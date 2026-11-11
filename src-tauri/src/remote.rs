@@ -10,6 +10,7 @@ mod crypto;
 pub(crate) mod diagnostics;
 pub(crate) mod grants;
 mod host;
+mod methods;
 mod images;
 #[cfg(test)]
 mod loopback;

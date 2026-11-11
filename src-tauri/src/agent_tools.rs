@@ -861,7 +861,7 @@ async fn dispatch(
             if store.session(&owner)?.project_id != current.project_id {
                 return Err("That queued message belongs to a different project.".into());
             }
-            crate::message_queue::remove(&store, &id)?;
+            crate::message_queue::remove_delivered(&store, &id)?;
             drop(store);
             let _ = app.emit("queue-changed", json!({"sessionId": owner}));
             crate::headless::queue_changed(&app, &owner);

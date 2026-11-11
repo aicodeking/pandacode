@@ -1903,7 +1903,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       Object.assign(entry, { text: String(args.text ?? ''), attachments: args.attachments ?? [], updatedAt: Date.now() });
       savePreviewQueue(queue); result = entry; break;
     }
-    case 'queue_remove': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
+    case 'queue_remove': case 'queue_take_steered': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
     case 'queue_reorder': {
       const queue = previewQueue(), own = queue.filter(e => e.sessionId === args.sessionId);
       if ([...own.map(e => e.id)].sort().join() !== [...args.ids].sort().join()) throw new Error('The queue changed. Try reordering again.');
@@ -2277,7 +2277,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!String(args.title ?? '').trim()) throw new Error('Give the pull request a title of up to 256 characters.');
       pushedBranches.add(checkout.branch);
       const number = previewGithub.nextNumber(s.projectId);
-      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: 'open', checkedAt: Date.now() };
+      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: args.draft ? 'draft' : 'open', checkedAt: Date.now() };
       previewGithub.pulls.push({ projectId: s.projectId, number, title: s.pullRequest.title, body: String(args.body ?? ''), base: args.base, head: checkout.branch });
       result = s; break;
     }

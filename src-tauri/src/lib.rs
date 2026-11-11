@@ -3085,7 +3085,7 @@ async fn git_status(
     session_id: Option<String>,
 ) -> Result<workspace::GitStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_status(&root)).await
+    blocking(move || workspace::git_status(&root, workspace::Trust::Desktop)).await
 }
 #[tauri::command]
 async fn git_diff(
@@ -3096,7 +3096,7 @@ async fn git_diff(
     staged: Option<bool>,
 ) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_diff(&root, path, staged.unwrap_or(false))).await
+    blocking(move || workspace::git_diff(&root, path, staged.unwrap_or(false), workspace::Trust::Desktop)).await
 }
 #[tauri::command]
 async fn git_stage(
@@ -3106,8 +3106,12 @@ async fn git_stage(
     paths: Vec<String>,
     staged: bool,
 ) -> Result<()> {
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_stage(&root, paths, staged)).await
+    stage_files(&state, &project_id, session_id.as_deref(), paths, staged, workspace::Trust::Desktop).await
+}
+/// `git_stage`, and the phone's `git.stage` with its [`workspace::Trust`].
+pub(crate) async fn stage_files(state: &AppState, project_id: &str, session_id: Option<&str>, paths: Vec<String>, staged: bool, trust: workspace::Trust) -> Result<()> {
+    let root = state.root(project_id, session_id)?;
+    blocking(move || workspace::git_stage(&root, paths, staged, trust)).await
 }
 #[tauri::command]
 async fn git_commit(
@@ -3117,7 +3121,7 @@ async fn git_commit(
     message: String,
 ) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_commit(&root, message)).await
+    blocking(move || workspace::git_commit(&root, message, workspace::Trust::Desktop)).await
 }
 fn create_worktree_task(
     store: &Arc<Mutex<Store>>,
@@ -3231,10 +3235,15 @@ fn worktree_paths(store: &Arc<Mutex<Store>>, session_id: &str) -> Result<(PathBu
 
 #[tauri::command]
 async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeStatus> {
+    task_worktree_status(&state, session_id, workspace::Trust::Desktop).await
+}
+
+/// `worktree_status`, and the phone's `worktree.status` with its [`workspace::Trust`].
+pub(crate) async fn task_worktree_status(state: &AppState, session_id: String, trust: workspace::Trust) -> Result<workspace::WorktreeStatus> {
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::worktree_status(&main, &path, branch.as_deref())
+        workspace::worktree_status(&main, &path, branch.as_deref(), trust)
     })
     .await
 }
@@ -3245,11 +3254,14 @@ async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Resul
         return Err("Wait for the agent to finish before merging its worktree.".into());
     }
     let store = state.store.clone();
-    blocking(move || {
-        let (main, path, _) = worktree_paths(&store, &session_id)?;
-        workspace::merge_worktree(&main, &path)
-    })
-    .await
+    blocking(move || merge_task_worktree(&store, &session_id, workspace::Trust::Desktop)).await
+}
+
+/// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
+/// phone's `worktree.merge` with its [`workspace::Trust`]). Blocking.
+pub(crate) fn merge_task_worktree(store: &Arc<Mutex<Store>>, session_id: &str, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
+    let (main, path, _) = worktree_paths(store, session_id)?;
+    workspace::merge_worktree(&main, &path, trust)
 }
 
 #[tauri::command]
@@ -3258,13 +3270,18 @@ async fn remove_worktree(
     session_id: String,
     delete_branch: Option<bool>,
 ) -> Result<workspace::WorktreeRemoval> {
+    remove_task_worktree(&state, session_id, delete_branch.unwrap_or(false), workspace::Trust::Desktop).await
+}
+
+/// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
+pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
     if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before removing its worktree.".into());
     }
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     // A lingering agent's working directory would block the removal on Windows.
     providers::end_lingering_in(&path).await;
-    let removed = blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await;
+    let removed = blocking(move || workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)).await;
     skill_manager::projects_changed();
     removed
 }
@@ -3287,8 +3304,13 @@ async fn git_branches(
     project_id: String,
     session_id: Option<String>,
 ) -> Result<workspace::BranchList> {
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_branches(&root)).await
+    task_branches(&state, &project_id, session_id.as_deref(), workspace::Trust::Desktop).await
+}
+
+/// `git_branches`, and the phone's `git.branches` (and `pull.create`'s base) with its [`workspace::Trust`].
+pub(crate) async fn task_branches(state: &AppState, project_id: &str, session_id: Option<&str>, trust: workspace::Trust) -> Result<workspace::BranchList> {
+    let root = state.root(project_id, session_id)?;
+    blocking(move || workspace::git_branches(&root, trust)).await
 }
 
 /// Check out another local branch in the task's own checkout; worktree tasks keep their branch.
@@ -3299,14 +3321,19 @@ async fn git_switch_branch(
     session_id: Option<String>,
     branch: String,
 ) -> Result<workspace::BranchList> {
-    if let Some(id) = session_id.as_deref() {
+    switch_branch(&state, &project_id, session_id.as_deref(), branch, workspace::Trust::Desktop).await
+}
+
+/// `git_switch_branch`, and the phone's `git.switchBranch` with its [`workspace::Trust`].
+pub(crate) async fn switch_branch(state: &AppState, project_id: &str, session_id: Option<&str>, branch: String, trust: workspace::Trust) -> Result<workspace::BranchList> {
+    if let Some(id) = session_id {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         if store.session(id)?.worktree_path.is_some() {
             return Err("This task works in its own worktree; its branch stays as it is.".into());
         }
     }
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_switch(&root, &branch)).await
+    let root = state.root(project_id, session_id)?;
+    blocking(move || workspace::git_switch(&root, &branch, trust)).await
 }
 
 #[tauri::command]
@@ -3316,7 +3343,7 @@ async fn git_push(
     session_id: Option<String>,
 ) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_push(&root)).await
+    blocking(move || workspace::git_push(&root, workspace::Trust::Desktop)).await
 }
 
 /// Images from the picker, a drop or a paste join the same PNG registry as browser
@@ -3498,7 +3525,7 @@ async fn set_task_link(
         .set_task_link(&session_id, &kind, link.as_ref())
 }
 
-/// Push the task's branch and open a pull request for it, linking the result.
+/// Push the task's branch and open a pull request (a draft with `draft`) for it, linking the result.
 #[tauri::command]
 async fn github_create_pull_request(
     state: State<'_, AppState>,
@@ -3506,6 +3533,7 @@ async fn github_create_pull_request(
     title: String,
     body: String,
     base: String,
+    draft: Option<bool>,
 ) -> Result<Session> {
     let root = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -3514,22 +3542,31 @@ async fn github_create_pull_request(
     };
     let store = state.store.clone();
     blocking(move || {
-        let status = workspace::git_status(&root)?;
-        if !status.is_repo {
-            return Err("Open a Git repository to create a pull request.".into());
-        }
-        if !status.files.is_empty() {
-            return Err("Commit or stash your changes before opening a pull request. The Changes tab can commit them.".into());
-        }
-        if status.branch.is_empty() || status.branch == base {
-            return Err(format!("Create a branch other than {base} before opening a pull request."));
-        }
-        workspace::git_push(&root)?;
-        let pull = github::create_pull_request(&root, &title, &body, &base, &status.branch)?;
-        let link = storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 };
+        let link = push_and_open_pull(&root, &title, &body, &base, draft.unwrap_or(false), workspace::Trust::Desktop)?;
         store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
     })
     .await
+}
+
+/// Pushes a clean checkout on a branch other than `base` (its hooks as `trust` says) and opens a
+/// pull request for it: `github_create_pull_request`, and the phone's `pull.create`. Blocking.
+pub(crate) fn push_and_open_pull(root: &std::path::Path, title: &str, body: &str, base: &str, draft: bool, trust: workspace::Trust) -> Result<storage::TaskLink> {
+    // Before the status below: for an untrusted phone, a status refresh may already run the
+    // checkout's filters (docs/remote-access.md, Round-6 gates).
+    workspace::refuse_untrusted_programs(root, trust)?;
+    let status = workspace::git_status(root, trust)?;
+    if !status.is_repo {
+        return Err("Open a Git repository to create a pull request.".into());
+    }
+    if !status.files.is_empty() {
+        return Err("Commit or stash your changes before opening a pull request. The Changes tab can commit them.".into());
+    }
+    if status.branch.is_empty() || status.branch == base {
+        return Err(format!("Create a branch other than {base} before opening a pull request."));
+    }
+    workspace::git_push(root, trust)?;
+    let pull = github::create_pull_request_as(root, title, body, base, &status.branch, draft, trust)?;
+    Ok(storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 })
 }
 /// The task's checkout and its linked pull request number.
 fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
@@ -3595,7 +3632,7 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
             Err(error) if error.is_empty() => return Ok(None),
             Err(error) => return Err(error),
         };
-        let branch = workspace::git_status(&root).map(|status| status.branch).unwrap_or_default();
+        let branch = workspace::git_status(&root, workspace::Trust::Desktop).map(|status| status.branch).unwrap_or_default();
         let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else { return Ok(None) };
         let store = store.lock().map_err(|e| e.to_string())?;
         if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
@@ -3866,7 +3903,9 @@ async fn start_terminal(
     }
     let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
-    blocking(move || {
+    let start_app = app.clone();
+    let terminal_id = blocking(move || {
+        let app = start_app;
         let state = app.state::<AppState>();
         let _admission = state
             .agents
@@ -3875,7 +3914,30 @@ async fn start_terminal(
         agent_updates::ensure_not_installing()?;
         terminal::start(app.clone(), terms, &root, cols, rows)
     })
-    .await
+    .await?;
+    // terminal.list on a phone groups shells by task; the webview adopts the ones it did not
+    // open itself (a phone's terminal.open comes through here too).
+    if let Some(session_id) = &session_id {
+        terminal::tag_output(&terminal_id, session_id);
+    }
+    let _ = app.emit(
+        "terminal-opened",
+        TerminalOpened { terminal_id: &terminal_id, project_id: &project_id, session_id: session_id.as_deref() },
+    );
+    Ok(terminal_id)
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOpened<'a> {
+    terminal_id: &'a str,
+    project_id: &'a str,
+    session_id: Option<&'a str>,
+}
+/// One page of a terminal's recorded output, for a webview tab attaching to a running shell.
+const TERMINAL_REPLAY_PAGE: usize = 64 * 1024;
+#[tauri::command]
+async fn read_terminal_output(terminal_id: String, after: u64) -> Result<terminal::OutputChunk> {
+    terminal::read_output(&terminal_id, after, TERMINAL_REPLAY_PAGE)
 }
 #[tauri::command]
 async fn write_terminal(
@@ -4390,6 +4452,7 @@ pub fn run() {
                 message_queue::queue_add,
                 message_queue::queue_update,
                 message_queue::queue_remove,
+                message_queue::queue_take_steered,
                 message_queue::queue_reorder,
                 message_queue::queue_take,
                 message_queue::queue_restore,
@@ -4662,6 +4725,7 @@ pub fn run() {
                 resize_terminal,
                 close_terminal,
                 get_terminal_activity,
+                read_terminal_output,
                 get_terminal_preferences,
                 get_metrics,
                 list_local_servers,

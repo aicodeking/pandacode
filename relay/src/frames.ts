@@ -1,4 +1,4 @@
-import { MAX_FRAME_BYTES, MAX_REF_CHARS } from "./limits.ts";
+import { MAX_FRAME_BYTES, MAX_REF_CHARS, RATE_LIMITED_SCAN_CHARS } from "./limits.ts";
 import { parseNotifyBody, type NotifyBody } from "./push.ts";
 import { isUuid } from "./validate.ts";
 
@@ -37,6 +37,27 @@ export function parseClientFrame(raw: unknown): ClientFrame {
   }
   const to = f.to.toLowerCase();
   return f.ref === undefined ? { kind: "send", to, body: f.body } : { kind: "send", to, body: f.body, ref: f.ref };
+}
+
+// A run of top-level string members at the very start or end of the object. Inside the body string every
+// quote is escaped, so `"key":"value"` with unescaped quotes next to the object's own brace is a real member.
+const MEMBER = String.raw`"(to|ref)"\s*:\s*"([^"\\]*)"`;
+const LEADING = new RegExp(String.raw`^\s*\{\s*((?:${MEMBER}\s*,\s*)+)`);
+const TRAILING = new RegExp(String.raw`((?:,\s*${MEMBER}\s*)+)\}\s*$`);
+const MEMBERS = new RegExp(MEMBER, "g");
+
+/** For a rate-limited frame too large to parse: scans only the first and last `RATE_LIMITED_SCAN_CHARS`
+ * characters for top-level `to` and `ref`, so the sender still gets an undeliverable reply carrying its
+ * request id. Null when no valid `to` is found. Cheap: bounded work regardless of frame size. */
+export function scanSendTarget(raw: string): { to: string; ref?: string } | null {
+  const found: Record<string, string> = {};
+  const head = LEADING.exec(raw.slice(0, RATE_LIMITED_SCAN_CHARS))?.[1] ?? "";
+  const tail = TRAILING.exec(raw.slice(-RATE_LIMITED_SCAN_CHARS))?.[1] ?? "";
+  for (const run of [head, tail]) for (const m of run.matchAll(MEMBERS)) found[m[1]] ??= m[2];
+  if (!isUuid(found.to)) return null;
+  const to = found.to.toLowerCase();
+  const ref = found.ref;
+  return ref !== undefined && ref.length <= MAX_REF_CHARS ? { to, ref } : { to };
 }
 
 /** What the target receives. `from` comes from the socket, never from the sender's frame. */

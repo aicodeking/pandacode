@@ -76,8 +76,12 @@ test('isolated app data and literal NSIS arguments do not inherit credentials', 
   assert.throws(() => installArguments('bad"path'), /Invalid/);
 });
 
+// Fixtures that exit at once settle the observation as soon as they exit, so a long window costs
+// nothing normally but keeps a cold Node start (over 1.5 s on windows-11-arm) inside it.
+const EXIT_WINDOW_MS = 10_000;
+
 test('startup observation rejects early clean exits, crashes, and missing executables', async () => {
-  const options = { env: process.env, cwd: tmpdir(), durationMs: 500, stdio: 'ignore' };
+  const options = { env: process.env, cwd: tmpdir(), durationMs: EXIT_WINDOW_MS, stdio: 'ignore' };
   await assert.rejects(observeProcess(process.execPath, ['-e', 'process.exit(0)'], options), /App exited/);
   await assert.rejects(observeProcess(process.execPath, ['-e', 'process.exit(42)'], options), /42/);
   await assert.rejects(observeProcess(join(tmpdir(), 'nonexistent-pandacode-smoke-executable'), [], options), /ENOENT/);
@@ -94,7 +98,7 @@ test('startup observation stops a surviving fixture and bounds installer executi
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-  await observeProcess(process.execPath, ['-e', 'process.exit(0)'], { ...options, durationMs: 1000, expectExit: true });
+  await observeProcess(process.execPath, ['-e', 'process.exit(0)'], { ...options, durationMs: EXIT_WINDOW_MS, expectExit: true });
   await assert.rejects(observeProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { ...options, expectExit: true }), /timeout/);
 });
 

@@ -3867,7 +3867,7 @@ async function steerQueued(s: Session, id: string): Promise<void> {
   steeringQueued.add(id); refreshComposer(s);
   try {
     await steer(s, entry.text);
-    await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
+    await call('queue_take_steered', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
   } finally { steeringQueued.delete(id); refreshComposer(s); }
 }
 async function saveQueueEdit(s = session()): Promise<void> {

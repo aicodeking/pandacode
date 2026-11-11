@@ -28,14 +28,20 @@ pub(crate) fn is_chat_folder(folder: &Path) -> bool {
     in_root(folder, &root())
 }
 
-/// Makes the chat's folder, registers it as a project and starts its task.
-pub(crate) fn create(store: &Store, root: &Path, provider: &str, model: &str, mode: Option<&str>) -> Result<Session> {
+/// Makes the chat's folder, registers it as a project and starts its task. `team`: whether the
+/// saved default team applies (off for a phone without "Full access for remote tasks": a team's
+/// workers always run in full access).
+pub(crate) fn create(store: &Store, root: &Path, provider: &str, model: &str, mode: Option<&str>, team: bool) -> Result<Session> {
     let id = crate::storage::id();
     let folder = root.join(format!("chat-{}", &id[..8]));
     std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create the chat's folder: {e}"))?;
     let project = store.add_project(&folder)?;
     store.db.execute("UPDATE projects SET name='Chat' WHERE id=?1", params![project.id]).map_err(|e| e.to_string())?;
-    crate::architect::profiles::create_user_task(store, &project.id, provider, model, mode, None)
+    if team {
+        crate::architect::profiles::create_user_task(store, &project.id, provider, model, mode, None)
+    } else {
+        crate::architect::profiles::create_task_without_team(store, &project.id, provider, model, mode, None)
+    }
 }
 
 /// The folder of a chat project no task uses any more.
@@ -65,7 +71,7 @@ pub(crate) fn cleanup(store: &Store, root: &Path, project_id: &str) -> Result<bo
 
 #[tauri::command]
 pub async fn chat_create(app: tauri::AppHandle, state: State<'_, AppState>, provider: String, model: String, mode: Option<String>) -> Result<Session> {
-    let task = create(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &provider, &model, mode.as_deref())?;
+    let task = create(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &provider, &model, mode.as_deref(), true)?;
     let _ = app.emit("sessions-changed", ());
     Ok(task)
 }
@@ -95,7 +101,7 @@ mod tests {
     #[test]
     fn a_chat_gets_its_own_hidden_folder_and_is_cleaned_up_with_its_last_task() {
         let (dir, root, store) = setup();
-        let task = create(&store, &root, "claude", "default", None).unwrap();
+        let task = create(&store, &root, "claude", "default", None, true).unwrap();
         let project = store.project(&task.project_id).unwrap();
         assert_eq!(project.name, "Chat");
         assert!(in_root(Path::new(&project.path), &root));
@@ -110,9 +116,23 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_without_team_never_gets_the_saved_default_team() {
+        let (dir, root, store) = setup();
+        let library = serde_json::json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
+        store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
+        let leads_team = |sid: &str| -> bool { store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |r| r.get(0)).unwrap() };
+        // A phone's chat.start without "Full access for remote tasks" passes team: false.
+        let plain = create(&store, &root, "codex", "default", None, false).unwrap();
+        assert!(!leads_team(&plain.id));
+        let desktop = create(&store, &root, "codex", "default", None, true).unwrap();
+        assert!(leads_team(&desktop.id), "the desktop's chat keeps the saved default team");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn user_files_keep_the_folder_and_other_projects_are_never_cleaned() {
         let (dir, root, store) = setup();
-        let task = create(&store, &root, "claude", "default", None).unwrap();
+        let task = create(&store, &root, "claude", "default", None, true).unwrap();
         let folder = PathBuf::from(store.project(&task.project_id).unwrap().path);
         std::fs::write(folder.join("notes.md"), "keep").unwrap();
         store.db.execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();

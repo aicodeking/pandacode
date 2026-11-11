@@ -1,38 +1,93 @@
 // One inbox row, two lines: project tile, the title and harness logo, then the status beside what the
 // agent is doing or the branch and project (plus the computer when there is more than one). Swipe for
-// Snooze / Pin, far enough to snooze outright; long press for those plus Approve, Deny and Stop as the
-// system context menu (iOS) or the action sheet. With accessibility text sizes the title wraps and the meta stacks.
-import { Link, router } from 'expo-router';
+// Snooze / Pin, far enough to snooze outright; long press for those plus Approve, Deny, Stop, Rename,
+// Archive and Delete as the system context menu (iOS) or the action sheet. An action hides only where
+// the computer lacks it; one this phone's access or the Full access switch keeps off stays, disabled with
+// the access note on iOS and explaining itself when chosen elsewhere (menu-gate.ts, as the computer hub). Pins sync with the computer
+// when it serves thread.pin; an older one keeps this phone's own pin. With accessibility text sizes the title wraps and the meta stacks.
+import { Link, router, useNavigationContainerRef } from 'expo-router';
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, Platform, PlatformColor, StyleSheet, Text, useWindowDimensions, View, type AccessibilityActionEvent, type ColorValue } from 'react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import Animated, { Extrapolation, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withSpring, withTiming, type SharedValue } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
+import { useHostCapabilities } from '../connect/api/capabilities.ts';
+import { pinThread } from '../connect/api/threads.ts';
 import { connect } from '../connect/client.ts';
 import { markOpen } from '../connect/perf.ts';
-import { approvalSummary, branchFits, elapsedLabel, pendingApproval, runClockStart, stalledFor, tomorrowMorning, type InboxRow as Row } from '../store/inbox.ts';
+import { approvalSummary, branchFits, elapsedLabel, offersSettle, offersUnarchive, pendingApproval, runClockStart, stalledFor, tomorrowMorning, type InboxRow as Row } from '../store/inbox.ts';
 import { taskKey, useConnect } from '../store/index.ts';
 import { workerActive } from '../store/team.ts';
-import { removeOutbox, retryOutbox, snooze, togglePin, unsnooze } from '../store/local.ts';
+import { removeOutbox, retryOutbox, snooze, unsnooze } from '../store/local.ts';
 import { useColors } from './theme.ts';
 import { BranchChip, CHROME_FONT_SCALE, Chip, CrossFadeText, haptic, PressScale, springs, StatusDot, type, type Tone } from './ds/index.ts';
 import { HarnessLogo } from './harness.tsx';
 import { Icon } from './Icon.tsx';
 import { ROW_PRESS_DELAY_MS } from './InboxCard.tsx';
 import { showActions, type MenuItem } from './Menu.tsx';
+import { BLOCKED_TITLE, gatedPress, menuGate } from './menu-gate.ts';
 import { ProjectTile } from './ProjectTile.tsx';
+import { archiveAction, deleteAction, openRename, unarchiveAction } from './TaskHeader.tsx';
 import { ago } from './status.tsx';
+import { rootStack, TASK_ROUTE, type SidebarOpen, type StackState } from './sidebar-nav.ts';
+import { openFromSidebar } from './sidebar-open.ts';
 import type { Colors } from './theme.ts';
 
 const HOUR = 3600_000;
 
-/** Pin and snooze are this phone's own: they apply at once, with a tick. */
+/** The row's host capabilities, read through `useHostCapabilities` so the menu follows host.hello. */
+type Caps = ReturnType<typeof useHostCapabilities>;
+/** A row action, with the access note when this phone can't use it on that computer. */
+type Item = MenuItem & { note?: string };
+
+/** An action for `method`: none where the computer lacks it; with the access note (and an alert in place of `run`) where it's blocked. */
+function gated(row: Row, caps: Caps, method: string, item: MenuItem): Item[] {
+  const gate = menuGate(caps, method, row.computer);
+  if (!gate.shown) return [];
+  return [{ ...item, onPress: gatedPress(gate, item.onPress, note => Alert.alert(BLOCKED_TITLE, note)), ...(gate.note ? { note: gate.note } : {}) }];
+}
+
+/** Pin (synced where the computer serves it) applies at once and goes back if the computer refuses. */
+function pin(row: Row) {
+  pinThread(row.deviceId, row.task.sessionId, !row.pinned).catch(error => { haptic('error'); Alert.alert(row.pinned ? 'Could not unpin' : 'Could not pin', (error as Error).message); });
+}
+
+/** Leaves the open task's pane (the Duo's split view) for the New thread pane, as the task's own header
+ * does, but only while that task is still the screen on top: the archive answers later, and by then
+ * Changes, a sheet or another task may cover it, which a plain back would close instead. A covered task
+ * stays (an archived one stays listed, a deleted one closes itself: useLeaveWhenGone). */
+function leaveOpen(state: StackState | undefined, deviceId: string, sessionId: string) {
+  const stack = rootStack(state);
+  const top = stack?.routes[stack.index ?? stack.routes.length - 1];
+  const params = top?.params as { device?: unknown; session?: unknown } | undefined;
+  if (top?.name !== TASK_ROUTE || params?.device !== deviceId || params?.session !== sessionId) return;
+  if (router.canGoBack()) router.back();
+  else router.replace('/inbox');
+}
+
+/** Rename, Archive (Unarchive under Archived) and Delete for a task row, where the computer serves them; a bot's conversation has none.
+ * `leave`: the row is the task open beside the sidebar, so archiving it closes that pane (an archived
+ * task stays listed); a deleted one leaves the list and its screen closes itself. */
+function manage(row: Row, caps: Caps, leave?: () => void): Item[] {
+  const { deviceId, task } = row;
+  if (task.botId) return [];
+  const settle = offersSettle({ badge: row.badge });
+  const unarchive = offersUnarchive({ task, badge: row.badge });
+  return [
+    ...gated(row, caps, 'thread.rename', { label: 'Rename', ios: 'pencil', android: 'edit', onPress: () => openRename(deviceId, task.sessionId) }),
+    ...(unarchive ? gated(row, caps, 'thread.archive', { label: 'Unarchive', ios: 'tray.and.arrow.up', android: 'unarchive', onPress: () => unarchiveAction(deviceId, task.sessionId) }) : []),
+    ...(!unarchive && settle ? gated(row, caps, 'thread.archive', { label: 'Archive', ios: 'archivebox', android: 'archive', onPress: () => archiveAction(deviceId, task.sessionId, leave) }) : []),
+    ...(settle ? gated(row, caps, 'thread.delete', { label: 'Delete', ios: 'trash', android: 'delete', destructive: true, onPress: () => deleteAction(deviceId, task.sessionId, task.title) }) : []),
+  ];
+}
+
+/** Pin and snooze apply at once, with a tick. */
 const tap = (run: () => void) => () => {
   haptic('selection');
   run();
 };
 
-function actions(row: Row, snoozed: boolean): MenuItem[] {
+function actions(row: Row, snoozed: boolean, caps: Caps, leave?: () => void): Item[] {
   if (row.outboxId) {
     const id = row.outboxId;
     return [
@@ -40,23 +95,23 @@ function actions(row: Row, snoozed: boolean): MenuItem[] {
       { label: 'Delete message', ios: 'trash', android: 'delete', destructive: true, onPress: () => removeOutbox(id) },
     ];
   }
-  const answers: MenuItem[] = row.badge === 'approval' && !seenActive(row)
+  const answers: Item[] = row.badge === 'approval' && !seenActive(row)
     ? [
-      { label: 'Approve', ios: 'checkmark.circle', android: 'check_circle', onPress: () => answerApproval(row, true) },
-      { label: 'Deny', ios: 'xmark.circle', android: 'cancel', destructive: true, onPress: () => answerApproval(row, false) },
+      ...gated(row, caps, 'approval.respond', { label: 'Approve', ios: 'checkmark.circle', android: 'check_circle', onPress: () => answerApproval(row, true) }),
+      ...gated(row, caps, 'approval.respond', { label: 'Deny', ios: 'xmark.circle', android: 'cancel', destructive: true, onPress: () => answerApproval(row, false) }),
     ]
     : [];
-  const items: MenuItem[] = snoozed
+  const items: Item[] = snoozed
     ? [{ label: 'Unsnooze', ios: 'bell', android: 'notifications', onPress: tap(() => unsnooze(row.key)) }]
     : [
       { label: 'Snooze 1 hour', ios: 'moon.zzz', android: 'snooze', onPress: tap(() => snooze(row.key, Date.now() + HOUR)) },
       { label: 'Snooze until tomorrow', ios: 'sunrise', android: 'wb_twilight', onPress: tap(() => snooze(row.key, tomorrowMorning(Date.now()))) },
     ];
-  items.push({ label: row.pinned ? 'Unpin' : 'Pin', ios: row.pinned ? 'pin.slash' : 'pin', android: 'push_pin', onPress: tap(() => togglePin(row.key)) });
+  items.push({ label: row.pinned ? 'Unpin' : 'Pin', ios: row.pinned ? 'pin.slash' : 'pin', android: 'push_pin', onPress: tap(() => pin(row)) });
   if (row.badge === 'working' || row.badge === 'approval' || row.badge === 'question') {
-    items.push({ label: 'Stop', ios: 'stop.circle', android: 'stop_circle', destructive: true, onPress: () => stop(row) });
+    items.push(...gated(row, caps, 'task.stop', { label: 'Stop', ios: 'stop.circle', android: 'stop_circle', destructive: true, onPress: () => stop(row) }));
   }
-  return [...answers, ...items];
+  return [...answers, ...items, ...manage(row, caps, leave)];
 }
 
 const openTask = (row: Row) => router.push({ pathname: '/task/[device]/[session]', params: { device: row.deviceId, session: row.task.sessionId } });
@@ -299,9 +354,10 @@ const LARGE_TEXT = 1.35;
 /** Short titles keep the row dense; a long one takes a second line rather than an ellipsis. */
 const TITLE_LINES = 2;
 
-/** `sidebar` is the iPhone Duo's list: a rounded fill on the `selected` row, and `replace` swaps the
- * open task instead of stacking another. `showComputer`: more than one computer is listed. */
-export const InboxRow = memo(function InboxRow({ row, snoozed, showComputer, sidebar, selected, replace }: { row: Row; snoozed: boolean; showComputer: boolean; minute: number; sidebar?: boolean; selected?: boolean; replace?: boolean }) {
+/** `sidebar` is the iPhone Duo's list: a rounded fill on the `selected` row, and `how` (sidebar-nav.ts)
+ * opens without stacking: replacing the open task, or back to the root first over a feature screen.
+ * Left out (the inbox tab) a row pushes. `showComputer`: more than one computer is listed. */
+export const InboxRow = memo(function InboxRow({ row, snoozed, showComputer, sidebar, selected, how }: { row: Row; snoozed: boolean; showComputer: boolean; minute: number; sidebar?: boolean; selected?: boolean; how?: SidebarOpen }) {
   const colors = useColors();
   const large = useWindowDimensions().fontScale >= LARGE_TEXT;
   const glyph = useGlyphSize(15);
@@ -315,11 +371,16 @@ export const InboxRow = memo(function InboxRow({ row, snoozed, showComputer, sid
   const agents = row.run.agents + workers;
   const project = task.chat ? 'Chat' : task.projectName || 'Project';
   const title = row.outboxId ? `“${row.text}”` : task.title || 'Untitled task';
-  const menu = actions(row, snoozed);
+  const caps = useHostCapabilities(row.deviceId);
+  const navigation = useNavigationContainerRef();
+  const leave = sidebar && selected
+    ? () => leaveOpen(navigation.isReady() ? navigation.getRootState() as StackState | undefined : undefined, row.deviceId, row.task.sessionId)
+    : undefined;
+  const menu = actions(row, snoozed, caps, leave);
   const href = { pathname: '/task/[device]/[session]' as const, params: { device: row.deviceId, session: task.sessionId } };
   const body = (
     // The element screen readers see is the wrapper below.
-    <PressScale scale={1} unstable_pressDelay={ROW_PRESS_DELAY_MS} accessible={false} focusable={false} onLongPress={Platform.OS === 'ios' && !replace ? undefined : () => showActions(task.title, menu)}
+    <PressScale scale={1} unstable_pressDelay={ROW_PRESS_DELAY_MS} accessible={false} focusable={false} {...(how ? { onPress: () => openFromSidebar(href, how) } : {})} onLongPress={Platform.OS === 'ios' && !how ? undefined : () => showActions(task.title, menu)}
       onPressIn={() => { pressed.set(withTiming(1, HIGHLIGHT_IN)); if (!row.outboxId) warm(row.deviceId, task.sessionId); }} onPressOut={() => pressed.set(withTiming(0, HIGHLIGHT_OUT))}
       style={StyleSheet.flatten([styles.row, large && styles.rowLarge, selected && [styles.selected, { backgroundColor: colors.fill }]])}>
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.selected, { backgroundColor: colors.fill }, highlight]} />
@@ -348,7 +409,7 @@ export const InboxRow = memo(function InboxRow({ row, snoozed, showComputer, sid
     swipeRef.current?.close();
     menu.find(item => item.label.startsWith(fullSwipe ?? '\0'))?.onPress();
   };
-  const open = () => (replace ? router.replace(href) : router.push(href));
+  const open = () => openFromSidebar(href, how);
   const act = (event: AccessibilityActionEvent) => {
     const name = event.nativeEvent.actionName;
     if (name === 'activate') open();
@@ -364,21 +425,22 @@ export const InboxRow = memo(function InboxRow({ row, snoozed, showComputer, sid
       onAccessibilityAction={act} onAccessibilityTap={open}>
       <Swipeable ref={swipeRef} renderRightActions={(progress, translation, swipe) => <SwipeActions row={row} snoozed={snoozed} sidebar={sidebar} menu={menu} progress={progress} translation={translation} swipe={swipe} onArm={arm} />}
         overshootRight={!sidebar && !!fullSwipe} friction={1} animationOptions={SPRING} onSwipeableWillOpen={commit} childrenContainerStyle={{ backgroundColor: colors.cardInner }}>
-        {/* Link's context menu works only for a push, so a replacing row long-presses into the action sheet. */}
-        {Platform.OS === 'ios' && !replace ? (
+        {/* Link's context menu works only for a push, so a sidebar row (which may replace or go back to the
+            root first) presses itself and long-presses into the action sheet. */}
+        {how ? body : Platform.OS === 'ios' ? (
           <Link href={href} asChild>
             <Link.Trigger>{body}</Link.Trigger>
             <Link.Menu>
-              {menu.map(item => <Link.MenuAction key={item.label} icon={item.ios} destructive={item.destructive} onPress={item.onPress}>{item.label}</Link.MenuAction>)}
+              {menu.map(item => <Link.MenuAction key={item.label} icon={item.ios} destructive={item.destructive} disabled={!!item.note} subtitle={item.note} onPress={item.onPress}>{item.label}</Link.MenuAction>)}
             </Link.Menu>
           </Link>
-        ) : <Link href={href} replace={replace} asChild>{body}</Link>}
+        ) : <Link href={href} asChild>{body}</Link>}
       </Swipeable>
     </View>
   );
 }, (a, b) => a.row.task === b.row.task && a.row.badge === b.row.badge && sameRun(a.row.run, b.row.run) && a.row.pinned === b.row.pinned && a.row.at === b.row.at
   && a.row.computer === b.row.computer && a.row.outboxId === b.row.outboxId && a.row.text === b.row.text && a.snoozed === b.snoozed && a.showComputer === b.showComputer && a.minute === b.minute
-  && a.sidebar === b.sidebar && a.selected === b.selected && a.replace === b.replace);
+  && a.sidebar === b.sidebar && a.selected === b.selected && a.how === b.how);
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingVertical: 9 },

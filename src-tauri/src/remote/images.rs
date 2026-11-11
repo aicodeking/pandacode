@@ -167,6 +167,17 @@ impl Uploads {
         }
         Ok(())
     }
+
+    /// Gives claimed images back to `from` after the message naming them failed, so a retry
+    /// with the same `sendId` finds them (with a fresh expiry). All of them, even past
+    /// [`MAX_READY`]: each was already counted when [`Uploads::stored`] admitted it, and
+    /// dropping one would make the retry fail ("missing") with no way to recover the send.
+    pub(crate) fn restore(&mut self, from: &str, ids: &[String], now: Instant) {
+        self.expire(now);
+        for id in ids {
+            self.ready.insert(id.clone(), (from.to_owned(), now));
+        }
+    }
 }
 
 fn capture_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
@@ -209,6 +220,13 @@ pub(crate) fn claim(app: &tauri::AppHandle, from: &str, ids: &[String]) -> Resul
         return Ok(());
     }
     super::remote(app).lock().uploads.claim(from, ids, Instant::now())
+}
+
+/// Undoes [`claim`] for a message that failed before it was sent or queued.
+pub(crate) fn restore(app: &tauri::AppHandle, from: &str, ids: &[String]) {
+    if !ids.is_empty() {
+        super::remote(app).lock().uploads.restore(from, ids, Instant::now());
+    }
 }
 
 /// One of this computer's captures, checked like `send_message` checks it.
@@ -437,10 +455,34 @@ mod tests {
         let c = uuid::Uuid::new_v4().to_string();
         uploads.stored("viewer", &c, now).unwrap();
         assert!(uploads.claim("viewer", &[c], now + TTL).is_err(), "unclaimed images expire");
+    }
+
+    #[test]
+    fn a_failed_message_gives_its_images_back_for_the_retry() {
+        let mut uploads = Uploads::default();
+        let now = Instant::now();
+        let a = uuid::Uuid::new_v4().to_string();
+        uploads.stored("viewer", &a, now).unwrap();
+        uploads.claim("viewer", std::slice::from_ref(&a), now).unwrap();
+        // The send failed: the same-sendId retry must find the image again.
+        uploads.restore("viewer", std::slice::from_ref(&a), now);
+        assert!(uploads.claim("intruder", std::slice::from_ref(&a), now).is_err(), "still only the sender's");
+        uploads.claim("viewer", std::slice::from_ref(&a), now + TTL / 2).unwrap();
+        assert!(uploads.claim("viewer", &[a], now).is_err(), "claimed once again");
         for _ in 0..MAX_READY {
             uploads.stored("viewer", &uuid::Uuid::new_v4().to_string(), now).unwrap();
         }
         assert!(uploads.stored("viewer", &uuid::Uuid::new_v4().to_string(), now).is_err());
+        // Round 11: claimed images all come back, even past the cap (they were counted when
+        // stored), so the failed send's retry finds every one; new uploads stay refused.
+        let back: Vec<String> = (0..3).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        uploads.restore("viewer", &back, now);
+        assert_eq!(uploads.ready.values().filter(|(sender, _)| sender == "viewer").count(), MAX_READY + 3);
+        assert!(uploads.stored("viewer", &uuid::Uuid::new_v4().to_string(), now).is_err());
+        uploads.claim("viewer", &back, now).unwrap();
+        let mut fresh = Uploads::default();
+        fresh.restore("viewer", &back, now);
+        fresh.claim("viewer", &back, now).unwrap();
     }
 
     #[test]

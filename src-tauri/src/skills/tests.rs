@@ -293,3 +293,41 @@ fn bot_workspace_sync_and_prompt_text_stay_scoped() {
     assert!(text.contains("### Release Notes") && text.contains("Summarize the changes."));
     assert!(!text.contains("curl") && skipped.len() == 1);
 }
+
+/// Round 24: a project's `CLAUDE.md` linked to `/dev/zero` or an `AGENTS.md` FIFO is never read
+/// in full or waited on: the matrix calls it content PandaCode does not manage, activation is
+/// refused, and an activation's status reads missing.
+#[cfg(unix)]
+#[test]
+fn special_rule_files_are_never_read_in_full() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    let rule = fx.folder("tests", &[("RULE.md", "Run the tests before finishing.\n")]);
+    fx.import(Kind::Rule, &rule);
+    fx.library.activate("tests", "claude", Scope::Project, Some(&root), false).unwrap();
+    fs::remove_file(root.join("CLAUDE.md")).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", root.join("CLAUDE.md")).unwrap();
+    let fifo = std::ffi::CString::new(root.join("AGENTS.md").to_string_lossy().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let started = std::time::Instant::now();
+    let matrix = fx.library.matrix(Some(&root)).unwrap();
+    assert_eq!(Fixture::cell(&matrix, "claude", "tests", Scope::Project).status, "missing");
+    for harness in ["claude", "codex"] {
+        let row = matrix.harnesses.iter().find(|h| h.harness == harness).unwrap();
+        assert!(row.unmanaged.iter().any(|u| u.scope == Scope::Project && u.detail == "Has instructions PandaCode does not manage."), "{harness}");
+    }
+    let refused = fx.library.activate("tests", "codex", Scope::Project, Some(&root), false).unwrap_err();
+    assert!(refused.contains("not a text file"), "{refused}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "nothing blocks");
+    assert!(adapter::file_hash(&root.join("CLAUDE.md")).is_none() && adapter::file_hash(&root.join("AGENTS.md")).is_none());
+
+    // A symlink to a regular rule file (AGENTS.md -> CLAUDE.md) still works as before.
+    fs::remove_file(root.join("CLAUDE.md")).unwrap();
+    fs::remove_file(root.join("AGENTS.md")).unwrap();
+    fs::write(root.join("CLAUDE.md"), "# Mine\n").unwrap();
+    std::os::unix::fs::symlink("CLAUDE.md", root.join("AGENTS.md")).unwrap();
+    fx.library.activate("tests", "codex", Scope::Project, Some(&root), false).unwrap();
+    assert!(fs::read_to_string(root.join("CLAUDE.md")).unwrap().contains("Run the tests"));
+    assert_eq!(Fixture::cell(&fx.library.matrix(Some(&root)).unwrap(), "codex", "tests", Scope::Project).status, "active");
+}
