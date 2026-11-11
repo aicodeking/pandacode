@@ -196,21 +196,85 @@ pub(crate) fn reinsert(store: &Store, entry: &QueuedMessage) -> Result<QueuedMes
 }
 
 #[tauri::command]
-pub async fn queue_list(state: State<'_, AppState>, session_id: Option<String>) -> Result<Vec<QueuedMessage>> {
+pub async fn queue_list(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<Vec<QueuedMessage>> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     list(&store, session_id.as_deref())
 }
 
-#[tauri::command]
-pub async fn queue_add(state: State<'_, AppState>, session_id: String, text: String, attachments: Option<serde_json::Value>) -> Result<QueuedMessage> {
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    add(&store, &session_id, &text, &attachments.unwrap_or_else(|| serde_json::json!([])))
+/// The session's harness and folder when `text` types a command, for the typed-command guard.
+fn guard_target(
+    store: &Store,
+    session_id: &str,
+    text: &str,
+) -> Result<Option<(String, std::path::PathBuf)>> {
+    if crate::skill_manager::typed_command(text).is_none() {
+        return Ok(None);
+    }
+    let session = store.session(session_id)?;
+    let cwd = match session.worktree_path {
+        Some(path) => path,
+        None => store.project(&session.project_id)?.path,
+    };
+    Ok(Some((session.provider, cwd.into())))
+}
+
+/// Refuses a steered or queued message that types a switched-off skill, with the error a new
+/// turn would get: a running agent's harness expands `/name` itself, past every other switch.
+/// The switches and the installed-skill scan are read off the async runtime.
+async fn refuse_switched_off_skill(state: &AppState, session_id: &str, text: &str) -> Result<()> {
+    let target = guard_target(
+        &*state.store.lock().map_err(|e| e.to_string())?,
+        session_id,
+        text,
+    )?;
+    let Some((provider, cwd)) = target else {
+        return Ok(());
+    };
+    let (session_id, text) = (session_id.to_owned(), text.to_owned());
+    crate::blocking(move || {
+        crate::skill_manager::check_session_prompt(&session_id, &provider, &cwd, &text)
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn queue_update(state: State<'_, AppState>, id: String, text: String, attachments: Option<serde_json::Value>) -> Result<QueuedMessage> {
+pub async fn queue_add(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    attachments: Option<serde_json::Value>,
+) -> Result<QueuedMessage> {
+    refuse_switched_off_skill(&state, &session_id, &text).await?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    update(&store, &id, &text, &attachments.unwrap_or_else(|| serde_json::json!([])))
+    add(
+        &store,
+        &session_id,
+        &text,
+        &attachments.unwrap_or_else(|| serde_json::json!([])),
+    )
+}
+
+#[tauri::command]
+pub async fn queue_update(
+    state: State<'_, AppState>,
+    id: String,
+    text: String,
+    attachments: Option<serde_json::Value>,
+) -> Result<QueuedMessage> {
+    if crate::skill_manager::typed_command(&text).is_some() {
+        let session_id = get(&*state.store.lock().map_err(|e| e.to_string())?, &id)?.session_id;
+        refuse_switched_off_skill(&state, &session_id, &text).await?;
+    }
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    update(
+        &store,
+        &id,
+        &text,
+        &attachments.unwrap_or_else(|| serde_json::json!([])),
+    )
 }
 
 #[tauri::command]
@@ -251,21 +315,43 @@ pub async fn queue_restore(state: State<'_, AppState>, entry: QueuedMessage) -> 
 /// with that id report `delivered`, or `failed` if the run ends first. On an error the
 /// message should stay queued.
 #[tauri::command]
-pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, text: String) -> Result<serde_json::Value> {
+pub async fn steer_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<serde_json::Value> {
     let text = text.trim().to_owned();
     if text.is_empty() {
         return Err("Write a message to steer with.".into());
     }
     // A task on another computer steers there and saves the message in its own history.
-    if let Some(reply) = crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await? {
+    if let Some(reply) = crate::remote::route(
+        &app,
+        &state,
+        &session_id,
+        "task.steer",
+        serde_json::json!({"text": text}),
+    )
+    .await?
+    {
         return Ok(reply);
     }
+    refuse_switched_off_skill(&state, &session_id, &text).await?;
     let reply = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
-        let agent = agents.get(&session_id).ok_or("The agent is not running; the message stays queued.")?;
+        let agent = agents
+            .get(&session_id)
+            .ok_or("The agent is not running; the message stays queued.")?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let id = uuid::Uuid::new_v4().to_string();
-        agent.send(RunInput::Steer { id, text: text.clone(), reply: tx }).map_err(|_| "The agent has stopped.".to_string())?;
+        agent
+            .send(RunInput::Steer {
+                id,
+                text: text.clone(),
+                reply: tx,
+            })
+            .map_err(|_| "The agent has stopped.".to_string())?;
         rx
     };
     let reply = tokio::time::timeout(std::time::Duration::from_secs(15), reply)
@@ -401,6 +487,48 @@ mod tests {
         assert!(channels.contains("message_queue::remove_delivered(&store,&queued.id)") && !channels.contains("message_queue::remove(&store"));
         let tools = include_str!("agent_tools.rs");
         assert!(tools.contains("crate::message_queue::remove_delivered(&store, &id)?;") && !tools.contains("crate::message_queue::remove(&store"));
+    }
+
+    #[test]
+    fn steered_and_queued_messages_refuse_a_typed_switched_off_skill_on_claude_and_acp() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let folder = std::env::temp_dir();
+        let project = store.add_project(&folder).unwrap();
+        for provider in ["claude", "kimi"] {
+            let task = store
+                .create_session(&project.id, provider, "default", "ask")
+                .unwrap();
+            // Plain text never reaches the switches.
+            assert_eq!(
+                guard_target(&store, &task.id, "deploy it please").unwrap(),
+                None
+            );
+            let (harness, cwd) = guard_target(&store, &task.id, "/deploy staging")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (harness.as_str(), cwd.as_path()),
+                (provider, Path::new(&project.path))
+            );
+            let check = |text: &str| {
+                crate::skill_manager::check_session_prompt_with(
+                    &harness,
+                    text,
+                    || std::collections::BTreeSet::from(["deploy".into()]),
+                    || std::collections::BTreeSet::from(["deploy".into()]),
+                )
+            };
+            assert_eq!(
+                check("/deploy staging").unwrap_err(),
+                format!(
+                    "deploy is switched off in {}.",
+                    crate::skill_manager::SKILLS_SETTINGS
+                ),
+                "{provider}"
+            );
+            assert!(check("/other").is_ok(), "{provider}");
+        }
+        assert!(guard_target(&store, "missing", "/deploy").is_err());
     }
 
     #[test]

@@ -182,11 +182,11 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 [data-state-tone="plan"]{--state-tone:var(--ds-tone-plan)}[data-state-tone="edit"]{--state-tone:var(--ds-tone-edit)}[data-state-tone="full"]{--state-tone:var(--ds-tone-full)}[data-state-tone="team"]{--state-tone:var(--ds-tone-team)}[data-state-tone="saver"]{--state-tone:var(--ds-tone-saver)}[data-state-tone="remote"]{--state-tone:var(--ds-tone-remote)}[data-state-tone="worktree"]{--state-tone:var(--ds-tone-worktree)}
 [data-state-tone]{color:var(--state-tone)}
 /* Account health (Settings → Connections, account pool): ready, near its limit, out until a reset. */
-[data-state-tone="ready"]{--state-tone:var(--ds-success)}[data-state-tone="near"]{--state-tone:var(--ds-warn)}[data-state-tone="limited"]{--state-tone:var(--ds-danger)}
+[data-state-tone="ready"]{--state-tone:var(--ds-success)}[data-state-tone="near"],[data-state-tone="limited"]{--state-tone:var(--ds-warn)}
 /* Accounts (Settings → Providers): one connection-card per pooled harness, then the Connections card.
  * Lists sit 2px inside the inner card, as rows do in .ds-card-inner. */
-.named-connections-card{display:grid;gap:12px}
-.named-connections-card>[data-pools]{display:grid;gap:12px}
+.named-connections-card{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}
+.named-connections-card>[data-pools]{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}
 .named-connections-card>[data-pools]:empty{display:none}
 .named-connection-feedback{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted)}
 .named-connection-feedback.error{color:var(--ds-danger)}
@@ -195,31 +195,52 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 .named-connections .ds-row-trail .ds-btn,.account-pool .ds-btn{height:28px;padding:0 10px;font-size:var(--ds-text-meta)}
 :is(.named-connections-list,.account-pool) .ds-btn>.icon{--icon-size:14px}
 .named-connections-list>.ds-btn{align-self:flex-start}
-.connection-card.account-pool{--connection-head:60px}
+.connection-card.account-pool{min-width:0;padding-top:12px;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:repeat(5,auto)}
+/* The inner surface spans the four body parts below the heading's natural height. */
+.connection-card.account-pool::before{grid-row:2 / -1;top:0;bottom:calc(-1 * (var(--ds-card-pad) + 2px))}
+/* At large text sizes the account heading can wrap; it must reserve its own height. */
+.connection-card.account-pool>.settings-heading.account-pool-head{position:relative;inset:auto;height:auto;margin:0 0 12px !important;padding:0}
 .account-pool-title{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
 .account-pool-title>h3{margin:0}
-.account-pool-hint{font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.account-pool-hint{display:flex;align-items:center;gap:5px;min-width:0;font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.account-pool-hint>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.account-pool-hint>.info-mark{flex:none}
 .account-pool-checked{flex:none;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
 .account-pool-head>.icon-button{width:28px;height:28px;color:var(--muted)}
 .account-pool-head>.icon-button>.icon{--icon-size:16px}
-.account-pool-member{flex-wrap:wrap;row-gap:6px}
 .account-pool-member:has(.account-usage){padding-bottom:10px}
-.account-pool-member .ds-row-trail{gap:8px}
 .account-pool-member[data-signed-out] .ds-row-title{color:var(--muted)}
 .account-pool-status{gap:6px;color:var(--muted)}
 .account-pool-status>.ds-dot{width:6px;height:6px}
 .account-pool-status>.ds-dot[data-state-tone]{color:var(--state-tone)}
 .account-pool-empty{min-height:var(--ds-row-h)}
 .account-pool-empty .ds-row-sub{flex:none;font-size:var(--ds-text-ui)}
-/* Usage under the account's name: up to two windows side by side, each a label, a percent and a thin meter. */
-.account-usage{order:3;flex:1 0 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 20px;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+/* Account identity keeps the flexible space; status and actions never grow with their text. */
+.account-pool-member.ds-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 12px;padding-top:14px;padding-bottom:14px}
+.account-pool-member .ds-row-main{min-width:0;gap:4px}
+.account-pool-member .ds-row-trail{gap:6px;min-width:0;align-self:start}
+.account-pool-member .account-email{user-select:text;overflow-wrap:anywhere;white-space:normal;line-height:1.4}
+.account-pool-member .ds-row-sub{white-space:normal;overflow-wrap:anywhere}
+.account-pool-member .icon-button,.account-pool-status{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border-radius:var(--ds-radius-control);color:var(--muted)}
+.account-pool-status>.icon{--icon-size:16px}
+.account-pool-status>.icon[data-state-tone]{color:var(--state-tone,var(--muted))}
+.account-pool-status>.icon[data-state-tone="limited"] path{display:none}
+.account-pool-status:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.account-pool-head{gap:8px}
+.account-pool-head .account-pool-checked{display:none}
+@media(forced-colors:active){.account-pool-status,.account-pool-status>.icon[data-state-tone]{color:CanvasText}.account-pool-status:focus-visible{outline-color:Highlight}}
+
+.account-pool-member [data-identity-unknown]{color:var(--muted);font-weight:400}
+
+/* Usage under the account's name: window and percent, thin meter, then its reset. */
+.account-usage{grid-column:1/-1;min-width:0;order:3;flex:1 0 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
 .account-usage:empty{display:none}
 /* A left-out account dims as one row, meters included. */
 .account-pool-member.ds-row-dim .account-usage{opacity:.62}
 .account-usage-none{display:block;color:var(--faint)}
-.account-meter{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:3px 8px;white-space:nowrap}
-.account-meter-label{overflow:hidden;text-overflow:ellipsis}
-.account-meter-reset{color:var(--faint)}
+.account-meter{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;align-content:start;gap:3px 8px;white-space:nowrap}
+.account-meter-label{white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+.account-meter-reset{grid-column:1/-1;color:var(--faint);white-space:normal;overflow-wrap:anywhere;line-height:1.5}
 .account-meter-value{color:var(--text)}
 .account-meter .ds-meter{grid-column:1/-1;min-width:0;height:4px;color:var(--muted)}
 .account-meter[data-level=warn] .ds-meter{color:var(--ds-meter-warn,var(--ds-warn))}
@@ -259,7 +280,14 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 .connection-card .account-pool-manual>p{margin:4px var(--ds-row-pad-x) 6px}
 .account-pool-command{display:flex;align-items:center;gap:8px;margin:0 2px 2px;padding:4px 4px 4px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card)}
 .account-pool-command code{flex:1;min-width:0;font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere}
-@media(max-width:640px){.account-usage{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:640px){
+  /* Give the account identity the full row before its fixed-size controls and usage. */
+  .account-pool-member.ds-row{grid-template-columns:minmax(0,1fr)}
+  .account-pool-member>.ds-row-main{grid-column:1;grid-row:1}
+  .account-pool-member>.ds-row-trail{grid-column:1;grid-row:2;justify-self:end}
+  .account-pool-member>.account-usage{grid-column:1;grid-row:3}
+  .account-usage{grid-template-columns:minmax(0,1fr)}
+}
 @media(prefers-reduced-motion:reduce){.account-pool-manual>summary,.account-pool-manual>summary>.icon{transition:none}.account-pool-pulse{animation:none}}
 
 
@@ -402,7 +430,7 @@ input[type=checkbox][role=switch]:not([class]):not([data-armed]),input[type=chec
   .ds-toggle:not(:checked),.ds-chip,.ds-btn{box-shadow:inset 0 0 0 1px var(--text)}
   .ds-row-title,.ds-row-sub,.ds-row-meta,.ds-chip,.ds-section-head{color:var(--text)}
 }
-@media(forced-colors:active){.ds-toggle{border:1px solid CanvasText}.ds-toggle::before{background:CanvasText}.ds-meter>span{background:Highlight}
+@media(forced-colors:active){.ds-btn,.ds-btn-primary{border:1px solid ButtonText}.ds-toggle{border:1px solid CanvasText}.ds-toggle::before{background:CanvasText}.ds-toggle:checked{forced-color-adjust:none;background:Highlight;border-color:CanvasText}.ds-toggle:checked::before{forced-color-adjust:none;background:CanvasText}.ds-meter>span{background:Highlight}
   .ds-dots>span{forced-color-adjust:none;box-sizing:border-box;border:1px solid CanvasText;background:Canvas}.ds-dots>span:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:CanvasText}}
 
 /* ---------- Global base: moves every page toward the look ---------- */

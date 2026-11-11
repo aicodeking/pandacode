@@ -5,6 +5,11 @@ export async function call<T>(command: string, args: Record<string, unknown> = {
   if (preview) return (await import('./preview')).invoke<T>(command, args);
   return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
 }
+export async function subscribe(name: 'voice-event', callback: (event: import('./voice-types').VoiceEvent) => void): Promise<() => void>;
+export async function subscribe(name: 'voice://local-model', callback: (event: import('./voice-types').VoiceLocalModelEvent) => void): Promise<() => void>;
+export async function subscribe(name: 'voice://mic-test-level', callback: (event: import('./voice-types').VoiceMicLevelEvent) => void): Promise<() => void>;
+export async function subscribe(name: 'voice://test-ended', callback: (event: import('./voice-types').VoiceTestEnded) => void): Promise<() => void>;
+export async function subscribe(name: 'voice://transcript', callback: (event: import('./voice-types').VoiceClosedTranscript) => void): Promise<() => void>;
 export async function subscribe(name: 'agent-update-progress', callback: (event: import('./agent-updates').AgentUpdateProgress) => void): Promise<() => void>;
 export async function subscribe(name: 'jev-run', callback: (event: import('./jev').JevReport) => void): Promise<() => void>;
 export async function subscribe(name: 'jev-frame', callback: (event: import('./jev-live').JevFrame) => void): Promise<() => void>;

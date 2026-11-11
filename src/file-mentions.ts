@@ -61,8 +61,9 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
   let generation = 0, searchTimer = 0, positionFrame = 0, rowId = 0, error = '';
 
   function token(): Token | undefined {
-    if (composing || textarea.disabled || textarea.readOnly || document.activeElement !== textarea || !textarea.getClientRects().length) return;
-    return mentionToken(textarea);
+    if (composing || textarea.disabled || textarea.readOnly || document.activeElement !== textarea) return;
+    const found = mentionToken(textarea);
+    return found && textarea.getClientRects().length ? found : undefined;
   }
   function invalidate(): void { generation++; clearTimeout(searchTimer); searchTimer = 0; loading = false; query = undefined; }
   function close(suppress = false): void {

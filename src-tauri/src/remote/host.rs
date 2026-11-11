@@ -4096,6 +4096,9 @@ mod tests {
             tool_catalog_version: 0,
             nudged: false,
             reported: false,
+            council: None,
+            score_nudged: false,
+            wrote_at: 0,
         }
     }
 
@@ -4115,6 +4118,7 @@ mod tests {
                 workspace: "shared".into(),
                 summary_limit: 2000,
                 lead_guidance: None,
+                council: None,
             },
             status: "running".into(),
             round: 3,
@@ -4140,6 +4144,11 @@ mod tests {
             stalled_wakes: 0,
             wake_baseline: (0, 0),
             lead_failure: None,
+            council_since: 0,
+            changed_at: 0,
+            council_status: None,
+            council_accepted: None,
+            council_reopened: None,
         }
     }
 

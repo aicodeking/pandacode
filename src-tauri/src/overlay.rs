@@ -1928,6 +1928,7 @@ mod tests {
                 workspace: "shared".into(),
                 summary_limit: 1500,
                 lead_guidance: None,
+                council: None,
             }),
             Some(ModelSelection {
                 provider: "claude".into(),

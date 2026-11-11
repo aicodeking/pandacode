@@ -257,11 +257,20 @@ pub struct MemberStatus {
 
 /// What makes an account distinct: a token of its own, else its config folder.
 fn identity(provider: &str, connection: Option<&Connection>) -> String {
-    let token = if provider == "claude" { "CLAUDE_CODE_OAUTH_TOKEN" } else { "CODEX_API_KEY" };
     match connection {
-        Some(c) if c.env.contains_key(token) || c.secret_env.iter().any(|n| n == token) => format!("token:{}", c.id),
+        Some(c) if owns_credentials(provider, c) => format!("token:{}", c.id),
         _ => format!("dir:{}", config_dir(provider, connection).map(|d| d.display().to_string()).unwrap_or_default()),
     }
+}
+
+fn owns_credentials(provider: &str, connection: &Connection) -> bool {
+    let names: &[&str] = if provider == "claude" { &["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] } else { &["CODEX_API_KEY", "OPENAI_API_KEY"] };
+    names.iter().any(|name| connection.env.get(*name).is_some_and(|value| !value.trim().is_empty()) || connection.secret_env.iter().any(|key| key == *name))
+}
+
+fn environment(provider: &str, connection: Option<&Connection>) -> Option<Vec<(String, String)>> {
+    let own = match connection { Some(connection) => connections::launch(connection).ok()?.env, None => Vec::new() };
+    Some(crate::account_config::environment(provider, &own))
 }
 
 /// Every candidate with whether it is left out, by the user or as a repeat of an earlier login.
@@ -287,36 +296,19 @@ fn candidates(provider: &str) -> Vec<(String, bool, Option<String>)> {
 /// so a folder added with **Add account…** joins the pool only once it is signed in.
 fn signed_in(provider: &str, id: &str) -> bool {
     let Some(connection) = connections::get(id) else { return id == DEFAULT };
-    let token = if provider == "claude" { "CLAUDE_CODE_OAUTH_TOKEN" } else { "CODEX_API_KEY" };
-    if connection.env.contains_key(token) || connection.secret_env.iter().any(|n| n == token) {
+    signed_in_connection(provider, &connection)
+}
+
+fn signed_in_connection(provider: &str, connection: &Connection) -> bool {
+    if owns_credentials(provider, connection) {
         return true;
     }
-    let Some(dir) = config_dir(provider, Some(&connection)) else { return false };
+    let Some(dir) = config_dir(provider, Some(connection)) else { return false };
     if provider == "codex" {
         return dir.join("auth.json").is_file();
     }
-    // `.claude.json` carries the signed-in account (credentials may be in the Keychain instead
-    // of `.credentials.json`); it can be large, so it is scanned in chunks and the scan stops at
-    // the key, which is usually near the top.
-    dir.join(".credentials.json").is_file() || claude_json(Some(&connection)).and_then(|file| std::fs::File::open(file).ok()).is_some_and(|file| contains(file, b"\"oauthAccount\""))
-}
-
-/// Whether a stream contains `needle`, read in 64 KiB chunks.
-fn contains(mut reader: impl std::io::Read, needle: &[u8]) -> bool {
-    let mut window = Vec::with_capacity(64 * 1024 + needle.len());
-    let mut chunk = vec![0; 64 * 1024];
-    loop {
-        let Ok(read) = reader.read(&mut chunk) else { return false };
-        if read == 0 {
-            return false;
-        }
-        window.extend_from_slice(&chunk[..read]);
-        if window.windows(needle.len()).any(|w| w == needle) {
-            return true;
-        }
-        // Keep the tail so a key split across chunks is still found.
-        window.drain(..window.len().saturating_sub(needle.len() - 1));
-    }
+    // Metadata also covers logins whose credentials are held by the CLI's protected storage.
+    dir.join(".credentials.json").is_file() || claude_json(Some(connection)).is_some_and(|file| crate::account_identity::claude_signed_in(&file))
 }
 
 fn members(provider: &str) -> Vec<String> {
@@ -349,44 +341,19 @@ pub(crate) fn has_alternative(provider: &str, current: &str) -> bool {
 /// The email and plan a member is signed in with, if its login files say.
 fn who(provider: &str, id: &str) -> crate::account_identity::Identity {
     let connection = connections::get(id);
-    if provider == "codex" {
-        return config_dir(provider, connection.as_ref()).map(|dir| crate::account_identity::codex(&dir.join("auth.json"))).unwrap_or_default();
-    }
-    claude_json(connection.as_ref()).map(|file| crate::account_identity::claude(&file)).unwrap_or_default()
+    if connection.as_ref().is_some_and(|connection| owns_credentials(provider, connection)) { return crate::account_identity::Identity::default() }
+    environment(provider, connection.as_ref()).map(|env| crate::account_identity::local(provider, &env)).unwrap_or_default()
 }
 
-/// Where Claude Code keeps `.claude.json`: inside an explicit CLAUDE_CONFIG_DIR (the
-/// connection's folder or variable, the saved provider variable, this process's variable), else
-/// in the home folder rather than in `~/.claude`.
+/// Modern config first; legacy is inside an explicit config dir, else directly in HOME.
 fn claude_json(connection: Option<&Connection>) -> Option<PathBuf> {
-    let explicit = connection
-        .and_then(|c| c.config_dir.clone().or_else(|| c.env.get("CLAUDE_CONFIG_DIR").cloned()))
-        .or_else(|| crate::provider_settings::environment("claude").into_iter().find(|(k, _)| k == "CLAUDE_CONFIG_DIR").map(|(_, v)| v))
-        .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok())
-        .filter(|dir| !dir.trim().is_empty());
-    match explicit {
-        Some(dir) => Some(PathBuf::from(dir).join(".claude.json")),
-        None => crate::agent_usage_providers::home().map(|home| home.join(".claude.json")),
-    }
+    crate::account_identity::claude_json(&environment("claude", connection)?)
 }
 
 /// The config folder a member's harness reads: the connection's folder or variable, else the
 /// harness's own (saved provider variable, this process's variable, then the home default).
 fn config_dir(provider: &str, connection: Option<&Connection>) -> Option<PathBuf> {
-    let var = match provider {
-        "claude" => "CLAUDE_CONFIG_DIR",
-        "codex" => "CODEX_HOME",
-        _ => return None,
-    };
-    if let Some(dir) = connection.and_then(|c| c.config_dir.clone().or_else(|| c.env.get(var).cloned())) {
-        return Some(PathBuf::from(dir));
-    }
-    let saved = crate::provider_settings::environment(provider).into_iter().find(|(k, _)| k == var).map(|(_, v)| v);
-    saved
-        .or_else(|| std::env::var(var).ok())
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(|| crate::agent_usage_providers::home().map(|h| h.join(if provider == "claude" { ".claude" } else { ".codex" })))
+    crate::account_config::config_dir(provider, &environment(provider, connection)?)
 }
 
 fn session_name_ok(id: &str) -> bool {
@@ -568,6 +535,77 @@ pub(crate) fn prepare(session_id: &str, provider: &str, resume_id: Option<&str>)
 mod tests {
     use super::*;
 
+    #[test]
+    fn claude_modern_config_precedes_legacy_for_named_accounts() {
+        let root = std::env::temp_dir().join(format!("pool-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let legacy = root.join(".claude.json");
+        let modern = root.join(".config.json");
+        std::fs::write(&legacy, r#"{"oauthAccount":{"emailAddress":"legacy@example.test"}}"#).unwrap();
+        std::fs::write(&modern, r#"{"oauthAccount":{"emailAddress":"modern@example.test","planDisplayName":"Max"}}"#).unwrap();
+        let connection = Connection { provider: "claude".into(), config_dir: Some(root.to_string_lossy().into_owned()), ..Connection::default() };
+        assert_eq!(claude_json(Some(&connection)), Some(modern.clone()));
+        assert!(signed_in_connection("claude", &connection));
+        assert_eq!(crate::account_identity::claude(&modern).email.as_deref(), Some("modern@example.test"));
+        std::fs::remove_file(modern).unwrap();
+        assert!(signed_in_connection("claude", &connection));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn connection_home_selects_the_same_default_config_as_its_cli() {
+        let root = std::env::temp_dir().join(format!("pool-home-{}", uuid::Uuid::new_v4()));
+        let connection = Connection { provider: "codex".into(), env: [("HOME".into(), root.to_string_lossy().into_owned()), ("USERPROFILE".into(), root.to_string_lossy().into_owned()), ("CODEX_HOME".into(), String::new())].into(), ..Connection::default() };
+        assert_eq!(config_dir("codex", Some(&connection)), Some(root.join(".codex")));
+    }
+
+    #[test]
+    fn claude_config_falls_back_only_when_modern_is_missing_or_malformed() {
+        let root = std::env::temp_dir().join(format!("pool-fallback-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let legacy = root.join(".claude.json");
+        let modern = root.join(".config.json");
+        std::fs::write(&legacy, r#"{"oauthAccount":{"emailAddress":"legacy@example.test"}}"#).unwrap();
+        let connection = Connection { provider: "claude".into(), config_dir: Some(root.to_string_lossy().into_owned()), ..Connection::default() };
+        assert_eq!(claude_json(Some(&connection)), Some(legacy.clone()));
+        std::fs::write(&modern, "malformed").unwrap();
+        assert_eq!(claude_json(Some(&connection)), Some(legacy));
+        std::fs::write(&modern, "{}").unwrap();
+        assert_eq!(claude_json(Some(&connection)), Some(modern.clone()));
+        assert!(!signed_in_connection("claude", &connection));
+        std::fs::write(&modern, r#"{"oauthAccount":null}"#).unwrap();
+        assert!(!signed_in_connection("claude", &connection));
+        std::fs::write(&modern, "malformed again").unwrap();
+        std::fs::write(root.join(".claude.json"), r#"{"oauthAccount":{}"#).unwrap();
+        assert!(!signed_in_connection("claude", &connection));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn own_tokens_are_distinct_and_do_not_require_default_login_files() {
+        for (provider, name) in [("claude", "CLAUDE_CODE_OAUTH_TOKEN"), ("claude", "ANTHROPIC_API_KEY"), ("codex", "CODEX_API_KEY"), ("codex", "OPENAI_API_KEY")] {
+            let connection = Connection { id: "synthetic-token".into(), provider: provider.into(), secret_env: vec![name.into()], ..Connection::default() };
+            assert!(owns_credentials(provider, &connection));
+            assert_eq!(identity(provider, Some(&connection)), "token:synthetic-token");
+            assert!(signed_in_connection(provider, &connection));
+        }
+    }
+
+    #[test]
+    fn member_status_serializes_only_flat_identity_and_camel_case_metadata() {
+        let value = serde_json::to_value(MemberStatus {
+            id: "work".into(), excluded: false, same_as: None, signed_in: true,
+            identity: crate::account_identity::Identity { email: Some("work@example.test".into()), plan: Some("Max".into()) },
+            limited_until: Some(123), limited_window: Some("five_hour".into()), near_until: None, active: 2,
+        }).unwrap();
+        let object = value.as_object().unwrap();
+        let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["active", "email", "excluded", "id", "limitedUntil", "limitedWindow", "nearUntil", "plan", "sameAs", "signedIn"]);
+        assert_eq!(value["email"], "work@example.test");
+        assert_eq!(value["plan"], "Max");
+    }
+
     fn members(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
     }
@@ -640,17 +678,6 @@ mod tests {
         let (first, _one) = claim(p, &pool, "", at).unwrap();
         let (second, _two) = claim(p, &pool, "", at).unwrap();
         assert_ne!(first, second, "two switches at the same moment take different accounts");
-    }
-
-    #[test]
-    fn login_keys_are_found_across_chunk_edges_and_deep_in_large_files() {
-        let mut text = vec![b' '; 64 * 1024 - 5];
-        text.extend_from_slice(b"\"oauthAccount\":{}");
-        assert!(contains(text.as_slice(), b"\"oauthAccount\""), "split across two chunks");
-        let mut deep = vec![b'x'; 9 << 20];
-        deep.extend_from_slice(b"\"oauthAccount\"");
-        assert!(contains(deep.as_slice(), b"\"oauthAccount\""), "past the old 8 MiB cap");
-        assert!(!contains(&b"{\"projects\":{}}"[..], b"\"oauthAccount\""));
     }
 
     #[test]

@@ -239,6 +239,9 @@ pub struct Tracker {
     limited: bool,
     snapshot_bytes: usize,
     observed_paths: BTreeSet<String>,
+    /// When this turn's latest write tool was seen (`storage::now`), 0 for none: a capture is saved
+    /// as its turn ends, and this dates its changes by when they happened.
+    last_write: i64,
 }
 fn empty_snapshot() -> Snapshot {
     Snapshot {
@@ -293,7 +296,11 @@ impl Tracker {
             limited: false,
             snapshot_bytes: 0,
             observed_paths: BTreeSet::new(),
+            last_write: 0,
         }
+    }
+    pub fn last_write(&self) -> i64 {
+        self.last_write
     }
     pub fn started(&mut self) {
         self.dirty_since_boundary = true;
@@ -436,6 +443,10 @@ impl Tracker {
         if !self.dirty_since_boundary || self.finished.contains(id) {
             return;
         }
+        // Only a real write dates the turn's changes, not a command that wrote nothing it reported.
+        if !reported.is_empty() || id.starts_with("reported:") {
+            self.last_write = storage::now();
+        }
         if self.finished.len() + self.pending.len() >= 512 {
             self.limited = true;
             return;
@@ -572,6 +583,7 @@ impl Tracker {
         self.snapshot_bytes = 0;
         self.observed_paths.clear();
         self.dirty_since_boundary = false;
+        self.last_write = 0;
         Some(changes)
     }
     pub fn finish(&mut self) -> Option<Captured> {
@@ -1530,18 +1542,30 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
     Some(ops)
 }
 
-pub fn persist(store: &Store, sid: &str, mut capture: Captured) -> Result<i64> {
+#[cfg(test)]
+pub fn persist(store: &Store, sid: &str, capture: Captured) -> Result<i64> {
+    persist_dated(store, sid, capture, 0)
+}
+/// `persist`, with when the turn last wrote (`Tracker::last_write`, 0 when unknown) saved as
+/// `lastWriteAt`, which the team's Council dates the change by.
+pub fn persist_dated(store: &Store, sid: &str, mut capture: Captured, last_write: i64) -> Result<i64> {
     let transaction = store
         .db
         .unchecked_transaction()
         .map_err(|e| e.to_string())?;
     store.session(sid)?;
+    // How many files this conversation changed itself, before its workers' changes are rolled in.
+    let own_files = capture.summary.files.len();
     let team_sources = team::merge(store, sid, &mut capture)?;
     let message_id:i64=store.db.query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id",params![sid,storage::now()],|r|r.get(0)).map_err(|e|e.to_string())?;
     let mut saved_summary = serde_json::to_value(&capture.summary).map_err(|e| e.to_string())?;
     if !team_sources.is_empty() {
         saved_summary["teamSources"] =
             serde_json::to_value(team_sources).map_err(|e| e.to_string())?;
+        saved_summary["ownFiles"] = own_files.into();
+    }
+    if last_write > 0 {
+        saved_summary["lastWriteAt"] = last_write.into();
     }
     let summary = serde_json::to_string(&saved_summary).map_err(|e| e.to_string())?;
     let details = capture

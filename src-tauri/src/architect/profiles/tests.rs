@@ -56,6 +56,7 @@ fn setup() -> TeamSetup {
             workspace: "shared".into(),
             summary_limit: 1500,
             lead_guidance: None,
+            council: None,
         },
     }
 }

@@ -1063,6 +1063,35 @@ pub(crate) fn epoch_iso(seconds: i64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The test child has isolated process variables and the test-only in-memory secret store.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn glm_quota_key_matches_harness_with_conflicting_saved_environment() {
+        const CHILD: &str = "PANDACODE_TEST_GLM_PRECEDENCE";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent_usage_providers::tests::glm_quota_key_matches_harness_with_conflicting_saved_environment", "--nocapture"])
+                .env(CHILD, "1")
+                .env("ZAI_API_KEY", "process-key-A")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let directory = std::env::temp_dir().join(format!("glm-precedence-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("provider-settings.json"), r#"{"executablePaths":{},"environment":{"glm":{"ZAI_API_KEY":"saved-provider-key-B"}}}"#).unwrap();
+        crate::provider_settings::setup(&directory).unwrap();
+        let effective = crate::account_config::environment("glm", &[]);
+        assert_eq!(crate::account_config::var(&effective, "ZAI_API_KEY").as_deref(), Some("saved-provider-key-B"));
+        let harness = crate::providers::glm_environment().unwrap();
+        let harness_key = &harness.iter().find(|(name, _)| name == "ANTHROPIC_AUTH_TOKEN").unwrap().1;
+        let quota_key = saved_key_or_environment(Ok(None), env_key("ZAI_API_KEY")).unwrap().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(harness_key, "process-key-A");
+        assert_eq!(&quota_key, harness_key);
+    }
+
     use serde_json::json;
 
     #[tokio::test]

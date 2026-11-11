@@ -2,7 +2,7 @@
 // executable, arguments, environment and config folder. Secret values go to the native
 // secure store and never come back; the list only carries their names.
 import { call, subscribe } from './bridge';
-import { accountPlan, accountState, accountWindows, meterTone, resetsAt, type PoolMember } from './account-status';
+import { accountSignedOut, accountEmail, accountStatusIcon, accountPlan, accountWindows, meterTone, resetsAt, type PoolMember } from './account-status';
 import type { AgentUsage } from './agent-usage';
 import { openChoiceMenu } from './choice-menu';
 import { escape, icon, isImeKey } from './dom';
@@ -49,9 +49,13 @@ function patch(container: HTMLElement, parts: [string, string][], keep: (key: st
   for (const node of existing.values()) node.remove();
 }
 /** Attributes that name a control in the pool cards (runtime ones such as a switch's `data-armed` are left out). */
-const CONTROL_KEYS = new Set(['id', 'data-pool-toggle', 'data-pool-member-toggle', 'data-pool-provider', 'data-member-menu', 'data-usage-refresh', 'data-new-account', 'data-sign-in', 'data-sign-in-code', 'data-sign-in-submit', 'data-sign-in-cancel', 'data-open-url', 'data-copy-command', 'data-confirm-cancel', 'data-confirm-delete']);
+const CONTROL_KEYS = new Set(['id', 'data-pool-toggle', 'data-pool-member-toggle', 'data-pool-provider', 'data-member-menu', 'data-usage-refresh', 'data-new-account', 'data-sign-in', 'data-sign-in-code', 'data-sign-in-submit', 'data-sign-in-cancel', 'data-open-url', 'data-copy-command', 'data-confirm-cancel', 'data-confirm-delete', 'data-status']);
 /** A selector that finds the same control after a redraw. */
 function focusKey(element: HTMLElement): string | null {
+  if (element.hasAttribute('data-status')) {
+    const row = element.closest<HTMLElement>('[data-pool-member]'), pool = element.closest<HTMLElement>('[data-pool]');
+    if (row && pool) return `[data-pool="${CSS.escape(pool.dataset.pool!)}"] [data-pool-member="${CSS.escape(row.dataset.poolMember!)}"] [data-status]`;
+  }
   const attributes = [...element.attributes].filter(a => CONTROL_KEYS.has(a.name));
   return attributes.length ? element.tagName.toLowerCase() + attributes.map(a => `[${a.name}="${CSS.escape(a.value)}"]`).join('') : null;
 }
@@ -62,7 +66,7 @@ function signInCommand(provider: string, dir: string): string {
 }
 const POOL_TERMS = 'Pool only accounts you own; each needs its own subscription.';
 const POOL_HINT = 'Moves to the next account when one reaches its usage limit.';
-const ABOUT = 'Add named setups of a harness, such as Claude Work and Claude Personal, each with its own executable, arguments, environment and config folder. Choose one in the model picker; tasks keep theirs.';
+const ABOUT = 'Manage saved harness setups here, each with its own executable, arguments, environment and config folder. Enabled Claude Code and Codex pools choose accounts automatically. The model picker chooses only the harness and model.';
 
 export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId; name: string }[], saved: (snapshot: ConnectionSnapshot) => void): () => void {
   let snapshot = emptyConnections(), editing: Connection | 'new' | null = null, disposed = false, members: Partial<Record<string, PoolMember[]>> = {}, signing: Partial<Record<string, SignIn>> = {};
@@ -70,6 +74,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
   let usage: Partial<Record<string, AgentUsage | null>> = {}, closeMenu: (() => void) | undefined, visible = false, redrawWaiting = false;
   /** A newer usage pass bumps its harness's generation; an older pass stops instead of landing stale results. */
   let usageGeneration: Partial<Record<string, number>> = {}, usageReadAt = 0, confirming: string | null = null, added: string[] = [];
+  const memberGeneration: Record<string, number> = {};
   const harnessName = (id: string) => harnesses.find(h => h.id === id)?.name ?? id;
   /** Deferred steps (after a menu closes), cleared on dispose. */
   const timers = new Set<number>();
@@ -91,37 +96,32 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     const on = snapshot.pools?.includes(provider) ?? false, name = escape(harnessName(provider));
     const ready = snapshot.connections.some(c => c.provider === provider), list = members[provider];
     const add = `<button type="button" class="ds-btn" data-new-account="${provider}" aria-label="Add a ${name} account">${icon('plus')}Add account</button>`;
-    const rows: [string, string][] = !ready ? [['empty', `<li class="ds-row account-pool-empty"><span class="ds-row-sub">Add a second account to pool</span>${add}</li>`]]
-      : !list ? [['loading', '<li class="ds-row account-pool-empty"><span class="ds-row-main"><span class="ds-row-sub">Loading accounts…</span></span></li>']]
+    const rows: [string, string][] = !list ? [['loading', '<li class="ds-row account-pool-empty"><span class="ds-row-main"><span class="ds-row-sub">Loading accounts…</span></span></li>']]
       : list.flatMap(m => memberParts(provider, m, on));
     const command = SETUP[provider as keyof typeof SETUP], terms = ready || added.includes(provider);
     return { off: !on, rows, section: [
-      ['head', `<div class="settings-heading account-pool-head"><span class="account-pool-title"><h3>${name} accounts</h3><span class="account-pool-hint">${POOL_HINT}</span></span>${checkedLine(provider)}<button type="button" class="icon-button" data-usage-refresh="${provider}" aria-label="Refresh ${name} usage" title="Refresh usage"${ready ? '' : ' hidden'}>${icon('refresh')}</button><input type="checkbox" role="switch" class="ds-toggle" data-pool-toggle="${provider}" aria-label="Account pool · ${name}" ${on ? 'checked' : ''}${ready ? '' : ' disabled'}></div>`],
+      ['head', `<div class="settings-heading account-pool-head"><span class="account-pool-title"><h3>${name} accounts</h3><span class="account-pool-hint"><span>${POOL_HINT}</span>${infoMark(POOL_HINT, 'About account pools')}</span></span><button type="button" class="icon-button" data-usage-refresh="${provider}" aria-label="Refresh ${name} usage" title="Refresh usage">${icon('refresh')}</button><input type="checkbox" role="switch" class="ds-toggle" data-pool-toggle="${provider}" aria-label="Account pool · ${name}" ${on ? 'checked' : ''}${ready ? '' : ' disabled'}></div>`],
       ['list', `<ul class="account-pool-members" aria-label="${name} account pool"></ul>`],
       ['feedback', '<p class="account-pool-feedback" role="status" hidden></p>'],
-      ['foot', ready ? `<div class="account-pool-foot">${add}${terms ? `<span class="account-pool-terms">${POOL_TERMS}</span>` : ''}</div>` : terms ? `<p class="account-pool-terms">${POOL_TERMS}</p>` : ''],
+      ['foot', `<div class="account-pool-foot">${add}${terms ? `<span class="account-pool-terms">${POOL_TERMS}</span>` : ''}</div>`],
       ['manual', `<details class="account-pool-manual"><summary>Set up an account by hand${icon('chevron')}</summary><p>Run this in a terminal, then add a connection with that config folder:</p><div class="account-pool-command"><code>${escape(command)}</code><button type="button" class="ds-btn" data-copy-command="${escape(command)}" aria-label="Copy ${name} sign-in command">${icon('copy')}Copy</button></div></details>`],
     ] };
-  }
-  /** 'Checked 10:57 AM' from the oldest usage result on screen, so the line never claims fresher numbers than shown. */
-  function checkedLine(provider: string): string {
-    const times = (members[provider] ?? []).map(m => usage[`${provider}/${m.id}`]?.checkedAt ?? 0).filter(at => at > 0);
-    return times.length ? `<span class="account-pool-checked" data-checked>Checked ${escape(new Date(Math.min(...times)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}</span>` : '';
   }
   const memberName = (id: string) => id ? snapshot.connections.find(c => c.id === id)?.name ?? id : 'Default setup';
   /** A member row, then the parts that open under it: delete confirmation, inline edit form, sign-in. */
   function memberParts(provider: string, m: PoolMember, on: boolean): [string, string][] {
-    const result = usage[`${provider}/${m.id}`], { tone, text: status } = accountState(m, result), name = escape(memberName(m.id)), dir = snapshot.connections.find(c => c.id === m.id)?.configDir;
-    const identity = [m.email, accountPlan(m, result), (m.active ?? 0) > 0 ? `Running ${m.active}` : ''].filter(Boolean).join(' · ');
-    const sub = m.sameAs !== null ? `Same login as ${escape(memberName(m.sameAs))} — give it its own config folder` : !m.signedIn ? escape(dir ? 'Sign in to add it to the pool' : 'Not signed in') : escape(identity || dir || 'Signed in');
+    const result = usage[`${provider}/${m.id}`], name = escape(memberName(m.id)), dir = snapshot.connections.find(c => c.id === m.id)?.configDir;
+    const identity = accountEmail(m, result), signedOut = accountSignedOut(m, result);
+    const secondary = [memberName(m.id), accountPlan(m, result)].filter(Boolean).join(' · ');
+    const sub = m.sameAs !== null ? `Same login as ${memberName(m.sameAs)}` : signedOut ? 'Not signed in' : 'Email not available';
     const busy = signing[m.id] && signing[m.id]!.state !== 'failed';
-    const signIn = !m.signedIn && m.sameAs === null && dir && !busy ? `<button type="button" class="ds-btn" data-sign-in="${escape(m.id)}" aria-label="Sign in ${name}">Sign in</button>` : '';
-    // With the pool off only the neutral states show; switches and limit chips return when it is on.
-    const chip = on || !tone ? `<span class="ds-chip ds-chip-text account-pool-status" data-status><span class="ds-dot"${tone ? ` data-state-tone="${tone}"` : ''} aria-hidden="true"></span>${status}</span>` : '';
-    const toggle = on && m.signedIn && m.sameAs === null ? `<input type="checkbox" role="switch" class="ds-toggle" data-pool-member-toggle="${escape(m.id)}" data-pool-provider="${provider}" aria-label="In pool: ${name}" ${m.excluded ? '' : 'checked'}>` : '';
+    const signIn = signedOut && m.sameAs === null && dir && !busy ? `<button type="button" class="icon-button" data-sign-in="${escape(m.id)}" aria-label="Sign in ${name}" data-tip="Sign in">${icon('unlock')}</button>` : '';
+    // Health stays visible when pooling is off; membership switches appear only while pooling.
+    const chip = accountStatusIcon(m, result, 'account-pool-status');
+    const toggle = on && !signedOut && m.sameAs === null ? `<input type="checkbox" role="switch" class="ds-toggle" data-pool-member-toggle="${escape(m.id)}" data-pool-provider="${provider}" aria-label="In pool: ${name}" ${m.excluded ? '' : 'checked'}>` : '';
     const more = actions(m).length ? `<button type="button" class="icon-button" data-member-menu="${escape(m.id)}" data-pool-provider="${provider}" aria-haspopup="menu" aria-label="More for ${name}" title="More">${icon('more')}</button>` : '';
-    const usageBlock = m.signedIn && m.sameAs === null ? usageLines(result, m) : '';
-    const row = `<li class="ds-row account-pool-member${m.excluded ? ' ds-row-dim' : ''}" data-pool-member="${escape(m.id)}"${m.signedIn ? '' : ' data-signed-out'}><span class="ds-row-main"><span class="ds-row-title">${name}</span><span class="ds-row-sub" data-identity>${sub}</span></span><span class="ds-row-trail">${chip}${signIn}${toggle}${more}</span>${usageBlock}</li>`;
+    const usageBlock = !signedOut && m.sameAs === null ? usageLines(result, m) : '';
+    const row = `<li class="ds-row account-pool-member${m.excluded ? ' ds-row-dim' : ''}" data-pool-member="${escape(m.id)}"${signedOut ? ' data-signed-out' : ''}><span class="ds-row-main"><span class="ds-row-title account-email" data-identity${identity ? '' : ' data-identity-unknown'}>${escape(identity || sub)}</span><span class="ds-row-sub">${escape(secondary)}</span></span><span class="ds-row-trail">${chip}${signIn}${toggle}${more}</span>${usageBlock}</li>`;
     const editForm = editingPooled()?.id === m.id && m.id ? `<li class="account-pool-edit" data-edit-panel="${escape(m.id)}">${form(editingPooled())}</li>` : '';
     return [[`m:${m.id}`, row], ...confirming === m.id ? [[`c:${m.id}`, confirmPanel(m.id, name, dir)] as [string, string]] : [], ...editForm ? [[`e:${m.id}`, editForm] as [string, string]] : [], ...signing[m.id] ? [[`s:${m.id}`, signInPanel(m.id, name)] as [string, string]] : []];
   }
@@ -135,8 +135,8 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     if (!windows.length) return '<span class="account-usage account-usage-none" data-usage>Usage not available</span>';
     return `<span class="account-usage" data-usage>${windows.map(w => {
       const used = Math.round(Math.min(100, Math.max(0, w.usedPercent))), at = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
-      const reset = Number.isFinite(at) ? `<span class="account-meter-reset"> · ${escape(resetsAt(at))}</span>` : '';
-      return `<span class="account-meter" data-level="${meterTone(used, m, w.label)}"><span class="account-meter-label">${escape(w.label)}${reset}</span><span class="account-meter-value"> ${used}%</span><span class="ds-meter" aria-hidden="true"><span style="--ds-value:${used}%"></span></span></span>`;
+      const reset = Number.isFinite(at) ? `<span class="account-meter-reset">${escape(resetsAt(at))}</span>` : '';
+      return `<span class="account-meter" data-level="${meterTone(used, m, w.label)}"><span class="account-meter-label">${escape(w.label)}</span><span class="account-meter-value"> ${used}%</span><span class="ds-meter" aria-hidden="true"><span style="--ds-value:${used}%"></span></span>${reset}</span>`;
     }).join('')}</span>`;
   }
   /** The row's overflow actions. */
@@ -153,7 +153,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     const provider = anchor.dataset.poolProvider!, id = anchor.dataset.memberMenu!, m = members[provider]?.find(other => other.id === id); if (!m) return;
     const dir = snapshot.connections.find(c => c.id === id)?.configDir;
     closeMenu = openChoiceMenu({ anchor, title: `Actions for ${memberName(id)}`, actions: true, items: actions(m), onSelect: choice => {
-      if (choice === 'try') call('account_pool_clear', { provider, id }).then(refreshPools, error => message(String(error), true, provider));
+      if (choice === 'try') call('account_pool_clear', { provider, id }).then(() => refreshPools(), error => message(String(error), true, provider));
       else if (choice === 'copy' && dir) copy(signInCommand(provider, dir), provider);
       else if (choice === 'edit') later(() => edit(id));
       else if (choice === 'delete') later(() => { confirming = id; redrawPools(); host.querySelector<HTMLElement>('[data-confirm-cancel]')?.focus(); });
@@ -202,16 +202,26 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     signing = event.state === 'done' ? rest : { ...signing, [event.id]: { ...event, url: event.url ?? signing[event.id]!.url } };
     if (event.state === 'done') { message(`${memberName(event.id)} is signed in.`, false, providerOf(event.id)); refreshPools(); } else redrawPools();
   }
-  /** Loads member status for each pool harness with a connection (on or off, so a shared login shows before turning
-   *  it on) and patches the pool cards, so an open form is kept. Accounts without usage yet get it while on screen;
+  /** Loads local member status for every pool-capable harness, including its default-only setup and patches the pool cards, so an open form is kept. Accounts without usage yet get it while on screen;
    *  the minute timer only re-reads this local status. */
-  function refreshPools(): void {
-    for (const provider of POOLED.filter(p => snapshot.connections.some(c => c.provider === p))) void call<PoolMember[]>('account_pool_status', { provider }).then(list => {
-      if (disposed) return;
-      members = { ...members, [provider]: list };
-      redrawPools();
-      if (visible) void loadUsage(provider, false);
-    }).catch(error => { if (!disposed) message(String(error), true, provider); });
+  function refreshPools(all = false, refresh = false, only?: string): Promise<void> {
+    return Promise.all(pooled().filter(p => !only || p === only).map(async provider => {
+      const generation = memberGeneration[provider] = (memberGeneration[provider] ?? 0) + 1;
+      await call<PoolMember[]>('account_pool_status', { provider }).then(list => {
+        if (disposed || generation !== memberGeneration[provider]) return;
+        for (const m of list) {
+          const previous = members[provider]?.find(old => old.id === m.id);
+          if (previous && (previous.email !== m.email || previous.signedIn !== m.signedIn || previous.sameAs !== m.sameAs)) {
+            delete usage[`${provider}/${m.id}`];
+            usageGeneration[provider] = (usageGeneration[provider] ?? 0) + 1;
+            for (const key of Object.keys(usage)) if (key.startsWith(`${provider}/`) && usage[key] === undefined) delete usage[key];
+          }
+        }
+        members = { ...members, [provider]: list };
+        redrawPools();
+        if (visible) void loadUsage(provider, all, refresh);
+      }).catch(error => { if (!disposed && generation === memberGeneration[provider]) message(String(error), true, provider); });
+    })).then(() => undefined);
   }
   /** Reads usage one account at a time, so a slow CLI cannot crowd the others. `all` re-reads every account and
    *  starts a new generation; otherwise only accounts never read are fetched. */
@@ -264,12 +274,44 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     for (const other of host.querySelectorAll<HTMLElement>('.account-pool-feedback,.named-connection-feedback')) if (other !== feedback) other.hidden = true;
     feedback.textContent = text; feedback.hidden = false; feedback.classList.toggle('error', error); feedback.classList.toggle('sr-only', quiet && !error);
   }
-  async function perform(operation: () => Promise<ConnectionSnapshot>, success: string, closeForm: boolean, provider?: string, quiet = false): Promise<void> {
+  /** A changed connection can point at another account even when both local identities are unknown. Cancel every
+   * in-flight status/usage reply for its provider and remove the old display before the new snapshot is rendered. */
+  function invalidateChangedAccounts(previous: ConnectionSnapshot, next: ConnectionSnapshot): Set<string> {
+    const before = new Map(previous.connections.map(connection => [connection.id, connection]));
+    const after = new Map(next.connections.map(connection => [connection.id, connection]));
+    const affected = new Set<string>();
+    for (const id of new Set([...before.keys(), ...after.keys()])) {
+      const old = before.get(id), current = after.get(id);
+      if (old && current && old.provider === current.provider && old.revision === current.revision) continue;
+      if (old && pooled().includes(old.provider)) affected.add(old.provider);
+      if (current && pooled().includes(current.provider)) affected.add(current.provider);
+    }
+    for (const id of affected) {
+      memberGeneration[id] = (memberGeneration[id] ?? 0) + 1;
+      usageGeneration[id] = (usageGeneration[id] ?? 0) + 1;
+      delete members[id];
+      for (const key of Object.keys(usage)) if (key.startsWith(`${id}/`)) delete usage[key];
+    }
+    return affected;
+  }
+  async function perform(operation: () => Promise<ConnectionSnapshot>, success: string, closeForm: boolean, provider?: string, quiet = false, restoreFocus?: () => string | null): Promise<void> {
+    const operationFocus = document.activeElement instanceof HTMLElement && host.contains(document.activeElement) ? document.activeElement : null;
     host.setAttribute('aria-busy', 'true');
     try {
       const next = await operation(); if (disposed) return;
+      const ownsFocus = operationFocus !== null && (document.activeElement === operationFocus || operationFocus.contains(document.activeElement));
+      const movedFocus = !ownsFocus && document.activeElement instanceof HTMLElement && host.contains(document.activeElement)
+        ? focusKey(document.activeElement) : null;
+      invalidateChangedAccounts(snapshot, next);
       snapshot = next; if (closeForm) editing = null;
-      render(); syncConfigVar(); message(success, false, provider, quiet); saved(next); refreshPools();
+      render(); syncConfigVar(); message(success, false, provider, quiet); saved(next);
+      await refreshPools();
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const focusFellBack = !active || active === document.body || !active.matches('button,input,select,textarea,a[href],[tabindex]');
+      if (!disposed && focusFellBack && (ownsFocus || movedFocus)) {
+        const selector = ownsFocus ? restoreFocus?.() : movedFocus;
+        if (selector) host.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+      }
     } catch (error) { if (!disposed) message(String(error instanceof Error ? error.message : error), true, provider); }
     finally { host.removeAttribute('aria-busy'); }
   }
@@ -291,7 +333,13 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     const id = confirming; confirming = null; redrawPools();
     if (id !== null) host.querySelector<HTMLElement>(`[data-member-menu="${CSS.escape(id)}"]`)?.focus();
   }
-  const remove = (id: string) => { confirming = null; void perform(() => call<ConnectionSnapshot>('connection_delete', { id }), 'Connection deleted. Its tasks use the harness setup again.', false, providerOf(id)); };
+  const remove = (id: string) => {
+    const provider = providerOf(id), list = provider ? members[provider] ?? [] : [], index = list.findIndex(member => member.id === id);
+    const adjacent = list[index + 1]?.id || list[index - 1]?.id;
+    const selector = adjacent ? `[data-member-menu="${CSS.escape(adjacent)}"]` : provider ? `[data-new-account="${CSS.escape(provider)}"]` : '[data-add-connection]';
+    confirming = null;
+    void perform(() => call<ConnectionSnapshot>('connection_delete', { id }), 'Connection deleted. Its tasks use the harness setup again.', false, provider, false, () => selector);
+  };
   const copy = (text: string, provider?: string) => navigator.clipboard.writeText(text).then(() => message('Command copied.', false, provider), error => message(String(error), true, provider));
   const click = (event: MouseEvent) => {
     const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[data-open-url]');
@@ -305,7 +353,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     else if (button.hasAttribute('data-cancel-connection')) { const id = editingPooled()?.id; editing = null; render(); if (id) host.querySelector<HTMLElement>(`[data-member-menu="${CSS.escape(id)}"]`)?.focus(); }
     else if (button.hasAttribute('data-confirm-cancel')) cancelConfirm();
     else if (button.dataset.confirmDelete !== undefined) remove(button.dataset.confirmDelete);
-    else if (button.dataset.usageRefresh) void loadUsage(button.dataset.usageRefresh, true, true);
+    else if (button.dataset.usageRefresh) refreshPools(true, true, button.dataset.usageRefresh);
     else if (button.hasAttribute('data-add-env')) { host.querySelector('[data-env-rows]')!.insertAdjacentHTML('beforeend', envRow({ name: '', value: '', secret: false, saved: false })); }
     else if (button.hasAttribute('data-remove-env')) button.closest('[data-env-row]')?.remove();
     else if (button.dataset.newAccount) {
@@ -322,7 +370,14 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
   const change = (event: Event) => {
     const target = event.target as HTMLInputElement;
     if (target.id === 'connection-provider') syncConfigVar();
-    if (target.dataset.poolToggle) { const provider = target.dataset.poolToggle, enabled = target.checked; void perform(() => call<ConnectionSnapshot>('connection_pool_set', { provider, enabled }), enabled ? 'Account pool on.' : 'Account pool off.', false, provider); }
+    if (target.dataset.poolToggle) {
+      const provider = target.dataset.poolToggle, enabled = target.checked;
+      // WebKit clears focus on a pointer click without focusing the checkbox. Establish the
+      // operation's control before saving; perform() still preserves focus moved during the save.
+      target.focus({ preventScroll: true });
+      void perform(() => call<ConnectionSnapshot>('connection_pool_set', { provider, enabled }), enabled ? 'Account pool on.' : 'Account pool off.', false, provider, false,
+        () => `[data-pool-toggle="${CSS.escape(provider)}"]`);
+    }
     if (target.dataset.poolMemberToggle !== undefined) { const provider = target.dataset.poolProvider, id = target.dataset.poolMemberToggle, included = target.checked; void perform(() => call<ConnectionSnapshot>('connection_pool_member_set', { provider, id, included }), included ? 'Account added to the pool.' : 'Account left out of the pool.', false, provider); }
     if (target.matches('[data-env-secret]')) {
       const value = target.closest('[data-env-row]')!.querySelector<HTMLInputElement>('[data-env-value]')!;
@@ -336,7 +391,9 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     event.preventDefault(); event.stopPropagation();
     const connection = collect(form);
     const provider = editingPooled()?.provider;
-    void perform(() => call<ConnectionSnapshot>('connection_save', { connection }), 'Connection saved. Choose it in the model picker.', true, provider);
+    const id = editingPooled()?.id;
+    void perform(() => call<ConnectionSnapshot>('connection_save', { connection }), 'Connection saved.', true, provider, false,
+      () => id ? `[data-member-menu="${CSS.escape(id)}"]` : '[data-add-connection]');
   };
   host.classList.add('named-connections-card');
   const keydown = (event: KeyboardEvent) => {
@@ -353,12 +410,11 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
   let timer: number | undefined;
   const focus = () => {
     if (!visible) return;
-    refreshPools();
-    if (Date.now() - usageReadAt >= USAGE_REFRESH_MS) for (const provider of pooled()) void loadUsage(provider, true);
+    refreshPools(Date.now() - usageReadAt >= USAGE_REFRESH_MS);
   };
   const observer = new IntersectionObserver(([entry]) => {
     visible = entry.isIntersecting; window.clearInterval(timer); timer = undefined;
-    if (visible) { refreshPools(); timer = window.setInterval(refreshPools, POOL_REFRESH_MS); }
+    if (visible) { refreshPools(); timer = window.setInterval(() => refreshPools(), POOL_REFRESH_MS); }
   });
   observer.observe(host); window.addEventListener('focus', focus);
   return () => { disposed = true; closeMenu?.(); for (const id of timers) window.clearTimeout(id); observer.disconnect(); window.clearInterval(timer); window.removeEventListener('focus', focus); host.removeEventListener('click', click); host.removeEventListener('change', change); host.removeEventListener('submit', submit); host.removeEventListener('keydown', keydown); unlisten?.(); };

@@ -109,6 +109,15 @@ pub fn show(app: &AppHandle) {
     }
 }
 
+/// True when closing the main window quits the app rather than hiding it (see `hide_on_close`).
+pub(crate) fn main_close_quits(app: &AppHandle) -> bool {
+    close_quits(cfg!(target_os = "linux"), app.tray_by_id(ID).is_some())
+}
+
+fn close_quits(linux: bool, has_tray: bool) -> bool {
+    linux || !has_tray
+}
+
 /// Closing the main window hides it, so `show` and every other path that brings it back still
 /// find it and its page keeps working. Without a menu bar item nothing could reopen it: quit.
 /// Linux always quits: a tray icon can exist yet be invisible (GNOME without an appindicator
@@ -118,7 +127,7 @@ pub(crate) fn hide_on_close(window: &WebviewWindow) {
     window.on_window_event(move |event| {
         let tauri::WindowEvent::CloseRequested { api, .. } = event else { return };
         api.prevent_close();
-        if cfg!(target_os = "linux") || main.app_handle().tray_by_id(ID).is_none() {
+        if main_close_quits(main.app_handle()) {
             main.app_handle().exit(0);
         } else if cfg!(target_os = "macos") && main.is_fullscreen().unwrap_or(false) {
             // Hiding a window in native fullscreen leaves its black Space behind.
@@ -370,5 +379,13 @@ mod tests {
         assert_eq!(position((0.0, 0.0, 20.0, 24.0), (340.0, 400.0), area, 6.0).0, 6.0);
         // A bottom taskbar icon opens the popover above it.
         assert_eq!(position((700.0, 870.0, 40.0, 30.0), (340.0, 400.0), (0.0, 0.0, 1440.0, 870.0), 6.0), (550.0, 464.0));
+    }
+
+    #[test]
+    fn closing_the_main_window_quits_on_linux_or_without_a_menu_bar_item() {
+        assert!(close_quits(true, true), "Linux quits even with a tray icon");
+        assert!(close_quits(true, false));
+        assert!(close_quits(false, false), "nothing could reopen the window");
+        assert!(!close_quits(false, true), "macOS and Windows with a menu bar item only hide");
     }
 }

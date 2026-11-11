@@ -27,8 +27,9 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-panel-head h2{margin:0;font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:0;line-height:1.3;color:var(--ds-title-ink)}
 /* A section's pages: the segmented control takes the title's place (each page keeps an sr-only heading). */
 .settings-subnav{width:min(720px,calc(100% - 64px));margin:0 auto;padding-top:36px}
-.settings-subnav .ds-seg{width:fit-content;max-width:100%}
-.settings-subnav .ds-seg>button{flex:0 1 auto;height:32px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:var(--ds-text-ui)}
+/* Wrapping keeps every page reachable with the tab handler's preventScroll focus. */
+.settings-subnav .ds-seg{width:fit-content;max-width:100%;flex-wrap:wrap}
+.settings-subnav .ds-seg>button{flex:0 0 auto;height:32px;white-space:nowrap;font-size:var(--ds-text-ui)}
 .settings-panel-paged{padding-top:16px}
 .settings-panel-paged .settings-panel-head{margin:0}
 /* A fold for rarely used options: a quiet heading row, closed by default. */
@@ -55,6 +56,9 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-heading small{font-weight:400;color:var(--faint)}
 .settings-heading h3{margin:0;font-size:inherit;font-weight:inherit}
 .settings-embed{min-width:0}
+/* Provider cards must fit the content panel, even when an account has a long identity. */
+.settings-embed.provider-connections{grid-template-columns:minmax(0,1fr)}
+.settings-embed.provider-connections .connection-card{overflow-wrap:anywhere}
 .settings-embed-error{font-size:var(--ds-text-meta);color:var(--ds-danger)}
 @media (max-width:760px){.settings-page-root{grid-template-columns:180px minmax(0,1fr)}.settings-panel{width:calc(100% - 32px);padding-top:24px}.settings-panel-paged{padding-top:12px}.settings-subnav{width:calc(100% - 32px);padding-top:24px}}
 @media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.workspace[data-wallpaper] .settings-content{background:var(--bg)}}

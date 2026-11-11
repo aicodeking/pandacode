@@ -269,7 +269,7 @@ async fn child() {
             assert!(result.is_ok(), "{context}");
             assert!(!kinds.contains(&"limited") && !kinds.contains(&"error"), "{context}");
             assert_eq!(notes.len(), 1, "{context}");
-            assert!(note_texts[0].contains("default Claude account reached its usage limit") && note_texts[0].contains("“Backup”"), "{context}");
+            assert_eq!(note_texts, ["Account switched\nThe default Claude account reached its usage limit, so this task continues on “Backup”."], "{context}");
             assert_eq!(notes[0].data.as_ref().unwrap()["accountPool"]["connectionId"], "b", "{context}");
             assert_eq!(launches.len(), 2, "{context}");
             assert!(on(launches[0], &a) && launches[0].contains("Fix the bug") && !launches[0].contains("--resume"), "{context}");
@@ -298,7 +298,7 @@ async fn child() {
         }
         "prepare" => {
             assert!(result.is_ok(), "{context}");
-            assert_eq!(note_texts, ["Using “Backup” because the default Claude account is near its usage limit."], "{context}");
+            assert_eq!(note_texts, ["Account switched\nUsing “Backup” because the default Claude account is near its usage limit."], "{context}");
             assert_eq!(notes[0].data.as_ref().unwrap()["accountPool"]["connectionId"], "b", "{context}");
             assert_eq!(launches.len(), 1, "{context}");
             assert!(on(launches[0], &b) && launches[0].contains(&format!("--resume={SESSION}")) && launches[0].contains("Fix the bug"), "{context}");
@@ -312,7 +312,7 @@ async fn child() {
                 ("the default Claude account", "“Backup”", "is out of room or left out of the pool", &a, Value::Null)
             };
             assert!(result.is_ok() && !kinds.contains(&"limited"), "{context}");
-            assert_eq!(note_texts, [format!("Using {to} because {from} {reason}.")], "{context}");
+            assert_eq!(note_texts, [format!("Account switched\nUsing {to} because {from} {reason}.")], "{context}");
             assert_eq!(notes[0].data.as_ref().unwrap()["accountPool"]["connectionId"], connection, "{context}");
             assert_eq!(launches.len(), 1, "{context}");
             assert!(on(launches[0], dir) && launches[0].contains("Fix the bug") && !launches[0].contains("--resume"), "{context}");
