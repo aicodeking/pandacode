@@ -86,38 +86,95 @@ fn channel_kind(store: &Store, channel_id: &str) -> String {
 }
 
 /// The text a turn receives: the message, plus the brief when the thread has not seen this version.
-fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
+fn compose(
+    app: &tauri::AppHandle,
+    store: &Store,
+    bot: &Bot,
+    session_id: &str,
+    kind: &str,
+    sender: &str,
+    text: &str,
+) -> Result<String> {
     let (skills, skipped) = workspace_skills(app, store, bot, session_id);
     let seen = super::brief_version_of(store, session_id)?;
     if seen == bot.memory_version && !handoff_pending(store, session_id)? {
         return Ok(text.to_owned());
     }
     for error in &skipped {
-        super::log(store, &bot.id, "error", &format!("Skill left out: {error}"), json!({"sessionId": session_id}))?;
+        super::log(
+            store,
+            &bot.id,
+            "error",
+            &format!("Skill left out: {error}"),
+            json!({"sessionId": session_id}),
+        )?;
     }
     let memories = super::memories(store, &bot.id)?;
     super::mark_briefed(store, session_id, bot.memory_version)?;
-    Ok(format!("{text}{}{skills}", brief::compose(bot, &memories, kind, sender)))
+    Ok(format!(
+        "{text}{}{skills}",
+        brief::compose(bot, &memories, kind, sender)
+    ))
 }
 
 /// A harness switch starts a fresh native session fed by a 64 KiB history replay
 /// (`context_recovery`). The brief sits at the end of an old user message, the first text that
 /// replay drops or shortens, so a pending replay counts as a thread that needs the brief again.
 fn handoff_pending(store: &Store, session_id: &str) -> Result<bool> {
-    store.db.query_row("SELECT EXISTS(SELECT 1 FROM context_recovery WHERE session_id=?1)", [session_id], |row| row.get(0)).map_err(|e| e.to_string())
+    store
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM context_recovery WHERE session_id=?1)",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
 }
 
 /// Puts the bot's skills in its own workspace for this conversation's harness (project scope,
 /// never harness-global), and returns the brief text for skills that harness reads from the prompt.
-fn workspace_skills(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str) -> (String, Vec<String>) {
-    let (Ok(task), Ok(root), Ok(library)) = (store.session(session_id), store.workspace_root(&bot.project_id, None), crate::skills::library(app)) else { return Default::default() };
-    let harness = task.provider;
-    let mut skipped = library.sync_project(&harness, &root, &bot.skills);
-    if crate::skills::scoped::has_skill_folder(&harness) {
-        let installed = library.project_active(&harness, &root).into_iter().filter(|id| bot.skills.contains(id)).collect::<Vec<_>>();
+/// Skills switched off for this session (All projects or the bot's project) are neither synced
+/// nor announced.
+fn workspace_skills(
+    app: &tauri::AppHandle,
+    store: &Store,
+    bot: &Bot,
+    session_id: &str,
+) -> (String, Vec<String>) {
+    let (Ok(task), Ok(root), Ok(library)) = (
+        store.session(session_id),
+        store.workspace_root(&bot.project_id, None),
+        crate::skills::library(app),
+    ) else {
+        return Default::default();
+    };
+    workspace_skills_with(
+        &library,
+        &task.provider,
+        &root,
+        &bot.skills,
+        &crate::skill_manager::disabled_for(session_id),
+    )
+}
+
+fn workspace_skills_with(
+    library: &crate::skills::Library,
+    harness: &str,
+    root: &std::path::Path,
+    skills: &[String],
+    disabled: &std::collections::BTreeSet<String>,
+) -> (String, Vec<String>) {
+    let (wanted, mut skipped) = library.without_switched_off(skills, disabled);
+    skipped.extend(library.sync_project(harness, root, &wanted));
+    if crate::skills::scoped::has_skill_folder(harness) {
+        let installed = library
+            .project_active(harness, root)
+            .into_iter()
+            .filter(|id| wanted.contains(id))
+            .collect::<Vec<_>>();
         return (brief::skills("", &installed, &skipped), skipped);
     }
-    let (text, more) = library.prompt_text(&bot.skills);
+    let (text, more) = library.prompt_text_filtered(&wanted, disabled);
     skipped.extend(more);
     (brief::skills(&text, &[], &skipped), skipped)
 }
@@ -568,5 +625,60 @@ mod tests {
         let ids = vec!["image-a".into(), "image-b".into()];
         let attachments = image_attachments(&ids);
         assert_eq!(queued_prompt(&attachments).1, ids);
+    }
+}
+
+#[cfg(test)]
+mod skill_switch_tests {
+    use super::*;
+
+    #[test]
+    fn bots_workspace_sync_skips_and_removes_skills_switched_off_for_the_session() {
+        let root =
+            std::env::temp_dir().join(format!("pandacode-bot-sync-{}", crate::storage::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let library = crate::skills::Library::new(root.join("library"), root.join("home"));
+        let source = || crate::skills::Source {
+            kind: "folder".into(),
+            location: "x".into(),
+            git_ref: None,
+            commit: None,
+        };
+        for name in ["review", "keep"] {
+            library
+                .import(
+                    crate::skills::Kind::Skill,
+                    vec![(
+                        "SKILL.md".into(),
+                        format!("---\nname: {name}\ndescription: d\n---\nDo {name}.\n")
+                            .into_bytes(),
+                    )],
+                    name,
+                    source(),
+                )
+                .unwrap();
+        }
+        let skills = ["review".to_string(), "keep".to_string()];
+        // Synced while on, then switched off: the next sync removes it from the bot workspace.
+        workspace_skills_with(&library, "claude", &workspace, &skills, &Default::default());
+        let mut active = library.project_active("claude", &workspace);
+        active.sort();
+        assert_eq!(active, ["keep", "review"]);
+        let off = std::collections::BTreeSet::from(["review".to_string()]);
+        let (brief, skipped) = workspace_skills_with(&library, "claude", &workspace, &skills, &off);
+        assert_eq!(library.project_active("claude", &workspace), ["keep"]);
+        assert_eq!(skipped, ["review is off in Skills."]);
+        assert!(
+            brief.contains("installed in this checkout for you: keep.\n"),
+            "{brief}"
+        );
+        // Prompt harnesses never inline it either.
+        let (brief, _) = workspace_skills_with(&library, "kimi", &workspace, &skills, &off);
+        assert!(
+            brief.contains("Do keep.") && !brief.contains("Do review."),
+            "{brief}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

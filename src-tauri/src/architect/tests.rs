@@ -1,4 +1,6 @@
 use super::*;
+#[path = "council_tests.rs"]
+mod council_tests;
 fn coordinate(
     state: &AppState,
     parent: &str,
@@ -897,6 +899,7 @@ fn config() -> TeamConfig {
         workspace: "shared".into(),
         summary_limit: 2000,
         lead_guidance: None,
+        council: None,
     }
 }
 fn fixture() -> (Store, TeamSnapshot) {
@@ -933,6 +936,11 @@ fn fixture() -> (Store, TeamSnapshot) {
         stalled_wakes: 0,
         wake_baseline: (0, 0),
         lead_failure: None,
+        council_since: 0,
+        changed_at: 0,
+        council_status: None,
+        council_accepted: None,
+        council_reopened: None,
     };
     (store, team)
 }
@@ -969,6 +977,9 @@ fn worker(id: &str, status: &str, files: &[&str], depends: &[&str]) -> Worker {
         nudged: false,
         reported: false,
         parent_worker: None,
+        council: None,
+        score_nudged: false,
+        wrote_at: 0,
     }
 }
 #[test]

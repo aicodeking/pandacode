@@ -47,8 +47,11 @@ fn a_worker_request_stopped_after_a_failed_save_does_not_fail_the_run_for_it() {
     assert!(worker_approvals::take_unresolved(&run.id).is_some());
 }
 
+/// The store, session ID, run, running agents and run input of `worker_fixture`.
+type WorkerFixture = (Arc<Mutex<storage::Store>>, String, worker_approvals::Run, Arc<Mutex<HashMap<String, RunningAgent>>>, tokio::sync::mpsc::UnboundedReceiver<RunInput>);
+
 /// A worker session with its run registered, and every status change to "waiting" logged.
-fn worker_fixture() -> (Arc<Mutex<storage::Store>>, String, worker_approvals::Run, Arc<Mutex<HashMap<String, RunningAgent>>>, tokio::sync::mpsc::UnboundedReceiver<RunInput>) {
+fn worker_fixture() -> WorkerFixture {
     let store = storage::Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let sid = store.create_session(&project.id, "codex", "default", "full").unwrap().id;

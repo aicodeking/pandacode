@@ -566,10 +566,18 @@ pub(crate) fn create(store: &Store, input: &BotInput, root: &std::path::Path) ->
     let input = validate(input)?;
     let id = crate::storage::id();
     let folder = root.join(slug(&input.name, &id));
-    std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create the bot's workspace: {e}"))?;
+    std::fs::create_dir_all(&folder)
+        .map_err(|e| format!("Could not create the bot's workspace: {e}"))?;
     let project = store.add_project(&folder)?;
+    crate::skill_manager::projects_changed();
     // The sidebar shows the bot's name, not its folder's.
-    store.db.execute("UPDATE projects SET name=?2 WHERE id=?1", params![project.id, input.name]).map_err(|e| e.to_string())?;
+    store
+        .db
+        .execute(
+            "UPDATE projects SET name=?2 WHERE id=?1",
+            params![project.id, input.name],
+        )
+        .map_err(|e| e.to_string())?;
     let now = crate::storage::now();
     store
         .db
@@ -992,62 +1000,208 @@ pub async fn bot_project_ids(state: State<'_, AppState>) -> Result<Vec<String>> 
 
 /// Sends a message to the bot from the desktop app, in its desktop conversation.
 #[tauri::command]
-pub async fn bot_message(app: tauri::AppHandle, bot_id: String, text: String, image_ids: Option<Vec<String>>, moodboard_ids: Option<Vec<String>>, force_queue: Option<bool>) -> Result<String> {
-    gateway::deliver_with_queue(&app, gateway::Inbound { bot_id, channel_id: DESKTOP.into(), thread: DESKTOP.into(), sender_id: DESKTOP.into(), sender_name: "You".into(), text, trusted: true, image_ids, moodboard_ids }, force_queue.unwrap_or(false)).await
+pub async fn bot_message(
+    app: tauri::AppHandle,
+    bot_id: String,
+    text: String,
+    image_ids: Option<Vec<String>>,
+    moodboard_ids: Option<Vec<String>>,
+    force_queue: Option<bool>,
+) -> Result<String> {
+    gateway::deliver_with_queue(
+        &app,
+        gateway::Inbound {
+            bot_id,
+            channel_id: DESKTOP.into(),
+            thread: DESKTOP.into(),
+            sender_id: DESKTOP.into(),
+            sender_name: "You".into(),
+            text,
+            trusted: true,
+            image_ids,
+            moodboard_ids,
+        },
+        force_queue.unwrap_or(false),
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn bot_set_capabilities(app: tauri::AppHandle, window: tauri::WebviewWindow, state: State<'_, AppState>, bot_id: String, skills: Vec<String>, mcp: Vec<String>) -> Result<Bot> {
+pub async fn bot_set_capabilities(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    bot_id: String,
+    skills: Vec<String>,
+    mcp: Vec<String>,
+) -> Result<Bot> {
     guard_main(&window)?;
-    let bot = set_capabilities(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id, &skills, &mcp)?;
+    let bot = set_capabilities(
+        &*state.store.lock().map_err(|e| e.to_string())?,
+        &bot_id,
+        &skills,
+        &mcp,
+    )?;
     let _ = app.emit("bots-changed", ());
     Ok(bot)
 }
 
 /// Starts an ordinary task with a bot (or none). The window then applies the bot's harness and model.
 #[tauri::command]
-pub async fn bot_assign_task(window: tauri::WebviewWindow, state: State<'_, AppState>, session_id: String, bot_id: Option<String>) -> Result<Option<Bot>> {
+pub async fn bot_assign_task(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    session_id: String,
+    bot_id: Option<String>,
+) -> Result<Option<Bot>> {
     guard_main(&window)?;
-    assign_task(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, bot_id.as_deref())
+    assign_task(
+        &*state.store.lock().map_err(|e| e.to_string())?,
+        &session_id,
+        bot_id.as_deref(),
+    )
 }
 
 #[tauri::command]
-pub async fn bot_task_links(state: State<'_, AppState>) -> Result<std::collections::HashMap<String, String>> {
+pub async fn bot_task_links(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>> {
     task_links(&*state.store.lock().map_err(|e| e.to_string())?)
 }
 
 /// The brief a bot task's next message carries, or nothing when the task has no bot or has
 /// seen this version. Skills are the bot's plus the project's, deduplicated by id; the bot's
 /// ride in the prompt, so nothing is written into a checkout other tasks may share.
-pub(crate) fn task_brief(store: &Store, library: Option<&crate::skills::Library>, session_id: &str) -> Result<Option<String>> {
-    let Some((bot, seen)) = task_bot(store, session_id)? else { return Ok(None) };
+/// The app goes through `task_brief_shared`; this form serves tests on a bare store.
+#[cfg(test)]
+pub(crate) fn task_brief(
+    store: &Store,
+    library: Option<&crate::skills::Library>,
+    session_id: &str,
+) -> Result<Option<String>> {
+    task_brief_with(store, library, session_id, || {
+        crate::skill_manager::disabled_for(session_id)
+    })
+}
+
+/// `task_brief` for the app's shared store: the session's switched-off skills are read (a
+/// settings file and the database) with the store unlocked, so other commands are never kept
+/// waiting on that I/O. Nothing is read when the task has no brief due.
+fn task_brief_shared(
+    store: &std::sync::Mutex<Store>,
+    library: Option<&crate::skills::Library>,
+    session_id: &str,
+    disabled: impl FnOnce() -> std::collections::BTreeSet<String>,
+) -> Result<Option<String>> {
+    let due = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        task_bot(&store, session_id)?.is_some_and(|(bot, seen)| seen != bot.memory_version)
+    };
+    if !due {
+        return Ok(None);
+    }
+    let disabled = disabled();
+    let store = store.lock().map_err(|e| e.to_string())?;
+    task_brief_with(&store, library, session_id, || disabled)
+}
+
+/// `disabled` gives the session's switched-off skills (All projects and its project): they are
+/// neither inlined nor announced as installed.
+fn task_brief_with(
+    store: &Store,
+    library: Option<&crate::skills::Library>,
+    session_id: &str,
+    disabled: impl FnOnce() -> std::collections::BTreeSet<String>,
+) -> Result<Option<String>> {
+    let Some((bot, seen)) = task_bot(store, session_id)? else {
+        return Ok(None);
+    };
     if seen == bot.memory_version {
         return Ok(None);
     }
     let task = store.session(session_id)?;
     let root = store.workspace_root(&task.project_id, Some(session_id))?;
-    let project = library.map(|l| l.project_active(&task.provider, &root)).unwrap_or_default();
-    let resolved = crate::skills::scoped::resolve(&bot.skills, &project);
+    let project = library
+        .map(|l| l.project_active(&task.provider, &root))
+        .unwrap_or_default();
+    let mut resolved = crate::skills::scoped::resolve(&bot.skills, &project);
+    let disabled = disabled();
+    let mut skipped = Vec::new();
+    if let Some(library) = library {
+        let ids: Vec<String> = resolved.iter().map(|r| r.id.clone()).collect();
+        let (kept, off) = library.without_switched_off(&ids, &disabled);
+        resolved.retain(|r| kept.contains(&r.id));
+        skipped = off;
+    }
     let files = crate::skills::scoped::has_skill_folder(&task.provider);
     // Harnesses with skill folders already read the project's; the rest get every skill as text.
-    let inline: Vec<String> = resolved.iter().filter(|r| !files || r.provenance == "bot").map(|r| r.id.clone()).collect();
-    let installed: Vec<String> = resolved.iter().filter(|r| files && r.provenance != "bot").map(|r| format!("{} ({})", r.id, if r.provenance == "both" { "bot and project" } else { "project" })).collect();
-    let (text, skipped) = library.map(|l| l.prompt_text(&inline)).unwrap_or_default();
+    let inline: Vec<String> = resolved
+        .iter()
+        .filter(|r| !files || r.provenance == "bot")
+        .map(|r| r.id.clone())
+        .collect();
+    let installed: Vec<String> = resolved
+        .iter()
+        .filter(|r| files && r.provenance != "bot")
+        .map(|r| {
+            format!(
+                "{} ({})",
+                r.id,
+                if r.provenance == "both" {
+                    "bot and project"
+                } else {
+                    "project"
+                }
+            )
+        })
+        .collect();
+    let (text, more) = library
+        .map(|l| l.prompt_text_filtered(&inline, &disabled))
+        .unwrap_or_default();
+    skipped.extend(more);
     let memories = memories(store, &bot.id)?;
-    store.db.execute("UPDATE bot_tasks SET brief_version=?2 WHERE session_id=?1", params![session_id, bot.memory_version]).map_err(|e| e.to_string())?;
-    Ok(Some(format!("{}{}", brief::compose(&bot, &memories, brief::TASK, ""), brief::skills(&text, &installed, &skipped))))
+    store
+        .db
+        .execute(
+            "UPDATE bot_tasks SET brief_version=?2 WHERE session_id=?1",
+            params![session_id, bot.memory_version],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(Some(format!(
+        "{}{}",
+        brief::compose(&bot, &memories, brief::TASK, ""),
+        brief::skills(&text, &installed, &skipped)
+    )))
 }
 
 #[tauri::command]
-pub async fn bot_task_brief(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<Option<String>> {
+pub async fn bot_task_brief(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<String>> {
     let library = crate::skills::library(&app).ok();
-    task_brief(&*state.store.lock().map_err(|e| e.to_string())?, library.as_ref(), &session_id)
+    let store = state.store.clone();
+    crate::blocking(move || {
+        task_brief_shared(&store, library.as_ref(), &session_id, || {
+            crate::skill_manager::disabled_for(&session_id)
+        })
+    })
+    .await
 }
 
 /// Starts the scheduler and channel connections once the app is ready.
 pub(crate) fn start(app: &tauri::AppHandle) {
     // Before the scheduler or any window reads a bot, so older databases have the profile columns.
-    let upgraded = app.state::<AppState>().store.lock().map_err(|e| e.to_string()).and_then(|store| { upgrade(&store.db)?; shared_channels::reconcile_in_progress(&store) });
+    let upgraded = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .map_err(|e| e.to_string())
+        .and_then(|store| {
+            upgrade(&store.db)?;
+            shared_channels::reconcile_in_progress(&store)
+        });
     if let Err(error) = upgraded {
         eprintln!("Could not upgrade the bots table: {error}");
     }
@@ -1087,5 +1241,141 @@ pub(crate) fn note(app: &tauri::AppHandle, bot_id: &str, kind: &str, summary: &s
     let result = state.store.lock().map_err(|e| e.to_string()).and_then(|store| log(&store, bot_id, kind, summary, detail));
     if let Err(error) = result {
         eprintln!("Could not record bot activity: {error}");
+    }
+}
+
+#[cfg(test)]
+mod skill_switch_tests {
+    use super::*;
+
+    fn library(root: &std::path::Path, names: &[&str]) -> crate::skills::Library {
+        let library = crate::skills::Library::new(root.join("library"), root.join("home"));
+        let source = || crate::skills::Source {
+            kind: "folder".into(),
+            location: "x".into(),
+            git_ref: None,
+            commit: None,
+        };
+        for name in names {
+            library
+                .import(
+                    crate::skills::Kind::Skill,
+                    vec![(
+                        "SKILL.md".into(),
+                        format!("---\nname: {name}\ndescription: {name} things\n---\nDo {name}.\n")
+                            .into_bytes(),
+                    )],
+                    name,
+                    source(),
+                )
+                .unwrap();
+        }
+        library
+    }
+
+    #[test]
+    fn bots_task_brief_leaves_out_skills_switched_off_for_the_session() {
+        let root =
+            std::env::temp_dir().join(format!("pandacode-bot-switch-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let library = library(&root, &["review", "lint", "keep"]);
+        let checkout = root.join("project");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let project = store.add_project(&checkout).unwrap();
+        let main = store.workspace_root(&project.id, None).unwrap();
+        for (id, harness) in [("lint", "claude"), ("keep", "claude")] {
+            library
+                .activate(
+                    id,
+                    harness,
+                    crate::skills::Scope::Project,
+                    Some(&main),
+                    false,
+                )
+                .unwrap();
+        }
+        let input = BotInput {
+            name: "Scout".into(),
+            role: "r".into(),
+            instructions: "i".into(),
+            provider: "claude".into(),
+            model: "default".into(),
+            mode: "ask".into(),
+            ..Default::default()
+        };
+        let bot = create(&store, &input, &root).unwrap();
+        let bot = set_capabilities(&store, &bot.id, &["review".into()], &[]).unwrap();
+        let task = store
+            .create_session(&project.id, "claude", "default", "ask")
+            .unwrap();
+        assign_task(&store, &task.id, Some(&bot.id)).unwrap();
+        let off = std::collections::BTreeSet::from(["review".to_string(), "lint".to_string()]);
+        let brief = task_brief_with(&store, Some(&library), &task.id, || off)
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        // Neither inlined (bot skill) nor announced as installed (project skill)…
+        assert!(!brief.contains("Do review."), "{brief}");
+        assert!(!brief.contains("lint (project)"), "{brief}");
+        // …while skills that are on still are, and the brief says why the others are missing.
+        assert!(brief.contains("keep (project)"), "{brief}");
+        assert!(
+            brief.contains("review is off in Skills.") && brief.contains("lint is off in Skills."),
+            "{brief}"
+        );
+    }
+
+    #[test]
+    fn bots_task_brief_reads_switched_off_skills_with_the_store_unlocked() {
+        let root =
+            std::env::temp_dir().join(format!("pandacode-bot-unlocked-{}", crate::storage::id()));
+        let checkout = root.join("project");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout).unwrap();
+        let input = BotInput {
+            name: "Scout".into(),
+            role: "r".into(),
+            instructions: "i".into(),
+            provider: "claude".into(),
+            model: "default".into(),
+            mode: "ask".into(),
+            ..Default::default()
+        };
+        let bot = create(&store, &input, &root).unwrap();
+        let plain = store
+            .create_session(&project.id, "claude", "default", "ask")
+            .unwrap();
+        let task = store
+            .create_session(&project.id, "claude", "default", "ask")
+            .unwrap();
+        assign_task(&store, &task.id, Some(&bot.id)).unwrap();
+        let store = std::sync::Mutex::new(store);
+        let never = || -> std::collections::BTreeSet<String> {
+            panic!("switches are read only when a brief is due")
+        };
+        // No bot, no brief, no switch I/O.
+        assert_eq!(
+            task_brief_shared(&store, None, &plain.id, never).unwrap(),
+            None
+        );
+        let mut read = false;
+        let brief = task_brief_shared(&store, None, &task.id, || {
+            read = true;
+            assert!(
+                store.try_lock().is_ok(),
+                "the store is locked during switch I/O"
+            );
+            Default::default()
+        })
+        .unwrap();
+        assert!(read && brief.is_some());
+        // The brief goes once; the next message reads nothing.
+        assert_eq!(
+            task_brief_shared(&store, None, &task.id, never).unwrap(),
+            None
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -21,9 +21,62 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # read CI runs for the release commit
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Require a green CI run for this commit
+        # Tag pushes and publishing manual runs ship this commit, so its CI must have
+        # passed. A manual run with publish unchecked only builds artifacts and may skip.
+        if: github.ref_type == 'tag' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only push runs on main count: a pull request or branch run of the same commit
+          # did not test what main ships.
+          lookup_failed="::error::The CI lookup for $GITHUB_SHA failed: gh did not return a list of runs. This is usually a transient GitHub API problem; re-run this workflow."
+          if ! runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url); then
+            echo "$lookup_failed"
+            exit 1
+          fi
+          if [ -z "$runs" ] || ! jq -e 'type == "array"' <<<"$runs" >/dev/null 2>&1; then
+            echo "$lookup_failed"
+            exit 1
+          fi
+          if [ "$(jq length <<<"$runs")" -eq 0 ]; then
+            echo "::error::No CI run from a push to main found for $GITHUB_SHA. The commit must be on main and pushed; wait for its CI to pass before tagging (docs/releasing.md step 3)."
+            exit 1
+          fi
+          if ! jq -e '.[0] | type == "object"' <<<"$runs" >/dev/null 2>&1; then
+            echo "$lookup_failed"
+            exit 1
+          fi
+          # gh lists the newest run first; that run decides. Read each field on its own:
+          # gh reports a pending conclusion as an empty string.
+          status=$(jq -r '.[0].status // ""' <<<"$runs")
+          conclusion=$(jq -r '.[0].conclusion // "" | if . == "" then "none" else . end' <<<"$runs")
+          url=$(jq -r '.[0].url // ""' <<<"$runs")
+          run_id=$(jq -r '.[0].databaseId // ""' <<<"$runs")
+          if [ "$status" != completed ]; then
+            echo "::error::CI for $GITHUB_SHA is still ${status:-pending} ($url). Wait for it to pass, then re-run this workflow."
+            exit 1
+          fi
+          case "$conclusion" in
+            success)
+              echo "CI passed for $GITHUB_SHA: $url"
+              ;;
+            cancelled)
+              echo "::error::CI for $GITHUB_SHA was cancelled (run $run_id, $url). Re-run CI for this commit with 'gh run rerun $run_id' (and push nothing newer to main until it completes), then re-run this workflow."
+              exit 1
+              ;;
+            *)
+              echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). If the failure was flaky or infrastructure (for example a job the runner never picked up), re-run its failed jobs with 'gh run rerun $run_id --failed' and re-run this workflow once that CI run is green; otherwise fix it in a new commit and release a higher version."
+              exit 1
+              ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Read and check the version
         id: version
@@ -43,19 +96,34 @@ jobs:
     needs: prepare
     strategy:
       fail-fast: false
+      # transcribe_cmake: TRANSCRIBE_CMAKE_ARGS for transcribe-cpp-sys 0.4.1 (its build.rs passes the
+      # variable to CMake when it builds ggml). Rule: never tune ggml to the runner's CPU.
+      # - x86_64 rows pin the baseline SSE4.2/AVX/F16C floor (no AVX2+, like ort).
+      # - Linux arm64 pins plain ARMv8-A (GGML_NATIVE=OFF + GGML_CPU_ARM_ARCH, ggml's -march).
+      # - Apple silicon: the crate's build.rs already sets GGML_NATIVE=OFF on macOS.
+      # - Windows arm64 is the one exception: ggml refuses GGML_NATIVE=OFF with MSVC on ARM
+      #   ("use clang"), and the clang-cl toolset cannot be chosen here because cmake-rs already
+      #   passes -Thost=x64 and CMake allows one -T. So it stays native: the build probes the
+      #   runner CPU (dotprod/i8mm on windows-11-arm), which sets that row's CPU floor (see
+      #   docs/agent-reference.md#voice-input). The same probe also tests SVE and SME, which
+      #   platform.rs does not check and Snapdragon X lacks, so the row pins their cached probe
+      #   results off (GGML_MACHINE_SUPPORTS_sve/_sme=OFF, read by ggml-cpu/CMakeLists.txt's
+      #   check_arm_feature). Keep ci.yml's Linux x86_64 job and rust-platforms rows in step.
       matrix:
         include:
-          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin }
+          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin, transcribe_cmake: '' }
           # Native Intel runner: build.mjs only builds on the target's own host architecture.
-          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin }
-          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
-          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc }
-          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
+          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc, transcribe_cmake: '-DGGML_MACHINE_SUPPORTS_sve=OFF -DGGML_MACHINE_SUPPORTS_sme=OFF' }
+          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu, transcribe_cmake: '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
       RELEASE_TARGET: ${{ matrix.target }}
+      # Empty on Apple silicon: an empty value adds no CMake arguments.
+      TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
       # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
       # an ad-hoc signature instead (see docs/releasing.md).
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -70,7 +138,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
       - run: npm ci
       - run: npm run test:release
       - name: Configure Apple signing keychain
@@ -108,7 +176,7 @@ jobs:
         run: node scripts/release/ci-apple.mjs cleanup
 
   # Release assurance (docs/releasing.md): SBOMs and scan coverage. Findings and tool
-  # failures are reported in SBOM-COVERAGE.md and never block the release.
+  # failures are reported in coverage or the job summary and never block the release.
   sbom:
     needs: [prepare, build]
     runs-on: ubuntu-latest
@@ -134,7 +202,8 @@ jobs:
           for tool in syft grype; do
             ver_var=${tool^^}_VERSION; sum_var=${tool^^}_SHA256
             file="${tool}_${!ver_var}_linux_amd64.tar.gz"
-            curl -fsSL -o "$file" "https://github.com/anchore/$tool/releases/download/v${!ver_var}/$file"
+            curl -fsSL --retry 3 --retry-max-time 300 --connect-timeout 15 --max-time 120 \
+              -o "$file" "https://github.com/anchore/$tool/releases/download/v${!ver_var}/$file"
             echo "${!sum_var}  $file" | sha256sum -c -
             tar -xzf "$file" -C "$HOME/.local/bin" "$tool"
           done
@@ -143,7 +212,15 @@ jobs:
         run: node scripts/release/sbom.mjs assets sbom "$VERSION" "$GITHUB_SHA"
       - name: Show coverage
         if: always()
-        run: cat sbom/SBOM-COVERAGE.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [ -s sbom/SBOM-COVERAGE.md ]; then
+            cat sbom/SBOM-COVERAGE.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## SBOM/scan coverage unavailable' >> "$GITHUB_STEP_SUMMARY"
+            echo 'No coverage report was produced. Check the artifact download, scanner installation and generation steps above; this release has no verified scan coverage.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::error::SBOM/scan coverage report is missing or empty.'
+            exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

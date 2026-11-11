@@ -19,7 +19,7 @@ export function isEditableField(target: EventTarget | null): boolean {
 
 /** The pieces of document and KeyboardEvent the handler needs, so tests can stub both. */
 export interface TextUndoEvent {
-  key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing: boolean; defaultPrevented: boolean; preventDefault(): void;
+  key: string; code?: string; keyCode?: number; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing: boolean; defaultPrevented: boolean; preventDefault(): void;
 }
 export interface TextUndoHost {
   activeElement: EventTarget | null;
@@ -32,8 +32,8 @@ export interface TextUndoHost {
 export function attachTextUndo(doc: TextUndoHost, platform: string): void {
   if (!/Linux/i.test(platform)) return;
   doc.addEventListener('keydown', (event: TextUndoEvent) => {
-    if (!event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.defaultPrevented) return;
-    const direction = undoDirection(event.key, event.shiftKey);
+    if (!event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
+    const direction = undoDirection(event.code ? event.code.replace(/^Key/, '') : event.key, event.shiftKey);
     const el = doc.activeElement as Element | null;
     if (!direction || !isEditableField(el) || el?.closest?.('.xterm')) return;
     event.preventDefault();

@@ -12,6 +12,19 @@ const liveSequence = (page: Page) => page.locator('#stream-region .live-text, #s
 }).filter(Boolean));
 
 async function installControlledStreaming(page: Page): Promise<void> {
+  await page.route('**/src/main.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    expect(source).toContain('function followTranscript() {');
+    await route.fulfill({ response, body: source.replace('function followTranscript() {', 'function followTranscript() { window.__followCalls = (window.__followCalls || 0) + 1;') + `
+      window.__scrollFixture = {
+        follow: followTranscript,
+        spring(now) { easeFollow(now); return followFrame; },
+        reset() { cancelAnimationFrame(followFrame); followFrame = 0; stickToBottom = true; sendFollow = true; followVelocity = 0; followAt = 0; },
+        following() { return stickToBottom; }
+      };
+    ` });
+  });
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     const source = await response.text();
@@ -701,4 +714,226 @@ test('completion refresh links a file that the agent mentioned before creating i
   });
   await expect(page.locator('#file-link-fixture .workspace-file-link')).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).__fileLinks.calls)).toBe(2);
+});
+
+test.describe('streaming scroll regressions', () => {
+  test.beforeEach(async ({ page }) => {
+    await installControlledStreaming(page);
+    await page.goto('/?cards');
+    await page.locator('.task-item', { hasText: 'Turn cards' }).click();
+    await expect(page.locator('.task-item.selected .task-title')).toHaveText('Turn cards');
+  });
+
+  for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+    test(`final tool-only handoff keeps the reply at the reading line (${reducedMotion})`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion });
+      await prompt(page).fill('Controlled streaming response');
+      await prompt(page).press('Enter');
+      await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+      const id = await page.evaluate(() => (window as any).__latestStreamId);
+      await page.evaluate(id => {
+        const fixture = (window as any).__streamFixtures[id];
+        for (let i = 0; i < 20; i++) fixture.tool();
+      }, id);
+      await expect(page.locator('#stream-region .tool-activity')).toHaveCount(20);
+      await expect.poll(() => page.evaluate(() => {
+        const scroller = document.querySelector('#transcript')!;
+        return document.querySelector('#stream-region .turn-card')!.getBoundingClientRect().top < scroller.getBoundingClientRect().top;
+      })).toBe(true);
+      // One task: the handoff, rather than the reply's delayed timer, must fold the trace.
+      await page.evaluate(id => {
+        const fixture = (window as any).__streamFixtures[id];
+        fixture.push('All done. This is the final answer.'); fixture.done();
+      }, id);
+      await expect(page.locator('#stream-region .turn-card')).toHaveCount(0);
+      const reply = transcript(page).locator('.turn-card').last().locator('.turn-card-reply');
+      await expect(reply).toContainText('All done. This is the final answer.');
+      await expect.poll(() => reply.evaluate(node => {
+        const scroller = document.querySelector('#transcript')!, bounds = scroller.getBoundingClientRect();
+        const line = bounds.top + (parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0), box = node.getBoundingClientRect();
+        return box.top >= line - 1 && box.bottom <= bounds.bottom + 1;
+      })).toBe(true);
+    });
+  }
+
+  test('typing during long streaming avoids mention measurements and composer mutation follows', async ({ page }) => {
+    const id = await startTurn(page, 'conversation', false);
+    await push(page, id, 'A long streaming paragraph.\n\n'.repeat(100));
+    await expect(live(page)).toContainText('A long streaming paragraph.');
+    await prompt(page).focus();
+    await page.waitForTimeout(400);
+    await prompt(page).evaluate(node => {
+      const input = node as HTMLTextAreaElement, rects = input.getClientRects.bind(input);
+      (window as any).__mentionReads = 0;
+      input.getClientRects = () => { (window as any).__mentionReads++; return rects(); };
+      const height = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')!.get!;
+      (window as any).__promptReads = 0;
+      Object.defineProperty(input, 'scrollHeight', { configurable: true, get() { (window as any).__promptReads++; return height.call(input); } });
+    });
+    await page.evaluate(id => {
+      (window as any).__typingStream = setInterval(() => (window as any).__streamFixtures[id].push('More streamed words. '), 25);
+    }, id);
+    const draft = 'A draft while the answer streams';
+    await prompt(page).pressSequentially(draft, { delay: 5 });
+    await page.evaluate(() => clearInterval((window as any).__typingStream));
+    expect(await page.evaluate(() => (window as any).__mentionReads)).toBe(0);
+    expect(await page.evaluate(() => (window as any).__promptReads)).toBe(draft.length);
+    await page.waitForTimeout(200);
+    const calls = await page.evaluate(async () => {
+      const input = document.querySelector('#prompt')!;
+      (window as any).__followCalls = 0;
+      input.setAttribute('aria-description', 'Draft');
+      input.setAttribute('data-fixture', 'changed');
+      (input as HTMLElement).style.setProperty('--fixture', '1');
+      input.append(document.createComment('composer mutation'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return (window as any).__followCalls;
+    });
+    expect(calls).toBe(0);
+    await push(page, id, '\n\nAnother live line.');
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
+    await page.setViewportSize({ width: 1180, height: 780 });
+    await prompt(page).fill('A growing draft\n'.repeat(20));
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
+    await prompt(page).fill('Short again');
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
+    // The viewport's delayed resize restoration must finish before the reader scrolls.
+    await expect(transcript(page)).not.toHaveAttribute('data-window-resizing');
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
+    await transcript(page).hover();
+    const wheelTarget = await transcript(page).evaluate(node =>
+      Math.max(0, Math.min(node.scrollTop - 350, node.scrollHeight - node.clientHeight)));
+    await page.mouse.wheel(0, -350);
+    await expect.poll(() => page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
+    // Wheel delivery releases follow synchronously, but Chrome applies its scroll asynchronously.
+    // Require the whole reachable displacement and three stable frames before saving the baseline.
+    await expect.poll(() => transcript(page).evaluate(async (node, target) => {
+      const tops: number[] = [];
+      for (let frame = 0; frame < 3; frame++) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        tops.push(node.scrollTop);
+      }
+      return tops.every(top => Math.abs(top - target) <= 1 && top === tops[0]);
+    }, wheelTarget)).toBe(true);
+    const top = await transcript(page).evaluate(node => node.scrollTop);
+    const shrinkReads = await page.evaluate(() => {
+      const card = document.querySelector<HTMLElement>('#stream-region .turn-card')!, rect = card.getBoundingClientRect.bind(card);
+      let reads = 0;
+      card.getBoundingClientRect = () => { reads++; return rect(); };
+      try { (window as any).__scrollFixture.follow(); return reads; }
+      finally { card.getBoundingClientRect = rect; }
+    });
+    expect(shrinkReads).toBe(0);
+    await push(page, id, '\n\nNew output while reading above.\n\n'.repeat(10));
+    const afterPush = await transcript(page).evaluate(node => node.scrollTop);
+    await prompt(page).pressSequentially(' and keep typing');
+    await expect(live(page)).toContainText('New output while reading above.');
+    const afterTyping = await transcript(page).evaluate(node => node.scrollTop);
+    expect({ afterPush, afterTyping }).toEqual({ afterPush: top, afterTyping: top });
+    await page.setViewportSize({ width: 1100, height: 820 });
+    await page.waitForTimeout(250);
+    expect(await page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
+    const reading = await live(page).locator('p').evaluateAll(nodes => {
+      const scroller = document.querySelector('#transcript')!, line = scroller.getBoundingClientRect().top + parseFloat(getComputedStyle(scroller).scrollPaddingTop);
+      const index = nodes.findIndex(node => node.getBoundingClientRect().bottom > line);
+      return { index, top: nodes[index].getBoundingClientRect().top };
+    });
+    await finish(page, id);
+    const savedLine = transcript(page).locator('.turn-card').last().locator('.message-content p').nth(reading.index);
+    expect(Math.abs((await savedLine.boundingBox())!.y - reading.top)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
+  });
+
+  test('fractional follow terminates stalled steps without counting normal motion as stuck', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const scroller = document.querySelector('#transcript')!, fixture = (window as any).__scrollFixture;
+      const raf = window.requestAnimationFrame;
+      const run = (round: boolean) => {
+        fixture.reset();
+        let top = 497, queued = false;
+        Object.defineProperties(scroller, {
+          scrollHeight: { configurable: true, get: () => 1000.75 },
+          clientHeight: { configurable: true, get: () => 500 },
+          scrollTop: { configurable: true, get: () => top, set: value => { top = Math.min(500.75, round ? Math.floor(value) : value); } },
+        });
+        window.requestAnimationFrame = () => { queued = true; return 1; };
+        const steps = [];
+        for (let frame = 1; frame <= 12; frame++) {
+          queued = false; fixture.spring(frame * 16); steps.push(top);
+          if (!queued) break;
+        }
+        return { steps, queued, gap: 500.75 - top };
+      };
+      try { return { moving: run(false), rounded: run(true) }; }
+      finally {
+        window.requestAnimationFrame = raf;
+        for (const key of ['scrollHeight', 'clientHeight', 'scrollTop']) delete (scroller as any)[key];
+      }
+    });
+    expect(result.moving.steps[2]).toBeLessThan(500);
+    expect(result.moving.steps[2]).toBeGreaterThan(result.moving.steps[1]);
+    expect(result.rounded.queued).toBe(false);
+    expect(result.rounded.steps.length).toBeLessThanOrEqual(4);
+    expect(result.rounded.gap).toBeLessThanOrEqual(0.5);
+  });
+
+  test('streaming prompt overflow matches its client box across interface sizes and imported themes', async ({ page }) => {
+    const results = await page.evaluate(async () => {
+      const sizingUrl = '/src/ui-size.ts', paletteUrl = '/src/palette.ts';
+      const { setUiScale } = await import(sizingUrl), { palette } = await import(paletteUrl);
+      const input = document.querySelector<HTMLTextAreaElement>('#prompt')!, results = [];
+      for (const imported of [false, true]) {
+        palette.setVsix(imported ? { id: 'scroll-fixture', name: 'Fixture', extension: 'fixture.theme', kind: 'dark', colors: {} } : null);
+        for (const scale of [.8, 1, 1.6]) {
+          setUiScale(scale);
+          for (const lines of [1, 4, 20, 1]) {
+            input.value = 'A line of the draft\n'.repeat(lines);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            const style = getComputedStyle(input);
+            results.push({ box: style.boxSizing, borders: parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth),
+              correct: input.style.overflowY === (input.scrollHeight > input.clientHeight + 1 ? 'auto' : 'hidden') });
+          }
+        }
+      }
+      return results;
+    });
+    expect(results.every(result => result.box === 'border-box' && result.borders === 0 && result.correct)).toBe(true);
+  });
+
+  test('thread switching resets follow and Read more still pauses it', async ({ page }) => {
+    const id = await startTurn(page, 'conversation', false);
+    await push(page, id, 'Long reply for reading.\n\n'.repeat(60));
+    await finish(page, id);
+    const more = transcript(page).locator('.turn-card-more').last();
+    const paused = await more.evaluate(node => {
+      (node as HTMLElement).click();
+      // A scroll notification from the preceding pin can arrive after this click.
+      document.querySelector('#transcript')!.dispatchEvent(new Event('scroll'));
+      return !(window as any).__scrollFixture.following();
+    });
+    expect(paused).toBe(true);
+    await expect(more).toHaveText('Read more');
+    await more.click();
+    await expect(more).toHaveText('Show less');
+    expect(await page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
+    await expect.poll(() => more.evaluate(node => {
+      const reply = node.closest('.turn-card-reply')!, scroller = document.querySelector('#transcript')!;
+      return [...reply.getAnimations({ subtree: true }), ...scroller.getAnimations()].some(animation => animation.playState === 'running');
+    })).toBe(false);
+    await transcript(page).evaluate(node => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event('scroll')); });
+    expect(await page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
+    await transcript(page).hover();
+    await page.mouse.wheel(0, 1);
+    await expect.poll(() => page.evaluate(() => (window as any).__scrollFixture.following())).toBe(true);
+    const top = await transcript(page).evaluate(node => node.scrollTop);
+    await page.mouse.wheel(0, -200);
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollTop)).toBeLessThan(top);
+    await page.mouse.wheel(0, 100000);
+    await expect.poll(() => page.evaluate(() => (window as any).__scrollFixture.following())).toBe(true);
+    await page.locator('.task-item', { hasText: 'Turn cards' }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__scrollFixture.following())).toBe(true);
+    await page.locator('.task-item', { hasText: 'Controlled streaming response' }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__scrollFixture.following())).toBe(true);
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
+  });
 });

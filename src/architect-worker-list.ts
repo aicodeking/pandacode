@@ -2,6 +2,7 @@ import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { teamActive, type TeamSnapshot, type TeamWorker } from './architect-types';
 import { workerQueueReason } from './worker-scheduling';
+import { formatScore, seatVerdict } from './council';
 
 /* The Workers panel's list: one dense row per worker (glyph, name, status, elapsed; logo · model · effort), ordered
  * by who needs the reader, with a header tally, roving keyboard focus, rows held still under the reader, and rows that
@@ -85,6 +86,16 @@ export function workerWord(worker: TeamWorker, state: string, approval: boolean,
   // Working, Done and Failed need no word: the glyph says it, and the name gets the room (the full status stays for
   // screen readers and the title).
   return { verb: ['running', 'completed', 'failed'].includes(state) ? '' : verb, full: workerVerbsFull[state] ?? verb, tone, bucket: verb.toLowerCase() };
+}
+/** A Council reviewer's row (one from an earlier cycle, or not yet in the Council summary): it is named by its lens and
+ *  reads its verdict against the target, never "Done" in success green below it. Null for other workers. */
+type ReviewerRow = { name: string; verb: string; full: string; tone: string; below: boolean; meta: string };
+export function reviewerRow(worker: TeamWorker, team: TeamSnapshot): ReviewerRow | null {
+  const council = worker.council; if (!council) return null;
+  const verdict = seatVerdict(team, worker as TeamWorker & { council: NonNullable<TeamWorker['council']> });
+  const below = verdict?.tone === 'below';
+  const meta = [`Round ${council.round}`, typeof council.score === 'number' ? `scored ${formatScore(council.score)}` : '', worker.createdAt < (team.councilSince ?? 0) ? 'earlier council' : ''].filter(Boolean).join(' · ');
+  return { name: council.lens.trim() || worker.name, verb: verdict ? verdict.tone === 'at' ? 'At target' : below ? 'Below' : 'Scored' : '', full: verdict?.text ?? '', tone: below ? 'warn' : '', below, meta };
 }
 /** The rows' own order: needs you, failed, working, waiting or queued, paused or stopped, done, skipped. */
 const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'paused', 'stopped', 'done', 'skipped', 'idle'];
@@ -205,6 +216,8 @@ export class WorkerList {
   private showHidden = false;
   /** The list's one Tab stop (roving tabindex). */
   private currentRow = '';
+  /** The last paint's `elsewhere`, kept for repaints the list starts itself. */
+  private elsewhere = false;
   constructor(private readonly panel: HTMLElement, private readonly host: WorkerListHost) {
     this.list = panel.querySelector<HTMLElement>('.architect-worker-list')!;
     this.tallyHost = panel.querySelector<HTMLElement>('.architect-panel-tally')!;
@@ -242,15 +255,16 @@ export class WorkerList {
     this.currentRow = workerId; this.rove(); row.focus({ preventScroll: true });
   }
   /** One dense line per worker, those that need the reader first; each unfolds its assignment and summary. */
-  paint(team: TeamSnapshot, unfreeze = false): void {
-    this.team = team;
+  /** `elsewhere`: some of the team's workers are shown outside the list (Council reviewers), so an empty list says nothing. */
+  paint(team: TeamSnapshot, unfreeze = false, elsewhere = false): void {
+    this.team = team; this.elsewhere = elsewhere;
     const list = this.list, tallyHost = this.tallyHost;
     tallyHost.hidden = !team.workers.length;
     if (!team.workers.length) { this.hiddenCounts = ''; this.showHidden = false; this.syncHidden(); }
     // An empty list is a sentence, not a list: it drops the list role and the list's name and hint with it.
     if (!team.workers.length) { list.removeAttribute('role'); list.removeAttribute('aria-label'); list.removeAttribute('aria-describedby'); }
     else { setAttr(list, 'role', 'list'); setAttr(list, 'aria-label', 'Workers'); setAttr(list, 'aria-describedby', 'architect-workers-hint'); }
-    if (!team.workers.length) { this.rows.clear(); list.textContent = team.status === 'ready' ? 'Send a task to let the architect delegate the work.' : 'The architect is planning its first assignments.'; return; }
+    if (!team.workers.length) { this.rows.clear(); list.textContent = elsewhere ? '' : team.status === 'ready' ? 'Send a task to let the architect delegate the work.' : 'The architect is planning its first assignments.'; return; }
     const tally = this.announce(team);
     const tallyText = tallyHost.querySelector<HTMLElement>('.architect-panel-tally-text')!;
     // The full line when it fits, else the minor buckets move to the title. Nothing is written unless it changed,
@@ -336,7 +350,7 @@ export class WorkerList {
   /** The tally's "needs you": bring the first worker that needs the user into view and focus its row. */
   private showNeedsYou(): void {
     const team = this.team; if (!team) return;
-    this.reorderPending = false; this.paint(team, true);
+    this.reorderPending = false; this.paint(team, true, this.elsewhere);
     const first = [...this.rows.values()].find(item => team.workers.some(worker => worker.id === item.dataset.workerId && this.host.needsInput(worker.sessionId)));
     const row = first?.querySelector<HTMLElement>('.architect-worker-row'); if (!row || !first) return;
     this.currentRow = first.dataset.workerId!; this.rove();
@@ -351,7 +365,7 @@ export class WorkerList {
   /** Applies an order held back while the reader was on the list. */
   private releaseList(): void {
     if (!this.reorderPending || this.listHeld() || !this.team || this.list.hidden) return;
-    this.reorderPending = false; this.paint(this.team);
+    this.reorderPending = false; this.paint(this.team, false, this.elsewhere);
   }
   /** Moves only the elapsed times of running workers forward; nothing else repaints. */
   private tickElapsed(): void {
@@ -378,7 +392,7 @@ export class WorkerList {
     const time = ms === null ? '' : shortDuration(ms), words = ms === null ? '' : `${['running', 'waiting', 'parked'].includes(state) ? 'running' : 'ran'} ${longDuration(ms)}`;
     if (element.textContent !== time) element.textContent = time;
     if (element.title !== words) element.title = words;
-    setAttr(row, 'aria-label', `${worker.name}, ${row.dataset.statusLabel ?? ''}${words ? `, ${words}` : ''} — open transcript`);
+    setAttr(row, 'aria-label', `${row.dataset.name ?? worker.name}, ${row.dataset.statusLabel ?? ''}${words ? `, ${words}` : ''} — open transcript`);
   }
   private workerItem(worker: TeamWorker): HTMLElement {
     const item = document.createElement('div'); item.className = 'architect-worker-item'; item.setAttribute('role', 'listitem'); item.dataset.workerId = worker.id;
@@ -429,10 +443,16 @@ export class WorkerList {
     const status = asking ? 'waiting' : state;
     row.dataset.status = status; item.dataset.status = status;
     const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-    const { verb: word, tone, full: fullVerb } = workerWord(worker, state, approval, asking);
+    const plain = workerWord(worker, state, approval, asking);
+    const reviewer = reviewerRow(worker, team);
+    // A scored reviewer reads its verdict (unless it needs the user or was skipped).
+    const scored = reviewer?.verb && !asking && !approval && !worker.abandoned ? reviewer : null;
+    const { verb: word, tone, full: fullVerb } = scored ? { verb: scored.verb, tone: scored.tone, full: scored.full } : plain;
+    const name = reviewer?.name ?? worker.name;
     // A queue reason ("Waiting for a dependency") already says it is queued: no status word beside it.
     const verb = queueReason && !asking ? '' : word;
-    const glyph = worker.abandoned ? 'idle' : asking ? 'alert' : ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
+    // A reviewer that finished below target gets no green done check beside its verdict.
+    const glyph = worker.abandoned || scored?.below ? 'idle' : asking ? 'alert' : ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
     const model = this.host.modelName(worker), effort = worker.reasoningEffort ? effortLabel(worker.reasoningEffort) : '';
     // The meta line: the model; a queued row's reason instead; a failed row's error (its first line) instead, without
     // the harness logo (nor beside a queue reason), which beside an error would read like its cause. It is cut on one
@@ -443,10 +463,10 @@ export class WorkerList {
     const reason = state === 'failed' && worker.error ? worker.error.split('\n')[0].trim() : '';
     const facts = [model, effort ? `${effort}${worker.note ? ', adjusted' : ''}` : '', worker.attempt > 1 ? `attempt ${worker.attempt}` : ''].filter(Boolean).join(' · ');
     const showFacts = Boolean(reason) && open;
-    const meta = showFacts ? facts : reason || queueReason || model;
+    const meta = showFacts ? facts : reason || queueReason || reviewer?.meta || model;
     const metaTitle = showFacts ? (worker.note ? `${facts}. ${worker.note}` : facts) : reason ? worker.error!.trim() : meta;
     const markup = `<span class="architect-worker-glyph" data-glyph="${glyph}" data-state-tone="${glyphTones[glyph]}">${workerGlyphs[glyph]}</span>`
-      + `<span class="architect-worker-copy"><span class="architect-worker-line"><strong title="${escape(worker.name)}">${escape(worker.name)}</strong>`
+      + `<span class="architect-worker-copy"><span class="architect-worker-line"><strong title="${escape(name)}">${escape(name)}</strong>`
       + (verb ? `<span class="architect-worker-state${tone === 'warn' ? ' architect-worker-state-attention' : ''}" title="${escape(fullVerb)}"><span aria-hidden="true">${escape(verb)}</span><span class="sr-only">${escape(fullVerb)}</span></span>`
         : `<span class="architect-worker-state sr-only">${escape(fullVerb)}</span>`)
       + `<span class="architect-worker-elapsed" aria-hidden="true"></span></span>`
@@ -456,7 +476,7 @@ export class WorkerList {
       + `</span></span>`;
     if (row.dataset.painted !== markup) { row.innerHTML = markup; row.dataset.painted = markup; }
     item.toggleAttribute('data-reason', Boolean(reason));
-    row.dataset.statusLabel = fullVerb;
+    row.dataset.statusLabel = fullVerb; row.dataset.name = name;
     this.paintElapsed(row, worker, state, now);
     // The caret is the disclosure; the row's description says whether the details are shown.
     const expand = item.querySelector<HTMLButtonElement>('.architect-worker-expand')!;

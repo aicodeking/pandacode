@@ -169,6 +169,7 @@ fn known_hosts_entry(host: &str, port: u16) -> String {
 /// blow (and multiplexing turns the many short calls of a run into one login; Windows
 /// OpenSSH has no ControlMaster).
 fn base_args(key: &Path, known_hosts: &Path, target: &Target, port_flag: &str) -> Vec<String> {
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut args = vec![
         "-i".into(), key.display().to_string(),
         port_flag.into(), target.port.to_string(),

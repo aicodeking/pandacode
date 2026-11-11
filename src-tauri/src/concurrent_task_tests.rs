@@ -945,6 +945,7 @@ fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState
                 workspace: "shared".into(),
                 summary_limit: 2000,
                 lead_guidance: None,
+                council: None,
             },
         );
         team.status = status.into();
@@ -982,6 +983,9 @@ fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState
             resume_prompt: None,
             nudged: false,
             reported: false,
+            council: None,
+            score_nudged: false,
+            wrote_at: 0,
             tool_catalog_version: 0,
         });
         store.db.execute(

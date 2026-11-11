@@ -47,3 +47,10 @@ test('every line of the macOS note stays inside its list item', () => {
     assert.ok(line === '' || line.startsWith('  '), JSON.stringify(line));
   }
 });
+
+test('only the installers are said to carry a .sha256 checksum', () => {
+  for (const notes of [installNotes(), installNotes({ signed: true })]) {
+    assert.match(notes, /The installers each have a `\.sha256` checksum/);
+    assert.doesNotMatch(notes, /Each file has/);
+  }
+});

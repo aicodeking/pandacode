@@ -66,7 +66,7 @@ async fn off_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static
 }
 
 fn note(config: &RunConfig, sink: &Sink, text: String, switch: &accounts::Switch) {
-    let mut event = Protocol::new(config.clone()).event("note", text, None);
+    let mut event = Protocol::new(config.clone()).event("note", format!("Account switched\n{text}"), None);
     // The window updates the task's connection from this; the persisted row is the text.
     event.data = Some(serde_json::json!({"accountPool": {"connectionId": switch.connection}}));
     sink(event);

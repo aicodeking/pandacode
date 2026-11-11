@@ -1,6 +1,7 @@
 /* Browser preview of the skills library (src-tauri/src/skills.rs): an in-memory library, a
  * pretend Claude Code and Codex install, and the same refusals the native side gives. */
-import type { CatalogImport, CatalogSkill, CatalogSource, SkillActivation, SkillCatalogs, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
+import { LIBRARY_DIR } from './preview-skill-manager';
+import type { SkillActivation, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
 
 const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse', 'devin', 'zcode', 'hermes']);
 const FILES = ['claude', 'codex'];
@@ -19,17 +20,6 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').re
 const hash = (text: string) => [...text].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(16).padStart(8, '0').repeat(8);
 
 type Entry = { item: SkillItem; text: string };
-type FixtureRepo = { commit: string; private?: boolean; skills: Omit<CatalogSkill, 'imported' | 'conflicts' | 'id' | 'bytes'>[] };
-const catalogSkill = (path: string, name: string, files = 2) => ({ path, name, description: `${name} from a repository catalog.`, files });
-/** What GitHub would return: repositories the preview user owns, and one public collection. */
-const REPOS: Record<string, FixtureRepo> = {
-  'you/agent-skills': { commit: '5e6f7a8b9c', private: true, skills: [catalogSkill('skills/release-notes', 'Release notes'), catalogSkill('skills/changelog', 'Changelog'), catalogSkill('skills/triage', 'Triage', 3)] },
-  'you/dotfiles': { commit: '0d0d0d0d0d', skills: [] },
-  'you/skills-wishlist': { commit: '1a1a1a1a1a', skills: [] },
-  'acme/pstack': { commit: 'c0ffee1234', skills: Array.from({ length: 40 }, (_, i) => catalogSkill(`skills/pstack-${String(i + 1).padStart(2, '0')}`, `pstack ${String(i + 1).padStart(2, '0')}`, 4)) },
-};
-const OWNED = ['you/agent-skills', 'you/dotfiles', 'you/skills-wishlist'];
-const at = (repo: string, path: string) => path ? `${repo}/${path}` : repo;
 
 export function createPreviewSkills() {
   const entries = new Map<string, Entry>();
@@ -48,7 +38,7 @@ export function createPreviewSkills() {
     const main = kind === 'skill' ? 'SKILL.md' : 'RULE.md';
     const sha256 = hash(text);
     const item: SkillItem = {
-      id, name, kind, description: text.split('\n').find(l => l.trim() && !l.startsWith('#') && !l.startsWith('---')) ?? '', sha256, importedAt: Date.now(), source,
+      id, name, kind, ...(kind === 'skill' ? { folder: `${LIBRARY_DIR}/${id}` } : {}), description: text.split('\n').find(l => l.trim() && !l.startsWith('#') && !l.startsWith('---')) ?? '', sha256, importedAt: Date.now(), source,
       acknowledged: previous?.item.acknowledged === sha256 ? sha256 : null, activations: previous?.item.activations ?? [], files: files ?? [main], findings: scan(main, text),
     };
     entries.set(id, { item, text });
@@ -57,79 +47,6 @@ export function createPreviewSkills() {
 
   add('skill', 'Release notes', '# Release notes\nWrites release notes from merged pull requests.', { kind: 'github', location: 'anthropics/skills/release-notes', gitRef: null, commit: '9f3c2a1b7e' }, ['SKILL.md', 'templates/short.md']);
   add('rule', 'No force push', 'Never force-push to main or release branches.', { kind: 'folder', location: '/Users/you/rules/no-force-push.md', gitRef: null, commit: null });
-
-  let sources: CatalogSource[] = [];
-  let discovery: SkillCatalogs['discovery'] = null;
-  let failure: string | null = null;
-  const failIfAsked = () => { const next = failure; failure = null; if (next) throw new Error(next); };
-  const findSource = (repo: unknown) => {
-    const source = sources.find(s => s.repo.toLowerCase() === String(repo).toLowerCase());
-    if (!source) throw new Error('That repository is not in your catalogs.');
-    return source;
-  };
-  const scanned = (repo: string, origin: CatalogSource['origin'], gitRef: string | null): CatalogSource => {
-    const fixture = REPOS[repo];
-    return {
-      repo, gitRef, commit: fixture.commit, origin, state: 'enabled', private: !!fixture.private, pushedAt: '2026-10-01T00:00:00Z', scannedAt: Date.now(),
-      skills: fixture.skills.map(skill => ({ ...skill, id: slug(skill.name), bytes: skill.files * 400, imported: null, conflicts: [] })),
-    };
-  };
-  const upsert = (source: CatalogSource) => {
-    sources = [...sources.filter(s => s.repo !== source.repo), source].sort((a, b) => a.repo.localeCompare(b.repo));
-  };
-  function catalogs(): SkillCatalogs {
-    const holders = new Map<string, string[]>();
-    const hold = (id: string, where: string) => holders.set(id, [...(holders.get(id) ?? []), where]);
-    for (const entry of entries.values()) hold(entry.item.id, entry.item.source.location);
-    for (const source of sources.filter(s => s.state !== 'ignored')) for (const skill of source.skills) hold(skill.id, at(source.repo, skill.path));
-    return structuredClone({
-      discovery,
-      sources: sources.map(source => ({ ...source, skills: source.skills.map(skill => {
-        const here = at(source.repo, skill.path);
-        const copy = entries.get(skill.id)?.item;
-        return { ...skill, conflicts: [...new Set((holders.get(skill.id) ?? []).filter(w => w !== here))], imported: copy?.source.kind === 'github' && copy.source.location === here ? copy.source.commit : null };
-      }) })),
-    });
-  }
-  function addCatalog(repo: unknown, gitRef: unknown): SkillCatalogs {
-    failIfAsked();
-    const name = String(repo ?? '').trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) throw new Error('Enter the repository as owner/name.');
-    if (!REPOS[name]) throw new Error('That repository was not found, or your GitHub login cannot read it.');
-    if (!REPOS[name].skills.length) throw new Error(`${name} has no SKILL.md with a name and description in its frontmatter.`);
-    const previous = sources.find(s => s.repo === name);
-    upsert(scanned(name, previous?.origin ?? 'manual', (gitRef as string) || null));
-    return catalogs();
-  }
-  function discover(): SkillCatalogs {
-    failIfAsked();
-    const registered: string[] = [];
-    for (const repo of OWNED) {
-      const known = sources.find(s => s.repo === repo);
-      if (known || !REPOS[repo].skills.length) continue;
-      upsert(scanned(repo, 'discovered', null));
-      registered.push(repo);
-    }
-    discovery = { at: Date.now(), checked: OWNED.length, registered, failures: [], note: null };
-    return catalogs();
-  }
-  function importCatalog(repo: unknown, paths: unknown): CatalogImport {
-    failIfAsked();
-    const source = findSource(repo);
-    if (source.state !== 'enabled') throw new Error(`${source.repo} is ${source.state}. Enable it to import from it.`);
-    const chosen = source.skills.filter(skill => !Array.isArray(paths) || paths.includes(skill.path));
-    if (!chosen.length) throw new Error('Choose at least one skill to import.');
-    const result: CatalogImport = { items: [], imported: [], skipped: [] };
-    for (const skill of chosen) {
-      const here = at(source.repo, skill.path);
-      const taken = entries.get(skill.id)?.item;
-      if (taken && taken.source.location !== here) { result.skipped.push({ path: skill.path, name: skill.name, reason: `${skill.id} is already in the library from ${taken.source.location}.` }); continue; }
-      const files = ['SKILL.md', ...Array.from({ length: skill.files - 1 }, (_, i) => `reference-${i + 1}.md`)];
-      add('skill', skill.name, `# ${skill.name}\n${skill.description}`, { kind: 'github', location: here, gitRef: source.gitRef, commit: source.commit }, files);
-      result.imported.push(skill.name);
-    }
-    return { ...result, items: list() };
-  }
 
   function cell(entry: Entry, harness: string, scope: SkillScope): SkillCell {
     const activation = entry.item.activations.find(a => a.harness === harness && a.scope === scope);
@@ -147,14 +64,27 @@ export function createPreviewSkills() {
     /** Simulate a hand edit of an activated file. */
     edit(id: string, harness: string, scope: SkillScope) { disk.set(key(id, harness, scope), 'edited'); },
     list,
-    /** Make the next catalog call fail the way GitHub would (rate limit, signed out). */
-    failNext(error: string) { failure = error; },
+    /** Rules & library's folder import: a skill or rule named for the folder or Markdown file; a name with 'setup'
+     * carries a download piped into a shell, so its activation asks first. */
     importFolder(path: unknown, kind: unknown) {
       const text = String(path ?? '').trim();
       if (!text.startsWith('/')) throw new Error('Choose a folder or Markdown file.');
       const name = text.split('/').filter(Boolean).pop()!.replace(/\.md$/, '');
       const body = name.includes('setup') ? '# Setup\nInstall with `curl -fsSL https://example.com/install.sh | sh`.' : `# ${name}\nImported from ${text}.`;
       return add(kind === 'rule' ? 'rule' : 'skill', name, body, { kind: 'folder', location: text, gitRef: null, commit: null });
+    },
+    /** Skills → Add skill → Bot library (`skill_manager_add_library`): imports the chosen skills from a source,
+     * kind `folder` for a local folder and `skills` otherwise; an item already here from elsewhere is left alone. */
+    importSkills(source: string, skills: readonly { name: string; description: string }[]) {
+      const kind = source.startsWith('/') ? 'folder' as const : 'skills' as const;
+      const result: { imported: { id: string; name: string }[]; failures: { skill: string; reason: string }[] } = { imported: [], failures: [] };
+      for (const skill of skills) {
+        const taken = entries.get(slug(skill.name))?.item;
+        if (taken && taken.source.location !== source) { result.failures.push({ skill: skill.name, reason: `${taken.id} is already in the library from ${taken.source.location}.` }); continue; }
+        const item = add('skill', skill.name, `# ${skill.name}\n${skill.description || `Added from ${source}.`}`, { kind, location: source, gitRef: null, commit: null });
+        result.imported.push({ id: item.id, name: item.name });
+      }
+      return result;
     },
     importGithub(repo: unknown, path: unknown, gitRef: unknown, kind: unknown) {
       const name = String(repo ?? '').trim();
@@ -189,6 +119,18 @@ export function createPreviewSkills() {
       entry.item = { ...entry.item, activations: entry.item.activations.filter(a => a !== previous) };
       return { items: list(), kept };
     },
+    /** `skills_deactivate_all`: undoes every activation, the legacy ones too; an edited copy stays (`kept`). */
+    deactivateAll(id: unknown) {
+      const entry = find(id);
+      const kept = entry.item.activations.flatMap(a => {
+        const k = key(entry.item.id, a.harness, a.scope);
+        const edited = a.surface !== 'prompt' && disk.has(k) && disk.get(k) !== a.sha256;
+        if (!edited) disk.delete(k);
+        return edited ? [cell(entry, a.harness, a.scope).surface] : [];
+      });
+      entry.item = { ...entry.item, activations: [] };
+      return { items: list(), kept };
+    },
     scan(id: unknown) { return find(id).item.findings; },
     remove(id: unknown) {
       const entry = find(id);
@@ -203,7 +145,8 @@ export function createPreviewSkills() {
       const harnesses = [...FILES, ...[...PROMPT].filter(h => used.has(h))].map(harness => ({
         harness, installed: FILES.includes(harness), prompt: PROMPT.has(harness),
         cells: scopes.flatMap(scope => all.map(entry => cell(entry, harness, scope))),
-        unmanaged: harness === 'claude' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.claude/skills/pdf-tools', detail: 'Not in the library.' }] : [],
+        // Native reports skills found on disk too; Rules & library lists only the rules (skills live in Settings → Tools → Skills).
+        unmanaged: harness === 'claude' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.claude/skills/pdf-tools', detail: 'Not in the library.' }, { scope: 'user' as const, kind: 'rule' as const, path: '~/.claude/rules/house-style.md', detail: 'Not in the library.' }] : [],
       }));
       return { project: projectId ? PROJECT_ROOT : null, harnesses };
     },
@@ -216,14 +159,9 @@ export function createPreviewSkills() {
         case 'skills_activate': return this.activate(args.id, args.harness, args.scope, args.projectId, args.acknowledge);
         case 'skills_deactivate': return this.deactivate(args.id, args.harness, args.scope);
         case 'skills_matrix': return this.matrix(args.projectId);
+        case 'skills_deactivate_all': return this.deactivateAll(args.id);
         case 'skills_scan': return this.scan(args.id);
         case 'skills_remove': return this.remove(args.id);
-        case 'skills_catalogs': return catalogs();
-        case 'skills_catalog_add': return addCatalog(args.repo, args.gitRef);
-        case 'skills_catalog_refresh': { failIfAsked(); const source = findSource(args.repo); if (source.state === 'ignored') throw new Error(`${source.repo} is ignored. Stop ignoring it to refresh.`); upsert({ ...scanned(source.repo, source.origin, source.gitRef), state: source.state }); return catalogs(); }
-        case 'skills_catalog_state': { const source = findSource(args.repo); upsert({ ...source, state: args.state }); return catalogs(); }
-        case 'skills_catalog_import': return importCatalog(args.repo, args.paths);
-        case 'skills_discover': return discover();
         default: throw new Error(`Unknown preview command: ${command}`);
       }
     },
