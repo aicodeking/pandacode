@@ -209,8 +209,9 @@ pub(super) fn saved_name(device: &cpal::Device) -> Option<String> {
     }
 }
 
-/// Input devices by name; the id is the name (what preferences store).
-pub(super) fn devices() -> Vec<MicDevice> {
+/// Input devices by name; the id is the name (what preferences store). `saved` is the stored
+/// choice, which Linux lists even when it is a raw PCM id it would otherwise hide.
+pub(super) fn devices(saved: Option<&str>) -> Vec<MicDevice> {
     let host = cpal::default_host();
     let default = host.default_input_device().and_then(|d| saved_name(&d));
     let ids: Vec<String> = host
@@ -218,7 +219,7 @@ pub(super) fn devices() -> Vec<MicDevice> {
         .map(|list| list.filter_map(|d| saved_name(&d)).collect())
         .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
-    listed_names(ids)
+    listed_names(ids, saved)
         .into_iter()
         .filter(|name| seen.insert(name.clone()))
         .map(|name| MicDevice {
@@ -244,12 +245,12 @@ pub(super) fn input_device(name: Option<&str>) -> Result<cpal::Device> {
 }
 
 #[cfg(target_os = "linux")]
-fn listed_names(ids: Vec<String>) -> Vec<String> {
-    alsa_picker_names(&ids, &alsa_cards())
+fn listed_names(ids: Vec<String>, saved: Option<&str>) -> Vec<String> {
+    alsa_picker_names(&ids, &alsa_cards(), saved)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn listed_names(ids: Vec<String>) -> Vec<String> {
+fn listed_names(ids: Vec<String>, _saved: Option<&str>) -> Vec<String> {
     ids
 }
 
@@ -332,10 +333,11 @@ fn alsa_card_pcm(card: &AlsaCard, ids: &[Option<String>]) -> Option<usize> {
 }
 
 /// The Linux picker: the builtins 0.16 listed, then each card with a capture PCM by its 0.16 card
-/// name, then every raw PCM id 0.3.109 listed, so a choice saved by either version shows as
-/// connected. Duplicates are dropped by the caller.
+/// name, then the raw PCM id `saved` names when it is listed (a 0.3.109 choice still shows as
+/// connected). Other raw ids (`hw:…`, `dsnoop:…`, `null`) are hidden, except without procfs, where
+/// no card names are known and every raw id lists as in 0.3.109. Duplicates are dropped by the caller.
 #[cfg(any(test, target_os = "linux"))]
-pub(super) fn alsa_picker_names(ids: &[String], cards: &[AlsaCard]) -> Vec<String> {
+pub(super) fn alsa_picker_names(ids: &[String], cards: &[AlsaCard], saved: Option<&str>) -> Vec<String> {
     let listed: Vec<Option<String>> = ids.iter().cloned().map(Some).collect();
     let builtins = ALSA_BUILTINS.iter().filter(|b| ids.iter().any(|id| id == *b)).map(|b| (*b).to_owned());
     let mut sorted_cards: Vec<&AlsaCard> = cards.iter().collect();
@@ -344,7 +346,11 @@ pub(super) fn alsa_picker_names(ids: &[String], cards: &[AlsaCard]) -> Vec<Strin
         .into_iter()
         .filter(|card| alsa_card_pcm(card, &listed).is_some())
         .map(|card| card.name.clone());
-    let raw = ids.iter().filter(|id| !ALSA_BUILTINS.contains(&id.as_str())).cloned();
+    let raw = ids
+        .iter()
+        .filter(|id| !ALSA_BUILTINS.contains(&id.as_str()))
+        .filter(|id| cards.is_empty() || saved == Some(id.as_str()))
+        .cloned();
     builtins.chain(card_names).chain(raw).collect()
 }
 

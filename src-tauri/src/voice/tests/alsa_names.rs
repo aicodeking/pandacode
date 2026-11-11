@@ -64,13 +64,31 @@ fn proc_cards_give_index_id_and_the_name_cpal_016_stored() {
 }
 
 #[test]
-fn picker_lists_builtins_then_card_names_then_every_raw_id() {
-    let names = alsa_picker_names(&listed(), &cards());
+fn picker_lists_builtins_then_card_names_and_hides_unsaved_raw_ids() {
     // HDA NVidia has no capture PCM by index, so 0.16 (which opened its plughw:1 for capture) left
-    // it out too; its duplex-hinted plughw still lists raw, as in 0.3.109.
-    assert_eq!(names[..5], ["default", "pipewire", "pulse", "HDA Intel PCH", "Blue Snowball"]);
-    let raw: Vec<String> = listed().into_iter().filter(|id| !["default", "pipewire", "pulse"].contains(&id.as_str())).collect();
-    assert_eq!(names[5..], raw[..]);
+    // it out too.
+    let expected = ["default", "pipewire", "pulse", "HDA Intel PCH", "Blue Snowball"];
+    assert_eq!(alsa_picker_names(&listed(), &cards(), None), expected);
+    // A saved card name or builtin adds nothing; an unlisted saved id is not invented.
+    for saved in ["HDA Intel PCH", "pulse", "plughw:CARD=9,DEV=0"] {
+        assert_eq!(alsa_picker_names(&listed(), &cards(), Some(saved)), expected);
+    }
+}
+
+#[test]
+fn picker_lists_the_raw_id_0_3_109_saved_so_it_shows_as_connected() {
+    let names = alsa_picker_names(&listed(), &cards(), Some("dsnoop:CARD=PCH,DEV=0"));
+    assert_eq!(names, ["default", "pipewire", "pulse", "HDA Intel PCH", "Blue Snowball", "dsnoop:CARD=PCH,DEV=0"]);
+}
+
+#[test]
+fn without_procfs_the_picker_lists_every_raw_id_as_0_3_109_did() {
+    let ids = listed();
+    let names = alsa_picker_names(&ids, &[], None);
+    assert_eq!(names[..3], ["default", "pipewire", "pulse"]);
+    let raw: Vec<String> = ids.iter().filter(|id| !["default", "pipewire", "pulse"].contains(&id.as_str())).cloned().collect();
+    assert_eq!(names[3..], raw[..]);
+    assert_eq!(alsa_picker_names(&ids, &[], Some("hw:CARD=0,DEV=0")), names);
 }
 
 #[test]
@@ -90,7 +108,6 @@ fn ids_saved_by_0_3_109_and_builtins_resolve_exactly() {
     // Without procfs card names are unknown, but raw ids still resolve.
     assert_eq!(resolved("hw:CARD=PCH,DEV=0", &ids, &[]).as_deref(), Some("hw:CARD=PCH,DEV=0"));
     assert_eq!(resolved("HDA Intel PCH", &ids, &[]), None);
-    assert_eq!(alsa_picker_names(&ids, &[]).len(), ids.len());
 }
 
 #[test]
@@ -104,7 +121,7 @@ fn without_device_0_a_card_falls_back_to_its_most_compatible_capture_pcm() {
     // card is not listed and recording uses the default, as 0.16 did for a card it could not open.
     let hints: Vec<String> = ["hw:CARD=PCH,DEV=0", "sysdefault:CARD=PCH", "plughw:CARD=PCH,DEV=0", "front:CARD=PCH,DEV=0"].map(String::from).to_vec();
     assert_eq!(resolved("HDA Intel PCH", &hints, &cards), None);
-    assert!(!alsa_picker_names(&hints, &cards).contains(&"HDA Intel PCH".to_owned()));
+    assert!(!alsa_picker_names(&hints, &cards, None).contains(&"HDA Intel PCH".to_owned()));
     // Another card's PCMs and malformed ids never match.
     let other: Vec<String> = ["plughw:CARD=2,DEV=0", "plughw:CARD=0", "plughw:CARD=x,DEV=0", "plughw"].map(String::from).to_vec();
     assert_eq!(resolved("HDA Intel PCH", &other, &cards), None);
@@ -117,5 +134,5 @@ fn two_cards_with_one_name_resolve_to_the_lowest_index_like_016() {
     assert_eq!(resolved("Blue Snowball", &ids, &twins).as_deref(), Some("plughw:CARD=2,DEV=0"));
     assert_eq!(resolved("Blue Snowball", &ids[..1], &twins).as_deref(), Some("plughw:CARD=3,DEV=0"));
     // Both cards list under one name, as in 0.16; the caller drops the duplicate.
-    assert_eq!(alsa_picker_names(&ids, &twins)[..2], ["Blue Snowball", "Blue Snowball"]);
+    assert_eq!(alsa_picker_names(&ids, &twins, None)[..], ["Blue Snowball", "Blue Snowball"]);
 }

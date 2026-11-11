@@ -119,7 +119,7 @@ fn open_no_follow(path: &Path) -> std::io::Result<fs::File> {
     #[cfg(not(unix))]
     {
         if fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, NOT_REGULAR));
+            return Err(std::io::Error::other(NOT_REGULAR));
         }
         fs::File::open(path)
     }

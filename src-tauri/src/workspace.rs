@@ -580,7 +580,7 @@ pub fn refuse_untrusted_programs_for(root: &Path, trust: Trust, action: &str) ->
 /// Refuse a phone's commit, push, merge or worktree while hooks are skipped when the checkout
 /// has submodules (`.gitmodules`, or a `modules` folder in its Git directory): each carries
 /// its own config, which the top-level allowlist cannot vouch for.
-#[cfg_attr(not(test), allow(dead_code))] // kept for tests; callers use the *_for variants
+#[allow(dead_code)] // kept for tests (some Unix-only); callers use the *_for variants
 pub fn refuse_submodules(root: &Path) -> Result<(), String> {
     refuse_submodules_for(root, "change it")
 }
@@ -1539,7 +1539,9 @@ fn index_sources(gate: &Gate, root: &Path, paths: &[String], codes: &[&str]) -> 
     let fields: Vec<String> = output.bytes.split(|byte| *byte == 0).map(|field| String::from_utf8_lossy(field).into_owned()).collect();
     // `-z --name-status`: `R100\0old\0new\0` per record.
     Ok(fields
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter(|record| codes.iter().any(|code| record[0].starts_with(code)) && named.contains(record[2].as_str()))
         .fold(Vec::new(), |sources, record| with_sources(sources, vec![record[1].clone()])))
 }
@@ -4197,6 +4199,7 @@ mod tests {
     }
 
     /// Runs `body` with `vars` added to every Git call `run_git_with` makes on this thread.
+    #[cfg_attr(not(unix), allow(dead_code))] // used by the Unix-only lazy-fetch tests
     fn with_test_env<T>(vars: &[(&str, &str)], body: impl FnOnce() -> T) -> T {
         TEST_ENV.with(|env| *env.borrow_mut() = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
         let result = body();
@@ -4208,6 +4211,7 @@ mod tests {
     const NO_GLOBAL: [(&str, &str); 2] = [("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1")];
 
     /// A setup Git command with no user or system config.
+    #[cfg_attr(not(unix), allow(dead_code))] // used by the Unix-only lazy-fetch tests
     fn plain_git(dir: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .arg("-C")
@@ -4226,6 +4230,7 @@ mod tests {
     }
 
     /// Commits `name` in `dir` and returns the commit id.
+    #[cfg_attr(not(unix), allow(dead_code))] // used by the Unix-only lazy-fetch tests
     fn commit_file(dir: &Path, name: &str, text: &str) -> String {
         fs::write(dir.join(name), text).unwrap();
         plain_git(dir, &["add", "--", name]);
@@ -4234,6 +4239,7 @@ mod tests {
     }
 
     /// Deletes a loose object, as a partial clone that never fetched it would lack it.
+    #[cfg_attr(not(unix), allow(dead_code))] // used by the Unix-only lazy-fetch tests
     fn drop_object(dir: &Path, id: &str) {
         let common = plain_git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
         fs::remove_file(Path::new(&common).join("objects").join(&id[..2]).join(&id[2..])).unwrap();
@@ -4241,6 +4247,7 @@ mod tests {
 
     /// Makes the checkout a partial clone of an ssh remote whose `core.sshCommand` (local
     /// config) touches `marker`: any lazy fetch of a missing object would run it.
+    #[cfg_attr(not(unix), allow(dead_code))] // used by the Unix-only lazy-fetch tests
     fn promisor_with_ssh_marker(dir: &Path, marker: &Path) {
         plain_git(dir, &["config", "core.repositoryFormatVersion", "1"]);
         plain_git(dir, &["config", "remote.origin.url", "ssh://example.invalid/never.git"]);
@@ -4290,6 +4297,7 @@ mod tests {
 
     /// A worktree with a tracked file under a clean filter (local config) that touches `marker`,
     /// its file rewritten unchanged so the next status has to run the filter to compare it.
+    #[cfg_attr(not(unix), allow(dead_code))] // used by the Unix-only lazy-fetch tests
     fn filtered_worktree(f: &Fixture, marker: &Path, branch: &str) -> Worktree {
         fs::write(f.root.join(".gitattributes"), "*.txt filter=x\n").unwrap();
         plain_git(&f.root, &["add", ".gitattributes"]);
