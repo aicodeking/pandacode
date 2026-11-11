@@ -536,6 +536,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   const onContextChanged = (listener: () => void) => { extensionContextListeners.add(listener); return () => { extensionContextListeners.delete(listener); }; };
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
+  // These exact business handlers also serve the existing delegated controls and shortcuts.
+  (await import('./extensions/catalog-host')).registerCoreCommands({
+    'panda.ui/toggle-sidebar': () => toggleSidebar(),
+    'panda.ui/open-settings': () => showSettings(),
+    'panda.ui/toggle-theme': () => toggleTheme(),
+  });
   await (await import('./extensions/manager')).loadExtensions();
 }).catch(() => undefined);
 // Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.
