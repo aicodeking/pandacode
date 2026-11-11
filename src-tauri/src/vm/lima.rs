@@ -338,7 +338,10 @@ fn create_arguments(image: &Image, name: &str) -> Vec<String> {
 /// The share as a yq assignment. JSON strings are valid yq literals, so any path survives;
 /// Lima expands `{{…}}` in a location, which could point a mount anywhere else. The type is
 /// always 9p: Lima's fallback, reverse-sshfs, serves SFTP unjailed to the shared folder, so
-/// root in the guest could read the whole host.
+/// root in the guest could read the whole host. The cache is `mmap`: Lima's default for a
+/// read-only mount, `fscache`, is a loose cache that keeps serving a file's old contents after
+/// the host changes it, while `none` would refuse to mmap files (shared libraries, builds).
+/// Every start rewrites the mounts, so a VM made before this gets it on its next start.
 fn mounts(share: Option<&Path>) -> Result<String, String> {
     let Some(path) = share else { return Ok(".mounts=[]".into()) };
     let location = path.to_str().ok_or("This folder's name cannot be shared.")?;
@@ -349,7 +352,7 @@ fn mounts(share: Option<&Path>) -> Result<String, String> {
     if location.contains(',') || location.chars().any(char::is_control) {
         return Err("A folder with a comma or a control character in its path cannot be shared. Rename it or copy the files in.".into());
     }
-    let mount = serde_json::json!([{ "location": location, "mountPoint": MOUNT_POINT, "writable": false }]);
+    let mount = serde_json::json!([{ "location": location, "mountPoint": MOUNT_POINT, "writable": false, "9p": { "cache": "mmap" } }]);
     Ok(format!(".mountType=\"9p\" | .mounts={mount}"))
 }
 fn edit_arguments(name: &str, share: Option<&Path>) -> Result<Vec<String>, String> {
@@ -438,7 +441,7 @@ mod tests {
     use super::*;
 
     /// Recorded from `limactl list --json` (Lima 2.2.1), trimmed to what is read plus neighbours.
-    const LISTED: &str = r#"{"name":"pc","hostname":"lima-pc","status":"Running","dir":"/data/lima/pc","vmType":"qemu","arch":"x86_64","cpus":2,"memory":2147483648,"disk":107374182400,"sshLocalPort":40413,"config":{"vmType":"qemu","mounts":[{"location":"/home/me/app","mountPoint":"/mnt/project","writable":false,"9p":{"securityModel":"none"}}],"mountType":"9p"}}
+    const LISTED: &str = r#"{"name":"pc","hostname":"lima-pc","status":"Running","dir":"/data/lima/pc","vmType":"qemu","arch":"x86_64","cpus":2,"memory":2147483648,"disk":107374182400,"sshLocalPort":40413,"config":{"vmType":"qemu","mounts":[{"location":"/home/me/app","mountPoint":"/mnt/project","writable":false,"9p":{"securityModel":"none","protocolVersion":"9p2000.L","msize":"128KiB","cache":"mmap"}}],"mountType":"9p"}}
 {"name":"t1","hostname":"lima-t1","status":"Stopped","dir":"/data/lima/t1","vmType":"qemu","arch":"x86_64","cpus":4,"memory":4294967296,"disk":107374182400,"config":{"mounts":[],"mountTypesUnsupported":["9p"]}}
 "#;
 
@@ -475,7 +478,7 @@ mod tests {
         let shared = mounts(Some(Path::new("/p/it's a \"dir\" $x"))).unwrap();
         let json = shared.strip_prefix(".mountType=\"9p\" | .mounts=").unwrap();
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
-        assert_eq!(value, serde_json::json!([{ "location": "/p/it's a \"dir\" $x", "mountPoint": "/mnt/project", "writable": false }]));
+        assert_eq!(value, serde_json::json!([{ "location": "/p/it's a \"dir\" $x", "mountPoint": "/mnt/project", "writable": false, "9p": { "cache": "mmap" } }]));
         assert!(mounts(Some(Path::new("/p/{{.Home}}"))).is_err());
         // A comma would add QEMU -virtfs options: the last `path=` wins.
         for path in ["/p/x,path=/home/u/.ssh", "/p/a,b", "/p/line\nbreak", "/p/tab\there", "/p/\u{7f}"] {
@@ -489,6 +492,9 @@ mod tests {
         let shared = [Mount { location: "/p/app".into() }];
         assert!(same_share(&[], None) && same_share(&shared, Some(Path::new("/p/app"))));
         assert!(!same_share(&shared, None) && !same_share(&[], Some(Path::new("/p/app"))) && !same_share(&shared, Some(Path::new("/p/other"))));
+        // Lima lists the mount with its 9p settings, which `Mount` ignores.
+        let listed = &parse_list(LISTED).unwrap()[0].config.mounts;
+        assert!(same_share(listed, Some(Path::new("/home/me/app"))));
     }
     #[test]
     fn exec_carries_any_script_as_base64_and_bounds_it_in_the_guest() {
@@ -678,6 +684,48 @@ mod tests {
         assert_eq!(run("test -e /mnt/project/hello.txt; echo $?").stdout, "1\n");
         vms.delete(name).unwrap();
         let _ = fs::remove_dir_all(&share);
+    }
+    /// Host edits show in the share at once: `cargo test --lib -- --ignored vm::lima::tests::live_share --nocapture`.
+    /// `PANDACODE_VM` names the VM (default `pc-cachefix`); it is deleted at the end.
+    #[test]
+    #[ignore]
+    fn live_share_shows_host_edits_at_once() {
+        use crate::vm::Vms;
+        let name = std::env::var("PANDACODE_VM").unwrap_or_else(|_| "pc-cachefix".into());
+        let name = name.as_str();
+        let run = |script: &str| Lima.exec(name, false, script, Duration::from_secs(60)).unwrap();
+        let share = std::env::temp_dir().join(format!("pandacode-share-{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(&share).unwrap();
+        fs::write(share.join("a.txt"), "v0").unwrap();
+        let vms = Vms::default();
+        let _ = vms.delete(name);
+        vms.create("ubuntu", name).unwrap();
+        // A VM made before the fix carries Lima's default, fscache; the next start replaces it.
+        let old = serde_json::json!([{ "location": share.to_str().unwrap(), "mountPoint": MOUNT_POINT, "writable": false }]);
+        output(&["edit".into(), "--tty=false".into(), format!("--set=.mountType=\"9p\" | .mounts={old}"), name.into()], QUICK).unwrap();
+        vms.start(name, Some(&share)).unwrap();
+        let mount = run("mount | grep /mnt/project").stdout;
+        println!("{mount}");
+        // The kernel prints the mode as its bitmask: mmap is 0b101.
+        assert!(mount.contains("cache=0x5") && mount.contains("(ro,"), "{mount}");
+        let mut seen = vec![run("cat /mnt/project/a.txt").stdout];
+        for round in 1..=4 {
+            // In place, keeping the inode (and the size, which a stale cache would hide best).
+            fs::write(share.join("a.txt"), format!("w{round}")).unwrap();
+            seen.push(run("cat /mnt/project/a.txt").stdout);
+            // Replaced by rename, the way editors save.
+            fs::write(share.join(".a.txt.tmp"), format!("r{round} longer")).unwrap();
+            fs::rename(share.join(".a.txt.tmp"), share.join("a.txt")).unwrap();
+            seen.push(run("cat /mnt/project/a.txt").stdout);
+        }
+        // An open, mmapped reader sees the edit too, and mmap itself works (python's mmap module).
+        fs::write(share.join("a.txt"), "mapped").unwrap();
+        seen.push(run("python3 -c 'import mmap;f=open(\"/mnt/project/a.txt\",\"rb\");print(mmap.mmap(f.fileno(),0,prot=mmap.PROT_READ)[:].decode(),end=\"\")'").stdout);
+        println!("{seen:?}");
+        vms.delete(name).unwrap();
+        let _ = fs::remove_dir_all(&share);
+        let expected = ["v0", "w1", "r1 longer", "w2", "r2 longer", "w3", "r3 longer", "w4", "r4 longer", "mapped"];
+        assert_eq!(seen, expected);
     }
     /// The review's checks on a VM of its own: `cargo test --lib -- --ignored vm::lima::tests::live_review --nocapture`.
     #[test]

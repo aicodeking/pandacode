@@ -103,8 +103,9 @@ A Lima VM sees none of your files unless you share a project: no home folder, SS
 keys, proxy settings or port forwards, and it runs as user `agent` with the time
 zone set to UTC. A shared project is mounted read-only at `/mnt/project` over 9p
 (Ubuntu and Fedora; Debian's image has no 9p, and PandaCode never uses Lima's sshfs
-mounts, which would expose the whole host to root in the guest). A folder whose
-path holds a comma, a control character or `{{` cannot be shared.
+mounts, which would expose the whole host to root in the guest), with `cache=mmap`
+so edits on your computer show in the guest at once. A folder whose path holds a
+comma, a control character or `{{` cannot be shared.
 
 The guest's network is not isolated from yours. QEMU's user-mode network lets it
 reach anything your computer can: your LAN, a VPN you are connected to, and
