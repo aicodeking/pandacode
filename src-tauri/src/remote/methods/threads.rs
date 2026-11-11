@@ -420,6 +420,8 @@ impl Run for SetStage {
             // A stage change calls `orchestrate::retry`, which can wake this task's agent to
             // report settled machine threads: a full task needs the switch, as for a prompt.
             allow_task_mode(&task.mode, None, ctx.full_access)?;
+            // A woken lead dispatches workers, which run in full access.
+            super::allow_remote_team_for(&ctx.state(), &self.session_id, ctx.full_access).await?;
             let task = crate::set_task_stage(ctx.app.clone(), ctx.state(), self.session_id, self.stage).await?;
             changed(ctx.app);
             Ok(goal_reply(&task))

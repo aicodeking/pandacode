@@ -262,6 +262,37 @@ fn save_pending_request(
 /// Whether a run is a team worker's: its team admission says so when there is one, otherwise
 /// (a re-attached cloud run) the session's own worker row does. The run's agent and its sink
 /// both use this one answer, so a worker's requests never wait on a person on any launch path.
+/// What a run keeps outside its registry entry: its `worker_approvals` run state, its decline
+/// reasons and (for a team worker) its launch prompt. Dropped before the run settles (an early
+/// return, a cloud run left re-attachable at shutdown, a panic), it forgets all three, so no
+/// path out of the run task can leak them.
+struct RunLeftovers {
+    run_id: String,
+    session_id: String,
+    settled: bool,
+}
+
+impl RunLeftovers {
+    /// The run settles: `settle_run` takes its run state and the team's `completed` its launch
+    /// prompt; no decline reason can be claimed once the run has ended.
+    fn settle(&mut self, stopped: bool) -> worker_approvals::Settled {
+        self.settled = true;
+        let settled = worker_approvals::settle_run(&self.run_id, stopped);
+        providers::forget_decline_reasons(&self.session_id);
+        settled
+    }
+}
+
+impl Drop for RunLeftovers {
+    fn drop(&mut self) {
+        if !self.settled {
+            worker_approvals::forget_run(&self.run_id);
+            architect::forget_launch(&self.session_id);
+            providers::forget_decline_reasons(&self.session_id);
+        }
+    }
+}
+
 fn worker_launch(store: &Store, team: Option<&architect::Admission>, session_id: &str) -> Result<bool> {
     match team {
         Some(_) => Ok(worker_approvals::is_worker_launch(team, session_id)),
@@ -830,16 +861,16 @@ async fn create_session(
     model: String,
     mode: Option<String>,
     draft: Option<bool>,
+    team: Option<bool>,
 ) -> Result<Session> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let task = architect::profiles::create_user_task(
-        &store,
-        &project_id,
-        &provider,
-        &model,
-        mode.as_deref(),
-        None,
-    )?;
+    // `team: false` (a /btw side thread) skips the saved default team.
+    let create = if team.unwrap_or(true) {
+        architect::profiles::create_user_task
+    } else {
+        architect::profiles::create_task_without_team
+    };
+    let task = create(&store, &project_id, &provider, &model, mode.as_deref(), None)?;
     if draft.unwrap_or(false) {
         store.mark_draft(&task.id)
     } else {
@@ -1802,10 +1833,12 @@ fn prepare_task_run_in_project(
         goal: admission.goal,
         codex_settings: session.codex_settings,
     };
+    // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
+    let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
     architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
     let mut agent = RunningAgent::new(tx, stopped.clone());
     agent.team_maintenance = team_maintenance;
-    agent.team_worker = worker_launch(&store, admission.team.as_ref(), &session_id)?;
+    agent.team_worker = team_worker;
     let agent_is_worker = agent.team_worker;
     let run_id = agent.run_id.clone();
     let pending_approvals = agent.approvals.clone();
@@ -2232,6 +2265,8 @@ async fn launch_operation_admitted(
         let team_sink = team.clone();
         // The run's own ID for its end, after the sink takes `run_id`.
         let settle_id = run_id.clone();
+        // Whatever ends this task before the run settles forgets what was kept for the run.
+        let mut leftovers = RunLeftovers { run_id: run_id.clone(), session_id: session_id.clone(), settled: false };
         let own_run = worker_approvals::Run {
             id: run_id.clone(),
             input: own_input.clone(),
@@ -2450,10 +2485,7 @@ async fn launch_operation_admitted(
             if let Ok(mut registry) = agents.lock() {
                 registry.remove(&session_id);
             }
-            // This run's own entries, whichever run the registry held.
-            worker_approvals::forget_run(&settle_id);
-            architect::forget_launch(&session_id);
-            providers::forget_decline_reasons(&session_id);
+            // This run's own entries, whichever run the registry held, go with `leftovers`.
             return;
         }
         if let Ok(mut slot) = goal_reply.lock() {
@@ -2501,9 +2533,6 @@ async fn launch_operation_admitted(
                 if let Ok(mut registry) = agents.lock() {
                     registry.remove(&session_id);
                 }
-                worker_approvals::forget_run(&settle_id);
-                architect::forget_launch(&session_id);
-                providers::forget_decline_reasons(&session_id);
                 return;
             }
         }
@@ -2516,9 +2545,7 @@ async fn launch_operation_admitted(
         if loop_took_stop.load(Ordering::SeqCst) {
             worker_approvals::stop_taken(&settle_id);
         }
-        let mut settled = worker_approvals::settle_run(&settle_id, stopped.load(Ordering::SeqCst));
-        // No decline reason can be claimed once the run has ended.
-        providers::forget_decline_reasons(&session_id);
+        let mut settled = leftovers.settle(stopped.load(Ordering::SeqCst));
         // The team stopped this worker itself (without a stop through its agent, or before the
         // automatic one): every client then reads it as stopped, as the team does.
         if settled.reason.is_some() && store.lock().ok().is_some_and(|db| architect::stopped_by_team(&db, team.as_ref(), &session_id)) {

@@ -7,7 +7,7 @@
 //! `send`, which the phone sends with `task.send`, so the host expands skills and native
 //! commands as it does for the desktop. App controls come back as `action` for the phone to
 //! map onto its own screens.
-use super::{allow_task_mode, drivable_session_from, drivable_task, id_param, local_session_from, local_task, workspace_session_from, name_param, text_param, Access, Ctx, Method, Reply, Run, PAGE_BUDGET};
+use super::{allow_remote_team, allow_remote_team_for, allow_task_mode, drivable_session_from, drivable_task, id_param, local_session_from, local_task, workspace_session_from, name_param, text_param, Access, Ctx, Method, Reply, Run, PAGE_BUDGET};
 use crate::{message_queue, slash_commands, AppState, Result};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -399,7 +399,8 @@ impl BtwAsk {
             let last = page.messages.iter().rev().find(|m| m.id > 0 && (m.role == "user" || m.role == "assistant")).ok_or("Send a first message in this task before asking on the side.")?;
             return Ok((crate::conversation_fork::at_message(&store, &main.id, last.id)?, true));
         }
-        let side = crate::architect::profiles::create_user_task(&store, &main.project_id, &main.provider, &main.model, Some(&main.mode), None)?;
+        // A side thread never gets the saved default team, as on the desktop.
+        let side = crate::architect::profiles::create_task_without_team(&store, &main.project_id, &main.provider, &main.model, Some(&main.mode), None)?;
         Ok((side, true))
     }
 
@@ -539,14 +540,16 @@ async fn on_queue(ctx: Ctx<'_>, session_id: String, changes: bool, work: impl Fn
 
 /// Whether a phone's queue edit may start the task's next turn (a headless host's drain): the
 /// device must be allowed to send to it, as `task.send` checks, so a bot's thread needs a Full
-/// device and the bot's mode rule, and a Full-access thread needs the switch.
+/// device and the bot's mode rule, and a Full-access thread or a team lead needs the switch.
 fn may_drain(store: &crate::storage::Store, session_id: &str, device_full: bool, full_access: bool) -> bool {
-    drivable_session_from(store, session_id, device_full, full_access).is_ok_and(|task| allow_task_mode(&task.mode, None, full_access).is_ok())
+    drivable_session_from(store, session_id, device_full, full_access).is_ok_and(|task| queue_edit_allowed(store, &task, full_access).is_ok())
 }
 
-/// Rewriting a queued message is a prompt for the task's own mode.
-fn queue_edit_allowed(mode: &str, full_access: bool) -> Result<()> {
-    allow_task_mode(mode, None, full_access)
+/// Rewriting a queued message is a prompt: the task's own mode rule, and a team lead (whose
+/// workers run in full access) needs the switch.
+fn queue_edit_allowed(store: &crate::storage::Store, task: &crate::storage::Session, full_access: bool) -> Result<()> {
+    allow_task_mode(&task.mode, None, full_access)?;
+    allow_remote_team(store, &task.id, full_access)
 }
 
 /// An entry of this task's queue, so one task's grant never edits another's.
@@ -589,7 +592,7 @@ impl Run for QueueUpdate {
         Box::pin(on_queue(ctx, session_id, true, move |store| {
             // The rewritten text is what the agent will run, so it follows the rule for prompts
             // (and a bot's thread needs a Full device and the bot's mode rule).
-            queue_edit_allowed(&drivable_session_from(store, &session, device_full, full_access)?.mode, full_access)?;
+            queue_edit_allowed(store, &drivable_session_from(store, &session, device_full, full_access)?, full_access)?;
             // The phone edits the text only; attachments stay as the desktop queued them.
             let entry = queued_in(store, &session, &id)?;
             message_queue::update(store, &id, &text, &entry.attachments).map(|_| ())
@@ -888,6 +891,8 @@ impl Run for ResumeAtReset {
             let task = if self.on { drivable_task(ctx.app, ctx.from, &self.session_id, ctx.full_access).await? } else { local_task(&state, &self.session_id).await? };
             if self.on {
                 allow_task_mode(&task.mode, None, ctx.full_access)?;
+                // A resumed lead dispatches workers, which run in full access.
+                allow_remote_team_for(&state, &self.session_id, ctx.full_access).await?;
             }
             let task = state.store.lock().map_err(|e| e.to_string())?.set_resume_at_reset(&self.session_id, self.on)?;
             let _ = ctx.app.emit("sessions-changed", ());
@@ -912,6 +917,8 @@ impl Run for ClearLimit {
             let state = ctx.state();
             let task = drivable_task(ctx.app, ctx.from, &self.session_id, ctx.full_access).await?;
             allow_task_mode(&task.mode, None, ctx.full_access)?;
+            // Waking a held lead dispatches workers, which run in full access.
+            allow_remote_team_for(&state, &self.session_id, ctx.full_access).await?;
             state.store.lock().map_err(|e| e.to_string())?.clear_limited(&self.session_id)?;
             crate::architect::wake(ctx.app.clone());
             let _ = ctx.app.emit("sessions-changed", ());
@@ -1158,10 +1165,43 @@ mod tests {
 
     #[test]
     fn full_mode_side_threads_and_queue_edits_need_full_access() {
+        let (store, full_task, _) = queue_store();
+        let full = store.session(&full_task).unwrap();
+        let project = store.projects().unwrap().remove(0);
+        let plain = store.create_session(&project.id, "codex", "m", "auto").unwrap();
         assert!(allow_task_mode("full", None, false).is_err());
-        assert!(queue_edit_allowed("full", false).is_err());
-        assert!(queue_edit_allowed("full", true).is_ok());
-        assert!(queue_edit_allowed("auto", false).is_ok());
+        assert!(queue_edit_allowed(&store, &full, false).is_err());
+        assert!(queue_edit_allowed(&store, &full, true).is_ok());
+        assert!(queue_edit_allowed(&store, &plain, false).is_ok());
+    }
+
+    /// A team lead's queue (an Ask lead too) is neither rewritten nor drained by a phone
+    /// without the switch: the prompt would let the lead dispatch full-access workers.
+    #[test]
+    fn a_team_leads_queue_needs_the_switch() {
+        let (store, _, _) = queue_store();
+        let project = store.projects().unwrap().remove(0);
+        let lead = store.create_session(&project.id, "codex", "m", "ask").unwrap();
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead.id]).unwrap();
+        assert_eq!(queue_edit_allowed(&store, &lead, false).unwrap_err(), super::super::TEAM_NEEDS_FULL_ACCESS);
+        assert!(queue_edit_allowed(&store, &lead, true).is_ok());
+        assert!(!may_drain(&store, &lead.id, false, false));
+        assert!(may_drain(&store, &lead.id, false, true));
+    }
+
+    /// `btw.ask` makes a side thread without the saved default team; `usage.*` resumes check the gate.
+    #[test]
+    fn side_threads_get_no_team_and_usage_resumes_check_the_team_gate() {
+        let source = include_str!("composer.rs");
+        let side = &source[source.find("fn side(&self, state: &AppState)").unwrap()..];
+        let side = &side[..side.find("\n    }\n").unwrap()];
+        assert!(side.contains("create_task_without_team(") && !side.contains("create_user_task("));
+        for start in ["impl Run for ResumeAtReset", "impl Run for ClearLimit"] {
+            let body = &source[source.find(start).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            let gate = body.find("allow_remote_team_for(").unwrap_or_else(|| panic!("{start}"));
+            assert!(gate < body.find(".lock()").unwrap(), "{start}: the gate comes before the change");
+        }
     }
 
     #[test]

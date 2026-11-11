@@ -614,7 +614,7 @@ fn cap_mode(call: Call, full_access: bool) -> Result<Call> {
     const SAFE: &str = "ask";
     if full_access {
         return Ok(match call {
-            Call::Start(start) => Call::Start(start::Start { full_access: Some(true), ..start }),
+            Call::Start(start) => Call::Start(start::Start { team: true, full_access: Some(true), ..start }),
             other => other,
         });
     }
@@ -5228,6 +5228,32 @@ mod tests {
         assert!(super::super::methods::SWITCH_METHODS.contains(&"team.start"), "hello lists team.start as needing the switch");
         let projects = include_str!("methods/projects.rs");
         assert!(projects.contains("mode.as_deref(), full_access)?"), "chat.start applies the default team only with the switch");
+        // A start's default team is off unless a caller that saw the switch turns it on.
+        assert!(after(include_str!("start.rs"), "pub(crate) fn parse(", "\n}\n").contains("team: false,"), "start::parse fails closed");
+        assert!(after(host, "fn cap_mode(", "\n}\n").contains("team: true, full_access: Some(true)"), "task.start with the switch");
+        let github = include_str!("methods/github.rs");
+        assert!(after(github, "async fn solve_issue(", "\n}\n").contains("start.team = full_access;"), "github.startTask");
+        let composer = include_str!("methods/composer.rs");
+        assert!(after(composer, "fn side(&self, state: &AppState)", "\n    }\n").contains("create_task_without_team("), "btw.ask");
+        assert!(after(composer, "fn queue_edit_allowed(", "\n}\n").contains("allow_remote_team(store, &task.id, full_access)"), "queue.update");
+        assert!(after(composer, "fn may_drain(", "\n}\n").contains("queue_edit_allowed(store, &task, full_access)"), "queue drain");
+        assert!(after(composer, "impl Run for QueueUpdate", "\n}\n").contains("queue_edit_allowed(store, "), "queue.update");
+        for run in ["impl Run for ResumeAtReset", "impl Run for ClearLimit"] {
+            assert!(after(composer, run, "\n}\n").contains(gate), "{run}");
+        }
+        let threads = include_str!("methods/threads.rs");
+        assert!(after(threads, "impl Run for SetStage", "\n}\n").contains(gate), "thread.setStage");
+    }
+
+    #[test]
+    fn only_a_start_that_saw_the_switch_gets_the_default_team() {
+        let params = json!({"projectId": "p1", "prompt": "Fix it.", "provider": "codex", "model": "default"});
+        let Call::Start(parsed) = parse(true, "task.start", &params).unwrap() else { panic!("not a start") };
+        assert!(!parsed.team, "parse alone never applies the default team");
+        for full_access in [false, true] {
+            let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
+            assert_eq!(start.team, full_access);
+        }
     }
 
     #[test]

@@ -263,9 +263,13 @@ that leads an agent team (one with a team configured, active or not) is also ref
 `task.send`, `task.steer` and `task.teamResume`, whatever the lead's own mode, with `Team workers
 run with full access; allow full access for remote tasks to drive a team remotely.`: team workers
 always run with full access ([architect-workers.md](architect-workers.md)). The same sentence
-refuses `recipes.run` on a team lead, a `schedules.create`/`update`, `runNow` or enable that
-targets one, and every `team.start` (listed in `fullAccessSwitch`); `chat.start` makes its chat
-without the saved default team. This prevents
+refuses `recipes.run` on a team lead, a `queue.update` of a lead's queued prompt (and a headless
+host's queue drain into one), `usage.clearLimit` and `usage.resumeAtReset {on: true}` on a lead,
+`thread.setStage` on a lead (it can wake the lead), a `schedules.create`/`update`, `runNow` or enable that
+targets one, and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
+`github.startTask` make their task without the saved default team (`start::parse` leaves `team`
+off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved
+default team, with or without the switch, as on the desktop. This prevents
 accidents; it is not a boundary against a device that can also answer approvals.
 Shells sit beyond any task's mode, so while it is off `terminal.list`, `terminal.open`,
 `terminal.read`, `terminal.write` (a shell's scrollback holds whatever was typed or printed),
@@ -1164,16 +1168,16 @@ paged replies take `offset` and answer `next`.
 | `thread.fork` | control | O | `sessionId, messageId, before?` |
 | `thread.export` | view | RO | `sessionId, offset?, token?` → `{ text, offset, next, total, token, version }`. Offset 0 snapshots the Markdown and answers a `token` (per device and task, 10 min); later pages pass it back and read that snapshot; an unknown or expired token is refused (`This export changed or expired. Export again.`). Without a token (older phones) each page rebuilds and `version` (a hash) shows a change. |
 | `thread.goal` / `thread.setGoal` | view / control | RO / O | `sessionId` / `sessionId, description` |
-| `thread.setStage` | control | O | `sessionId, stage` (a known task stage) |
+| `thread.setStage` | control | O | `sessionId, stage` (a known task stage). On a team lead it needs Full access for remote tasks. |
 | `slash.list` | view | RO | `sessionId, force?` → `{ commands, warnings, truncated }`; `force` (re-scan the harness) needs control |
 | `slash.resolve` | control | B | `sessionId, text`. Waits in the background lane up to 30 s (Round 20). Refused for a bot's thread. |
-| `btw.ask` | control | B | `sessionId, text, sideId?, seenId?` → `{ sideId, title, seenId, created }`. Reuses `sideId` only if this host linked it to the task, it is in the same project and not archived; otherwise makes a new side thread (a fork at the last message for a worktree task, else a new task with the task's provider, model and mode, which must pass the Full-access rule). Refused for bot conversations and while the side thread is still answering; a side thread made by a failed ask is deleted. |
+| `btw.ask` | control | B | `sessionId, text, sideId?, seenId?` → `{ sideId, title, seenId, created }`. Reuses `sideId` only if this host linked it to the task, it is in the same project and not archived; otherwise makes a new side thread (a fork at the last message for a worktree task, else a new task with the task's provider, model and mode, which must pass the Full-access rule, and never the saved default team). Refused for bot conversations and while the side thread is still answering; a side thread made by a failed ask is deleted. |
 | `queue.list` | view | RO | `sessionId` |
-| `queue.update` / `queue.remove` / `queue.reorder` | control | O | `sessionId, id, text` / `sessionId, id` / `sessionId, ids` |
+| `queue.update` / `queue.remove` / `queue.reorder` | control | O | `sessionId, id, text` / `sessionId, id` / `sessionId, ids`. `queue.update` on a team lead needs Full access for remote tasks. |
 | `queue.restore` | control | O | `sessionId, id`. Puts back the exact entry (text, attachments) a `queue.remove` took out in the last 60 s, at its old index; at most 8 held per task. Idempotent; no mode check (it only restores what was queued). Refused once the task has a newer user message or the hold expired: `This message can no longer be put back.` Delivery is checked before the idempotency check, so an entry that was restored and later sent reports that it can't be put back. The demo host does the same. |
 | `usage.get` | view | RO | `sessionId?, refresh?` (token ledger) |
 | `usage.limits` | view | RO | `provider, refresh?`; `refresh` (asks the provider) needs control |
-| `usage.resumeAtReset` / `usage.clearLimit` | control | O | `sessionId, on` / `sessionId` |
+| `usage.resumeAtReset` / `usage.clearLimit` | control | O | `sessionId, on` / `sessionId`. Resuming (`on: true`) or clearing a team lead's limit needs Full access for remote tasks. |
 | `git.status` / `git.branches` / `worktree.status` | view | RO | `sessionId`. Staged renames and copies carry `origPath`. |
 | `git.stage` | control | O | `sessionId, paths \| all, unstage?` → `{ count, skipped? }` for `all`. Named paths: up to 5,000; `all`: up to 50,000 files, folder and submodule rows skipped and counted, run over pathspec chunks. Refused while a background git call holds the checkout (`Another git change is still running on this checkout.`). `unstage` of a staged rename or copy is `origPath`-aware: unstaging its `path` also restores its `origPath` in the index, so the old name does not stay staged as a deletion. |
 | `git.discard` | control | O | `sessionId, paths, skipFolders?` (1–500 files) → `{ count, skipped? }`. With `skipFolders` (Discard all) folder and submodule rows are left out and counted in `skipped`; without it a named folder is refused. Git runs over 8 KiB pathspec chunks. Restores tracked files from HEAD and deletes only the untracked files it names; discarding a rename's new path also restores the old one; refused while any agent works in the checkout or another git change holds it; `allow_task_mode`; change gate; idempotent. |
@@ -1191,7 +1195,7 @@ paged replies take `offset` and answer `next`.
 | `github.item` | view | RO | `projectId, kind: issue\|pull\|run, number \| runId` |
 | `github.search` | view | RO | `projectId, query` |
 | `github.comment` | full | B | `projectId, kind?: issue\|pull, number, body, sendId?` |
-| `github.startTask` | full | S | `projectId, issueNumber, provider, model, worktree?, mode?, effort?, startId` (titled `Fix #N: …`). `startId` is required (`Missing startId.`), so a retry after a lost reply never starts a second task. |
+| `github.startTask` | full | S | `projectId, issueNumber, provider, model, worktree?, mode?, effort?, startId` (titled `Fix #N: …`). Without Full access for remote tasks the task gets no saved default team. `startId` is required (`Missing startId.`), so a retry after a lost reply never starts a second task. |
 | `schedules.list` / `schedules.runs` | view | RO | `sessionId?` / `sessionId?, scheduleId?, limit?` |
 | `schedules.runNow` | control | B | `scheduleId, sendId?` (sends under the thread's send lock) |
 | `schedules.setEnabled` / `schedules.snooze` | control | O | `scheduleId, enabled` / `scheduleId, minutes` (1 min–7 days) |

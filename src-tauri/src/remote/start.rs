@@ -91,8 +91,8 @@ pub(crate) struct Start {
     pub effort: Option<String>,
     /// Images the viewer sent with `image.put` for the first prompt.
     pub image_ids: Vec<String>,
-    /// Whether the saved default team may be applied. Off when the host has no "Full access for
-    /// remote tasks": a team's workers always run in full access, so the start makes a plain task.
+    /// Whether the saved default team may be applied. Off unless the caller saw "Full access for
+    /// remote tasks" (`parse` leaves it off): a team's workers always run in full access.
     pub team: bool,
     /// Whether the caller may use "Full access for remote tasks", which decides the
     /// [`workspace::Trust`] of every Git call the start makes. `None` (a parsed `task.start`)
@@ -130,7 +130,8 @@ pub(crate) fn parse(params: &Value) -> Result<Start> {
         mode: name_param(params, "mode")?,
         effort: name_param(params, "effort")?,
         image_ids: super::images::ids_param(params)?,
-        team: true,
+        // Fail closed: only a caller that checked the switch turns the default team on.
+        team: false,
         full_access: None,
     })
 }
