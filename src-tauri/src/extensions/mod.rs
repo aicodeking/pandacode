@@ -1,2 +1,3 @@
-//! Versioned extension data contracts. No activation, grants, IPC or execution.
+//! Declarative extensions: bounded packages and host-owned presentation only.
 pub mod contracts;
+pub mod packages;

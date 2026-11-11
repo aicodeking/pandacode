@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
   "revision": "979b7d4e3c073e9bebf74f70bf80440a27564237",
-  "phase": "M0 inventory; no extension adapter implemented",
+  "phase": "M1 header contribution adapter; legacy rows still have no hide/order/replace adapter",
+  "implementedAdapters": [{ "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute"], "scope": "main-window declarative showMessage buttons; no built-in customization", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" }],
   "format": {
     "members": "[local ID, renderer owner, literal source anchor, contextual objects, optional window override] inherits its family metadata; stable ID is family ID + '.' + local ID",
     "sourceInventory": "[owner, action IDs, modal call count, menu call count]. Each action expands to panda.inventory.<owner stem>.<action>; transient calls are additionally guarded by counts and named in dialogs/menus below. These are audit identities, not a public registration API.",
     "coverage": "References are inspected assertions, not executed baseline passes. missing entries are characterization work, never protected exceptions. All inherited gaps resolve with the concrete member ID/owner/context.",
-    "operations": "allowedOperations describes today's third-party operations (none). plannedOperations is the target, not implemented support. Hiding never authorizes cancelling a task or destroying host state."
+    "operations": "allowedOperations on legacy inventory rows stays empty until their customization adapters exist; implementedAdapters separately records delivered contribution adapters and their exact scope. plannedOperations is the target, not implemented support. Hiding never authorizes cancelling a task or destroying host state."
   },
   "defaults": {
     "window": "main",
@@ -117,6 +118,7 @@
       ["tools", "src/settings-sections.ts", "id: 'tools'", "MCP, add-ons and capability cache"],
       ["skills", "src/settings-sections.ts", "id: 'skills'", "harness/project skill scope"],
       ["rules", "src/settings-sections.ts", "id: 'rules'", "rules/library import and scope"],
+      ["extensions", "src/settings-sections.ts", "id: 'extensions'", "unsigned local install, explicit enable/disable and protected safe-mode recovery"],
       ["cloud", "src/settings-sections.ts", "id: 'cloud'", "explicit cloud connections and inherited environment opt-in"],
       ["remote", "src/settings-sections.ts", "id: 'remote'", "pairing/revocation and diagnostics; protected consent"],
       ["github", "src/settings-sections.ts", "id: 'github'", "opt-in sign-in; no token exposure"],

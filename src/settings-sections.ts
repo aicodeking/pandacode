@@ -1,6 +1,6 @@
 /** Settings' map, kept apart from settings.ts so the command palette can list pages without loading the page. */
 
-export type SettingsPage = 'recommended' | 'general' | 'appearance' | 'voice' | 'agents' | 'providers' | 'teams' | 'routing' | 'schedules' | 'tools' | 'skills' | 'rules' | 'cloud' | 'remote' | 'github' | 'about';
+export type SettingsPage = 'recommended' | 'general' | 'appearance' | 'voice' | 'agents' | 'providers' | 'teams' | 'routing' | 'schedules' | 'tools' | 'skills' | 'rules' | 'extensions' | 'cloud' | 'remote' | 'github' | 'about';
 /** A page id, or a section id that lands on the section's first page. */
 export type SettingsSection = SettingsPage | 'connections';
 
@@ -16,5 +16,6 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; pages
   { id: 'schedules', label: 'Schedules', icon: 'clock', pages: [{ id: 'schedules', label: 'Schedules', keywords: 'wake up wake-up timer timed message cron' }] },
   { id: 'tools', label: 'Tools', icon: 'terminal', pages: [{ id: 'tools', label: 'Add-ons', keywords: 'mcp integrations capabilities cache tools' }, { id: 'skills', label: 'Skills', keywords: 'skill installed agents project' }, { id: 'rules', label: 'Rules & library', keywords: 'rule library agents.md claude.md import bot library' }] },
   { id: 'connections', label: 'Connections', icon: 'globe', pages: [{ id: 'cloud', label: 'Cloud sandboxes', keywords: 'daytona docker podman aws ec2 agentcore cloudflare digitalocean vultr hetzner runpod vps vercel railway gcloud deploy cloud machine' }, { id: 'remote', label: 'Remote access', keywords: 'connect pandacode connect phone mobile iphone android remote control pair' }, { id: 'github', label: 'GitHub', keywords: 'gh token pull request issues' }] },
+  { id: 'extensions', label: 'Extensions', icon: 'info', pages: [{ id: 'extensions', label: 'Extensions', keywords: 'local declarative package install enable disable safe mode recovery' }] },
   { id: 'about', label: 'About', icon: 'info', pages: [{ id: 'about', label: 'About', keywords: 'updates update version license privacy' }] },
 ];

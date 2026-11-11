@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { fileIconId, fileIconUrl } from '../src/file-icons.ts';
+import { createServer } from 'vite';
 
 test('files and folders get the Material Icon Theme icon VS Code would show', () => {
   for (const [name, isDir, expected] of [
@@ -37,4 +38,15 @@ test('README files take their extension icon, never the info circle that reads a
   assert.equal(fileIconId('README.md', false), 'markdown');
   assert.equal(fileIconId('readme.md', false, true), 'markdown');
   assert.equal(fileIconId('README', false), 'file');
+});
+
+test('development resolves file icons without eagerly importing the entire asset library', async () => {
+  const server = await createServer({ server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true, include: [] } });
+  try {
+    const transformed = await server.transformRequest('/src/file-icons.ts');
+    assert.ok(transformed);
+    assert.match(transformed.code, /new URL\(\s*\/\* @vite-ignore \*\//);
+    assert.equal((transformed.code.match(/icons\/[^"'`\s]+\?import/g) ?? []).length, 0);
+    assert.ok(transformed.code.includes('../node_modules/material-icon-theme/icons/${file}'));
+  } finally { await server.close(); }
 });

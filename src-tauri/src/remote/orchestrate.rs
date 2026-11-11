@@ -791,7 +791,10 @@ pub(super) fn recover_wakes(store: &Store, running: &std::collections::HashSet<S
     }
     // An answer already unread here (its wake was refused while the task was busy, say).
     for session in links::answered_sessions() {
-        if !running.contains(&session) && !woken.contains(&session) {
+        // Answers outlive requests in memory. A deleted task (or another Store in a
+        // concurrent test) is not a recovery target in this database.
+        let exists: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [&session], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if exists && !running.contains(&session) && !woken.contains(&session) {
             woken.push(session);
         }
     }

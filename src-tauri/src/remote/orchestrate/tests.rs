@@ -626,13 +626,22 @@ fn startup_gives_back_wakes_cut_off_by_a_quit() {
 
 #[test]
 fn an_unread_answer_in_memory_is_delivered_by_recovery() {
-    let (store, _, _) = store();
-    let session = format!("task-{}", uuid::Uuid::new_v4());
+    let (store, _, session) = store();
     assert!(links::restore_answer(&session, "The user answered.".into()));
     assert!(recover_wakes(&store, &Default::default()).unwrap().contains(&session));
     let running: std::collections::HashSet<String> = [session.clone()].into();
     assert!(!recover_wakes(&store, &running).unwrap().contains(&session), "not while it runs");
     links::take_answer(&session);
+}
+
+#[test]
+fn recovery_does_not_wake_an_answer_without_a_task_in_its_store() {
+    let (store, _, _) = store();
+    let absent = format!("task-{}", uuid::Uuid::new_v4());
+    assert!(links::restore_answer(&absent, "An answer whose task is no longer here.".into()));
+    assert!(!recover_wakes(&store, &Default::default()).unwrap().contains(&absent));
+    assert!(links::has_answer(&absent), "recovery must not consume another store's answer");
+    links::take_answer(&absent);
 }
 
 #[test]

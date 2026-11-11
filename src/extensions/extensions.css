@@ -1,0 +1,3 @@
+.extension-header-actions { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
+.extension-header-actions[hidden] { display: none; }
+.extension-header-actions button { -webkit-app-region: no-drag; }

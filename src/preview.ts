@@ -1464,6 +1464,7 @@ async function previewVoice(command: string, args: Record<string, any>): Promise
 }
 
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (command.startsWith('extensions_')) return (await import('./extensions/preview')).previewExtensions(command, args) as T;
   // Opt-in synthetic baseline instrumentation also works in a production preview build.
   // No live/native session or executable is involved; normal preview behavior is unchanged.
   if (new URLSearchParams(location.search).has('extensions-baseline')) {

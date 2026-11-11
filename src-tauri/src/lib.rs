@@ -3965,6 +3965,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
     secret_store::setup(&dir);
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
@@ -4186,6 +4187,10 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                extensions::packages::extensions_snapshot,
+                extensions::packages::extensions_install,
+                extensions::packages::extensions_enable,
+                extensions::packages::extensions_safe_mode,
                 voice::voice_configuration,
                 voice::voice_save_profile,
                 voice::voice_select_profile,

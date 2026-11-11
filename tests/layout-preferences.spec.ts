@@ -66,6 +66,20 @@ async function openInspector(page: Page): Promise<void> {
   await expect(inspectorSeparator(page)).toBeVisible();
 }
 
+test('layout preferences load the requested file icons without a development asset-module waterfall', async ({ page }) => {
+  const assetModules: string[] = [];
+  page.on('request', request => {
+    if (/material-icon-theme\/icons\/.*[?&]import(?:&|$)/.test(request.url())) assetModules.push(request.url());
+  });
+  await open(page);
+  await openInspectorTab(page, 'tab-files');
+  await page.locator('#inspector [data-action="tab-files"]').click();
+  const icons = page.locator('#inspector img.file-type-icon');
+  await expect(icons.first()).toBeVisible();
+  await expect.poll(() => icons.evaluateAll(nodes => nodes.every(node => (node as HTMLImageElement).complete && (node as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  expect(assetModules).toEqual([]);
+});
+
 async function dragInspector(page: Page, targetWidth: number): Promise<void> {
   const handle = (await inspectorSeparator(page).boundingBox())!;
   const width = await inspectorWidth(page);

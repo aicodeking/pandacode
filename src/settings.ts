@@ -27,6 +27,7 @@ import type { AgentsDockPreferences } from './agents-dock';
 import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-sections';
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
+import { mountExtensionSettings } from './extensions/settings';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -141,6 +142,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
     case 'recommended': return '<div id="recommended-settings"></div>';
+    case 'extensions': return '<div id="extension-settings"></div>';
     case 'voice': return '<div id="voice-settings"></div>';
     case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
@@ -308,6 +310,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(() => recommended?.dispose());
     }
     if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
+    if (id === 'extensions') cleanups.push(mountExtensionSettings(panel.querySelector<HTMLElement>('#extension-settings')!));
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
