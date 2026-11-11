@@ -34,6 +34,7 @@ export async function subscribe(name: 'agent-event', callback: (event: AgentEven
 export async function subscribe(name: 'terminal-event', callback: (event: TerminalEvent) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-state', callback: (event: BrowserStatus) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
+export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
   if (preview) return (await import('./preview')).listen(name, callback);
   return (await import('@tauri-apps/api/event')).listen(name, event => callback(event.payload));

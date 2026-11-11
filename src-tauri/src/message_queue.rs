@@ -125,15 +125,64 @@ pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result
 
 /// Removes and returns an entry for delivery, so it can only ever be sent once.
 pub(crate) fn take(store: &Store, id: &str) -> Result<QueuedMessage> {
+    let entry = withdraw(store, id)?;
+    count_delivery(&entry.session_id, true);
+    Ok(entry)
+}
+
+/// Removes and returns an entry without counting a queue delivery: a sender that queued an
+/// entry and takes it straight back to send it itself (the run ended in between) is a direct
+/// send, not the queue moving on.
+pub(crate) fn withdraw(store: &Store, id: &str) -> Result<QueuedMessage> {
     let entry = get(store, id)?;
     remove(store, id)?;
     Ok(entry)
 }
 
+/// Round 22: removes an entry that left the queue for a run or on someone else's behalf (the
+/// desktop's steer took it into the running turn, a shared channel stopped its assignment, an
+/// agent removed it) and counts it like [`take`], so a phone's queue Undo held from before is
+/// refused rather than putting an entry back into a queue that moved on. An entry already gone
+/// is no error and counts nothing, as [`remove`]. The delete is one statement, so a racing
+/// [`take`] and this never both count.
+pub(crate) fn remove_delivered(store: &Store, id: &str) -> Result<()> {
+    let session: Option<String> = store.db.query_row("DELETE FROM queued_messages WHERE id=?1 RETURNING session_id", [id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if let Some(session) = session {
+        count_delivery(&session, true);
+    }
+    Ok(())
+}
+
+/// How many entries each task's queue has handed out for delivery since launch. Only
+/// [`take`] and [`remove_delivered`] move it up and [`restore`] (a failed delivery) back down, so a prompt sent
+/// straight to the task never does; PandaConnect's queue Undo compares it to refuse putting
+/// an entry back once the queue moved on.
+static DELIVERIES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> = std::sync::LazyLock::new(Default::default);
+
+fn count_delivery(session_id: &str, delivered: bool) {
+    // A poisoned lock still holds a usable map.
+    let mut counts = DELIVERIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count = counts.entry(session_id.to_owned()).or_default();
+    *count = if delivered { count.saturating_add(1) } else { count.saturating_sub(1) };
+}
+
+/// The number of entries [`take`] has delivered from the task's queue since launch.
+pub(crate) fn deliveries(session_id: &str) -> u64 {
+    DELIVERIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).copied().unwrap_or(0)
+}
+
 /// Puts a taken entry back at the front of its queue after a failed delivery, keeping
 /// its id, text, attachments and creation time. The queue limit does not apply: the
-/// entry already held its place.
+/// entry already held its place. The [`take`] it undoes no longer counts as a delivery.
 pub(crate) fn restore(store: &Store, entry: &QueuedMessage) -> Result<QueuedMessage> {
+    let restored = reinsert(store, entry)?;
+    count_delivery(&entry.session_id, false);
+    Ok(restored)
+}
+
+/// Puts a removed (never taken) entry back at the front of its queue, as [`restore`] does,
+/// without touching the delivery count: PandaConnect's queue Undo.
+pub(crate) fn reinsert(store: &Store, entry: &QueuedMessage) -> Result<QueuedMessage> {
     store.session(&entry.session_id)?;
     let encoded = validate(&entry.text, &entry.attachments)?;
     store
@@ -168,6 +217,14 @@ pub async fn queue_update(state: State<'_, AppState>, id: String, text: String, 
 pub async fn queue_remove(state: State<'_, AppState>, id: String) -> Result<()> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     remove(&store, &id)
+}
+
+/// The desktop composer's steer of a queued entry: once the running turn took it, the entry
+/// leaves the queue as a delivery ([`remove_delivered`]); otherwise like `queue_remove`.
+#[tauri::command]
+pub async fn queue_take_steered(state: State<'_, AppState>, id: String) -> Result<()> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    remove_delivered(&store, &id)
 }
 
 #[tauri::command]
@@ -253,9 +310,12 @@ mod tests {
         assert!(reorder(&store, &task, std::slice::from_ref(&first.id)).is_err(), "a partial order is refused");
         let edited = update(&store, &second.id, "second, edited", &json!([])).unwrap();
         assert_eq!(edited.attachments, json!([]));
+        assert_eq!(deliveries(&task), 0);
         let taken = take(&store, &third.id).unwrap();
         assert_eq!(taken.text, "third");
+        assert_eq!(deliveries(&task), 1, "a delivery is counted for its task");
         assert!(take(&store, &third.id).is_err(), "an entry is delivered once");
+        assert_eq!(deliveries(&task), 1, "a failed take is not a delivery");
         assert_eq!(list(&store, None).unwrap().len(), 2);
         // A new message goes to the end even after reordering.
         assert_eq!(add(&store, &task, "fourth", &json!([])).unwrap().position, 3);
@@ -279,6 +339,68 @@ mod tests {
         restore(&store, &taken).unwrap();
         assert_eq!(list(&store, Some(&task)).unwrap().iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["first", "third", "second"]);
         assert_eq!(add(&store, &task, "fourth", &json!([])).unwrap().position, 2);
+    }
+
+    /// Round 21: only real deliveries move the count queue Undo compares. A failed launch's
+    /// restore undoes its take, a sender taking back its own just-queued entry (the run ended
+    /// in between) counts nothing, and an Undo's reinsert leaves the count alone.
+    #[test]
+    fn only_real_deliveries_are_counted() {
+        let (store, task) = store();
+        let first = add(&store, &task, "first", &json!([])).unwrap();
+        let taken = take(&store, &first.id).unwrap();
+        assert_eq!(deliveries(&task), 1);
+        restore(&store, &taken).unwrap();
+        assert_eq!(deliveries(&task), 0, "a failed launch is not a delivery");
+        assert!(restore(&store, &taken).is_err());
+        assert_eq!(deliveries(&task), 0, "a refused restore changes nothing");
+        let raced = add(&store, &task, "raced", &json!([])).unwrap();
+        assert_eq!(withdraw(&store, &raced.id).unwrap().text, "raced");
+        assert_eq!(deliveries(&task), 0, "taking back a just-queued entry to send it directly is not a queue delivery");
+        assert!(withdraw(&store, &raced.id).is_err(), "withdrawn once");
+        let removed = list(&store, Some(&task)).unwrap().remove(0);
+        remove(&store, &removed.id).unwrap();
+        reinsert(&store, &removed).unwrap();
+        assert_eq!(deliveries(&task), 0, "an Undo's reinsert is not a delivery either");
+        take(&store, &first.id).unwrap();
+        assert_eq!(deliveries(&task), 1);
+        // The race fallbacks never count, and the desktop's failed launch goes through restore.
+        let host = include_str!("remote/host.rs");
+        let deliver = &host[host.find("async fn deliver_prompt").unwrap()..];
+        let deliver = &deliver[..deliver.find("\n}\n").unwrap()];
+        assert!(deliver.contains("message_queue::withdraw(") && !deliver.contains("message_queue::take("));
+        let tools = include_str!("remote/methods/tools.rs");
+        assert!(!tools.contains("message_queue::take("));
+        let source = include_str!("message_queue.rs");
+        let command = &source[source.find("pub async fn queue_restore").unwrap()..];
+        assert!(command[..command.find("\n}\n").unwrap()].contains("restore(&store, &entry)"));
+        let composer = include_str!("remote/methods/composer.rs");
+        assert!(composer.contains("message_queue::reinsert(store, &held.entry)") && !composer.contains("message_queue::restore("));
+    }
+
+    /// Round 22: a steered entry (the desktop's `queue_take_steered`), a stopped channel
+    /// assignment and an agent's removal leave the queue as deliveries; a plain remove does not.
+    #[test]
+    fn steered_and_other_takes_count_as_deliveries() {
+        let (store, task) = store();
+        let first = add(&store, &task, "first", &json!([])).unwrap();
+        let second = add(&store, &task, "second", &json!([])).unwrap();
+        remove_delivered(&store, &first.id).unwrap();
+        assert_eq!(deliveries(&task), 1);
+        assert_eq!(list(&store, Some(&task)).unwrap().iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), [second.id.as_str()]);
+        remove_delivered(&store, &first.id).expect("already gone is fine, as remove");
+        assert_eq!(deliveries(&task), 1, "and counts nothing");
+        remove(&store, &second.id).unwrap();
+        assert_eq!(deliveries(&task), 1, "a user's own remove is not a delivery");
+        let main = include_str!("../../src/main.ts");
+        let steer = &main[main.find("async function steerQueued(").unwrap()..];
+        let steer = &steer[..steer.find("\n}\n").unwrap()];
+        assert!(steer.contains("call('queue_take_steered', { id })") && !steer.contains("'queue_remove'"), "the desktop steer counts");
+        assert!(include_str!("lib.rs").contains("message_queue::queue_take_steered,"));
+        let channels = include_str!("bots/shared_channels.rs");
+        assert!(channels.contains("message_queue::remove_delivered(&store,&queued.id)") && !channels.contains("message_queue::remove(&store"));
+        let tools = include_str!("agent_tools.rs");
+        assert!(tools.contains("crate::message_queue::remove_delivered(&store, &id)?;") && !tools.contains("crate::message_queue::remove(&store"));
     }
 
     #[test]

@@ -28,13 +28,15 @@ function useStyle(): MarkdownStyle {
 }
 
 /** A row's extra item for the selection menu of all Markdown inside it: the transcript's "Copy reply". */
-export const MarkdownMenuContext = createContext<{ text: string; icon?: string; onPress: () => void } | null>(null);
+export interface MarkdownMenuItem { text: string; icon?: string; onPress: () => void }
+/** The selection menu's own item, plus any after it (a reply's Fork from here). */
+export const MarkdownMenuContext = createContext<(MarkdownMenuItem & { more?: readonly MarkdownMenuItem[] }) | null>(null);
 
 /** Markdown text with its workspace images drawn as thumbnails. */
 export const Body = memo(function Body({ text, streaming }: { text: string; streaming?: boolean }) {
   const style = useStyle();
   const menu = use(MarkdownMenuContext);
-  const menuItems = useMemo(() => (menu ? [{ text: menu.text, icon: menu.icon, onPress: menu.onPress }] : undefined), [menu]);
+  const menuItems = useMemo(() => (menu ? [menu, ...(menu.more ?? [])].map(item => ({ text: item.text, icon: item.icon, onPress: item.onPress })) : undefined), [menu]);
   const parts = useMemo(() => replyParts(text), [text]);
   const body = (markdown: string, key?: number) => <EnrichedMarkdownText key={key} markdown={markdown} markdownStyle={style} flavor="github" onLinkPress={open} selectable contextMenuItems={menuItems} streamingAnimation={streaming} />;
   if (parts.length === 1 && parts[0].kind === 'text') return body(parts[0].text);

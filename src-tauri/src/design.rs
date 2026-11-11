@@ -104,24 +104,63 @@ fn design_dir(root: &Path, create: bool) -> Result<Option<PathBuf>> {
     Ok(Some(dir))
 }
 
-/// Reads a regular, non-linked file up to `limit` bytes; `None` when it is missing.
+/// Refused by `read_bounded`: a symlinked, hard-linked or non-regular design file.
+const NOT_REGULAR: &str = "Design files must be regular files, not links.";
+const HARD_LINKED: &str = "This design file is hard-linked elsewhere, so PandaCode won't open it.";
+
+/// Opens `path` without following a final symlink (`O_NOFOLLOW`; `O_NONBLOCK` so a FIFO never
+/// blocks the open). Off unix it falls back to a `symlink_metadata` check before opening.
+fn open_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        if fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, NOT_REGULAR));
+        }
+        fs::File::open(path)
+    }
+}
+
+/// Whether the open file has other hard links (which could expose a file outside the checkout).
+#[cfg(unix)]
+fn hard_linked(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.nlink() > 1
+}
+#[cfg(not(unix))]
+fn hard_linked(_meta: &fs::Metadata) -> bool {
+    false
+}
+
+/// Reads a regular, non-linked file up to `limit` bytes; `None` when it is missing. The checks
+/// run on the opened handle, so the file cannot be swapped for a link between check and read.
 fn read_bounded(path: &Path, limit: u64) -> Result<Option<String>> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
+    let file = match open_no_follow(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // ELOOP: the final component is a symlink.
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(NOT_REGULAR.into()),
+        Err(e) if e.to_string() == NOT_REGULAR => return Err(NOT_REGULAR.into()),
         Err(e) => return Err(e.to_string()),
     };
-    if !meta.is_file() { return Err("Design files must be regular files, not links.".into()); }
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() { return Err(NOT_REGULAR.into()); }
+    if hard_linked(&meta) { return Err(HARD_LINKED.into()); }
     if meta.len() > limit { return Err(format!("{} is larger than {} KiB.", path.file_name().unwrap_or_default().to_string_lossy(), limit / 1024)); }
     let mut text = String::new();
-    fs::File::open(path).map_err(|e| e.to_string())?.take(limit + 1).read_to_string(&mut text).map_err(|_| "Design files must be UTF-8 text.")?;
+    file.take(limit + 1).read_to_string(&mut text).map_err(|_| "Design files must be UTF-8 text.")?;
     if text.len() as u64 > limit { return Err("Design file grew while reading.".into()); }
     Ok(Some(text))
 }
 
 /// Replaces `path` atomically; never follows a link at the target.
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    if is_symlink(path) { return Err("Design files must be regular files, not links.".into()); }
+    if is_symlink(path) { return Err(NOT_REGULAR.into()); }
     let temp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
     fs::write(&temp, text).map_err(|e| e.to_string())?;
     fs::rename(&temp, path).map_err(|e| { let _ = fs::remove_file(&temp); e.to_string() })
@@ -369,6 +408,29 @@ mod tests {
         std::os::unix::fs::symlink(&outside.0, linked.0.join(DIR)).unwrap();
         assert!(list(&linked.0).is_err());
         assert!(write(&linked.0, "x", "x").is_err());
+    }
+
+    /// Round 15: `read` (and so `design.read` / `design.preview` from the phone) checks the
+    /// opened handle: a symlinked artboard fails the `O_NOFOLLOW` open and a hard-linked one
+    /// (say to `~/.ssh/id_rsa`) is refused by its link count.
+    #[cfg(unix)]
+    #[test]
+    fn reads_refuse_symlinked_and_hard_linked_artboards() {
+        let t = checkout();
+        let outside = checkout();
+        fs::write(outside.0.join("id_rsa"), "PRIVATE KEY").unwrap();
+        fs::create_dir_all(t.0.join(DIR)).unwrap();
+        std::os::unix::fs::symlink(outside.0.join("id_rsa"), t.0.join(DIR).join("sym.html")).unwrap();
+        fs::hard_link(outside.0.join("id_rsa"), t.0.join(DIR).join("hard.html")).unwrap();
+        assert_eq!(read(&t.0, "sym").unwrap_err(), NOT_REGULAR);
+        assert_eq!(read(&t.0, "hard").unwrap_err(), HARD_LINKED);
+        assert_eq!(read_bounded(&t.0.join(DIR).join("hard.html"), MAX_ARTBOARD).unwrap_err(), HARD_LINKED);
+        assert!(read_bounded(&t.0.join(DIR).join("missing.html"), MAX_ARTBOARD).unwrap().is_none());
+        fs::hard_link(outside.0.join("id_rsa"), t.0.join(DIR).join(COMMENTS)).unwrap();
+        assert_eq!(comments(&t.0).unwrap_err(), HARD_LINKED, "comments.json too");
+        fs::remove_file(t.0.join(DIR).join(COMMENTS)).unwrap();
+        write(&t.0, "plain", "<p>ok</p>").unwrap();
+        assert_eq!(read(&t.0, "plain").unwrap(), "<p>ok</p>");
     }
 
     #[test]

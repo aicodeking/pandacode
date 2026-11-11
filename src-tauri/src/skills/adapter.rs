@@ -10,6 +10,19 @@ use std::{
 
 use super::{sha256_hex, Kind, Scope, Written};
 
+/// The largest rule file or written skill file PandaCode reads back: twice a library item's
+/// size, so a rule file with the user's own instructions around a block still fits (Round 24).
+pub const READ_LIMIT: u64 = 2 * super::MAX_BYTES as u64;
+
+/// A rule or skill file's text, bounded and only from a regular file (a symlink to one is
+/// followed; one to `/dev/zero` or a FIFO is refused), so a project file can never run the host
+/// out of memory or block it (Round 24). A missing file is `NotFound`; anything else that is
+/// not a regular UTF-8 file of at most [`READ_LIMIT`] is content PandaCode does not manage.
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    let bytes = crate::workspace::read_regular_target(path, READ_LIMIT)?;
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 /// Harnesses with file-based skills and instruction files.
 pub const FILE_HARNESSES: &[&str] = &["claude", "codex"];
 /// Every other PandaCode harness; their skills and rules ride in the prompt.
@@ -132,7 +145,11 @@ pub fn remove_folder(written: &[Written]) -> Vec<String> {
 
 /// Add or update `id`'s block in `file`, leaving everything else in the file alone.
 pub fn write_block(file: &Path, id: &str, body: &str, previous: Option<&Written>) -> Result<Written, String> {
-    let text = fs::read_to_string(file).unwrap_or_default();
+    let text = match read_text(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err(format!("{} is not a text file PandaCode can add to.", file.display())),
+    };
     let block_text = format!("{}\n{}\n{}\n", begin(id), body.trim_matches('\n'), end(id));
     let next = match block(&text, id) {
         Some((current, range)) => {
@@ -156,7 +173,12 @@ pub fn write_block(file: &Path, id: &str, body: &str, previous: Option<&Written>
 /// Remove `id`'s block when it still matches; Ok(false) when it was edited and was left.
 pub fn remove_block(written: &Written, id: &str) -> Result<bool, String> {
     let file = Path::new(&written.path);
-    let Ok(text) = fs::read_to_string(file) else { return Ok(true) };
+    let text = match read_text(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        // Not a regular text file any more: left as it is, like an edited block.
+        Err(_) => return Ok(false),
+    };
     let Some((current, range)) = block(&text, id) else { return Ok(true) };
     if sha256_hex(current.as_bytes()) != written.sha256 {
         return Ok(false);
@@ -171,8 +193,9 @@ pub fn remove_block(written: &Written, id: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The hash of a file PandaCode wrote; None when it is missing or no longer a bounded regular file.
 pub fn file_hash(path: &Path) -> Option<String> {
-    fs::read(path).ok().map(|bytes| sha256_hex(&bytes))
+    crate::workspace::read_regular_target(path, READ_LIMIT).ok().map(|bytes| sha256_hex(&bytes))
 }
 
 /// The checkout's `info/exclude`, or None outside Git.

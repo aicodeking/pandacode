@@ -30,6 +30,18 @@ const PROGRESS_EVENT: &str = "task.progress";
 /// The error of a start the viewer cancelled (`task.cancelStart`); no `error` stage is sent for it.
 pub(crate) const CANCELLED: &str = "Start cancelled.";
 
+/// What a clone refusal names (`terminal::require_full_access_to`).
+pub(crate) const CLONE_A_REPOSITORY: &str = "clone a repository from the phone";
+
+/// Round 10: a fresh clone brings the repository's own harness config (`.claude/settings.json`
+/// hooks, `.opencode/plugin`…) that an agent started in it runs without anyone approving it,
+/// so with the host's "Full access for remote tasks" switch off a phone may not create a clone
+/// (`projects.clone`, or a `task.start` whose repository this computer has no project for).
+/// Starts in an existing project are unaffected.
+pub(crate) fn refuse_clone(trust: workspace::Trust) -> Result<()> {
+    super::methods::terminal::require_full_access_to(!trust.untrusted(), CLONE_A_REPOSITORY)
+}
+
 /// A start's cancel switch: `task.cancelStart` flips it only until the start commits to
 /// making its task; after that it is too late, and the caller links and stops the task instead.
 #[derive(Default)]
@@ -79,6 +91,10 @@ pub(crate) struct Start {
     pub effort: Option<String>,
     /// Images the viewer sent with `image.put` for the first prompt.
     pub image_ids: Vec<String>,
+    /// Whether the caller may use "Full access for remote tasks", which decides the
+    /// [`workspace::Trust`] of every Git call the start makes. `None` (a parsed `task.start`)
+    /// reads the setting when the start runs.
+    pub full_access: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +127,7 @@ pub(crate) fn parse(params: &Value) -> Result<Start> {
         mode: name_param(params, "mode")?,
         effort: name_param(params, "effort")?,
         image_ids: super::images::ids_param(params)?,
+        full_access: None,
     })
 }
 
@@ -200,15 +217,20 @@ pub(crate) fn clone_path(home: &Path, repo: &str, taken: impl Fn(&Path) -> bool)
     (1..).map(|n| parent.join(if n == 1 { name.to_owned() } else { format!("{name}-{n}") })).find(|path| !taken(path)).expect("an unused name")
 }
 
+/// A Git call on the viewer's own checkout (`remote::mirror`): the desktop's trust. A host
+/// start never calls it; its Git goes through [`git_as`] with the caller's trust.
 pub(crate) fn git(root: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(root).args(args);
-    let output = workspace::checked(workspace::run_process(command, "Git", 64 * 1024, timeout)?)?;
+    git_as(root, args, timeout, workspace::Trust::Desktop)
+}
+
+/// One Git call of a start under `trust` ([`workspace::git_change`]).
+fn git_as(root: &Path, args: &[&str], timeout: Duration, trust: workspace::Trust) -> Result<String> {
+    let output = workspace::checked(workspace::git_change(root, args, 64 * 1024, timeout, false, trust)?)?;
     Ok(String::from_utf8_lossy(&output.bytes).trim().to_owned())
 }
 
-fn on_origin(root: &Path, branch: &str) -> bool {
-    git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")], GIT).is_ok()
+fn on_origin(root: &Path, branch: &str, trust: workspace::Trust) -> bool {
+    git_as(root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")], GIT, trust).is_ok()
 }
 
 /// One `git clone --progress` line as overall clone progress: receiving is 0–80 %,
@@ -407,7 +429,8 @@ pub(crate) fn progress(app: &tauri::AppHandle, from: &str, data: &Value) {
 
 /// The project checking out `repo`, cloned into `~/PandaCode` when there is none (with an
 /// empty working tree when `lazy`), and whether it was cloned just now.
-fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: bool, cancel: &Cancel) -> Result<(Project, bool)> {
+/// An untrusted phone ([`refuse_clone`]) gets an existing project only.
+fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: bool, cancel: &Cancel, trust: workspace::Trust) -> Result<(Project, bool)> {
     let (projects, bot_projects) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         (store.projects()?, crate::bots::project_ids(&store)?)
@@ -423,6 +446,7 @@ fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: boo
             if let Some(project) = find_project(origins(projects), repo) {
                 return Ok((project, false));
             }
+            refuse_clone(trust)?;
             let home = crate::agent_usage_providers::home().ok_or("This computer has no home folder to clone into.")?;
             let destination = clone_path(&home, repo, Path::exists);
             std::fs::create_dir_all(home.join(CLONE_FOLDER)).map_err(|e| e.to_string())?;
@@ -435,14 +459,23 @@ fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: boo
 
 /// Picks the viewer's branch when origin has it, else the default branch. An existing
 /// checkout fetches first (`fetch`); a clone made a moment ago already has origin's refs.
+#[cfg(test)]
 pub(crate) fn pick_branch(root: &Path, wanted: Option<&str>, fetch: bool) -> Result<String> {
+    pick_branch_as(root, wanted, fetch, workspace::Trust::Desktop)
+}
+
+/// [`pick_branch`] under `trust`: an untrusted phone's fetch keeps only the user's own
+/// credential helper ([`workspace::git_change`] with `network`).
+fn pick_branch_as(root: &Path, wanted: Option<&str>, fetch: bool, trust: workspace::Trust) -> Result<String> {
     if fetch {
-        git(root, &["fetch", "--quiet", "origin"], FETCH).map_err(|e| format!("Could not fetch from GitHub: {e}"))?;
+        workspace::git_change(root, &["fetch", "--quiet", "origin"], 64 * 1024, FETCH, true, trust)
+            .and_then(workspace::checked)
+            .map_err(|e| format!("Could not fetch from GitHub: {e}"))?;
     }
-    if let Some(branch) = wanted.filter(|branch| on_origin(root, branch)) {
+    if let Some(branch) = wanted.filter(|branch| on_origin(root, branch, trust)) {
         return Ok(branch.to_owned());
     }
-    let head = git(root, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], GIT).unwrap_or_default();
+    let head = git_as(root, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], GIT, trust).unwrap_or_default();
     head.strip_prefix("origin/").map(str::to_owned).filter(|branch| valid_branch(branch).is_ok()).ok_or_else(|| "Could not find the repository's default branch.".into())
 }
 
@@ -464,14 +497,14 @@ pub(crate) fn in_place_refusal(host: &str, project: &str, current: &str, branch:
 
 /// Readies the main checkout for a task in place, fast-forwarded to origin when it can, or
 /// returns why it can't (busy, dirty or on another branch) without touching it.
-fn ready_in_place(root: &Path, project: &str, branch: &str, busy: bool) -> Result<Option<String>> {
-    let current = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], GIT).unwrap_or_default();
-    let dirty = !git(root, &["status", "--porcelain"], GIT)?.is_empty();
+fn ready_in_place(root: &Path, project: &str, branch: &str, busy: bool, trust: workspace::Trust) -> Result<Option<String>> {
+    let current = git_as(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], GIT, trust).unwrap_or_default();
+    let dirty = !git_as(root, &["status", "--porcelain"], GIT, trust)?.is_empty();
     if let Some(refusal) = in_place_refusal(&super::config::device_name(), project, &current, branch, dirty, busy) {
         return Ok(Some(refusal));
     }
     // A local branch that diverged keeps its own commits; the agent starts from them.
-    let _ = git(root, &["merge", "--ff-only", "--quiet", &format!("origin/{branch}")], GIT);
+    let _ = git_as(root, &["merge", "--ff-only", "--quiet", &format!("origin/{branch}")], GIT, trust);
     Ok(None)
 }
 
@@ -516,38 +549,48 @@ fn busy_in_place(state: &AppState, project_id: &str) -> Result<bool> {
 /// Puts a fresh clone's checkout on `branch`; nobody's work is there yet. A clone starts on
 /// origin's default branch at origin's commit, so that branch needs no switch and no merge,
 /// and any other is made from origin's ref.
+#[cfg(test)]
 pub(crate) fn checkout(root: &Path, branch: &str) -> Result<()> {
-    if git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], GIT).is_ok_and(|current| current == branch) {
+    checkout_as(root, branch, workspace::Trust::Desktop)
+}
+
+fn checkout_as(root: &Path, branch: &str, trust: workspace::Trust) -> Result<()> {
+    if git_as(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], GIT, trust).is_ok_and(|current| current == branch) {
         return Ok(());
     }
-    let local = git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], GIT).is_ok();
-    let switched = if local { git(root, &["switch", branch], GIT) } else { git(root, &["switch", "--track", "-c", branch, &format!("origin/{branch}")], GIT) };
+    let local = git_as(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], GIT, trust).is_ok();
+    let switched = if local { git_as(root, &["switch", branch], GIT, trust) } else { git_as(root, &["switch", "--track", "-c", branch, &format!("origin/{branch}")], GIT, trust) };
     switched.map(drop).map_err(|e| format!("Could not check out {branch}: {e}"))
 }
 
 /// Fills the working tree of a clone made with `--no-checkout` from its HEAD.
-fn restore_checkout(root: &Path) -> Result<()> {
-    git(root, &["reset", "--hard", "--quiet"], CHECKOUT).map(drop).map_err(|e| format!("Could not check out the repository: {e}"))
+fn restore_checkout(root: &Path, trust: workspace::Trust) -> Result<()> {
+    git_as(root, &["reset", "--hard", "--quiet"], CHECKOUT, trust).map(drop).map_err(|e| format!("Could not check out the repository: {e}"))
 }
 
-fn remote_worktree(root: &Path, branch: &str) -> Result<workspace::Worktree> {
+fn remote_worktree(root: &Path, branch: &str, trust: workspace::Trust) -> Result<workspace::Worktree> {
     let name = format!("pandacode/remote-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-    workspace::create_worktree_with(root, &name, Some(&format!("origin/{branch}")), false)
+    workspace::create_worktree_for(root, &name, Some(&format!("origin/{branch}")), false, trust)
 }
 
 /// A worktree for a task on a `--no-checkout` clone, made while the clone's own working tree
 /// is filled in: two separate checkouts in parallel, each with its own index, instead of one
 /// after the other. Both finish before this returns, so the project is never left empty.
+#[cfg(test)]
 pub(crate) fn worktree_while_restoring(root: &Path, branch: &str) -> Result<workspace::Worktree> {
+    worktree_while_restoring_as(root, branch, workspace::Trust::Desktop)
+}
+
+fn worktree_while_restoring_as(root: &Path, branch: &str, trust: workspace::Trust) -> Result<workspace::Worktree> {
     std::thread::scope(|scope| {
-        let main = scope.spawn(|| restore_checkout(root));
-        let made = remote_worktree(root, branch);
+        let main = scope.spawn(|| restore_checkout(root, trust));
+        let made = remote_worktree(root, branch, trust);
         let restored = main.join().unwrap_or_else(|_| Err("Could not check out the repository.".into()));
         match (made, restored) {
             (Ok(made), Ok(())) => Ok(made),
             (made, restored) => {
                 if let Ok(made) = &made {
-                    discard(root, made);
+                    discard(root, made, trust);
                 }
                 Err(restored.err().or(made.err()).unwrap_or_default())
             }
@@ -556,8 +599,8 @@ pub(crate) fn worktree_while_restoring(root: &Path, branch: &str) -> Result<work
 }
 
 /// Removes a worktree made for a start that did not go on, best effort.
-fn discard(root: &Path, made: &workspace::Worktree) {
-    let _ = workspace::remove_worktree(root, &made.path, Some(&made.branch), true);
+fn discard(root: &Path, made: &workspace::Worktree, trust: workspace::Trust) {
+    let _ = workspace::remove_worktree_for(root, &made.path, Some(&made.branch), true, trust);
 }
 
 /// The refusal for a harness `host` doesn't have, naming it as the app does when it knows it.
@@ -598,22 +641,25 @@ pub(crate) async fn run_cancellable(app: &tauri::AppHandle, from: &str, start: S
 /// The checkout a start works in once the project is found or cloned: the branch to use, the
 /// worktree made along the way (a worktree start on a fresh clone, or an in-place start whose
 /// main checkout is busy, dirty or elsewhere), and the note saying why it fell back.
-fn prepare(state: &AppState, project: &Project, cloned: bool, worktree: bool, wanted: Option<&str>, progress: &Progress, cancel: &Cancel) -> Result<Prepared> {
+/// An untrusted phone (Full access off) is refused before the first Git call when the
+/// checkout's own config could run a program ([`workspace::refuse_untrusted_programs`]).
+fn prepare(state: &AppState, project: &Project, cloned: bool, worktree: bool, wanted: Option<&str>, progress: &Progress, cancel: &Cancel, trust: workspace::Trust) -> Result<Prepared> {
     check(cancel)?;
     progress.report("preparing", None, None);
     let root = PathBuf::from(&project.path);
-    let branch = pick_branch(&root, wanted, !cloned)?;
+    workspace::refuse_untrusted_programs_for(&root, trust, "start a task")?;
+    let branch = pick_branch_as(&root, wanted, !cloned, trust)?;
     check(cancel)?;
     let made = match (worktree, cloned) {
-        (true, true) => Some(worktree_while_restoring(&root, &branch)?),
+        (true, true) => Some(worktree_while_restoring_as(&root, &branch, trust)?),
         (false, true) => {
-            checkout(&root, &branch)?;
+            checkout_as(&root, &branch, trust)?;
             None
         }
         (false, false) => {
             let reserved = reserve_in_place(&project.id, || busy_in_place(state, &project.id))?;
-            if let Some(reason) = ready_in_place(&root, &project.name, &branch, reserved.is_none())? {
-                let made = remote_worktree(&root, &branch)?;
+            if let Some(reason) = ready_in_place(&root, &project.name, &branch, reserved.is_none(), trust)? {
+                let made = remote_worktree(&root, &branch, trust)?;
                 return Ok((branch, Some(made), Some(worktree_note(&reason)), None));
             }
             return Ok((branch, None, None, reserved));
@@ -629,7 +675,7 @@ type Prepared = (String, Option<workspace::Worktree>, Option<String>, Option<Res
 
 /// A worktree made for a start, removed when dropped unless [`Made::keep`] took it: every
 /// failure, panic or cancel between making it and the task owning it cleans it up.
-struct Made(PathBuf, Option<workspace::Worktree>);
+struct Made(PathBuf, Option<workspace::Worktree>, workspace::Trust);
 
 impl Made {
     fn keep(mut self) -> Option<workspace::Worktree> {
@@ -640,15 +686,15 @@ impl Made {
 impl Drop for Made {
     fn drop(&mut self) {
         if let Some(made) = &self.1 {
-            discard(&self.0, made);
+            discard(&self.0, made, self.2);
         }
     }
 }
 
 /// Gives task `id` its worktree: `made`, or a new one on `branch`. A worktree made here or
 /// handed in is removed again if the task can't take it.
-fn attach(store: &Mutex<crate::storage::Store>, root: &Path, branch: &str, made: Option<workspace::Worktree>, id: &str) -> Result<workspace::Worktree> {
-    let made = Made(root.to_owned(), Some(made.map_or_else(|| remote_worktree(root, branch), Ok)?));
+fn attach(store: &Mutex<crate::storage::Store>, root: &Path, branch: &str, made: Option<workspace::Worktree>, id: &str, trust: workspace::Trust) -> Result<workspace::Worktree> {
+    let made = Made(root.to_owned(), Some(made.map_or_else(|| remote_worktree(root, branch, trust), Ok)?), trust);
     let checkout = made.1.as_ref().expect("just made");
     store.lock().map_err(|e| e.to_string())?.attach_worktree(id, &checkout.path, &checkout.branch)?;
     Ok(made.keep().expect("just made"))
@@ -668,24 +714,36 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
     progress.report("finding", None, None);
     // Before any clone: the images must be ones this caller just sent.
     super::images::claim(app, from, &start.image_ids)?;
+    let image_ids = start.image_ids.clone();
+    let started = start_claimed(app, from, start, progress, cancel).await;
+    // Like `task.send`, `chat.start` and `team.start`: a start that failed gives its images
+    // back, so a retry with the same `startId` finds them.
+    if started.is_err() {
+        super::images::restore(app, from, &image_ids);
+    }
+    started
+}
+
+async fn start_claimed(app: &tauri::AppHandle, from: &str, start: Start, progress: &Arc<Progress>, cancel: &Arc<Cancel>) -> Result<Value> {
     require_installed(&start.provider).await?;
     check(cancel)?;
+    let trust = workspace::Trust::phone(start.full_access.unwrap_or_else(|| super::remote(app).lock().settings.remote_full_access));
     let handle = app.clone();
     let (target, wanted, worktree, reporter, flag) = (start.target.clone(), start.branch.clone(), start.worktree, progress.clone(), cancel.clone());
     let (project, (branch, made, mut note, reserved)) = tauri::async_runtime::spawn_blocking(move || -> Result<(Project, Prepared)> {
         let state = handle.state::<AppState>();
         // A worktree start never uses the clone's own checkout, so a fresh clone defers it.
-        let (project, cloned) = project_for(&state, &target, &reporter, worktree, &flag)?;
-        let prepared = prepare(&state, &project, cloned, worktree, wanted.as_deref(), &reporter, &flag);
+        let (project, cloned) = project_for(&state, &target, &reporter, worktree, &flag, trust)?;
+        let prepared = prepare(&state, &project, cloned, worktree, wanted.as_deref(), &reporter, &flag, trust);
         if cloned && worktree && prepared.is_err() {
-            let _ = restore_checkout(Path::new(&project.path));
+            let _ = restore_checkout(Path::new(&project.path), trust);
         }
         prepared.map(|prepared| (project, prepared))
     })
     .await
     .map_err(|e| e.to_string())??;
     let root = PathBuf::from(&project.path);
-    let made = Made(root.clone(), made);
+    let made = Made(root.clone(), made, trust);
     // From here the task is made, so a cancel arriving now is answered "too late".
     cancel.commit()?;
     let state = app.state::<AppState>();
@@ -701,7 +759,7 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
         let store = state.store.clone();
         let id = task.id.clone();
         let made = made.keep();
-        let attached = tauri::async_runtime::spawn_blocking(move || attach(&store, &root, &branch, made, &id)).await.map_err(|e| e.to_string()).and_then(|attached| attached);
+        let attached = tauri::async_runtime::spawn_blocking(move || attach(&store, &root, &branch, made, &id, trust)).await.map_err(|e| e.to_string()).and_then(|attached| attached);
         if let Err(error) = attached {
             let _ = crate::task_deletion::delete_state(&state, &task.id);
             return Err(error);
@@ -710,18 +768,51 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
     progress.report("starting", None, note.as_deref());
     // The caller mirrors the task from its first event.
     super::host::follow(app, from, &task.id);
-    crate::send_message(app.clone(), state, task.id.clone(), start.prompt, Some(start.image_ids), None).await?;
+    let sent = crate::send_message(app.clone(), state, task.id.clone(), start.prompt, Some(start.image_ids), None).await;
     use tauri::Emitter;
     let _ = app.emit("sessions-changed", ());
+    if let Err(error) = sent {
+        return Ok(made_but_not_sent(&task.id, error));
+    }
     Ok(match note {
         Some(note) => json!({"sessionId": task.id, "worktree": true, "note": note}),
         None => json!({"sessionId": task.id}),
     })
 }
 
+/// Round 11: the reply of a start whose task (or chat) was made but whose first message did
+/// not go. The start is remembered (`startStatus` reports it done) with the `sessionId`, so
+/// the phone opens the task it made, holding the prompt to retry, instead of an orphan it
+/// can't find; `error` says why the message did not go.
+pub(crate) fn made_but_not_sent(session_id: &str, error: String) -> Value {
+    json!({"sessionId": session_id, "sent": false, "error": error})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_made_task_whose_message_failed_still_answers_with_its_session() {
+        let reply = made_but_not_sent("s1", "Could not start claude.".into());
+        assert_eq!(reply, json!({"sessionId": "s1", "sent": false, "error": "Could not start claude."}));
+        let source = include_str!("start.rs");
+        let body = &source[source.find("progress.report(\"starting\"").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let send = body.find("crate::send_message(").unwrap();
+        assert!(!body[send..].starts_with("crate::send_message(app.clone(), state, task.id.clone(), start.prompt, Some(start.image_ids), None).await?"));
+        assert!(body.find("made_but_not_sent(&task.id, error)").unwrap() > send);
+    }
+
+    #[test]
+    fn a_failed_start_gives_its_images_back() {
+        let source = include_str!("start.rs");
+        let body = &source[source.find("async fn start_task(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let claim = body.find("images::claim(app, from, &start.image_ids)?").expect("claimed first");
+        let restore = body.find("if started.is_err() {\n        super::images::restore(app, from, &image_ids);").expect("restored on failure");
+        assert!(restore > claim);
+    }
 
     fn project(id: &str) -> Project {
         Project { id: id.into(), name: id.into(), path: format!("/p/{id}"), added_order: 0 }
@@ -892,7 +983,7 @@ mod tests {
         assert_eq!(found, by_git);
         assert_eq!(found[0].as_deref(), Some("Orbit-Labs/Orbit"));
         assert_eq!(found[1], found[0], "a linked worktree shares its main checkout's config");
-        assert_eq!(found[2].as_deref(), Some("orbit-labs/included"), "an include goes through git");
+        assert_eq!(found[2], None, "Round 20: an origin only in an [include] file is not followed");
         assert_eq!((found[3].clone(), found[4].as_deref(), found[5].clone()), (None, Some("Orbit-Labs/Orbit"), None));
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -972,7 +1063,7 @@ mod tests {
         checkout(&clone, "main").unwrap();
         checkout(&clone, "feature").unwrap();
         assert_eq!(git(&clone, &["branch", "--show-current"], GIT).unwrap(), "feature");
-        discard(&clone, &made);
+        discard(&clone, &made, workspace::Trust::Desktop);
         assert!(!made.path.exists());
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1023,15 +1114,76 @@ mod tests {
         git_in(&base, &["clone", "-q", origin.to_str().unwrap(), "clone"]);
         let root = std::fs::canonicalize(&clone).unwrap();
         let store = Mutex::new(crate::storage::Store::open(Path::new(":memory:")).unwrap());
-        let handed = remote_worktree(&root, "main").unwrap();
+        let handed = remote_worktree(&root, "main", workspace::Trust::Desktop).unwrap();
         let (path, branch) = (handed.path.clone(), handed.branch.clone());
-        assert!(attach(&store, &root, "main", Some(handed), "missing").is_err());
+        assert!(attach(&store, &root, "main", Some(handed), "missing", workspace::Trust::Desktop).is_err());
         assert!(!path.exists());
         assert!(git(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], GIT).is_err(), "branch deleted");
-        assert!(attach(&store, &root, "main", None, "missing").is_err());
+        assert!(attach(&store, &root, "main", None, "missing", workspace::Trust::Desktop).is_err());
         assert_eq!(git(&root, &["worktree", "list", "--porcelain"], GIT).unwrap().matches("worktree ").count(), 1, "only the main checkout");
         assert_eq!(git(&root, &["branch", "--list", "pandacode/*"], GIT).unwrap(), "");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Round 9: a phone start with Full access off never runs a program the checkout's own
+    /// config names. Here a smudge/clean filter (which a worktree checkout would run) and a gc
+    /// hook: every step `prepare` takes for a worktree start is refused and the filter's marker
+    /// is never made, while the desktop's (and a Full-access phone's) worktree really runs it.
+    #[test]
+    fn an_untrusted_phone_start_runs_no_program_from_the_checkouts_config() {
+        let base = temp_base("untrusted");
+        let (origin, clone) = (base.join("origin"), base.join("clone"));
+        std::fs::create_dir_all(&origin).unwrap();
+        git_in(&origin, &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join(".gitattributes"), "a.txt filter=mark\n").unwrap();
+        std::fs::write(origin.join("a.txt"), "a\n").unwrap();
+        git_in(&origin, &["add", "."]);
+        git_in(&origin, &["commit", "-q", "-m", "one"]);
+        git_in(&base, &["clone", "-q", origin.to_str().unwrap(), "clone"]);
+        let root = std::fs::canonicalize(&clone).unwrap();
+        // A GitHub origin, so the refusal below is the filter's, not a local-path remote's.
+        git_in(&root, &["remote", "set-url", "origin", "https://github.com/octo/orbit.git"]);
+        let marker = base.join("marker");
+        let program = format!("touch '{}'; cat", marker.display());
+        git_in(&root, &["config", "filter.mark.smudge", &program]);
+        git_in(&root, &["config", "filter.mark.clean", &program]);
+        git_in(&root, &["config", "gc.recentObjectsHook", &format!("touch '{}'", marker.display())]);
+        let phone = workspace::Trust::phone(false);
+        let refused = workspace::refuse_untrusted_programs(&root, phone).unwrap_err();
+        assert!(refused.contains("filter.mark.smudge") && refused.contains("gc.recentobjectshook"), "{refused}");
+        // Round 10: the refusal names the start, not a commit.
+        let refused = workspace::refuse_untrusted_programs_for(&root, phone, "start a task").unwrap_err();
+        assert!(refused.ends_with("to start a task from the phone.") && !refused.contains("commit"), "{refused}");
+        assert!(pick_branch_as(&root, Some("main"), true, phone).unwrap_err().contains("to start a task from the phone"));
+        assert!(pick_branch_as(&root, Some("main"), false, phone).is_err());
+        assert!(remote_worktree(&root, "main", phone).is_err());
+        assert!(worktree_while_restoring_as(&root, "main", phone).is_err());
+        assert!(checkout_as(&root, "main", phone).is_err());
+        assert!(!marker.exists(), "no filter or hook ran for the phone");
+        assert_eq!(git(&root, &["worktree", "list", "--porcelain"], GIT).unwrap().matches("worktree ").count(), 1, "no worktree was made");
+        for trust in [workspace::Trust::phone(true), workspace::Trust::Desktop] {
+            let made = remote_worktree(&root, "main", trust).unwrap();
+            assert!(marker.exists(), "the setup really runs the filter ({trust:?})");
+            discard(&root, &made, trust);
+            std::fs::remove_file(&marker).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Round 10: with the switch off a phone start never clones (the clone's own harness
+    /// config would run unapproved), but finds an existing project as before.
+    #[test]
+    fn an_untrusted_phone_start_never_clones() {
+        assert_eq!(refuse_clone(workspace::Trust::phone(false)).unwrap_err(), "Turn on Full access for remote tasks on this computer to clone a repository from the phone.");
+        assert!(refuse_clone(workspace::Trust::phone(true)).is_ok());
+        assert!(refuse_clone(workspace::Trust::Desktop).is_ok());
+        let source = include_str!("start.rs");
+        let body = &source[source.find("fn project_for(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let found = body.find("find_project(origins(projects), repo)").unwrap();
+        let refusal = body.find("refuse_clone(trust)?").expect("project_for refuses a clone");
+        assert!(found < refusal && refusal < body.find("clone_path(").unwrap() && refusal < body.find("clone_with_progress(").unwrap());
+        assert!(source.contains("project_for(&state, &target, &reporter, worktree, &flag, trust)"));
     }
 
     /// Picks a pushed branch, falls back to origin's default, and checks it out.
@@ -1049,25 +1201,25 @@ mod tests {
         assert_eq!(pick_branch(&clone, Some("unpushed"), true).unwrap(), "main");
         assert_eq!(pick_branch(&clone, None, true).unwrap(), "main");
         // An existing checkout on another branch, dirty or busy is never switched.
-        assert!(ready_in_place(&clone, "orbit", "feature", false).unwrap().unwrap().contains("on main, not feature"));
-        assert!(ready_in_place(&clone, "orbit", "main", true).unwrap().unwrap().contains("an agent working"));
+        assert!(ready_in_place(&clone, "orbit", "feature", false, workspace::Trust::Desktop).unwrap().unwrap().contains("on main, not feature"));
+        assert!(ready_in_place(&clone, "orbit", "main", true, workspace::Trust::Desktop).unwrap().unwrap().contains("an agent working"));
         std::fs::write(clone.join("notes.txt"), "work").unwrap();
-        assert!(ready_in_place(&clone, "orbit", "main", false).unwrap().unwrap().contains("uncommitted changes"));
+        assert!(ready_in_place(&clone, "orbit", "main", false, workspace::Trust::Desktop).unwrap().unwrap().contains("uncommitted changes"));
         assert_eq!(git(&clone, &["branch", "--show-current"], GIT).unwrap(), "main");
         // The fallback worktree leaves the busy checkout's branch and files alone.
         let root = std::fs::canonicalize(&clone).unwrap();
-        let made = remote_worktree(&root, "feature").unwrap();
+        let made = remote_worktree(&root, "feature", workspace::Trust::Desktop).unwrap();
         assert!(made.branch.starts_with("pandacode/remote-"));
         assert_eq!(std::fs::read_to_string(clone.join("notes.txt")).unwrap(), "work");
         assert_eq!(git(&clone, &["branch", "--show-current"], GIT).unwrap(), "main");
         assert_eq!(git(&made.path, &["rev-parse", "HEAD"], GIT).unwrap(), git(&clone, &["rev-parse", "origin/feature"], GIT).unwrap());
         assert!(!made.path.join("notes.txt").exists());
-        discard(&root, &made);
+        discard(&root, &made, workspace::Trust::Desktop);
         std::fs::remove_file(clone.join("notes.txt")).unwrap();
         // Clean, idle and on the branch: fast-forwarded and used in place.
         run(&origin, &["commit", "-q", "--allow-empty", "-m", "two"]);
         pick_branch(&clone, Some("main"), true).unwrap();
-        assert_eq!(ready_in_place(&clone, "orbit", "main", false).unwrap(), None);
+        assert_eq!(ready_in_place(&clone, "orbit", "main", false, workspace::Trust::Desktop).unwrap(), None);
         assert_eq!(git(&clone, &["rev-parse", "HEAD"], GIT).unwrap(), git(&origin, &["rev-parse", "HEAD"], GIT).unwrap());
         checkout(&clone, "feature").unwrap();
         assert_eq!(git(&clone, &["branch", "--show-current"], GIT).unwrap(), "feature");

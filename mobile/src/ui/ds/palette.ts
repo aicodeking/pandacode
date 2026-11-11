@@ -148,3 +148,7 @@ const TABLES: Record<Scheme, Record<'normal' | 'increased', Palette>> = {
 };
 
 export const paletteFor = (scheme: Scheme, increase: boolean): Palette => TABLES[scheme][increase ? 'increased' : 'normal'];
+
+/** Full-screen image viewers: black in every scheme (photos read truest on black), white text, and a
+ * dimmed chrome bar the image can show through. Scheme-independent, so not part of the Palette. */
+export const VIEWER = { page: BLACK, text: WHITE, chrome: alpha(BLACK, 0.55) } as const;

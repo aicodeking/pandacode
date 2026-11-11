@@ -11,12 +11,17 @@ import { File, Paths } from 'expo-file-system';
 import { create } from 'zustand';
 import { BUILD_DEMO, DEMO_FILE, demoAtStart } from '../demo.ts';
 import { demoCall, type DemoHost } from '../demo-host.ts';
-import { delivering, settled, unmatched, type Sent } from '../store/sent.ts';
+import { delivering, settled, unconfirm, unconfirmedVerdict, undeliver, unmatched, withoutSent, type Sent } from '../store/sent.ts';
 import { applyTeamEvent, decodeTeam, decodeTeamRun, teamBusy, teamRun, type Team } from '../store/team.ts';
 import { applyEvent, ended, fromList, fromSubscribe, idleLive, lastId, mergeMessages, prependMessages, staleLists, withTeamRun } from '../store/reduce.ts';
 import { cachedLastId, clearThreads, readThread, saveThread } from '../store/threads.ts';
 import { PrefetchQueue, prefetchOrder } from '../store/prefetch.ts';
-import { Cursors, followReplay } from '../store/replay.ts';
+import { Cursors, encodeCursors, followReplay, parseCursors } from '../store/replay.ts';
+import { missingKeys } from '../store/gone.ts';
+import { Batcher } from './batcher.ts';
+import { clearCursors, readCursors, saveCursorsSoon } from './cursor-file.ts';
+import { RetryLater } from './renewal.ts';
+import { followStart, unsentFields, type StartReply } from './start-retry.ts';
 import { clearBlobs } from '../store/attachment-files.ts';
 import type { Variant } from '../store/attachments.ts';
 import { fetchAttachment, type AttachmentDeps, type Source } from './attachments.ts';
@@ -25,14 +30,18 @@ import { deleteAccount as deleteAccountSteps } from './delete-account.ts';
 import { forgetPhoneState, signOutSteps } from './sign-out.ts';
 import { build, NOT_CONFIGURED } from './config.ts';
 import { open, pairKey, seal, uuid } from './crypto.ts';
-import { BackgroundGate, LOST, NOT_CONNECTED, OFFLINE, outdated, Pending, RATE, Replay, request, STALE, START_TIMEOUT_MS, TIMEOUT_MS, UNKNOWN_METHOD, type Method } from './rpc.ts';
+import { BackgroundGate, LOST, maybeRan, NOT_CONNECTED, OFFLINE, outdated, Pending, promptMaybeRan, RATE, Replay, request, STALE, START_TIMEOUT_MS, TIMEOUT_MS, UNKNOWN_METHOD, type Method } from './rpc.ts';
 import * as secrets from './secrets.ts';
+import { isLegacyHelloError, legacy as legacyCapabilities, parseHello, supports } from './api/hello.ts';
+import { attachLimits, uploadImages, type ImageChunk, type SendImage } from '../store/attach.ts';
+import { capabilitiesOf, forgetCapabilities, markMissing, refusalMeansStale, setCapabilities } from './api/capabilities.ts';
 import { AppState } from 'react-native';
-import { RelaySocket } from './socket.ts';
+import { RelaySocket, type ConnectionQuality, type QualityListener } from './socket.ts';
 import { markCurrent, markStartup } from './perf.ts';
 import { clearInbox, readInbox, saveInboxSoon } from './inbox-file.ts';
 import { decodeInbox, encodeInbox, type RestoredInbox } from '../store/inbox-cache.ts';
 import { attempt, configured, stopping, unanswered, unconfigured, unpaused, unstopping } from './optimistic.ts';
+import { planPull, pullCurrent } from '../store/git.ts';
 import { newestPage, olderByAfterId, pageMessages, workerNewer, workerNewest, workerOlder, type Fetch, type WorkerPage } from './paging.ts';
 import type { Live } from '../store/reduce.ts';
 import type { AgentEvent, Bot, Changes, ConfigureParams, Device, Diff, MergeMethod, Message, MessagePage, Provider, ProviderModel, PullDetail, RunFinished, StartParams, SubscribeReply, TaskSummary, TasksList } from './types.ts';
@@ -67,6 +76,10 @@ const LIST_FRESH_MS = 5_000;
 const MERGE_TIMEOUT_MS = 60_000;
 /** Calls made while the socket connects (a tap at launch, after foregrounding) wait this long for presence before failing. */
 const CONNECT_WAIT_MS = 5_000;
+/** A user action while the socket waits to reconnect connects now and waits this long for presence. */
+const USER_CONNECT_WAIT_MS = 10_000;
+/** After a reconnect, read calls made within this window go to each host as one `batch`. */
+const BATCH_WINDOW_MS = 2_000;
 
 let token: string | null = null;
 let secret: Uint8Array | null = null;
@@ -77,6 +90,9 @@ let timers: ReturnType<typeof setInterval>[] = [];
 let initialized = false;
 const pending = new Pending();
 const gate = new BackgroundGate();
+/** Hosts asked host.hello on this socket (or in this demo); cleared when the socket closes and per
+ * host when it goes offline, so a host updated meanwhile is asked again. */
+const helloed = new Set<string>();
 /** Settles when init has read the secrets: calls wait for it (the socket starts as soon as the token is read). */
 let booted: Promise<void> = Promise.resolve();
 /** Calls waiting for the socket's presence frame (see whenConnected). */
@@ -117,6 +133,9 @@ const socket = new RelaySocket({
     timers.forEach(clearInterval);
     timers = [];
     presence = false;
+    helloed.clear();
+    renewals.clear();
+    batchUntil = 0;
     pending.failAll(LOST);
     patch({ connected: false });
   },
@@ -157,7 +176,9 @@ async function init(): Promise<void> {
     if (token) socket.start();
     return value;
   });
-  const read = Promise.all([saved, secrets.getAccount(), secrets.getDeviceId(), secrets.getSecret(), readInbox()]);
+  // Resume tokens before any subscribe: the boot wait below covers them.
+  const resume = readCursors().then(raw => { if (current()) cursors.restore(parseCursors(raw, Date.now())); });
+  const read = Promise.all([saved, secrets.getAccount(), secrets.getDeviceId(), secrets.getSecret(), readInbox(), resume]);
   booted = read.then(() => undefined, () => undefined);
   void loadIcons();
   const [, account, deviceId, key, cached] = await read;
@@ -224,6 +245,7 @@ async function seedDemo() {
   const data = await import('../demo-data.ts');
   data.seedDemo();
   patch({ demo: true, error: null });
+  discoverAll();
 }
 
 /** From sign-in: fake computers and tasks, no network, kept across launches. */
@@ -251,7 +273,10 @@ async function leaveDemo(): Promise<void> {
   const f = demoFile();
   if (f.exists) f.delete();
   resetIcons();
+  helloed.clear();
+  forgetCapabilities();
   await forgetLocal();
+  forgetResends();
   useConnect.setState({ ...initialState(), ready: true }, true);
   initialized = false;
   await init();
@@ -312,6 +337,7 @@ function applyDevices(list: unknown[]) {
   for (const id of keys.keys()) if (!devices.some(d => d.id === id && d.publicKey === keys.get(id)!.publicKey)) keys.delete(id);
   for (const map of [watched, glanced]) for (const id of map.keys()) if (!devices.some(d => d.id === id)) map.delete(id);
   patch({ devices });
+  discoverAll();
 }
 
 /** The device list over HTTP; only needed before the socket's first presence frame. */
@@ -387,9 +413,13 @@ function pairFor(device: Device): Uint8Array {
   return key;
 }
 
-/** Resolves once presence arrived on an open socket, or after `ms` (the call then fails as before). */
-function whenConnected(ms = CONNECT_WAIT_MS): Promise<void> {
-  if ((presence && socket.open) || !token || !(socket.open || socket.connecting)) return Promise.resolve();
+/** Resolves once presence arrived on an open socket, or after a while (the call then fails as
+ * before). A user action (`user`) waiting out a reconnect backoff connects now and waits longer. */
+function whenConnected(user = false): Promise<void> {
+  if ((presence && socket.open) || !token) return Promise.resolve();
+  if (user) socket.kick();
+  if (!(socket.open || socket.connecting)) return Promise.resolve();
+  const ms = user ? USER_CONNECT_WAIT_MS : CONNECT_WAIT_MS;
   return new Promise(resolve => {
     const done = () => {
       clearTimeout(timer);
@@ -401,18 +431,27 @@ function whenConnected(ms = CONNECT_WAIT_MS): Promise<void> {
   });
 }
 
+/** Reads the client makes by itself (resubscribing, paging a transcript in, refreshing lists and
+ * pull requests, polling a start): they wait for a reconnect but never cut its backoff short. */
+const AUTOMATIC_METHODS: ReadonlySet<string> = new Set(['host.hello', 'subscribe', 'task.messages', 'task.workerMessages', 'tasks.list', 'task.pull', 'task.pullDetect', 'task.team', 'task.startStatus', 'providers.list', 'providers.models', 'projects.icons', 'bots.list']);
+
+/** Whether a call is the user's own, so it may `kick()` the socket out of its reconnect backoff:
+ * not `background` work, not one of the [`AUTOMATIC_METHODS`], not a caller's `automatic` poll. */
+export const userInitiated = (method: Method, background: boolean, automatic = false) => !background && !automatic && !AUTOMATIC_METHODS.has(method);
+
 /**
  * One request to a host. `background` work (prefetch, icons, attachments, glance subscribes, bots)
  * waits its turn: at most one per host in flight, so a tap never queues behind a pile of it.
+ * Only a user-initiated call ([`userInitiated`]) reconnects at once; automatic ones wait.
  */
-async function call<T>(deviceId: string, method: Method, params: unknown, timeoutMs = TIMEOUT_MS, background = false): Promise<T> {
+async function call<T>(deviceId: string, method: Method, params: unknown, timeoutMs = TIMEOUT_MS, background = false, automatic = false): Promise<T> {
   await booted;
   if (state().demo) return demoCall(demoHost, deviceId, method, params) as Promise<T>;
-  await whenConnected();
-  if (!background) return send<T>(deviceId, method, params, timeoutMs);
+  await whenConnected(userInitiated(method, background, automatic));
+  if (!background) return batcher.call(deviceId, method, params, timeoutMs) as Promise<T>;
   const release = await gate.turn(deviceId);
   try {
-    return await send<T>(deviceId, method, params, timeoutMs);
+    return await (batcher.call(deviceId, method, params, timeoutMs) as Promise<T>);
   } finally {
     release();
   }
@@ -429,6 +468,23 @@ function send<T>(deviceId: string, method: Method, params: unknown, timeoutMs: n
   return reply as Promise<T>;
 }
 
+/** Until when read calls are grouped per host (a reconnect or a return to the foreground). */
+let batchUntil = 0;
+const batcher = new Batcher({
+  send: (deviceId, method, params, timeoutMs) => send(deviceId, method, params, timeoutMs),
+  limit: deviceId => {
+    if (Date.now() >= batchUntil) return 0;
+    const caps = capabilitiesOf(deviceId);
+    return caps?.kind === 'hello' && caps.methods.has('batch') ? caps.limits.maxBatch ?? 8 : 0;
+  },
+});
+
+/** Hosts whose host.hello says they run a repeated task.send/steer/bot.message `sendId` once. */
+const dedupesSends = (deviceId: string) => {
+  const caps = capabilitiesOf(deviceId);
+  return caps?.kind === 'hello' && caps.features.has('sendId');
+};
+
 // ---- Incoming frames ----
 
 function frame(text: string) {
@@ -438,7 +494,10 @@ function frame(text: string) {
     case 'presence':
       if (!Array.isArray(value.devices)) return;
       // The first presence of a socket: open threads catch up alongside the subscribe.
-      if (!presence) for (const host of watched.keys()) catchUp.add(host);
+      if (!presence) {
+        for (const host of watched.keys()) catchUp.add(host);
+        batchUntil = Date.now() + BATCH_WINDOW_MS;
+      }
       presence = true;
       markStartup('presence');
       applyDevices(value.devices);
@@ -482,14 +541,23 @@ function frame(text: string) {
 const active = (status?: string) => status === 'running' || status === 'waiting';
 
 /** Per host: its event journal's epoch and the newest `seq` seen per task, so a subscribe asks
- * only for what was missed; live events wait while a subscribe's replay is in flight. */
+ * only for what was missed; live events wait while a subscribe's replay is in flight. Saved
+ * (cursor-file.ts) so a relaunch resumes from them. */
 const cursors = new Cursors();
+const saveCursors = () => saveCursorsSoon(() => (current() && token && !state().demo ? encodeCursors(cursors.snapshot(), Date.now()) : null));
 
 function events(host: string, raw: unknown, epoch?: unknown, live = true) {
   const ids = subscribed(host);
   if (!ids.size || !Array.isArray(raw)) return;
   if (live && cursors.keep(host, epoch, raw as AgentEvent[])) return;
-  const list = cursors.fresh(host, epoch, raw as AgentEvent[]);
+  const { events: list, gaps } = cursors.check(host, epoch, raw as AgentEvent[]);
+  // An event names an earlier one this phone never got (newer hosts' `prev`): as after `lagged`,
+  // hold what comes next and replay from where this phone is.
+  if (gaps.length) {
+    cursors.hold(host);
+    void subscribeHost(host);
+  }
+  saveCursors();
   const started = new Set<string>();
   patch(s => {
     const live = { ...s.live };
@@ -599,6 +667,13 @@ const catchUp = new Set<string>();
 /** Per host: the subscribe in flight, and whether the set changed since it was sent. */
 const subscribing = new Map<string, Promise<void>>();
 const resubscribe = new Set<string>();
+/** A failed subscribe (a renewal, or one cut short) is tried again per host, 2 s doubling to a minute. */
+const renewals = new RetryLater({
+  run: host => {
+    if (socket.open && state().devices.some(d => d.id === host && d.online)) void subscribeHost(host);
+    else renewals.succeeded(host); // back online, presence resubscribes
+  },
+});
 
 /** One subscribe call per host at a time: calls in the same tick share it, and changes made while
  * it is in flight go out in one more call after it. */
@@ -634,7 +709,17 @@ async function subscribeOnce(deviceId: string): Promise<void> {
     for (const entry of held.entries) events(deviceId, entry.events, entry.epoch, false);
     if (held.overflow) resubscribe.add(deviceId);
   };
-  if (!reply) return showHeld(); // offline; the next presence frame or renewal retries
+  if (!reply) {
+    showHeld();
+    renewals.failed(deviceId);
+    return;
+  }
+  renewals.succeeded(deviceId);
+  saveCursors();
+  // Tasks the host says it no longer has were deleted on the desktop: their open screens close.
+  // Imported on call: store/local.ts imports this module.
+  const gone = missingKeys(deviceId, reply.missing, ids);
+  if (gone.length) void import('../store/local.ts').then(local => local.markDeleted(gone)).catch(() => undefined);
   patch(s => {
     const live = { ...s.live };
     for (const t of tasks) {
@@ -760,10 +845,13 @@ function loadMessages(deviceId: string, sessionId: string, pages = MAX_PAGES, ba
     });
   };
   patch(s => ({ history: { ...s.history, [key]: null } }));
+  // Unconfirmed prompts whose lost reply came before this copy started: it decides them.
+  const deciding = [...(awaiting.get(key) ?? [])];
   return copy.then(how => {
     copiedAt.set(key, Date.now());
     settle(null);
     markCurrent(key, how);
+    for (const id of deciding) decideUnconfirmed(deviceId, sessionId, id);
   }, (error: Error) => {
     settle(error?.message || 'Could not load this task.');
     throw error;
@@ -829,6 +917,9 @@ function schedulePrefetch() {
 
 /** Sign-out and account deletion: nothing of any thread stays in memory or on disk. */
 function forgetThreads() {
+  helloed.clear();
+  forgetCapabilities();
+  forgetResends();
   prefetch.replace([]);
   warming.clear();
   copiedAt.clear();
@@ -836,6 +927,7 @@ function forgetThreads() {
   clearThreads();
   clearBlobs();
   clearInbox();
+  clearCursors();
 }
 
 function withTitle(s: ConnectState, host: string, sessionId: string, title: unknown): ConnectState['tasks'] {
@@ -900,8 +992,10 @@ function pollLists() {
 // gets no presence frame; one that closed reconnects and catches up on presence).
 AppState.addEventListener('change', next => {
   if (next !== 'active' || !socket.open) return;
+  batchUntil = Date.now() + BATCH_WINDOW_MS;
   void refreshLists(LIST_FRESH_MS);
   void subscribeAll();
+  rediscoverAll();
 });
 
 /** Hosts that answered 'Unknown method.' (older desktops): not asked again this session. */
@@ -941,14 +1035,24 @@ async function listModels(deviceId: string, provider: string, force = false): Pr
 }
 
 /** Starts a task on the host (repo OR projectId) and watches it; `note` says when a busy
- * checkout made the host use a worktree instead. */
-async function startTask(deviceId: string, params: StartParams): Promise<{ sessionId: string; note?: string }> {
+ * checkout made the host use a worktree instead. Every send carries the draft's `startId` (one is
+ * made when none is given), so the host runs it once; a reply lost to a timeout or a dropped
+ * connection becomes task.startStatus polls (start-retry.ts) instead of a failure. */
+async function startTask(deviceId: string, params: StartParams): Promise<{ sessionId: string; note?: string; sent?: false; error?: string }> {
   if (!params.repo === !params.projectId) throw new Error('Choose a repository or a project.');
-  const reply = await call<{ sessionId: string }>(deviceId, 'task.start', params, START_TIMEOUT_MS);
+  const startId = params.startId ?? uuid();
+  const reply = await followStart({
+    start: () => call<StartReply>(deviceId, 'task.start', { ...params, startId }, START_TIMEOUT_MS),
+    status: () => call(deviceId, 'task.startStatus', { startId }),
+    canPoll: () => supports(capabilitiesOf(deviceId), 'task.startStatus') !== false,
+    sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    now: Date.now,
+    maxMs: START_TIMEOUT_MS,
+  });
   const { sessionId } = reply;
   watch(deviceId, [sessionId]);
   patch(s => ({ live: { ...s.live, [taskKey(deviceId, sessionId)]: { ...idleLive(), status: 'running', activity: 'Starting' } } }));
-  return { sessionId, note: startNote(reply) };
+  return { sessionId, note: startNote(reply), ...unsentFields(reply) };
 }
 
 /** Applies `edit` to one task's sent list; unchanged → same object, an empty list is dropped. */
@@ -961,29 +1065,185 @@ function editSent(all: ConnectState['sent'], key: string, edit: (sent: Sent[]) =
   return next.length ? { ...rest, [key]: next } : rest;
 }
 
-/** Shows `text` in the transcript at once while `send` runs: kept (as queued if the host queued
- * it) until the stored copy replaces it, dropped if the send fails. */
-async function optimistic<T>(deviceId: string, sessionId: string, text: string, initial: Sent['state'], send: () => Promise<T>, queued?: (reply: T) => boolean): Promise<T> {
+/** A prompt whose reply was lost: the host may have it. Shown as "Unconfirmed" until a reload finds it. */
+export interface Unconfirmed { unconfirmed: true }
+
+/** How an unconfirmed prompt goes out again: `outbox` (task.send only) lets a host that dedupes
+ * by `sendId` get it back through the outbox; `again` is the bubble's "Send again". */
+interface Resend { outbox?: { images: readonly SendImage[] }; again: () => Promise<unknown> }
+
+/** An unconfirmed task.send handed back to the outbox under its `sendId` (src/store/local.ts). */
+export interface Requeued { id: string; deviceId: string; sessionId: string; text: string; images: readonly SendImage[] }
+
+/** Unconfirmed prompts (by taskKey) waiting for a reload that started after their lost reply. */
+const awaiting = new Map<string, Set<string>>();
+/** Each unconfirmed prompt's way out again, and how often it went back to the outbox (by sendId). */
+const resends = new Map<string, Resend>();
+const resent = new Map<string, number>();
+let requeue: ((entry: Requeued) => void) | null = null;
+
+/** local.ts registers how an unconfirmed send goes back to the outbox. */
+const onRequeue = (handler: ((entry: Requeued) => void) | null) => { requeue = handler; };
+
+function stopAwaiting(key: string, id: string) {
+  const ids = awaiting.get(key);
+  ids?.delete(id);
+  if (ids && !ids.size) awaiting.delete(key);
+}
+
+/** Forgets a prompt's resend state (sent again, discarded, or its stored copy turned up). */
+function forgetResend(key: string, id: string) {
+  stopAwaiting(key, id);
+  resends.delete(id);
+  resent.delete(id);
+}
+
+/** After a reload that started after `id`'s lost reply: still no stored copy and the task idle
+ * means the host never ran it (`unconfirmedVerdict`): back to the outbox, or "Not delivered". */
+function decideUnconfirmed(deviceId: string, sessionId: string, id: string) {
   const key = taskKey(deviceId, sessionId);
-  const entry: Sent = { id: uuid(), text, state: initial, after: lastId(state().messages[key]) };
-  patch(s => ({ sent: { ...s.sent, [key]: [...(s.sent[key] ?? []), entry] } }));
+  const s = state();
+  const entry = s.sent[key]?.find(e => e.id === id);
+  if (!entry?.unconfirmed) return forgetResend(key, id);
+  const status = s.live[key]?.status ?? s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.status;
+  const resend = resends.get(id);
+  const verdict = unconfirmedVerdict(entry, { idle: !active(status), dedupes: dedupesSends(deviceId), resendable: !!(resend?.outbox && requeue), resent: resent.get(id) ?? 0 });
+  if (verdict === 'keep') return; // still running: its end (or the next reload) decides
+  stopAwaiting(key, id);
+  if (verdict === 'resend' && resend?.outbox && requeue) {
+    resent.set(id, (resent.get(id) ?? 0) + 1);
+    patch(st => ({ sent: editSent(st.sent, key, list => withoutSent(list, id)) }));
+    requeue({ id, deviceId, sessionId, text: entry.text, images: resend.outbox.images });
+    return;
+  }
+  patch(st => ({ sent: editSent(st.sent, key, list => undeliver(list, id)) }));
+}
+
+/** Sign-out, demo: no prompt is waiting to be decided. */
+function forgetResends() {
+  awaiting.clear();
+  resends.clear();
+  resent.clear();
+}
+
+/** "Discard" on a "Not delivered" bubble. */
+function discardSent(deviceId: string, sessionId: string, id: string) {
+  const key = taskKey(deviceId, sessionId);
+  forgetResend(key, id);
+  patch(s => ({ sent: editSent(s.sent, key, list => withoutSent(list, id)) }));
+}
+
+/** "Send again" on a "Not delivered" bubble: the same call under the same `sendId` (a steer goes
+ * as a message: its run is over). Rejects as the send does; the bubble then shows the outcome. */
+async function sendAgain(deviceId: string, sessionId: string, id: string): Promise<void> {
+  const key = taskKey(deviceId, sessionId);
+  const entry = state().sent[key]?.find(e => e.id === id);
+  if (!entry) return;
+  const again = resends.get(id)?.again;
+  forgetResend(key, id);
+  patch(s => ({ sent: editSent(s.sent, key, list => withoutSent(list, id)) }));
+  // A steer goes as a new message under a new id (see steerTask), never under the steer's.
+  await (again ? again() : sendMessage(deviceId, sessionId, entry.text, entry.state === 'steering' ? uuid() : id));
+  void loadMessages(deviceId, sessionId).catch(() => undefined);
+}
+
+/**
+ * Shows `text` in the transcript at once while `send` runs: kept (as queued if the host queued it)
+ * until the stored copy replaces it, dropped if the host refused it. `send` gets the prompt's
+ * `sendId` (the bubble's id; `sendId` reuses one, as the outbox does). A lost reply (timed out or
+ * the connection dropped, or an older host's "waited too long" `DROPPED`, which an earlier copy may
+ * have beaten; a newer host's `NOT_RUN` means it never ran) is sent once more under the same id when the host dedupes by it; if that
+ * is lost too (or the host can't dedupe) the bubble stays as "Unconfirmed", the thread reloads to
+ * settle it, and this resolves `{ unconfirmed: true }` instead of failing, so nobody sends it twice.
+ */
+async function optimistic<T>(deviceId: string, sessionId: string, text: string, initial: Sent['state'], send: (sendId: string) => Promise<T>, queued?: (reply: T) => boolean, sendId: string = uuid(), images?: readonly string[], resend?: (sendId: string) => Resend): Promise<T | Unconfirmed> {
+  const key = taskKey(deviceId, sessionId);
+  const entry: Sent = { id: sendId, text, state: initial, after: lastId(state().messages[key]), ...(images?.length && { images: [...images] }) };
+  patch(s => ({ sent: { ...s.sent, [key]: [...(s.sent[key] ?? []).filter(e => e.id !== sendId), entry] } }));
   prefetch.hold(`send:${entry.id}`);
   const edit = (change: (e: Sent) => Sent | null) =>
     patch(s => ({ sent: editSent(s.sent, key, list => list.flatMap(e => (e.id === entry.id ? change(e) ?? [] : [e]))) }));
-  try {
-    const reply = await send();
+  const sent = (reply: T) => {
     if (queued?.(reply)) edit(e => ({ ...e, state: 'queued' }));
     return reply;
+  };
+  try {
+    return sent(await send(sendId));
   } catch (error) {
-    edit(() => null);
-    throw error;
+    if (!promptMaybeRan(error)) {
+      edit(() => null);
+      throw error;
+    }
+    if (dedupesSends(deviceId)) {
+      try {
+        return sent(await send(sendId));
+      } catch (again) {
+        // The host answers a repeat with the first reply, so a refusal now means it never ran.
+        if (!promptMaybeRan(again) && again instanceof Error && again.message !== OFFLINE && again.message !== NOT_CONNECTED && again.message !== RATE) {
+          edit(() => null);
+          throw again;
+        }
+      }
+    }
+    patch(s => ({ sent: editSent(s.sent, key, list => unconfirm(list, entry.id)) }));
+    // The reload below decides it (decideUnconfirmed); later ones retry if it fails.
+    resends.set(entry.id, resend?.(entry.id) ?? { again: () => optimistic(deviceId, sessionId, text, initial, send, queued, entry.id, images) });
+    awaiting.set(key, new Set([...(awaiting.get(key) ?? []), entry.id]));
+    void loadMessages(deviceId, sessionId).catch(() => undefined);
+    return { unconfirmed: true };
   } finally {
     prefetch.release(`send:${entry.id}`);
   }
 }
 
-const sendMessage = (deviceId: string, sessionId: string, text: string) =>
-  optimistic(deviceId, sessionId, text, 'sending', () => call<{ queued: boolean }>(deviceId, 'task.send', { sessionId, text }), reply => !!reply?.queued);
+/** The image's bytes from this phone, or null once the file is gone. */
+async function readImage(uri: string): Promise<string | null> {
+  const file = new File(uri);
+  return file.exists ? file.base64() : null;
+}
+
+/** The host's refusal when an image a message names expired or was lost there (images.rs `claim`). */
+const IMAGE_MISSING = 'An image for this message is missing';
+const imageMissing = (error: unknown) => error instanceof Error && error.message.includes(IMAGE_MISSING);
+
+/** Uploads a send's images once (image.put in chunks); a retry of the same send reuses the ids.
+ * `forget` drops them, for when the computer no longer has them. */
+function imageUploader(deviceId: string, images: readonly SendImage[]): { ids: () => Promise<string[]>; forget: () => void } {
+  let ids: Promise<string[]> | undefined;
+  const caps = capabilitiesOf(deviceId);
+  const deps = {
+    read: readImage, put: (chunk: ImageChunk) => hostCall<{ imageId?: unknown }>(deviceId, 'image.put', chunk), uploadId: uuid, lost: maybeRan,
+    imageChunk: attachLimits(caps?.kind === 'hello' ? caps.limits : undefined).imageChunk,
+  };
+  return {
+    ids: () => (ids ??= uploadImages(images, deps).catch(error => { ids = undefined; throw error; })),
+    forget: () => { ids = undefined; },
+  };
+}
+
+/** Sends a prompt (`sendId`: the outbox entry's id, so a resend is run once). `images` upload
+ * first, inside the send, so the bubble shows at once and an offline upload leaves it unsent. A
+ * computer that lost the uploaded images (expired, restarted) refuses without running the send,
+ * so they go up once more under the same sendId before the send fails. */
+function sendMessage(deviceId: string, sessionId: string, text: string, sendId?: string, images: readonly SendImage[] = []): Promise<{ queued: boolean; unconfirmed?: true }> {
+  const upload = images.length ? imageUploader(deviceId, images) : null;
+  const deliver = async (id: string) => {
+    const imageIds = upload ? await upload.ids() : undefined;
+    return call<{ queued: boolean }>(deviceId, 'task.send', { sessionId, text, sendId: id, ...(imageIds && { imageIds }) });
+  };
+  const send = async (id: string) => {
+    try {
+      return await deliver(id);
+    } catch (error) {
+      if (!upload || !imageMissing(error)) throw error;
+      upload.forget();
+      return deliver(id);
+    }
+  };
+  const resend = (id: string): Resend => ({ outbox: { images }, again: () => sendMessage(deviceId, sessionId, text, id, images) });
+  return optimistic(deviceId, sessionId, text, 'sending', send, reply => !!reply?.queued, sendId, images.map(i => i.uri), resend)
+    .then(reply => ('unconfirmed' in reply ? { queued: false, unconfirmed: true as const } : reply));
+}
 /** Edits one task's live view (and the list's status with it); returns the view before. */
 function editLive(deviceId: string, sessionId: string, edit: (live: Live) => Live): Live {
   const key = taskKey(deviceId, sessionId);
@@ -1001,8 +1261,12 @@ const stopTask = (deviceId: string, sessionId: string) => attempt(() => {
   return () => editLive(deviceId, sessionId, live => unstopping(live, before.activity));
 }, () => call<object>(deviceId, 'task.stop', { sessionId }));
 /** The host saves a steer when the agent accepts it, before it answers. */
-async function steerTask(deviceId: string, sessionId: string, text: string) {
-  const reply = await optimistic(deviceId, sessionId, text, 'steering', () => call<object>(deviceId, 'task.steer', { sessionId, text }));
+async function steerTask(deviceId: string, sessionId: string, text: string, sendId?: string) {
+  // Not delivered means the run it steered is over: "Send again" sends it as a message, under a
+  // fresh sendId: the host keys sends and steers alike, so the steer's id would answer the
+  // remembered steer reply instead of running the message.
+  const resend = (): Resend => ({ again: () => sendMessage(deviceId, sessionId, text, uuid()) });
+  const reply = await optimistic(deviceId, sessionId, text, 'steering', id => call<object>(deviceId, 'task.steer', { sessionId, text, sendId: id }), undefined, sendId, undefined, resend);
   void loadMessages(deviceId, sessionId).catch(() => undefined);
   return reply;
 }
@@ -1052,25 +1316,99 @@ async function newer<T>(deviceId: string, method: Method, params: unknown, timeo
   }
 }
 
+// ---- Capabilities (host.hello) and feature calls ----
+
+
+/** Asks every online host not yet asked what it serves (presence, the device list, demo seeding). */
+function discoverAll() {
+  const s = state();
+  // An offline computer may come back updated (or with another grant): ask it again then.
+  for (const d of s.devices) if (!d.online) { helloed.delete(d.id); forgetCapabilities(d.id); }
+  if (!s.demo && !presence) return; // the socket's presence frame asks again
+  for (const d of s.devices) if (d.host && d.online && d.id !== s.deviceId && !helloed.has(d.id)) void discover(d.id);
+}
+
+async function discover(deviceId: string): Promise<void> {
+  helloed.add(deviceId);
+  try {
+    const caps = parseHello(await call(deviceId, 'host.hello', {}, TIMEOUT_MS, true));
+    if (caps) setCapabilities(deviceId, caps);
+    else helloed.delete(deviceId);
+  } catch (error) {
+    if (isLegacyHelloError((error as Error).message)) setCapabilities(deviceId, legacyCapabilities());
+    else helloed.delete(deviceId); // offline, timed out or pending approval: asked again on the next presence
+  }
+}
+
+/** Hosts being asked host.hello again (foreground, stale refusal): one ask at a time per host. */
+const rehello = new Set<string>();
+
+/** Asks a host already known host.hello again: its grant or Full access switch may have changed while
+ * the socket stayed open. The cached capabilities stay until the new answer replaces them. */
+function rediscover(deviceId: string) {
+  if (rehello.has(deviceId) || !helloed.has(deviceId)) return;
+  rehello.add(deviceId);
+  void discover(deviceId).finally(() => rehello.delete(deviceId));
+}
+
+/** Back in the foreground: every online host already asked is asked again (an open socket gets no presence frame). */
+function rediscoverAll() {
+  const s = state();
+  for (const d of s.devices) if (d.host && d.online && d.id !== s.deviceId) rediscover(d.id);
+}
+
+const computerName = (deviceId: string) => state().devices.find(d => d.id === deviceId)?.name ?? 'that computer';
+
+/** `automatic`: a refresh or poll the user did not ask for, which never cuts a reconnect backoff short. */
+export interface HostCallOptions { timeoutMs?: number; background?: boolean; automatic?: boolean }
+
+/**
+ * A call to a host method that older hosts may lack: the helper every src/connect/api/*.ts uses.
+ * A host known (host.hello) not to serve `method` fails at once, without a round trip, and a host
+ * that answers 'Unknown method.' has `method` recorded as missing; both throw
+ * `outdated(<computer>)` ("Update PandaCode on <computer> to use this."). Unlike `newer`, this never
+ * marks the whole host outdated for pulls and bots. `background` calls take turns per host.
+ */
+export async function hostCall<T>(deviceId: string, method: Method, params: unknown = {}, options: HostCallOptions = {}): Promise<T> {
+  if (supports(capabilitiesOf(deviceId), method) === false) throw new Error(outdated(computerName(deviceId)));
+  try {
+    return await call<T>(deviceId, method, params, options.timeoutMs, options.background, options.automatic);
+  } catch (error) {
+    const message = (error as Error).message;
+    // A switch or grant refusal the cached host.hello didn't predict: the computer changed it; ask again.
+    if (refusalMeansStale(capabilitiesOf(deviceId), method, message)) rediscover(deviceId);
+    if (message !== UNKNOWN_METHOD) throw error;
+    markMissing(deviceId, method);
+    throw new Error(outdated(computerName(deviceId)));
+  }
+}
+
 const pullOf = (reply: { pull?: unknown } | undefined) => (reply?.pull && typeof reply.pull === 'object' ? reply.pull as PullDetail : null);
 const setPull = (key: string, pull: PullDetail | null) => patch(s => ({ pulls: { ...s.pulls, [key]: pull } }));
-const checking = new Map<string, Promise<PullDetail | null>>();
+/** Per task: the newest pull fetch's generation and, while it runs, its promise (store/git.ts `planPull`). */
+const pullFlights = new Map<string, { generation: number; run?: Promise<PullDetail | null> }>();
 
-/** The task's linked pull request, else one its turns opened (task.pullDetect links it). Cached per task unless `force`. */
+/** The task's linked pull request, else one its turns opened (task.pullDetect links it). Cached per task unless
+ * `force`, which always fetches anew: only the newest fetch writes the cache, so one begun before a merge,
+ * review or create can't overwrite what came after. */
 function loadPull(deviceId: string, sessionId: string, force = false): Promise<PullDetail | null> {
   const key = taskKey(deviceId, sessionId);
-  if (!force && key in state().pulls) return Promise.resolve(state().pulls[key]);
+  const flight = pullFlights.get(key);
+  const plan = planPull(key in state().pulls, force, flight && { generation: flight.generation, running: !!flight.run });
+  if (plan.kind === 'cached') return Promise.resolve(state().pulls[key]);
   if (state().outdated[deviceId]) return Promise.resolve(null);
-  const run = checking.get(key) ?? (async () => {
+  if (plan.kind === 'join' && flight?.run) return flight.run;
+  const generation = plan.kind === 'fetch' ? plan.generation : (flight?.generation ?? 0) + 1;
+  const run = (async () => {
     try {
       const pull = pullOf(await newer(deviceId, 'task.pull', { sessionId })) ?? pullOf(await newer(deviceId, 'task.pullDetect', { sessionId }));
-      setPull(key, pull);
+      if (pullCurrent(generation, pullFlights.get(key))) setPull(key, pull);
       return pull;
     } finally {
-      checking.delete(key);
+      if (pullCurrent(generation, pullFlights.get(key))) pullFlights.set(key, { generation });
     }
   })();
-  checking.set(key, run);
+  pullFlights.set(key, { generation, run });
   return run;
 }
 
@@ -1125,8 +1463,8 @@ async function botThread(deviceId: string, botId: string): Promise<string> {
 }
 
 /** Sends through the bot (its brief and memories apply), shown at once in its conversation. */
-const botMessage = (deviceId: string, botId: string, sessionId: string, text: string) =>
-  optimistic(deviceId, sessionId, text, 'sending', () => newer<{ sessionId: string }>(deviceId, 'bot.message', { botId, text }));
+const botMessage = (deviceId: string, botId: string, sessionId: string, text: string, sendId?: string) =>
+  optimistic(deviceId, sessionId, text, 'sending', id => newer<{ sessionId: string }>(deviceId, 'bot.message', { botId, text, sendId: id }), undefined, sendId);
 
 /** Shows paused/resumed at once; a refusal puts the bot back. */
 async function pauseBot(deviceId: string, botId: string, paused: boolean): Promise<void> {
@@ -1202,6 +1540,10 @@ const attachmentDeps: AttachmentDeps = {
 const attachment = (deviceId: string, sessionId: string, source: Source, variant: Variant) =>
   fetchAttachment(attachmentDeps, deviceId, sessionId, source, variant);
 
+/** The relay socket's connection quality (ui/ConnectionQuality.tsx). */
+const connectionQuality = (): ConnectionQuality => socket.quality;
+const subscribeQuality = (listener: QualityListener) => socket.subscribeQuality(listener);
+
 export const connect = {
   init, signInStart, signInFinish, signInCancel, signOut,
   enterDemo, leaveDemo, deleteAccount,
@@ -1212,4 +1554,6 @@ export const connect = {
   loadPull, pullDiff, mergePull, taskChanges, taskDiff, listBots, botThread, botMessage, pauseBot,
   loadTeam, resumeTeam, workerMessages, olderWorkerMessages,
   attachment,
+  dedupesSends, connectionQuality, subscribeQuality,
+  sendAgain, discardSent, onRequeue,
 };

@@ -34,7 +34,9 @@ const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// A request that waited longer than this in its peer's queue is dropped unanswered by its
 /// work: its caller gave up ([`super::client::TIMEOUT`]) and may have sent it again.
-const EXPIRED: Duration = Duration::from_secs(super::client::TIMEOUT.as_secs() - 2);
+const EXPIRED: Duration = Duration::from_secs(super::client::TIMEOUT.as_secs() - EXPIRY_MARGIN.as_secs());
+/// How long before its caller's timeout a queued request stops being run (relay transit).
+const EXPIRY_MARGIN: Duration = Duration::from_secs(2);
 /// A socket must stay up this long before the backoff resets.
 const STABLE: Duration = Duration::from_secs(30);
 pub(super) const MAX_FRAME: usize = 256 * 1024;
@@ -324,17 +326,34 @@ enum Lane {
     Read,
     /// One at a time, in arrival order: everything that changes a task.
     Ordered,
-    /// Each `task.start` on its own (bounded by [`MAX_STARTS`]): a clone can take minutes,
-    /// and stops, answers and prompts must not wait behind it.
+    /// Each start (`task.start`, `github.startTask`, `chat.start`) on its own, holding one of
+    /// the computer's [`MAX_STARTS`] slots: a clone can take minutes, and stops, answers and
+    /// prompts must not wait behind it.
     Start,
+    /// Slow registry methods (`methods::lane_for`: a push, checks, a model call) beside the
+    /// ordered lane, up to [`BACKGROUND_PER_PEER`] at once.
+    Background,
+    /// Read-only methods the phone waits long for (`methods::slow_read_timeout`: `gh`, a usage
+    /// refresh, a design render), up to [`SLOW_READS_PER_PEER`] at once, so they never take the
+    /// read slots a reconnect's `subscribe`, `tasks.list` and `task.messages` need.
+    SlowRead,
 }
 
 fn lane(method: &str) -> Lane {
     match method {
         "task.start" => Lane::Start,
         "batch" | "task.cancelStart" => Lane::Read,
+        // Round 23: a merge waits on GitHub up to the phone's 60 s (`MERGE_TIMEOUT_MS`), so it
+        // runs beside the ordered lane instead of expiring there after 18 s; host.rs lets one
+        // merge per task run at a time (`claim_merge`).
+        "task.pullMerge" => Lane::Background,
+        method if super::methods::slow_read_timeout(method).is_some() && host::is_read_only_method(method) => Lane::SlowRead,
         method if host::is_read_only_method(method) => Lane::Read,
-        _ => Lane::Ordered,
+        method => match super::methods::lane_for(method) {
+            Some(super::methods::Lane::Start) => Lane::Start,
+            Some(super::methods::Lane::Background) => Lane::Background,
+            None => Lane::Ordered,
+        },
     }
 }
 
@@ -343,11 +362,13 @@ struct PendingRequests {
     reads: VecDeque<Request>,
     ordered: VecDeque<Request>,
     starts: VecDeque<Request>,
+    background: VecDeque<Request>,
+    slow_reads: VecDeque<Request>,
 }
 
 impl PendingRequests {
     fn len(&self) -> usize {
-        self.reads.len() + self.ordered.len() + self.starts.len()
+        self.reads.len() + self.ordered.len() + self.starts.len() + self.background.len() + self.slow_reads.len()
     }
 
     fn push(&mut self, request: Request) {
@@ -355,7 +376,39 @@ impl PendingRequests {
             Lane::Read => self.reads.push_back(request),
             Lane::Ordered => self.ordered.push_back(request),
             Lane::Start => self.starts.push_back(request),
+            Lane::Background => self.background.push_back(request),
+            Lane::SlowRead => self.slow_reads.push_back(request),
         }
+    }
+
+    /// The next ordinary read, while fewer than [`READS_PER_PEER`] run.
+    fn next_read(&mut self, active: &mut usize) -> Option<Request> {
+        if *active >= READS_PER_PEER {
+            return None;
+        }
+        let request = self.reads.pop_front()?;
+        *active += 1;
+        Some(request)
+    }
+
+    /// The next slow read, while fewer than [`SLOW_READS_PER_PEER`] run.
+    fn next_slow_read(&mut self, active: &mut usize) -> Option<Request> {
+        if *active >= SLOW_READS_PER_PEER {
+            return None;
+        }
+        let request = self.slow_reads.pop_front()?;
+        *active += 1;
+        Some(request)
+    }
+
+    /// The next slow call, while fewer than [`BACKGROUND_PER_PEER`] run.
+    fn next_background(&mut self, active: &mut usize) -> Option<Request> {
+        if *active >= BACKGROUND_PER_PEER {
+            return None;
+        }
+        let request = self.background.pop_front()?;
+        *active += 1;
+        Some(request)
     }
 
     fn next_ordered(&mut self, active: &mut bool) -> Option<Request> {
@@ -647,21 +700,43 @@ fn refuse(app: &tauri::AppHandle, from: &str, request: Request, error: &str) {
     let _ = send_reply(app, from, &request, &failure);
 }
 
+/// The refusal of a request that waited too long. It never ran, and neither did an earlier copy
+/// with its `sendId` (that one is answered instead), so the phone may drop its bubble. Hosts
+/// before this said "...and was dropped. Try again." even when an earlier copy had run.
+pub(crate) const NOT_RUN: &str = "This request waited too long on the other computer and did not run. Try again.";
+
 /// Whether a request waited so long that its caller gave up; running it now could run a
-/// retried prompt twice. A start is kept: `startId` makes a repeated one harmless.
-fn expired(method: &str, waited: Duration) -> bool {
-    method != "task.start" && waited >= EXPIRED
+/// retried prompt twice. A start is kept: `startId` makes a repeated one harmless. A background
+/// call gets the slow method's own, longer timeout the phone waits for it
+/// (`methods::background_timeout`: a `git.commit` queued behind `checks.run` and `git.push` is
+/// still wanted), less the same margin, so a call the phone gave up on never runs late and a
+/// manual retry never runs it twice. Only queued requests expire; a running one finishes.
+fn expired(message: &Value, waited: Duration) -> bool {
+    let method = message["method"].as_str().unwrap_or_default();
+    match lane(method) {
+        Lane::Start => false,
+        Lane::Background => waited >= super::methods::background_timeout(method, &message["params"]).saturating_sub(EXPIRY_MARGIN),
+        Lane::SlowRead => waited >= super::methods::slow_read_timeout(method).unwrap_or(super::client::TIMEOUT).saturating_sub(EXPIRY_MARGIN),
+        Lane::Read | Lane::Ordered => waited >= EXPIRED,
+    }
 }
 
 const READS_PER_PEER: usize = 4;
+/// Slow read-only methods one phone runs at once, beside its [`READS_PER_PEER`] ordinary reads.
+const SLOW_READS_PER_PEER: usize = 2;
+/// Slow registry methods one phone runs at once beside its ordered lane.
+const BACKGROUND_PER_PEER: usize = 2;
 
 /// Read-only requests overlap up to a small bound. State-changing requests share one FIFO
-/// lane; each `task.start` runs on its own. Response ids let replies return in any order.
+/// lane; each start runs on its own and slow registry methods run beside it, a few at a time.
+/// Response ids let replies return in any order.
 async fn peer(app: tauri::AppHandle, from: String, mut requests: mpsc::Receiver<Request>) {
     let mut pending = PendingRequests::default();
     let mut in_flight = FuturesUnordered::<BoxFuture<'static, Lane>>::new();
     let mut active_reads = 0usize;
     let mut active_starts = 0usize;
+    let mut active_background = 0usize;
+    let mut active_slow_reads = 0usize;
     let mut ordered_active = false;
     let mut input_open = true;
 
@@ -674,13 +749,25 @@ async fn peer(app: tauri::AppHandle, from: String, mut requests: mpsc::Receiver<
                 Lane::Start
             }));
         }
-        while active_reads < READS_PER_PEER {
-            let Some(request) = pending.reads.pop_front() else { break };
-            active_reads += 1;
+        while let Some(request) = pending.next_read(&mut active_reads) {
             let (app, from) = (app.clone(), from.clone());
             in_flight.push(Box::pin(async move {
                 answer(&app, &from, request).await;
                 Lane::Read
+            }));
+        }
+        while let Some(request) = pending.next_slow_read(&mut active_slow_reads) {
+            let (app, from) = (app.clone(), from.clone());
+            in_flight.push(Box::pin(async move {
+                answer(&app, &from, request).await;
+                Lane::SlowRead
+            }));
+        }
+        while let Some(request) = pending.next_background(&mut active_background) {
+            let (app, from) = (app.clone(), from.clone());
+            in_flight.push(Box::pin(async move {
+                answer(&app, &from, request).await;
+                Lane::Background
             }));
         }
         if let Some(request) = pending.next_ordered(&mut ordered_active) {
@@ -696,13 +783,15 @@ async fn peer(app: tauri::AppHandle, from: String, mut requests: mpsc::Receiver<
 
         tokio::select! {
             request = requests.recv(), if input_open => match request {
-                Some(request) if pending.len() + active_reads + active_starts + usize::from(ordered_active) < PEER_QUEUE => pending.push(request),
+                Some(request) if pending.len() + active_reads + active_slow_reads + active_starts + active_background + usize::from(ordered_active) < PEER_QUEUE => pending.push(request),
                 Some(request) => busy(&app, &from, request),
                 None => input_open = false,
             },
             completed = in_flight.next(), if !in_flight.is_empty() => match completed {
                 Some(Lane::Read) => active_reads -= 1,
                 Some(Lane::Start) => active_starts -= 1,
+                Some(Lane::Background) => active_background -= 1,
+                Some(Lane::SlowRead) => active_slow_reads -= 1,
                 Some(Lane::Ordered) => ordered_active = false,
                 None => {}
             },
@@ -713,17 +802,20 @@ async fn peer(app: tauri::AppHandle, from: String, mut requests: mpsc::Receiver<
 async fn answer(app: &tauri::AppHandle, from: &str, request: Request) {
     let method = request.message["method"].as_str().unwrap_or("unknown").to_owned();
     let queue_wait = request.queued_at.elapsed();
-    if expired(&method, queue_wait) {
-        return refuse(app, from, request, "This request waited too long on the other computer and was dropped. Try again.");
+    // A prompt or once-method whose `sendId` already ran (or runs now) still goes through: the
+    // host answers its first reply.
+    if expired(&request.message, queue_wait) && !host::already_sent(from, &request.message) {
+        return refuse(app, from, request, NOT_RUN);
     }
     let method = method.as_str();
+    let starts = lane(method) == Lane::Start;
     let start_waiting = Instant::now();
-    let _start_permit = if method == "task.start" {
+    let _start_permit = if starts {
         Some(STARTS.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_STARTS))).clone().acquire_owned().await.ok())
     } else {
         None
     };
-    let start_slot_wait = if method == "task.start" { start_waiting.elapsed() } else { Duration::ZERO };
+    let start_slot_wait = if starts { start_waiting.elapsed() } else { Duration::ZERO };
     let handling = Instant::now();
     let response = host::handle(app, from, &request.message).await;
     let handle_time = handling.elapsed();
@@ -995,9 +1087,11 @@ mod tests {
     #[test]
     fn stops_and_answers_never_wait_behind_a_start() {
         assert_eq!(lane("task.start"), Lane::Start);
-        for method in ["task.stop", "approval.respond", "input.respond", "task.send", "task.pullMerge"] {
+        for method in ["task.stop", "approval.respond", "input.respond", "task.send"] {
             assert_eq!(lane(method), Lane::Ordered, "{method}");
         }
+        // Round 23: a merge never holds up a Stop, and waits as long as the phone does.
+        assert_eq!(lane("task.pullMerge"), Lane::Background);
         // Cancelling and asking about a start overlap with it.
         for method in ["task.cancelStart", "task.startStatus", "subscribe", "batch"] {
             assert_eq!(lane(method), Lane::Read, "{method}");
@@ -1006,11 +1100,104 @@ mod tests {
 
     #[test]
     fn a_request_its_caller_gave_up_on_is_dropped() {
+        let call = |method: &str| json!({"method": method, "params": {}});
+        let s = Duration::from_secs;
         assert!(EXPIRED < super::super::client::TIMEOUT);
-        assert!(!expired("task.send", Duration::from_secs(5)));
-        assert!(expired("task.send", EXPIRED));
-        assert!(expired("approval.respond", Duration::from_secs(60)));
-        assert!(!expired("task.start", Duration::from_secs(600)), "startId makes a repeated start harmless");
+        assert!(!expired(&call("task.send"), s(5)));
+        assert!(expired(&call("task.send"), EXPIRED));
+        assert!(expired(&call("approval.respond"), s(60)));
+        assert!(!expired(&call("task.start"), s(600)), "startId makes a repeated start harmless");
+        for method in ["github.startTask", "chat.start"] {
+            assert!(!expired(&call(method), s(600)), "{method}");
+        }
+        // The phone still waits for a queued slow call while its own, longer timeout runs...
+        for (method, waited) in [("checks.run", 140), ("git.push", 80), ("git.commit", 50), ("pull.create", 80), ("recipes.run", 40), ("btw.ask", 50), ("vm.start", 50)] {
+            assert!(!expired(&call(method), s(waited)), "the phone still waits for a queued {method}");
+        }
+        // ...but not past it: a btw.ask queued behind checks.run and git.push never runs late.
+        for (method, waited) in [("checks.run", 148), ("git.push", 88), ("git.commit", 58), ("btw.ask", 58), ("vm.stop", 58), ("recipes.run", 43), ("moodboards.add", 18), ("rewind.to", 18)] {
+            assert!(expired(&call(method), s(waited)), "{method} after {waited} s");
+        }
+        // Round 23: a queued merge is still wanted for the phone's 60 s, not refused after 18 s.
+        assert!(!expired(&call("task.pullMerge"), s(50)), "the phone still waits for a queued merge");
+        assert!(expired(&call("task.pullMerge"), s(58)));
+        let commit = |push: bool| json!({"method": "git.commit", "params": {"push": push}});
+        assert!(!expired(&commit(true), s(80)), "a commit with a push gets the push timeout");
+        assert!(expired(&commit(false), s(80)));
+    }
+
+    #[test]
+    fn registry_starts_take_the_start_lane_and_slow_methods_run_beside_the_ordered_one() {
+        for method in ["github.startTask", "chat.start"] {
+            assert_eq!(lane(method), Lane::Start, "{method}");
+        }
+        for method in ["checks.run", "git.push", "git.commit", "pull.create", "worktree.merge", "worktree.remove", "btw.ask", "recipes.run"] {
+            assert_eq!(lane(method), Lane::Background, "{method}");
+        }
+        assert_eq!(lane("thread.rename"), Lane::Ordered);
+        assert_eq!(lane("github.repos"), Lane::SlowRead);
+    }
+
+    #[test]
+    fn a_slow_method_never_delays_a_stop_and_slow_ones_are_bounded_per_phone() {
+        let mut pending = PendingRequests::default();
+        for method in ["checks.run", "git.push", "btw.ask", "task.stop", "chat.start"] {
+            pending.push(Request { message: json!({"method": method}), key: [0; 32], queued_at: Instant::now() });
+        }
+        assert_eq!(pending.starts.len(), 1);
+        let (mut background, mut ordered) = (0, false);
+        assert_eq!(pending.next_background(&mut background).unwrap().message["method"], "checks.run");
+        assert_eq!(pending.next_background(&mut background).unwrap().message["method"], "git.push");
+        assert!(pending.next_background(&mut background).is_none(), "at most {BACKGROUND_PER_PEER} at once");
+        // Both slow calls still run, and the stop goes at once.
+        assert_eq!(pending.next_ordered(&mut ordered).unwrap().message["method"], "task.stop");
+        background -= 1;
+        assert_eq!(pending.next_background(&mut background).unwrap().message["method"], "btw.ask");
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn slow_reads_never_take_the_read_slots_core_reads_catch_up_through() {
+        let mut pending = PendingRequests::default();
+        let slow = ["github.repos", "github.pulls", "usage.get", "usage.limits", "design.preview", "settings.providers", "projects.recentRepos"];
+        for method in slow.iter().chain(["subscribe", "tasks.list", "task.messages", "batch", "host.hello"].iter()) {
+            pending.push(Request { message: json!({"method": method}), key: [0; 32], queued_at: Instant::now() });
+        }
+        assert_eq!(pending.slow_reads.len(), slow.len());
+        let (mut reads, mut slow_reads) = (0, 0);
+        assert_eq!(pending.next_slow_read(&mut slow_reads).unwrap().message["method"], "github.repos");
+        assert_eq!(pending.next_slow_read(&mut slow_reads).unwrap().message["method"], "github.pulls");
+        assert!(pending.next_slow_read(&mut slow_reads).is_none(), "at most {SLOW_READS_PER_PEER} slow reads at once");
+        // With both slow slots busy, every core read still gets an ordinary read slot.
+        let core = std::iter::from_fn(|| pending.next_read(&mut reads)).map(|request| request.message["method"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(core, ["subscribe", "tasks.list", "task.messages", "batch"]);
+        assert!(pending.next_read(&mut reads).is_none(), "at most {READS_PER_PEER} reads at once");
+        reads -= 1;
+        assert_eq!(pending.next_read(&mut reads).unwrap().message["method"], "host.hello");
+        slow_reads -= 1;
+        assert_eq!(pending.next_slow_read(&mut slow_reads).unwrap().message["method"], "usage.get");
+        for method in ["subscribe", "tasks.list", "task.messages", "batch", "host.hello", "task.startStatus"] {
+            assert_eq!(lane(method), Lane::Read, "{method}");
+        }
+    }
+
+    #[test]
+    fn a_slow_read_waits_for_its_own_phone_timeout_not_the_default() {
+        let call = |method: &str| json!({"method": method, "params": {}});
+        let s = Duration::from_secs;
+        // Queued past the default 18 s, but the phone still waits for these...
+        for (method, waited) in [("github.repos", 40), ("github.item", 40), ("usage.get", 55), ("usage.limits", 40), ("design.preview", 35), ("settings.providers", 25), ("projects.recentRepos", 25)] {
+            assert!(!expired(&call(method), s(waited)), "the phone still waits for a queued {method}");
+        }
+        // ...and not past their own timeout less the margin.
+        for (method, waited) in [("github.repos", 43), ("github.search", 43), ("usage.get", 58), ("usage.limits", 43), ("design.preview", 38), ("settings.providers", 28), ("projects.recentRepos", 28)] {
+            assert!(expired(&call(method), s(waited)), "{method} after {waited} s");
+        }
+        // Core reads keep the default.
+        for method in ["subscribe", "tasks.list", "task.messages"] {
+            assert!(expired(&call(method), EXPIRED), "{method}");
+            assert!(!expired(&call(method), s(10)), "{method}");
+        }
     }
 
     #[test]

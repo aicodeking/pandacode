@@ -299,11 +299,18 @@ fn can_drain(archived: bool, limited_at: Option<i64>, limited_until: Option<i64>
 
 /// An agent tool or a remote client queued (or removed) a message. The run-end hook drains
 /// finished tasks; this covers a message queued while the task sits idle.
+/// The desktop's webview answers `queue-changed` itself, so only `serve` drains here (no
+/// double send), and drain_queue still skips a task whose agent is running.
 pub(crate) fn queue_changed(app: &tauri::AppHandle, session_id: &str) {
-    if !active() {
+    if !drains_natively(active()) {
         return;
     }
     drain_queue(app.clone(), session_id.to_owned());
+}
+
+/// Whether a queue change drains natively: only on a headless host, which has no webview.
+fn drains_natively(headless: bool) -> bool {
+    headless
 }
 
 fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
@@ -474,6 +481,21 @@ mod tests {
         assert!(!can_drain(true, None, None, 1000));
         assert!(!can_drain(true, None, Some(999), 1000));
         assert!(!can_drain(true, Some(500), Some(999), 1000));
+    }
+
+    /// Round 17: the desktop's webview drains on `queue-changed`, so the native drain runs
+    /// only under `serve`, and never over a running agent.
+    #[test]
+    fn queue_changes_drain_only_headless_and_idle() {
+        assert!(drains_natively(true));
+        assert!(!drains_natively(false));
+        assert!(!active(), "a desktop (test) process is not headless");
+        let source = include_str!("headless.rs");
+        let hook = &source[source.find("pub(crate) fn queue_changed").unwrap()..];
+        let hook = &hook[..hook.find("\n}\n").unwrap()];
+        assert!(hook.find("if !drains_natively(active())").unwrap() < hook.find("drain_queue(").unwrap());
+        let drain = &source[source.find("pub(crate) fn drain_queue").unwrap()..];
+        assert!(drain.find("agents.contains_key(&session_id)").unwrap() < drain.find("message_queue::take(").unwrap());
     }
 
     #[test]

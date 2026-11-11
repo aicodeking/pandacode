@@ -460,7 +460,7 @@ impl Library {
             return "outdated";
         }
         let present = |w: &Written| match activation.surface.as_str() {
-            "block" => fs::read_to_string(&w.path).ok().map(|text| adapter::block(&text, &meta.id).map(|(body, _)| sha256_hex(body.as_bytes()) == w.sha256)),
+            "block" => adapter::read_text(Path::new(&w.path)).ok().map(|text| adapter::block(&text, &meta.id).map(|(body, _)| sha256_hex(body.as_bytes()) == w.sha256)),
             _ => adapter::file_hash(Path::new(&w.path)).map(|hash| Some(hash == w.sha256)),
         }
         .flatten();
@@ -517,15 +517,21 @@ impl Library {
                     }
                 }
                 if let Surface::Block(file) = adapter::surface(harness, Kind::Rule, *scope, base) {
-                    if let Ok(text) = fs::read_to_string(&file) {
-                        let (ids, other) = adapter::blocks_in(&text);
-                        let path = file.to_string_lossy().into_owned();
-                        for id in ids.iter().filter(|id| !managed.contains(&id.as_str())) {
-                            unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path: path.clone(), detail: format!("Has a PandaCode block for {id} that the library does not track.") });
+                    let path = file.to_string_lossy().into_owned();
+                    match adapter::read_text(&file) {
+                        Ok(text) => {
+                            let (ids, other) = adapter::blocks_in(&text);
+                            for id in ids.iter().filter(|id| !managed.contains(&id.as_str())) {
+                                unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path: path.clone(), detail: format!("Has a PandaCode block for {id} that the library does not track.") });
+                            }
+                            if other {
+                                unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path, detail: "Has instructions PandaCode does not manage.".into() });
+                            }
                         }
-                        if other {
-                            unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path, detail: "Has instructions PandaCode does not manage.".into() });
-                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        // Round 24: oversized, not text, or not a regular file (a link to
+                        // `/dev/zero`, a FIFO) is never read in full.
+                        Err(_) => unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path, detail: "Has instructions PandaCode does not manage.".into() }),
                     }
                 }
             }
