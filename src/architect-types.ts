@@ -69,6 +69,10 @@ export interface TeamWorker extends WorkerProfile {
   assignment: string;
   summary: string;
   error?: string | null;
+  /** Information about the run, such as an effort the model could not take; never a failure. */
+  note?: string | null;
+  /** When the worker's current run started (a follow-up starts a new run); absent on older hosts. */
+  startedAt?: number | null;
   dependsOn: string[];
   files: string[];
   /** Advisory no-edit assignment; legacy workers reserve their declared edit scope. */

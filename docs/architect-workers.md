@@ -14,7 +14,12 @@ open directly from it. Send a
 task normally or start it from the board.
 The architect can delegate several assignments in one call, review their results,
 and send corrections to an existing worker context. **Open workers** shows each
-assignment's streamed response, tools, saved conversation, and approval requests.
+assignment's streamed response, tools and saved conversation.
+
+The team panel's compact **Workers** list (`WorkerList` and `teamTally` in `src/architect-worker-list.ts`) shows one row per
+worker, sorted by status, under a tally ("3 working · 2 done") and a progress bar;
+a row's chevron opens that worker's details. The `?workers` preview seeds a running
+team with a worker in every state.
 
 **Lead guidance** adds your own instructions to the built-in architect rules — for
 example, that the architect should only coordinate and never edit files itself. It
@@ -47,6 +52,114 @@ and the router escalates to a stronger model than every model that failed the
 assignment, for at most 2 retries; after that the lead reports the failure.
 See [model routing](model-routing.md).
 
+## Worker access and effort
+
+**Policy: a lead in Plan or Ask mode still dispatches full-access workers.** The lead's
+permission mode applies to the lead only. This is deliberate (Auto and Review leads too):
+a worker that waited for approvals would stall the whole team.
+
+Workers always run with **full access** (`WORKER_PERMISSION_MODE`, `"full"`, in
+`architect.rs`). Each worker session is created in that mode and set back to it before every
+worker turn, so retries and follow-ups never block. The lead started the team with your
+authority, so the backend (`src-tauri/src/worker_approvals.rs`) answers a worker's requests:
+
+- **Approvals** are granted. A worker's request never flips the task to "waiting" and never
+  appears in the request list remote clients read.
+- **Always-ask tools** (`ALWAYS_ASK` in `src-tauri/src/cloud/deploy.rs`: cloud CLI, scheduled
+  messages) are declined; the worker is told to ask its lead. They are recognised by tool name,
+  from an `Allow <tool>?` label or a bare (MCP-prefixed) tool-name label as Claude's permission
+  prompt uses. On PandaCode's tool host, Codex host tools and Claude's permission prompt the
+  decline itself says so ("Declined: team workers cannot run <tool>; ask your lead…");
+  elsewhere the running turn is told, only on a harness that takes a message mid-turn
+  (Claude-family, Codex, Pi, OpenCode, Devin). A user's own decline still reads "Declined by
+  the user".
+- **Questions** get "decide yourself" where text is accepted. A choice-only question gets the
+  option marked recommended or default: a `recommended`/`default`/`isDefault` flag, a label
+  starting with the word "Recommended", or a label or description ending in a whole
+  "(Recommended)"/"(default)" clause ("No (Recommended)" counts; "(not recommended)",
+  "riskier than recommended", "Unrecommended" and a description such as "Recommended only if
+  you are sure" do not). With none marked it is cancelled, never "Yes" for coming first;
+  answers are all or nothing, so one unmarked choice cancels a multi-question request. Secret
+  questions are cancelled. An answered question leaves the pending lists at once and counts as
+  worker activity for the silence watchdog; one asked while a pooled run changes accounts keeps
+  waiting for the next account (up to two extra minutes).
+- **Audit:** each automatic decision (with the request's first 300 characters) is kept as a
+  note in the worker's transcript. The transcript's approval card for a worker stays only
+  because a remote host on an older PandaCode version can still forward a pending worker
+  approval.
+- **Unresolvable requests** (no automatic answer, an answer that cannot be given, a request with
+  no ID or that could not be saved, a decision the harness could not take while the request
+  waits) end the worker's turn: it fails with the reason (failed, not stopped, everywhere), with
+  no failover and nothing held against the model. The stop's error and transcript note appear
+  only once the run's end confirms the stop ended the run. If the harness ended first (it
+  finished the turn, or crashed, whose own error then stands), the reason is dropped; if the
+  user or the team stopped the worker too, it stays stopped.
+- **Pooled account switch:** when a pooled run moves to another account, every request the old
+  account's process left open is cancelled, a user's own pending approvals and questions too
+  (the new account's process never asked them and cannot answer them): the cards drop, the task
+  reads as running, approval cards forwarded to a bot conversation are withdrawn, and no late
+  answer is sent on to the new account.
+- **Run identity:** a request only acts on the run that raised it. If that run is gone, the
+  request is cleared and never shown (a newer run's status is untouched); a decision after the
+  harness cancelled or expired the request is a no-op; a request after the team paused or
+  stopped the worker is dropped quietly, and Resume picks the worker up.
+
+Worker sessions stay out of manual use, so their full access never carries into a user's own
+chat:
+
+- `readOnly` is advisory, not enforced: it shapes the worker's rules and lets read-only work
+  run alongside writers, but a read-only worker still has full access.
+- A worker session cannot be continued by hand, during or after its team: `architect::check_manual`
+  refuses messages, settings changes and Codex commands that change the conversation.
+- **Console:** opening a worker's harness console is refused (checked when it opens and again
+  right before it starts).
+- **Fork:** Codex `/fork` of a worker session is refused. A transcript fork of a worker (fork
+  at a message) starts in its lead's mode, or Ask if the lead is gone, never in full access.
+- **Remote devices** cannot prompt, steer or resume a team's lead unless "Full access for
+  remote tasks" is on, since its workers would run with full access, and a task they start
+  then gets no saved default team ([remote-access.md](remote-access.md)).
+- A `reasoningEffort` that is not a level (over 32 characters, or anything but letters,
+  digits, dashes and underscores) is refused for an explicit provider and ignored with a note
+  otherwise.
+
+An assignment or follow-up may set `reasoningEffort` (a worker's own sub-worker follow-ups
+accept it too, but the `sub_workers` schema does not advertise it: the worker tool budget
+has no room) (`low`…`max`; some models also
+`off`, `minimal`); it overrides the profile's or the lead's default. It is normalised
+(trimmed, lowercase) and fitted to the chosen model (`architect/model_efforts.rs`):
+- A level is lowered only when the model's harness catalog is known to lack it (the
+  nearest supported level, else the default). With no catalog, the harness's general
+  rule decides and the level is kept: missing data never lowers an effort. Inherited
+  defaults (the lead's own, or a roster profile's for that same model) are kept unless a
+  fresh catalog shows the model lacks them (the scheduler refits before each launch).
+- Catalogs are looked up at dispatch and follow-up only, for the harnesses that will
+  run, and only when an effort is set: such a dispatch can wait up to about 8 seconds
+  for the lookup (including a busy discovery); failures are remembered for a minute. Only a catalog confirmed within the last ten minutes lowers a level; an
+  older one kept after a failed refresh decides nothing. The lookup is the same local CLI
+  model discovery the model picker runs; PandaCode makes no network request of its own for
+  it (a harness CLI may contact its own provider, as it does for the picker).
+- A thinking switch (Kimi's `on`/`off`) gets `on` for any level other than `off`, and a
+  positive level is never lowered to `off` or `none`; `off` and `none` (some Codex
+  catalogs) fit each other.
+- A provider and model the lead names explicitly get an error listing the valid levels.
+  Failover refits the lead's original request to the new model (with none, the new model
+  takes its own default, not the old harness's level), and the scheduler fits
+  once more before each launch from cached data only.
+- If a harness still refuses the effort at startup (Codex and Claude check it; ACP
+  harnesses report that the model does not advertise an adjustable reasoning effort, or
+  the selected `thought_level`/`effort`), the worker is relaunched once on
+  the model's default with the same prompt that launch sent (a parked worker's results,
+  say), without repeating it in the transcript (only the refused turn's prompt row that
+  launch recorded and its error rows are dropped; change records and notes stay; after an
+  app restart nothing is deleted and the prompt may repeat once); this spends no
+  attempt or failover and does not count against the model's health (a worker its team
+  stopped meanwhile is not relaunched, and then the refusal does count). Only a refusal
+  before any reply or tool counts; a second one, or a later error, is a normal failure.
+- Every change is reported in the dispatch or follow-up result and in the worker's
+  `note` (JSON field `note` in the team snapshot and `list_workers`), never in its error.
+  A change before launch is added to an earlier note; a follow-up without
+  `reasoningEffort` clears an effort note.
+
 ## Saved setups and profiles
 
 **Save setup** remembers the complete team for this task and future tasks, across
@@ -63,8 +176,8 @@ and Delete. Deleting a profile retains the applied setup and task histories.
 
 **Use a single agent** disables team inheritance for new tasks while retaining
 your saved setup and profiles. Teams that already have worker history retain their
-team controls so those transcripts remain accessible. Profile changes never grant new permissions;
-the task's existing approval behavior is preserved.
+team controls so those transcripts remain accessible. Profile changes do not change
+the lead's own permission mode; workers always run with full access (see above).
 
 ### Switching during work
 
@@ -106,8 +219,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   The architect batches independent work and can reuse the same model profile for
   several assignments. Queued workers explain dependency, slot, or edit-scope waits
   in the team panel and worker tools. These are advisory task
-  boundaries, not an operating-system filesystem sandbox. Normal harness approval
-  and sandbox behavior applies. Other apps and terminals can still edit files.
+  boundaries, not an operating-system filesystem sandbox. Workers run with full
+  access (see above). Other apps and terminals can still edit files.
 - Dependencies refer to already-created assignments. The scheduler launches work
   only when its dependencies have completed. Assignment keys prevent a retried
   tool call from creating the same worker twice within one objective; a new

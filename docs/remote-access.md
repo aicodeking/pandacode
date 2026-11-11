@@ -248,10 +248,15 @@ approval policy: remote prompts get no more power than local ones. Access (remot
 sender in presence, replay) is checked again when a queued request runs, not only when it arrives.
 
 **Full access for remote tasks** (`remote_full_access` in `remote.json`, off by default): while
-off, `task.start` without a mode starts in `ask`; an explicit `full` in `task.start` or
+off, `task.start` without a mode starts in `ask` and makes a plain task: the saved default agent
+team is not applied (its workers would run with full access), so no team is started remotely; an explicit `full` in `task.start` or
 `task.configure`, and any `task.send`, `task.steer` or mode-less `task.configure` on a task whose
-stored mode is `full`, are refused with `Full access is off for remote tasks on <host>.` This
-prevents accidents; it is not a boundary against a device that can also answer approvals.
+stored mode is `full`, are refused with `Full access is off for remote tasks on <host>.` A task
+that leads an agent team (one with a team configured, active or not) is also refused for
+`task.send`, `task.steer` and `task.teamResume`, whatever the lead's own mode, with `Team workers
+run with full access; allow full access for remote tasks to drive a team remotely.`: team workers
+always run with full access ([architect-workers.md](architect-workers.md)). This prevents
+accidents; it is not a boundary against a device that can also answer approvals.
 
 | Method | Params | Result |
 |---|---|---|
@@ -270,7 +275,7 @@ prevents accidents; it is not a boundary against a device that can also answer a
 | `task.workspaceImage` | `{ sessionId, path, variant: "thumb" | "full", offset? }` | The same chunk shape as `task.attachment`. Uses the local task's workspace image checks: relative paths only, no traversal or escaping symlinks, image types only, and a maximum source size of 8 MiB. Mirrors are refused. |
 
 | `task.send` | `{ sessionId, text }` | `{ queued: boolean }`. Queued if the task is running, like Enter. If the run ended between the check and the queue add, the host takes the entry back and sends it. |
-| `task.teamResume` | `{ sessionId }` | `{}`. The desktop's Resume (`architect_control` with `resume`) for a team that is `paused`, `failed` or `interrupted`; any other team is refused. Resuming starts agents, so it needs the `control` scope and a task stored in `full` needs Full access for remote tasks, as for `task.send`. Hosts without it answer `Unknown method.`, and the phone and desktop mirror say to update that computer. |
+| `task.teamResume` | `{ sessionId }` | `{}`. The desktop's Resume (`architect_control` with `resume`) for a team that is `paused`, `failed` or `interrupted`; any other team is refused. Resuming starts agents, so it needs the `control` scope and Full access for remote tasks, since its workers run with full access (and as for `task.send`). Hosts without it answer `Unknown method.`, and the phone and desktop mirror say to update that computer. |
 | `task.stop` | `{ sessionId }` | `{}`. For a task whose team is running or waiting this is the desktop Stop button (`architect_control` with `stop`): the team is paused, unsettled workers are marked stopped, and the architect's and workers' runs are stopped, also between architect turns when no agent of the task itself runs. Otherwise it stops the task's run (`stop_session`). |
 | `task.steer` | `{ sessionId, text }` | `{}` (as `steer_task`) |
 | `task.configure` | `{ sessionId, provider?, model?, effort?, mode? }` | `{}`. `provider` and `model` together (a provider not installed there is refused as in `task.start`); `effort: null` clears it; `mode` changes permissions. |

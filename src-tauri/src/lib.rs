@@ -73,6 +73,9 @@ mod turn_changes;
 mod usage_keychain;
 mod usage_ledger;
 mod workspace;
+mod worker_approvals;
+mod run_requests;
+use run_requests::{record_request_event, run_end, settle_account_switch, show_settled_stop};
 mod jj;
 mod tray;
 mod headless;
@@ -110,6 +113,8 @@ struct RunningAgent {
     last_event: Arc<std::sync::atomic::AtomicI64>,
     /// A maintenance command on a team's lead: Stop ends this run and leaves the team alone.
     team_maintenance: bool,
+    /// A team worker's launch: only its stops are kept for the team's settle (`worker_approvals`).
+    team_worker: bool,
 }
 impl RunningAgent {
     fn new(input: UnboundedSender<RunInput>, stopped: Arc<AtomicBool>) -> Self {
@@ -118,6 +123,7 @@ impl RunningAgent {
             stopped,
             run_id: uuid::Uuid::new_v4().to_string(),
             team_maintenance: false,
+            team_worker: false,
             approvals: Arc::new(Mutex::new(HashSet::new())),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             started_at_ms: storage::now(),
@@ -182,6 +188,11 @@ impl RunningAgent {
     ) -> std::result::Result<(), tokio::sync::mpsc::error::SendError<RunInput>> {
         if matches!(input, RunInput::Stop) {
             self.stopped.store(true, Ordering::SeqCst);
+            // A user's or team's stop of a worker launch (the automatic worker stop sends on the
+            // input directly). Other agents never settle through the team, so they keep nothing.
+            if self.team_worker {
+                worker_approvals::stopped_by_owner(&self.run_id);
+            }
         } else {
             // An answered approval or question restarts the silence clock.
             self.last_event.store(storage::now(), Ordering::SeqCst);
@@ -201,12 +212,26 @@ fn save_approval(
     save_approval_with_pending(store, approvals, None, run_id, activity)
 }
 
+/// The pending-request save with the task status following it (tests use it directly).
+#[cfg(test)]
 fn save_approval_with_pending(
     store: &Mutex<Store>,
     approvals: &Mutex<HashSet<String>>,
     pending_requests: Option<&Mutex<HashMap<String, AgentEvent>>>,
     run_id: &str,
     activity: &mut AgentEvent,
+) -> Result<()> {
+    save_pending_request(store, approvals, pending_requests, run_id, activity, true)
+}
+
+/// `write_status`: whether the task's running/waiting status follows the pending list.
+fn save_pending_request(
+    store: &Mutex<Store>,
+    approvals: &Mutex<HashSet<String>>,
+    pending_requests: Option<&Mutex<HashMap<String, AgentEvent>>>,
+    run_id: &str,
+    activity: &mut AgentEvent,
+    write_status: bool,
 ) -> Result<()> {
     let request_id = activity
         .request_id
@@ -217,6 +242,9 @@ fn save_approval_with_pending(
     let mut approvals = approvals.lock().map_err(|error| error.to_string())?;
     let mut pending_requests = pending_requests.map(|requests| requests.lock().map_err(|error| error.to_string())).transpose()?;
     update_pending_request(&mut approvals, pending_requests.as_deref_mut(), &request_id, activity);
+    if !write_status {
+        return Ok(());
+    }
     store.lock().map_err(|error| error.to_string())?.status(
         &activity.session_id,
         if approvals.is_empty() {
@@ -225,6 +253,16 @@ fn save_approval_with_pending(
             "waiting"
         },
     )
+}
+
+/// Whether a run is a team worker's: its team admission says so when there is one, otherwise
+/// (a re-attached cloud run) the session's own worker row does. The run's agent and its sink
+/// both use this one answer, so a worker's requests never wait on a person on any launch path.
+fn worker_launch(store: &Store, team: Option<&architect::Admission>, session_id: &str) -> Result<bool> {
+    match team {
+        Some(_) => Ok(worker_approvals::is_worker_launch(team, session_id)),
+        None => Ok(architect::parent_of(store, session_id)?.is_some()),
+    }
 }
 
 fn update_pending_request(
@@ -255,33 +293,8 @@ fn remove_pending_request(
 }
 
 #[cfg(test)]
-mod pending_request_tests {
-    use super::*;
-
-    #[test]
-    fn remote_pending_request_payloads_are_added_and_cancelled_with_the_approval_id() {
-        let request_id = "run-id:provider-id";
-        let mut approvals = HashSet::new();
-        let mut pending = HashMap::new();
-        let request = AgentEvent {
-            session_id: "task-id".into(),
-            kind: "input_request".into(),
-            text: "Choose one".into(),
-            request_id: Some(request_id.into()),
-            data: Some(serde_json::json!({"questions": [{"question": "Which?"}]})),
-            tool: None,
-        };
-        update_pending_request(&mut approvals, Some(&mut pending), request_id, &request);
-        assert!(approvals.contains(request_id));
-        assert_eq!(pending.get(request_id).unwrap().text, "Choose one");
-        assert_eq!(pending.get(request_id).unwrap().data, request.data);
-
-        let cancelled = AgentEvent { kind: "input_cancelled".into(), ..request };
-        update_pending_request(&mut approvals, Some(&mut pending), request_id, &cancelled);
-        assert!(!approvals.contains(request_id));
-        assert!(!pending.contains_key(request_id));
-    }
-}
+#[path = "lib_tests/pending_requests.rs"]
+mod pending_request_tests;
 
 #[cfg(test)]
 mod concurrent_task_tests;
@@ -1538,6 +1551,8 @@ struct PreparedRun {
     assistant: Arc<Mutex<String>>,
     last_event: Arc<std::sync::atomic::AtomicI64>,
     team: Option<architect::Admission>,
+    /// A team worker's run (`worker_launch`): its requests are resolved, never surfaced.
+    team_worker: bool,
 }
 
 #[cfg(test)]
@@ -1747,9 +1762,11 @@ fn prepare_task_run_in_project(
         goal: admission.goal,
         codex_settings: session.codex_settings,
     };
-    architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
+    architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
     let mut agent = RunningAgent::new(tx, stopped.clone());
     agent.team_maintenance = team_maintenance;
+    agent.team_worker = worker_launch(&store, admission.team.as_ref(), &session_id)?;
+    let agent_is_worker = agent.team_worker;
     let run_id = agent.run_id.clone();
     let pending_approvals = agent.approvals.clone();
     let pending_requests = agent.pending_requests.clone();
@@ -1770,6 +1787,7 @@ fn prepare_task_run_in_project(
         assistant,
         last_event,
         team: admission.team,
+        team_worker: agent_is_worker,
     })
 }
 
@@ -1804,7 +1822,9 @@ fn prepare_cloud_attach(
         goal: None,
         codex_settings: session.codex_settings,
     };
-    let agent = RunningAgent::new(tx, stopped);
+    let mut agent = RunningAgent::new(tx, stopped);
+    // A re-attached run has no team admission: whether it is a worker's comes from the store.
+    agent.team_worker = worker_launch(store, None, &session_id)?;
     let prepared = PreparedRun {
         config,
         restore_stage: None,
@@ -1818,6 +1838,7 @@ fn prepare_cloud_attach(
         assistant: agent.assistant.clone(),
         last_event: agent.last_event.clone(),
         team: None,
+        team_worker: agent.team_worker,
     };
     agents.insert(session_id, agent);
     Ok(prepared)
@@ -2047,6 +2068,8 @@ async fn launch_operation_admitted(
         })
         .collect::<Result<Vec<_>>>()?;
     let (tx, rx) = unbounded_channel();
+    // The run's own input, for a team worker request that must stop this run and no other.
+    let own_input = tx.downgrade();
     let stopped = Arc::new(AtomicBool::new(false));
     let PreparedRun {
         mut config,
@@ -2061,6 +2084,7 @@ async fn launch_operation_admitted(
         assistant,
         last_event,
         team,
+        team_worker,
     } = prepare_task_run_in_project(
         &state,
         session_id.clone(),
@@ -2118,8 +2142,7 @@ async fn launch_operation_admitted(
         config.prompt.push_str(&title.instruction());
     }
     if restore_stage.is_none() {
-        let worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
+        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
         if providers::takes_system_instructions(&config.provider) {
             // Cached with the system prompt: paid once, then read at a tenth of the price.
             config.instructions = instructions;
@@ -2162,12 +2185,20 @@ async fn launch_operation_admitted(
         let assistant_sink = assistant.clone();
         let store_sink = store.clone();
         let app_sink = app.clone();
-        let pending_requests_sink = pending_requests.clone();
         let subagents_sink = subagents.clone();
         let goal_reply_sink = goal_reply.clone();
         let goal_agents_sink = agents.clone();
         let native_turn_sink = Mutex::new(String::new());
         let team_sink = team.clone();
+        // The run's own ID for its end, after the sink takes `run_id`.
+        let settle_id = run_id.clone();
+        let own_run = worker_approvals::Run {
+            id: run_id.clone(),
+            input: own_input.clone(),
+            stopped: stopped.clone(),
+            approvals: pending_approvals.clone(),
+            requests: pending_requests.clone(),
+        };
         let coalescer = Arc::new(Mutex::new(providers::Coalescer::default()));
         let coalescer_sink = coalescer.clone();
         let sink: providers::Sink = Arc::new(move |mut e: AgentEvent| {
@@ -2216,6 +2247,21 @@ async fn launch_operation_admitted(
                     }
                 });
             }
+            if e.kind == providers::ACCOUNT_SWITCHED {
+                // Any run: the old account's requests can no longer be answered, so their cards go.
+                let cancelled = settle_account_switch(&store_sink, &own_run, &e.session_id);
+                if !cancelled.is_empty() {
+                    for event in cancelled {
+                        emit_coalesced(&app_sink, &coalescer_sink, event);
+                    }
+                    tray::refresh(&app_sink);
+                }
+                return;
+            }
+            if e.kind == providers::UNANSWERED_APPROVAL {
+                worker_approvals::stop_unanswered(team_worker, &own_run, &e);
+                return;
+            }
             if e.kind == "text" {
                 if let Ok(mut text) = assistant_sink.lock() {
                     text.push_str(&e.text);
@@ -2231,7 +2277,7 @@ async fn launch_operation_admitted(
                     e.kind.as_str(),
                     "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
                 ) {
-                    let saved = save_approval_with_pending(&store_sink, &pending_approvals, Some(&pending_requests_sink), &run_id, &mut e);
+                    let saved = record_request_event(&store_sink, &own_run, team_worker, &goal_agents_sink, &mut e);
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {
                             bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
@@ -2336,6 +2382,8 @@ async fn launch_operation_admitted(
         // The harness and model this run used, for model health.
         let ran = (config.provider.clone(), config.model.clone());
         let reached_harness = Arc::new(AtomicBool::new(false));
+        // Set by the run's own loop when it takes a stop (`providers::stop_taken`).
+        let loop_took_stop = Arc::new(AtomicBool::new(false));
         let result = if stopped.load(Ordering::SeqCst) {
             Ok(())
         } else if team_tools_missing {
@@ -2344,7 +2392,7 @@ async fn launch_operation_admitted(
                     .into(),
             )
         } else {
-            providers::run_with_tools(config, sink, rx, host, reached_harness.clone()).await
+            providers::run_with_tools_reporting(config, sink, rx, host, reached_harness.clone(), loop_took_stop.clone()).await
         };
         flush_coalesced(&app, &coalescer);
         if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
@@ -2352,6 +2400,10 @@ async fn launch_operation_admitted(
             if let Ok(mut registry) = agents.lock() {
                 registry.remove(&session_id);
             }
+            // This run's own entries, whichever run the registry held.
+            worker_approvals::forget_run(&settle_id);
+            architect::forget_launch(&session_id);
+            providers::forget_decline_reasons(&session_id);
             return;
         }
         if let Ok(mut slot) = goal_reply.lock() {
@@ -2396,13 +2448,32 @@ async fn launch_operation_admitted(
                 if let Ok(mut registry) = agents.lock() {
                     registry.remove(&session_id);
                 }
+                worker_approvals::forget_run(&settle_id);
+                architect::forget_launch(&session_id);
+                providers::forget_decline_reasons(&session_id);
                 return;
             }
         }
         // Match the registry -> store lock order used for Start and Stop. Stop
         // cannot arrive between the final stage decision and registry removal.
         let mut registry = agents.lock().ok();
-        let was_stopped = stopped.load(Ordering::SeqCst);
+        // A team worker stopped for a request it could not resolve fails with that reason, unless
+        // its harness finished the turn first. Settled by this run's own ID, registered or not, so
+        // nothing kept for it outlives the run.
+        if loop_took_stop.load(Ordering::SeqCst) {
+            worker_approvals::stop_taken(&settle_id);
+        }
+        let mut settled = worker_approvals::settle_run(&settle_id, stopped.load(Ordering::SeqCst));
+        // No decline reason can be claimed once the run has ended.
+        providers::forget_decline_reasons(&session_id);
+        // The team stopped this worker itself (without a stop through its agent, or before the
+        // automatic one): every client then reads it as stopped, as the team does.
+        if settled.reason.is_some() && store.lock().ok().is_some_and(|db| architect::stopped_by_team(&db, team.as_ref(), &session_id)) {
+            settled = worker_approvals::Settled { stopped: true, ..Default::default() };
+        }
+        let (unresolved, was_stopped) = (settled.reason.clone(), settled.stopped);
+        // The automatic stop's notes and error appear only now that it is confirmed.
+        show_settled_stop(&app, &store, settled);
         // Provider completion revokes callbacks too; a delayed collaboration/MCP
         // request must not write into the next run while the team remains active.
         stopped.store(true, Ordering::SeqCst);
@@ -2410,12 +2481,21 @@ async fn launch_operation_admitted(
         // Only the harness's own outcome counts for model health (Settings → Model routing): a stop
         // says nothing, and PandaCode's own failures before the harness (validation, attachments,
         // connections, team tools) are not the model's.
+        // A worker PandaCode stopped for an unresolvable request is not the model's failure either.
         let provider_error = match &result {
-            Err(error) if !was_stopped && reached_harness.load(Ordering::SeqCst) => Some(error.to_string()),
+            Err(error) if !was_stopped && unresolved.is_none() && reached_harness.load(Ordering::SeqCst) => Some(error.to_string()),
             _ => None,
         };
+        // Decided once here and handed to the team (`RunEnd::Harness`), so both agree.
+        let mut effort_relaunch = false;
         if let Some(error) = &provider_error {
-            model_health::record_failure(&ran.0, &ran.1, error);
+            // A reasoning effort a worker's harness refused at startup says nothing about the
+            // model: the team relaunches the worker without it.
+            let counts = store.lock().map_or(true, |db| architect::counts_against_model(&db, team.as_ref(), &session_id, error));
+            effort_relaunch = !counts;
+            if counts {
+                model_health::record_failure(&ran.0, &ran.1, error);
+            }
         } else if successful {
             model_health::record_success(&ran.0, &ran.1);
         }
@@ -2480,10 +2560,12 @@ async fn launch_operation_admitted(
                     }
                 }
             }
+            // A worker stopped for a request it could not resolve is saved as failed, as every
+            // other client shows it (`run_end`), not as interrupted.
             if let Err(error) = db.finish_task_operation(
                 &session_id,
                 successful,
-                was_stopped,
+                run_end(successful, was_stopped, unresolved.is_some()).0,
                 restore_stage.as_deref(),
             ) {
                 successful = false;
@@ -2541,17 +2623,11 @@ async fn launch_operation_admitted(
                 memory::release_soon();
             }
         }
-        let done = if was_stopped {
-            "Turn stopped"
-        } else if successful {
-            "Turn complete"
-        } else {
-            "Turn failed"
-        };
+        let (ended_stopped, done) = run_end(successful, was_stopped, unresolved.is_some());
         // Before `done`, so the window's tray_seen for the open task lands after it.
-        tray::finished(&app, &session_id, was_stopped, successful);
+        tray::finished(&app, &session_id, ended_stopped, successful);
         let _ = app.emit("agent-event", event(&session_id, "done", done));
-        remote::run_finished(&app, &session_id, successful, was_stopped, done);
+        remote::run_finished(&app, &session_id, successful, ended_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).
         let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
         // Settled machine threads wake this task now that it is idle.
@@ -2585,7 +2661,12 @@ async fn launch_operation_admitted(
         // Read before the team scheduler can start this task's next turn.
         let launch = providers::warm_epoch(&session_id);
         if let Some(registry) = registry.as_ref() {
-            architect::completed(&app, &session_id, team.as_ref(), successful, was_stopped, provider_error.as_deref(), registry);
+            let end = match (&unresolved, &provider_error) {
+                (Some(reason), _) => architect::RunEnd::Unresolved(reason),
+                (None, Some(error)) => architect::RunEnd::Harness { error: error.as_str(), effort_relaunch: Some(effort_relaunch) },
+                (None, None) => architect::RunEnd::Clean,
+            };
+            architect::completed(&app, &session_id, team.as_ref(), successful, was_stopped && unresolved.is_none(), end, registry);
         }
         drop(registry);
         // Start the next turn's agent now, so a follow-up skips the CLI's own startup.

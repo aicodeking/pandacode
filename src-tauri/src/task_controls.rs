@@ -419,8 +419,15 @@ pub(super) async fn fork_codex_task(
     session_id: String,
     remote_id: Option<String>,
 ) -> Result<Session> {
-    let _lease = TaskLease::acquire(&state, &session_id)?;
-    let (source, cwd) = context(&state, &session_id)?;
+    fork_codex(&state, session_id, remote_id).await
+}
+
+/// `/fork`: the task lease refuses a team worker's session, and so does this explicitly, so a
+/// worker's full access can never reach a task the user then runs.
+async fn fork_codex(state: &AppState, session_id: String, remote_id: Option<String>) -> Result<Session> {
+    let _lease = TaskLease::acquire(state, &session_id)?;
+    crate::architect::refuse_worker(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)?;
+    let (source, cwd) = context(state, &session_id)?;
     let adopting = remote_id.is_some();
     if !adopting {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -458,11 +465,13 @@ pub(super) async fn fork_codex_task(
         .db
         .unchecked_transaction()
         .map_err(|e| e.to_string())?;
+    // Never a worker's full access (refused above in any case): a worker's fork takes its lead's mode.
+    let mode = crate::architect::fork_mode(&store, &source);
     let task = store.create_session(
         &source.project_id,
         "codex",
         fork.model.as_deref().unwrap_or(&source.model),
-        &source.mode,
+        &mode,
     )?;
     store.db.execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task.id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
     for (role, content) in history {
@@ -622,18 +631,9 @@ pub(super) async fn start_harness_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<String> {
-    let lease = TaskLease::acquire(&state, &session_id)?;
+    let (lease, task, cwd) = console_task(&state, &session_id)?;
     let store = state.store.clone();
     let terms = state.terminals.clone();
-    let (task, cwd) = {
-        let db = store.lock().map_err(|error| error.to_string())?;
-        let task = db.session(&session_id)?;
-        if crate::context_recovery::pending(&db, &task)? {
-            return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
-        }
-        let cwd = db.workspace_root(&task.project_id, Some(&session_id))?;
-        (task, cwd)
-    };
     if task.provider == "codex" {
         if let Some(remote) = task.resume_id.as_deref() {
             // A native CLI can change the persisted goal while PandaCode is idle.
@@ -686,7 +686,23 @@ pub(super) async fn start_harness_terminal(
     .await
 }
 
+/// The console's opening checks. A team worker's session is refused (by the task lease and
+/// explicitly here): its console would run the harness in the worker's full access.
+fn console_task(state: &AppState, session_id: &str) -> Result<(TaskLease, Session, PathBuf)> {
+    let lease = TaskLease::acquire(state, session_id)?;
+    let db = state.store.lock().map_err(|error| error.to_string())?;
+    crate::architect::refuse_worker(&db, session_id)?;
+    let task = db.session(session_id)?;
+    if crate::context_recovery::pending(&db, &task)? {
+        return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
+    }
+    let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
+    Ok((lease, task, cwd))
+}
+
 fn verify_console_task(store: &Store, expected: &Session) -> Result<Session> {
+    // Checked again right before the console starts.
+    crate::architect::refuse_worker(store, &expected.id)?;
     let current = store.session(&expected.id)?;
     if current.provider != expected.provider
         || current.resume_id != expected.resume_id
@@ -720,6 +736,49 @@ mod command_tests {
             shutdown: AtomicU8::new(0),
         }
     }
+    /// A team with one worker session in full access under an "ask" lead.
+    fn worker_state() -> (AppState, String, String) {
+        let state = state();
+        let (lead, worker) = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let lead = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            let worker = store.create_session(&project.id, "codex", "default", "full").unwrap();
+            store.resume(&worker.id, &uuid::Uuid::new_v4().to_string()).unwrap();
+            store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'w1',?2)", rusqlite::params![lead.id, worker.id]).unwrap();
+            (lead.id, worker.id)
+        };
+        (state, lead, worker)
+    }
+
+    #[test]
+    fn the_task_lease_both_fork_and_console_take_first_refuses_a_worker() {
+        let (state, _lead, worker) = worker_state();
+        let error = TaskLease::acquire(&state, &worker).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+    }
+
+    #[test]
+    fn a_worker_session_gets_no_console() {
+        let (state, _lead, worker) = worker_state();
+        let error = console_task(&state, &worker).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+        // Checked again right before the console starts.
+        let store = state.store.lock().unwrap();
+        let session = store.session(&worker).unwrap();
+        let error = verify_console_task(&store, &session).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_worker_session_cannot_be_forked_into_a_users_task() {
+        let (state, _lead, worker) = worker_state();
+        let error = fork_codex(&state, worker.clone(), None).await.err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+        let tasks: i64 = state.store.lock().unwrap().db.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(tasks, 2, "no new task was created");
+    }
+
     #[test]
     fn console_uses_refreshed_goal_and_rejects_changes_to_its_native_session() {
         let store = Store::open(Path::new(":memory:")).unwrap();

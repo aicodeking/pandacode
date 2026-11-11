@@ -542,6 +542,80 @@ pub struct ReasoningEffortInfo {
     pub description: String,
 }
 
+/// Harnesses that take a steering message into the running turn (`RunInput::Steer`) rather than
+/// holding it for a new one: Claude-family stream input, Codex `turn/steer`, Pi `steer`, and
+/// OpenCode and Devin over ACP.
+pub(crate) fn steers_live(provider: &str) -> bool {
+    matches!(provider, "claude" | "glm" | "mimo" | "codex" | "pi" | "omp" | "opencode" | "devin")
+}
+
+/// The status a run's loop reports when it takes a stop (or pauses a goal on one), so the run's
+/// owner knows the stop, not the harness, ended the turn.
+pub(crate) const STOPPING_STATUS: &str = "Stopping agent";
+pub(crate) const PAUSING_GOAL_STATUS: &str = "Pausing goal";
+
+/// The event a pooled run reports when it moves to another account: the old account's open
+/// requests can no longer be answered, so the run's owner settles them (`account_switched`).
+pub(crate) const ACCOUNT_SWITCHED: &str = "account_switched";
+
+/// Whether the session's pooled run is changing accounts, so input waits for the next account.
+pub(crate) fn switching_accounts(session_id: &str) -> bool {
+    pool::switching(session_id)
+}
+
+/// The event a run reports when it could not apply an approval decision (`approval_step`).
+pub(crate) const UNANSWERED_APPROVAL: &str = "approval_unanswered";
+/// Phrases of the startup errors for a reasoning effort a harness refuses (Codex and Claude
+/// model checks, the provider-wide check), shared with `architect::model_efforts::rejected`.
+pub(crate) const MODEL_REFUSES_EFFORT: &str = "does not support this reasoning effort";
+pub(crate) const UNSUPPORTED_EFFORT: &str = "Unsupported reasoning effort";
+
+/// The decline a tool or harness gets when the user declines an approval.
+pub(crate) const USER_DECLINE: &str = "Declined by the user";
+/// Most decline texts one session keeps (its oldest goes first), so one session's burst of
+/// declines never evicts another's; and a safety cap over all sessions.
+const DECLINE_REASONS_PER_SESSION: usize = 16;
+const DECLINE_REASONS_MAX: usize = 1024;
+/// Decline texts PandaCode chose for approvals it answered itself (a team worker's always-ask tool),
+/// by session and the harness's approval ID. The tool host returns one instead of `USER_DECLINE`;
+/// a user's own decline registers none, so it reads exactly as before. Approval IDs can repeat
+/// across runs (Codex host-tool IDs are small integers), so a reason is scoped to its session
+/// and a session's reasons are dropped when its run ends (`forget_decline_reasons`).
+/// Kept apart from `worker_approvals`' run registry: the tool host claims it inside the run and
+/// knows only its session, not the team run.
+static DECLINE_REASONS: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
+
+pub(crate) fn set_decline_reason(session_id: &str, id: &str, reason: &str) {
+    let mut reasons = DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner());
+    reasons.retain(|(session, known, _)| !(session == session_id && known == id));
+    if reasons.iter().filter(|(session, _, _)| session == session_id).count() >= DECLINE_REASONS_PER_SESSION {
+        if let Some(oldest) = reasons.iter().position(|(session, _, _)| session == session_id) {
+            reasons.remove(oldest);
+        }
+    }
+    if reasons.len() >= DECLINE_REASONS_MAX {
+        reasons.remove(0);
+    }
+    reasons.push((session_id.to_owned(), id.to_owned(), reason.to_owned()));
+}
+
+/// Claims the reason registered for this approval, if any (also on approval, so none is left).
+pub(crate) fn take_decline_reason(session_id: &str, id: &str) -> Option<String> {
+    let mut reasons = DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner());
+    let index = reasons.iter().position(|(session, known, _)| session == session_id && known == id)?;
+    Some(reasons.remove(index).2)
+}
+
+/// Drops every reason left for a session (its run ended, so none can be claimed any more).
+pub(crate) fn forget_decline_reasons(session_id: &str) {
+    DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner()).retain(|(session, _, _)| session != session_id);
+}
+
+/// The text a declined approval returns: PandaCode's own reason, else the user's decline.
+pub(crate) fn decline_text(session_id: &str, id: &str) -> String {
+    take_decline_reason(session_id, id).unwrap_or_else(|| USER_DECLINE.into())
+}
+
 pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result<(), String> {
     let valid = match (provider, effort) {
         (
@@ -568,7 +642,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     if valid {
         Ok(())
     } else {
-        Err("Unsupported reasoning effort for this provider".into())
+        Err(format!("{UNSUPPORTED_EFFORT} for this provider"))
     }
 }
 
@@ -2000,6 +2074,7 @@ impl Protocol {
             return Some(decision);
         }
         let request = self.pending.remove(id)?;
+        let declined = decline_text(&self.config.session_id, id);
         Some(match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
             "zcode" => zcode::permission_decision(&request, approved),
@@ -2029,7 +2104,7 @@ impl Protocol {
                 json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
             }
             _ => {
-                json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":if approved {json!({"behavior":"allow","updatedInput":request["request"]["input"]})} else {json!({"behavior":"deny","message":"Declined by the user"})}}})
+                json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":if approved {json!({"behavior":"allow","updatedInput":request["request"]["input"]})} else {json!({"behavior":"deny","message":declined})}}})
             }
         })
     }
@@ -2200,7 +2275,7 @@ impl Protocol {
                                 .iter()
                                 .any(|option| &option.id == effort)
                         }) {
-                            return Err("The selected Codex model does not support this reasoning effort. Choose another effort or use harness settings.".into());
+                            return Err(format!("The selected Codex model {MODEL_REFUSES_EFFORT}. Choose another effort or use harness settings."));
                         }
                     }
                     self.codex_goal_ready(&mut step)?;
@@ -2563,7 +2638,7 @@ impl Protocol {
                                     .iter()
                                     .any(|option| &option.id == effort)
                                 {
-                                    return Err("The selected Claude model does not support this reasoning effort. Choose another effort or use harness settings.".into());
+                                    return Err(format!("The selected Claude model {MODEL_REFUSES_EFFORT}. Choose another effort or use harness settings."));
                                 }
                             }
                         }
@@ -3143,6 +3218,15 @@ pub async fn run(
 
 tokio::task_local! {
     static HARNESS: Arc<std::sync::atomic::AtomicBool>;
+    /// Set when the run's own loop takes a `RunInput::Stop` (`stop_taken`): its owner then knows
+    /// the stop, not the harness, ended the turn.
+    static STOP_TAKEN: Arc<std::sync::atomic::AtomicBool>;
+}
+
+/// The run's loop took a stop. Every loop that takes `RunInput::Stop` calls this (and still
+/// reports `STOPPING_STATUS` for the window).
+pub(crate) fn stop_taken() {
+    let _ = STOP_TAKEN.try_with(|taken| taken.store(true, std::sync::atomic::Ordering::SeqCst));
 }
 
 #[cfg(test)]
@@ -3178,7 +3262,9 @@ fn reached_harness() {
     let _ = HARNESS.try_with(|reached| reached.store(true, std::sync::atomic::Ordering::SeqCst));
 }
 
-/// `harness` is set once the run reaches the harness (`reached_harness`).
+/// `harness` is set once the run reaches the harness (`reached_harness`). Tests' entry point;
+/// the app runs `run_with_tools_reporting`.
+#[cfg(test)]
 pub async fn run_with_tools(
     config: RunConfig,
     sink: Sink,
@@ -3186,14 +3272,26 @@ pub async fn run_with_tools(
     host: Option<ToolHost>,
     harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
+    run_with_tools_reporting(config, sink, input, host, harness, Default::default()).await
+}
+
+/// `run_with_tools`, also setting `taken` once the run's loop takes a stop (`stop_taken`).
+pub async fn run_with_tools_reporting(
+    config: RunConfig,
+    sink: Sink,
+    input: UnboundedReceiver<RunInput>,
+    host: Option<ToolHost>,
+    harness: Arc<std::sync::atomic::AtomicBool>,
+    taken: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
     let identity = Protocol::new(config.clone());
     sink(identity.event("status", "Starting agent", None));
     // A goal operation is acknowledged by its own turn, so it is never continued elsewhere.
     let pooled = config.goal.is_none() && crate::account_pool::enabled(&config.provider) && !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let result = if pooled {
-        HARNESS.scope(harness, pool::run(config, sink.clone(), input, host)).await
+        STOP_TAKEN.scope(taken, HARNESS.scope(harness, pool::run(config, sink.clone(), input, host))).await
     } else {
-        HARNESS.scope(harness, run_inner(config, sink.clone(), input, host)).await
+        STOP_TAKEN.scope(taken, HARNESS.scope(harness, run_inner(config, sink.clone(), input, host))).await
     };
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
@@ -3631,14 +3729,14 @@ async fn run_process_with_tools(
                             if let Some(server) = &mcp { server.stop(); }
                             if let Some(step)=protocol.stop_goal() {
                                 input_open=false;
-                                sink(protocol.event("status","Pausing goal",None));
+                                stop_taken();sink(protocol.event("status",PAUSING_GOAL_STATUS,None));
                                 jobs.abort_all(); queued.clear();
                                 let cancel=protocol.cancel_requests();
                                 apply_step(&mut protocol,cancel,&sink,&mut stdin,&mut jobs,&mut queued).await?;
                                 if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
                                 continue;
                             }
-                            input_open=false;stopped=true;sink(protocol.event("status","Stopping agent",None));
+                            input_open=false;stopped=true;stop_taken();sink(protocol.event("status",STOPPING_STATUS,None));
                             jobs.abort_all(); queued.clear();
                             let step=protocol.cancel_requests();
                             let _=tokio::time::timeout(Duration::from_millis(500),apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued)).await;
@@ -4148,6 +4246,74 @@ mod tests {
             assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
             assert!(review_supported(provider, "ask").is_ok());
         }
+    }
+
+    /// A loop that takes a stop from the run's input must say so (`STOPPING_STATUS`), or a team
+    /// worker's automatic stop reads as "finished first" and its failure is lost.
+    #[test]
+    fn one_sessions_burst_of_declines_never_evicts_anothers() {
+        set_decline_reason("quiet-session", "7", "Declined: team workers cannot run it.");
+        for i in 0..100 {
+            set_decline_reason("busy-session", &i.to_string(), "Declined: team workers cannot run it.");
+        }
+        assert!(take_decline_reason("quiet-session", "7").is_some(), "the other session keeps its reason");
+        assert!(take_decline_reason("busy-session", "99").is_some(), "the newest is kept");
+        assert!(take_decline_reason("busy-session", "0").is_none(), "the busy session's oldest went first");
+        forget_decline_reasons("busy-session");
+    }
+
+    #[test]
+    fn every_input_loop_that_takes_a_stop_reports_it() {
+        let marker = ["Some(RunInput", "::Stop)"].concat();
+        for (name, source) in [("providers.rs", include_str!("providers.rs")), ("providers/pool.rs", include_str!("providers/pool.rs"))] {
+            for (at, _) in source.match_indices(&marker) {
+                let arm = &source[at..(at + 1500).min(source.len())];
+                assert!(arm.contains("stop_taken()"), "{name}: an input loop takes a stop without marking it (`stop_taken`)");
+                assert!(arm.contains("STOPPING_STATUS"), "{name}: an input loop takes a stop without reporting STOPPING_STATUS");
+            }
+        }
+        // The pool's stop taken between accounts marks it as well.
+        let pool = include_str!("providers/pool.rs");
+        let between = pool.find("Stopped while the run changed accounts").expect("the pool's stop between accounts");
+        assert!(pool[between..between + 400].contains("stopped_between_accounts("));
+        let helper = pool.find("fn stopped_between_accounts(").unwrap();
+        assert!(pool[helper..helper + 200].contains("super::stop_taken();"));
+    }
+
+    #[tokio::test]
+    async fn a_taken_stop_sets_the_runs_flag_and_only_inside_its_run() {
+        let taken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        STOP_TAKEN.scope(taken.clone(), async { stop_taken() }).await;
+        assert!(taken.load(std::sync::atomic::Ordering::SeqCst));
+        // Outside any run it is a no-op.
+        stop_taken();
+    }
+
+    #[test]
+    fn a_decision_after_claude_cancelled_its_permission_reports_nothing() {
+        let mut p = Protocol::new(config("claude"));
+        let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}})).unwrap();
+        let id = step.events.iter().find(|e| e.kind == "approval").unwrap().request_id.clone().unwrap();
+        p.receive(json!({"type":"control_cancel_request","request_id":"r"})).unwrap();
+        // The automatic decision arrives late: nothing waits on it, so the worker keeps running.
+        let late = p.approval_step(&id, true);
+        assert!(late.events.is_empty() && late.write.is_empty(), "{:?}", late.events);
+    }
+
+    #[test]
+    fn claudes_permission_for_an_always_ask_tool_is_recognised_for_team_workers() {
+        let mut cfg = config("claude");
+        cfg.mode = "full".into();
+        let mut p = Protocol::new(cfg);
+        let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"mcp__pandacode__pandacode_cloud_cli","input":{"args":["deploy"]}}})).unwrap();
+        let event = step.events.iter().find(|e| e.kind == "approval").expect("Claude asks for it");
+        // The real label is the bare tool name; the data keeps only scalar keys.
+        assert_eq!(event.text, "mcp__pandacode__pandacode_cloud_cli");
+        assert_eq!(event.data.as_ref().unwrap()["type"], "control_request");
+        assert_eq!(crate::worker_approvals::always_ask_tool(event), Some("pandacode_cloud_cli"));
+        let mut other = event.clone();
+        other.text = "mcp__pandacode__pandacode_status".into();
+        assert_eq!(crate::worker_approvals::always_ask_tool(&other), None);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use tauri::Manager;
 
 use rusqlite::{params, OptionalExtension};
 
-use super::{active, load, text, Assignment, TeamConfig, TeamSnapshot, WorkerProfile, HARNESSES, PAGE_BYTES};
+use super::{active, load, model_efforts, text, Assignment, TeamConfig, TeamSnapshot, WorkerProfile, HARNESSES, PAGE_BYTES};
 use crate::model_routing::{self, Job};
 use crate::model_health;
 use crate::panda_router::{Mode, PoolModel, Route, Routed, TaskContext};
@@ -213,10 +213,6 @@ pub(super) async fn auto_routes(config: &TeamConfig, langs: &[String], chains: &
     auto_from(keys, model_routing::route_jobs(pool(config), jobs, Some(mode)).await, mode)
 }
 
-pub(super) fn effort(provider: &str, effort: Option<&String>) -> Option<String> {
-    effort.filter(|e| crate::providers::validate_reasoning_effort(provider, Some(e)).is_ok()).cloned()
-}
-
 fn money(usd: f64) -> String {
     if usd < 0.01 { format!("${usd:.4}") } else { format!("${usd:.2}") }
 }
@@ -230,30 +226,61 @@ pub(super) fn usable(profile: &WorkerProfile) -> bool {
 /// team without the lead's usable model uses its first usable entry, else the lead's own model), and says which in one line. A fresh assignment
 /// in Cheap or Balanced mode opens on the ladder's first (cheapest safe) rung and escalates from there;
 /// Best mode and escalations take the policy's pick.
-pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment, routes: &AutoRoutes) -> Result<(WorkerProfile, String)> {
+/// The model a route staffs: Cheap keeps its contract (the opener must clear the minimum lower
+/// bound, else the policy pick); Best mode and escalations take the policy's pick.
+fn opener<'a>(route: &'a AutoRoute) -> Option<&'a Routed> {
+    match route.mode {
+        _ if !route.failed.is_empty() => None,
+        Mode::Quality => None,
+        Mode::Cheapest => route.ladder.iter().find(|m| m.p_success_lower >= model_routing::min_p()),
+        _ => route.ladder.first(),
+    }
+}
+
+/// The harness an assignment will run on, before staffing it, so only that catalog is looked up.
+pub(super) fn planned_provider(config: &TeamConfig, lead: &storage::Session, key: &str, routes: &AutoRoutes) -> String {
+    match routes.get(key) {
+        Some(Ok(route)) if route.pick.is_some() => opener(route).or(route.pick.as_ref()).map(|m| m.provider.clone()).unwrap_or_default(),
+        _ => unrouted(config, lead).provider,
+    }
+}
+
+/// An unrouted assignment's model: the lead's own in an open auto team; otherwise the lead's
+/// entry, else the first usable one, else the lead's own model. Its effort is the default.
+fn unrouted(config: &TeamConfig, lead: &storage::Session) -> WorkerProfile {
+    let own = || WorkerProfile {
+        id: AUTO.into(),
+        name: lead.model.clone(),
+        provider: lead.provider.clone(),
+        model: lead.model.clone(),
+        reasoning_effort: lead.reasoning_effort.clone(),
+    };
+    if config.auto && !config.roster_only {
+        return own();
+    }
+    let entries = || config.workers.iter().filter(|p| usable(p));
+    entries().find(|p| p.provider == lead.provider && p.model == lead.model).or_else(|| entries().next()).cloned().unwrap_or_else(own)
+}
+
+/// Returns the profile, the routing note, and how the effort was fitted to the model.
+pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment, routes: &AutoRoutes) -> Result<(WorkerProfile, String, Option<String>)> {
     if assignment.provider.is_some() || assignment.model.is_some() {
         return Err("Use either profileId or provider and model, not both.".into());
     }
     let wanted = assignment.reasoning_effort.as_ref();
     let route = routes.get(&assignment.key).cloned().unwrap_or(Err("routing is off"));
-    let reason = match route {
-        Ok(AutoRoute { pick: Some(policy), ladder, mode, decided_by, failed, difficulty, category, profiler }) => {
-            // Cheap keeps its contract: the opener must clear the minimum lower bound, else the policy pick.
-            let opener = match mode {
-                _ if !failed.is_empty() => None,
-                Mode::Quality => None,
-                Mode::Cheapest => ladder.iter().find(|m| m.p_success_lower >= model_routing::min_p()),
-                _ => ladder.first(),
-            };
+    let reason = match &route {
+        Ok(routed @ AutoRoute { pick: Some(policy), ladder, decided_by, failed, difficulty, category, profiler, .. }) => {
+            let opener = opener(routed);
             let pick = opener.cloned().unwrap_or_else(|| policy.clone());
             let roster = config.workers.iter().find(|p| p.provider == pick.provider && p.model == pick.model);
             if config.roster_only && roster.is_none() {
                 return Err("Panda Router picked a model outside this team.".into());
             }
-            let reasoning_effort = effort(&pick.provider, wanted).or_else(|| roster.and_then(|p| p.reasoning_effort.clone()));
+            let (reasoning_effort, adjusted) = model_efforts::apply(&pick.provider, &pick.model, wanted, roster.and_then(|p| p.reasoning_effort.as_ref()));
             let label = if pick.name.contains('·') { pick.name.clone() } else { format!("{} · {}", pick.name, pick.provider) };
             // The keyword heuristic stands in while the profiler downloads; say so.
-            let rough = if profiler == "heuristic" { ", heuristic" } else { "" };
+            let rough = if *profiler == "heuristic" { ", heuristic" } else { "" };
             // The rung the opener sits on (Cheap may skip rungs below min P).
             let rung = opener.and_then(|o| ladder.iter().position(|m| m.card_id == o.card_id)).map_or(1, |i| i + 1);
             let step = match opener {
@@ -274,35 +301,15 @@ pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &A
                 model: pick.model,
                 reasoning_effort,
             };
-            return Ok((profile, note));
+            return Ok((profile, note, adjusted));
         }
         Ok(_) => "no rated model fits",
         Err(reason) => reason,
     };
-    let profile = if config.auto && !config.roster_only {
-        WorkerProfile {
-            id: AUTO.into(),
-            name: lead.model.clone(),
-            provider: lead.provider.clone(),
-            model: lead.model.clone(),
-            reasoning_effort: effort(&lead.provider, wanted).or_else(|| lead.reasoning_effort.clone()),
-        }
-    } else {
-        // The lead's entry, else the first usable one; with none usable, the lead's own model.
-        let entries = || config.workers.iter().filter(|p| usable(p));
-        match entries().find(|p| p.provider == lead.provider && p.model == lead.model).or_else(|| entries().next()) {
-            Some(entry) => WorkerProfile { reasoning_effort: effort(&entry.provider, wanted).or_else(|| entry.reasoning_effort.clone()), ..entry.clone() },
-            None => WorkerProfile {
-                id: AUTO.into(),
-                name: lead.model.clone(),
-                provider: lead.provider.clone(),
-                model: lead.model.clone(),
-                reasoning_effort: effort(&lead.provider, wanted).or_else(|| lead.reasoning_effort.clone()),
-            },
-        }
-    };
+    let profile = unrouted(config, lead);
+    let (reasoning_effort, adjusted) = model_efforts::apply(&profile.provider, &profile.model, wanted, profile.reasoning_effort.as_ref());
     let note = format!("not routed ({reason}), using {} · {}", profile.name, profile.provider);
-    Ok((profile, note))
+    Ok((WorkerProfile { reasoning_effort, ..profile }, note, adjusted))
 }
 
 #[derive(Deserialize)]

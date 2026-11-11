@@ -1075,6 +1075,12 @@ pub(crate) fn approval_requested(app: &tauri::AppHandle, session_id: &str, reque
     tauri::async_runtime::spawn(async move { gateway::approval_requested(&app, &session_id, &request_id, &text).await });
 }
 
+/// The run withdrew these approvals (its pooled account changed): bot conversations stop
+/// waiting on them (`gateway::approvals_withdrawn`).
+pub(crate) fn approvals_withdrawn(session_id: &str, request_ids: &[String]) {
+    gateway::approvals_withdrawn(session_id, request_ids);
+}
+
 /// Logs activity from async code without holding the store lock across an await.
 pub(crate) fn note(app: &tauri::AppHandle, bot_id: &str, kind: &str, summary: &str, detail: Value) {
     let state = app.state::<AppState>();

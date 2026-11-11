@@ -528,15 +528,20 @@ impl Context {
             session_id: self.session_id.clone(),
             kind: "approval".into(),
             text: format!("Allow {name}?\n{}", preview_json(args, TOOL_INPUT_LIMIT)),
-            request_id: Some(id),
+            request_id: Some(id.clone()),
             data: None,
             tool: None,
         });
         let wait = crate::remote::orchestrate::approval_wait(name).unwrap_or(Duration::from_secs(300));
         match tokio::time::timeout(wait, receive).await {
-            Ok(Ok(true)) => Ok(()),
-            Ok(Ok(false)) => Err("Declined by the user".into()),
-            _ => Err("App approval expired or was cancelled".into()),
+            Ok(Ok(false)) => Err(crate::providers::decline_text(&self.session_id, &id)),
+            outcome => {
+                crate::providers::take_decline_reason(&self.session_id, &id);
+                match outcome {
+                    Ok(Ok(true)) => Ok(()),
+                    _ => Err("App approval expired or was cancelled".into()),
+                }
+            }
         }
     }
     fn activity(&self, id: &str, name: &str, status: &str, input: &str, output: &str) {
@@ -813,6 +818,41 @@ mod tests {
                 assert_eq!(result["result"]["isError"], !approved);
                 assert_eq!(count.load(Ordering::SeqCst), usize::from(approved));
                 assert!(server.current().approvals.lock().unwrap().is_empty());
+            }
+        }
+    }
+    #[tokio::test]
+    async fn a_team_worker_decline_reaches_the_tool_result_and_a_user_decline_is_unchanged() {
+        let reason = "Declined: team workers cannot run pandacode_delegate; ask your lead to run it or decide, then continue with the rest of your work.";
+        for worker in [false, true] {
+            let mut protected = host();
+            protected.approval_tools.insert("pandacode_delegate".into());
+            let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| {
+                let _ = sender.send(event);
+            }), "ask")
+            .await
+            .unwrap();
+            let request = request(&server, call(json!(1), json!({})), "");
+            let answer = async {
+                let pending = loop {
+                    let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
+                    if event.kind == "approval" {
+                        break event.request_id.unwrap();
+                    }
+                };
+                if worker {
+                    crate::providers::set_decline_reason("task", &pending, reason);
+                }
+                assert!(server.approve(&pending, false));
+            };
+            let ((_, result), ()) = tokio::join!(request, answer);
+            let text = result["result"].to_string();
+            assert_eq!(result["result"]["isError"], true);
+            if worker {
+                assert!(text.contains(reason) && !text.contains(crate::providers::USER_DECLINE), "{text}");
+            } else {
+                assert!(text.contains(crate::providers::USER_DECLINE) && !text.contains("team workers"), "{text}");
             }
         }
     }

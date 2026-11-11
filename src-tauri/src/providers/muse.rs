@@ -542,7 +542,16 @@ impl Protocol {
             .map(|command| format!("Run `{command}`"))
             .or_else(|| subject["path"].as_str().map(|path| format!("{} {path}", field(params, "toolName"))))
             .unwrap_or_else(|| format!("Allow {}?", field(params, "toolName")));
+        // Which decisions Muse offers, so a team worker's auto-approval can decline
+        // (and keep going) when there is no approve choice, instead of waiting.
+        let choices = json!({"approve": muse_choice(params, true).is_some(), "deny": muse_choice(params, false).is_some()});
         self.approval(value, label, step);
+        if let Some(event) = step.events.last_mut().filter(|event| event.kind == "approval") {
+            let data = event.data.get_or_insert_with(|| json!({}));
+            if let Some(data) = data.as_object_mut() {
+                data.insert("museChoices".into(), choices);
+            }
+        }
         Ok(())
     }
 
@@ -673,11 +682,7 @@ impl Protocol {
     /// the prompt stays open instead of sending an ID Muse would refuse.
     pub(super) fn muse_decide(&mut self, request: &Value, approved: bool) -> Option<Value> {
         let params = &request["params"];
-        let wanted: &[&str] = if approved { &["approved", "approvedForSession"] } else { &["denied", "abort"] };
-        let choice = wanted.iter().find_map(|decision| {
-            params["availableChoices"].as_array().into_iter().flatten()
-                .find(|c| c["decision"] == *decision && c["choiceId"].as_str().is_some_and(|id| !id.is_empty()))
-        })?;
+        let choice = muse_choice(params, approved)?;
         Some(self.muse_request("approval/decide", json!({
             "commandId":command_id(),"sessionId":params["sessionId"],"approvalId":params["approvalId"],
             "choiceId":choice["choiceId"],"requirementId":params["currentRequirementId"]
@@ -739,6 +744,15 @@ impl Protocol {
         }
         json!({"jsonrpc":"2.0","id":900,"method":"turn/interrupt","params":params})
     }
+}
+
+/// The offered one-time choice for approving or denying, if any.
+fn muse_choice(params: &Value, approved: bool) -> Option<&Value> {
+    let wanted: &[&str] = if approved { &["approved", "approvedForSession"] } else { &["denied", "abort"] };
+    wanted.iter().find_map(|decision| {
+        params["availableChoices"].as_array().into_iter().flatten()
+            .find(|c| c["decision"] == *decision && c["choiceId"].as_str().is_some_and(|id| !id.is_empty()))
+    })
 }
 
 #[cfg(test)]
@@ -1135,6 +1149,22 @@ mod tests {
         assert!(p.muse_user_input(&id, json!({"answers":{"which-fruits":["Apple","Banana"]}})).is_err());
         let step = p.muse_user_input(&id, json!({"answers":{"which-fruits":["Banana"]}})).unwrap();
         assert_eq!(step.write[0]["params"]["answers"], json!([{"questionId":"which-fruits","selectedLabel":"Banana"}]));
+    }
+
+    #[test]
+    fn approval_events_report_which_decisions_are_offered() {
+        let (mut p, _) = started("ask", "default", false);
+        let event = p.receive(approval_request()).unwrap().events.remove(0);
+        assert_eq!(event.data.unwrap()["museChoices"], json!({"approve":true,"deny":true}));
+        // Recorded choices with only a reject: a worker declines and Muse continues.
+        let mut reject_only = approval_request();
+        reject_only["params"]["availableChoices"] = json!([{"choiceId":"abort","label":"Reject","decision":"abort","scope":"once","acceptsFeedback":true}]);
+        let (mut p, _) = started("ask", "default", false);
+        let event = p.receive(reject_only).unwrap().events.remove(0);
+        assert_eq!(event.data.as_ref().unwrap()["museChoices"], json!({"approve":false,"deny":true}));
+        let id = event.request_id.unwrap();
+        assert_eq!(p.approval_step(&id, false).write[0]["params"]["choiceId"], "abort");
+        assert!(!p.pending.contains_key(&id));
     }
 
     #[test]

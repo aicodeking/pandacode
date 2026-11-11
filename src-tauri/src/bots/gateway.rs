@@ -37,6 +37,21 @@ fn pending() -> &'static Pending {
     PENDING.get_or_init(Default::default)
 }
 
+/// Forgets approvals the run withdrew (its pooled account changed, so they can never be
+/// answered): a bot conversation no longer reads as waiting on them. A message already posted
+/// to a chat channel stays there (channels offer no edit or delete); a reply to it skips to the
+/// next live request, as for any request answered elsewhere.
+pub(crate) fn approvals_withdrawn(session_id: &str, request_ids: &[String]) {
+    if let Ok(mut map) = pending().lock() {
+        if let Some(list) = map.get_mut(session_id) {
+            list.retain(|(id, _)| !request_ids.contains(id));
+            if list.is_empty() {
+                map.remove(session_id);
+            }
+        }
+    }
+}
+
 /// What an inbound text asks for, before it is treated as a message to the agent.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
@@ -482,6 +497,16 @@ pub(crate) async fn stop_bot(app: &tauri::AppHandle, bot_id: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn withdrawn_approvals_leave_the_bot_conversation() {
+        let session = "withdrawn-approvals-session";
+        super::pending().lock().unwrap().insert(session.into(), vec![("run:1".into(), "Run `ls`".into()), ("run:2".into(), "Run `pwd`".into())]);
+        super::approvals_withdrawn(session, &["run:1".to_string()]);
+        assert_eq!(super::pending().lock().unwrap().get(session).map(Vec::len), Some(1));
+        super::approvals_withdrawn(session, &["run:2".to_string()]);
+        assert!(!super::pending().lock().unwrap().contains_key(session), "no longer waiting");
+    }
+
     use super::*;
 
     #[test]

@@ -79,6 +79,9 @@ pub(crate) struct Start {
     pub effort: Option<String>,
     /// Images the viewer sent with `image.put` for the first prompt.
     pub image_ids: Vec<String>,
+    /// Whether the saved default team may be applied. Off when the host has no "Full access for
+    /// remote tasks": a team's workers always run in full access, so the start makes a plain task.
+    pub team: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +114,7 @@ pub(crate) fn parse(params: &Value) -> Result<Start> {
         mode: name_param(params, "mode")?,
         effort: name_param(params, "effort")?,
         image_ids: super::images::ids_param(params)?,
+        team: true,
     })
 }
 
@@ -656,7 +660,11 @@ fn attach(store: &Mutex<crate::storage::Store>, root: &Path, branch: &str, made:
 
 /// The host task a start makes.
 pub(super) fn create_task(store: &crate::storage::Store, project: &str, start: &Start) -> Result<crate::storage::Session> {
-    let task = crate::architect::profiles::create_user_task(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?;
+    let task = if start.team {
+        crate::architect::profiles::create_user_task(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?
+    } else {
+        crate::architect::profiles::create_task_without_team(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?
+    };
     if start.effort.is_some() {
         store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
     }

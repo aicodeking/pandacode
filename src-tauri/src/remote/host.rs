@@ -566,7 +566,8 @@ fn cap_mode(call: Call, full_access: bool) -> Result<Call> {
     let refuse = || Err(full_access_off());
     Ok(match call {
         Call::Start(start) if start.mode.as_deref() == Some("full") => return refuse(),
-        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), ..start }),
+        // No saved default team either: its workers would run in full access.
+        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), team: false, ..start }),
         Call::Configure { mode: Some(mode), .. } if mode == "full" => return refuse(),
         other => other,
     })
@@ -584,6 +585,32 @@ fn allow_task_mode(stored: &str, requested: Option<&str>, full_access: bool) -> 
         return Err(full_access_off());
     }
     Ok(())
+}
+
+/// Told to a remote device that would drive a team without "Full access for remote tasks".
+const TEAM_NEEDS_FULL_ACCESS: &str = "Team workers run with full access; allow full access for remote tasks to drive a team remotely.";
+
+/// Without "Full access for remote tasks", a task that leads a team (configured, active or
+/// not) is not prompted, steered or resumed remotely: its lead would dispatch workers, which
+/// always run in full access, whatever the lead's own mode.
+fn allow_remote_team(store: &crate::storage::Store, session_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let leads_team: bool = store
+        .db
+        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [session_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if leads_team { Err(TEAM_NEEDS_FULL_ACCESS.into()) } else { Ok(()) }
+}
+
+/// `allow_remote_team` off the async runtime.
+async fn allow_remote_team_for(state: &AppState, session_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let (store, id) = (state.store.clone(), session_id.to_owned());
+    crate::blocking(move || allow_remote_team(&*store.lock().map_err(|e| e.to_string())?, &id, full_access)).await
 }
 
 /// The response to one request frame, or None when it has no usable id.
@@ -1422,6 +1449,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         Call::PutImage(chunk) => images::put(app, from, chunk).await,
         Call::Send { session_id, text, image_ids } => {
             allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            allow_remote_team_for(&state, &session_id, full_access).await?;
             // Only images this caller just sent; they are now this task's.
             images::claim(app, from, &image_ids)?;
             // Like Enter in the composer: a running task queues the message.
@@ -1461,6 +1489,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         Call::TeamResume { session_id } => {
             // Resuming starts agents again, so it follows the rule for prompts, not for Stop.
             allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            allow_remote_team_for(&state, &session_id, full_access).await?;
             let store = state.store.clone();
             let id = session_id.clone();
             crate::blocking(move || {
@@ -1473,6 +1502,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::Steer { session_id, text } => {
             allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            // A steered lead can dispatch workers too.
+            allow_remote_team_for(&state, &session_id, full_access).await?;
             message_queue::steer_task(app.clone(), state, session_id, text).await
         }
         Call::Configure { session_id, model, effort, mode } => {
@@ -3373,6 +3404,9 @@ mod tests {
             provider: "codex".into(),
             model: "test-model".into(),
             reasoning_effort: None,
+            note: None,
+            effort_retried: false,
+            started_at: None,
             status: status.into(),
             assignment: "Inspect the implementation".into(),
             summary: "Worker summary".into(),
@@ -4355,6 +4389,42 @@ mod tests {
         assert!(off("full", Some("ask")).is_ok(), "switching it to an approving mode");
         assert!(off("ask", None).is_ok() && off("auto", None).is_ok());
         assert!(allow_task_mode("full", None, true).is_ok());
+    }
+
+    #[test]
+    fn a_remote_start_without_full_access_never_gets_the_default_team() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        // A saved default team that new tasks inherit.
+        let library = json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
+        store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
+        let params = json!({"projectId": project.id, "prompt": "Fix the parser.", "provider": "codex", "model": "default"});
+        let leads_team = |sid: &str| -> bool { store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |r| r.get(0)).unwrap() };
+        for (full_access, team) in [(false, false), (true, true)] {
+            let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
+            assert_eq!(start.team, team);
+            let task = start::create_task(&store, &project.id, &start).unwrap();
+            assert_eq!(leads_team(&task.id), team, "full access for remote tasks: {full_access}");
+            if !team {
+                // A plain task: nothing it runs can dispatch a worker.
+                assert!(allow_remote_team(&store, &task.id, false).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn a_team_lead_takes_no_remote_prompt_or_resume_without_full_access() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        // An Ask lead: its own mode passes the task-mode rule, but its workers run in full access.
+        let lead = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        let plain = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        assert!(allow_task_mode(&lead.mode, None, false).is_ok());
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead.id]).unwrap();
+        // task.send, task.steer and task.teamResume all pass this gate.
+        assert_eq!(allow_remote_team(&store, &lead.id, false), Err(TEAM_NEEDS_FULL_ACCESS.into()));
+        assert!(allow_remote_team(&store, &lead.id, true).is_ok(), "allowed with full access for remote tasks");
+        assert!(allow_remote_team(&store, &plain.id, false).is_ok(), "a task without a team is unaffected");
     }
 
     #[test]

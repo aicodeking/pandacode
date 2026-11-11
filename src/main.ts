@@ -226,7 +226,7 @@ void call<import('./jev').JevConfiguration>('jev_configuration').then(config => 
 window.addEventListener('pandacode:jev-settings', event => setJevAvailability(Boolean((event as CustomEvent<import('./jev').JevConfiguration>).detail.decisionsEnabled)));
 async function ensureArchitectView(): Promise<ArchitectView> {
   return architectLoading ??= import('./architect').then(({ ArchitectView }) => {
-    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice) });
+    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice), leadMode: sessionId => state.sessions.find(task => task.id === sessionId)?.mode ?? null });
     architectView.setAssistEnabled(jevDecisionsEnabled);
     $('#subagents-host').before(architectView.host);
     architectView.setTask(state.sessionId, teams.get(state.sessionId) ?? null, state.providers);
@@ -4360,8 +4360,15 @@ function onAgent(event: AgentEvent): void {
     void ensureArchitectView().then(view => {
       if (deletedSessions.has(event.sessionId)) return;
       view.receive(event);
-      // A worker's approval or question must reach the user even with the panel closed.
-      if (event.kind === 'approval' || event.kind === 'input_request') notify('A worker needs your input. Open Architect & workers.');
+      // Worker questions are auto-answered and approvals auto-granted; current hosts never leave either pending, but an
+      // older or unusual host can still forward one. It notifies only while that worker is still at work, by the
+      // panel's own definition (a worker not yet in any team snapshot counts as active).
+      if (event.kind === 'approval' || event.kind === 'input_request') {
+        const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
+        void import('./architect-worker-list').then(({ workerActive }) => {
+          if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.');
+        });
+      }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
     });
     return;
@@ -5321,6 +5328,7 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });
       const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
+      architectView?.modeChanged();
       if (inPanel) btwPanel.refresh();
       else if (s.id === state.sessionId) {
         if (saved) syncOverlayContext({ projectId: saved.projectId, provider: saved.provider, model: saved.model || 'default', mode: saved.mode, reasoningEffort: saved.reasoningEffort ?? null });

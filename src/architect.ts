@@ -18,6 +18,7 @@ import { mountTeamProfiles } from './team-profiles';
 import { infoMark } from './tooltip';
 import { workerQueueReason } from './worker-scheduling';
 import { Subagents } from './subagents';
+import { WorkerList, approvalLabel, effortLabel, markScrollRegions, requestHtml, workerActive, workerState, workerWord } from './architect-worker-list';
 import { TeamMessages } from './team-messages';
 import { teamSignature } from './team-progress';
 import { renderCoordination } from './coordination-message';
@@ -30,18 +31,6 @@ type SetupOptions = {
   save: (config: TeamConfig | null, architect: ModelSelection, profileId: string | null) => Promise<void>;
 };
 const statusNames: Record<string, string> = { ready: 'Ready', running: 'Working', waiting: 'Waiting', paused: 'Paused', completed: 'Ready for review', failed: 'Needs attention', interrupted: 'Interrupted', queued: 'Queued', stopped: 'Stopped', parked: 'Waiting on sub-workers' };
-// Worker rows: a status verb (with its colour tone) and a 28px glyph per state.
-const workerVerbs: Record<string, [string, string]> = { running: ['Working..', 'accent'], waiting: ['Waiting', 'accent'], queued: ['Queued', ''], parked: ['Waiting on sub-workers', 'accent'], completed: ['Done', 'success'], failed: ['Failed', 'danger'] };
-/** A parked worker has no process of its own, so it only waits on sub-workers while its team runs. Resume recovers it. */
-const workerState = (worker: TeamWorker, team: TeamSnapshot): TeamWorker['status'] | 'paused' => worker.status === 'parked' && !teamActive(team) ? 'paused' : worker.status;
-const ring = (dash: string) => `<circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${dash}"/>`;
-const workerGlyphs: Record<string, string> = {
-  running: `<svg viewBox="0 0 28 28" aria-hidden="true"><g class="architect-glyph-spin">${ring('2.5 4')}</g><circle cx="14" cy="14" r="3.5" fill="currentColor"/></svg>`,
-  pending: `<svg viewBox="0 0 28 28" aria-hidden="true">${ring('2.5 4')}<g fill="currentColor"><circle cx="9.5" cy="14" r="1.6"/><circle cx="14" cy="14" r="1.6"/><circle cx="18.5" cy="14" r="1.6"/></g></svg>`,
-  completed: `<svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="13" fill="currentColor"/><path d="m8.5 14.5 3.6 3.5 7.4-8" fill="none" stroke="var(--panel)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-  failed: `<svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="13" fill="currentColor"/><path d="M14 7.5v8" stroke="var(--panel)" stroke-width="2.6" stroke-linecap="round"/><circle cx="14" cy="20" r="1.6" fill="var(--panel)"/></svg>`,
-  idle: `<svg viewBox="0 0 28 28" aria-hidden="true">${ring('2.5 4')}</svg>`,
-};
 const modelName = (selection: ModelSelection, providers: Provider[]) => providers.find(p => p.id === selection.provider)?.models.find(m => m.id === selection.model)?.name ?? fallbackModel(selection.provider, selection.model || 'default').name;
 const modelMarkup = (selection: ModelSelection, providers: Provider[]) => `<span class="provider-small ${escape(selection.provider)}">${providerLogo(selection.provider)}</span><span>${escape(modelName(selection, providers))}${selection.reasoningEffort ? `<small> · ${escape(selection.reasoningEffort)}</small>` : ''}</span>${icon('down')}`;
 
@@ -151,7 +140,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   const setupHelp = 'Applies to the next architect turn. Existing workers keep their models.';
   const parallelHelp = 'Maximum simultaneous assignments. The architect dispatches independent work; overlapping writes or dependencies may wait.';
   const guidanceHelp = 'Extra instructions for the lead, added to the built-in architect rules and sent with them. Leave it empty to use the guidance from Settings → Agent teams, or the built-in rules alone when none is set.';
-  host.innerHTML = `<form class="architect-setup"><section class="architect-config-section"><div class="architect-section-label"><h3>Architect</h3><span>Plans & reviews</span></div><button class="architect-model" type="button" aria-label="Choose architect model" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(architect, providers)}</button><div class="architect-guidance"><label for="team-guidance">Lead guidance</label>${infoMark(guidanceHelp, 'Lead guidance')}<span class="sr-only" id="team-guidance-help">${escape(guidanceHelp)}</span><textarea id="team-guidance" name="leadGuidance" rows="3" aria-describedby="team-guidance-help" placeholder="Extra instructions for the lead, on top of the built-in team rules.">${escape(config.leadGuidance ?? '')}</textarea><button type="button" class="secondary-button architect-guidance-reset">Reset to default</button></div></section><section class="architect-config-section"><div class="architect-section-label"><h3>Workers</h3><button type="button" class="architect-add" aria-label="Add worker profile">${icon('plus')} Add</button></div><div class="architect-profiles"></div></section><section class="architect-parallel"><div class="architect-parallel-controls"><label for="team-parallel">At once</label>${infoMark(parallelHelp, 'How parallel workers run')}<span id="team-parallel-help" class="sr-only">${parallelHelp}</span></div><div class="architect-parallel-controls"><label><input id="team-unlimited" type="checkbox" aria-label="Unlimited workers" aria-describedby="team-parallel-help" ${config.maxParallel === 0 ? 'checked' : ''}>Unlimited</label><input id="team-parallel" name="maxParallel" aria-label="Workers at once" aria-describedby="team-parallel-help" type="number" min="1" step="1" value="${config.maxParallel || 3}" ${config.maxParallel === 0 ? 'hidden' : ''} ${config.maxParallel === 0 ? 'disabled' : ''} required></div></section><p class="architect-workspace-note">Shared checkout · overlapping write scopes wait. Read-only assignments can run alongside writers. Scopes coordinate work; task permissions apply to every worker.</p>${task.resumeId && !team ? '<p class="architect-workspace-note">A fresh architect context enables delegation. Your saved conversation stays here.</p>' : ''}${team ? `<p class="architect-workspace-note">Next architect turn ${infoMark(setupHelp, 'When team changes apply')}<span class="sr-only">${setupHelp}</span></p>` : ''}<p class="architect-setup-error" role="alert" hidden></p><div class="architect-setup-footer">${canDisable ? '<button class="secondary-button architect-disable" type="button">Use a single agent</button>' : '<span>Remembered for new tasks</span>'}<button class="primary-button" type="submit">${team && !canDisable ? 'Apply setup' : 'Save setup'}</button></div></form>`;
+  host.innerHTML = `<form class="architect-setup"><section class="architect-config-section"><div class="architect-section-label"><h3>Architect</h3><span>Plans & reviews</span></div><button class="architect-model" type="button" aria-label="Choose architect model" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(architect, providers)}</button><div class="architect-guidance"><label for="team-guidance">Lead guidance</label>${infoMark(guidanceHelp, 'Lead guidance')}<span class="sr-only" id="team-guidance-help">${escape(guidanceHelp)}</span><textarea id="team-guidance" name="leadGuidance" rows="3" aria-describedby="team-guidance-help" placeholder="Extra instructions for the lead, on top of the built-in team rules.">${escape(config.leadGuidance ?? '')}</textarea><button type="button" class="secondary-button architect-guidance-reset">Reset to default</button></div></section><section class="architect-config-section"><div class="architect-section-label"><h3>Workers</h3><button type="button" class="architect-add" aria-label="Add worker profile">${icon('plus')} Add</button></div><div class="architect-profiles"></div></section><section class="architect-parallel"><div class="architect-parallel-controls"><label for="team-parallel">At once</label>${infoMark(parallelHelp, 'How parallel workers run')}<span id="team-parallel-help" class="sr-only">${parallelHelp}</span></div><div class="architect-parallel-controls"><label><input id="team-unlimited" type="checkbox" aria-label="Unlimited workers" aria-describedby="team-parallel-help" ${config.maxParallel === 0 ? 'checked' : ''}>Unlimited</label><input id="team-parallel" name="maxParallel" aria-label="Workers at once" aria-describedby="team-parallel-help" type="number" min="1" step="1" value="${config.maxParallel || 3}" ${config.maxParallel === 0 ? 'hidden' : ''} ${config.maxParallel === 0 ? 'disabled' : ''} required></div></section><p class="architect-workspace-note"><span class="architect-workspace-line">Write scopes decide who edits what; overlaps wait.</span><span class="architect-workspace-line">Workers have full access; approvals are automatic (deploy and scheduling go back to the lead).</span></p>${task.resumeId && !team ? '<p class="architect-workspace-note">A fresh architect context enables delegation. Your saved conversation stays here.</p>' : ''}${team ? `<p class="architect-workspace-note">Next architect turn ${infoMark(setupHelp, 'When team changes apply')}<span class="sr-only">${setupHelp}</span></p>` : ''}<p class="architect-setup-error" role="alert" hidden></p><div class="architect-setup-footer">${canDisable ? '<button class="secondary-button architect-disable" type="button">Use a single agent</button>' : '<span>Remembered for new tasks</span>'}<button class="primary-button" type="submit">${team && !canDisable ? 'Apply setup' : 'Save setup'}</button></div></form>`;
   const form = host.querySelector<HTMLFormElement>('form')!;
   const guidanceField = host.querySelector<HTMLTextAreaElement>('#team-guidance')!;
   const profiles = host.querySelector<HTMLElement>('.architect-profiles')!;
@@ -250,6 +239,10 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
 // An open worker transcript keeps a bounded window of messages in memory and the DOM.
 const WINDOW_MESSAGES = 200, WINDOW_CHARS = 2_000_000;
 type WorkerLive = { body: TailText; readonly text: string; tools: Map<string, ToolActivity>; approvals: Map<string, string>; inputs: Map<string, AgentInput>; ended: boolean };
+/** Whether the reader dismissed the full-access note for a team this session (session storage; unavailable counts as no). */
+const accessKey = (taskId: string) => `pandacode.workers-access-dismissed.${taskId}`;
+const accessDismissed = (taskId: string): boolean => { try { return sessionStorage.getItem(accessKey(taskId)) === '1'; } catch { return false; } };
+const dismissAccess = (taskId: string): void => { try { sessionStorage.setItem(accessKey(taskId), '1'); } catch { /* storage off: the note stays */ } };
 /** A mirror's host cut text, files or rows of its reply to fit. */
 const teamCut = (team: TeamSnapshot & { truncated?: boolean; workersTruncated?: boolean }) =>
   Boolean(team.truncated || team.workersTruncated || team.workers.some(worker => (worker as { filesTruncated?: boolean }).filesTruncated));
@@ -263,7 +256,8 @@ export class ArchitectView {
   private panel?: HTMLElement;
   private selected = '';
   private live = new Map<string, WorkerLive>();
-  private rows = new Map<string, HTMLButtonElement>();
+  /** The open panel's worker list (rows, tally, keyboard focus); src/architect-worker-list.ts. */
+  private list?: WorkerList;
   private paintedTools = new Map<string, ToolActivity>();
   private paintedWorker = '';
   private frame = 0;
@@ -283,7 +277,7 @@ export class ArchitectView {
   private assistEnabled = false;
   private childAgents?: Subagents;
   private teamMessages?: TeamMessages;
-  constructor(private options: { setup: (anchor: HTMLElement) => void; loadModels: (provider: ProviderId) => Promise<ProviderModel[]>; updated: (team: TeamSnapshot) => void; report: (error: unknown) => void; onFork?: (sessionId: string, messageId: number) => Promise<void>; fileContext?: (sessionId: string) => FileLinkContext | undefined; assist?: (sessionId: string, kind: 'review' | 'route') => void; remote?: (sessionId: string) => boolean }) {
+  constructor(private options: { setup: (anchor: HTMLElement) => void; loadModels: (provider: ProviderId) => Promise<ProviderModel[]>; updated: (team: TeamSnapshot) => void; report: (error: unknown) => void; onFork?: (sessionId: string, messageId: number) => Promise<void>; fileContext?: (sessionId: string) => FileLinkContext | undefined; assist?: (sessionId: string, kind: 'review' | 'route') => void; remote?: (sessionId: string) => boolean; leadMode?: (sessionId: string) => string | null }) {
     this.host.className = 'architect-host'; this.host.hidden = true;
     this.trigger.className = 'architect-trigger'; this.trigger.type = 'button'; this.trigger.setAttribute('aria-label', 'Open workers'); this.trigger.setAttribute('aria-expanded', 'false');
     this.trigger.addEventListener('click', () => this.panel ? this.close() : this.open()); this.host.append(this.trigger);
@@ -353,9 +347,18 @@ export class ArchitectView {
     if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) this.paint();
     if (event.sessionId === this.worker()?.sessionId) this.schedule();
   }
-  /** A worker is asking for an approval or an answer the user has not given yet. */
-  needsInput(sessionId: string): boolean { const live = this.live.get(sessionId); return Boolean(live?.approvals.size || live?.inputs.size); }
+  /** A worker is waiting on the user: an unanswered question, or an approval. Current hosts auto-grant worker
+   *  approvals (turning each into `approval_cancelled`) and clear any they cannot; an older or unusual host can still
+   *  forward a pending one. */
+  needsInput(sessionId: string): boolean { const live = this.live.get(sessionId); return this.workerActive(sessionId) && Boolean(live?.approvals.size || live?.inputs.size); }
+  /** A worker approval waiting for the user. Current hosts never leave one pending (they auto-grant it, or clear it
+   *  once the worker's run is gone), but an older or unusual host can still forward one. */
+  needsApproval(sessionId: string): boolean { return this.workerActive(sessionId) && Boolean(this.live.get(sessionId)?.approvals.size); }
+  /** A request can only be the user's while its worker is still at work: never for a skipped or settled worker. */
+  private workerActive(sessionId: string): boolean { return workerActive(this.team?.workers.find(member => member.sessionId === sessionId)); }
   private worker(): TeamWorker | undefined { return this.team?.workers.find(w => w.id === this.selected); }
+  /** The lead's approval mode changed: repaint so the full-access note follows it. */
+  modeChanged(): void { if (this.panel) this.schedulePaint(); }
   private schedulePaint(): void { this.paintFrame ||= requestAnimationFrame(() => { this.paintFrame = 0; this.paint(); }); }
   private schedule(): void { if (this.frame || !this.panel) return; this.frame = requestAnimationFrame(() => { this.frame = 0; this.paintLive(); }); }
   /** For the dock's Agents item: whether a team exists, how many workers run, and the panel. */
@@ -366,7 +369,7 @@ export class ArchitectView {
     if (!this.team || this.panel) return;
     this.childAgents?.setTask('', false);
     const panel = document.createElement('section'); panel.className = 'architect-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Workers');
-    panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><div class="architect-panel-scroll"><div class="architect-worker-list"></div><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div>`;
+    panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><span class="sr-only architect-panel-live" aria-live="polite"></span><div class="architect-panel-tally" hidden><span class="architect-panel-tally-text"></span><span class="sr-only architect-panel-tally-readable"></span><span class="architect-panel-tally-measure" aria-hidden="true" inert></span><span class="architect-progress" role="progressbar" aria-label="Workers finished" aria-valuemin="0"><span class="architect-progress-fill"></span></span></div><p class="architect-panel-tally-hidden" id="architect-tally-hidden" hidden></p><p class="architect-panel-access" title="Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead." hidden><span class="architect-panel-access-icon" data-state-tone="worker-idle" aria-hidden="true">${icon('unlock')}</span><span class="architect-panel-access-text">Workers have full access; approvals are automatic.<span class="sr-only"> Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.</span></span><button type="button" class="icon-button architect-panel-access-dismiss" aria-label="Dismiss the full-access note" title="Dismiss">${icon('close')}</button></p><div class="architect-panel-scroll"><div class="architect-worker-list" aria-label="Workers" aria-describedby="architect-workers-hint"></div><span class="sr-only" id="architect-workers-hint">Up and down arrows move between workers; Home and End jump to the first and last. Right arrow shows details, left arrow hides them, Enter opens the transcript.</span><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div><p class="architect-worker-keyhint" aria-hidden="true">→ details · Enter opens</p>`;
     this.panel = panel; this.host.append(panel);
     const assist = document.createElement('button'); assist.type = 'button'; assist.className = 'architect-assist';
     assist.addEventListener('click', () => {
@@ -381,7 +384,17 @@ export class ArchitectView {
       this.teamMessages = new TeamMessages(this.team);
       panel.querySelector('.architect-worker-list')!.after(this.teamMessages.host);
     }
+    this.list = new WorkerList(panel, {
+      needsInput: sessionId => this.needsInput(sessionId),
+      needsApproval: sessionId => this.needsApproval(sessionId),
+      modelName: worker => modelName(worker, this.providers),
+      openWorker: workerId => { this.selected = workerId; this.paint(); this.revealApproval(); void this.loadMessages().then(() => this.revealApproval()); },
+    });
     panel.querySelector('.architect-close')!.addEventListener('click', () => { this.close(); this.trigger.focus(); });
+    // The full-access note can be dismissed for this team (remembered for the session) to save a line.
+    panel.querySelector('.architect-panel-access-dismiss')!.addEventListener('click', () => {
+      dismissAccess(this.taskId); this.paint(); panel.querySelector<HTMLElement>('.architect-close')!.focus();
+    });
     panel.querySelector('.architect-back')!.addEventListener('click', () => { this.selected = ''; this.historyWorker = ''; this.historyLoading = false; this.historyRefreshQueued = false; ++this.request; this.paint(); });
     panel.querySelector('.architect-configure')!.addEventListener('click', event => this.options.setup(event.currentTarget as HTMLElement));
     panel.querySelectorAll<HTMLButtonElement>('[data-team-control]').forEach(control => control.addEventListener('click', () => { void this.control(control.dataset.teamControl!); }));
@@ -390,7 +403,9 @@ export class ArchitectView {
     scroll.addEventListener('scroll', () => { if (scroll.scrollTop < 72) void this.loadMessages(true); else if (this.historyTrimmedNewer && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 72) void this.loadMessages(); }, { passive: true });
     scroll.addEventListener('wheel', event => { if (event.deltaY < 0 && scroll.scrollTop < 72) void this.loadMessages(true); }, { passive: true });
     void Promise.allSettled([...new Set(this.team.config.workers.map(worker => worker.provider))].map(this.options.loadModels)).then(() => { if (this.panel === panel) this.paint(); });
-    this.trigger.setAttribute('aria-expanded', 'true'); this.paint(); showPopover(panel, this.trigger); if (focus) panel.querySelector<HTMLButtonElement>('.architect-close')!.focus();
+    this.trigger.setAttribute('aria-expanded', 'true'); this.paint(); showPopover(panel, this.trigger);
+    // The tally is fitted to the panel's width, known once it is laid out.
+    requestAnimationFrame(() => { if (this.panel === panel) this.paint(); }); if (focus) panel.querySelector<HTMLButtonElement>('.architect-close')!.focus();
   }
   async openWorker(workerId: string, subagentId?: string): Promise<void> {
     const worker = this.team?.workers.find(worker => worker.id === workerId);
@@ -407,9 +422,11 @@ export class ArchitectView {
     }
     this.open(); this.selected = workerId; this.paint();
     this.panel?.querySelector<HTMLButtonElement>('.architect-back')?.focus();
+    this.revealApproval();
     await this.loadMessages();
+    this.revealApproval();
   }
-  close(): void { this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear(); this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
+  close(): void { this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.list?.dispose(); this.list = undefined; this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
   private async control(action: string): Promise<void> {
     if (this.busy || !this.team) return;
     this.busy = true; this.paint();
@@ -425,8 +442,8 @@ export class ArchitectView {
     if (agents !== this.agentsSignal) { this.agentsSignal = agents; dispatchEvent(new Event('pandacode:agents')); }
     if (!team) { this.close(); return; }
     const done = team.workers.filter(w => w.status === 'completed' || w.abandoned).length;
-    const asking = team.workers.some(w => this.needsInput(w.sessionId));
-    const progress = asking ? 'Needs input' : team.workers.length ? `${done}/${team.workers.length}` : 'Ready';
+    const asking = team.workers.some(w => !w.abandoned && this.needsInput(w.sessionId));
+    const progress = asking ? 'Needs you' : team.workers.length ? `${done}/${team.workers.length}` : 'Ready';
     const trigger = `${icon('team')}<span>Architect & workers</span><small>${progress}</small>${icon('chevron')}`;
     if (this.trigger.dataset.painted !== trigger) { this.trigger.innerHTML = trigger; this.trigger.dataset.painted = trigger; }
     this.trigger.dataset.status = asking ? 'waiting' : team.status;
@@ -440,6 +457,8 @@ export class ArchitectView {
     panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = heldUntil ? `Usage limit, resumes at ${resetTime(heldUntil)}` : teamActive(team) ? 'Architect is working…' : statusNames[team.status];
     const count = panel.querySelector<HTMLElement>('.architect-panel-count')!;
     count.textContent = `${team.workers.length} ${team.workers.length === 1 ? 'task' : 'tasks'}`; count.title = `Round ${team.round}`;
+    // The list's tally already counts the workers.
+    count.hidden = Boolean(team.workers.length) && !worker;
     panel.querySelector<HTMLButtonElement>('[data-team-control=pause]')!.hidden = !teamActive(team) || remote;
     panel.querySelector<HTMLButtonElement>('[data-team-control=stop]')!.hidden = remote || (!teamActive(team) && team.status !== 'paused');
     const resumable = ['paused', 'failed', 'interrupted'].includes(team.status);
@@ -453,13 +472,25 @@ export class ArchitectView {
     // Pausing or stopping is the user's own choice, and neither a quiet lead nor one retrying is a failure.
     error.classList.toggle('is-notice', !team.error || (team.status === 'paused' && /^Team (paused|stopped)\./.test(team.error)) || /^The lead is quiet:/.test(team.error) || LEAD_RETRY.test(team.error));
     panel.querySelector<HTMLElement>('.architect-back')!.hidden = !worker;
+    // Workers always run with full access and auto-approval, whatever the lead's mode: say so quietly when the lead
+    // itself is not in Full access.
+    const leadMode = this.taskId ? this.options.leadMode?.(this.taskId) ?? null : null;
+    const access = panel.querySelector<HTMLElement>('.architect-panel-access')!;
+    // Like the tally, it belongs to the list: hidden while a worker's transcript is open. It is also hidden while an
+    // approval (forwarded by an older or unusual host) waits on the user, which it would contradict.
+    const approvalPending = team.workers.some(member => this.needsApproval(member.sessionId));
+    const hideAccess = !leadMode || leadMode === 'full' || !team.workers.length || Boolean(worker) || approvalPending || accessDismissed(this.taskId);
+    if (access.hidden !== hideAccess) access.hidden = hideAccess;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
+    if (worker) { panel.querySelector<HTMLElement>('.architect-panel-tally')!.hidden = true; panel.querySelector<HTMLElement>('.architect-panel-tally-hidden')!.hidden = true; }
     panel.querySelector<HTMLElement>('.architect-worker-detail')!.hidden = !worker;
     if (this.teamMessages) { this.teamMessages.host.hidden = Boolean(worker); if (!worker) this.teamMessages.update(team); }
+    // Needs-you and failed changes are announced with a transcript open too.
+    if (worker) this.list?.announce(team);
     if (worker) {
       const meta = panel.querySelector<HTMLElement>('.architect-worker-meta')!;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(modelName(worker, this.providers))} · ${escape(statusNames[workerState(worker, team)])}${worker.readOnly ? ' · Read only' : ''}</small>${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
+      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape([modelName(worker, this.providers), worker.reasoningEffort ? `${effortLabel(worker.reasoningEffort)}${worker.note ? ' (adjusted)' : ''}` : '', workerWord(worker, workerState(worker, team), this.needsApproval(worker.sessionId), this.needsInput(worker.sessionId)).full, worker.readOnly ? 'Read only' : ''].filter(Boolean).join(' · '))}</small>${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
       panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? 'Read only · no writes' : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : 'Write scope: shared checkout';
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;
@@ -479,27 +510,38 @@ export class ArchitectView {
       panel.querySelector('.architect-panel-scroll')!.classList.remove('is-overflowing');
       this.paintLive(); return;
     }
-    const list = panel.querySelector<HTMLElement>('.architect-worker-list')!;
-    if (!team.workers.length) { list.textContent = team.status === 'ready' ? 'Send a task to let the architect delegate the work.' : 'The architect is planning its first assignments.'; return; }
-    if (!this.rows.size) list.replaceChildren();
-    // Sub-workers sit indented under their parent.
-    const ordered = team.workers.filter(w => !w.parentWorker).flatMap(parent => [parent, ...team.workers.filter(w => w.parentWorker === parent.id)]);
-    ordered.forEach((worker, index) => {
-      let row = this.rows.get(worker.id);
-      if (!row) { row = document.createElement('button'); row.className = 'architect-worker-row'; row.type = 'button'; row.dataset.workerId = worker.id; row.addEventListener('click', () => { this.selected = worker.id; this.paint(); void this.loadMessages(); }); this.rows.set(worker.id, row); if (worker.parentWorker) row.style.paddingInlineStart = '32px'; }
-      if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
-      const live = this.live.get(worker.sessionId);
-      const needsInput = Boolean(live?.approvals.size || live?.inputs.size);
-      const state = workerState(worker, team);
-      row.dataset.status = needsInput ? 'waiting' : state;
-      const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      const [verb, tone] = worker.abandoned ? ['Resolved', ''] : needsInput ? ['Needs input', 'accent'] : workerVerbs[state] ?? [statusNames[state] ?? state, ''];
-      const glyph = worker.abandoned ? 'idle' : needsInput || ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
-      const markup = `<span class="architect-worker-glyph" data-glyph="${glyph}">${workerGlyphs[glyph]}<span class="architect-worker-logo">${providerLogo(worker.provider)}</span></span><span class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small${queueReason ? ` data-tip="${escape(queueReason)}"` : ''}><span class="architect-worker-state"${tone ? ` data-tone="${tone}"` : ''}>${escape(verb)}</span> ${escape(queueReason ?? modelName(worker, this.providers))}</small></span>${icon('chevron')}`;
-      if (row.dataset.painted !== markup) { row.innerHTML = markup; row.dataset.painted = markup; }
-    });
-    const scroll = panel.querySelector<HTMLElement>('.architect-panel-scroll')!;
-    scroll.classList.toggle('is-overflowing', scroll.scrollHeight > scroll.clientHeight + 1);
+    this.list?.paint(team);
+  }
+  /** Brings a failed auto-approval into view in an open transcript, and focuses it. */
+  private revealApproval(): void {
+    const card = this.panel?.querySelector<HTMLElement>('.architect-worker-approvals .approval-card');
+    if (!card) return;
+    // Centred, so the transcript header above it is not half cut off.
+    card.scrollIntoView({ block: 'center' }); card.focus({ preventScroll: true });
+  }
+  /** Answers a worker's approval from its transcript card (forwarded by an older or unusual host). */
+  private async respondApproval(sessionId: string, requestId: string, approved: boolean, host: HTMLElement): Promise<void> {
+    const buttons = host.querySelectorAll<HTMLButtonElement>('[data-approval], button');
+    // Read before disabling: a disabled button drops focus to the page.
+    const focused = host.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+    buttons.forEach(button => { button.disabled = true; });
+    try {
+      await call('respond_approval', { sessionId, requestId, approved });
+      this.live.get(sessionId)?.approvals.delete(requestId);
+      // The answered request leaves; focus moves to its worker's row (or the transcript's back button), never to the page.
+      if (focused) {
+        const worker = this.team?.workers.find(worker => worker.sessionId === sessionId);
+        if (this.selected) this.panel?.querySelector<HTMLElement>('.architect-back')?.focus({ preventScroll: true });
+        else if (worker) this.list?.focusRow(worker.id);
+      }
+      host.remove(); this.paint(); this.paintLive();
+    } catch (error) {
+      // The reason is for the log; the reader gets a plain sentence.
+      console.error('Could not answer the worker approval', { sessionId, requestId, approved, error });
+      host.querySelector('small')!.textContent = 'Couldn’t send your answer. The worker may have stopped.';
+      buttons.forEach(button => { button.disabled = false; });
+      focused?.focus({ preventScroll: true });
+    }
   }
   private async loadMessages(older = false): Promise<void> {
     const worker = this.worker(), panel = this.panel; if (!worker || !panel) return;
@@ -648,16 +690,18 @@ export class ArchitectView {
       this.paintedTools.set(tool.id, tool);
     }
     const approvals = panel.querySelector<HTMLElement>('.architect-worker-approvals')!;
-    for (const element of [...approvals.children]) if (!live?.approvals.has((element as HTMLElement).dataset.requestId!)) element.remove();
-    for (const [id, text] of live?.approvals ?? []) {
+    const answerable = this.needsApproval(worker.sessionId);
+    for (const element of [...approvals.children]) if (!answerable || !live?.approvals.has((element as HTMLElement).dataset.requestId!)) element.remove();
+    // Never for a skipped or settled worker.
+    for (const [id, text] of answerable ? live?.approvals ?? [] : []) {
       if ([...approvals.children].some(el => (el as HTMLElement).dataset.requestId === id)) continue;
-      const card = document.createElement('div'); card.className = 'approval-card'; card.dataset.requestId = id;
-      card.innerHTML = `<strong>Worker needs approval</strong><p>${escape(text)}</p><div><button class="secondary-button" type="button">Deny</button><button class="primary-button" type="button">Approve</button></div><small role="alert"></small>`;
-      card.querySelectorAll<HTMLButtonElement>('button').forEach((button, index) => button.addEventListener('click', async () => {
-        card.querySelectorAll('button').forEach(b => { b.disabled = true; });
-        try { await call('respond_approval', { sessionId: worker.sessionId, requestId: id, approved: index === 1 }); live?.approvals.delete(id); card.remove(); }
-        catch (error) { card.querySelector('small')!.textContent = String(error); card.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
-      })); approvals.append(card);
+      // Kept for older or unusual hosts, which can still forward a pending worker approval (current
+      // hosts auto-grant or clear them); when one arrives, the decision is the user's.
+      const card = document.createElement('div'); card.className = 'approval-card architect-needs-approval'; card.dataset.requestId = id;
+      card.innerHTML = `<strong class="architect-worker-alert"><span class="architect-worker-alert-icon" data-state-tone="near">${icon('alert')}</span><span>Needs approval</span></strong><p class="architect-approval-reason">This worker’s host asked for your approval.</p>${requestHtml(text)}<div><button class="secondary-button" type="button">Deny</button><button class="primary-button" type="button">Approve</button></div><small role="alert"></small>`;
+      card.tabIndex = -1; card.setAttribute('role', 'group'); card.setAttribute('aria-label', approvalLabel(text));
+      card.querySelectorAll<HTMLButtonElement>('button').forEach((button, index) => button.addEventListener('click', () => { void this.respondApproval(worker.sessionId, id, index === 1, card); }));
+      approvals.append(card); markScrollRegions(card);
     }
     const inputs = panel.querySelector<HTMLElement>('.architect-worker-inputs')!;
     for (const element of [...inputs.children]) if (![...(live?.inputs.values() ?? [])].some(input => input.element === element)) element.remove();
