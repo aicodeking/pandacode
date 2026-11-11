@@ -92,8 +92,16 @@ test('startup observation stops a surviving fixture and bounds installer executi
   const directory = await mkdtemp(join(tmpdir(), 'pandacode-smoke-test-'));
   try {
     const pidFile = join(directory, 'pid');
-    await observeProcess(process.execPath, ['-e', 'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', pidFile], { ...options, durationMs: 1000 });
-    const pid = Number(await readFile(pidFile, 'utf8'));
+    const survivor = ['-e', 'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', pidFile];
+    // A cold Node start can outlast a short window before the pid is written; widen and retry.
+    let pid;
+    for (let durationMs = 1000; pid === undefined; durationMs *= 2) {
+      await observeProcess(process.execPath, survivor, { ...options, durationMs });
+      const text = await readFile(pidFile, 'utf8').catch(error => {
+        if (error.code !== 'ENOENT' || durationMs >= 16_000) throw error;
+      });
+      if (text) pid = Number(text);
+    }
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the observed process must be gone before returning');
   } finally {
     await rm(directory, { recursive: true, force: true });

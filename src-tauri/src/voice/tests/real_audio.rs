@@ -1,6 +1,7 @@
 //! The real audio stack, for what mocks cannot see: cpal 0.16 segfaulted while listing devices,
 //! but only under the release profile. Run with `--release --ignored`. A machine with no usable
-//! input passes, so only a crash fails, unless `REQUIRE_MIC_ENV` asks for real samples.
+//! input passes, so only a crash fails, unless `REQUIRE_MIC_ENV` is `1` or `true` (any case),
+//! which asks for real samples.
 
 use super::*;
 
@@ -12,8 +13,8 @@ const REQUIRE_MIC_ENV: &str = "PANDACODE_REQUIRE_REAL_MIC";
 #[test]
 #[ignore = "opens the real audio stack; run in --release to match shipped builds"]
 fn real_audio_lists_opens_and_records() {
-    let required = std::env::var_os(REQUIRE_MIC_ENV).is_some();
-    let devices = capture::devices();
+    let required = std::env::var(REQUIRE_MIC_ENV).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let devices = capture::devices(None);
     let names: Vec<&str> = devices.iter().map(|d| d.name.as_str()).collect();
     eprintln!("real_audio: input devices: {names:?}");
     let Some(default) = devices.iter().find(|d| d.is_default) else {
