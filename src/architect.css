@@ -215,6 +215,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* Legacy fallback: an older host's approval, shown only in the worker's transcript (its request scrolls past 12 lines). */
 .architect-needs-approval > strong { display: flex; }
 .architect-needs-approval > .architect-approval-reason { color: var(--muted); }
+.architect-needs-approval > div { display: flex; flex-wrap: wrap; gap: var(--ds-row-pad-x); margin-top: var(--ds-section-gap); }
 /* A request is shown whole: wrapped monospace, never capped, so nothing of it hides beside Approve. */
 .architect-worker-request { max-height: calc(12 * 1.5em + 12px); overflow: auto; overscroll-behavior: contain; margin: 0; padding: 6px 8px; border-radius: var(--ds-radius-control); background: var(--ds-fill); box-shadow: inset 0 0 0 1px var(--ds-chip-border); color: var(--text); font-family: var(--mono); font-size: var(--ds-text-chip); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .architect-needs-approval:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

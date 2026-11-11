@@ -276,6 +276,8 @@ export class ArchitectView {
   /** Paging back dropped the newest messages; scrolling to the bottom reloads the latest. */
   private historyTrimmedNewer = false;
   private historyLoading = false;
+  /** The last history load's async Markdown paints: each may pin the transcript to its bottom when it lands. */
+  private historyPainted: Promise<unknown> = Promise.resolve();
   private historyRefreshQueued = false;
   private busy = false;
   private providers: Provider[] = [];
@@ -393,7 +395,7 @@ export class ArchitectView {
       needsInput: sessionId => this.needsInput(sessionId),
       needsApproval: sessionId => this.needsApproval(sessionId),
       modelName: worker => modelName(worker, this.providers),
-      openWorker: workerId => { this.selected = workerId; this.paint(); this.revealApproval(); void this.loadMessages().then(() => this.revealApproval()); },
+      openWorker: workerId => { this.selected = workerId; this.paint(); this.revealApproval(); void this.loadMessages().then(() => this.historyPainted).then(() => this.revealApproval()); },
     });
     panel.querySelector('.architect-close')!.addEventListener('click', () => this.closeAndReturn());
     // The full-access note can be dismissed for this team (remembered for the session) to save a line.
@@ -444,7 +446,7 @@ export class ArchitectView {
     back()?.focus();
     if (document.activeElement !== back()) requestAnimationFrame(() => { if (this.selected === workerId) back()?.focus(); });
     this.revealApproval();
-    await this.loadMessages();
+    await this.loadMessages(); await this.historyPainted;
     this.revealApproval();
   }
   close(): void {
@@ -514,9 +516,9 @@ export class ArchitectView {
     if (access.hidden !== hideAccess) access.hidden = hideAccess;
     // A Plan (read-only) or Standard lead may not edit freely itself, so the note says plainly that its workers can.
     // Worded without picker labels, which differ by harness (Codex calls Plan "Read only").
-    // Short enough for one line at the default 400px panel (the unlock mark and the tooltip carry "full access").
+    // At most two lines at the default 400px panel (the tooltip adds the deploy and scheduling exception).
     const accessLine = leadMode === 'plan' ? 'Workers can edit files, though this lead is read-only.'
-      : leadMode === 'ask' ? 'Workers approve their own actions; this lead asks you.' : 'Workers have full access; approvals are automatic.';
+      : leadMode === 'ask' ? 'Workers run with full access; only this lead asks you for approval.' : 'Workers have full access; approvals are automatic.';
     const accessText = access.querySelector('.architect-panel-access-text')!.firstChild!;
     if (accessText.textContent !== accessLine) accessText.textContent = accessLine;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
@@ -566,8 +568,10 @@ export class ArchitectView {
   private revealApproval(): void {
     const card = this.panel?.querySelector<HTMLElement>('.architect-worker-approvals .approval-card');
     if (!card) return;
-    // Centred, so the transcript header above it is not half cut off.
-    card.scrollIntoView({ block: 'center' }); card.focus({ preventScroll: true });
+    // The transcript header (name and model) stays in view: scrolled to the top first, then only as far as the card
+    // needs, so a card that fits under the header leaves it where it is.
+    this.panel?.querySelector<HTMLElement>('.architect-worker-meta')?.scrollIntoView({ block: 'start' });
+    card.scrollIntoView({ block: 'nearest' }); card.focus({ preventScroll: true });
   }
   /** Answers a worker's approval from its transcript card (forwarded by an older or unusual host). */
   private async respondApproval(sessionId: string, requestId: string, approved: boolean, host: HTMLElement): Promise<void> {
@@ -642,7 +646,7 @@ export class ArchitectView {
       const restore = older ? captureTranscriptAnchor(scroll) : preserveTranscriptPosition(scroll);
       const changeViews = captureChangeCards(history);
       const openedTools = new Set([...history.querySelectorAll<HTMLDetailsElement>('details[data-tool-key][open]')].map(tool => tool.dataset.toolKey!));
-      const fragment = document.createDocumentFragment();
+      const fragment = document.createDocumentFragment(), paints: Promise<void>[] = [];
       const existing = new Map([...history.querySelectorAll<HTMLElement>(':scope > [data-message-id]')].map(article => [Number(article.dataset.messageId), article]));
       let pendingChanges: import('./types').TurnChanges | null | undefined;
       const appendChanges = (changes: import('./types').TurnChanges) => {
@@ -665,7 +669,7 @@ export class ArchitectView {
             const current = this.live.get(worker.sessionId);
             if (tool.status !== 'running' && current?.tools.get(tool.id)?.status === 'running') current.tools.set(tool.id, tool);
             article.dataset.savedToolId = tool.id; article.innerHTML = renderToolActivity(tool, 'tool:' + tool.id); } else article.textContent = message.content; }
-        else { const label = document.createElement('small'); label.textContent = message.role === 'assistant' ? worker.name : message.role === 'user' ? 'Assignment' : 'Activity'; const body = document.createElement('div'); article.append(label, body); bindFileLinkContext(body, fileContext); void markdown(body, message.content, scroll);
+        else { const label = document.createElement('small'); label.textContent = message.role === 'assistant' ? worker.name : message.role === 'user' ? 'Assignment' : 'Activity'; const body = document.createElement('div'); article.append(label, body); bindFileLinkContext(body, fileContext); paints.push(markdown(body, message.content, scroll));
           if (message.role === 'user' || message.role === 'assistant') {
             article.insertAdjacentHTML('beforeend', messageActionsHtml(worker.sessionId, message.id, Boolean(this.options.onFork) && message.id > 0 && !this.options.remote?.(taskId)));
           }
@@ -674,6 +678,7 @@ export class ArchitectView {
       }
       if (pendingChanges) appendChanges(pendingChanges);
       history.replaceChildren(fragment);
+      this.historyPainted = Promise.allSettled(paints);
       restoreChangeCards(history, changeViews);
       history.querySelectorAll<HTMLDetailsElement>('details[data-tool-key]').forEach(tool => { tool.open = openedTools.has(tool.dataset.toolKey!); });
       const live = this.live.get(worker.sessionId);

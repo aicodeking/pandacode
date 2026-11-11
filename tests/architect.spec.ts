@@ -1493,7 +1493,8 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   // Elapsed time is spoken in full.
   await expect(compactItem(page, 'search').locator('.architect-worker-row')).toHaveAccessibleName(/^Make search results stream as they arrive, Working, running \d+ minutes? — open transcript$/);
   // Long runs stay compact: over an hour and over a day, each fitting the column, in full in the title.
-  await expect(compactItem(page, 'tests').locator('.architect-worker-elapsed')).toHaveText('1h');
+  // 75 minutes reads "75m" (minutes up to 90m), never a floored "1h".
+  await expect(compactItem(page, 'tests').locator('.architect-worker-elapsed')).toHaveText('75m');
   // A finished row's time says "ran" (a faint prefix), so it never reads like "1h ago"; a running one does not.
   await expect(compactItem(page, 'tests').locator('.architect-worker-elapsed')).toHaveAttribute('data-ran', '');
   expect(await compactItem(page, 'tests').locator('.architect-worker-elapsed').evaluate(cell => getComputedStyle(cell, '::before').content)).toMatch(/^"ran\s"/);
@@ -1536,10 +1537,18 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   await expect(tally.locator('.architect-tally-icon')).toHaveAttribute('data-state-tone', 'near');
   // Counted in the rows' order; a shortened line keeps a visible "+N more" so its counts add up to the workers.
   await expect(tally).toHaveAttribute('title', '1 needs you · 1 failed · 1 working · 1 queued · 1 stopped · 1 done');
-  // Every count is compact, the rows' glyph and its number (the word in its title), so at the default width every
-  // bucket is on the line and no "+N" is needed. "needs you" keeps its words: it is a button.
+  // Words first, glyphs as the fallback: the worded line (each bucket's words after the rows' glyph) needs a wider
+  // panel, so at the default width the other buckets are compact, the glyph and its number (the word in its title),
+  // every bucket still on the line and no "+N". "needs you" keeps its words: it is a button.
   await expect(tally.locator('.architect-tally-count').first().locator('.architect-tally-glyph')).toHaveAttribute('data-state-tone', 'failed');
+  await expect.poll(() => drawnText(tally)).toBe('1 needs you11111');
   for (const count of await tally.locator('.architect-tally-count').all()) expect(await count.textContent()).toBe((await count.getAttribute('title'))!.split(' ')[0]);
+  // Wide enough, every bucket reads its words.
+  await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '600px'; });
+  await expect.poll(() => drawnText(tally)).toBe('1 needs you1 failed1 working1 queued1 stopped1 done');
+  for (const count of await tally.locator('.architect-tally-count').all()) { expect(await count.textContent()).toBe(await count.getAttribute('title')); await expect(count).toHaveAttribute('data-worded', ''); }
+  await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = ''; });
+  await expect.poll(() => drawnText(tally)).toBe('1 needs you11111');
   await expect.poll(() => visibleTally(tally)).toEqual(['1 needs you', '1 failed', '1 working', '1 queued', '1 stopped', '1 done']);
   await expect(tally.locator('.architect-tally-more')).toHaveCount(0);
   await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 failed · 1 working · 1 queued · 1 stopped · 1 done');
@@ -1601,6 +1610,16 @@ test('a row unfolds its assignment and summary by click and keyboard, and opens 
   await page.keyboard.press('Enter');
   await expect(panel(page).locator('.architect-worker-approvals .approval-card')).toBeFocused();
   await expect(panel(page).locator('.architect-worker-approvals .approval-card')).toBeInViewport();
+  // The worker's header (name and model) stays in view above it, whole.
+  await expect(panel(page).locator('.architect-worker-meta')).toBeInViewport({ ratio: 1 });
+  expect(await panel(page).locator('.architect-worker-meta').evaluate(meta => meta.getBoundingClientRect().top >= meta.closest('.architect-panel-scroll')!.getBoundingClientRect().top - 0.5)).toBe(true);
+  // Deny and Approve sit apart from the request and from each other.
+  const actions = panel(page).locator('.architect-worker-approvals .approval-card > div');
+  expect(await actions.evaluate(row => {
+    const [deny, approve] = [...row.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+    const request = row.parentElement!.querySelector('.architect-worker-request')!.getBoundingClientRect();
+    return { gap: approve.left - deny.right >= 8, below: deny.top - request.bottom >= 8 };
+  })).toEqual({ gap: true, below: true });
   await panel(page).getByRole('button', { name: 'Back to workers' }).click();
 
   // A finished worker shows its summary; its transcript is one click away.
@@ -1914,14 +1933,14 @@ test.describe('workers full access note', () => {
     // One visible line; the deploy and scheduling exception is in the tooltip, in visually hidden text inside the note
     // (screen readers and keyboard users get it without hovering), and on the setup screen.
     const text = note.locator('.architect-panel-access-text');
-    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers approve their own actions; this lead asks you.');
+    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers run with full access; only this lead asks you for approval.');
     await expect(text.locator('.sr-only')).toHaveText(' Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.');
     await expect(text).toContainText('Deploy and scheduling tools are the exception');
     // The tooltip adds what the line leaves out, rather than repeating it.
     await expect(note).toHaveAttribute('title', "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.");
     await expect(note.locator('.architect-panel-access-icon')).toHaveAttribute('data-state-tone', 'worker-idle');
-    // One line at the default width (two would be ~40px).
-    expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(28);
+    // At most two lines at the default width (three would be ~56px).
+    expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(44);
     // In a narrow panel it wraps rather than being cut.
     await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '220px'; });
     expect(await text.evaluate(span => getComputedStyle(span).textOverflow !== 'ellipsis' && span.scrollWidth <= span.clientWidth + 1)).toBe(true);
@@ -1940,7 +1959,7 @@ test.describe('workers full access note', () => {
     expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(28);
     await pickMode(page, 'Standard');
     await expect(note).toBeVisible();
-    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers approve their own actions; this lead asks you.');
+    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers run with full access; only this lead asks you for approval.');
     // Like the tally, it belongs to the list: hidden while a worker's transcript is open.
     await row(page, 'build').click();
     await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
@@ -2176,18 +2195,18 @@ test.describe('compact workers round 17', () => {
     await expect(details).not.toHaveAttribute('role');
   });
   test('a finished worker\'s elapsed time stays put when it is updated later', async ({ page }) => {
-    const start = team('session-2', { workers: [worker('build', { status: 'completed', createdAt: 1_800_000_000_000, updatedAt: 1_800_003_600_000 })] });
+    const start = team('session-2', { workers: [worker('build', { status: 'completed', createdAt: 1_800_000_000_000, updatedAt: 1_800_006_300_000 })] });
     await installArchitect(page, { 'session-2': start });
     await openWorkers(page).click();
     const elapsed = row(page, 'build').locator('.architect-worker-elapsed');
-    await expect(elapsed).toHaveText('1h');
-    await expect(elapsed).toHaveAttribute('title', 'ran 1 hour');
+    await expect(elapsed).toHaveText('2h');
+    await expect(elapsed).toHaveAttribute('title', 'ran 1 hour 45 minutes');
     // A later snapshot (a summary arriving hours afterwards) does not make the run look longer.
     await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 2, workers: [worker('build', { status: 'completed', summary: 'All done.', createdAt: 1_800_000_000_000, updatedAt: 1_800_014_400_000 })] });
     await row(page, 'build').locator('xpath=..').locator('.architect-worker-expand').click();
     await expect(panel(page).locator('.architect-worker-item[data-worker-id="build"] .architect-worker-more')).toContainText('All done.');
-    await expect(elapsed).toHaveText('1h');
-    await expect(elapsed).toHaveAttribute('title', 'ran 1 hour');
+    await expect(elapsed).toHaveText('2h');
+    await expect(elapsed).toHaveAttribute('title', 'ran 1 hour 45 minutes');
   });
 });
 
@@ -2370,6 +2389,21 @@ test.describe('compact workers round 23', () => {
     }
     await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px'; });
     await expect(tally.locator('.architect-tally-more')).toBeVisible();
+    // Words first, glyphs as the fallback: a wide panel shows every bucket in words; narrower (the default 400px),
+    // the other buckets go compact ("needs you" keeps its words) before any is cut.
+    const shape = () => tally.evaluate(element => ({ worded: element.querySelectorAll('.architect-tally-count[data-worded]').length, counts: element.querySelectorAll('.architect-tally-count').length, more: Boolean(element.querySelector('.architect-tally-more')) }));
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '400px'; });
+    await expect.poll(shape).toEqual({ worded: 0, counts: 5, more: false });
+    const seen = new Set<string>();
+    for (const width of [...widths, 560, 600, 640]) {
+      await page.evaluate(px => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = `${px}px`; }, width);
+      await tally.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const now = await shape();
+      seen.add(now.worded ? 'worded' : now.more ? 'more' : 'compact');
+      if (now.worded) expect(now, `width ${width}px`).toEqual({ worded: 5, counts: 5, more: false });
+    }
+    expect([...seen].sort()).toEqual(['compact', 'more', 'worded']);
+    await expect(tally.locator('.architect-tally-asking')).toHaveText('1 needs you');
   });
   test('the keyboard hint sits after the rows, in view for a lower row, and never hides the tally', async ({ page }) => {
     await openShowcase(page);

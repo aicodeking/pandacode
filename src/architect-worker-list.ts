@@ -63,9 +63,11 @@ const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
  *  every 15 s, so a seconds count would look stuck. */
 export const shortDuration = (ms: number): string => {
   if (ms < MINUTE) return '<1m';
-  if (ms < HOUR) return `${Math.floor(ms / MINUTE)}m`;
-  if (ms < DAY) { const hours = Math.floor(ms / HOUR * 2) / 2; return `${hours < 10 ? hours : Math.floor(hours)}h`; }
-  return `${Math.min(999, Math.floor(ms / DAY))}d`;
+  // Minutes up to 90m ("75m", never a floored "1h"), then hours to the nearest half (whole from 10h), then days.
+  if (ms < 90 * MINUTE) return `${Math.floor(ms / MINUTE)}m`;
+  const halves = Math.round(ms / HOUR * 2) / 2, hours = halves < 10 ? halves : Math.round(ms / HOUR);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.min(999, Math.max(1, Math.round(ms / DAY)))}d`;
 };
 /** The same duration in words, for titles and screen readers: "1 hour 15 minutes", "less than a minute". */
 export const longDuration = (ms: number): string => {
@@ -109,13 +111,14 @@ const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 't
 /** Then these, first-first, when the line still does not fit: "working" outlasts "done" (the progress bar already
  *  shows completion) and only "failed" outlasts "working". */
 const TALLY_DROP = ['paused', 'waiting', 'done', 'working', 'failed'];
-/** One compact count: the rows' glyph and the number, its word in the title. On the tally line it is hidden from
- *  screen readers (the readable copy says it); on the unfolded "+N" line it says its word to them. */
-const tallyCount = (key: string, count: number, text: string, spoken: boolean): string => {
+/** One count: the rows' glyph and its words ("2 working") when `worded`, else the glyph and the bare number, its word
+ *  in the title. On the tally line it is hidden from screen readers (the readable copy says it); on the unfolded "+N"
+ *  line it says its word to them. */
+const tallyCount = (key: string, count: number, text: string, spoken: boolean, worded = false): string => {
   const [glyph, tone] = TALLY_GLYPHS[key] ?? ['idle', 'worker-idle'];
   const mark = `<span class="architect-tally-glyph" data-state-tone="${tone}" aria-hidden="true">${workerGlyphs[glyph]}</span>`;
   return spoken ? `<span class="architect-tally-count" title="${escape(text)}">${mark}<span aria-hidden="true">${count}</span><span class="sr-only">${escape(text)}</span></span>`
-    : `<span class="architect-tally-count" title="${escape(text)}" aria-hidden="true">${mark}${count}</span>`;
+    : `<span class="architect-tally-count"${worded ? ' data-worded' : ''} title="${escape(text)}" aria-hidden="true">${mark}${escape(worded ? text : String(count))}</span>`;
 };
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
  *  full line, a short one without the minor buckets, and the share of settled workers. Empty buckets are left out. */
@@ -126,19 +129,21 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
   const parts = [...TALLY_ORDER, ...[...counts.keys()].filter(key => !TALLY_ORDER.includes(key))].filter(key => counts.get(key)).map(key => [key, label(key, counts.get(key)!)] as const);
   const settled = workers.filter(worker => worker.abandoned || ['completed', 'failed', 'stopped'].includes(worker.status)).length;
   // The visible line is hidden from screen readers (a readable copy says it in words), except the "needs you" button,
-  // which keeps its words after a warn-toned icon since it acts. Every other bucket is compact: the rows' own glyph and
-  // its count, its word in the title. A line too wide for the panel drops the minor buckets first and ends with a "+N"
-  // button that unfolds the hidden counts on a line of their own (aria-expanded), its title naming them too.
-  const html = (list: (readonly [string, string])[], hidden: (readonly [string, string])[]) => {
+  // which keeps its words after a warn-toned icon since it acts. Words first: every bucket reads "2 working" after the
+  // rows' own glyph (at 11px some glyphs look alike). Too wide, the other buckets go compact (glyph and count, the word
+  // in the title); still too wide, the minor buckets drop first and the line ends with a "+N" button that unfolds the
+  // hidden counts on a line of their own (aria-expanded), its title naming them too.
+  const html = (list: (readonly [string, string])[], hidden: (readonly [string, string])[], worded = false) => {
     const more = hidden.reduce((sum, [key]) => sum + counts.get(key)!, 0), names = hidden.map(([, text]) => text).join(', ');
     return [...list.map(([key, text]) => key === 'needs you'
       ? `<button type="button" class="architect-tally-asking" title="Show the first worker that needs you"><span class="architect-tally-icon" data-state-tone="near" aria-hidden="true">${icon('alert')}</span>${escape(text)}</button>`
-      : tallyCount(key, counts.get(key)!, text, false)),
+      : tallyCount(key, counts.get(key)!, text, false, worded)),
     ...more ? [`<button type="button" class="architect-tally-more" aria-expanded="false" aria-controls="architect-tally-hidden" aria-label="${escape(`Show ${more} more: ${names}`)}" title="${escape(names)}" data-label="+${more} more" data-names="${escape(`${more} more: ${names}`)}">+${more} more</button>`] : []].join('');
   };
   // Ever shorter lines for a narrow panel: the minor buckets go first, then TALLY_DROP in order, "failed" last of
   // all; "needs you" always stays. Each drop is counted in "+N more", which is never cut.
-  const variants = [{ text: parts.map(([, text]) => text).join(' · '), html: html(parts, []), hidden: '' }];
+  const full = parts.map(([, text]) => text).join(' · ');
+  const variants = [{ text: full, html: html(parts, [], true), hidden: '' }, { text: full, html: html(parts, []), hidden: '' }];
   const order = [...TALLY_MINOR, ...TALLY_DROP];
   for (let step = 1; step <= order.length; step++) {
     const gone = new Set(order.slice(0, step));
