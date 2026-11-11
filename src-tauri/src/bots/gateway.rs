@@ -189,12 +189,28 @@ fn image_attachments(image_ids: &[String]) -> Value {
     json!(image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Attached image"})).collect::<Vec<_>>())
 }
 
+/// Team workers run with full access, so a bot thread that leads a team takes no turn (started
+/// or queued) unless the bot itself is set to Full access; any allowed chat sender drives it.
+pub(crate) const TEAM_NEEDS_FULL_BOT: &str = "This bot's thread leads a team, and team workers run with full access; set the bot to Full access to use a team.";
+
+fn allow_team_turn(store: &Store, bot: &Bot, session_id: &str) -> Result<()> {
+    if bot.mode == "full" {
+        return Ok(());
+    }
+    let leads_team: bool = store
+        .db
+        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [session_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if leads_team { Err(TEAM_NEEDS_FULL_BOT.into()) } else { Ok(()) }
+}
+
 async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String, image_ids: Option<Vec<String>>, sender_id: &str, force_queue: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let image_ids = image_ids.unwrap_or_default();
     if image_ids.len() > 4 {
         return Err("Attach up to four images per message.".into());
     }
+    allow_team_turn(&*state.store.lock().map_err(|e| e.to_string())?, bot, session_id)?;
     let busy = state.agents.lock().map_err(|e| e.to_string())?.contains_key(session_id);
     if busy {
         if !force_queue && steer_while_busy(bot, &image_ids, sender_id)
@@ -306,6 +322,9 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
     };
     if let Err(error) = start_or_queue(app, &bot, &session_id, turn, inbound.image_ids, &inbound.sender_id, force_queue).await {
         unbrief(app, &session_id, briefed, bot.memory_version);
+        if error == TEAM_NEEDS_FULL_BOT {
+            reply(app, &bot, &inbound.channel_id, &inbound.thread, TEAM_NEEDS_FULL_BOT).await;
+        }
         return Err(error);
     }
     let _ = app.emit("bots-changed", ());
@@ -391,8 +410,9 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     }
     let _ = app.emit("bots-changed", ());
     // Send the next queued message natively, so bot threads keep moving without the window.
-    // A failed run holds the queue until the next turn ends cleanly.
-    let next = if !successful { None } else { state.store.lock().ok().and_then(|store| message_queue::list(&store, Some(session_id)).ok()).and_then(|queue| queue.into_iter().next()) };
+    // A failed run holds the queue until the next turn ends cleanly, and so does a thread that
+    // came to lead a team on a bot without Full access (`allow_team_turn`).
+    let next = if !successful { None } else { state.store.lock().ok().filter(|store| allow_team_turn(store, &bot, session_id).is_ok()).and_then(|store| message_queue::list(&store, Some(session_id)).ok()).and_then(|queue| queue.into_iter().next()) };
     let taken = next.and_then(|entry| state.store.lock().ok().and_then(|store| {
         let entry = message_queue::take(&store, &entry.id).ok()?;
         let delivery = super::shared_channels::promote_taken(&store, session_id, &entry.text);
@@ -617,6 +637,30 @@ mod tests {
         super::super::mark_briefed(&store, &session, 6).unwrap();
         restore_brief(&store, &session, 4, 5).unwrap();
         assert_eq!(super::super::brief_version_of(&store, &session).unwrap(), 6);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_team_leading_thread_takes_turns_only_on_a_full_access_bot() {
+        let root = std::env::temp_dir().join(format!("pandacode-bot-team-gate-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = super::super::BotInput { name: "Scout".into(), role: "r".into(), instructions: "i".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let mut bot = super::super::create(&store, &input, &root).unwrap();
+        let (session, _) = super::super::thread_session(&store, &bot, "telegram", "chat-1", "Scout · Ana").unwrap();
+        assert!(allow_team_turn(&store, &bot, &session).is_ok(), "no team: unchanged");
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&session]).unwrap();
+        for mode in ["ask", "auto", "review", "plan"] {
+            bot.mode = mode.into();
+            assert_eq!(allow_team_turn(&store, &bot, &session), Err(TEAM_NEEDS_FULL_BOT.into()), "{mode}");
+        }
+        bot.mode = "full".into();
+        assert!(allow_team_turn(&store, &bot, &session).is_ok());
+        // Checked before a turn is started or queued, so nothing runs for a refused message.
+        let source = include_str!("gateway.rs");
+        let start = &source[source.find("async fn start_or_queue(").unwrap()..];
+        let gate = start.find("allow_team_turn(").unwrap();
+        assert!(gate < start.find("message_queue::add(").unwrap() && gate < start.find("architect_start_in_project(").unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 

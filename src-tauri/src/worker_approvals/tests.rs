@@ -759,3 +759,39 @@ fn an_account_switch_drops_a_users_stale_request_cards() {
     assert_eq!(cancelled, vec![("approval_cancelled".to_string(), approval_id), ("input_cancelled".to_string(), question_id)]);
     assert!(pending_empty(&f));
 }
+
+/// Every harness's real approval label for an always-ask tool, as its producer writes it, so a
+/// label format change fails here instead of letting a team worker approve the tool.
+#[test]
+fn always_ask_tools_match_every_harness_approval_shape() {
+    // The producers these shapes copy; a change to one must update its fixture below.
+    let mcp_host = include_str!("../providers/mcp_host.rs");
+    assert!(mcp_host.contains(r#"const SERVER_NAME: &str = "pandacode_architect";"#));
+    assert!(mcp_host.contains(r#"text: format!("Allow {name}?\n{}", preview_json(args, TOOL_INPUT_LIMIT)),"#));
+    let host_tools = include_str!("../providers/host_tools.rs");
+    assert!(host_tools.contains("\"Allow {}?\\n{}\",\n                call.tool,"));
+    assert!(host_tools.contains(r#""method":"item/tool/call""#));
+    assert!(include_str!("../providers/cline.rs").contains(r#"title.strip_prefix("pandacode_architect__")?.split(':').next()"#));
+    let event = |text: String, data: Option<Value>| AgentEvent { session_id: "s".into(), kind: "approval".into(), text, request_id: Some("7".into()), data, tool: None };
+    for name in crate::cloud::deploy::ALWAYS_ASK {
+        let shapes = [
+            // PandaCode's MCP tool host (`mcp-approval:` IDs): Claude, GLM, MiMo, Kimi, OpenCode,
+            // Antigravity, Grok, Pi, DeepSeek, Command Code, Cline, Kilo, OMP, GitHub Copilot,
+            // Muse, Devin, Hermes, and Codex's per-run server. It asks even in full access.
+            ("mcp host", event(format!("Allow {name}?\n{{\"args\":[\"deploy\"]}}"), None)),
+            // Codex dynamic host tools (`item/tool/call`).
+            ("codex", event(format!("Allow {name}?\n{{\"args\":[\"deploy\"]}}"), Some(json!({"id":"rpc","method":"item/tool/call"})))),
+            // Claude's `can_use_tool` control request: the bare MCP tool name.
+            ("claude", event(format!("mcp__pandacode_architect__{name}"), Some(json!({"type":"control_request"})))),
+            // Cline's ACP `session/request_permission` title: `<server>__<tool>: <input>`.
+            ("cline", event(format!("pandacode_architect__{name}: {{\"args\":[\"deploy\"]}}"), Some(json!({"jsonrpc":"2.0","method":"session/request_permission"})))),
+        ];
+        for (harness, shape) in shapes {
+            assert_eq!(always_ask_tool(&shape), Some(*name), "{harness}: {}", shape.text);
+        }
+        // Only the exact tool name counts: never a longer name or a command line naming it.
+        for text in [format!("Allow {name}_extra?"), format!("Run `grep {name} src`"), format!("pandacode_architect__x{name}: {{}}"), format!("Run `echo x: {name}`")] {
+            assert_eq!(always_ask_tool(&event(text.clone(), None)), None, "{text}");
+        }
+    }
+}

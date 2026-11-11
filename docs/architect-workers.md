@@ -67,8 +67,9 @@ authority, so the backend (`src-tauri/src/worker_approvals.rs`) answers a worker
   appears in the request list remote clients read.
 - **Always-ask tools** (`ALWAYS_ASK` in `src-tauri/src/cloud/deploy.rs`: cloud CLI, scheduled
   messages) are declined; the worker is told to ask its lead. They are recognised by tool name,
-  from an `Allow <tool>?` label or a bare (MCP-prefixed) tool-name label as Claude's permission
-  prompt uses. On PandaCode's tool host, Codex host tools and Claude's permission prompt the
+  from an `Allow <tool>?` label, a bare (MCP-prefixed) tool-name label as Claude's permission
+  prompt uses, or Cline's `<server>__<tool>: <input>` permission title; each harness's real
+  label is a fixture in `worker_approvals/tests.rs`. On PandaCode's tool host, Codex host tools and Claude's permission prompt the
   decline itself says so ("Declined: team workers cannot run <tool>; ask your lead…");
   elsewhere the running turn is told, only on a harness that takes a message mid-turn
   (Claude-family, Codex, Pi, OpenCode, Devin). A user's own decline still reads "Declined by
@@ -118,6 +119,10 @@ chat:
 - **Remote devices** cannot prompt, steer, resume, approve for or answer a team's lead unless
   "Full access for remote tasks" is on (declining an approval or cancelling a question still works), since its workers would run with full access, and a task they start
   then gets no saved default team ([remote-access.md](remote-access.md)).
+- **Bots:** a bot conversation that leads a team takes no turn (started, queued or drained from
+  its queue) unless the bot's own permission mode is Full access, since any paired chat sender,
+  schedule or other bot would drive full-access workers; the sender is told to set the bot to
+  Full access (`bots::gateway::allow_team_turn`, [bots.md](bots.md#safety-model)).
 - A `reasoningEffort` that is not a level (over 32 characters, or anything but letters,
   digits, dashes and underscores) is refused for an explicit provider and ignored with a note
   otherwise.

@@ -510,14 +510,16 @@ fn always_asks(event: &AgentEvent) -> bool {
 }
 
 /// The always-ask tool this request is for, by its PandaCode name. The label is either
-/// `Allow <tool>?` (PandaCode's tool host, Codex host tools) or the bare tool name, MCP prefix
-/// included (Claude's permission prompt); a tool activity on the event counts too. Event data
-/// carries no tool arguments (`event_metadata` keeps only a few scalar keys).
+/// `Allow <tool>?` (PandaCode's tool host, Codex host tools), the bare tool name, MCP prefix
+/// included (Claude's permission prompt), or `<server>__<tool>: <input>` (Cline's permission
+/// title); a tool activity on the event counts too. Event data carries no tool arguments
+/// (`event_metadata` keeps only a few scalar keys). Fixtures: `worker_approvals/tests.rs`.
 pub(crate) fn always_ask_tool(event: &AgentEvent) -> Option<&'static str> {
     let line = event.text.lines().next().unwrap_or_default().trim();
     let names = [
         line.strip_prefix("Allow ").and_then(|rest| rest.strip_suffix('?')),
         Some(line),
+        line.split_once(':').map(|(name, _)| name),
         event.tool.as_ref().map(|tool| tool.name.as_str()),
     ];
     names.into_iter().flatten().find_map(|name| {

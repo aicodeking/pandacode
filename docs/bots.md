@@ -53,7 +53,7 @@ Out of scope: vendor cloud VMs, one-time card numbers and payment rails, health 
 A bot can run commands on the user's computer and can be messaged from outside it, so remote input is untrusted by default.
 
 1. **Pairing.** A channel only accepts messages from paired senders. An unknown sender gets a one-time code; the user approves it in the app. Web UI access needs a per-bot token.
-2. **Permission mode.** Bots default to approvals for edits and commands. Full access is an explicit per-bot choice.
+2. **Permission mode.** Bots default to approvals for edits and commands. Full access is an explicit per-bot choice. Team workers always run with full access, so a bot conversation that leads a team takes no turn unless the bot is set to Full access: a message (from a channel, the desktop, a schedule or another bot) is not started or queued, its queue is not drained, and the sender gets "This bot's thread leads a team, and team workers run with full access; set the bot to Full access to use a team." Conversations without a team are unaffected.
 3. **Guard.** Approval requests are decided by the bot's rules (deny wins, then the always-ask list, then allow); anything else is asked. The Guard sees what the harness asks about, so a bot set to Full access is not gated by it. That is why bots default to Ask.
 4. **Approvals in context.** A pending approval is sent to the channel that started the run; `yes`, `no` or `always` answers it. The desktop app shows every pending approval.
 5. **Kill switch.** `/stop` in a paired channel or Pause in the app stops the bot's running work and its schedules.
