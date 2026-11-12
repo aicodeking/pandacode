@@ -19,17 +19,17 @@
  * testSummary(output) / testSummaryHtml(summary): see shell-intent-results.ts.
  * Handler tables live in shell-intent-files.ts, shell-intent-dev.ts and shell-intent-system.ts. */
 import {
-  afterOptions, argsSummary, basename, clip, desc, destroys, flagValue, hasFlag, helpDesc, isImagePath, isSubstitution, missingWrapper, monoObject, positionals, programName, set, stripPrefixes,
+  afterOptions, argsSummary, basename, clip, desc, destroys, flagValue, hasFlag, helpDesc, isDeviceStream, isImagePath, isSubstitution, missingWrapper, monoObject, positionals, programName, set, stripPrefixes,
   tidyObject, withImage, withoutVariables, type Desc, type Handler, type Risk, type Segment, type ShellIntent, type Step,
 } from './shell-intent-base.ts';
 import { lex } from './shell-intent-lex.ts';
-import { DELETERS, ECHO_HANDLERS, FILE_HANDLERS, filterPattern, findSeverity, withRedirect } from './shell-intent-files.ts';
+import { DELETERS, ECHO_HANDLERS, FILE_HANDLERS, SED_IN_PLACE, filterPattern, findSeverity, withRedirect } from './shell-intent-files.ts';
 import { DEV_HANDLERS, cargoTestBinary, isTestBinary, wrappedTests } from './shell-intent-dev.ts';
 import { SYSTEM_HANDLERS } from './shell-intent-system.ts';
 import { gh, git } from './shell-intent-git.ts';
 import {
-  RISK_HANDLERS, SEVERITY, emptied, isCriticalPath, isHomeConfig, isSystemPath, overwroteConfig, overwroteSystem, rankRisks, resolvePath, riskLine, risksOf, withCommandRisk,
-  withRisks,
+  RISK_HANDLERS, SEVERITY, emptied, isCriticalPath, isHomeConfig, isShellStartup, isSystemPath, overwroteConfig, overwroteSystem, rankRisks, resolvePath, riskLine, risksOf, withCommandRisk,
+  withRisks, MAX_UNCHECKED, uncheckedDanger, withUnchecked,
 } from './shell-intent-risk.ts';
 import {
   LEADING_KEYWORDS, closeSubshell, deeper, inLoop, locatedPath, loopsUsed, newContext, recordAssignments, recordCd, recordLoop, scopedScratch, sourceText, withVars,
@@ -139,7 +139,7 @@ function isFilter(seg: Segment): boolean {
   const [first = '', ...args] = seg.words;
   const program = programName(first);
   if (!FILTERS.has(program)) return false;
-  if (program === 'sed') return !args.some(arg => /^-i/.test(arg) || /^--in-place/.test(arg));
+  if (program === 'sed') return !args.some(arg => SED_IN_PLACE.test(arg));
   if (program === 'sort') return !args.some(arg => /^-o/.test(arg) || /^--output/.test(arg));
   return true;
 }
@@ -226,6 +226,14 @@ function xargsRisks(words: string[], pipes: Segment[], scope: Pick<Segment, 'scr
 }
 
 
+/** `cat a.txt | xargs rm`: `Deleted [files] listed by cat a.txt`, leading with the deletion rather than the listing. */
+function listedDeletion(pipes: Segment[]): Desc | undefined {
+  const words = stripPrefixes(pipes[pipes.length - 1].words);
+  if (pipes.length < 2 || programName(words[0] ?? '') !== 'xargs' || !words.slice(1).some(word => DELETERS.has(programName(word)))) return undefined;
+  const source = pipes.slice(0, -1).map(pipe => pipe.text || pipe.words.join(' ')).join(' | ');
+  return desc('file', 'Deleted', 'files', `listed by ${clip(source, 48)}`, 'trash');
+}
+
 /** A destructive step's own risk reads as the command, as written (`git reset --hard origin/main`, `rm -rf ~/x`). */
 function commandRisk(described: Desc | undefined, seg: Segment): Desc | undefined {
   return withCommandRisk(described, clip(sourceText(seg.text || seg.words.join(' ')), RISK_TEXT));
@@ -259,7 +267,8 @@ const fetches = (text: string) => /(?:^|[\s;|&(])(?:curl|wget|xh|https?)\s/.test
 const isDynamic = (script: string | undefined, pipe: Segment) => !!script && pipe.subs.length > 0 && /^\s*(?:\$\((?!\()|`)/.test(script);
 
 /** Code fetched or generated at run time and run by a shell: `curl … | bash`, `sh -c "$(…)"`, `bash <<< "$(…)"`,
- * `eval "$(curl …)"`. Nothing reads what it does, so it may do anything. */
+ * `eval "$(curl …)"`. Nothing reads what it does, so it may do anything. A local file (`cat x.sh | bash`) is not flagged,
+ * just as `bash x.sh` is not: the script is on disk to read. */
 function dynamicCodeRisks(pipes: Segment[]): Risk[] {
   return pipes.flatMap((pipe, index): Risk[] => {
     const words = stripPrefixes(pipe.words);
@@ -438,7 +447,7 @@ function describeWork(step: Step, ctx: Context, polls: boolean): Described[] {
   const fed = feedRisks(pipes, ctx);
   if (!readsFetched(pipes, index) && (fed || !pipes.slice(index + 1).every(isFilter))) {
     const risks = [...(fed ?? []), ...stageRisks(pipes, ctx), ...substitutionRisks(pipes, ctx)];
-    return [{ program, desc: withRisks(rawDesc(pipedText(step, pipes, index), pipes[index].words), risks) }];
+    return [{ program, desc: withRisks(listedDeletion(pipes) ?? rawDesc(pipedText(step, pipes, index), pipes[index].words), risks) }];
   }
   const called = ctx.functions.has(first) ? functionCall(first, args, ctx.functions) : undefined;
   if (called) return [{ program: first, desc: called }];
@@ -465,6 +474,7 @@ function finishStep(step: Step, pipes: Segment[], index: number, described: Desc
   const redirect = target?.redirect ?? '';
   // `curl … > ~/.zshrc`: a dotfile or setting replaced by whatever the step prints.
   if (target && !target.append && isHomeConfig(redirect)) return overwroteConfig(redirect, clip(sourceText(step.text), RISK_TEXT));
+  if (target?.append && isShellStartup(redirect)) return overwroteConfig(redirect, clip(sourceText(step.text), RISK_TEXT), 'Appended to');
   if (target && isSystemPath(redirect)) return overwroteSystem(redirect, target.append ? 'Appended to' : 'Overwrote', clip(sourceText(step.text), RISK_TEXT));
   // `sed 's#a#b#g' run.sh > run2.sh`, `jq . a.json > b.json`: a filter's output written to a file is that file's new text.
   if (target && (described.kind === 'read' || described.kind === 'shell') && WRITING_FILTERS.has(programName(commandWords(seg.words)[0] ?? ''))) {
@@ -593,8 +603,8 @@ function describeSteps(command: string, ctx: Context): Described[] {
   const out: Described[] = [];
   for (let i = 0; i < steps.length; i++) {
     const header = functionHeader(steps[i]);
-    const gated = i > 0 && steps[i - 1].next?.trim() === '&&';
-    if (!header) { out.push(...describeStep(steps[i], ctx, polls.has(i)).map(step => gate(dead.has(i) ? neverRuns(step) : step, gated))); continue; }
+    const op = i > 0 ? steps[i - 1].next?.trim() : undefined;
+    if (!header) { out.push(...describeStep(steps[i], ctx, polls.has(i)).map(step => gate(dead.has(i) ? neverRuns(step) : step, op))); continue; }
     const first: Step = { ...steps[i], pipes: [{ ...steps[i].pipes[0], words: header.rest }, ...steps[i].pipes.slice(1)] };
     const body = [first];
     let open = header.rest[0] === '{' ? braceDelta(first) : 0;
@@ -608,7 +618,7 @@ function describeSteps(command: string, ctx: Context): Described[] {
 /** The steps the shared budget still allows; the rest are dropped and the row falls back to the command as written. */
 function withinBudget(steps: Step[], ctx: Context): Step[] {
   const allowed = Math.max(0, Math.min(steps.length, ctx.budget.left));
-  if (allowed < steps.length) ctx.budget.exhausted = true;
+  if (allowed < steps.length) { ctx.budget.exhausted = true; ctx.budget.unchecked.push(...steps.slice(allowed).map(step => step.text)); }
   ctx.budget.left -= allowed;
   return allowed < steps.length ? steps.slice(0, allowed) : steps;
 }
@@ -632,8 +642,8 @@ function deadSteps(steps: Step[]): Set<number> {
   return out;
 }
 
-/** A step that only runs when the step before it succeeded (`a && b`). */
-const gate = (step: Described, gated: boolean): Described => gated ? { ...step, gated: true } : step;
+/** A step that only runs when the step before it succeeded (`a && b`) or failed (`a || b`). */
+const gate = (step: Described, op?: string): Described => op === '&&' ? { ...step, gated: true } : op === '||' ? { ...step, orElse: true } : step;
 
 /** A step the shell skips makes no image; its risks stay, but it never leads or badges the row (notRunSteps). */
 const neverRuns = (step: Described): Described => ({ ...step, dead: true, desc: step.desc.producedImage ? { ...step.desc, producedImage: undefined } : step.desc });
@@ -676,11 +686,14 @@ function withoutCutTail(text: string): string {
 export function describeShell(command: string, output?: string, context?: ShellContext): ShellIntent {
   const { command: text, cwd } = splitWorkingDirectory(withoutCutTail(typeof command === 'string' ? command.slice(0, MAX_INPUT) : ''));
   const title = text.trim();
+  // Past the input limit: the cut-off tail is only scanned for dangerous steps.
+  const tail = typeof command === 'string' ? command.slice(MAX_INPUT, MAX_UNCHECKED) : '';
   try {
     const ctx = newContext(typeof context?.cwd === 'string' && context.cwd ? context.cwd : cwd);
     const all = describeSteps(title, ctx);
-    if (ctx.budget.exhausted) return tooLong(title, all);
-    return summarize(title, all, output) ?? fallbackIntent(title);
+    const danger = tail || ctx.budget.exhausted ? uncheckedDanger([...ctx.budget.unchecked, tail].join('\n')) : undefined;
+    if (ctx.budget.exhausted) return withUnchecked(tooLong(title, all), danger);
+    return withUnchecked(summarize(title, all, output) ?? fallbackIntent(title), danger);
   } catch {
     return fallbackIntent(title);
   }

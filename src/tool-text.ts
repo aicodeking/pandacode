@@ -3,7 +3,10 @@
 
 /** The last segment of a path, for either separator; '/' for the root, the input when it has no name. */
 export function basename(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
+  // A loop, not `/[\\/]+$/`: that regex retries from every slash of a long run that is not at the end (quadratic).
+  let end = path.length;
+  while (end > 0 && (path[end - 1] === '/' || path[end - 1] === '\\')) end--;
+  const trimmed = path.slice(0, end);
   if (!trimmed) return path ? path.charAt(0) : '';
   return trimmed.slice(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\')) + 1) || trimmed;
 }

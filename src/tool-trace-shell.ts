@@ -81,13 +81,13 @@ function leadStepFailed(intent: ShellIntent): boolean {
 }
 
 /** Checks whose nonzero exit is their finding, not a failure to run: [finished verb or kind, what the row then says]. */
-const FAILED_CHECKS: Record<string, string> = { test: 'Tests failed', Typechecked: 'Typecheck failed', Linted: 'Lint found problems', Built: 'Build failed' };
+export const FAILED_CHECKS: Readonly<Record<string, string>> = { test: 'Tests failed', Typechecked: 'Typecheck failed', Linted: 'Lint found problems', Built: 'Build failed' };
 
 type FailedCheck = { verb: string; tally: string; label?: string };
 
-/** `1 of 14`: the verb already says `Tests failed`, so the tally does not say it twice. */
+/** `1 of 14 tests`: the verb (`Tests failed`) already says which side the count is. */
 function failedOf(summary: { failed: number; passed: number }): string {
-  return `${summary.failed} of ${summary.passed + summary.failed}`;
+  return `${summary.failed} of ${summary.passed + summary.failed} tests`;
 }
 
 /** `Tests failed` with `1 of 14` when the output has a summary; undefined when the check never ran or is no check. */
@@ -158,7 +158,7 @@ function intentCheck(check: ShellCheck | undefined, output: string): FailedCheck
 function waitedTally(check: ShellCheck | undefined, output: string): string {
   if (!check?.waited || !check.failed) return '';
   const summary = testSummary(output);
-  return summary?.failed ? `${failedOf(summary)} tests failed` : 'tests failed';
+  return summary?.failed ? `${summary.failed} of ${summary.passed + summary.failed} tests failed` : 'tests failed';
 }
 
 /** `152 passed`: a test run that passed says how many, from its parsed summary. */

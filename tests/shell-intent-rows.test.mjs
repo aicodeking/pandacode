@@ -147,12 +147,12 @@ test('recursive deletes count folders; plain deletes count files', () => {
   assert.match(describeShell('rm -rf a b c').risks[0], /^Deletes files: rm -rf a b c$/);
 });
 
-test('writes into system paths overwrite a system file', () => {
+test('writes into system paths overwrite a system file and appends append to one', () => {
   const cases = {
     'echo "127.0.0.1 x" > /etc/hosts': 'Overwrites a system file: echo "127.0.0.1 x" > /etc/hosts',
     'echo x | sudo tee /etc/hosts': 'Overwrites a system file: sudo tee /etc/hosts',
-    'echo x | sudo tee -a /etc/fstab': 'Overwrites a system file: sudo tee -a /etc/fstab',
-    'echo x >> /etc/fstab': 'Overwrites a system file: echo x >> /etc/fstab',
+    'echo x | sudo tee -a /etc/fstab': 'Appends to a system file: sudo tee -a /etc/fstab',
+    'echo x >> /etc/fstab': 'Appends to a system file: echo x >> /etc/fstab',
     'sudo cp hosts /etc/hosts': 'Overwrites a system file: sudo cp hosts /etc/hosts',
     'sudo mv x /usr/local/bin/x': 'Overwrites a system file: sudo mv x /usr/local/bin/x',
     ': > /etc/motd': 'Overwrites a system file: : > /etc/motd',

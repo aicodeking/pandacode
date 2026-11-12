@@ -43,6 +43,7 @@ Area → key files → detail (read it before touching the area).
 - Motion: `src/motion.ts`, `src/popover-motion.ts`, `src/trace-motion.ts` → [ref](docs/agent-reference.md#motion).
 - Action dock, Agents flyout: `src/action-dock.ts`, `src/team-progress.ts` → [ref](docs/agent-reference.md#action-dock-and-agents).
 - Turn card, thread tiles, long-thread windowing: `src/turn-card.ts`, `src/thread-tiles.ts`, `src/tile-layout.ts`, `src/transcript-rows.ts`, `src/transcript-window.ts`, `src/transcript-view.ts`, `src/transcript-host.ts` → [ref](docs/agent-reference.md#turn-card-and-thread-tiles).
+- Tool rows, shell intents, tool images: `src/tool-trace*.ts`, `src/shell-intent*.ts`, `src/tool-image*.ts`, `src-tauri/src/tool_images*.rs` → [ref](docs/agent-reference.md#turn-card-and-thread-tiles).
 - Header, view menu, inspector tabs, GitHub view, worktrees: `src/inspector-bar.css`, `src/inspector-tabs.ts`, `src/github-hub.ts`, `src/worktrees.ts` → [ref](docs/agent-reference.md#header-views-and-inspector).
 - Menu bar item, Settings: `src-tauri/src/tray.rs`, `src/tray-popover.ts`, `src/settings.ts`, `src/settings-sections.ts` → [ref](docs/agent-reference.md#tray-and-settings).
 - Sidebar, thread switching, find: `src/sidebar-sections.ts`, `src/sidebar-sort.ts`, `src/thread-find.ts` → [ref](docs/agent-reference.md#sidebar-and-thread-switching).

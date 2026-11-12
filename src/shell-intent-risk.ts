@@ -40,21 +40,31 @@ export const isHomeConfig = (path: string): boolean => HOME_CONFIG.test(path.tri
 /** `~/Documents`, `/Users/me/Desktop`: moving it away loses where everything is. */
 export const isHomeFolder = (path: string): boolean => HOME_FOLDER.test(path.trim());
 
-/** `> ~/.zshrc`, `ln -sf /dev/null ~/.zshrc`: a dotfile or setting replaced. */
-export const overwroteConfig = (file: string, risk?: string): Desc => ({
-  ...destroys(desc('file', 'Overwrote', clip(basename(file), 48), '', 'edit'), SEVERITY.discard, risk && riskLine(CONFIG_REASON, risk)), reason: CONFIG_REASON,
+/** `.bashrc`, `.zshrc`, `.profile`, fish's `config.fish`: run by every new shell, so even an append changes it. */
+const SHELL_STARTUP = new RegExp(`${HOME.source}(?:\\.(?:bash(?:rc|_profile|_login)|zsh(?:rc|env|profile)|z?profile|zlogin)|\\.config\\/fish\\/(?:config\\.fish|conf\\.d\\/[^/]+))$`);
+export const isShellStartup = (path: string): boolean => SHELL_STARTUP.test(path.trim());
+
+type Write = 'Overwrote' | 'Appended to' | 'Edited';
+const CONFIG_REASONS: Record<Write, string> = {
+  'Overwrote': 'Overwrites a config file', 'Appended to': 'Appends to a shell startup file', 'Edited': 'Edits a config file in place',
+};
+
+/** `> ~/.zshrc`, `ln -sf /dev/null ~/.zshrc`, `sed -i … ~/.zshrc`, `>> ~/.bashrc`: a dotfile or setting replaced or changed. */
+export const overwroteConfig = (file: string, risk?: string, verb: Write = 'Overwrote'): Desc => ({
+  ...destroys(desc('file', verb, clip(basename(file), 48), '', 'edit'), SEVERITY.discard, risk && riskLine(CONFIG_REASONS[verb], riskCommand(risk))), reason: CONFIG_REASONS[verb],
 });
-const CONFIG_REASON = 'Overwrites a config file';
 
 /** System locations (`/etc`, `/private/etc`, `/usr`, `/System`, `/Library`, `/bin`, `/sbin`): writing there changes the machine. */
 const SYSTEM_PATH = /^(?:(?:\/private)?\/etc|\/usr|\/System|\/Library|\/bin|\/sbin)\//;
-const SYSTEM_REASON = 'Overwrites a system file';
+const SYSTEM_REASONS: Record<Write | 'Emptied', string> = {
+  'Overwrote': 'Overwrites a system file', 'Emptied': 'Overwrites a system file', 'Appended to': 'Appends to a system file', 'Edited': 'Edits a system file in place',
+};
 export const isSystemPath = (path: string): boolean => SYSTEM_PATH.test(path.trim());
 
-/** `> /etc/hosts`, `sudo tee /etc/hosts`, `cp x /usr/local/bin/x`: a file the whole machine reads, replaced or appended to. */
-export const overwroteSystem = (file: string, verb: 'Overwrote' | 'Appended to' | 'Emptied' = 'Overwrote', risk?: string): Desc => ({
-  ...destroys(desc('file', verb, clip(basename(file), 48) || clip(file, 48), '', verb === 'Emptied' ? 'trash' : 'edit'), SEVERITY.tree, risk && riskLine(SYSTEM_REASON, risk)),
-  reason: SYSTEM_REASON,
+/** `> /etc/hosts`, `sudo tee /etc/hosts`, `cp x /usr/local/bin/x`, `sed -i … /etc/hosts`: a file the whole machine reads, changed. */
+export const overwroteSystem = (file: string, verb: Write | 'Emptied' = 'Overwrote', risk?: string): Desc => ({
+  ...destroys(desc('file', verb, clip(basename(file), 48) || clip(file, 48), '', verb === 'Emptied' ? 'trash' : 'edit'), SEVERITY.tree, risk && riskLine(SYSTEM_REASONS[verb], riskCommand(risk))),
+  reason: SYSTEM_REASONS[verb],
 });
 
 /** `/`, `~`, `$HOME`, `..`, `.`, a root `*`, the checkout (`$(pwd)`): deleting it loses everything. */
@@ -113,13 +123,16 @@ function deletedCount(paths: string[], recursive: boolean): string {
 /** `~/.config/app`, `$HOME/.cache/x`: a path under home is named as written, so the chip says whose folder it is. */
 const UNDER_HOME = /^(?:~|\$\{?HOME\}?)\/./;
 
+/** `/usr`, `/etc/`: a system root itself (`isSystemPath` covers what is under one). */
+const SYSTEM_ROOT = /^(?:\/private)?\/(?:etc|usr|System|Library|bin|sbin)\/?$/;
+
 /** `../sibling`: a path beside the project keeps its `..`, so the chip never reads as a folder inside it. */
 const BESIDE = /^\.\.\/[^/]+\/?$/;
 
 /** The chip for one deleted path: under home or beside the project as written, else its name; `files` when the name is
  * an unresolved variable (`rm -rf $D`), which the risk still quotes. */
 function deletedName(path: string): string {
-  if (UNDER_HOME.test(path) || BESIDE.test(path)) return trimTrailing(path, '/');
+  if (UNDER_HOME.test(path) || BESIDE.test(path) || isSystemPath(path) || SYSTEM_ROOT.test(path)) return trimTrailing(path, '/');
   const name = basename(path);
   return name.includes('$') ? 'files' : name;
 }
@@ -176,7 +189,18 @@ export const riskLine = (reason: string, command: string): string => `${reason}:
 /** A destructive step whose risk reads as `command` (as written) after its reason; hidden steps' risks stay as they are. */
 export function withCommandRisk(described: Desc | undefined, command: string): Desc | undefined {
   if (!described?.destructive || described.risks?.length) return described;
-  return { ...described, risk: riskLine(riskReason(described), clip(command, 160)) };
+  return { ...described, risk: riskLine(riskReason(described), clip(riskCommand(command), 160)) };
+}
+
+/** A command as quoted in a risk: without a leading line continuation (`\ rm -rf ~` after `ls && \⏎`) or the `)` that
+ * closes a subshell it sits in (`(cd /; rm -rf *)` → `rm -rf *`). */
+const QUOTED = /'[^']*'|"(?:\\.|[^"\\])*"/g;
+export function riskCommand(command: string): string {
+  let text = command.replace(/^(?:\\\s+)+/, '').trim();
+  const bare = text.replace(QUOTED, '');
+  let extra = (bare.match(/\)/g) ?? []).length - (bare.match(/\(/g) ?? []).length;
+  while (extra-- > 0 && text.endsWith(')')) text = text.slice(0, -1).trimEnd();
+  return text;
 }
 
 /** A step's risk: its reason and the command as written, else the step's sentence without command chips. */
@@ -342,3 +366,55 @@ const launchctl: Handler = (_program, args) => {
 export const RISK_HANDLERS: Record<string, Handler> = {
   crontab, diskutil, kubectl, terraform, pulumi, aws, xargs, parallel, shutdown: power, reboot: power, halt: power, poweroff: power, security, defaults, launchctl,
 };
+
+// ---------------------------------------------------------------- text the parser never checked
+
+/** How much of a command the fallback scan reads: past the parser's input limit and step budget, padding must not hide a step. */
+export const MAX_UNCHECKED = 200_000;
+const UNCHECKED_WRAPPERS = set('sudo', 'doas', 'env', 'nohup', 'time', 'command', 'exec', 'xargs', 'nice', 'then', 'do', 'else', '!');
+const PIPED_SHELLS = set('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish');
+/** A segment naming none of these needs no word scan. */
+const UNCHECKED_PROGRAMS = /\b(?:rm|git|dd|mkfs|chmod|chown|chgrp|curl|wget|drop)\b/i;
+const SQL_DROP = /\bDROP\s+(?:TABLE|DATABASE|SCHEMA)\b[^"';\n]*/i;
+
+/** The program of a stage's words (wrappers, assignments and their flags skipped) and its arguments. */
+function stageProgram(words: string[]): { program: string; args: string[] } {
+  let at = 0;
+  while (at < Math.min(words.length, 8) && (UNCHECKED_WRAPPERS.has(words[at]) || words[at].startsWith('-') || /^[A-Za-z_]\w*=/.test(words[at]))) at++;
+  const word = words[at] ?? '';
+  return { program: word.slice(word.lastIndexOf('/') + 1), args: words.slice(at + 1) };
+}
+
+/** Whether one pipe stage, as plain words, deletes, force-pushes, discards or overwrites a disk. */
+function dangerousStage(words: string[]): boolean {
+  const { program, args } = stageProgram(words);
+  const short = (letters: RegExp) => args.some(word => /^-[^-]/.test(word) && letters.test(word.slice(1)));
+  const sub = args.find(word => !word.startsWith('-'));
+  if (program === 'rm') return short(/[rRf]/) || args.includes('--recursive') || args.includes('--force');
+  if (program === 'git' && sub === 'push') return short(/f/) || args.some(word => word.startsWith('--force') || /^\+./.test(word));
+  if (program === 'git' && sub === 'reset') return args.includes('--hard');
+  if (program === 'git' && sub === 'clean') return short(/f/) || args.includes('--force');
+  if (program === 'dd') return args.some(word => word.startsWith('of='));
+  if (['chmod', 'chown', 'chgrp'].includes(program)) return short(/R/) || args.includes('--recursive');
+  return program.startsWith('mkfs');
+}
+
+/** The first dangerous step in text the parser never checked (the steps past its budget, the tail past its input limit),
+ * as written. A word scan per `;`/`&`/newline segment and `|` stage: linear, no regex over the whole text. */
+export function uncheckedDanger(text: string): string | undefined {
+  for (const segment of text.slice(0, MAX_UNCHECKED).split(/[;&\n(){}`]/)) {
+    if (!UNCHECKED_PROGRAMS.test(segment)) continue;
+    const stages = segment.split('|').map(stage => stage.trim().split(/\s+/));
+    const at = stages.findIndex(dangerousStage);
+    if (at >= 0) return clip(stages[at].join(' '), 120);
+    const fetched = stages.some((words, index) => ['curl', 'wget'].includes(stageProgram(words).program) && PIPED_SHELLS.has(stageProgram(stages[index + 1] ?? []).program));
+    const found = fetched ? segment : SQL_DROP.exec(segment)?.[0];
+    if (found) return clip(found.trim(), 120);
+  }
+  return undefined;
+}
+
+/** `intent` marked destructive by a step the parser never checked. */
+export function withUnchecked<T extends { destructive: boolean; risks: string[] }>(intent: T, danger: string | undefined): T {
+  return danger ? { ...intent, destructive: true, risks: [...intent.risks, `Long command not fully checked: ${danger}`] } : intent;
+}

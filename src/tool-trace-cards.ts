@@ -1,7 +1,7 @@
 import { escape, icon } from './dom.ts';
 import { brandFor } from './trace-brands.ts';
-import { richCard, terminalHeadHtml } from './tool-cards.ts';
-import { errorCount, errorCountText } from './tool-trace-outcome.ts';
+import { exitBadgeHtml, richCard, terminalHeadHtml } from './tool-cards.ts';
+import { errorCount, errorCountText, searchFoundNothing } from './tool-trace-outcome.ts';
 import { pandacodeCard, pandacodeTool } from './tool-trace-pandacode.ts';
 import { fieldsOf, normalizeTool } from './tool-names.ts';
 import { type Fields } from './tool-fields.ts';
@@ -11,10 +11,11 @@ import { lex } from './shell-intent-lex.ts';
 import { describeShell, testSummary } from './shell-intent.ts';
 import { INTERRUPTED_NOTE, blockedNoteHtml, editFailureHtml, editFailureReason, isInterruptedOutput, stripToolError, withoutInterrupt } from './tool-trace-errors.ts';
 import { pandacodeImage, specialCard, testSummaryCard } from './tool-trace-intent.ts';
+import { harnessUnstarted } from './tool-trace-refusal.ts';
 import type { Tool, TraceKind } from './tool-trace.ts';
 import {
   MAX_SCAN, cleanOutput, clipText, describeTool, domain, editLines, exitCode, field, filePath, lines, mcpParts, parseJson, shellCommand, text,
-  toolBlocked, traceKind,
+  toolBlocked, toolFailed, traceKind, withReportedFailure,
 } from './tool-trace.ts';
 
 /* Result cards for an expanded row (`toolPreview`): terminals, file previews, diffs, search hits, MCP record rows and the
@@ -61,16 +62,16 @@ export function list(items: ListItem[], total = items.length): string {
 }
 
 function shellCard(tool: Tool, fields: Fields): string {
-  return terminalCard(shellCommand(tool.input, fields), cleanOutput(tool.output), tool.status);
+  return terminalCard(shellCommand(tool.input, fields), cleanOutput(tool.output), tool.status, toolFailed(tool));
 }
 
-/** Command line, exit badge and the output's last lines (Codex text or `{exitCode, stdout, stderr}`). */
-export function terminalCard(command: string, output: string, status: Tool['status']): string {
+/** Command line, exit badge and the output's last lines (Codex text or `{exitCode, stdout, stderr}`). Without the row's
+ *  outcome, a nonzero exit fails unless a signal stopped it (143/137) or a search found nothing. */
+export function terminalCard(command: string, output: string, status: Tool['status'], failedRow?: boolean): string {
   const { code, body } = exitCode(output);
-  // 143/137: stopped by a signal, neutral (tool-trace-refusal.ts).
-  const failed = code !== undefined ? code !== 0 && code !== 143 && code !== 137 : status === 'failed';
-  const pill = code !== undefined || status === 'failed'
-    ? `<span class="tool-trace-badge${failed ? ' is-failed' : ''}">${escape(code !== undefined ? `exit ${code}` : 'failed')}</span>` : '';
+  const failed = failedRow ?? (code !== undefined
+    ? code !== 0 && code !== 143 && code !== 137 && !searchFoundNothing(command, code, body) : status === 'failed');
+  const pill = exitBadgeHtml(code, failed || (code === undefined && status === 'failed'));
   const all = lines(body.trimEnd());
   if (!command) return '';
   if (status === 'completed' && !all.length && !pill && command.length <= 120) return COMPLETE;
@@ -96,8 +97,11 @@ function diffCard(tool: Tool, fields: Fields): string {
   return (clipped ? PARTIAL : '') + (path ? fileCard(path, '', []) : '') + (shown ? `<pre class="tool-trace-diff" tabindex="0" aria-label="Edit preview">${shown}</pre>${more}` : '');
 }
 
+const SEARCH_NOTICE = /^(?:Found \d+ (?:files?|matches?)|No (?:files|matches) found)/i;
 export function searchCard(output: string): string {
-  const found = lines(output).map(line => line.trim()).filter(line => line && !/^Found \d+ (files?|matches?)/i.test(line) && !/^No (files|matches) found/i.test(line));
+  const found = lines(output).map(line => line.trim()).filter(line => line && !SEARCH_NOTICE.test(line));
+  // Only `No files found` (or `Found 0 files`): the row's `· no matches` says it all.
+  if (!found.length && output.trim() && lines(output).every(line => !line.trim() || SEARCH_NOTICE.test(line.trim()))) return COMPLETE;
   if (!found.length) return output.trim() ? `${output.trim().length > 200 ? PARTIAL : ''}<p class="tool-trace-note">${escape(clip(output, 200))}</p>` : '';
   return list(found.slice(0, LIST_ITEMS).map(line => {
     const [path, ...match] = line.split(':');
@@ -401,16 +405,21 @@ function withoutErrorTags<T extends Tool>(tool: T): T {
   return tool.status === 'failed' && tool.output.includes('tool_use_error>') ? { ...tool, output: stripToolError(tool.output) } : tool;
 }
 
+/** A command the harness never started (`Couldn't start [npm]`, or `Couldn't read [a.rs]` for a lone read). */
+function neverStarted(raw: Tool, normal: Tool): boolean {
+  return describeTool(raw).verb === "Couldn't start" || harnessUnstarted(shellCommand(normal.input, fieldsOf(normal.input)), normal.output) !== undefined;
+}
+
 /** A Devin edit cut at 4 KB before its new text (tool-trace-legacy.ts): what is left is only the old lines. */
 const UNRECORDED = '<p class="tool-trace-note">Before (after was not recorded)</p>';
 
 /** Structured, escaped result card for an expanded row; empty when there is nothing better than the raw record. */
 export function toolPreview(raw: Tool): string {
-  const normal = normalizeTool(raw);
+  const normal = withReportedFailure(normalizeTool(raw));
   const kind = traceKind(normal);
   if (toolBlocked(normal)) return blockedCard(kind, normal, fieldsOf(normal.input));
   if (isInterruptedOutput(normal.status, normal.output)) return interruptedCard(kind, normal, fieldsOf(normal.input));
-  if (kind === 'shell' && describeTool(raw).verb === "Couldn't start") return unstartedCard(normal, fieldsOf(normal.input));
+  if (kind === 'shell' && neverStarted(raw, normal)) return unstartedCard(normal, fieldsOf(normal.input));
   const tool = withoutErrorTags(normal);
   const fields = fieldsOf(tool.input);
   const output = cleanOutput(tool.output);
@@ -425,7 +434,9 @@ export function toolPreview(raw: Tool): string {
   const failedFile = tool.status === 'failed' && (kind === 'edit' || kind === 'write');
   const why = (failedFile && !editFailureReason(withoutInterrupt(tool.output)) ? editFailureHtml(tool.output) : '')
     + (kind === 'edit' && fields._unrecorded === true ? UNRECORDED : '');
-  const body = why + (shot ? toolImageCardHtml(shot) : '') + previewBody(kind, tool, fields, output);
+  // A progress snapshot's row already carries its image as a thumbnail; the card holds its note and marks only.
+  const cardShot = kind === 'mcp' && pandacodeTool(tool.name) === 'progress_snapshot' ? '' : shot;
+  const body = why + (cardShot ? toolImageCardHtml(cardShot) : '') + previewBody(kind, tool, fields, output);
   const own = () => card(kind, body && body !== COMPLETE && cut ? PARTIAL + body : body);
   // A destructive command always opens to the whole command it ran, even with nothing printed.
   if (body === COMPLETE && trace?.destructive) { const rich = richCard(tool); if (rich) return card(kind, rich); }

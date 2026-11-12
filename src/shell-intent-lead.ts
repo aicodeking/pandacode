@@ -65,8 +65,8 @@ const MAX_OUTPUT = 200_000;
 const typeErrors = (output: string, label = '') => (CHECK_ERRORS.find(([chip]) => chip.test(label))?.[1] ?? TYPE_ERRORS).test(output.slice(0, MAX_OUTPUT));
 const testsFailed = (output: string) => (testSummary(output)?.failed ?? 0) > 0;
 
-/** `fatal: …`, `nothing to commit`, `npm ERR!`: a step failed. Per line, linear. */
-const STEP_FAILED = /^(?:fatal|error): |^nothing (?:added )?to commit\b|\bnpm ERR!|\bERR_PNPM_/m;
+/** `fatal: …`, `error: could not compile`, `nothing to commit`, `npm ERR!`, `make: *** [all] Error 2`: a step failed. Per line, linear. */
+const STEP_FAILED = /^(?:fatal|error): |^nothing (?:added )?to commit\b|\bnpm ERR!|\bERR_PNPM_|^make(?:\[\d+\])?: \*\*\* /m;
 
 /** Steps whose failure `fatal:` / `nothing to commit` / `npm ERR!` can be: git, gh, package managers, builds. */
 const BLAMED_KINDS = set('git', 'github', 'install', 'build');
@@ -85,7 +85,7 @@ const OWN_FAILURES: [ReadonlySet<string>, RegExp][] = [
 ];
 /** The failure lines a kind's own program prints. */
 const KIND_FAILURES: Record<string, RegExp> = {
-  git: /^(?:fatal|error): /m, github: /^(?:fatal|error): /m, install: /\bnpm ERR!|\bERR_PNPM_/, build: /\bnpm ERR!|\bERR_PNPM_/,
+  git: /^(?:fatal|error): /m, github: /^(?:fatal|error): /m, install: /\bnpm ERR!|\bERR_PNPM_/, build: /\bnpm ERR!|\bERR_PNPM_|^make(?:\[\d+\])?: \*\*\* /m,
 };
 
 /** Whether `output` pins a failure on `lead` itself (ShellIntent.leadFailed): a line only its subcommand prints
@@ -101,21 +101,34 @@ export function leadFailed(lead: Described, all: Described[], output: string): b
   return !!pattern && pattern.test(text) && !all.some(step => step !== lead && BLAMED_KINDS.has(step.desc.kind));
 }
 
-/** Destructive steps the shell skips (`true || rm -rf ~`), and those after a `&&` that can't have run: a step before them in the same `&&` chain is blamed by the output
- * (`npm test && git push -f` printing failures). A nonzero exit alone proves nothing (the destructive step may be the one
- * that failed), and a line of the step's own program (`rm: x: Permission denied`) proves it ran. A step after `;` or `||`,
- * or one whose chain shows no failure, could have run. */
+/** Destructive steps the shell skips (`true || rm -rf ~`), those after a `&&` that can't have run: a step before them in the same `&&` chain is blamed by the output
+ * (`npm test && git push -f` printing failures), and those after a `||` whose chain clearly succeeded (`npm test || rm -rf x`
+ * printing every test passed). A nonzero exit alone proves nothing (the destructive step may be the one
+ * that failed), and a line of the step's own program (`rm: x: Permission denied`) proves it ran. A step after `;`, or one
+ * whose chain shows neither, could have run. */
 export function notRunSteps(all: Described[], output: string): Set<Described> {
   const text = output.slice(0, MAX_OUTPUT);
   const out = new Set<Described>();
   all.forEach((step, at) => {
     if (step.dead && step.desc.destructive) { out.add(step); return; }
-    if (!step.gated || !step.desc.destructive || printedBy(step.program, text)) return;
-    let head = at;
-    while (head > 0 && all[head].gated) head--;
-    if (all.slice(head, at).some(before => blamed(before, text))) out.add(step);
+    if (!step.desc.destructive || printedBy(step.program, text)) return;
+    if (step.gated && chainBefore(all, at, 'gated').some(before => blamed(before, text))) out.add(step);
+    if (step.orElse && chainBefore(all, at, 'orElse').some(before => succeeded(before, text))) out.add(step);
   });
   return out;
+}
+
+/** The steps before `at` in its own `&&` (gated) or `||` (orElse) chain. */
+function chainBefore(all: Described[], at: number, link: 'gated' | 'orElse'): Described[] {
+  let head = at;
+  while (head > 0 && all[head][link]) head--;
+  return all.slice(head, at);
+}
+
+/** A test step whose summary shows every test passed: the `||` branch after it never ran. */
+function succeeded(step: Described, output: string): boolean {
+  const summary = step.desc.kind === 'test' ? testSummary(output) : undefined;
+  return !!summary && summary.passed > 0 && !summary.failed;
 }
 
 /** `rm: x: Permission denied`: a line the program itself printed. */

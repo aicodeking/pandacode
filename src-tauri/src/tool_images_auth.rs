@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::storage::Store;
 
 mod shell;
+mod tool_names;
 
 /// Tool records containing the file name fetched per store lock, newest first.
 const CANDIDATE_BATCH: usize = 64;
@@ -42,10 +43,6 @@ const MISSED_TTL: Duration = Duration::from_secs(30);
 /// Fields that name an image file (at any depth of the input, or of an image
 /// tool's JSON output).
 const IMAGE_FIELDS: [&str; 7] = ["path", "file_path", "filePath", "image_path", "image", "screenshot", "savedPath"];
-/// Tool-name fragments (lowercase) of tools that capture or show an image; their
-/// output may report the file in an image-path shape.
-const IMAGE_TOOL_WORDS: [&str; 8] =
-    ["screenshot", "snapshot", "capture", "view image", "viewimage", "imageview", "generate image", "reading media"];
 /// Tool-name fragments (lowercase) of tools whose output is page text (an
 /// accessibility tree, a DOM snapshot); their output never authorizes.
 const TEXT_SNAPSHOT_WORDS: [&str; 5] = ["browser_snapshot", "accessibility", "take_snapshot", "aria_snapshot", "ariasnapshot"];
@@ -265,7 +262,7 @@ fn tool_kind(name: &str) -> ToolKind {
     let lower = name.to_lowercase();
     if TEXT_SNAPSHOT_WORDS.iter().any(|word| lower.contains(word)) {
         ToolKind::TextSnapshot
-    } else if IMAGE_TOOL_WORDS.iter().any(|word| lower.contains(word)) {
+    } else if tool_names::is_image_tool(&lower) {
         ToolKind::Image
     } else if is_read_tool(&lower) {
         ToolKind::Read
@@ -510,6 +507,11 @@ mod tests {
             named("WebFetch", Value::Null, "<image path=/tmp/shot.png>"),
             named("Bash", Value::Null, "View image /tmp/shot.png"),
             named("mcp__web__fetch", Value::Null, r#"[{"type":"text","text":"<image path=/tmp/shot.png>"}]"#),
+            named("mcp__capture_notes__save", Value::Null, "/tmp/shot.png"),
+            named("mcp__screenshot_store__save", Value::Null, "Saved to /tmp/shot.png"),
+            named("mcp__notes__recapture_page", Value::Null, "/tmp/shot.png"),
+            named("mcp__notes__save_snapshot", Value::Null, "Saved to /tmp/shot.png"),
+            named("Running: curl https://site/capture", Value::Null, "/tmp/shot.png"),
         ];
         for record in &reject {
             assert!(!named_by(std::slice::from_ref(record), path), "{record}");
@@ -521,6 +523,8 @@ mod tests {
             named("x", serde_json::json!({"screenshot": {"saved": path}}), ""),
             named("x", serde_json::json!({"savedPath": path}), ""),
             named("mcp__pw__browser_take_screenshot", Value::Null, "Saved to /tmp/shot.png"),
+            named("mcp__chrome-devtools__take_screenshot", Value::Null, "Saved screenshot to /tmp/shot.png"),
+            named("mcp__pandacode_architect__pandacode_vm_screenshot", Value::Null, path),
             named("Capture window", Value::Null, path),
             named("Generate image", serde_json::json!({"revisedPrompt": "a cat"}), path),
             named("View image", Value::Null, "/private/tmp/shot.png"),
@@ -665,6 +669,9 @@ mod tests {
             named("simulator_screenshot", Value::Null, r#"{"ok": true, "path": "/var/folders/x/page-1.png"}"#),
             named("vm_screenshot", Value::Null, r#"[{"type":"text","text":"{\"image\":\"file:///var/folders/x/page-1.png\"}"}]"#),
             named("Screen capture", Value::Null, "Captured window 42\n  `/var/folders/x/page-1.png`  "),
+            named("mcp__pandacode__pandacode_capture_browser", Value::Null,
+                r#"{"path": "/var/folders/x/page-1.png", "width": 1280, "height": 800}"#),
+            named("mcp__puppeteer__puppeteer_screenshot", Value::Null, "Screenshot saved: /var/folders/x/page-1.png"),
         ];
         for record in &accept {
             assert!(named_by(std::slice::from_ref(record), path), "{record}");

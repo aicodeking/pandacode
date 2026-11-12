@@ -116,7 +116,7 @@ export function reportRow(f: Fields, o?: Out, role = 'worker'): Row {
   if (name) return { chip: worker(f, o), object: 'report' };
   return { object: id ? `${role} ${clip(shortId(id), 40)}'s report` : `a ${role}'s report` };
 }
-/** `Sent message to [Rows]`, `Sent message to worker [9b326e2a]` for a bare id, `Sent team message` when nobody is named. */
+/** `Messaged [Rows]`, `Messaged worker [9b326e2a]` for a bare id, `Sent team message` when nobody is named. */
 export function sendRow(f: Fields, o: Out): Row {
   // The gist of what was said, like a checkpoint's summary.
   const gist = clip(field(f, 'message', 'text', 'body'), GIST_LIMIT);
@@ -128,7 +128,7 @@ function sendTarget(f: Fields, o: Out): Row {
   const name = field(o.obj, 'name', 'workerName') || field(f, 'workerName', 'name');
   if (name) return { chip: chip(name, 'bot', id || name) };
   if (!id) return { verbs: ['Sending team message', 'Sent team message'] };
-  return WORKER_ID.test(id) ? { verbs: ['Sending message to worker', 'Sent message to worker'], chip: chip(shortId(id), 'bot', id) } : { chip: chip(id, 'bot') };
+  return WORKER_ID.test(id) ? { verbs: ['Messaging worker', 'Messaged worker'], chip: chip(shortId(id), 'bot', id) } : { chip: chip(id, 'bot') };
 }
 /** `Followed up with [Rows] · “…”`; a record cut before its `workerId` (the prompt filled it) still says who it went to. */
 export function followupRow(f: Fields, o: Out): Row {

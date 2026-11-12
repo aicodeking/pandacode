@@ -74,3 +74,13 @@ test('a verb with several nouns never keeps its own `and` before a later clause'
   assert.equal(summarizeTools([npmTest, grep, ls, read]), 'Ran tests, 1 search, 1 other command and read 1 file');
   assert.equal(summarizeTools([read, grep, ls]), 'Read 1 file, ran 1 search and 1 command');
 });
+
+test('blocked, denied and interrupted calls share one `stopped` tally when more than one kind is present', () => {
+  const bash = (command, output, status) => tool('Bash', { command }, { status, output });
+  const blocked = tool('Read', { file_path: '/repo/b.ts' }, { status: 'failed', output: '<tool_use_error>Blocked: read b.ts</tool_use_error>' });
+  const denied = bash('git push --force', "The user doesn't want to proceed with this tool use. The tool use was rejected.", 'failed');
+  const failed = bash('git push', 'Exit code 1\nrejected', 'failed');
+  const ls = bash('ls', 'a', 'completed');
+  assert.equal(summarizeTools([ls, failed, blocked, denied]), 'Ran 1 command · 1 failed · 2 stopped');
+  assert.equal(summarizeTools([ls, blocked]), 'Ran 1 command · 1 blocked');
+});

@@ -156,7 +156,7 @@ fn tool_image_shell_relative_outputs_need_a_known_directory() {
     }
     assert_eq!(outputs("cd /tmp/w && ffmpeg -i demo.mp4 intro.jpg"), ["/tmp/w/intro.jpg"]);
     assert_eq!(outputs("cd /tmp/w && cd sub && screencapture ./a.png"), ["/tmp/w/sub/a.png"]);
-    assert_eq!(outputs("screencapture ~/a.png"), ["~/a.png"]);
+    assert!(outputs("screencapture ~/a.png").is_empty(), "the webview never requests ~ paths");
     assert_eq!(in_dir("ffmpeg -i demo.mp4 intro.jpg", "/repo"), ["/repo/intro.jpg"]);
     let mut argv = Vec::new();
     image_outputs(&serde_json::json!({ "command": ["ffmpeg", "-i", "d.mp4", "f.png"], "cwd": "/r/" }), ShellInput::Any, &mut argv);

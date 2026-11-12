@@ -196,7 +196,7 @@ test('PandaCode rows read as sentences', () => {
     return [t.verb, t.chip?.label, t.object].filter(Boolean).join(' ');
   };
   assert.equal(row('mcp__pandacode_architect__pandacode_dispatch_workers', { assignments: [{}, {}, {}] }), 'Dispatched 3 workers');
-  assert.equal(row('pandacode_send_team_message', { recipient: 'worker-2', message: 'hi' }), 'Sent message to worker-2');
+  assert.equal(row('pandacode_send_team_message', { recipient: 'worker-2', message: 'hi' }), 'Messaged worker-2');
   assert.equal(row('pandacode_vm_screenshot', { name: 'macos-vm' }), 'Took a screenshot of macos-vm');
   assert.equal(row('pandacode_vm_screenshot', { name: 'macos-vm' }, '', 'running'), 'Took a screenshot of macos-vm');
   assert.equal(row('pandacode_design_write', { name: 'Login.html', html: '<p>\n</p>' }), 'Wrote artboard Login · 2 lines');
@@ -330,8 +330,9 @@ test('summaries keep finished work in past tense, name PandaCode families and co
   const failing = tool('Bash', { command: 'npm test' }, { output: 'Exit code: 1\nOutput:\nfail' });
   assert.equal(summarizeTools([failing, bash]), 'Ran tests and 1 other command · 1 failed');
   const trace = describeTool(failing);
-  assert.equal(trace.exit, 1);
-  assert.match(traceRowHtml(trace), /is-failed">exit 1</);
+  // `Tests failed` already says it: no exit badge.
+  assert.equal(trace.exit, undefined);
+  assert.doesNotMatch(traceRowHtml(trace), /exit 1/);
   assert.match(renderToolActivity({ id: '1', ...failing }, 'k'), /data-tool-failed/);
   assert.ok(!renderToolActivity({ id: '1', ...bash, output: 'Exit code: 0\nOutput:\nok' }, 'k').includes('data-tool-failed'));
 });

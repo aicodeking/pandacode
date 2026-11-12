@@ -299,6 +299,8 @@ const GH_FLAGS = set('-R', '--repo', '-q', '--jq', '-t', '--template', '--json',
   '--body-file', '-B', '--base', '--head', '-a', '--assignee', '-r', '--reviewer', '-l', '--label', '-m', '--milestone', '-p', '--project', '--notes', '-n', '--notes-file');
 /** How a created item reads: `Created [PR] “Fix it”`. */
 const GH_NOUNS: Record<string, string> = { pr: 'PR', issue: 'issue', release: 'release', gist: 'gist', repo: 'repo', label: 'label' };
+/** What a `gh … delete` risk names: `Deletes a GitHub repository`. */
+const GH_KINDS: Record<string, string> = { repo: 'repository', run: 'workflow run', cache: 'cache', secret: 'secret', variable: 'variable', ssh_key: 'SSH key' };
 
 /** `gh pr create --title "Fix it" --body-file b.md` → `Created [PR] “Fix it”`; never the body or its file. */
 function ghCreated(group: string, args: string[]): Desc | undefined {
@@ -315,7 +317,10 @@ export const gh: Handler = (_program, args) => {
   const target = (pair ? rest : [action, ...rest]).filter(Boolean)[0] ?? '';
   const object = /^\d+$/.test(target) ? `#${target}` : clip(target, 60);
   const described = desc('github', GH_VERBS[pair ? action : group] ?? 'Ran', clip(label, 40), object);
-  if (pair && action === 'delete') return destroys({ ...described, verb: 'Deleted', icon: 'trash' }, group === 'repo' ? SEVERITY.critical : SEVERITY.other, `Deleted ${group} ${object}`.trim());
+  if (pair && action === 'delete') {
+    const deleted = destroys({ ...described, verb: 'Deleted', icon: 'trash' }, group === 'repo' ? SEVERITY.critical : SEVERITY.other, `Deleted ${group} ${object}`.trim());
+    return { ...deleted, reason: `Deletes a GitHub ${GH_KINDS[group] ?? GH_NOUNS[group] ?? group}` };
+  }
   if (group === 'api' && /^delete$/i.test(flagValue(args, ['-X', '--method']) ?? '')) return destroys(described, SEVERITY.other, `Called DELETE ${object}`.trim());
   return described;
 };

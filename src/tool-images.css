@@ -41,7 +41,7 @@ html[data-theme="dark"] .tool-image-viewer-plate{backdrop-filter:blur(54px) satu
 .tool-image-viewer-actions{display:flex;align-items:center;gap:10px;flex:none}
 /* Controls: one group pinned to the end whose width never changes while stepping. */
 .tool-image-viewer-controls{display:flex;align-items:center;gap:10px;flex:none;margin-inline-start:auto}
-.tool-image-viewer-name{margin:0;font-size:var(--ds-text-head);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-image-viewer-name{margin:0;font-size:var(--ds-text-head);font-weight:var(--weight-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tool-image-viewer-meta{display:flex;gap:8px;min-width:0;margin:2px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
 .tool-image-viewer-path{display:flex;min-width:0;white-space:nowrap;user-select:text}
 .tool-image-viewer-path-head{min-width:0;overflow:hidden;text-overflow:ellipsis}

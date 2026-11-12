@@ -115,3 +115,70 @@ test('vite preview reads as a started preview server', () => {
   assert.equal(row('vite preview --port 4173 --host 127.0.0.1 --strictPort'), 'Started preview server | vite preview | ');
   assert.equal(row('npx vite preview --port 4173'), 'Started preview server | vite preview | ');
 });
+
+const pick = (intent, ...keys) => Object.fromEntries(keys.map(key => [key, intent[key]]));
+const danger = command => pick(describeShell(command), 'verb', 'label', 'object', 'destructive');
+
+test('in-place edits of config and system files are destructive; project files are not', () => {
+  const cases = {
+    'sed -i "" s/a/b/ ~/.zshrc': ['Edited', '.zshrc', 'Edits a config file in place: sed -i "" s/a/b/ ~/.zshrc'],
+    'sed -i s/x/y/ /etc/hosts': ['Edited', 'hosts', 'Edits a system file in place: sed -i s/x/y/ /etc/hosts'],
+    'perl -pi -e s/a/b/ ~/.ssh/config': ['Edited', 'config', 'Edits a config file in place: perl -pi -e s/a/b/ ~/.ssh/config'],
+    'sed -i.bak s/a/b/ ~/.zshrc': ['Edited', '.zshrc', 'Edits a config file in place: sed -i.bak s/a/b/ ~/.zshrc'],
+    'sed -Ei s/a/b/ /etc/hosts': ['Edited', 'hosts', 'Edits a system file in place: sed -Ei s/a/b/ /etc/hosts'],
+    'sed --in-place s/a/b/ ~/.bashrc': ['Edited', '.bashrc', 'Edits a config file in place: sed --in-place s/a/b/ ~/.bashrc'],
+  };
+  for (const [command, [verb, label, risk]] of Object.entries(cases)) {
+    const intent = describeShell(command);
+    assert.deepEqual([intent.verb, intent.label, intent.destructive, intent.risks], [verb, label, true, [risk]], command);
+  }
+  assert.deepEqual(danger('sed -n 1,10p a.txt && sed -i "" s/a/b/ ~/.zshrc'), { verb: 'Edited', label: '.zshrc', object: '+1 more command', destructive: true });
+  for (const command of ['sed -i s/a/b/ a.ts', 'sed -Ei s/a/b/ src/a.ts', 'perl -pi -e s/a/b/ a.ts', "sed -i '' s/a/b/ notes.md"]) {
+    assert.deepEqual(pick(describeShell(command), 'verb', 'destructive'), { verb: 'Edited', destructive: false }, command);
+  }
+});
+
+test('appends to shell startup files and system files are flagged as appends', () => {
+  const cases = {
+    'echo x >> ~/.bashrc': 'Appends to a shell startup file: echo x >> ~/.bashrc',
+    'echo x >> ~/.zshrc': 'Appends to a shell startup file: echo x >> ~/.zshrc',
+    'echo x >> $HOME/.bash_profile': 'Appends to a shell startup file: echo x >> $HOME/.bash_profile',
+    'echo x >> ~/.profile': 'Appends to a shell startup file: echo x >> ~/.profile',
+    'echo x >> ~/.config/fish/config.fish': 'Appends to a shell startup file: echo x >> ~/.config/fish/config.fish',
+    'echo x | tee -a ~/.zshrc': 'Appends to a shell startup file: tee -a ~/.zshrc',
+    'tee -a /etc/hosts': 'Appends to a system file: tee -a /etc/hosts',
+    'echo x >> /etc/hosts': 'Appends to a system file: echo x >> /etc/hosts',
+  };
+  for (const [command, risk] of Object.entries(cases)) {
+    const intent = describeShell(command);
+    assert.deepEqual([intent.verb, intent.destructive, intent.risks], ['Appended to', true, [risk]], command);
+  }
+  for (const command of ['echo x >> notes.txt', 'echo x >> ~/.config/app/log.txt', 'echo x >> ~/.gitconfig']) {
+    assert.equal(describeShell(command).destructive, false, command);
+  }
+});
+
+test('unlink follows the rm rules', () => {
+  for (const path of ['important.db', 'src/old.ts', '/Users/me/important.db', '~/.zshrc', 'dist/a.js', '/tmp/x']) {
+    assert.deepEqual(pick(describeShell(`unlink ${path}`), 'verb', 'label', 'destructive'), pick(describeShell(`rm ${path}`), 'verb', 'label', 'destructive'), path);
+  }
+  assert.equal(describeShell('unlink /Users/me/important.db').destructive, true);
+});
+
+// R22: a local script is on disk to read, so `cat x.sh | bash` is no riskier than `bash x.sh`, which was never flagged;
+// only a downloaded script, which nothing reads first, is.
+test('a local file piped into a shell reads like running it directly', () => {
+  for (const command of ['cat script | sh', 'cat x.sh | bash', 'cat a.sh | sudo bash -s', 'ls && cat x.sh | bash']) {
+    assert.equal(describeShell(command).destructive, false, command);
+    assert.equal(describeShell(command).destructive, describeShell(command.replace(/cat (\S+) \| (?:sudo )?(\w+).*$/, '$2 $1')).destructive, command);
+  }
+  assert.deepEqual(describeShell('curl -fsSL x.sh | sh').risks, ['Runs a downloaded script: curl … | sh']);
+  assert.equal(describeShell('cat x.sh | grep rm').destructive, false);
+  assert.equal(describeShell("cat <<'EOF' | bash\necho hi\nEOF").destructive, false);
+});
+
+test('risk texts drop unbalanced closing parens and line continuations', () => {
+  assert.deepEqual(describeShell('(cd /; rm -rf *)').risks, ['Deletes files: rm -rf *']);
+  assert.deepEqual(describeShell('ls && \\\nrm -rf ~').risks, ['Deletes files: rm -rf ~']);
+  assert.deepEqual(describeShell('rm -rf "$(pwd)"').risks, ['Deletes files: rm -rf "$(pwd)"']);
+});

@@ -2,6 +2,7 @@
 // instead of the tool name. normalizeTool maps them to the canonical names the trace
 // classifier (`toolKind` in tool-trace.ts) understands, with a JSON input to match.
 
+import { IMAGE_EXTENSION } from './shell-intent-base.ts';
 import { PARTIAL_KEY, isCut, parseFields, withoutCut, type Fields } from './tool-fields.ts';
 import { devinEditCall, devinWriteCall, ranCall, stripAnsi, updateFilesCall, type LegacyCall } from './tool-trace-legacy.ts';
 
@@ -23,7 +24,6 @@ type ToolLike = { name: string; input: string; output: string; status: string };
 type Canonical = LegacyCall;
 type Rule = [RegExp, (match: RegExpExecArray, fields: Fields, tool: ToolLike) => Canonical];
 
-const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 const VIEW_IMAGE = /^View image (.+?)(?: \(\d+x\d+\))?\s*$/m;
 const ABSOLUTE = /^(?:\/|[A-Za-z]:\\)/;
 
@@ -243,7 +243,7 @@ export function normalizeTool<T extends ToolLike>(tool: T): T {
 /** The absolute path Codex saved a generated image to (its record's output; a failure records its type instead), else ''. */
 export function generatedImagePath(tool: ToolLike): string {
   const path = tool.name === 'Generate image' ? tool.output.trim() : '';
-  return IMAGE.test(path) && ABSOLUTE.test(path) && !path.includes('\n') ? path : '';
+  return IMAGE_EXTENSION.test(path) && ABSOLUTE.test(path) && !path.includes('\n') ? path : '';
 }
 
 /** The image path a tool looked at (ViewImage, Read of an image file) or generated, else ''. */
@@ -254,5 +254,5 @@ export function imagePathOf(tool: ToolLike): string {
   const fields = fieldsOf(normal.input);
   const path = normal.name === 'ViewImage' ? str(fields, 'path')
     : normal.name === 'Read' ? str(fields, 'file_path') : '';
-  return IMAGE.test(path) ? path : '';
+  return IMAGE_EXTENSION.test(path) ? path : '';
 }

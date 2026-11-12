@@ -317,16 +317,16 @@ test('a piped test run that exited 0 but printed failures reads `Tests failed`, 
   const trace = describeTool(pw);
   assert.equal(trace.verb, 'Tests failed');
   assert.equal(trace.exit, undefined);
-  assert.equal(row(trace), 'Tests failed playwright · 3 of 12');
+  assert.equal(row(trace), 'Tests failed playwright · 3 of 12 tests');
   assert.equal(toolFailed(pw), true);
   assert.match(renderToolActivity({ id: 'p', ...pw }, 'k'), /data-tool-failed/);
   assert.doesNotMatch(traceRowHtml(trace), /exit 0|then failed/);
   const node = bash('npm test 2>&1 | tail -8', 'not ok 5 - auto-detect on a model\n# pass 4\n# fail 1', 'completed');
-  assert.equal(row(describeTool(node)), 'Tests failed npm test · 1 of 5');
+  assert.equal(row(describeTool(node)), 'Tests failed npm test · 1 of 5 tests');
   const cargo = bash('cargo test 2>&1 | grep "test result"', 'test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s', 'completed');
-  assert.equal(row(describeTool(cargo)), 'Tests failed cargo test · 2 of 12');
+  assert.equal(row(describeTool(cargo)), 'Tests failed cargo test · 2 of 12 tests');
   const codexRun = codex('npx playwright test | tail -3', 'Exit code: 0\nWall time: 3.1 seconds\nOutput:\n  1 failed\n  4 passed (3.0s)');
-  assert.equal(row(describeTool(codexRun)), 'Tests failed playwright · 1 of 5');
+  assert.equal(row(describeTool(codexRun)), 'Tests failed playwright · 1 of 5 tests');
   assert.equal(toolFailed(codexRun), true);
   const ls = bash('ls src', 'a.ts', 'completed');
   assert.equal(summarizeTools([pw, ls]), 'Ran tests and 1 other command · 1 failed');
@@ -383,12 +383,12 @@ test('refused rows name the refused command and never claim it ran', () => {
   assert.doesNotMatch(traceRowHtml(describeTool(exited)), /exit 1|then failed/);
 });
 
-test('blocked and denied calls tally apart: `· 1 blocked`, `· 1 denied`', () => {
+test('a lone kind of stop tallies by name (`· 1 denied`); blocked and denied together read `· 2 stopped`', () => {
   const blockedRun = bash('sleep 60; cat a.txt', BLOCKED_OUTPUT);
   const denied = bash('rm -rf old-site', DENIED);
   const ls = bash('ls src', 'a.ts', 'completed');
   assert.equal(summarizeTools([ls, denied]), 'Ran 1 command · 1 denied');
-  assert.equal(summarizeTools([ls, blockedRun, denied]), 'Ran 1 command · 1 blocked · 1 denied');
+  assert.equal(summarizeTools([ls, blockedRun, denied]), 'Ran 1 command · 2 stopped');
   assert.equal(summarizeTools([denied, denied]), 'Denied 2 calls');
   assert.equal(summarizeTools([blockedRun, denied]), 'Blocked 1 call · 1 denied');
   const html = renderToolGroup([{ key: 'a', content: { id: 'a', ...ls } }, { key: 'b', content: { id: 'b', ...denied } }]);
@@ -486,8 +486,8 @@ test('a group of failed test runs says the tests ran, then tallies the failure',
 test('a chip that moves its object in never carries the object\'s separator; a stopped server\'s card is neutral', () => {
   assert.equal(describeTool(bash('git diff src/tool-text.ts', '', 'completed')).chip?.label, 'tool-text.ts');
   const card = toolPreview(codex('node server.mjs', 'Exit code: 143\nlistening on 3000\n', 'failed'));
-  assert.match(card, /class="tc-badge is-quiet">exit 143</);
-  assert.doesNotMatch(card, /tc-term is-failed|tc-badge is-failed/);
+  assert.match(card, /class="tool-trace-badge is-quiet">exit 143</);
+  assert.doesNotMatch(card, /tc-term is-failed|is-failed/);
 });
 
 // --- 9. Interruptions, unstarted commands, failed edits and refusals say what happened -----------
@@ -538,8 +538,10 @@ const NOT_STARTED = "The command was not started: this computer's disk is full (
 test('a command the harness never started reads `Couldn\'t start [program] …` with the intent\'s chip', () => {
   const cat = tool('Command', "/bin/zsh -lc 'cat src-tauri/src/subagent_state.rs'\nWorking directory: /repo", { status: 'failed', output: UNIFIED_EXEC });
   const trace = describeTool(cat);
-  assert.equal(row(trace), "Couldn't start cat src-tauri/src/subagent_state.rs");
-  assert.equal(trace.chip?.label, 'cat');
+  // A lone read says what it could not do.
+  assert.equal(row(trace), "Couldn't read subagent_state.rs");
+  assert.equal(trace.chip?.label, 'subagent_state.rs');
+  assert.match(toolPreview(cat), /tool-trace-note is-error">Failed to create unified exec process/);
   assert.equal(trace.exit, undefined);
   const compound = tool('Command', `/bin/zsh -lc "sed -n '1,120p' src/a.rs && rg -n 'x' src/a.rs"\nWorking directory: /repo`, { status: 'failed', output: UNIFIED_EXEC });
   assert.equal(row(describeTool(compound)), "Couldn't start sed -n '1,120p' src/a.rs +1 more command");
@@ -650,7 +652,7 @@ test('a completed build piped to tail that printed its failure reads `Build fail
 test('a completed test run whose output says tests failed reads `Tests failed`', () => {
   const mocha = describeTool(bash('npx mocha 2>&1 | tail -4', '  5 passing (2s)\n  2 failing\n\n  1) a\n', 'completed'));
   assert.equal(mocha.verb, 'Tests failed');
-  assert.match(mocha.object, /2 of 7/);
+  assert.match(mocha.object, /2 of 7 tests/);
   // node:test printed a clean summary first, Playwright's failures came after it.
   const both = describeTool(bash('npm test; npx playwright test 2>&1 | tail -6', '# pass 178\n# fail 0\n  1 failed\n    tests/ui.spec.ts:1165:1 › finds projects\n  192 passed (4.8m)', 'completed'));
   assert.equal(both.verb, 'Tests failed');

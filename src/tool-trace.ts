@@ -14,6 +14,8 @@ import {
 export { exitCode };
 import { pandacodeImage, shellTrace, specialKind, specialTrace } from './tool-trace-intent.ts';
 import { describeShell } from './shell-intent.ts';
+import { isHomeConfig, isSystemPath, overwroteConfig, overwroteSystem, risksOf } from './shell-intent-risk.ts';
+import { FAILED_CHECKS } from './tool-trace-shell.ts';
 export { parseFields, type Fields };
 export { traceRowHtml } from './tool-trace-row.ts';
 export { groupTallies, summarizeGroup, summarizeTools, summaryIcons } from './tool-trace-summary.ts';
@@ -51,6 +53,9 @@ export type TraceExtras = {
   reason?: string;
   /** The turn ended before the call reported (`Interrupted: [npm] test`): quiet, neither a success nor a failure. */
   interrupted?: boolean;
+  /** The count or answer this code appended to `object` after ` · ` (`no matches`, `3 files`): the row gives only it the tally
+   *  span, so a ` · ` inside the object's own text (a quoted query) never splits it. */
+  tally?: string;
 };
 export type Tool = Pick<ToolActivity, 'name' | 'status' | 'input' | 'output'>;
 
@@ -168,8 +173,17 @@ function fileChip(path: string): TraceChip | undefined {
 }
 
 const MCP_VERB = '(search|find|query|lookup|get|list|read|fetch|retrieve|view|show|load)';
-/** What an MCP tool does, from its name: `search_messages` searches, `list_issues` reads. */
-export function mcpAction(tool: string): 'search' | 'read' | undefined {
+/** `deleteFile`, `delete-file` → `delete_file`: one word separator for the patterns below. */
+const snake = (tool: string) => tool.replace(/([a-z\d])([A-Z])/g, '$1_$2').replace(/-/g, '_');
+const word = (words: string) => new RegExp(`(?:^|_)(?:${words})(?:_|$)`, 'i');
+/** Words that lose data: the row gets the destructive badge. */
+const MCP_DESTROYS = word('delete|drop|destroy|remove|purge|wipe|truncate');
+/** Words that change anything: such a tool never reads as a search or a read (`lookup_delete`, `find_and_replace`). */
+const MCP_CHANGES = word('delete|remove|drop|destroy|purge|wipe|truncate|update|create|replace|write|set|put|patch|insert|execute|exec|run|send|post|push|merge|move|rename');
+/** What an MCP tool does, from its name: `search_messages` searches, `list_issues` reads; one that changes anything, neither. */
+export function mcpAction(name: string): 'search' | 'read' | undefined {
+  const tool = snake(name);
+  if (MCP_CHANGES.test(tool)) return;
   if (/(^|_)(search|find|query|lookup)(_|$)/i.test(tool)) return 'search';
   if (new RegExp(`(^|_)${MCP_VERB}(_|$)`, 'i').test(tool)) return 'read';
   return;
@@ -237,7 +251,7 @@ function describeFile({ kind, input, fields }: Parameters<Describe>[0]): Parts {
   const count = lines(content).length;
   const more = fields._partial === true ? '+' : '';
   // `· 46+ lines`: a count after a separator, so it never runs into the file name or reads as a +/− delta.
-  return { chip: fileChip(path), object: content ? `· ${count}${more} ${count === 1 && !more ? 'line' : 'lines'}` : '' };
+  return { chip: fileChip(path), object: content ? `· ${count}${more} ${count === 1 && !more ? 'line' : 'lines'}` : '', ...(kind === 'write' ? writeRisks(path) : {}) };
 }
 
 /** Legacy Codex `Update files` that only created or only deleted files (tool-trace-legacy.ts's `_action`). */
@@ -268,7 +282,15 @@ export function quotedPattern(pattern: string, limit = ROW_TEXT): string {
 }
 
 /** `Searched for "x" in [src]`, `Found files matching *.ts in [src]`, `Listed [folder]`: one wording for every provider. */
-function describeSearch({ name, fields, failed }: Parameters<Describe>[0]): Parts {
+/** Claude's Grep and Glob report what they found on the first line: `No files found` → `no matches`, `Found 3 files` → `3 files`. */
+function searchTally(output: string): string {
+  const first = output.trimStart().split('\n', 1)[0].trim();
+  if (/^No (?:files|matches) found$/i.test(first)) return ' · no matches';
+  const files = /^Found (\d+) (files?)$/i.exec(first);
+  return files ? ` · ${files[1]} ${files[2].toLowerCase()}` : '';
+}
+
+function describeSearch({ name, fields, failed, output }: Parameters<Describe>[0]): Parts {
   const lower = name.toLowerCase();
   // A directory listing names its folder; there is nothing it searched for.
   if (/^(ls|list|list_dir)$/.test(lower)) {
@@ -281,8 +303,9 @@ function describeSearch({ name, fields, failed }: Parameters<Describe>[0]): Part
   const pattern = field(fields, 'pattern', 'query', 'glob', 'regex');
   const glob = /glob|^find$|file_search/.test(lower);
   const what = !pattern ? '' : glob ? `files matching ${quotedPattern(pattern)}` : `for ${quotedPattern(pattern)}`;
-  const object = [what, place ? 'in' : ''].filter(Boolean).join(' ');
-  return { ...(glob ? { verb: tense(failed, 'Finding', 'Found') } : {}), chip: place, chipLast: true, object, icon: 'search' };
+  const tally = failed ? '' : searchTally(output);
+  const object = [what, place ? 'in' : ''].filter(Boolean).join(' ') + tally;
+  return { ...(glob ? { verb: tense(failed, 'Finding', 'Found') } : {}), chip: place, chipLast: true, object, icon: 'search', ...(tally ? { tally: tally.slice(3) } : {}) };
 }
 
 /** A web query always reads inside curly quotes, its own quotes kept (`for “tauri "drag drop" macos”`). */
@@ -340,7 +363,9 @@ function describeAgent({ input, fields }: Parameters<Describe>[0]): Parts {
 function describeSkill({ fields, failed }: Parameters<Describe>[0]): Parts {
   const skill = field(fields, 'skill', 'name', 'command');
   const chip = skill ? { icon: 'spark', label: skill, title: skill } : undefined;
-  return { verb: tense(failed, 'Loading skill', 'Loaded skill'), chip, object: clip(field(fields, 'args', 'arguments'), ROW_TEXT), mono: true };
+  // One token (`src/lib`, `--fix`) is code; words are prose, quoted after a separator (`· “Read-only review”`).
+  const args = clip(field(fields, 'args', 'arguments'), ROW_TEXT);
+  return { verb: tense(failed, 'Loading skill', 'Loaded skill'), chip, ...(/\s/.test(args) ? { object: '', note: args } : { object: args, mono: true }) };
 }
 
 function describeMcp({ name, fields, failed, output }: Parameters<Describe>[0]): Parts {
@@ -349,11 +374,34 @@ function describeMcp({ name, fields, failed, output }: Parameters<Describe>[0]):
   const { server, tool } = mcpParts(name);
   const brand = brandFor(server);
   const chip = { icon: 'server', label: brand?.label ?? server, title: name, svg: brand?.svg };
+  const danger = mcpRisks(server, tool, fields);
+  if (danger.length) return { family: 'mcp', chip, object: tool.replace(/_/g, ' '), destructive: true, risks: danger };
   const action = mcpAction(tool);
   const query = clip(field(fields, 'query', 'q', 'search', 'filter'), ROW_TEXT);
   if (action === 'search') return { verb: tense(failed, 'Searching', 'Searched'), family: 'mcp', icon: 'search', chip, object: `for ${query ? webQuote(query) : mcpNoun(tool)}` };
   if (action === 'read') return { verb: tense(failed, 'Reading the', 'Read the'), family: 'mcp', icon: 'file', chip, object: query || mcpNoun(tool) };
   return { family: 'mcp', chip, object: tool.replace(/_/g, ' ') };
+}
+
+/** Why an MCP call loses data: a deleting tool name (`delete_repository`), or SQL that drops or deletes, read by the
+ *  shell's own database rule (shell-intent-system.ts) as if `psql -c` ran it. */
+function mcpRisks(server: string, tool: string, fields: Fields): string[] {
+  const named = MCP_DESTROYS.test(snake(tool)) ? [`Deletes data: ${server} ${tool}`] : [];
+  const sql = field(fields, 'query', 'sql', 'statement').trim();
+  if (!sql) return named;
+  const quoted = `'${sql.slice(0, 2000).replace(/'/g, `'\\''`)}'`;
+  const shown = clip(sql.replace(/\s+/g, ' '), 80);
+  const fromShell = describeShell(`psql -c ${quoted}`).risks.map(risk => `${risk.split(': ', 1)[0]}: ${shown}`);
+  // ponytail: ALTER … DROP is not in the shell's SQL rule yet; move it there when shell-intent-system.ts is next touched.
+  const altered = !fromShell.length && /\bALTER\s+TABLE\b[\s\S]*?\bDROP\b/i.test(sql) ? [`Drops a column: ${shown}`] : [];
+  return [...named, ...fromShell, ...altered];
+}
+
+/** A Write over a dotfile or a system file carries the risk the shell gives `echo x > ~/.zshrc` (shell-intent-risk.ts). */
+function writeRisks(path: string): Pick<Parts, 'destructive' | 'risks'> {
+  const described = isSystemPath(path) ? overwroteSystem(path, 'Overwrote', path) : isHomeConfig(path) ? overwroteConfig(path, path) : undefined;
+  const risks = described ? risksOf(described).map(risk => risk.text) : [];
+  return risks.length ? { destructive: true, risks } : {};
 }
 
 const DESCRIBE: Partial<Record<TraceKind, Describe>> = {
@@ -489,17 +537,26 @@ function shellOutcome(tool: Tool, fields: Fields, failed: boolean, refusal: Refu
   if (refusal) return refusedShell(command, tool.output, refusal);
   if (isInterruptedOutput(tool.status, tool.output)) return interruptedShell(command);
   if (!failed) return stoppedShell(tool, command) ?? backgroundedShell(command, cleanOutput(tool.output)) ?? missingShell(command, tool.output);
-  return timedOutShell(command, tool.output) ?? harnessUnstarted(command, tool.output) ?? unstartedShell(tool, fields);
+  const unstarted = harnessUnstarted(command, tool.output);
+  return timedOutShell(command, tool.output) ?? (unstarted && unstartedRead(command, unstarted)) ?? unstartedShell(tool, fields);
+}
+
+/** A read of one file the harness never started says so plainly: `Couldn't read [subagent_state.rs]`, not
+ *  `Couldn't start [cat] src/subagent_state.rs`. Any other command keeps `Couldn't start`. */
+function unstartedRead(command: string, unstarted: Parts): Parts {
+  const intent = describeShell(command);
+  if (intent.kind !== 'read' || intent.steps !== 1 || !intent.label || /^\+\d/.test(intent.object)) return unstarted;
+  return { ...unstarted, verb: "Couldn't read", chip: { icon: intent.icon, label: intent.label, title: command }, object: '', mono: false, more: undefined };
 }
 
 function partsOf(kind: TraceKind, tool: Tool, fields: Fields, failed: boolean, refusal: Refusal, output: string): Parts {
   const own = unknownTool(tool) ?? (kind === 'shell' ? shellOutcome(tool, fields, failed, refusal) : undefined);
   const parts = own ?? specialTrace(kind, tool, fields, failed, output) ?? describeFields(kind, tool, fields, failed, output);
-  // Nothing was written by a failed edit, so it claims no +/− delta but says why; nothing ran in a denied call, so it carries no risk.
+  // Nothing was written by a failed edit, so it claims no +/− delta or risk but says why; nothing ran in a denied call, so it carries no risk.
   const { added, removed, destructive, risks, ...rest } = parts;
   const file = failed && (kind === 'edit' || kind === 'write');
   const delta = file ? { reason: editFailureReason(withoutInterrupt(tool.output)) || undefined } : { added, removed };
-  return { ...rest, ...defined({ ...delta, ...(refusal === 'Denied' ? {} : { destructive, risks }) }) };
+  return { ...rest, ...defined({ ...delta, ...(refusal === 'Denied' || file ? {} : { destructive, risks }) }) };
 }
 
 /** The entries whose value is set, so a row never carries `added: undefined`. */
@@ -528,6 +585,7 @@ const SEARCH_OBJECT = /^(for|matching) (["'])([^\n]*?)\2((?: in(?: [^\n]*)?)?(?:
 type CachedTrace = { name: string; status: string; output: string; trace: Trace };
 const TRACE_CACHE = new Map<string, CachedTrace[]>();
 const TRACE_CACHE_SIZE = 64;
+const CHECK_VERBS: ReadonlySet<string> = new Set(Object.values(FAILED_CHECKS));
 
 export function describeTool(raw: Tool): Trace {
   const hits = TRACE_CACHE.get(raw.input) ?? [];
@@ -539,8 +597,21 @@ export function describeTool(raw: Tool): Trace {
   return trace;
 }
 
+/** A call that says it completed while its result reports an error (an MCP `isError` or `MCP error -32603`, an edit,
+ *  write or read result that starts with `<tool_use_error>`) failed: the record reads as one with status `failed` everywhere.
+ *  Only the start counts: an edit's `cat -n` snippet may quote the tag. */
+const MCP_ERROR = /^\s*(?:MCP error -?\d+|\{\s*"isError"\s*:\s*true\b)/;
+const TOOL_ERROR_LEAD = /^\s*<tool_use_error>/;
+const FILE_KINDS: ReadonlySet<TraceKind> = new Set(['edit', 'write', 'read']);
+export function withReportedFailure(tool: Tool): Tool {
+  if (tool.status !== 'completed') return tool;
+  const kind = traceKind(tool);
+  const reported = kind === 'mcp' ? MCP_ERROR.test(tool.output) : FILE_KINDS.has(kind) && TOOL_ERROR_LEAD.test(tool.output);
+  return reported ? { ...tool, status: 'failed' } : tool;
+}
+
 function traceOf(raw: Tool): Trace {
-  const tool = normalizeTool(raw);
+  const tool = withReportedFailure(normalizeTool(raw));
   const kind = traceKind(tool);
   const nothing = foundNothing(tool, kind);
   const interrupted = isInterruptedOutput(tool.status, tool.output);
@@ -560,13 +631,17 @@ function traceOf(raw: Tool): Trace {
   const verb = described.verb ?? KINDS[kind][failed || interrupted ? 0 : 1];
   // A program that never started (`Couldn't start [pnpm]`) has no answer of its own: the shell's 127 is no badge.
   const unstarted = described.verb === "Couldn't start";
-  const code = refusal || interrupted || unstarted ? undefined : !failed && exitFailed(tool, kind, nothing) ? exitCode(cleanOutput(tool.output)).code : described.exit;
-  const object = tidySeparators(described.object) + EXIT_TAIL[nothing ?? 'tail'];
+  // A failed check's verb (`Tests failed`) already says it failed: its exit code adds nothing.
+  const checkFailed = CHECK_VERBS.has(verb);
+  const code = refusal || interrupted || unstarted || checkFailed ? undefined : !failed && exitFailed(tool, kind, nothing) ? exitCode(cleanOutput(tool.output)).code : described.exit;
+  const exitTail = EXIT_TAIL[nothing ?? 'tail'];
+  const object = tidySeparators(described.object) + exitTail;
+  const tally = [described.tally, exitTail.slice(3)].filter(Boolean).join(' · ');
   const chips = described.chips ? { chips: described.chips.map(chip => placeChip(chip) ?? chip) } : {};
   return {
     ...described, ...chips, ...(described.chip ? { chip: placeChip(described.chip) } : {}), ...(inVm ? { family: 'vm' } : {}), ...(shot ? { image: shot } : {}), kind,
     verb: interrupted ? interruptedVerb(verb, settled, tool.input) : rowVerb(verb, failed, settled, refusal), object: proseQuotes(object.replace(/^ · /, described.chip || described.chips?.length ? '· ' : ''), kind, described.mono),
-    ...(refusal ? { icon: 'shield', blocked: true } : interrupted ? { icon: 'stop', quiet: true, interrupted: true } : {}), ...(code !== undefined ? { exit: code } : {}),
+    ...(tally ? { tally } : {}), ...(refusal ? { icon: 'shield', blocked: true } : interrupted ? { icon: 'stop', quiet: true, interrupted: true } : {}), ...(code !== undefined ? { exit: code } : {}),
     ...(produced && !inVm && tool.status === 'completed' && code === undefined ? { produced } : {}),
   };
 }
@@ -589,9 +664,9 @@ function exitFailed(tool: Tool, kind: TraceKind, nothing: ExitAnswer | undefined
  *  that found nothing and a command stopped by a signal (exit 143/137) are not failures. */
 export function toolFailed(tool: Tool): boolean {
   if (isInterruptedOutput(tool.status, tool.output) || toolUnavailable(tool)) return false;
-  const normal = normalizeTool(tool);
+  const normal = withReportedFailure(normalizeTool(tool));
   const kind = traceKind(normal);
-  if (tool.status === 'failed') return !foundNothing(normal, kind) && !signalStop(normal, kind);
+  if (normal.status === 'failed') return !foundNothing(normal, kind) && !signalStop(normal, kind);
   if (exitFailed(normal, kind, foundNothing(normal, kind))) return true;
   return tool.status === 'completed' && kind === 'shell' && describeTool(tool).outputFailed === true;
 }
