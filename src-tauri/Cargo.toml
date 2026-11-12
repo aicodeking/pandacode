@@ -98,6 +98,10 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 # WKWebView and WebView2 hand pasted images over as files, so other targets skip it.
 arboard = { version = "3", features = ["wayland-data-control"] }
 
+[dev-dependencies]
+# Paused tokio clock for deterministic usage-check timing tests (test builds only).
+tokio = { version = "1", features = ["test-util"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

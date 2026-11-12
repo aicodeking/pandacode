@@ -8,6 +8,7 @@ import { openChoiceMenu } from './choice-menu';
 import { escape, icon, isImeKey } from './dom';
 import { errorText } from './error-text';
 import { isWindows } from './platform';
+import { signInCommand } from './usage-labels';
 import { infoMark } from './tooltip';
 import type { ProviderId } from './types';
 
@@ -59,11 +60,6 @@ function focusKey(element: HTMLElement): string | null {
   }
   const attributes = [...element.attributes].filter(a => CONTROL_KEYS.has(a.name));
   return attributes.length ? element.tagName.toLowerCase() + attributes.map(a => `[${a.name}="${CSS.escape(a.value)}"]`).join('') : null;
-}
-/** The line that signs a harness in with a config folder, quoted as `connection_new_account` quotes it. */
-function signInCommand(provider: string, dir: string): string {
-  const [variable, login] = provider === 'codex' ? ['CODEX_HOME', 'codex login'] : ['CLAUDE_CONFIG_DIR', 'claude auth login'];
-  return isWindows ? `$env:${variable}='${dir.replace(/['\u2018-\u201B]/g, '$&$&')}'; ${login}; Remove-Item Env:${variable}` : `${variable}='${dir.replace(/'/g, "'\\''")}' ${login}`;
 }
 const POOL_TERMS = 'Pool only accounts you own; each needs its own subscription.';
 const POOL_HINT = 'Moves to the next account when one reaches its usage limit.';

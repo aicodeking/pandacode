@@ -78,6 +78,7 @@ html[data-theme=dark] .provider-logo[data-provider=omp]{border-radius:3px;box-sh
 .tray-usage-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:1rem;font-weight:var(--weight-medium)}
 .tray-chip{padding:0 6px;border:1px solid var(--tray-border);border-radius:6px;font:var(--weight-medium) var(--text-sm)/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tray-muted);background:var(--tray-fill)}
 .tray-stale{font-size:var(--text-md);color:var(--tray-warn);font-weight:400}
+.tray-state{margin:2px 0 0;font-size:var(--text-md);color:var(--tray-warn)}
 .tray-window{--bar:var(--tray-text);display:grid;grid-template-columns:56px 1fr 36px;align-items:center;column-gap:10px;padding:3px 0 3px 28px;font-size:var(--text-md)}
 .tray-window[data-tone=high]{--bar:var(--tray-warn)}.tray-window[data-tone=exhausted]{--bar:var(--tray-danger)}
 .tray-window-label{color:var(--tray-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

@@ -149,6 +149,7 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
   return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: 'onnx', latencyMs: 12 };
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
+let previewClaudeRefresh = true;
 let previewTelemetryOff = false;
 /** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
 const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
@@ -162,7 +163,7 @@ const previewEnvState = { global: [] as [string, string][], providers: {} as Rec
 const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
 function previewProviderConfiguration(): Record<string, unknown> {
   return {
-    executablePaths: {}, claudeConnectionMode: previewClaudeMode,
+    executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
@@ -999,8 +1000,10 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
     usage: [
       { provider: 'claude', status: 'ready', plan: 'Max', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
       { provider: 'codex', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 97, resetsAt: hours(0.6) }] },
+      ...((window as any).__trayExtraUsage ?? []),
     ],
     checking: false,
+    askingClaude: Boolean((window as any).__trayAskingClaude),
   };
 }
 /** The Running agents widget's commands (header and pinned window). */
@@ -1630,6 +1633,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (typeof args.off !== 'boolean') throw new Error('Choose on or off.');
       previewTelemetryOff = args.off; result = previewPrivacy(); break;
     }
+    case 'provider_set_claude_cli_refresh': previewClaudeRefresh = Boolean(args.enabled); return invoke<T>('provider_configuration', {});
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
@@ -1703,6 +1707,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       previewConnections = { ...previewConnections, tasks: args.connectionId ? { ...tasks, [args.sessionId]: args.connectionId } : tasks }; result = previewConnections; break;
     }
     case 'provider_claude_status': result = {mode: previewClaudeMode, source: 'Saved Claude login', environmentVariables: [], endpoint: null, savedLogin: 'signedIn', conflict: false}; break;
+    case 'agent_usage_asking_claude': result = Object.fromEntries(((args.connections ?? []) as string[]).map(id => [id, { asking: false, saved: null }])); break;
     case 'usage_ledger': result = sampleUsageLedger(); break;
     case 'prompt_activity': result = sampleUsageLedger().rows.filter((_, i) => i % 3 === 0).map(row => [row[0], i2p(row[1]), 1 + (row[0] % 7)]); break;
     case 'agent_usage': {

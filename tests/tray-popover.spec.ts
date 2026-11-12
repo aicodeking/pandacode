@@ -66,3 +66,47 @@ test('a failing tray command shows one stable alert, Dismiss removes it and a la
   await page.locator('footer .tray-open-app').click();
   await expect(alert).toBeEmpty();
 });
+
+test('menu bar popover keeps a Claude row without limits, with the panel state label, and dates a saved snapshot', async ({page}) => {
+  // A fixed day: the printed reset below (Nov 15) is still ahead.
+  await page.clock.setFixedTime(new Date(2026, 10, 10, 12, 0));
+  await page.setViewportSize({width:340,height:640});
+  await page.addInitScript(() => {
+    // Yesterday morning: an older snapshot is dated, as in the panel.
+    const now = new Date();
+    const taken = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 9, 5).getTime();
+    (window as any).__trayExtraUsage = [
+      { provider: 'kimi', status: 'error', action: 'claude', stale: false, checkedAt: Date.now(), windows: [] },
+      { provider: 'glm', status: 'error', action: 'rateLimited', stale: false, checkedAt: Date.now(), windows: [] },
+      { provider: 'deepseek', status: 'ready', action: 'refresh', stale: true, checkedAt: taken, windows: [{ label: 'Weekly', usedPercent: 30, resetsAt: null }] },
+      { provider: 'mimo', status: 'error', action: 'updateClaude', stale: false, checkedAt: Date.now(), windows: [] },
+      { provider: 'grok', status: 'ready', stale: false, checkedAt: Date.now(), windows: [{ label: 'Weekly', usedPercent: 48, resetsAt: null, detail: 'Resets Nov 15 at 8pm (America/New_York)' }] },
+    ];
+  });
+  await page.goto('/?view=tray');
+  const row = (name: string) => page.locator('.tray-usage', { hasText: name });
+  await expect(row('Kimi').locator('.tray-state')).toHaveText('Sign in via Claude Code');
+  await expect(row('GLM').locator('.tray-state')).toHaveText('Rate limited');
+  await expect(row('MiMo').locator('.tray-state')).toHaveText('Update Claude Code');
+  // Without a reset time, the reset as Claude Code printed it, without its time zone.
+  await expect(row('Grok').locator('.tray-reset')).toHaveText('resets Nov 15 at 8pm');
+  const saved = row('DeepSeek');
+  await expect(saved.locator('.tray-window')).toHaveCount(1);
+  const label = await page.evaluate(() => {
+    const now = new Date();
+    const taken = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 9, 5);
+    return `${taken.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${taken.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  });
+  expect(label).toMatch(/\d.*,/);
+  await expect(saved.locator('.tray-stale')).toHaveText(`saved ${label}`);
+  await expect(saved.locator('.tray-stale')).toHaveAttribute('title', 'Saved · needs refresh');
+});
+
+test('menu bar shows "Asking Claude Code…" on the Claude row while PandaCode runs it', async ({page}) => {
+  await page.setViewportSize({width:340,height:640});
+  await page.addInitScript(() => { (window as any).__trayAskingClaude = true; });
+  await page.goto('/?view=tray');
+  const claude = page.locator('.tray-usage', { hasText: 'Claude' }).first();
+  await expect(claude.locator('.tray-asking')).toHaveText('Asking Claude Code…');
+  await expect(page.locator('.tray-usage', { hasText: 'Codex' }).locator('.tray-asking')).toHaveCount(0);
+});

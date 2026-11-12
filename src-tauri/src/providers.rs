@@ -57,7 +57,7 @@ mod zcode;
 mod diagnostics;
 pub(crate) mod claude_auth;
 pub(crate) mod privacy;
-pub(crate) use launch::{command, pty_command, external_path, executable_path, widen_process_path};
+pub(crate) use launch::{command, pty_command, std_command, external_path, executable_path, widen_process_path};
 #[cfg(test)]
 mod kimi_stream_tests;
 #[cfg(test)]

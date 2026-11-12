@@ -5,6 +5,11 @@ mod account_sign_in;
 mod agent_tools;
 mod agents_dock;
 mod agent_usage;
+mod agent_usage_claude;
+mod agent_usage_claude_env;
+mod agent_usage_claude_limits;
+mod agent_usage_claude_remote;
+mod agent_usage_claude_store;
 mod agent_updates;
 mod agent_usage_providers;
 mod memory;
@@ -4573,6 +4578,7 @@ pub fn run() {
                 account_sign_in::account_sign_in_code,
                 account_sign_in::account_sign_in_cancel,
                 agent_usage::agent_usage,
+                agent_usage::agent_usage_asking_claude,
                 tray::tray_seen,
                 usage_ledger::usage_ledger,
                 capabilities::capabilities_inventory,
@@ -4644,6 +4650,7 @@ pub fn run() {
                 conversation_import::list_importable_conversations,
                 conversation_import::import_conversations,
                 provider_settings::provider_set_claude_connection_mode,
+                provider_settings::provider_set_claude_cli_refresh,
                 providers::privacy::harness_privacy,
                 providers::privacy::harness_privacy_set,
                 providers::claude_auth::provider_claude_status,
