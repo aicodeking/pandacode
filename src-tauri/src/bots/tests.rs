@@ -825,3 +825,16 @@ fn project_tasks_get_their_own_bot_brief_and_skill_union() {
     let (thread, _) = thread_session(&f.store, &writer, DESKTOP, DESKTOP, "x").unwrap();
     assert!(assign_task(&f.store, &thread, Some(&reviewer.id)).is_err());
 }
+
+#[test]
+fn a_team_saved_after_the_early_check_refuses_the_turn_and_clears_its_images() {
+    let f = fixture();
+    let bot = bot(&f);
+    let task = f.store.create_session(&bot.project_id, "claude", "default", "ask").unwrap();
+    // The early check in `start_or_queue` passed: no team yet, so the images are remembered.
+    assert!(gateway::claim_turn(&f.store, &bot, &task.id, "hi").is_ok());
+    super::failover::remember_images(&task.id, &["img-1".to_string()]);
+    f.store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&task.id]).unwrap();
+    assert_eq!(gateway::claim_turn(&f.store, &bot, &task.id, "hi").unwrap_err(), gateway::TEAM_NEEDS_FULL_BOT);
+    assert_eq!(super::failover::remembered_images(&task.id), None);
+}

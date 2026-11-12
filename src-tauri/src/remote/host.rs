@@ -702,6 +702,15 @@ fn allow_remote_lasting(state: &AppState, session_id: &str, request_id: &str, fu
     allow_lasting(&requests, request_id, full_access)
 }
 
+/// The gates an `approval.respond` passes before it is sent: only approving checks them.
+async fn allow_remote_approval(state: &AppState, session_id: &str, request_id: &str, approve: bool, full_access: bool) -> Result<()> {
+    if !approve {
+        return Ok(());
+    }
+    allow_remote_team_for(state, session_id, full_access).await?;
+    allow_remote_lasting(state, session_id, request_id, full_access)
+}
+
 /// Whether an `input.respond` response only cancels or declines the question
 /// (`{action: "cancel" | "decline"}`, or a questions form sent back with no answers).
 fn declines_input(response: &Value) -> bool {
@@ -1692,10 +1701,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             drivable_task(app, from, &session_id, full_access).await?;
             // Approving lets a lead run the tool and dispatch full-access workers. Declining is allowed
             // without the switch: the lead's turn goes on, but the phone adds no text and approves nothing.
-            if approve {
-                allow_remote_team_for(&state, &session_id, full_access).await?;
-                allow_remote_lasting(&state, &session_id, &request_id, full_access)?;
-            }
+            allow_remote_approval(&state, &session_id, &request_id, approve, full_access).await?;
             crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
             answered(app, session_id, "approval_cancelled", request_id);
             Ok(json!({}))
@@ -5137,11 +5143,23 @@ mod tests {
         assert_eq!(allow_lasting(&lasting, "r", true), Ok(()));
         assert_eq!(allow_lasting(&once, "r", false), Ok(()));
         assert_eq!(allow_lasting(&lasting, "other", false), Ok(()));
-        // Declining skips the gate: only the approve branch checks it.
-        let source = include_str!("host.rs");
-        let call = &source[source.find("Call::Approve { session_id, request_id, approve } => {").unwrap()..];
-        let call = &call[..call.find("Call::Answer").unwrap()];
-        assert!(call.contains("if approve {") && call[call.find("if approve {").unwrap()..].contains("allow_remote_lasting("));
+    }
+
+    #[tokio::test]
+    async fn a_running_tasks_lasting_only_request_is_gated_on_approve_only() {
+        let (state, project_id) = crate::concurrent_task_tests::test_state();
+        let task = state.store.lock().unwrap().create_session(&project_id, "kimi", "default", "ask").unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        agent.pending_requests.lock().unwrap().insert("r".into(), AgentEvent {
+            session_id: task.id.clone(), kind: "approval".into(), text: String::new(), request_id: Some("r".into()),
+            data: Some(json!({(crate::providers::LASTING_ONLY): true})), tool: None,
+        });
+        crate::run_requests::lock_agents(&state.agents).unwrap().insert(task.id.clone(), agent);
+        let gate = |approve, full_access| allow_remote_approval(&state, &task.id, "r", approve, full_access);
+        assert_eq!(gate(true, false).await, Err(LASTING_NEEDS_FULL_ACCESS.to_string()));
+        assert_eq!(gate(false, false).await, Ok(()));
+        assert_eq!(gate(true, true).await, Ok(()));
     }
 
     #[test]
@@ -5316,9 +5334,11 @@ mod tests {
         assert!(after(host, "async fn send_prompt(", "\n}\n").contains(gate), "task.send");
         for call in ["Call::Steer { session_id, text, send_id } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
             let body = after(host, call, "\n        Call::");
-            let at = body.find(gate).unwrap_or_else(|| panic!("{call}"));
+            // Approve checks its gates in `allow_remote_approval`, which calls the team gate.
+            let at = body.find(gate).or_else(|| body.find("allow_remote_approval(")).unwrap_or_else(|| panic!("{call}"));
             assert!(body.find("crate::respond_").is_none_or(|respond| at < respond), "{call} checks before it responds");
         }
+        assert!(after(host, "async fn allow_remote_approval(", "\n}\n").contains(gate), "approval.respond");
         assert!(after(host, "Call::Start(start) => Call::Start(start::Start { mode: Some(", "\n").contains("team: false"), "task.start");
         let tools = include_str!("methods/tools.rs");
         assert!(after(tools, "async fn run_recipe(", "\n}\n").contains(gate), "recipes.run");
