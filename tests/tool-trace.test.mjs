@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 // dom.ts's fileIcon reads the theme once its lazy icon chunk has loaded.
@@ -149,6 +150,25 @@ test('previews prefer the MCP card, then the rich card inside the shared card ch
   const workers = toolPreview(tool('mcp__pandacode_architect__pandacode_dispatch_workers', { workers: [{ name: 'A', prompt: 'Do it', model: 'opus' }] }, { output: '{"workers":[{"name":"A","status":"started"}]}' }));
   assert.match(workers, /tool-trace-roster/);
   assert.equal(toolPreview(tool('Read', 'a', { output: '[Non-text content omitted]' })).includes('Non-text'), false);
+});
+
+test('explore lists each request with what it found, even from a clipped reply', () => {
+  const name = 'mcp__pandacode_architect__pandacode_explore';
+  // A real engine reply for a scripted repo, untrimmed; `explore::call_tests` checks it still is.
+  const { args: input, reply } = JSON.parse(readFileSync(new URL('./fixtures/explore-reply.json', import.meta.url), 'utf8'));
+  assert.equal(describeTool(tool(name, input)).object, '2 searches, 1 symbol, 3 files, 1 test lookup');
+  // A string is one request, as the tool reads it.
+  assert.equal(describeTool(tool(name, { search: 'handleLogin', read: 'a.ts' })).object, '1 search, 1 file');
+  const text = toolPreview(tool(name, input, { output: JSON.stringify(reply) })).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  for (const part of ['handleLogin', '8 matches · 4 files', 'toolFamily', '0 matches · 1 match outside the glob', '1 definition', '0 test files', '7 lines', 'lines 5–7']) assert.ok(text.includes(part), part);
+  const clipped = toolPreview(tool(name, input, { output: JSON.stringify(reply).slice(0, 40) })).replace(/<[^>]+>/g, ' ');
+  for (const part of ['handleLogin', 'Session', 'src/auth.ts:5-7']) assert.ok(clipped.includes(part), part);
+  assert.equal(clipped.includes('coverage'), false);
+  const one = toolPreview(tool(name, { read: 'nope.ts' }, { output: JSON.stringify({ read: [reply.read[1]] }) })).replace(/<[^>]+>/g, ' ');
+  assert.ok(one.includes('nope.ts') && one.includes('File not found.'));
+  const unsafe = toolPreview(tool(name, { search: ['<img src=x>'] }, { output: '{"search":[{"error":"<b>bad</b>"}]}' }));
+  assert.equal(unsafe.includes('<img'), false);
+  assert.equal(unsafe.includes('<b>bad'), false);
 });
 
 test('chips, objects and cards escape tool data', () => {
@@ -366,4 +386,29 @@ test('vm_exec rows name their machine; created tasks keep the input description'
   assert.equal(vm.object, '-a · on ubuntu-dev');
   const created = toolPreview(tool('pandacode_create_task', { title: 'Polish', description: 'Tighten the onboarding copy' }, { output: JSON.stringify({ task: { id: 't1', title: 'Polish' } }) }));
   assert.match(created, /Tighten the onboarding copy/);
+});
+
+test('agent-made tools read as sentences and show the script output', () => {
+  const row = (name, input, output = '', status = 'completed') => {
+    const t = describeTool({ name, input: JSON.stringify(input), output, status });
+    return [t.verb, t.chip?.label, t.object].filter(Boolean).join(' ');
+  };
+  const save = { name: 'run-e2e-subset', description: 'Runs one Playwright file', when: 'Before finishing a UI change', script: 'npx playwright test "$PC_FILE"' };
+  assert.equal(row('mcp__pandacode_architect__pandacode_tool_save', save, '{"saved":"run-e2e-subset","version":2,"scope":"project","run":"pandacode_tool_run"}'), 'Saved tool run-e2e-subset (v2)');
+  const ok = JSON.stringify({ tool: 'run-e2e-subset', version: 2, exit: 0, ms: 812, stdout: '3 passed', stderr: '', truncated: false });
+  const bad = JSON.stringify({ tool: 'run-e2e-subset', version: 2, exit: 1, ms: 640, stdout: '1 failed', stderr: 'Error: expected Saved', truncated: true });
+  assert.equal(row('pandacode_tool_run', { name: 'run-e2e-subset', args: { file: 'tests/a.spec.ts' } }, ok), 'Ran tool run-e2e-subset');
+  assert.equal(row('pandacode_tool_run', { name: 'run-e2e-subset' }, bad), 'Ran tool run-e2e-subset · failed (exit 1)');
+  // A script ended by a signal reports exit -1 (no code): that is a failure too.
+  const killed = JSON.stringify({ tool: 'run-e2e-subset', version: 2, exit: -1, ms: 9, stdout: '', stderr: '', truncated: false });
+  assert.equal(row('pandacode_tool_run', { name: 'run-e2e-subset' }, killed), 'Ran tool run-e2e-subset · failed (exit -1)');
+  assert.match(toolPreview(tool('pandacode_tool_run', { name: 'run-e2e-subset' }, { output: killed })), /is-failed">failed</);
+  assert.equal(row('pandacode_tool_list', {}, '{"tools":[]}'), 'Listed project tools');
+  const card = toolPreview(tool('pandacode_tool_run', { name: 'run-e2e-subset', args: { file: 'tests/a.spec.ts' } }, { output: bad }));
+  assert.match(card, /is-failed">failed</);
+  assert.match(card, /1 failed/);
+  assert.match(card, /Error: expected Saved/);
+  assert.match(card, /<dt>file<\/dt><dd>tests\/a.spec.ts<\/dd>/);
+  assert.match(card, /Output was truncated/);
+  assert.match(toolPreview(tool('pandacode_tool_save', save, { output: '{"version":1}' })), /npx playwright test/);
 });

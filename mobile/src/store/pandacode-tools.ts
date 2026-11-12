@@ -50,6 +50,19 @@ const MANAGE: Record<string, [string, string]> = {
   suspend: ['Suspending', 'Suspended'], delete: ['Deleting', 'Deleted'], install_desktop: ['Installing a desktop on', 'Installed a desktop on'],
 };
 
+/** `3 searches, 2 files`: what one explore call asked. */
+function explored(f: Fields): string {
+  // The tool takes one string as a list of one.
+  const asked = (key: string) => (typeof f[key] === 'string' ? 1 : list(f, key).length);
+  const parts: [number, string, string][] = [
+    [asked('search'), 'search', 'searches'],
+    [asked('symbols'), 'symbol', 'symbols'],
+    [asked('outline') + asked('read'), 'file', 'files'],
+    [asked('tests_for'), 'test lookup', 'test lookups'],
+  ];
+  return parts.filter(([n]) => n).map(([n, one, many]) => count(n, one, many)).join(', ') || 'the code';
+}
+
 function control(f: Fields, verbs: Record<string, [string, string]>): Sentence {
   const action = str(f, 'action');
   const [run, done] = verbs[action] ?? ['Using', 'Used'];
@@ -103,12 +116,17 @@ const SENTENCES: Record<string, (f: Fields, names: WorkerNames) => Sentence> = {
   vm_list: () => ['Listing', 'Listed', 'VMs'],
   vm_control: f => control(f, VM_CONTROL),
   vm_manage: f => manage(f, 'VM'),
+  explore: f => ['Exploring', 'Explored', explored(f)],
   design_write: f => ['Drawing', 'Drew', str(f, 'name') || str(f, 'title') ? `artboard ${quoted(str(f, 'name') || str(f, 'title'))}` : 'an artboard'],
   design_list: () => ['Listing', 'Listed', 'artboards'],
   design_comments: () => ['Reading', 'Read', 'design comments'],
   design_resolve: () => ['Resolving', 'Resolved', 'a design comment'],
   preview_file: f => ['Previewing', 'Previewed', str(f, 'path').split('/').pop() || 'a file'],
   run_project: () => ['Running', 'Ran', 'the project'],
+  // Agent-made tools (docs/custom-tools.md). The phone sees only the input, so no version or exit code here.
+  tool_save: f => ['Saving tool', 'Saved tool', clip(str(f, 'name'), 40) || 'a tool'],
+  tool_run: f => ['Running tool', 'Ran tool', clip(str(f, 'name'), 40) || 'a tool'],
+  tool_list: () => ['Listing', 'Listed', 'project tools'],
   cloud_cli: f => ['Running', 'Ran', clip(str(f, 'cli') || str(f, 'tool') || 'a deploy command', 40)],
 };
 

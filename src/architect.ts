@@ -15,6 +15,7 @@ import { decodeToolActivity, renderToolActivity } from './tool-activity';
 import { teamActive, type TeamConfig, type TeamSnapshot, type TeamWorker, type ModelSelection, type TeamLibrary, type TeamSetup } from './architect-types';
 import { mountTeamProfiles } from './team-profiles';
 import { infoMark } from './tooltip';
+import { PACKS } from './token-saver';
 import { workerQueueReason } from './worker-scheduling';
 import { Subagents } from './subagents';
 import { TeamMessages } from './team-messages';
@@ -42,6 +43,13 @@ const workerGlyphs: Record<string, string> = {
   idle: `<svg viewBox="0 0 28 28" aria-hidden="true">${ring('2.5 4')}</svg>`,
 };
 const modelName = (selection: ModelSelection, providers: Provider[]) => providers.find(p => p.id === selection.provider)?.models.find(m => m.id === selection.model)?.name ?? fallbackModel(selection.provider, selection.model || 'default').name;
+/** `Caveman lite · Quiet tools` as chips, or nothing. */
+const saverChips = (saver: TeamWorker['tokenSaver']) => {
+  const names = (saver?.packs ?? []).map(id => `${PACKS.find(pack => pack.id === id)?.title ?? id}${id === 'caveman' && saver?.level ? ` ${saver.level}` : ''}`);
+  if (!names.length) return '';
+  const label = `Token saver: ${names.join(' · ')}`;
+  return `<span class="architect-saver" role="note" aria-label="${escape(label)}" data-tip="${escape(label)}">${names.map(name => `<span class="architect-saver-chip">${escape(name)}</span>`).join('')}</span>`;
+};
 const modelMarkup = (selection: ModelSelection, providers: Provider[]) => `<span class="provider-small ${escape(selection.provider)}">${providerLogo(selection.provider)}</span><span>${escape(modelName(selection, providers))}${selection.reasoningEffort ? `<small> · ${escape(selection.reasoningEffort)}</small>` : ''}</span>${icon('down')}`;
 
 type SetupController = (() => void) & { hasChildMenu: () => boolean };
@@ -455,7 +463,7 @@ export class ArchitectView {
     if (worker) {
       const meta = panel.querySelector<HTMLElement>('.architect-worker-meta')!;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(modelName(worker, this.providers))} · ${escape(statusNames[worker.status])}${worker.readOnly ? ' · Read only' : ''}</small>${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
+      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(modelName(worker, this.providers))} · ${escape(statusNames[worker.status])}${worker.readOnly ? ' · Read only' : ''}</small>${saverChips(worker.tokenSaver)}${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
       panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? 'Read only · no writes' : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : 'Write scope: shared checkout';
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;

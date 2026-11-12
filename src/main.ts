@@ -3414,7 +3414,10 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     finishingStreams.delete(sessionId);
     if (sessionId !== state.sessionId || generation !== state.generation) return;
     setMessagePage(saved); state.messagesLoading = false; state.messagesError = ''; mirrorPrompts.delete(sessionId);
-    renderTranscript(); renderComposer(); await refreshInspector();
+    renderTranscript(); renderComposer();
+    // A queued follow-up does not need git/file status: dispatchQueue runs as soon as this returns.
+    // refreshInspector shows its own load errors; run() reports anything else (a render throw).
+    run(refreshInspector());
   } catch (error) {
     if (!current()) return;
     finishing.error = errorText(error); finishing.stream.revision++;

@@ -1,0 +1,103 @@
+{
+ "batch": "G1",
+ "status": "incomplete",
+ "plannedRuns": 480,
+ "completedRuns": 21,
+ "remainingRuns": 459,
+ "completedByArm": {
+  "PLAIN": 6,
+  "T3": 5,
+  "PANDA": 5,
+  "PANDA_W": 5
+ },
+ "completedBySet": {
+  "loc": 12,
+  "edit": 5,
+  "edit2": 4
+ },
+ "billedUsd": {
+  "batch": 3.2252151,
+  "smoke": 1.9673977,
+  "ledger": 5.1926128,
+  "thisResume": 0
+ },
+ "smoke": {
+  "runs": 8,
+  "successes": 8,
+  "allArms": true
+ },
+ "validation": {
+  "model": "claude-sonnet-5-5",
+  "harness": "2.1.317",
+  "cachedRunsChecked": 29,
+  "invalidCachedRuns": 0,
+  "pinsVerified": true,
+  "sourceDigestMatchesSnapshot": true,
+  "optimizedServer": {
+   "profile": "fast-release",
+   "optLevel": "s",
+   "sha256": "97823a5eb6d1ea54568a0aa3b67fe73cce5aa75c4f710b7972899fbaf97ed544"
+  },
+  "catalogs": {
+   "T3": {
+    "tools": 71,
+    "bytes": 48157
+   },
+   "PANDA": {
+    "tools": 17,
+    "bytes": 13861
+   },
+   "PANDA_mobile": {
+    "tools": 22,
+    "bytes": 16388
+   },
+   "pandaNames": [
+    "pandacode_schedule_wakeup",
+    "pandacode_schedule_message",
+    "pandacode_list_schedules",
+    "pandacode_cancel_schedule",
+    "pandacode_simulator_devices",
+    "pandacode_simulator_screenshot",
+    "pandacode_simulator_describe",
+    "pandacode_simulator_control",
+    "pandacode_simulator_manage",
+    "pandacode_vm_list",
+    "pandacode_vm_manage",
+    "pandacode_design_list",
+    "pandacode_design_write",
+    "pandacode_design_comments",
+    "pandacode_design_resolve",
+    "pandacode_progress_snapshot",
+    "pandacode_explore",
+    "pandacode_tool_save",
+    "pandacode_run_project",
+    "pandacode_preview_file",
+    "pandacode_track_files",
+    "pandacode_title"
+   ]
+  },
+  "runnerSha256": "4c48365d7dff1c549959af564f6133570a2344e4cdaeab2f8c8c86ce49ac8daf",
+  "nodeTestsPassed": 93,
+  "rustCatalogTestsPassed": 3,
+  "httpCatalogSelfCheckPassed": true
+ },
+ "operationalGuards": {
+  "runCapUsd": 3,
+  "totalBudgetUsd": 150,
+  "minFreeGiB": 6,
+  "concurrency": 4
+ },
+ "batchSeed": 877740526,
+ "blocker": {
+  "kind": "missing-pinned-dependency-cache",
+  "path": "src-tauri/target/debug/deps",
+  "expectedFingerprint": "6e21a7338dd0b5ea0628f21aae5a83f14680ceb5f38881badadc59c8426a6e83",
+  "currentFingerprint": null,
+  "previousStop": "low disk below 6 GiB"
+ },
+ "analysis": {
+  "status": "withheld-incomplete",
+  "reason": "Only 21 of 480 runs exist; unequal task/seed coverage cannot support a final registered comparison. No primary, gate, CI or Holm conclusion is reported.",
+  "selectiveExclusions": []
+ }
+}

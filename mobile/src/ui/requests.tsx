@@ -10,6 +10,7 @@ import { Glass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
 import { mono, useColors, type Colors } from './theme.ts';
+import { isToolRun } from './tool-run-approval.ts';
 
 interface Question { id: string; header?: string; question: string; options?: { label: string; description?: string }[]; isOther?: boolean; isSecret?: boolean; multiSelect?: boolean }
 type Input = { kind: 'questions'; questions: Question[] } | { kind: 'form'; message: string; schema: unknown } | { kind: 'url'; message: string; url: string };
@@ -47,7 +48,9 @@ export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: strin
   return (
     <Glass style={styles.card}>
       <Heading icon={{ ios: 'hand.raised.fill', android: 'front_hand' }} title="Approval needed" color={colors.orange} />
-      <Markdown text={request.text || 'The agent asks to continue.'} />
+      {isToolRun(request.text)
+        ? <Text style={[styles.tool, { color: colors.text, backgroundColor: colors.fill, fontFamily: mono }]} selectable>{request.text}</Text>
+        : <Markdown text={request.text || 'The agent asks to continue.'} />}
       {!!request.tool && <Text style={[styles.tool, { color: colors.text, backgroundColor: colors.fill, fontFamily: mono }]} numberOfLines={6} selectable>{request.tool.name}{request.tool.input ? `\n${request.tool.input}` : ''}</Text>}
       <View style={styles.actions}>
         {busy ? <ActivityIndicator /> : <>

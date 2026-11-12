@@ -5,6 +5,8 @@ mod agent_updates;
 mod agent_usage_providers;
 mod memory;
 mod app_updates;
+mod app_marker;
+mod app_instructions;
 mod appearance;
 mod architect;
 mod bots;
@@ -18,7 +20,9 @@ mod command_operations;
 mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
+mod custom_tools;
 mod design;
+mod explore;
 mod progress;
 mod file_preview;
 mod run_script;
@@ -55,6 +59,7 @@ mod panda_router;
 mod provider_settings;
 mod remote;
 mod providers;
+mod session_state;
 mod session_titles;
 mod slash_commands;
 mod recipes;
@@ -79,6 +84,11 @@ pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
 
+#[cfg(test)]
+use app_instructions::app_instructions;
+use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, HostPlan, LaunchText};
+#[cfg(test)]
+use app_instructions::Role;
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
 use std::{
@@ -92,6 +102,42 @@ use std::{
 use storage::{ContextUsage, MessagePage, Project, Session, Store};
 use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+
+// The texts `app_instructions` assembles. They stay in this file because the pinned benchmark
+// scripts (`scripts/agent-bench`) read them from lib.rs as `const NAME: &str` and `fn look(`.
+
+/// Agent-made tools only get made and reused when agents are told when to.
+const REUSE: &str = "\n\nIf the Project tools note lists a tool that does a multi-step command sequence you need, run it; after doing the same sequence twice, or once when it will clearly recur, save it with pandacode_tool_save.";
+/// The empty-project sentence the app said before the catalog's state moved to the Project
+/// tools note. No run hears it now (one fixed `REUSE` keeps the cached prefix stable); kept
+/// because the pinned GUI benchmark (`scripts/agent-bench/gui.mjs`) reads it from here.
+#[cfg(test)]
+const SAVE: &str = "\n\nAfter running the same multi-step command sequence twice, or once when it will clearly recur, save it with pandacode_tool_save.";
+
+/// PandaCode closes the harness when a turn ends, so background waits never come back.
+const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Wait for long-running commands in the foreground (or poll them) before you reply.";
+
+/// Each extra step re-reads the whole cached prompt, so lookups should take as few as they can.
+const LOOK: &str = "\n\nUse {explore} to locate code (search, symbols, outlines, ranged reads), with all your questions in one call. When a reply already names the files and symbols you need, answer; search again only for a named gap. ";
+
+/// Batch E/E2: AFTER agents swapped one scripted edit for a Read and one Edit per hunk. Claude
+/// Code's Edit refuses a file its own Read has not seen, so only it is told to Read first.
+const EDIT_CLAUDE: &str = "Explore's reads are not a Read for your Edit tool: for a file you will edit, read the lines you need with Read, not explore, and make each file's changes in as few edit calls as your editor allows.";
+const EDIT_OTHER: &str = "Make each file's changes in as few edit calls as your tools allow.";
+
+fn look(explore: explore::RunExplore) -> String {
+    let edit = if explore.claude_code { EDIT_CLAUDE } else { EDIT_OTHER };
+    [&LOOK.replace("{explore}", explore.name), edit].concat()
+}
+
+/// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
+const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
+
+/// Replies may carry generative UI blocks that PandaCode draws in the thread.
+const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
+
+/// Agents building a GUI post one annotated screenshot per iteration to the progress timeline.
+const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
 
 type Result<T> = std::result::Result<T, String>;
 struct RunningAgent {
@@ -277,6 +323,9 @@ mod pending_request_tests {
     }
 }
 
+mod launch_host;
+use launch_host::{launch_role, run_host, screenshot_paths, start_spare, HostInputs, RunSink};
+mod lead_spare;
 #[cfg(test)]
 mod concurrent_task_tests;
 
@@ -535,67 +584,6 @@ impl AppState {
             .workspace_root(project_id, session_id)
     }
 }
-/// Fixed instructions for every task turn: sidebar titles, the run script, change tracking.
-/// Projectless chats have nothing to run, so they skip the run script. Managed team workers
-/// report to their lead, not the user: no titles (they never get a title run), run script,
-/// rich questions or generative UI.
-fn app_instructions(chat: bool, worker: bool) -> String {
-    if worker {
-        return [turn_changes::instruction(), TURN_ENDS].concat();
-    }
-    let run = if chat { "" } else { run_script::INSTRUCTIONS };
-    [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat()
-}
-
-/// PandaCode closes the harness when a turn ends, so background waits never come back.
-const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Wait for long-running commands in the foreground (or poll them) before you reply.";
-
-/// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
-const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
-
-/// Replies may carry generative UI blocks that PandaCode draws in the thread.
-const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
-
-/// Agents building a GUI post one annotated screenshot per iteration to the progress timeline.
-const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
-
-/// Harnesses without a system prompt hear the app instructions again every few turns.
-const INSTRUCTION_REMINDER_EVERY: i64 = 8;
-fn reminder_turn(turns: i64) -> bool {
-    turns > 0 && turns % INSTRUCTION_REMINDER_EVERY == 1
-}
-
-#[cfg(test)]
-mod instruction_tests {
-    use super::*;
-
-    #[test]
-    fn harnesses_without_a_system_prompt_are_reminded_every_eighth_turn() {
-        let reminded: Vec<i64> = (1..=20).filter(|turn| reminder_turn(*turn)).collect();
-        assert_eq!(reminded, [1, 9, 17]);
-        assert!(!reminder_turn(0));
-        let text = app_instructions(false, false);
-        for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:", "Visual progress:"] {
-            assert!(text.contains(part), "{part}");
-        }
-        let chat = app_instructions(true, false);
-        assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:"));
-    }
-
-    #[test]
-    fn team_workers_get_only_change_tracking_and_turn_end() {
-        let lead = app_instructions(false, false);
-        let worker = app_instructions(false, true);
-        assert_eq!(lead, [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat());
-        assert_eq!(worker, [turn_changes::instruction(), TURN_ENDS].concat());
-        assert!(worker.contains("File change tracking:") && worker.contains("Your turn ends when you reply"));
-        for gone in ["Sidebar titles:", "Run and preview workflow:", "Generative UI:", "request_user_input"] {
-            assert!(!worker.contains(gone), "{gone}");
-        }
-        eprintln!("app instructions: lead {} B, worker {} B", lead.len(), worker.len());
-    }
-}
-
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
     tauri::async_runtime::spawn_blocking(f)
         .await
@@ -608,6 +596,7 @@ async fn delete_session_with_attachment_cleanup(
     window: tauri::WebviewWindow,
     session_id: String,
 ) -> Result<task_deletion::DeletedSessions> {
+    // `task_deletion` forgets the tasks' per-conversation state for every deletion path.
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
     match app.path().app_data_dir() {
         Ok(data_dir) => {
@@ -840,12 +829,16 @@ async fn configure_session(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
-    state.store.lock().map_err(|e| e.to_string())?.configure(
+    let session = state.store.lock().map_err(|e| e.to_string())?.configure(
         &session_id,
         &provider,
         &model,
         project_id.as_deref(),
-    )
+    )?;
+    drop(agents);
+    // A lead's spare keeps the config it launched with, so it would renew on the old provider/model.
+    providers::discard_warm_agent(&session_id);
+    Ok(session)
 }
 #[tauri::command]
 async fn set_reasoning_effort(
@@ -861,11 +854,15 @@ async fn set_reasoning_effort(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    state
+    let session = state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
+        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())?;
+    drop(agents);
+    // Like a model change: a lead's spare launched at the old effort could renew until its next wake.
+    providers::discard_warm_agent(&session_id);
+    Ok(session)
 }
 #[tauri::command]
 async fn update_session(
@@ -899,12 +896,17 @@ async fn update_session(
         return Err("Stop the agent before changing its model or permissions.".into());
     }
     let restored = archived == Some(false);
+    let reconfigured = model.is_some() || mode.is_some();
     state
         .store
         .lock()
         .map_err(|e| e.to_string())?
         .update(&session_id, title, archived, model, mode)?;
     drop(agents);
+    // A lead's spare launched with the old model/mode could renew until its next wake.
+    if reconfigured {
+        providers::discard_warm_agent(&session_id);
+    }
     if restored {
         remote::orchestrate::retry(&app, &session_id);
     }
@@ -1186,6 +1188,18 @@ fn save_agent_activity(
         _ => Ok(()),
     }
 }
+/// Saves a tool row through the path a run's events take.
+#[cfg(test)]
+pub(crate) fn save_tool_row(db: &Store, sid: &str, id: &str, name: &str, output: &str) {
+    let tool = providers::ToolActivity { id: id.into(), name: name.into(), status: "completed".into(), input: String::new(), output: output.into(), write_paths: None };
+    let mut activity = AgentEvent { tool: Some(tool), ..event(sid, "tool", "") };
+    save_agent_activity(db, &Mutex::new(String::new()), &mut activity, None).unwrap();
+}
+/// Saves the row a harness's reported compaction becomes.
+#[cfg(test)]
+pub(crate) fn save_compaction(db: &Store, sid: &str, id: &str) {
+    save_tool_row(db, sid, id, providers::COMPACT_CONTEXT_TOOL, providers::COMPACTED_OUTPUT);
+}
 fn recipes_dir(app: &tauri::AppHandle, state: &State<'_, AppState>, project_id: &str, scope: &str) -> Result<PathBuf> {
     if scope == "global" {
         return Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipes"));
@@ -1411,7 +1425,6 @@ async fn start_task(
     launch_task(app, state, session_id, None, None).await
 }
 
-#[derive(Default)]
 struct RunAdmission<'a> {
     expected_project: Option<&'a str>,
     command: Option<PreparedCommand>,
@@ -1421,11 +1434,23 @@ struct RunAdmission<'a> {
     cloud_attach: bool,
     /// An app-origin turn PandaCode itself starts (`launch_app_turn`).
     kind: Option<architect::internal_turns::CoordinationKind>,
+    /// Settings → Agents → Workers can use skills (`architect::worker_skills_on`).
+    worker_skills: bool,
+    /// Settings → Agents → Trim worker tools (`architect::worker_trim_on`, off by default).
+    worker_trim: bool,
+}
+
+impl Default for RunAdmission<'_> {
+    fn default() -> Self {
+        Self { expected_project: None, command: None, goal: None, team: None, cloud_attach: false, kind: None, worker_skills: true, worker_trim: false }
+    }
 }
 
 struct PreparedRun {
     config: RunConfig,
     restore_stage: Option<String>,
+    /// The message is a slash command the harness runs itself (`app_instructions::bare_command`).
+    native_command: bool,
     turn_message_id: i64,
     turn_started: std::time::Instant,
     context_handoff: Option<i64>,
@@ -1528,7 +1553,7 @@ fn prepare_task_run_in_project(
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
-    let (prompt, skill, maintenance) = match admission.command {
+    let (prompt, skill, maintenance, native_command) = match admission.command {
         Some(command) => {
             if command.provider != session.provider
                 || command.cwd != cwd
@@ -1542,10 +1567,14 @@ fn prepare_task_run_in_project(
                         .into(),
                 );
             }
+            // Skills are rewritten to `$name …` mentions; anything else stays `/name …`,
+            // which the harness parses itself.
+            let native = command.resolution.skill.is_none();
             (
                 command.resolution.prompt,
                 command.resolution.skill,
                 command.resolution.maintenance,
+                native,
             )
         }
         None if admission.goal.is_none()
@@ -1555,7 +1584,7 @@ fn prepare_task_run_in_project(
         {
             return Err("The task command changed. Try again to load its commands.".into());
         }
-        None => (text.clone(), None, false),
+        None => (text.clone(), None, false, false),
     };
     let needs_context = context_recovery::pending(&store, &session)?;
     let goal_control = matches!(
@@ -1622,7 +1651,8 @@ fn prepare_task_run_in_project(
         }
         error
     };
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    let prompt = architect::prompt_with_skills(&store, &session_id, &prompt, admission.team.as_ref(), admission.worker_skills).map_err(restore)?;
+    let worker = architect::worker_trim(&store, &session_id, admission.team.as_ref(), admission.worker_skills, admission.worker_trim).map_err(restore)?;
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1637,6 +1667,8 @@ fn prepare_task_run_in_project(
         skill,
         goal: admission.goal,
         codex_settings: session.codex_settings,
+        worker,
+        disallowed_tools: None,
     };
     architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
     let agent = RunningAgent::new(tx, stopped.clone());
@@ -1650,6 +1682,7 @@ fn prepare_task_run_in_project(
     Ok(PreparedRun {
         config,
         restore_stage: maintenance.then_some(session.task_stage),
+        native_command,
         turn_message_id,
         turn_started,
         context_handoff,
@@ -1693,11 +1726,14 @@ fn prepare_cloud_attach(
         skill: None,
         goal: None,
         codex_settings: session.codex_settings,
+        worker: None,
+        disallowed_tools: None,
     };
     let agent = RunningAgent::new(tx, stopped);
     let prepared = PreparedRun {
         config,
         restore_stage: None,
+        native_command: false,
         turn_message_id: cloud.turn_message,
         turn_started: std::time::Instant::now(),
         context_handoff: None,
@@ -1883,28 +1919,13 @@ async fn launch_operation_admitted(
         .app_cache_dir()
         .map_err(|e| e.to_string())?
         .join("browser-captures");
-    let images = image_ids
-        .into_iter()
-        .map(|id| {
-            let parsed = uuid::Uuid::parse_str(&id)
-                .map_err(|_| "Invalid screenshot attachment.".to_string())?;
-            if parsed.to_string() != id {
-                return Err("Invalid screenshot attachment.".to_string());
-            }
-            let path = capture_dir.join(format!("{id}.png"));
-            let metadata = std::fs::symlink_metadata(&path)
-                .map_err(|_| "Screenshot is unavailable. Capture it again.".to_string())?;
-            if !metadata.file_type().is_file() || metadata.len() > 5 * 1024 * 1024 {
-                return Err("Invalid screenshot attachment.".to_string());
-            }
-            Ok(path)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let images = screenshot_paths(&capture_dir, image_ids)?;
     let (tx, rx) = unbounded_channel();
     let stopped = Arc::new(AtomicBool::new(false));
     let PreparedRun {
         mut config,
         restore_stage,
+        native_command,
         turn_message_id,
         turn_started,
         context_handoff,
@@ -1929,6 +1950,8 @@ async fn launch_operation_admitted(
             team: team_admission,
             cloud_attach,
             kind,
+            worker_skills: architect::worker_skills_on(&app),
+            worker_trim: architect::worker_trim_on(&app),
         },
     )?;
     if !cloud_attach && turn_message_id > 0 && (!attachment_ids.is_empty() || attachment_text.contains("(moodboard ID: ")) {
@@ -1971,20 +1994,60 @@ async fn launch_operation_admitted(
     if let Some(title) = &title_run {
         config.prompt.push_str(&title.instruction());
     }
-    if restore_stage.is_none() {
-        let worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
-        if providers::takes_system_instructions(&config.provider) {
-            // Cached with the system prompt: paid once, then read at a tenth of the price.
-            config.instructions = instructions;
+    // The tool catalog rides the message note (first message, on change, a fresh
+    // conversation, every 8th), not the tool specs, which never depend on whether the project
+    // has tools: no save, the first included, changes the cached prompt prefix or the warm key.
+    // Managed team workers report to their lead and are never offered agent-made tools.
+    let (managed_worker, role) = launch_role(team.as_ref(), &session_id, config.worker);
+    // What this conversation may already hold: a family it holds stays listed (and refused)
+    // even when this turn does not want it (`app_instructions::catalog`).
+    let history = app_instructions::History::of(&session_id, &config.provider, config.resume_id.as_deref());
+    // The deny set is read from this history once: the launch, the warm key and
+    // `catalog_listing` below must not see two reads that agree only by determinism.
+    if providers::claude_family(&config.provider) {
+        config.disallowed_tools = Some(providers::claude_disallowed_tools(config.worker, &history));
+    }
+    let custom_offered = custom_tools_offered(cloud, managed_worker) && custom_tools::ipc::enabled_for(&app);
+    // Read once, so the instructions, the note and the host see the same tools this turn; the
+    // tool files are read on a blocking thread, off the async launch path.
+    let catalog = if custom_offered || (custom_tools::offered(cloud) && history.may_hold(false)) {
+        let (app, session_id) = (app.clone(), session_id.clone());
+        tauri::async_runtime::spawn_blocking(move || custom_tools::catalog(&app, &session_id)).await.unwrap_or_else(|error| {
+            eprintln!("PandaCode: reading agent-made tools failed: {error}");
+            None
+        })
+    } else {
+        None
+    };
+    // Set when this turn's message was reckoned against the catalog; recorded only once the
+    // run ends cleanly, so a turn that fails or is stopped carries its note again.
+    let mut note_mark = None;
+    // A slash command's message must reach the harness bare (`bare_command`): no note rides it
+    // and none is recorded as sent, so the next ordinary turn carries it.
+    let maintenance = restore_stage.is_some();
+    let bare = app_instructions::bare_command(maintenance, native_command);
+    if let Some(catalog) = catalog.as_ref().filter(|_| custom_offered && !bare) {
+        // Plan lists no way to save or run: that caveat rides the message, never the cached
+        // instructions, which say the same in every mode.
+        if let Some(note) = plan_tools_note(&config.mode) {
+            config.prompt.push_str(note);
         } else {
-            // In the message: on a new conversation, then as a periodic reminder.
-            let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
-            if config.resume_id.is_none() || reminder_turn(turns) {
-                config.prompt.push_str(&instructions);
+            note_mark = Some(catalog.note_mark());
+            if let Some(note) = custom_tools::message_note(catalog, &session_id, config.resume_id.is_none()) {
+                config.prompt.push_str(&note);
             }
         }
     }
+    // Whether this run lists explore, and the name its instructions use for it.
+    let explore_on = explore::enabled_for(&app, &config.provider);
+    let explore = explore::run_name(cloud, explore_on, &config.provider);
+    let explore_offered = explore::run_name(cloud, true, &config.provider).is_some();
+    let host_plan = HostPlan::of(&config, team.is_some(), role, cloud, explore_offered, explore_on).custom_tools(custom_offered);
+    // What this turn's message said; recorded only once the run ends cleanly, so a turn that
+    // fails or is stopped says it again.
+    // A run with no catalog (a mirror, no app data) has no tools to mention.
+    let tools_said = custom_offered && catalog.is_some();
+    let instructed = instruct_launch(&store, &mut config, LaunchText { role, explore, offered: tools_said, maintenance: bare });
     tauri::async_runtime::spawn(async move {
         let changes_root = config.cwd.clone();
         let changes_cache = app
@@ -2010,180 +2073,34 @@ async fn launch_operation_admitted(
             .ok()
             .map(|tracker| Arc::new(Mutex::new(tracker)))
         };
-        let tracker_sink = tracker.clone();
         let persistence_error = Arc::new(Mutex::new(None::<String>));
-        let errors_sink = persistence_error.clone();
-        let assistant_sink = assistant.clone();
-        let store_sink = store.clone();
-        let app_sink = app.clone();
-        let pending_requests_sink = pending_requests.clone();
-        let subagents_sink = subagents.clone();
-        let goal_reply_sink = goal_reply.clone();
-        let goal_agents_sink = agents.clone();
-        let native_turn_sink = Mutex::new(String::new());
-        let team_sink = team.clone();
         let coalescer = Arc::new(Mutex::new(providers::Coalescer::default()));
-        let coalescer_sink = coalescer.clone();
-        let sink: providers::Sink = Arc::new(move |mut e: AgentEvent| {
-            if cloud && app_sink.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
-                return;
-            }
-            last_event.store(storage::now(), Ordering::SeqCst);
-            if e.kind == "done" {
-                return;
-            }
-            let usage = if e.kind == "usage" {
-                let Some(usage) = e.data.as_ref().and_then(ContextUsage::from_value) else {
-                    return;
-                };
-                // Forward only bounded, recognized metadata, never the raw
-                // provider response or cumulative billing totals.
-                e.data = serde_json::to_value(&usage).ok();
-                Some(usage)
-            } else {
-                None
-            };
-            if e.kind == "turn_start" {
-                if let Some(tracker) = &tracker_sink {
-                    blocking_snapshot(|| {
-                        if let Ok(mut tracker) = tracker.lock() {
-                            tracker.started();
-                        }
-                    });
-                }
-                if let Some(turn) = e.data.as_ref().and_then(|data| data["turnId"].as_str()) {
-                    *native_turn_sink
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()) = turn.into();
-                }
-            }
-            if let Some(tool) = &mut e.tool {
-                let turn = native_turn_sink
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
-                tool.id = run_tool_id(&run_id, &turn, &tool.id);
-            }
-            if let Some(tracker) = tracker_sink.as_ref().filter(|_| e.tool.is_some() || e.kind == "subagent") {
-                blocking_snapshot(|| {
-                    if let Ok(mut tracker) = tracker.lock() {
-                        tracker.observe(&e);
-                    }
-                });
-            }
-            if e.kind == "text" {
-                if let Ok(mut text) = assistant_sink.lock() {
-                    text.push_str(&e.text);
-                    bounded_tail(&mut text, 512 * 1024);
-                }
-            } else {
-                let saved = if e.kind == "subagent" {
-                    subagents_sink
-                        .lock()
-                        .map_err(|error| error.to_string())
-                        .and_then(|mut children| children.record(&store_sink, &run_id, &mut e))
-                } else if matches!(
-                    e.kind.as_str(),
-                    "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
-                ) {
-                    let saved = save_approval_with_pending(&store_sink, &pending_approvals, Some(&pending_requests_sink), &run_id, &mut e);
-                    if saved.is_ok() && e.kind == "approval" {
-                        if let Some(request_id) = &e.request_id {
-                            bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
-                        }
-                        tray::refresh(&app_sink);
-                    }
-                    saved
-                } else {
-                    store_sink
-                        .lock()
-                        .map_err(|error| error.to_string())
-                        .and_then(|db| {
-                            save_agent_activity(&db, &assistant_sink, &mut e, usage.as_ref())
-                        })
-                };
-                if let Err(error) = saved {
-                    if let Ok(mut slot) = errors_sink.lock() {
-                        *slot = Some(error);
-                    }
-                    if matches!(e.kind.as_str(), "goal" | "goal_input") {
-                        if let Ok(registry) = goal_agents_sink.lock() {
-                            if let Some(agent) = registry.get(&e.session_id) {
-                                let _ = agent.send(RunInput::Stop);
-                            }
-                        }
-                    }
-                }
-            }
-            if e.kind == "goal_ready" {
-                let result = errors_sink
-                    .lock()
-                    .map_err(|_| "Goal persistence is unavailable.".to_string())
-                    .and_then(|error| {
-                        if let Some(error) = error.as_ref() {
-                            Err(error.clone())
-                        } else {
-                            e.data
-                                .clone()
-                                .filter(|v| !v.is_null())
-                                .map(serde_json::from_value)
-                                .transpose()
-                                .map_err(|_| "Invalid goal metadata.".to_string())
-                        }
-                    });
-                if let Ok(mut slot) = goal_reply_sink.lock() {
-                    if let Some(reply) = slot.take() {
-                        let _ = reply.send(result);
-                    }
-                }
-            }
-            if matches!(
-                e.kind.as_str(),
-                "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
-            ) {
-                architect::activity(&app_sink, &e.session_id, team_sink.as_ref());
-            }
-            // Cloned only for the turn boundary below.
-            let completed = (e.kind == "turn_complete").then(|| e.session_id.clone());
-            emit_coalesced(&app_sink, &coalescer_sink, e);
-            if let Some(changes_sid) = completed {
-                if let Some(tracker) = &tracker_sink {
-                    let capture = blocking_snapshot(|| {
-                        tracker
-                            .lock()
-                            .ok()
-                            .and_then(|mut tracker| tracker.boundary())
-                    });
-                    if let Some(capture) = capture {
-                        persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture);
-                    }
-                }
-            }
+        let sink = RunSink {
+            app: app.clone(), cloud, last_event, tracker: tracker.clone(), run_id, assistant: assistant.clone(), subagents: subagents.clone(), store: store.clone(),
+            pending_approvals, pending_requests, errors: persistence_error.clone(), agents: agents.clone(), goal_reply: goal_reply.clone(), team: team.clone(), coalescer: coalescer.clone(),
+        }
+        .sink();
+        let custom_definitions = catalog.as_ref().map(|catalog| catalog.definitions()).unwrap_or_default();
+        let custom = catalog.map(|catalog| {
+            let author = custom_tools::Author { session_id: session_id.clone(), harness: config.provider.clone(), model: config.model.clone() };
+            let (app, stopped, mode) = (app.clone(), stopped.clone(), config.mode.clone());
+            move |host| custom_tools::with_custom_tools(host, catalog, app, author, stopped, &mode)
         });
-        let host = if let Some(admission) = team.as_ref() {
-            architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
-        } else {
-            (config.provider == "codex")
-                .then(|| agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+        let inputs = HostInputs { app: &app, session_id: &session_id, stopped: &stopped, team: team.as_ref(), custom_definitions: &custom_definitions };
+        let app_instructions::RunHost { host, refused, missing: team_tools_missing } = run_host(&host_plan, &inputs, &history, custom, tracker.clone(), title_run.as_ref());
+        // What this conversation holds from now on (a superset if the launch fails, which only
+        // keeps more listed later).
+        // Written on a blocking thread while the harness starts (one fsync), joined below
+        // before the turn's end is recorded (`remember_catalog_listed`).
+        let listed = app_instructions::catalog_listing(config.resume_id.as_deref(), host.as_ref(), &providers::claude_kept_natives(config.worker, &history));
+        let remembered = {
+            let session_id = session_id.clone();
+            tauri::async_runtime::spawn_blocking(move || app_instructions::remember_catalog_listed(&session_id, listed))
         };
-        let team_tools_missing = team.is_some() && host.is_none();
-        let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
-        let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
-        // A cloud agent's checkout is on its machine, where screenshots cannot be read.
-        let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
-        let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
-        let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
-        let host = Some(session_titles::with_host(title_run.as_ref(), host, stopped.clone()));
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
-        let managed_worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
+        let warm_next = lead_spare::starts_spare(&config, managed_worker, cloud, maintenance).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
@@ -2198,8 +2115,13 @@ async fn launch_operation_admitted(
                     .into(),
             )
         } else {
-            providers::run_with_tools(config, sink, rx, host, reached_harness.clone()).await
+            providers::run_with_tools(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone()).await
         };
+        if let Err(error) = remembered.await {
+            eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
+        }
+        // Approval snapshots and the tools' place live only as long as the run.
+        custom_tools::run_ended(&session_id);
         flush_coalesced(&app, &coalescer);
         if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             // The remote run continues; the next launch re-attaches to it.
@@ -2261,6 +2183,18 @@ async fn launch_operation_admitted(
         // request must not write into the next run while the team remains active.
         stopped.store(true, Ordering::SeqCst);
         let mut successful = result.is_ok() && !was_stopped;
+        // The run carrying this role's instructions ended cleanly (`instructions_due`). A failed
+        // or stopped run records nothing, even if the model read the message.
+        if let Some(role) = instructed.role.filter(|_| result.is_ok() && !was_stopped) {
+            app_instructions::instructed_as(&session_id, role);
+            if let Some(compaction) = instructed.compaction {
+                app_instructions::compaction_answered(&session_id, compaction);
+            }
+        }
+        // The run carrying this turn's tools note ended cleanly (`custom_tools::message_note`).
+        if let Some(mark) = note_mark.filter(|_| result.is_ok() && !was_stopped) {
+            mark.accepted(&session_id);
+        }
         // Only the harness's own outcome counts for model health (Settings → Model routing): a stop
         // says nothing, and PandaCode's own failures before the harness (validation, attachments,
         // connections, team tools) are not the model's.
@@ -2443,32 +2377,8 @@ async fn launch_operation_admitted(
         }
         drop(registry);
         // Start the next turn's agent now, so a follow-up skips the CLI's own startup.
-        if let (true, Some((mut next, (tools, approvals)))) = (successful && !was_stopped, warm_next) {
-            // A turn that ended without any reply (seen after background commands) may have
-            // left the session in a state a spare would inherit: start the next one fresh.
-            let replied = store.lock().ok().and_then(|db| db.db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')))",
-                [&session_id],
-                |row| row.get::<_, bool>(0),
-            ).ok()).unwrap_or(false);
-            // A lead whose workers are still unsettled is woken only after they settle, often
-            // past the spare's idle limit: skip the spare (the wake starts cold, ~1.4 s).
-            let lead = team.as_ref().is_some_and(|admission| admission.parent == session_id);
-            let waiting_on_workers = lead && store.lock().ok().and_then(|db| architect::load(&db, &session_id).ok().flatten()).is_some_and(|snapshot| {
-                snapshot.workers.iter().any(|worker| !worker.abandoned && architect::unsettled(&worker.status))
-            });
-            let task = store.lock().ok().filter(|_| replied && !waiting_on_workers).and_then(|db| db.session(&session_id).ok());
-            if let Some(task) = task {
-                next.resume_id = task.resume_id;
-                next.model = task.model;
-                next.mode = task.mode;
-                next.reasoning_effort = task.reasoning_effort;
-                next.prompt.clear();
-                next.images.clear();
-                tauri::async_runtime::spawn(async move {
-                    let _ = providers::prewarm_agent(next, tools, approvals, launch).await;
-                });
-            }
+        if let (true, Some(next)) = (successful && !was_stopped, warm_next) {
+            start_spare(&app, &store, &session_id, team.as_ref(), launch, next);
         }
     });
     Ok(())
@@ -2491,6 +2401,7 @@ async fn stop_session(
         architect::load(&store, &session_id)?.is_some()
     };
     if is_team {
+        // `architect_control` drops the lead's idle spare (its Pause and Stop do too).
         architect::architect_control(app, state, session_id, "stop".into()).await?;
         return Ok(());
     }
@@ -3637,6 +3548,16 @@ async fn local_sign_app() -> Result<()> {
         .map_err(|e| e.to_string())?
 }
 
+/// Drops persisted conversation state of tasks deleted by paths that do not forget it (a bot
+/// reset deletes its conversations' rows directly). A failed read keeps everything.
+fn prune_session_state(store: &Store) {
+    let ids = store.db.prepare("SELECT id FROM sessions").and_then(|mut statement| statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<String>>>());
+    match ids {
+        Ok(ids) => session_state::retain(|id| ids.contains(id)),
+        Err(error) => eprintln!("PandaCode: could not prune session state: {error}"),
+    }
+}
+
 /// State and services shared by the desktop app and `pandacode serve` (docs/headless.md):
 /// storage, credentials, the cloud-run resume loop, Connect hosting, bots and archiving.
 /// Returns the app data dir. GUI-only startup (overlay, tray, appearance, VM idle watch)
@@ -3661,6 +3582,8 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     if let Err(error) = store.discard_empty_drafts() {
         eprintln!("Could not clear unsent new tasks: {error}");
     }
+    session_state::init(&dir);
+    prune_session_state(&store);
     app.manage(AppState {
         store: Arc::new(Mutex::new(store)),
         agents: Arc::new(Mutex::new(HashMap::new())),
@@ -3742,6 +3665,8 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         app.state::<vm::Vms>().shutdown();
         cloud::aws_screen::close(None);
         providers::shutdown_all();
+        // Counters and marks are written lazily; save the last few seconds' changes.
+        session_state::flush();
     }
 }
 
@@ -4190,6 +4115,20 @@ pub fn run() {
                 close_terminal,
                 get_terminal_activity,
                 get_terminal_preferences,
+                explore::explore_enabled,
+                explore::set_explore_enabled,
+                explore::explore_harness_enabled,
+                explore::set_explore_harness_enabled,
+                architect::worker_skills_enabled,
+                architect::set_worker_skills_enabled,
+                architect::worker_trim_enabled,
+                architect::set_worker_trim_enabled,
+                custom_tools::ipc::custom_tools_list,
+                custom_tools::ipc::custom_tools_enabled,
+                custom_tools::ipc::set_custom_tools_enabled,
+                custom_tools::ipc::custom_tool_move,
+                custom_tools::ipc::custom_tool_delete,
+                custom_tools::ipc::custom_tool_set_disabled,
                 get_metrics,
                 list_local_servers,
                 jev::jev_configuration,

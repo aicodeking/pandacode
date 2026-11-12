@@ -28,6 +28,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 portable-pty = "0.9"
 ignore = "0.4.33"
 regex = "1"
+regex-syntax = "0.8"
 flate2 = "=1.1.10"
 libc = "0.2"
 base64 = "0.22"

@@ -1,0 +1,539 @@
+{
+ "about": "POST-HOC (round 17, written after S1v3's results were known; docs/token-saver-benchmark.md deviation S1v3-2). Strict rubrics for the 8 report tasks: each item keeps its registered `line` regexes, adds a required correct-value or defect-statement regex where the registered item scored the topic alone, and lists `not` regexes a matching unit must not match (negations and wrong values). `field: \"failing\"` items score only the entries of the answer's JSON `failing` array. `controls` are same-topic wrong answers, one negated and one with wrong values, per task; each must score at most 1 item under its strict rubric (saver.test.mjs). The registered rubrics in tasks-saver.json are unchanged and the registered verdicts stand.",
+ "report": [
+  {
+   "id": "rep-review-deepseek",
+   "kind": "review",
+   "rubric": [
+    {
+     "id": "remove-skips-invalidate",
+     "line": [
+      "\\bremov\\w*",
+      "\\b(invalidat\\w*|stale|cached?|refresh\\w*)\\b",
+      "\\b(not|n't|never|no longer|without|skip\\w*|miss\\w*|omit\\w*|forg[eo]t\\w*|stale|surviv\\w*|stays?|lingers?|remains?)\\b"
+     ],
+     "not": [
+      "\\b(correctly|properly|already|still|also)\\b[^.;]{0,40}\\b(invalidat|refresh|clear)",
+      "\\bnothing\\b[^.;]{0,20}\\bstale\\b",
+      "\\bno stale\\b",
+      "\\binvalidat\\w*\\(\\s*\\\\?\"glm",
+      "\\bnot (a )?(defect|bug|problem|issue)\\b"
+     ]
+    },
+    {
+     "id": "linux-unlock-prompt",
+     "line": [
+      "\\b(linux|secret service|keyring|other platforms|non-?(mac|windows)\\w*)\\b|not\\(any",
+      "\\b(unlock\\w*|prompt\\w*|dialogs?|interactive\\w*)\\b"
+     ],
+     "not": [
+      "\\b(never|cannot|can't|won't|will not|does not|doesn't|no longer)\\b(\\s+\\w+){0,3}\\s+(unlock|prompt)\\w*",
+      "deepseek\\w*[^.;]{0,30}\\breturns (an )?err\\b",
+      "^(?!.*\\b(linux|secret service|non-?(mac|windows)\\w*|not\\(any)).*\\bwindows\\b"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "1. provider_remove_deepseek_key correctly calls agent_usage::invalidate(\"deepseek\"), so no stale usage is left after the key is removed.\n2. On Linux, deepseek_key_for_usage returns Err like glm_key_for_usage, so the Secret Service keyring is never unlocked and never prompts.\n```json\n{\"findings\":[{\"file\":\"src-tauri/src/provider_settings.rs\",\"line\":592,\"issue\":\"provider_remove_deepseek_key correctly calls agent_usage::invalidate(\\\"deepseek\\\"), so no stale usage is left after the key is removed.\"},{\"file\":\"src-tauri/src/provider_settings.rs\",\"line\":160,\"issue\":\"On Linux deepseek_key_for_usage returns Err like glm_key_for_usage, so the keyring is never unlocked and never prompts.\"}]}\n```",
+    "wrongValue": "1. Removing the DeepSeek key does not call agent_usage::invalidate(\"glm\"), so the GLM usage cache stays stale after removal.\n2. On Windows, deepseek_key_for_usage reads Credential Manager through the keyring crate, which can prompt.\n```json\n{\"findings\":[{\"file\":\"src-tauri/src/provider_settings.rs\",\"line\":592,\"issue\":\"Removing the DeepSeek key does not call agent_usage::invalidate(\\\"glm\\\"), so the GLM usage cache stays stale after removal.\"},{\"file\":\"src-tauri/src/provider_settings.rs\",\"line\":160,\"issue\":\"On Windows the keyring read in deepseek_key_for_usage can prompt.\"}]}\n```"
+   }
+  },
+  {
+   "id": "rep-review-simulator",
+   "kind": "review",
+   "rubric": [
+    {
+     "id": "short-png-panics",
+     "line": [
+      "\\b(png|frame|header|len|length|short|20|24)\\b",
+      "\\b(panic\\w*|out.of.bounds|bounds|index\\w*|slic\\w*|crash\\w*)\\b",
+      "\\b(20|23|24)\\b"
+     ],
+     "not": [
+      "\\b(prevent\\w*|avoid\\w*|guards? against|cannot|can't|never|no (risk|chance) of|safe\\w*)\\b(\\s+\\w+){0,3}\\s+(panic\\w*|out.of.bounds|index\\w*|crash\\w*)",
+      "\\bnot (a |an )?(panic|crash)\\w*"
+     ]
+    },
+    {
+     "id": "scale-not-positive",
+     "line": [
+      "\\bscale\\b",
+      "\\b(zero|0\\.0|negative|divi\\w*|infinit\\w*|inf|nan|positive)\\b|<= ?0",
+      "\\b(not|n't|never|no|missing|unchecked|unvalidated|without|dropped|removed|lost|accept\\w*|pass\\w*|infinit\\w*)\\b"
+     ],
+     "not": [
+      "\\b(checked|validated|guarded|rejected|ensured|verified)\\b[^.;]{0,30}\\b(positive|zero|<= ?0)",
+      "\\bscale (is|gets|stays) (still )?(checked|validated)\\b"
+     ]
+    },
+    {
+     "id": "home-button-inverted",
+     "line": [
+      "\\b(home.?button|pearl\\w*|face ?id)\\b",
+      "\\b(invert\\w*|backwards?|opposite|negat\\w*|revers\\w*|flip\\w*)\\b|== ?Some\\(true\\)",
+      "\\b(face ?id|pearl\\w*|touch ?id)\\b"
+     ],
+     "not": [
+      "\\bnot (inverted|backwards|reversed|flipped)\\b",
+      "\\bcorrectly\\b",
+      "==\\s*Some\\(false\\)"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "1. `screen_from_png` checks `png.len() < 24`, which prevents any out-of-bounds panic on short PNG data.\n2. The scale is checked to be positive before use, so a zero or negative scale is rejected.\n3. home_button is not inverted: it is true exactly when pearl-id (Face ID) is not true.\n```json\n{\"findings\":[{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"png.len() < 24 prevents any out-of-bounds panic on short PNG data.\"},{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"The scale is checked to be positive, so a zero or negative scale is rejected.\"},{\"file\":\"src-tauri/src/simulator.rs\",\"line\":291,\"issue\":\"home_button is not inverted: true exactly when pearl-id (Face ID) is not true.\"}]}\n```",
+    "wrongValue": "1. A PNG shorter than 16 bytes panics because side(16) indexes past the end of the slice.\n2. A scale above 4.0 is not capped, so huge scales pass.\n3. home_button now reads `pearl-id == Some(false)`, which inverts it for Touch ID devices.\n```json\n{\"findings\":[{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"A PNG shorter than 16 bytes panics because side(16) indexes past the end.\"},{\"file\":\"src-tauri/src/simulator.rs\",\"line\":221,\"issue\":\"A scale above 4.0 is not capped, so huge scales pass.\"},{\"file\":\"src-tauri/src/simulator.rs\",\"line\":291,\"issue\":\"home_button reads pearl-id == Some(false), which inverts it for Touch ID devices.\"}]}\n```"
+   }
+  },
+  {
+   "id": "rep-review-pi-launcher",
+   "kind": "review",
+   "rubric": [
+    {
+     "id": "at-prefix-not-stripped",
+     "line": [
+      "@",
+      "\\b(strip\\w*|trim\\w*|prefix\\w*)\\b",
+      "\\b(not|n't|never|no longer|without|fails?|unrecogni[sz]ed|isn't|keeps?|kept|dropped)\\b"
+     ],
+     "not": [
+      "\\b(correctly|already|properly)\\b[^.;]{0,15}\\b(strip|trim)\\w*",
+      "\\b(is|are|gets?) (stripped|trimmed|removed)\\b",
+      "\\bstrips (a |the )?(leading )?.?@"
+     ]
+    },
+    {
+     "id": "bridge-dir-world-readable",
+     "line": [
+      "\\b0?o?755\\b|\\bother (local )?users\\b|\\bworld.?readable\\b|\\breadable by (others|anyone|everyone)\\b",
+      "\\b(perm\\w*|mode|readab\\w*|access\\w*|secur\\w*|privat\\w*|0?o?700)\\b"
+     ],
+     "not": [
+      "\\b(still|correctly|stays?|remains?|kept)\\b[^.;]{0,20}\\b0?o?700\\b",
+      "\\bnot (\\w+ ){0,2}(readable|accessible|exposed)\\b",
+      "\\bonly the owner\\b",
+      "\\b0?o?777\\b"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "1. shim_tokens strips a leading @ before comparing, so `@node.exe \"%~dp0pi-launcher.js\"` resolves.\n2. The bridge temp directory stays at mode 0o700, so it is not readable by other users.\n```json\n{\"findings\":[{\"file\":\"src-tauri/src/providers/launch.rs\",\"line\":214,\"issue\":\"shim_tokens strips a leading @ before comparing, so @node.exe resolves.\"},{\"file\":\"src-tauri/src/providers/pi.rs\",\"line\":15,\"issue\":\"The bridge directory stays at mode 0o700, so it is not readable by other users.\"}]}\n```",
+    "wrongValue": "1. The @ prefix is stripped twice, so `@@node.exe` becomes `node.exe`.\n2. The bridge directory mode is now 0o777, so any local user can write to it.\n```json\n{\"findings\":[{\"file\":\"src-tauri/src/providers/launch.rs\",\"line\":214,\"issue\":\"The @ prefix is stripped twice, so @@node.exe becomes node.exe.\"},{\"file\":\"src-tauri/src/providers/pi.rs\",\"line\":15,\"issue\":\"The bridge directory mode is now 0o777, so any local user can write to it.\"}]}\n```"
+   }
+  },
+  {
+   "id": "rep-explain-secrets",
+   "kind": "explain",
+   "rubric": [
+    {
+     "id": "file-name",
+     "line": [
+      "\\bsecrets\\.json\\b"
+     ],
+     "not": [
+      "\\b(not|never|no longer|isn't)\\b[^.;]{0,30}\\bsecrets\\.json\\b",
+      "\\bsecrets\\.json\\b[^.;]{0,20}\\b(is|was) (not|never|removed|gone)\\b"
+     ]
+    },
+    {
+     "id": "mode-0600",
+     "line": [
+      "\\b0o?600\\b"
+     ],
+     "not": [
+      "\\b(not|never|isn't|instead of|rather than)\\b[^.;]{0,25}\\b0o?600\\b",
+      "\\b0o?600\\b[^.;]{0,15}\\b(is not|isn't|never)\\b"
+     ]
+    },
+    {
+     "id": "atomic-rename",
+     "line": [
+      "\\brenam\\w*",
+      "\\b(atomic\\w*|temp\\w*|tmp)\\b"
+     ],
+     "not": [
+      "\\b(no|not|never|without|n't)\\b[^.;]{0,20}\\b(renam|temp|atomic)\\w*",
+      "\\bin place\\b"
+     ]
+    },
+    {
+     "id": "fsync",
+     "line": [
+      "\\b(fsync\\w*|sync_all|sync_data)\\b"
+     ],
+     "not": [
+      "\\b(no|not|never|without|skips?|n't)\\b[^.;]{0,20}\\b(fsync|sync_all|sync_data)"
+     ]
+    },
+    {
+     "id": "lock-file",
+     "line": [
+      "\\.lock\\b|\\block ?files?\\b|\\bflock\\b|\\badvisory lock"
+     ],
+     "not": [
+      "\\b(no|not|never|without|n't)\\b[^.;]{0,20}(\\block ?files?\\b|\\bfile lock\\b|\\bflock\\b|\\badvisory lock|\\.lock\\b)"
+     ]
+    },
+    {
+     "id": "keychain-migrates",
+     "line": [
+      "\\bkeychain\\b",
+      "\\bmigrat\\w*|\\b(mov|cop|sav)\\w*\\b[^.;]{0,40}\\b(to|in(to)?) (the )?(file|\\x60?secrets\\.json)"
+     ],
+     "not": [
+      "\\b(never|not|no|n't)\\b[^.;]{0,25}\\b(migrat|mov|cop|sav)\\w*",
+      "\\b(stay|stays|remain|remains|kept) in the keychain\\b"
+     ]
+    },
+    {
+     "id": "keychain-deleted",
+     "line": [
+      "\\bkeychain\\b",
+      "\\b(delet\\w*|remov\\w*)\\b"
+     ],
+     "not": [
+      "\\b(never|not|no|n't|kept|keeps|left|stays?)\\b[^.;]{0,25}\\b(delet|remov)\\w*"
+     ]
+    },
+    {
+     "id": "os-stores",
+     "line": [
+      "\\b(secret service|credential manager)\\b"
+     ],
+     "not": [
+      "\\b(not|never|n't|instead of|rather than)\\b[^.;]{0,30}\\b(secret service|credential manager)"
+     ]
+    },
+    {
+     "id": "file-mode-env",
+     "line": [
+      "\\bPANDACODE_SECRETS_FILE\\b"
+     ],
+     "not": [
+      "\\b(ignor\\w*|unused|no effect|not (used|read|checked))\\b"
+     ]
+    },
+    {
+     "id": "why-no-keychain",
+     "line": [
+      "\\bkeychain\\b",
+      "\\b(re-?prompt\\w*|unsigned|team id|code.?sign\\w*|pinned to (the|each|a) build|every (app )?update)\\b"
+     ],
+     "not": [
+      "\\b(signed|has|have) (with )?(an? )?(apple )?team id\\b",
+      "\\b(never|no|not|n't)\\b[^.;]{0,20}\\b(re-?prompt|prompt)\\w*"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "On macOS secrets are not stored in secrets.json; they stay in the Keychain.\nThe file is not created with mode 0600, rather than 0600 it uses 0644.\nWrites are not atomic: there is no temp file and no rename.\nThere is no fsync; sync_all is never called.\nThere is no lock file: no advisory lock or secrets.lock is used.\nSecrets saved by older versions are never migrated; they stay in the Keychain.\nThe old Keychain items are never deleted or removed.\nLinux and Windows do not use Secret Service or Credential Manager; they use the same file.\nPANDACODE_SECRETS_FILE is ignored.\nPandaCode is signed with an Apple Team ID, so the Keychain never re-prompts.",
+    "wrongValue": "On macOS secrets are written to credentials.json with mode 0644.\nEach write goes straight into the file in place, and is flushed with flush() only.\nConcurrent writers are kept apart by a SQLite transaction.\nOld secrets are read from the SQLite database once and then dropped from it.\nLinux uses KWallet and Windows uses DPAPI; PANDACODE_SECRETS_DIR moves the file.\nThe Keychain was dropped because it was slow."
+   }
+  },
+  {
+   "id": "rep-explain-queue",
+   "kind": "explain",
+   "rubric": [
+    {
+     "id": "limit-50",
+     "line": [
+      "\\b50\\b",
+      "\\b(entr(y|ies)|messages?|queued?|limit|cap|max\\w*|per task)\\b"
+     ],
+     "not": [
+      "\\b(no|not|n't|never|unlimited|without)\\b[^.;]{0,20}\\b(limit|cap|max\\w*)\\b",
+      "\\b(was|were|is) (removed|dropped|gone)\\b"
+     ]
+    },
+    {
+     "id": "text-128k",
+     "line": [
+      "\\b128\\s*(k|kib|kb)\\b|\\b128 ?\\* ?1024\\b|\\b131,?072\\b"
+     ],
+     "not": [
+      "\\b(no|not|n't|never|unlimited|without)\\b[^.;]{0,25}\\b(limit|cap|max\\w*|size)\\b"
+     ]
+    },
+    {
+     "id": "attachments-1mib",
+     "line": [
+      "\\b1\\s*(mib|mb)\\b|\\b1024 ?\\* ?1024\\b|\\b1,?048,?576\\b|\\bone megabyte\\b",
+      "\\battach\\w*"
+     ],
+     "not": [
+      "\\b(no|not|n't|never|unlimited|without)\\b[^.;]{0,25}\\b(limit|cap|max\\w*|size)\\b"
+     ]
+    },
+    {
+     "id": "sqlite-table",
+     "line": [
+      "\\bqueued_messages\\b"
+     ],
+     "not": [
+      "\\b(not|never|n't)\\b[^.;]{0,25}\\b(sqlite|database|queued_messages)",
+      "\\b(stored|kept|lives?|held) (only )?in (localStorage|memory)\\b"
+     ]
+    },
+    {
+     "id": "append-position",
+     "line": [
+      "\\bposition\\b",
+      "\\b(max|end|append\\w*|last|back)\\b"
+     ],
+     "not": [
+      "\\bnot (at |to )?(the )?(back|end)\\b",
+      "\\b(front|head|min)\\b"
+     ]
+    },
+    {
+     "id": "take-removes",
+     "line": [
+      "\\btake\\b",
+      "\\b(remov\\w*|delet\\w*)\\b"
+     ],
+     "not": [
+      "\\b(not|never|n't|without)\\b[^.;]{0,20}\\b(remov|delet)\\w*",
+      "\\b(marks?|flags?)\\b[^.;]{0,20}\\bsent\\b"
+     ]
+    },
+    {
+     "id": "restore-front",
+     "line": [
+      "\\brestor\\w*",
+      "\\b(front|head|min)\\b"
+     ],
+     "not": [
+      "\\b(to|at) the (back|end|tail)\\b",
+      "\\bmax\\(position\\)"
+     ]
+    },
+    {
+     "id": "restore-skips-limit",
+     "line": [
+      "\\b(restor\\w*|put back|requeu\\w*)\\b",
+      "\\b(skip\\w*|bypass\\w*|ignor\\w*|exempt\\w*|not count\\w*)\\b",
+      "\\b(limit|cap|50)\\b"
+     ],
+     "not": [
+      "\\b(does not|doesn't|never|no longer) (skip|bypass|ignor)\\w*",
+      "\\b(enforc\\w*|respects?|counts? against|applies)\\b[^.;]{0,25}\\b(limit|cap|50)\\b"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "There is no limit on entries per task; the old 50 cap was removed.\nText has no size limit, not even 128 KiB.\nAttachments have no size limit; the 1 MiB cap was dropped.\nEntries are kept only in memory in the webview, not in the queued_messages table.\nadd puts a new entry at the front, not at the back: position = MIN(position)-1.\ntake does not remove the entry; it marks it sent.\nrestore puts the entry back at the end of the queue (MAX(position)+1), not the front.\nrestore does not skip the 50-entry limit; it enforces the 50 cap like add.",
+    "wrongValue": "A task holds at most 100 queued entries.\nText may be up to 64 KiB.\nAttachments may be up to 10 MiB encoded.\nEntries live in localStorage under pandacode.queue.\nadd inserts at position 0, the front.\ntake copies the entry and leaves the row until the send succeeds.\nrestore inserts at the back of the queue.\nrestore checks the 100-entry limit again."
+   }
+  },
+  {
+   "id": "rep-explain-saver-resend",
+   "kind": "explain",
+   "rubric": [
+    {
+     "id": "on-change",
+     "line": [
+      "\\b(chang\\w*|differ\\w*|sentKey)\\b",
+      "\\b(packs?|level)\\b"
+     ],
+     "not": [
+      "\\b(not|never|n't|no)\\b[^.;]{0,40}\\b(chang\\w*|differ\\w*)"
+     ]
+    },
+    {
+     "id": "remind-8",
+     "line": [
+      "\\bREMIND_EVERY\\b|\\b(every|each) (8|eight)(th)?\\b|\\b(8|eight)(th)? (messages?|turns?|sends?)\\b"
+     ],
+     "not": [
+      "\\b(no|never|not|n't)\\b[^.;]{0,25}\\b(remind\\w*|resen\\w*|periodic\\w*|repeat\\w*)",
+      "\\bunused\\b"
+     ]
+    },
+    {
+     "id": "stored-locally",
+     "line": [
+      "\\blocalStorage\\b|\\bpandacode\\.tokenSaver"
+     ],
+     "not": [
+      "\\b(not|never|n't|instead of|rather than)\\b[^.;]{0,25}\\b(localStorage|pandacode\\.tokenSaver)",
+      "\\bunused\\b"
+     ]
+    },
+    {
+     "id": "rtk-needs-install",
+     "line": [
+      "\\brtk\\b",
+      "\\b(install\\w*|availab\\w*|present|missing)\\b",
+      "\\b(drop\\w*|skip\\w*|omit\\w*|only (if|when)|unless|needs?|requires?|left out|remov\\w*|filter\\w*|minus|when\\b[^.;]{0,20}\\binstalled)\\b|\\bif\\b[^.;]{0,30}\\b(isn't|is not|not) (installed|available|found)\\b"
+     ],
+     "not": [
+      "\\b(always|regardless)\\b",
+      "\\bwhether or not\\b",
+      "\\bwhether\\b[^.;]{0,25}\\b(installed|available)\\b[^.;]{0,5}\\bor not\\b"
+     ]
+    },
+    {
+     "id": "off-message",
+     "line": [
+      "\\b(off|normal style)\\b",
+      "\\b(empty|no packs|clear\\w*|remov\\w*|turn\\w*|switch\\w*|disabl\\w*|none)\\b",
+      "\\b(sends?|sent|notice|note|message|says?|text)\\b"
+     ],
+     "not": [
+      "\\b(turn\\w*|switch\\w*)\\b[^.;]{0,30}\\boff\\b[^.;]{0,20}\\bsends? nothing\\b",
+      "\\bno (\\w+ )?\"?off\"? (message|notice|note)\\b",
+      "\\bthere is no (\\w+ )?(message|notice|note)\\b"
+     ]
+    },
+    {
+     "id": "counter-reset",
+     "line": [
+      "\\b(turns?|count\\w*)\\b",
+      "\\b(reset\\w*|zero)\\b"
+     ],
+     "not": [
+      "\\b(never|not|n't|no)\\b[^.;]{0,20}\\breset\\w*",
+      "\\bkeeps counting\\b"
+     ]
+    },
+    {
+     "id": "header-text",
+     "line": [
+      "\\bResponse style \\(PandaCode token saver"
+     ],
+     "not": [
+      "\\b(not|never|n't|no)\\b[^.;]{0,30}Response style"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "The guidance is not resent when the packs or level change; changes wait for the reminder.\nThere is no periodic reminder; REMIND_EVERY (8) is unused.\nThe state is not kept in localStorage (pandacode.tokenSaver is unused); it lives in SQLite.\nThe rtk pack is always sent, whether rtk is installed or not.\nTurning every pack off sends nothing; there is no off message.\nThe turn counter is never reset.\nIt does not send a \"Response style (PandaCode token saver\" header.",
+    "wrongValue": "The guidance is sent only on the first message of a thread.\nA reminder goes out every 20 messages.\nThe state is saved in the SQLite settings table.\nrtk is sent only on Windows.\nSwitching off restarts the agent.\nThe header reads \"Token saver rules:\"."
+   }
+  },
+  {
+   "id": "rep-fail-sidebar",
+   "kind": "failing",
+   "rubric": [
+    {
+     "id": "t-active-latest",
+     "line": [
+      "Active lists the latest start first"
+     ],
+     "field": "failing"
+    },
+    {
+     "id": "t-finished-keeps",
+     "line": [
+      "Finished keeps every finished task"
+     ],
+     "field": "failing"
+    },
+    {
+     "id": "t-only-three",
+     "line": [
+      "only Active, Finished and Settled"
+     ],
+     "field": "failing"
+    },
+    {
+     "id": "t-exactly-one",
+     "line": [
+      "puts every task in exactly one section"
+     ],
+     "field": "failing"
+    },
+    {
+     "id": "t-open-holds",
+     "line": [
+      "the open thread holds its section"
+     ],
+     "field": "failing"
+    },
+    {
+     "id": "cause-file",
+     "line": [
+      "\\bsidebar-sections\\.ts\\b|\\bsidebarSections\\b"
+     ],
+     "not": [
+      "\\b(not|n't|never)\\b[^.;]{0,30}\\b(sidebar-sections\\.ts|sidebarSections)",
+      "\\b(is|are) (correct|fine|right)\\b"
+     ]
+    },
+    {
+     "id": "cause-rest",
+     "line": [
+      "\\b(rest|other list|chats|falls? (out|into))\\b",
+      "\\b(stages?|review|unpinned|interrupted|not pinned)\\b"
+     ],
+     "not": [
+      "\\b(never|not|n't)\\b[^.;]{0,15}\\brest\\b",
+      "\\bcorrectly\\b"
+     ]
+    },
+    {
+     "id": "cause-sort",
+     "line": [
+      "\\b(compareResponded|latest response|responded|re-?sort\\w*|reorder\\w*)\\b"
+     ],
+     "not": [
+      "\\b(not|never|n't|no)\\b[^.;]{0,25}\\b(sort\\w*|reorder\\w*|compareResponded)"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "All nine tests pass, including \"puts every task in exactly one section\", \"Active lists the latest start first; Finished keeps the sidebar sort it was given\", \"Finished keeps every finished task, open or not, until it is settled\", \"the open thread holds its section, so a click on its row never moves it; running still wins\" and \"only Active, Finished and Settled: new, interrupted and in-progress tasks are Finished\".\nsrc/sidebar-sections.ts is correct.\nPending and interrupted tasks correctly go to Finished, never to rest.\nFinished is not re-sorted by compareResponded.\n```json\n{\"failing\":[],\"causes\":[]}\n```",
+    "wrongValue": "Two tests fail: \"sorts pinned tasks by title\" and \"Settled shows ten rows\".\nThe cause is in src/sidebar-sort.ts, whose comparator is reversed.\n```json\n{\"failing\":[\"sorts pinned tasks by title\",\"Settled shows ten rows\"],\"causes\":[\"src/sidebar-sort.ts reverses the comparator.\"]}\n```"
+   }
+  },
+  {
+   "id": "rep-fail-appimage",
+   "kind": "failing",
+   "rubric": [
+    {
+     "id": "t-gtk-hook",
+     "line": [
+      "the GTK hook keeps a GDK_BACKEND the user set"
+     ],
+     "field": "failing"
+    },
+    {
+     "id": "cause-file",
+     "line": [
+      "\\b(appimage\\.mjs|respectGdkBackend|FORCED_BACKEND)\\b"
+     ],
+     "not": [
+      "\\b(is|are) (correct|fine|right)\\b",
+      "\\bnot (in|a bug in|the cause)\\b"
+     ]
+    },
+    {
+     "id": "cause-commented",
+     "line": [
+      "\\bcomment\\w*",
+      "\\b(regex\\w*|pattern|match\\w*|FORCED_BACKEND|export GDK_BACKEND)\\b",
+      "\\b(not|n't|never|only|fails?|without|miss\\w*|ignor\\w*|skip\\w*)\\b"
+     ],
+     "not": [
+      "\\bcorrectly\\b",
+      "\\bcomment\\w*[^.;]{0,30}\\bnot the cause\\b"
+     ]
+    },
+    {
+     "id": "cause-tauri",
+     "line": [
+      "\\b(tauri|plugin)\\b",
+      "\\b(2\\.12|version|bundl\\w*|templat\\w*|hook)\\b"
+     ],
+     "not": [
+      "\\b(not|n't|never|no)\\b[^.;]{0,25}\\b(chang\\w*|comment\\w*)"
+     ]
+    }
+   ],
+   "controls": {
+    "negated": "All tests pass, including \"the GTK hook keeps a GDK_BACKEND the user set, defaulting to x11\".\nscripts/release/appimage.mjs is correct: respectGdkBackend and FORCED_BACKEND work.\nFORCED_BACKEND matches the commented-out line correctly, so comments are not the cause.\nTauri 2.12 did not change the hook template.\n```json\n{\"failing\":[],\"causes\":[]}\n```",
+    "wrongValue": "One test fails: \"the AppImage bundles libwebkit\".\nThe cause is in scripts/release/linux-deps.mjs, which drops libwebkit2gtk from the bundle.\n```json\n{\"failing\":[\"the AppImage bundles libwebkit\"],\"causes\":[\"scripts/release/linux-deps.mjs drops libwebkit2gtk.\"]}\n```"
+   }
+  }
+ ]
+}

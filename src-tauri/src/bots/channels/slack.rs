@@ -139,10 +139,16 @@ pub(crate) async fn verify(bot_token: &str, app_token: &str) -> Result<super::Id
     Ok(super::Identity { name: format!("@{user} in {team}"), link: me["url"].as_str().map(str::to_owned), ..Default::default() })
 }
 
+/// Text as Slack's API requires it: `&`, `<` and `>` escaped, so an agent's `<!channel>`,
+/// `<@U…>` or `<url|label>` shows as typed and never pings anyone or hides a link's target.
+pub(crate) fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 pub(crate) async fn send(channel: &Channel, thread: &str, text: &str) -> Result<()> {
     let token = secrets::get(&channel.id, "token").ok_or("The Slack bot token is missing.")?;
     let (target, thread_ts) = thread.split_once('|').map_or((thread, None), |(c, ts)| (c, Some(ts)));
-    let mut body = json!({"channel": target, "text": text, "unfurl_links": false});
+    let mut body = json!({"channel": target, "text": escape(text), "unfurl_links": false});
     if let Some(ts) = thread_ts {
         body["thread_ts"] = json!(ts);
     }

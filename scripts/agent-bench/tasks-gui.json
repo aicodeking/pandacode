@@ -1,0 +1,2939 @@
+{
+ "about": "Batch G1 (docs/gui-benchmark.md): GUI launch comparison. Tasks are named, not copied: tuned localization and edit tasks from tasks.json, edit2 tasks from tasks-edit-v2.json, with their gold, tests and sanity verdicts. `t3` is a snapshot of how T3 Code launches Claude Code, taken by running makeClaudeQueryOptions and the MCP tool registration of the pinned commit (the same calls its AgentContextBudget.test.ts measures); never edit after the batch starts.",
+ "model": "sonnet",
+ "arms": [
+  "PLAIN",
+  "T3",
+  "PANDA"
+ ],
+ "optionalArms": [
+  "PANDA_W"
+ ],
+ "seeds": [
+  1,
+  2,
+  3
+ ],
+ "tasks": {
+  "loc": "tasks.json localization without held-out tags (20)",
+  "edit": "tasks.json edit (6)",
+  "edit2": "tasks-edit-v2.json edit (14)"
+ },
+ "t3": {
+  "repo": "https://github.com/pingdotgg/t3code",
+  "commit": "25bf84ab07f53f141c20239c63e383823a9d5ea0",
+  "agentSdk": "@anthropic-ai/claude-agent-sdk 0.3.316",
+  "sources": {
+   "queryOptions": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts makeClaudeQueryOptions (lines 1751-1910); call site lines 10917-10960; permission mode lines 2800-2830",
+   "runtimeInstructions": "packages/provider-core/src/server/runtimeInstructions.ts",
+   "orchestrationInstructions": "packages/provider-core/src/server/orchestrationInstructions.ts",
+   "mcpTools": "apps/server/src/mcp/McpHttpServer.ts layerTools (lines 1232-1245), claudeMcpQueryOverrides (ClaudeAdapterV2.ts lines 2011-2039)",
+   "budget": "apps/server/src/provider/agentContextBudget.json: claudeSystemAppendBytes 5366, mcpToolListJsonBytes 48119",
+   "sdkArgs": "sdk.mjs ProcessTransport.initialize: thinking adaptive -> --thinking=adaptive and --thinking-display; effort -> --effort; preset tools -> --tools=default; settings -> --settings; mcpServers -> --mcp-config; additionalDirectories -> --add-dir; includePartialMessages -> --include-partial-messages; settingSources unset -> no --setting-sources; env CLAUDE_CODE_ENTRYPOINT=sdk-ts"
+  },
+  "queryOptions": {
+   "model": "claude-sonnet-5-5",
+   "tools": {
+    "type": "preset",
+    "preset": "claude_code"
+   },
+   "permissionMode": "default",
+   "includePartialMessages": true,
+   "effort": "high",
+   "sessionId": "gui-bench",
+   "thinking": {
+    "type": "adaptive",
+    "display": "summarized"
+   },
+   "settings": {
+    "showThinkingSummaries": true
+   },
+   "extraArgs": {
+    "thinking-display": "summarized"
+   },
+   "additionalDirectories": [
+    "/work"
+   ],
+   "cwd": "/work"
+  },
+  "systemAppend": "<runtime_info>In case you're asked: you are running in T3 Code through the Claude Code harness. No need to mention this otherwise. You can embed images, video, and audio in your response using Markdown image syntax with absolute file paths. Link any other file you produce using its absolute path so the user can open it in T3 Code's files viewer.</runtime_info>\n\n<pull_request_linking>\nLink each PR you create, take over, or push to: link_pull_request, or link_pull_requests for several, full URL, every stack layer, as your next call. Host tools do not link for you. If linking fails, say so. Skip PRs you only read or review, and PRs named only as background. Call watch_pull_request when asked to monitor or babysit, or when work you were asked to do, such as a merge, still waits on checks or reviews, even after an earlier unwatch. Finish any needed branch update and push first, then watch and end your turn. Otherwise act now or hand back. Delegated children never watch, even if the brief says babysit. After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>. Links and watches persist across pushes. For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup. Before handback, call unwatch_pull_request on any PR you watch.\n</pull_request_linking>\n\n## T3 Code orchestration\n\nOrdinary coding tasks need no T3 tools.\n\n- Subagents: use your native tool when the child uses your provider, a model it offers, and no settings beyond yours (Claude `Agent`, `run_in_background:false`; Codex `spawn_agent`, then wait). Use `delegate_task` for another provider's model, user-asked settings, a separate checkout (`isolation:\"worktree\"`), or `delegate_task` by name. A native type on another provider's model counts too. Background agent: `delegate_task`, never a background `Agent`. Workflow only when asked.\n- Call `orchestrator_capabilities` once per thread, before the first `delegate_task`. Again only after an error or a user-named provider change. Settings go in `target.options`. Provider or model unavailable: say so. Never switch unasked, or fall back to native tools, Workflow, or CLIs. Never make a child's checkout in the shell or in `task`.\n- Every new delegate review or re-check is a new `delegate_task` (brief, findings, objections), never a `t3_thread_send`. Fix small review findings yourself; start no delegate for them. When told to proceed without a delegate, or to run fewer, `task_cancel` the extras. Start no replacement.\n- Follow a running delegate's `next`. Do not poll it (`task_status`, `sleep`, watchers, Monitor, ScheduleWakeup). Stop a delegate run you replace or no longer need with `task_cancel`, never `t3_thread_interrupt` on a `childThreadId`.\n- If you are a subagent or child, do the work yourself. Start no subagents unless your task says to.\n\n- `t3_thread_launch` and `create_threads` make new top-level threads, only when the user asks for a new thread. \"Subagent\", \"delegate\", and \"parallel\" never mean one. Worktree thread: set `workspaceStrategy`. Honor a requested base. Otherwise, independent work uses the default branch as `remote/branch` with `startFromOrigin:true`; with no remote, use the local default. Required unpublished commits and dependent work use their local base. Shell worktrees do not bind it, and no checkout setup in its prompt. No `workspaceStrategy`: project root, not your worktree.\n- Given a thread id, `t3_thread_read` it before you answer about it.\n- Another machine: `t3_environment_links` lists linked ones. Pass its `environmentId` to a T3 tool to act there. Ids are then that machine's, so pass `threadId`.\n- A machine the user names that is not linked (\"delegate this to my vps\"): call `t3_environment_link` with a `hint` from their words. Never ask for a pairing code in chat.\n- In your reply, mention a thread by its `link`, verbatim. Never a plain title or bare id.\n- A login, token, PIN or pairing code only the user can give: call `request_secret`, not a chat ask or a handoff. Not for access you have. When asked only to schedule, `schedule_task` without running its prompt.\n- T3 tools may load late. Try the name once before you call it absent.\n\n### Visuals and preview\n\n- Answer data with a trend or comparison with a chart, and show any visual the user asks for here: pass its HTML to `html_preview`, then `html_render`. If the visual is a file, pass that file's HTML. A screenshot on disk or a text description does not show it. Never start a server for it. Tools a web page exposes give data only. Never use them to show results. Asked for an image to post, send, or use elsewhere: a `.png` file and its path, never `html_render`.\n- Never use `preview_*` unasked to verify or show your own edit. Use them when the current request asks for browser work, including recording edits, or names a page or tab. Do not repeat preview calls from an earlier turn. Public pages: web fetch or search unless browser work was asked; then preview tools only, no web fetch. Close a tab you opened before you reply, unless the user asked for it or uses it.\n\n\n### Background work you wait on\n\nTo wait for a background command or Monitor you started (tests, a build), call `t3_background_wait` with its task ID before you end your turn. Do not mark work you leave running, or PRs. T3 MCP tools are deferred: load one with ToolSearch before you call it.\n",
+  "mcpServerName": "t3-code",
+  "tools": [
+   {
+    "name": "preview_dialog",
+    "description": "Accept or dismiss the dialog `preview_status` reports. Pass `promptText` to accept a prompt. Needs your own tab, or an unclaimed one. Desktop hosts may not support this.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "accept": {
+       "type": "boolean"
+      },
+      "promptText": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "accept"
+     ]
+    }
+   },
+   {
+    "name": "preview_status",
+    "description": "Report preview tab state: owner, pending dialog, URL, title, loading, viewport, and size. `tabs` lists this thread's tabs. `profiles` lists logins for `preview_open`. Read any listed tab. Act only on your tab, or an unclaimed tab with no human in control.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "preview_open",
+    "description": "Open a preview tab in this thread and show it. For a dev server, pass `target` instead of `url`. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string",
+       "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$",
+       "minLength": 1,
+       "maxLength": 2048,
+       "description": "First page URL. Absolute http(s) URL, or a bare host (https; http for loopback). Omit to open a blank tab."
+      },
+      "open": {
+       "type": "boolean",
+       "description": "Show the preview to the user. Default true. False for background only."
+      },
+      "show": {
+       "type": "boolean",
+       "description": "Old alias for `open`."
+      },
+      "reuseExistingTab": {
+       "type": "boolean",
+       "description": "Reuse `tabId`, or your current tab. Default true. False makes a new tab."
+      },
+      "profileId": {
+       "type": "string",
+       "description": "Profile id or name from preview_status, for a new tab. Default: the user's. A tab keeps its profile."
+      },
+      "target": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "environment-port"
+         ]
+        },
+        "port": {
+         "type": "integer",
+         "exclusiveMinimum": 0,
+         "exclusiveMaximum": 65536,
+         "description": "Dev-server port here."
+        },
+        "protocol": {
+         "type": "string",
+         "enum": [
+          "http",
+          "https"
+         ],
+         "description": "Default http."
+        },
+        "path": {
+         "type": "string",
+         "description": "Path, query, and fragment, such as /settings?tab=account."
+        }
+       },
+       "required": [
+        "kind",
+        "port"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "name": "preview_navigate",
+    "description": "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string",
+       "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$",
+       "minLength": 1,
+       "maxLength": 2048,
+       "description": "Website URL. Absolute http(s) URL, or a bare host (https; http for loopback). For public pages."
+      },
+      "target": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "url",
+          "environment-port"
+         ]
+        },
+        "url": {
+         "type": "string",
+         "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$",
+         "minLength": 1,
+         "maxLength": 2048,
+         "description": "Website URL. Absolute http(s) URL, or a bare host (https; http for loopback)."
+        },
+        "port": {
+         "type": "integer",
+         "exclusiveMinimum": 0,
+         "exclusiveMaximum": 65536,
+         "description": "Dev-server port here."
+        },
+        "protocol": {
+         "type": "string",
+         "enum": [
+          "http",
+          "https"
+         ],
+         "description": "Default http."
+        },
+        "path": {
+         "type": "string",
+         "description": "Path, query, and fragment, such as /settings?tab=account."
+        }
+       },
+       "required": [
+        "kind"
+       ]
+      },
+      "readiness": {
+       "type": "string",
+       "enum": [
+        "load",
+        "domContentLoaded",
+        "none"
+       ],
+       "description": "Default 'load'. 'none': return at once."
+      },
+      "timeoutMs": {
+       "type": "integer",
+       "maximum": 60000,
+       "exclusiveMinimum": 0,
+       "description": "Default 15000."
+      }
+     }
+    }
+   },
+   {
+    "name": "preview_resize",
+    "description": "Resize the chosen tab: {mode:'fill'}, {mode:'freeform',width,height}, or {mode:'preset',preset,orientation}. Changes CSS size only, not the user agent.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "mode": {
+       "type": "string",
+       "enum": [
+        "fill",
+        "freeform",
+        "preset"
+       ]
+      },
+      "preset": {
+       "type": "string",
+       "enum": [
+        "iphone-se",
+        "iphone-xr",
+        "iphone-12-pro",
+        "iphone-14-pro-max",
+        "pixel-7",
+        "samsung-galaxy-s8-plus",
+        "samsung-galaxy-s20-ultra",
+        "ipad-mini",
+        "ipad-air",
+        "ipad-pro",
+        "surface-pro-7",
+        "surface-duo",
+        "galaxy-z-fold-5",
+        "asus-zenbook-fold",
+        "samsung-galaxy-a51-71",
+        "nest-hub",
+        "nest-hub-max"
+       ]
+      },
+      "width": {
+       "type": "integer",
+       "minimum": 240,
+       "maximum": 3840
+      },
+      "height": {
+       "type": "integer",
+       "minimum": 240,
+       "maximum": 3840
+      },
+      "orientation": {
+       "type": "string",
+       "enum": [
+        "portrait",
+        "landscape"
+       ]
+      },
+      "timeoutMs": {
+       "type": "integer",
+       "maximum": 60000,
+       "exclusiveMinimum": 0,
+       "description": "Default 15000."
+      }
+     },
+     "required": [
+      "mode"
+     ]
+    }
+   },
+   {
+    "name": "preview_set_appearance",
+    "description": "Set `prefers-color-scheme` for the chosen tab: 'dark', 'light', or 'system' to clear the override.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "colorScheme": {
+       "type": "string",
+       "enum": [
+        "system",
+        "light",
+        "dark"
+       ]
+      }
+     },
+     "required": [
+      "colorScheme"
+     ]
+    }
+   },
+   {
+    "name": "preview_act",
+    "description": "Act on the chosen tab. Target with `locator='aria-ref=<ref>'` from `preview_snapshot`; `x` and `y` go together. `timeoutMs` defaults to 15000. click: `button`, `clickCount` 1 to 3. type: literal `text`, `clear=true` replaces it. hover: shows menus or tooltips. select: `values` in one native <select>, by value or label; for a custom dropdown, click it open, then click the option. drag: `source` onto `target`. upload: absolute `paths` answer the file picker `preview_status` reports, [] cancels it, or a `locator` sets an <input type=file>. press: one `key`, such as 'Enter', with `modifiers`, to the focused element; click a field first to focus it. scroll: the tab, or one container with a locator; positive `deltaY` scrolls down, positive `deltaX` right.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "enum": [
+        "click",
+        "type",
+        "hover",
+        "select",
+        "drag",
+        "upload",
+        "press",
+        "scroll"
+       ]
+      },
+      "tabId": {
+       "type": "string"
+      },
+      "locator": {
+       "type": "string"
+      },
+      "selector": {
+       "type": "string"
+      },
+      "x": {
+       "type": "number"
+      },
+      "y": {
+       "type": "number"
+      },
+      "button": {
+       "type": "string",
+       "enum": [
+        "left",
+        "right",
+        "middle"
+       ]
+      },
+      "clickCount": {
+       "type": "integer"
+      },
+      "text": {
+       "type": "string"
+      },
+      "clear": {
+       "type": "boolean"
+      },
+      "values": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "source": {
+       "type": "string"
+      },
+      "target": {
+       "type": "string"
+      },
+      "paths": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "key": {
+       "type": "string"
+      },
+      "modifiers": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "Alt",
+         "Control",
+         "Meta",
+         "Shift"
+        ]
+       }
+      },
+      "deltaX": {
+       "type": "number"
+      },
+      "deltaY": {
+       "type": "number"
+      },
+      "timeoutMs": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "action"
+     ]
+    }
+   },
+   {
+    "name": "preview_evaluate",
+    "description": "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools reached here: read data only, never create, save, or display. Show results with `html_render`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "expression": {
+       "type": "string",
+       "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$",
+       "minLength": 1,
+       "maxLength": 64000
+      },
+      "awaitPromise": {
+       "type": "boolean",
+       "description": "Default true."
+      },
+      "returnByValue": {
+       "type": "boolean",
+       "description": "False returns a ref. Default true."
+      }
+     },
+     "required": [
+      "expression"
+     ]
+    }
+   },
+   {
+    "name": "preview_wait_for",
+    "description": "Wait until all given locator, selector, text, and URL conditions match in the chosen tab.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "selector": {
+       "type": "string"
+      },
+      "locator": {
+       "type": "string"
+      },
+      "text": {
+       "type": "string",
+       "description": "Case counts."
+      },
+      "urlIncludes": {
+       "type": "string"
+      },
+      "timeoutMs": {
+       "type": "integer",
+       "maximum": 60000,
+       "exclusiveMinimum": 0,
+       "description": "Default 15000."
+      }
+     }
+    }
+   },
+   {
+    "name": "preview_recording_start",
+    "description": "Start recording the chosen tab.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "preview_recording_stop",
+    "description": "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB).",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "preview_snapshot",
+    "description": "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot when asked: `save=true`, then embed ![alt](screenshotPath).",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      },
+      "includeImage": {
+       "type": "boolean",
+       "description": "Default false. True only to see the page."
+      },
+      "save": {
+       "type": "boolean",
+       "description": "Write PNG, return `screenshotPath`."
+      }
+     }
+    }
+   },
+   {
+    "name": "orchestrator_capabilities",
+    "description": "List providers, models, options, and runtime modes for `delegate_task`. Short list. `search` finds others. Any catalog model works.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "search": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "delegate_task",
+    "description": "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. No secrets in `task`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "task": {
+       "type": "string"
+      },
+      "target": {
+       "type": "object",
+       "properties": {
+        "providerInstanceId": {
+         "type": "string"
+        },
+        "driverKind": {
+         "type": "string"
+        },
+        "model": {
+         "type": "string"
+        },
+        "options": {
+         "description": "Options from `orchestrator_capabilities`, such as {effort:'max'}. Given values override inherited. [] or {} clears.",
+         "anyOf": [
+          {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "value": {
+              "anyOf": [
+               {
+                "type": "string"
+               },
+               {
+                "type": "boolean"
+               }
+              ]
+             }
+            },
+            "required": [
+             "id",
+             "value"
+            ]
+           }
+          },
+          {
+           "type": "object",
+           "additionalProperties": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "type": "boolean"
+             }
+            ]
+           }
+          }
+         ]
+        },
+        "environmentId": {
+         "type": "string"
+        },
+        "projectId": {
+         "type": "string"
+        }
+       }
+      },
+      "title": {
+       "type": "string"
+      },
+      "role": {
+       "type": "string",
+       "enum": [
+        "implementation",
+        "research",
+        "review",
+        "design",
+        "test",
+        "general"
+       ]
+      },
+      "isolation": {
+       "type": "string",
+       "enum": [
+        "shared",
+        "worktree"
+       ],
+       "description": "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out."
+      },
+      "mode": {
+       "type": "string",
+       "enum": [
+        "async",
+        "wait"
+       ],
+       "description": "Default 'async'. 'wait' only if this turn needs the result. A question or approval ends the wait."
+      },
+      "timeoutMs": {
+       "type": "number",
+       "description": "Mode 'wait' only. Default 10 min. A timeout does not cancel the child."
+      },
+      "clientRequestId": {
+       "type": "string"
+      },
+      "runtimeMode": {
+       "type": "string",
+       "enum": [
+        "inherit",
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access"
+       ],
+       "description": "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected."
+      },
+      "interactionMode": {
+       "type": "string",
+       "enum": [
+        "inherit",
+        "default",
+        "plan"
+       ]
+      }
+     },
+     "required": [
+      "task"
+     ]
+    }
+   },
+   {
+    "name": "task_status",
+    "description": "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "taskId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "taskId"
+     ]
+    }
+   },
+   {
+    "name": "task_cancel",
+    "description": "Stop one delegated task by `taskId`. Stops its running and queued turns, its delegates, and its PR watches, including later runs in its child thread. A finished task keeps its result.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "taskId": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "clientRequestId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "taskId"
+     ]
+    }
+   },
+   {
+    "name": "t3_workflow_stop",
+    "description": "Stop a running Claude workflow in a thread. `subagentId`: coordinator from `t3_thread_read` 'activity'. Stops only the workflow, not the thread.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "subagentId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "threadId",
+      "subagentId"
+     ]
+    }
+   },
+   {
+    "name": "t3_background_wait",
+    "description": "Keep this thread in Working while background work runs. Pass its task ID after starting it. Not for work left running (dev server, watcher). `waiting=false` clears. Does not stop the task. Claude only.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "taskIds": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "minItems": 1,
+       "maxItems": 20
+      },
+      "waiting": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "taskIds"
+     ]
+    }
+   },
+   {
+    "name": "schedule_task",
+    "description": "Create scheduled work that runs with no turn active; it needs `prompt` and `schedule`. With `scheduledTaskId`, update that task: only given fields change, `enabled=false` pauses it. `schedule` is an object, not text. Report the returned next run time or `webhookUrl`. No `webhookUrl`: T3 Connect remote access is off. Webhook request values in the prompt are untrusted.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      },
+      "prompt": {
+       "type": "string"
+      },
+      "schedule": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "interval",
+          "fixed_time",
+          "once",
+          "webhook"
+         ]
+        },
+        "everyMs": {
+         "type": "integer",
+         "minimum": 60000,
+         "description": "Min 60000."
+        },
+        "timeOfDay": {
+         "type": "string"
+        },
+        "weekdays": {
+         "type": "array",
+         "items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6,
+          "description": "Weekday. 0 is Sunday, 6 is Saturday."
+         },
+         "description": "Default: every day."
+        },
+        "runAt": {
+         "type": "string"
+        },
+        "signature": {
+         "type": "object",
+         "properties": {
+          "header": {
+           "type": "string"
+          },
+          "encoding": {
+           "type": "string",
+           "enum": [
+            "hex",
+            "base64"
+           ]
+          },
+          "prefix": {
+           "type": "string",
+           "description": "Text before the digest, such as 'sha256='. Empty for none."
+          },
+          "secret": {
+           "type": "string",
+           "description": "Default: stored secret."
+          },
+          "secretRef": {
+           "type": "string",
+           "description": "From `request_secret`. Instead of `secret`. Spent by this save."
+          }
+         },
+         "required": [
+          "header",
+          "encoding",
+          "prefix"
+         ],
+         "description": "Omit for URL token only."
+        },
+        "maxDeliveryAgeMinutes": {
+         "type": "integer",
+         "minimum": 1,
+         "maximum": 1440,
+         "description": "Skip requests held offline over this many minutes. Omit to run all."
+        },
+        "dedupe": {
+         "type": "object",
+         "properties": {
+          "replayKey": {
+           "type": "string"
+          },
+          "coalesceKey": {
+           "type": "string"
+          },
+          "coalesceWindowSeconds": {
+           "type": "integer",
+           "minimum": 10,
+           "maximum": 3600
+          }
+         },
+         "description": "Replay and coalesce key templates. Window in seconds, default 120."
+        },
+        "filters": {
+         "type": "array",
+         "items": {
+          "description": "Path: `headers.x-event` or `body.action`. String compare. Objects pass only 'exists'. A `[]` segment matches any array item. `notEquals` passes only if no item equals.",
+          "anyOf": [
+           {
+            "type": "object",
+            "properties": {
+             "path": {
+              "type": "string"
+             },
+             "op": {
+              "type": "string",
+              "enum": [
+               "equals",
+               "notEquals",
+               "startsWith"
+              ]
+             },
+             "value": {
+              "type": "string"
+             }
+            },
+            "required": [
+             "path",
+             "op",
+             "value"
+            ]
+           },
+           {
+            "type": "object",
+            "properties": {
+             "path": {
+              "type": "string"
+             },
+             "op": {
+              "type": "string",
+              "enum": [
+               "in"
+              ]
+             },
+             "value": {
+              "type": "array",
+              "items": {
+               "type": "string",
+               "description": "Non-empty, without commas or surrounding whitespace."
+              },
+              "minItems": 1
+             }
+            },
+            "required": [
+             "path",
+             "op",
+             "value"
+            ]
+           },
+           {
+            "type": "object",
+            "properties": {
+             "path": {
+              "type": "string"
+             },
+             "op": {
+              "type": "string",
+              "enum": [
+               "exists"
+              ]
+             }
+            },
+            "required": [
+             "path",
+             "op"
+            ]
+           }
+          ]
+         },
+         "maxItems": 16,
+         "description": "All must match. Max 16. Omitted: keep stored. [] clears."
+        }
+       },
+       "required": [
+        "type"
+       ],
+       "description": "Trigger: {type:'interval',everyMs}, {type:'fixed_time',timeOfDay,weekdays?}, {type:'once',runAt}, or {type:'webhook'}."
+      },
+      "title": {
+       "type": "string"
+      },
+      "enabled": {
+       "type": "boolean",
+       "description": "Default true."
+      },
+      "bindToCurrentThread": {
+       "type": "boolean",
+       "description": "Default true: runs post in this thread. False: new thread per run."
+      },
+      "freshSession": {
+       "type": "boolean",
+       "description": "Runs share one thread but each starts a fresh session without earlier runs' context. Unbound: the first run makes the thread."
+      },
+      "clientRequestId": {
+       "type": "string"
+      },
+      "scheduledTaskId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "list_scheduled_tasks",
+    "description": "List scheduled tasks. Omit `projectId` for this thread's project. Pass a `scheduledTaskId` to `schedule_task` or `delete_scheduled_task`. In a scheduled run, do not call this to find your task. Do the prompt.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "delete_scheduled_task",
+    "description": "Delete one scheduled task by `scheduledTaskId`. It stops at once. To pause instead, use `schedule_task` with `enabled=false`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "scheduledTaskId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "scheduledTaskId"
+     ]
+    }
+   },
+   {
+    "name": "request_secret",
+    "description": "Ask for one secret per single-line card; never combine values. Open it, don't offer it. Returns one-use `secretRef`, or `delivery: \"file\"` a file read only in its command, e.g. `adb pair <ip:port> \"$(cat <file>)\"`. Asked how: call now. Pasted secret for child/script: `value`. Never from an old thread.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "label": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string"
+      },
+      "placeholder": {
+       "type": "string"
+      },
+      "delivery": {
+       "type": "string",
+       "enum": [
+        "secretRef",
+        "file"
+       ],
+       "description": "secretRef (default) for a T3 tool; file for a command."
+      },
+      "value": {
+       "type": "string",
+       "description": "Pasted in this thread; no card."
+      },
+      "timeoutMs": {
+       "type": "integer",
+       "minimum": 1000,
+       "maximum": 3600000
+      },
+      "clientRequestId": {
+       "type": "string",
+       "description": "Retry key."
+      }
+     },
+     "required": [
+      "label",
+      "reason"
+     ]
+    },
+    "_meta": {
+     "anthropic/alwaysLoad": true
+    }
+   },
+   {
+    "name": "create_threads",
+    "description": "Create new top-level threads in this checkout. Not delegation. One thread or its own worktree: `t3_thread_launch`. Project, branch, and worktree inherit.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "threads": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "prompt": {
+          "type": "string"
+         },
+         "title": {
+          "type": "string"
+         },
+         "target": {
+          "type": "object",
+          "properties": {
+           "providerInstanceId": {
+            "type": "string"
+           },
+           "driverKind": {
+            "type": "string"
+           },
+           "model": {
+            "type": "string"
+           },
+           "options": {
+            "description": "Options from `orchestrator_capabilities`, such as {effort:'max'}. Given values override inherited. [] or {} clears.",
+            "anyOf": [
+             {
+              "type": "array",
+              "items": {
+               "type": "object",
+               "properties": {
+                "id": {
+                 "type": "string"
+                },
+                "value": {
+                 "anyOf": [
+                  {
+                   "type": "string"
+                  },
+                  {
+                   "type": "boolean"
+                  }
+                 ]
+                }
+               },
+               "required": [
+                "id",
+                "value"
+               ]
+              }
+             },
+             {
+              "type": "object",
+              "additionalProperties": {
+               "anyOf": [
+                {
+                 "type": "string"
+                },
+                {
+                 "type": "boolean"
+                }
+               ]
+              }
+             }
+            ]
+           },
+           "environmentId": {
+            "type": "string"
+           },
+           "projectId": {
+            "type": "string"
+           }
+          }
+         },
+         "runtimeMode": {
+          "type": "string",
+          "enum": [
+           "inherit",
+           "approval-required",
+           "auto-accept-edits",
+           "auto",
+           "full-access"
+          ]
+         },
+         "interactionMode": {
+          "type": "string",
+          "enum": [
+           "inherit",
+           "default",
+           "plan"
+          ]
+         }
+        }
+       },
+       "minItems": 1,
+       "maxItems": 20
+      },
+      "clientRequestId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "threads"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_list",
+    "description": "List threads newest first, in one project or with `allProjects`. Page with `cursor`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      },
+      "allProjects": {
+       "type": "boolean"
+      },
+      "statuses": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "idle",
+         "preparing",
+         "queued",
+         "starting",
+         "running",
+         "waiting",
+         "completed",
+         "interrupted",
+         "failed",
+         "cancelled",
+         "rolled_back"
+        ]
+       },
+       "maxItems": 10
+      },
+      "titleContains": {
+       "type": "string"
+      },
+      "settled": {
+       "type": "boolean"
+      },
+      "snoozed": {
+       "type": "boolean"
+      },
+      "includeSubagents": {
+       "type": "boolean"
+      },
+      "cursor": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 100
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_thread_read",
+    "description": "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "itemId": {
+       "type": "string"
+      },
+      "textOffset": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "view": {
+       "type": "string",
+       "enum": [
+        "messages",
+        "activity"
+       ]
+      },
+      "afterPosition": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "Max items, 1 to 100."
+      },
+      "runLimit": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "Max recent runs, 1 to 50."
+      },
+      "maxCharsPerItem": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "Max chars per item, 1 to 50000."
+      }
+     },
+     "required": [
+      "threadId"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_update",
+    "description": "Rename a thread (`action:'rename'` with `title`) or regenerate its title. Omit `threadId` for this thread. Workspace and branch cannot change here.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "threadId": {
+       "type": "string"
+      },
+      "action": {
+       "type": "string",
+       "enum": [
+        "rename",
+        "regenerate_title"
+       ]
+      },
+      "title": {
+       "type": "string"
+      },
+      "clientRequestId": {
+       "type": "string"
+      },
+      "environmentId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "action"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_send",
+    "description": "Send a message to any thread. The target cannot run with broader modes than yours. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart. A send to a finished child thread starts a fresh task and returns its `taskId`. In your reply, name it as its `link` verbatim.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "message": {
+       "type": "string"
+      },
+      "mode": {
+       "type": "string",
+       "enum": [
+        "auto",
+        "queue",
+        "steer",
+        "restart"
+       ]
+      },
+      "freshContext": {
+       "type": "boolean",
+       "description": "Start a new provider session without the thread's earlier context, like /clear. Never steers."
+      },
+      "clientRequestId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "threadId",
+      "message"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_wait",
+    "description": "Wait for a thread's run to finish. No `runId`: latest. Idle: at once. On timeout, with `next` end your turn; without, call again.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "runId": {
+       "type": "string"
+      },
+      "timeoutMs": {
+       "type": "number"
+      },
+      "untilDelegatedWorkSettled": {
+       "type": "boolean",
+       "description": "Also wait for its delegated and background tasks and their completions to settle. `resultRun` then names the run with its final answer."
+      }
+     },
+     "required": [
+      "threadId"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_interrupt",
+    "description": "Interrupt a top-level thread's running turn. No `runId`: newest running turn. No effect when idle. For a delegate, use `task_cancel`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "runId": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "stop": {
+       "type": "boolean"
+      },
+      "clientRequestId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "threadId"
+     ]
+    }
+   },
+   {
+    "name": "t3_environment_links",
+    "description": "List linked environments (the user's other machines) and whether each answers now. Pass one's `environmentId` to a tool to act there; `delegate_task` takes `target.environmentId`. Expired: link it again with `t3_environment_link`.",
+    "inputSchema": {
+     "type": "object",
+     "additionalProperties": false
+    }
+   },
+   {
+    "name": "t3_environment_link",
+    "description": "Ask the user to link another machine, in a card. For a machine the user names that is not linked. Pass `hint` from their words, `environmentId` when one names it (already linked: returns `linked`), `url` only when the user gave an address. Returns `pending`; the outcome arrives as a message in this thread. Do not wait, poll, or call it again to check. Never ask for a pairing code in chat.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string",
+       "description": "The machine, when known, e.g. from a mentioned machine. Otherwise the user picks it in the card."
+      },
+      "url": {
+       "type": "string",
+       "description": "Only an address the user gave: https, Tailscale, LAN or loopback. Never guess one."
+      },
+      "hint": {
+       "type": "string",
+       "description": "The user's words for the machine, e.g. \"vps\". Preselects it in the card."
+      },
+      "reason": {
+       "type": "string",
+       "description": "One sentence for the card."
+      },
+      "requestedAccess": {
+       "type": "string",
+       "enum": [
+        "read-only",
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access"
+       ],
+       "description": "Suggested access. The user picks; default approval-required."
+      },
+      "clientRequestId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_environment_unlink",
+    "description": "Forget a linked environment. That machine's Connections list its session until revoked there.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "environmentId"
+     ]
+    }
+   },
+   {
+    "name": "run_scheduled_task_now",
+    "description": "Run one scheduled task now. Needs a full-access or default caller. Returns its thread, or null if not started. Success means started, not finished.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "taskId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "taskId"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_search",
+    "description": "Search active threads by title, branch, PR, project, then message text. Skips subagent threads. `projectId`: one project, else yours, else all outside a thread. Not exhaustive.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "query": {
+       "type": "string"
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 50
+      },
+      "projectId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_configure",
+    "description": "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "modelSelection": {
+       "type": "object",
+       "properties": {
+        "provider": {},
+        "instanceId": {},
+        "model": {},
+        "options": {}
+       },
+       "required": [
+        "model"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_thread_transfer",
+    "description": "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "enum": [
+        "fork",
+        "merge_back",
+        "status"
+       ]
+      },
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "sourcePoint": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "latest_stable",
+          "run",
+          "checkpoint"
+         ]
+        },
+        "runId": {
+         "type": "string"
+        },
+        "checkpointId": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "type"
+       ]
+      },
+      "targetThreadId": {
+       "type": "string"
+      },
+      "title": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "action"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_organize",
+    "description": "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "action": {
+       "type": "string",
+       "enum": [
+        "pin",
+        "unpin",
+        "snooze",
+        "unsnooze",
+        "settle",
+        "unsettle",
+        "archive",
+        "unarchive",
+        "mark_unread"
+       ]
+      },
+      "snoozedUntil": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "action"
+     ]
+    }
+   },
+   {
+    "name": "t3_pending_request",
+    "description": "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "enum": [
+        "list",
+        "read",
+        "respond"
+       ]
+      },
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "requestId": {
+       "type": "string"
+      },
+      "answers": {
+       "type": "object"
+      }
+     },
+     "required": [
+      "action"
+     ]
+    }
+   },
+   {
+    "name": "t3_queue",
+    "description": "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`. Writes fail once the run is no longer queued.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "enum": [
+        "list",
+        "read",
+        "edit",
+        "cancel",
+        "reorder",
+        "promote_to_steer"
+       ]
+      },
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "queuedRunId": {
+       "type": "string"
+      },
+      "text": {
+       "type": "string",
+       "maxLength": 100000
+      },
+      "beforeRunId": {
+       "type": "string"
+      },
+      "targetRunId": {
+       "type": "string"
+      },
+      "cursor": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 100
+      }
+     },
+     "required": [
+      "action"
+     ]
+    }
+   },
+   {
+    "name": "t3_attachment_prepare_upload",
+    "description": "Get an upload URL. POST the file's exact bytes to `relativeUrl` on this MCP server's HTTP origin, then send via `t3_thread_send_attachments` with the returned `attachmentId`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "upload": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "image",
+          "file"
+         ]
+        },
+        "name": {
+         "type": "string"
+        },
+        "mimeType": {
+         "anyOf": [
+          {
+           "type": "string",
+           "enum": [
+            "image/gif",
+            "image/jpeg",
+            "image/png",
+            "image/webp"
+           ]
+          },
+          {
+           "type": "string"
+          }
+         ]
+        },
+        "sizeBytes": {
+         "anyOf": [
+          {
+           "type": "integer",
+           "minimum": 1,
+           "maximum": 10485760
+          },
+          {
+           "type": "integer",
+           "minimum": 1,
+           "maximum": 52428800
+          }
+         ]
+        }
+       },
+       "required": [
+        "type",
+        "name",
+        "mimeType",
+        "sizeBytes"
+       ]
+      }
+     },
+     "required": [
+      "upload"
+     ]
+    }
+   },
+   {
+    "name": "t3_attachment_discard",
+    "description": "Discard a pending upload (not a sent attachment).",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "attachmentId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "attachmentId"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_send_attachments",
+    "description": "Send uploaded attachments as a new message to a thread. No retry key. Target modes cannot exceed yours. Success does not mean the provider read them or finished.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "threadId": {
+       "type": "string"
+      },
+      "message": {
+       "type": "string",
+       "maxLength": 120000
+      },
+      "attachments": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "type": {
+          "type": "string",
+          "enum": [
+           "image",
+           "file"
+          ]
+         },
+         "id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "mimeType": {
+          "type": "string"
+         },
+         "sizeBytes": {
+          "anyOf": [
+           {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+           },
+           {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 52428800
+           }
+          ]
+         },
+         "source": {
+          "type": "object",
+          "properties": {
+           "_tag": {
+            "type": "string",
+            "enum": [
+             "pasted-text"
+            ]
+           }
+          },
+          "required": [
+           "_tag"
+          ]
+         }
+        },
+        "required": [
+         "type",
+         "id",
+         "name",
+         "mimeType",
+         "sizeBytes"
+        ]
+       },
+       "minItems": 1,
+       "maxItems": 8
+      }
+     },
+     "required": [
+      "attachments"
+     ]
+    }
+   },
+   {
+    "name": "t3_thread_launch",
+    "description": "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      },
+      "scratch": {
+       "type": "boolean",
+       "description": "No project: a new Scratch folder. Not with `projectId` or `workspaceStrategy`."
+      },
+      "title": {
+       "type": "string"
+      },
+      "modelSelection": {
+       "type": "object",
+       "properties": {
+        "provider": {},
+        "instanceId": {},
+        "model": {},
+        "options": {}
+       },
+       "required": [
+        "model"
+       ]
+      },
+      "runtimeMode": {
+       "type": "string",
+       "enum": [
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access"
+       ]
+      },
+      "interactionMode": {
+       "type": "string",
+       "enum": [
+        "default",
+        "plan"
+       ]
+      },
+      "workspaceStrategy": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "root",
+          "existing_worktree",
+          "worktree"
+         ]
+        },
+        "branch": {
+         "type": "string"
+        },
+        "worktreePath": {
+         "type": "string"
+        },
+        "baseRef": {
+         "type": "string"
+        },
+        "startFromOrigin": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "type"
+       ],
+       "description": "'worktree': new checkout from `baseRef`. Honor a requested base. Otherwise, independent work uses the default branch as `remote/branch` (e.g. `origin/main`) with `startFromOrigin: true`; with no remote, use the local default branch. Required unpublished commits and dependent or stacked work use their local base with `startFromOrigin: false`. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Uncommitted edits are not copied."
+      },
+      "message": {
+       "type": "string",
+       "maxLength": 120000,
+       "description": "First prompt. Omit it and `attachments` for idle."
+      },
+      "attachments": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "type": {
+          "type": "string",
+          "enum": [
+           "image",
+           "file"
+          ]
+         },
+         "id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "mimeType": {
+          "type": "string"
+         },
+         "sizeBytes": {
+          "anyOf": [
+           {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+           },
+           {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 52428800
+           }
+          ]
+         },
+         "source": {
+          "type": "object",
+          "properties": {
+           "_tag": {
+            "type": "string",
+            "enum": [
+             "pasted-text"
+            ]
+           }
+          },
+          "required": [
+           "_tag"
+          ]
+         }
+        },
+        "required": [
+         "type",
+         "id",
+         "name",
+         "mimeType",
+         "sizeBytes"
+        ]
+       },
+       "maxItems": 8
+      },
+      "clientRequestId": {
+       "type": "string"
+      },
+      "delegatedFrom": {
+       "type": "object",
+       "properties": {
+        "environmentId": {
+         "type": "string"
+        },
+        "threadId": {
+         "type": "string"
+        },
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "environmentId",
+        "threadId",
+        "title"
+       ]
+      }
+     },
+     "required": [
+      "title"
+     ]
+    }
+   },
+   {
+    "name": "t3_project_list",
+    "description": "List projects. Pages can shift.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "cursor": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 100
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_project_read",
+    "description": "Read one project: workspace and saved scripts.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "projectId"
+     ]
+    }
+   },
+   {
+    "name": "t3_project_create",
+    "description": "Register a project folder. `createWorkspaceRootIfMissing` creates it; a registered folder is rejected. No `workspaceRoot`: makes a git repo from `title` with README, icon, first commit (`commitError` on failure; project still exists). Clone first with `t3_project_clone` if needed.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "title": {
+       "type": "string"
+      },
+      "workspaceRoot": {
+       "type": "string"
+      },
+      "createWorkspaceRootIfMissing": {
+       "type": "boolean"
+      },
+      "defaultModelSelection": {
+       "type": "object",
+       "properties": {
+        "provider": {},
+        "instanceId": {},
+        "model": {},
+        "options": {}
+       },
+       "required": [
+        "model"
+       ]
+      },
+      "scripts": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "command": {
+          "type": "string"
+         },
+         "icon": {
+          "type": "string",
+          "enum": [
+           "play",
+           "test",
+           "lint",
+           "configure",
+           "build",
+           "debug"
+          ]
+         },
+         "runOnWorktreeCreate": {
+          "type": "boolean"
+         },
+         "runOnSettle": {
+          "type": "boolean"
+         },
+         "stopOnSettle": {
+          "type": "boolean"
+         },
+         "async": {
+          "type": "boolean"
+         },
+         "previewUrl": {
+          "type": "string"
+         },
+         "autoOpenPreview": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "id",
+         "name",
+         "command",
+         "icon",
+         "runOnWorktreeCreate"
+        ]
+       }
+      }
+     },
+     "required": [
+      "title"
+     ]
+    }
+   },
+   {
+    "name": "t3_project_update",
+    "description": "Update one project's settings. Omitted fields are unchanged.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      },
+      "title": {
+       "type": "string"
+      },
+      "workspaceRoot": {
+       "type": "string"
+      },
+      "defaultModelSelection": {
+       "type": "object",
+       "properties": {
+        "provider": {},
+        "instanceId": {},
+        "model": {},
+        "options": {}
+       },
+       "required": [
+        "model"
+       ]
+      },
+      "autoPull": {
+       "type": "boolean"
+      },
+      "projectIcon": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "lucide",
+          "emoji",
+          "monogram"
+         ]
+        },
+        "name": {
+         "type": "string"
+        },
+        "color": {
+         "type": "string",
+         "enum": [
+          "gray",
+          "red",
+          "orange",
+          "amber",
+          "yellow",
+          "lime",
+          "green",
+          "emerald",
+          "teal",
+          "cyan",
+          "sky",
+          "blue",
+          "indigo",
+          "violet",
+          "purple",
+          "fuchsia",
+          "pink",
+          "rose"
+         ]
+        },
+        "emoji": {
+         "type": "string"
+        },
+        "text": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "kind"
+       ]
+      },
+      "faviconPath": {
+       "type": "string"
+      },
+      "defaultThreadEnvMode": {
+       "type": "string",
+       "enum": [
+        "local",
+        "worktree"
+       ]
+      },
+      "scripts": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "command": {
+          "type": "string"
+         },
+         "icon": {
+          "type": "string",
+          "enum": [
+           "play",
+           "test",
+           "lint",
+           "configure",
+           "build",
+           "debug"
+          ]
+         },
+         "runOnWorktreeCreate": {
+          "type": "boolean"
+         },
+         "runOnSettle": {
+          "type": "boolean"
+         },
+         "stopOnSettle": {
+          "type": "boolean"
+         },
+         "async": {
+          "type": "boolean"
+         },
+         "previewUrl": {
+          "type": "string"
+         },
+         "autoOpenPreview": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "id",
+         "name",
+         "command",
+         "icon",
+         "runOnWorktreeCreate"
+        ]
+       }
+      },
+      "pinned": {
+       "type": "boolean"
+      },
+      "archived": {
+       "type": "boolean",
+       "description": "Threads and files are kept."
+      }
+     },
+     "required": [
+      "projectId"
+     ]
+    }
+   },
+   {
+    "name": "t3_project_delete",
+    "description": "Delete one project. Nonempty needs `force: true`. Folder on disk stays.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "projectId": {
+       "type": "string"
+      },
+      "force": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "projectId"
+     ]
+    }
+   },
+   {
+    "name": "t3_project_clone",
+    "description": "Clone a repository (`destinationPath` new or empty). Register after with `t3_project_create`, with the same `environmentId`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "provider": {
+       "type": "string"
+      },
+      "repository": {
+       "type": "string"
+      },
+      "remoteUrl": {
+       "type": "string"
+      },
+      "destinationPath": {
+       "type": "string"
+      },
+      "protocol": {
+       "type": "string",
+       "enum": [
+        "auto",
+        "ssh",
+        "https"
+       ]
+      }
+     },
+     "required": [
+      "destinationPath"
+     ]
+    }
+   },
+   {
+    "name": "t3_environment_read",
+    "description": "Read this server's identity and preferences. Providers and models: `orchestrator_capabilities`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_environment_preferences_update",
+    "description": "Update environment-wide preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "defaultThreadEnvMode": {
+       "type": "string",
+       "enum": [
+        "local",
+        "worktree"
+       ]
+      },
+      "newWorktreesStartFromOrigin": {
+       "type": "boolean"
+      },
+      "enableProviderUpdateChecks": {
+       "type": "boolean"
+      },
+      "backgroundActivity": {
+       "type": "object",
+       "properties": {
+        "profile": {
+         "type": "string",
+         "enum": [
+          "balanced",
+          "performance",
+          "battery-saver"
+         ]
+        }
+       },
+       "required": [
+        "profile"
+       ]
+      },
+      "sourceControlWritingStyle": {
+       "type": "object",
+       "properties": {
+        "mode": {
+         "type": "string",
+         "enum": [
+          "repo_conventions",
+          "conventional_commits",
+          "custom"
+         ]
+        },
+        "customInstructions": {
+         "type": "string"
+        },
+        "followChangeRequestTemplates": {
+         "type": "boolean"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_preview_list",
+    "description": "List this thread's preview tabs. Only `runtime:'server'` entries can be automated here. Others are in the user's local desktop app. Never pass a non-server `tabId` to a `preview_*` tool. Tell the user that tab is on their local desktop and this environment cannot reach it.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "cursor": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 50
+      }
+     }
+    }
+   },
+   {
+    "name": "t3_preview_close",
+    "description": "Close one preview tab this thread owns. Use it on a tab you opened for your own check when you finish.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "tabId": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "tabId"
+     ]
+    }
+   },
+   {
+    "name": "t3_worktree_handoff",
+    "description": "Move THIS thread into a new git worktree on a new branch. Runs the setup script by default. A separate agent in a worktree: `t3_thread_launch` with `workspaceStrategy`. Call last in your turn. The move ends the live session. `continuationPrompt` resumes work there next turn. Without it, the thread waits. The worktree stays after the thread is deleted. Fails if this thread has a worktree.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "branch": {
+       "type": "string"
+      },
+      "baseRef": {
+       "type": "string"
+      },
+      "startFromOrigin": {
+       "type": "boolean",
+       "description": "True: fetch, start from the remote ref; check `startedFromOrigin`. Default: server setting."
+      },
+      "runSetupScript": {
+       "type": "boolean",
+       "description": "Default true."
+      },
+      "continuationPrompt": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "branch"
+     ]
+    }
+   },
+   {
+    "name": "t3_worktree_status",
+    "description": "Report this thread's worktree: attached or not, path, branch, project root, and the `startFromOrigin` default. Check before `t3_worktree_handoff`.",
+    "inputSchema": {
+     "type": "object",
+     "additionalProperties": false
+    }
+   },
+   {
+    "name": "t3_worktree_list",
+    "description": "List branch refs and checkout paths for a thread's workspace. Omit `threadId` for this thread. Detached worktrees with no branch are left out.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "query": {
+       "type": "string"
+      },
+      "cursor": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 200
+      },
+      "refKind": {
+       "type": "string",
+       "enum": [
+        "all",
+        "local",
+        "remote"
+       ]
+      },
+      "includeMatchingRemoteRefs": {
+       "type": "boolean"
+      }
+     }
+    }
+   },
+   {
+    "name": "link_pull_request",
+    "description": "Link a PR to this thread. T3 shows its status and settles the thread on merge. For several PRs, use `link_pull_requests`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      },
+      "repository": {
+       "type": "string"
+      },
+      "number": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "With `repository`, when no `url`."
+      },
+      "host": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "link_pull_requests",
+    "description": "Link several PRs to a thread in one call. Use it instead of one `link_pull_request` per PR. URLs that are not PRs come back in `invalidUrls`.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "urls": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "minItems": 1
+      }
+     },
+     "required": [
+      "urls"
+     ]
+    }
+   },
+   {
+    "name": "unlink_pull_request",
+    "description": "Remove a PR link from this thread. Succeeds with `wasLinked=false` when it was not linked.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      },
+      "repository": {
+       "type": "string"
+      },
+      "number": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "With `repository`, when no `url`."
+      },
+      "host": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "unlink_pull_requests",
+    "description": "Unlink every PR on a thread whose last known state (as `list_thread_pull_requests` shows) is in `states`, in one call. Use it instead of one `unlink_pull_request` per PR. PRs with no known state stay linked.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "states": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "open",
+         "closed",
+         "merged"
+        ]
+       },
+       "minItems": 1
+      }
+     },
+     "required": [
+      "states"
+     ]
+    }
+   },
+   {
+    "name": "list_thread_pull_requests",
+    "description": "List PRs linked to a thread, with last known state and stack order (bottom to top). Call only when you need that list. Never as an end-of-work check.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "watch_pull_request",
+    "description": "Watch an open PR for this thread, linking it first if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, or conflicts. Handle old comments first. Only later ones wake you. After this call, end your turn. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      },
+      "repository": {
+       "type": "string"
+      },
+      "number": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "With `repository`, when no `url`."
+      },
+      "host": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "unwatch_pull_request",
+    "description": "Stop watching a PR for this thread. It stays linked.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "threadId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      },
+      "repository": {
+       "type": "string"
+      },
+      "number": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "With `repository`, when no `url`."
+      },
+      "host": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "write_pull_request_guides",
+    "description": "Write review guides for up to 20 PRs (the tour in the PR Guide tab). Returns once runs start. Each run takes minutes in a temporary checkout. A run for the same head is joined. Read with `read_pull_request_guide`. Fails while guides are off.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "pullRequests": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string"
+         },
+         "repository": {
+          "type": "string"
+         },
+         "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "With `repository`, when no `url`."
+         },
+         "host": {
+          "type": "string"
+         }
+        }
+       },
+       "minItems": 1,
+       "maxItems": 20
+      }
+     },
+     "required": [
+      "pullRequests"
+     ]
+    }
+   },
+   {
+    "name": "read_pull_request_guide",
+    "description": "Read a PR's stored review guide and run state. `guide` is null when none exists. Never starts a run.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "environmentId": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      },
+      "repository": {
+       "type": "string"
+      },
+      "number": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "With `repository`, when no `url`."
+      },
+      "host": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "device_list",
+    "description": "List iOS Simulators and Android Emulators on every device host, what each host can run, and what is open in this thread's Device panel. Call before `device_open` when you do not know a device id.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "hostId": {
+       "type": "string",
+       "description": "Limit to one device host. Defaults to all hosts."
+      }
+     }
+    }
+   },
+   {
+    "name": "device_open",
+    "description": "Open a simulator or emulator for this thread. Pass `deviceId` and `hostId` from `device_list`. Boots it if needed and shows it in the user's Device panel. Returns the `agent-device` CLI call pinned to that device. Drive the device with that CLI.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "deviceId": {
+       "type": "string"
+      },
+      "platform": {
+       "type": "string",
+       "enum": [
+        "ios",
+        "android"
+       ],
+       "description": "Needed with no `deviceId` when both platforms exist."
+      },
+      "hostId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "device_close",
+    "description": "Remove a device from this thread's Device panel. `shutdown=true` also turns it off.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "deviceId": {
+       "type": "string"
+      },
+      "hostId": {
+       "type": "string"
+      },
+      "shutdown": {
+       "type": "boolean",
+       "description": "Also turn it off. Default false."
+      }
+     }
+    }
+   },
+   {
+    "name": "device_screenshot",
+    "description": "Get a PNG of an open device's screen. For taps and text, use the `agent-device` CLI.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "deviceId": {
+       "type": "string"
+      },
+      "hostId": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   {
+    "name": "html_render",
+    "description": "Show a finished HTML page (chart, diagram, mockup) inline in this thread, above your final reply. Do not announce or restate the page. Frame fits height to 20000px. On mobile, content past the given height scrolls. Frame width is reply width (728px desktop, about 360px phones), on the thread background. Leave html, body, and the outer element with no background color, no outer card, border, banner title, or side padding. This wins over any rule that sets a page background. T3 adds an overridable 8px html gutter for selection rings and shadows. Use fluid widths within it. A box that needs its own background gets 16px padding and var(--radius) corners. Give charts fixed pixel heights. Let content set the height. Do not use vh units or height:100% on html or body. Both are rejected or loop. Use theme CSS variables on :root, not fixed colors: --background, --foreground, --muted, --card, --popover, --secondary, --border, --ring, --primary, --accent, --destructive, --warning, --success, --info, --code-background (most have a matching -foreground; accent, destructive, and warning also have -surface), --chart-1 to --chart-6, --radius, --font-sans, --font-mono. The base sheet sets background, text, and font.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "html": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 512000,
+       "description": "A complete, self-contained HTML document."
+      },
+      "title": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 200
+      },
+      "height": {
+       "type": "integer",
+       "description": "Frame height in CSS pixels, 80 to 2000. Use the contentHeight from html_preview."
+      }
+     },
+     "required": [
+      "html",
+      "title",
+      "height"
+     ]
+    }
+   },
+   {
+    "name": "html_preview",
+    "description": "Check an HTML page before html_render. Returns PNG, contentHeight, and console output. If it says the browser is still installing, call again in a minute. Inline <style> and <script>. Local images as absolute paths are inlined. Remote URLs load as-is. Theme and layout rules are in html_render.",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "html": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 512000,
+       "description": "A complete, self-contained HTML document."
+      },
+      "width": {
+       "type": "integer",
+       "description": "CSS pixels, 240 to 1600. Default 728. Use about 390 for phones."
+      },
+      "appearance": {
+       "type": "string",
+       "enum": [
+        "dark",
+        "light"
+       ],
+       "description": "Default dark."
+      }
+     },
+     "required": [
+      "html"
+     ]
+    }
+   }
+  ]
+ }
+}

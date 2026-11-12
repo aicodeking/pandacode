@@ -1,0 +1,478 @@
+{
+  "about": "Edit tasks v2 (batch F onward): real fix commits whose own tests fail at the parent on an assertion and pass with the fix, so no task needs a stub. Hono tasks run their tests with `bun test` on an uninstalled checkout (Bun runs Hono's vitest-style tests with globals, no node_modules). See edit-tasks-v2.md for verification.",
+  "repos": {
+    "hono": {
+      "url": "https://github.com/honojs/hono.git",
+      "depth": 400,
+      "prune": [
+        ".claude",
+        ".mcp.json",
+        "CLAUDE.md"
+      ]
+    }
+  },
+  "edit": [
+    {
+      "id": "e2-ho-accepts-exact",
+      "repo": "hono",
+      "commit": "98b35afc0e8d70dc07bf59c3b796c9cbfdd4c7a7",
+      "tags": [
+        "ts",
+        "hard"
+      ],
+      "prompt": "Content negotiation with the accepts helper gets wildcards wrong. With supports text/html and application/json, `Accept: text/html;q=0, text/*;q=1, application/json;q=0.5` returns text/html, which the client explicitly refused, and `text/html;q=0.1, text/*;q=1, application/json;q=0.5` also prefers text/html. Per RFC 9110 an exact media type sets its own quality even when a subtype wildcard such as text/* has a higher q, so the wildcard must not re-enable or upgrade a type that is listed exactly; it can still pick another supported type it covers (matching case-insensitively). Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/helper/accepts/accepts.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/helper/accepts/accepts.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/helper/accepts",
+          "src/utils/accept"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-etag-commas",
+      "repo": "hono",
+      "commit": "b3f127207b49a98be52d626c026f61054286e5c6",
+      "tags": [
+        "ts",
+        "medium"
+      ],
+      "prompt": "The etag middleware never answers 304 when the entity tag has a comma inside its quotes, like ETag \"revision,1\", because If-None-Match is split on commas. It can also match just part of a quoted tag. Compare whole quoted tags from If-None-Match (weak or strong) against the response's tag instead. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/middleware/etag/index.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/etag/index.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/etag"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-timing-quotes",
+      "repo": "hono",
+      "commit": "28e7498e88cc3d0dad2bc22ffece685dfb16eff7",
+      "tags": [
+        "ts",
+        "medium"
+      ],
+      "prompt": "Server-Timing descriptions are written into the header inside double quotes without escaping, so `setMetric(c, 'db', 12.3, 'Query \"users\"')`, a value-less metric with a quoted description, or a timing() totalDescription with a quote or a backslash produces a broken header. Escape `\"` and `\\` in every description the way an HTTP quoted-string requires. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/middleware/timing/index.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/timing/index.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/timing"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-timing-precision",
+      "repo": "hono",
+      "commit": "edae2bf701e37e49f4603e9ce62d7466624e3ed4",
+      "tags": [
+        "ts",
+        "easy"
+      ],
+      "prompt": "A precision of 0 is ignored by the Server-Timing helpers: `setMetric(c, 'value', 23.86, undefined, 0)` writes `dur=23.9` instead of `dur=24`, and endTime and wrapTime with precision 0 still print a decimal. An explicit 0 should give whole milliseconds; leaving precision out should still give one decimal place. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/middleware/timing/index.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/timing/index.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/timing"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-basepath-regex",
+      "repo": "hono",
+      "commit": "e77c7c8eb9fea50a496ba10010063998b55d7a6b",
+      "tags": [
+        "ts",
+        "hard"
+      ],
+      "prompt": "The route helper's basePath() is wrong when a sub-app is mounted under a path with a custom regex param. With `app.route('/api/:version{v[0-9]+}', subApp)` and a sub-app route `/posts/:id`, a request to /api/v2/posts/123 should give basePath `/api/v2`; likewise `/tags/:tag{foo|bar}` should give `/tags/bar` and `/users/:name{[a-z]+}/:group` should give `/users/abc/def`. basePath() should match such params the same way the router does. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/helper/route/index.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/helper/route/index.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/helper/route"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-clone-void",
+      "repo": "hono",
+      "commit": "43379d93e23abaaa54ff85f2ce64a149f50d4295",
+      "tags": [
+        "ts",
+        "easy"
+      ],
+      "prompt": "In hono/jsx, cloneElement breaks void elements: `<img src='foo.png' />` renders as `<img src=\"foo.png\"/>`, but `cloneElement(element, { alt: 'bar' })` no longer renders as a self-closing tag. A clone should keep the original's children exactly, including having none, so the clone renders `<img src=\"foo.png\" alt=\"bar\"/>`. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/jsx/base.test.tsx",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/jsx/base.test.tsx"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-combine-some",
+      "repo": "hono",
+      "commit": "afb2068c1c53a530528ac5f237e245793dd03c07",
+      "tags": [
+        "ts",
+        "medium"
+      ],
+      "prompt": "The combine middleware's some() drops the Response of a middleware that short-circuits. With `some(async (c) => c.json({ error: 'bad request' }, 400), other)` the request should end with that 400 JSON response and `other` should not run, but today the route's handler answers instead. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/middleware/combine/index.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/combine/index.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/middleware/combine"
+        ]
+      }
+    },
+    {
+      "id": "e2-ho-accept-negative-q",
+      "repo": "hono",
+      "commit": "9b4e9c2864c30ea9275cf426e2d2716bd9f05195",
+      "tags": [
+        "ts",
+        "easy"
+      ],
+      "prompt": "Parsing an Accept header treats a negative quality as q=1, so `application/json;q=0.9,text/html;q=-1` lists text/html first. A q below 0 (including -Infinity) should clamp to 0 and one above 1 (including Infinity) to 1; a q that is not a number keeps today's value of 1. Please fix it. Dependencies are not installed; `bun test <file>` runs the tests.",
+      "overlay": [
+        {
+          "path": "src/utils/accept.test.ts",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/utils/accept.test.ts"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "bun",
+          "--config=/dev/null",
+          "test",
+          "src/utils/accept",
+          "src/helper/accepts"
+        ]
+      }
+    },
+    {
+      "id": "e2-linux-arm64-target",
+      "commit": "cbf4a86ea59944c8677ec189aa3413e2db068683",
+      "tags": [
+        "js",
+        "medium"
+      ],
+      "prompt": "Our release scripts only know three targets. Add Linux arm64 as a fourth, after the x86_64 Linux one: target `linux-aarch64` (platform linux, arch arm64, Rust triple aarch64-unknown-linux-gnu). Tauri builds it as `PandaCode_<version>_aarch64.AppImage` in the appimage bundle folder, and it is published as `PandaCode-Linux-aarch64.AppImage`, which is also its updater asset. A Linux arm64 host should map to it, and everything that treats the x86_64 AppImage specially (bundle options, the AppImage repack and its library folders, the executable bit, and the CI startup smoke check, which must accept it on a GitHub-hosted Linux runner and launch exactly its versioned package) should treat it the same way. Please make the change.",
+      "overlay": [
+        {
+          "path": "scripts/release/ci-startup-smoke.test.mjs",
+          "mode": "file"
+        },
+        {
+          "path": "scripts/release/common.test.mjs",
+          "mode": "file"
+        },
+        {
+          "path": "scripts/release/desktop-build.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "scripts/release/ci-startup-smoke.test.mjs",
+          "scripts/release/common.test.mjs",
+          "scripts/release/desktop-build.test.mjs"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "sh",
+          "-c",
+          "node --test scripts/release/*.test.mjs packages/npx/*.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "e2-draft-rank-undo",
+      "commit": "b2f811d68d7a9d92f21fd2d1652acb74a29e1f6b",
+      "tags": [
+        "rust",
+        "hard"
+      ],
+      "prompt": "Two fixes to how tasks are stored. First, once the sidebar has been arranged by hand (any task has a sidebar rank), a New task draft that its first prompt publishes should go to the top: it takes rank 0 and every ranked task moves down one, so a later reorder of other tasks keeps it on top. While nothing is ranked, published drafts stay unranked, and drafts themselves are never ranked; pinned tasks are left alone. Second, moving a task back to in progress by hand is always refused today. Allow it only to undo settling (completing) a run that stopped or failed (status error or interrupted), which clears its completion time; every other move to in progress is still refused. Please fix both.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/storage.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "storage::"
+        ]
+      }
+    },
+    {
+      "id": "e2-boat-trial-ttl",
+      "commit": "5714ebfd729a69eb809db74a515dda110262c23a",
+      "tags": [
+        "rust",
+        "easy"
+      ],
+      "prompt": "Keeping a boat cloud sandbox alive for longer than two hours fails on a free-trial account: boat refuses any auto-stop TTL above 2 hours (7200 seconds) with an error until the trial ends. When boat refuses a longer keep-alive, retry once with the trial's 2-hour cap instead of failing. Please fix it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/cloud/boat.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "cloud::boat::"
+        ]
+      },
+      "suite": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "cloud::"
+        ]
+      }
+    },
+    {
+      "id": "e2-pnpm-global-bin",
+      "commit": "b35bff4e8035523d32fef889a96a66122b5a7b48",
+      "tags": [
+        "rust",
+        "medium"
+      ],
+      "prompt": "Harness CLIs installed with `pnpm add -g` are not found when PandaCode is opened from Finder or the Dock, because the shell rc file that exports PNPM_HOME never runs. When discovering harnesses, also search pnpm's global bin, right after npm's global bin: PNPM_HOME when it is set to an absolute path (a relative value is ignored), otherwise pnpm's default location, which is ~/Library/pnpm on macOS, ~/.local/share/pnpm on other Unix systems, and %LOCALAPPDATA%\\pnpm on Windows (home's AppData/Local/pnpm when LOCALAPPDATA is unset). Please fix it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/providers/launch.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "providers::launch::"
+        ]
+      },
+      "suite": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "providers::"
+        ]
+      }
+    },
+    {
+      "id": "e2-opencode-cache-pin",
+      "commit": "33347e065b1bbb8c779e4791ee348fd4228635ba",
+      "tags": [
+        "rust",
+        "medium"
+      ],
+      "prompt": "Cloud agent runs with OpenCode reinstall the CLI on the machine every time when this computer reports its OpenCode version as a prefixed line like `OpenCode 2.1.2`, as `v2.1.2`, or as a bare major like `2`. The machine's cached CLI prints just `2.1.2` for --version, and the runtime cache check compares that against the raw host line, so it never matches. Compare against the parsed version pin instead, so a matching cached CLI is reused without installing anything. Please fix it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/cloud_agents/setup.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "cloud_agents::setup::"
+        ]
+      },
+      "suite": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "cloud_agents::"
+        ]
+      }
+    },
+    {
+      "id": "e2-do-ssh-key",
+      "commit": "0e8263bc0ab541e1a84d0632da7aa42eb412a553",
+      "tags": [
+        "rust",
+        "medium"
+      ],
+      "prompt": "Starting a DigitalOcean machine fails while registering PandaCode's SSH key: DigitalOcean answers the key create with `{\"ssh_key\": {...}}`, but we read `key`, so a successful registration reads as a failure. Accept `ssh_key` (keep `key` as an alternate shape). Also, when the create is refused (for example because another task just registered the same key) or its reply has no id, list the account's keys again and reuse the one whose public key matches, rather than failing or creating a duplicate; never retry the create. If the key still isn't listed, report the create's own error. Please fix it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/cloud/digitalocean.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "cloud::digitalocean::"
+        ]
+      },
+      "suite": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "cloud::"
+        ]
+      }
+    }
+  ]
+}

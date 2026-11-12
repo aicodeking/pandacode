@@ -1,0 +1,11 @@
+{
+  "repo": {
+    "src/auth.ts": "// Sign-in helpers.\nexport const login = handleLogin;\nexport interface Session { user: string }\n\nexport function handleLogin(name: string): Session {\n  return { user: name };\n}\n",
+    "src/page1.ts": "import { handleLogin } from './auth';\nexport function page1() {\n  return handleLogin('u1');\n}\n",
+    "src/page2.ts": "import { handleLogin } from './auth';\nexport function page2() {\n  return handleLogin('u2');\n}\n",
+    "src/page3.ts": "import { handleLogin } from './auth';\nexport function page3() {\n  return handleLogin('u3');\n}\n",
+    "web/family.ts": "export function toolFamily(name: string) {\n  return name;\n}\n"
+  },
+  "args": {"search": ["handleLogin", "toolFamily"], "glob": ["src/**"], "symbols": ["Session"], "read": ["src/auth.ts:5-7", "nope.ts"], "outline": ["src/auth.ts"], "tests_for": ["src/auth.ts"]},
+  "reply": {"coverage": {"files": 5, "files_in_scope": 4}, "outline": [{"path": "src/auth.ts", "text": "const login 2-2\ninterface Session 3-3\nfunction handleLogin 5-7\n", "total_lines": 7}], "read": [{"from": 5, "path": "src/auth.ts", "text": "5:export function handleLogin(name: string): Session {\n6:  return { user: name };\n7:}\n", "to": 7, "total_lines": 7}, {"error": "File not found.", "path": "nope.ts"}], "search": [{"files": 4, "matches": 8, "pattern": "handleLogin", "text": "src/auth.ts\n2:export const login = handleLogin;\n@ handleLogin 5-7\n5:export function handleLogin(name: string): Session {\nsrc/page1.ts\n1:import { handleLogin } from './auth';\n@ page1 2-4\n3:return handleLogin('u1');\nsrc/page2.ts\n1:import { handleLogin } from './auth';\n@ page2 2-4\n3:return handleLogin('u2');\nsrc/page3.ts\n1:import { handleLogin } from './auth';\n@ page3 2-4\n3:return handleLogin('u3');\n"}, {"files": 0, "matches": 0, "outside_glob": {"files": 1, "hits": ["web/family.ts:1:export function toolFamily(name: string) {"], "matches": 1}, "pattern": "toolFamily"}], "symbols": [{"definitions": 1, "name": "Session", "text": "src/auth.ts\n3-3 export interface Session { user: string }\n"}], "tests_for": [{"found": 0, "path": "src/auth.ts", "stem": "auth"}]}
+}

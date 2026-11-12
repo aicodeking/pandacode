@@ -208,6 +208,33 @@ function codeCard(f: Fields, o: Out): string {
   const results = field(o.obj, 'results') || (o.json ? '' : o.text);
   return (results ? searchCard(results) : note(`No matches for ${field(f, 'query')}.`)) + (o.obj.truncated === true ? note('Results were truncated.') : '');
 }
+/** An explore argument's requests: the tool takes one string as a list of one. */
+function asked(f: Fields, key: string): string[] {
+  const value = f[key];
+  return typeof value === 'string' ? [value] : Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+/** `3 searches, 2 files`: what one explore call asked. */
+function exploreAsked(f: Fields): string {
+  const parts: [number, string, string][] = [[asked(f, 'search').length, 'search', 'searches'], [asked(f, 'symbols').length, 'symbol', 'symbols'], [asked(f, 'outline').length + asked(f, 'read').length, 'file', 'files'], [asked(f, 'tests_for').length, 'test lookup', 'test lookups']];
+  return parts.filter(([n]) => n).map(([n, one, many]) => count(n, one, many)).join(', ');
+}
+function exploreMeta(r: Fields): string {
+  if (field(r, 'error')) return field(r, 'error');
+  const outside = isObj(r.outside_glob) && typeof r.outside_glob.matches === 'number' ? `${count(r.outside_glob.matches, 'match', 'matches')} outside the glob` : '';
+  if (typeof r.matches === 'number') return [count(r.matches, 'match', 'matches'), typeof r.files === 'number' && r.matches ? count(r.files, 'file') : '', outside].filter(Boolean).join(' · ');
+  if (typeof r.definitions === 'number') return count(r.definitions, 'definition');
+  if (typeof r.found === 'number') return count(r.found, 'test file');
+  if (typeof r.from === 'number' && typeof r.to === 'number') return `lines ${r.from}–${r.to}`;
+  return typeof r.total_lines === 'number' ? count(r.total_lines, 'line') : '';
+}
+/** One row per request, from the call's own input: a long reply reaches the trace clipped and does not parse. */
+function exploreCard(f: Fields, o: Out): string {
+  const items = ['search', 'symbols', 'tests_for', 'outline', 'read'].flatMap(key => {
+    const replies = objects(o.obj[key]);
+    return asked(f, key).map((request, at) => ({ title: request, meta: replies[at] ? exploreMeta(replies[at]) : '' }));
+  });
+  return list(items, items.length) + (o.obj.truncated === true ? note('Results were truncated.') : '');
+}
 function trackCard(f: Fields, o: Out): string {
   const paths = Array.isArray(f.paths) ? f.paths.filter((p): p is string => typeof p === 'string') : [];
   const capture = field(o.obj, 'captureId');
@@ -215,6 +242,19 @@ function trackCard(f: Fields, o: Out): string {
 }
 function cloudCard(f: Fields, o: Out, status: Status): string {
   return terminalCard(`${field(f, 'tool')} ${field(f, 'args')}`.trim(), o.text, status) + (o.obj.truncated === true ? note('Output was truncated.') : '');
+}
+/** Agent-made tools (docs/custom-tools.md): the script's exit code and its stdout/stderr. */
+function toolExit(o: Out): number | undefined { return typeof o.obj.exit === 'number' ? o.obj.exit : undefined; }
+function toolRunRow(f: Fields, o: Out): Row {
+  const exit = toolExit(o);
+  return { object: [field(f, 'name') || field(o.obj, 'tool'), exit !== undefined && exit !== 0 ? `· failed (exit ${exit})` : ''].filter(Boolean).join(' '), mono: true };
+}
+function toolRunCard(f: Fields, o: Out): string {
+  const exit = toolExit(o);
+  if (exit === undefined) return resultCard(o.text);
+  const args = isObj(f.args) ? kvTable(f.args, 'Arguments') : '';
+  const head = `<div class="tool-trace-card-head">${badge(exit === 0 ? 'passed' : 'failed')}<span class="tool-trace-card-meta">${escape(`exit ${exit}${typeof o.obj.ms === 'number' ? ` · ${o.obj.ms} ms` : ''}`)}</span></div>`;
+  return head + args + label('Output', excerptCard(field(o.obj, 'stdout'))) + label('Errors', excerptCard(field(o.obj, 'stderr'))) + (o.obj.truncated === true ? note('Output was truncated.') : '');
 }
 function itemsCard(key: string, titleKeys: string[], metaKeys: string[]) {
   return (_: Fields, o: Out): string => {
@@ -318,6 +358,10 @@ const CATALOG: Record<string, Spec> = {
   list_local_servers: { family: 'browser', icon: 'server', verbs: ['Listing local servers', 'Listed local servers'], row: (_, o) => ({ object: Array.isArray(o.json) ? `· ${count(o.json.length, 'server')}` : '' }), card: serverCard },
 
   cloud_cli: { family: 'cloud', icon: 'upload', verbs: ['Running', 'Ran'], row: f => ({ chip: chip(field(f, 'tool'), 'terminal'), object: clip(field(f, 'args'), 100), mono: true }), card: cloudCard },
+  tool_save: { family: 'code', icon: 'spark', verbs: ['Saving tool', 'Saved tool'], row: (f, o) => ({ object: [field(f, 'name') || field(o.obj, 'saved'), typeof o.obj.version === 'number' ? `(v${o.obj.version})` : ''].filter(Boolean).join(' '), mono: true }), card: (f, o) => label('When', prose(field(f, 'when'), 300)) + label('Script', excerptCard(field(f, 'script'))) },
+  tool_run: { family: 'code', icon: 'play', verbs: ['Running tool', 'Ran tool'], row: toolRunRow, card: toolRunCard },
+  tool_list: { family: 'code', icon: 'spark', verbs: ['Listing project tools', 'Listed project tools'], card: itemsCard('tools', ['name'], ['when']) },
+  explore: { family: 'code', icon: 'search', verbs: ['Exploring', 'Explored'], row: f => ({ object: exploreAsked(f) }), card: exploreCard },
   code_search: { family: 'code', icon: 'search', verbs: ['Searching code', 'Searched code'], row: f => ({ verbs: f.symbols === true ? ['Finding symbol', 'Found symbol'] : undefined, object: field(f, 'query') ? `${f.symbols === true ? '' : 'for '}${clip(field(f, 'query'), 70)}` : '', mono: f.symbols === true }), card: codeCard },
   track_files: { family: 'code', icon: 'edit', verbs: ['Tracking', 'Tracked'], row: f => { const n = Array.isArray(f.paths) ? f.paths.length : 0; return { verbs: field(f, 'action') === 'complete' ? undefined : ['Tracking changes to', 'Tracking changes to'], object: count(n, 'file') }; }, card: trackCard },
   title: { family: 'meta', icon: 'text', verbs: ['Naming', 'Named'], row: f => ({ object: field(f, 'title') ? `the task “${clip(field(f, 'title'), 60)}”` : 'the task' }), card: rowOnly },

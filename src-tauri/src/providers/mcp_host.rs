@@ -162,6 +162,21 @@ impl Server {
     }
 }
 
+/// One `tools/list` entry. The hints live here, not in the catalog, because the catalog is part
+/// of the warm-agent key: `alwaysLoad` keeps Claude Code from spending a ToolSearch step on a tool
+/// used in most turns, and `readOnlyHint` tells harnesses that read annotations not to ask.
+fn listing(spec: &Value) -> Value {
+    let mut tool = json!({"name":spec["name"],"description":spec["description"],"inputSchema":spec["inputSchema"]});
+    let name = spec["name"].as_str().unwrap_or_default();
+    if name == EXPLORE_TOOL || name == crate::turn_changes::TRACK_TOOL {
+        tool["_meta"] = json!({"anthropic/alwaysLoad":true});
+    }
+    if name == EXPLORE_TOOL {
+        tool["annotations"] = json!({"readOnlyHint":true});
+    }
+    tool
+}
+
 fn current(context: &std::sync::RwLock<Arc<Context>>) -> Arc<Context> {
     match context.read() {
         Ok(context) => context.clone(),
@@ -205,6 +220,8 @@ struct PendingApproval<'a> {
 }
 impl Drop for PendingApproval<'_> {
     fn drop(&mut self) {
+        // Approved snapshots have moved on already; anything left was never approved.
+        crate::custom_tools::approval::forget(&self.id);
         if let Ok(mut pending) = self.context.approvals.lock() {
             pending.remove(&self.id);
         }
@@ -413,7 +430,7 @@ impl Context {
             }
             "ping" => json!({}),
             "tools/list" => {
-                let tools:Vec<Value> = self.host.tools.iter().map(|spec| json!({"name":spec["name"],"description":spec["description"],"inputSchema":spec["inputSchema"]})).collect();
+                let tools:Vec<Value> = self.host.tools.iter().map(listing).collect();
                 json!({"tools":tools})
             }
             "tools/call" => {
@@ -452,7 +469,7 @@ impl Context {
                 self.activity(&call_id, name, "running", &input, "");
                 let result = tokio::select! {
                     result = async {
-                        self.authorize(name, &args).await?;
+                        let args = self.authorize(name, args).await?;
                         tokio::time::timeout(Duration::from_secs(60),(self.host.handler)(name.into(),args)).await
                             .unwrap_or_else(|_|Err("PandaCode tool timed out".into()))
                     } => result,
@@ -496,24 +513,34 @@ impl Context {
         };
         HttpResponse::json(json!({"jsonrpc":"2.0","id":id,"result":result}))
     }
-    async fn authorize(&self, name: &str, args: &Value) -> Result<(), String> {
+    /// Asks the user when `name` needs it, and returns the arguments the handler gets: an
+    /// approved agent-made tool run carries its approval id (`custom_tools::approval`).
+    async fn authorize(&self, name: &str, mut args: Value) -> Result<Value, String> {
+        // Only an approval below may name an approved snapshot.
+        crate::custom_tools::approval::strip(&mut args);
         if !self.host.approval_tools.contains(name) {
-            return Ok(());
+            return Ok(args);
         }
         if self.mode == "plan" {
             return Err("This host action is unavailable in Plan mode".into());
         }
         if self.mode == "full" && !crate::cloud::deploy::ALWAYS_ASK.contains(&name) {
-            return Ok(());
+            return Ok(args);
         }
         let id = format!("mcp-approval:{}", uuid::Uuid::new_v4());
+        // An agent-made tool's approval shows its whole script; that snapshot is what runs.
+        let text = match crate::custom_tools::approval::prepare(&self.session_id, &id, name, &args) {
+            Some(prepared) => prepared?,
+            None => format!("Allow {name}?\n{}", preview_json(&args, TOOL_INPUT_LIMIT)),
+        };
         let (send, receive) = tokio::sync::oneshot::channel();
         {
-            let mut pending = self
-                .approvals
-                .lock()
-                .map_err(|_| "Approval state is unavailable")?;
+            let Ok(mut pending) = self.approvals.lock() else {
+                crate::custom_tools::approval::forget(&id);
+                return Err("Approval state is unavailable".into());
+            };
             if pending.len() >= 8 {
+                crate::custom_tools::approval::forget(&id);
                 return Err("Too many pending app approvals".into());
             }
             pending.insert(id.clone(), send);
@@ -525,14 +552,17 @@ impl Context {
         (self.sink)(AgentEvent {
             session_id: self.session_id.clone(),
             kind: "approval".into(),
-            text: format!("Allow {name}?\n{}", preview_json(args, TOOL_INPUT_LIMIT)),
-            request_id: Some(id),
+            text,
+            request_id: Some(id.clone()),
             data: None,
             tool: None,
         });
         let wait = crate::remote::orchestrate::approval_wait(name).unwrap_or(Duration::from_secs(300));
         match tokio::time::timeout(wait, receive).await {
-            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(true)) => {
+                crate::custom_tools::approval::approve(&id, &mut args);
+                Ok(args)
+            }
             Ok(Ok(false)) => Err("Declined by the user".into()),
             _ => Err("App approval expired or was cancelled".into()),
         }
@@ -560,542 +590,7 @@ impl Context {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn host() -> ToolHost {
-        ToolHost {
-            tools: vec![
-                json!({"type":"function","name":"pandacode_delegate","description":"Assign a scoped worker","inputSchema":{"type":"object","properties":{"prompt":{"type":"string"}}}}),
-            ],
-            approval_tools: HashSet::new(),
-            handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
-        }
-    }
-    async fn server() -> Server {
-        Server::start(host(), "parent".into(), Arc::new(|_| {}))
-            .await
-            .unwrap()
-    }
-    async fn request(server: &Server, body: Value, extra: &str) -> (u16, Value) {
-        let bytes = serde_json::to_vec(&body).unwrap();
-        raw(server,format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\r\n",server.authority,server.token,bytes.len(),extra),bytes).await
-    }
-    async fn raw(server: &Server, header: String, body: Vec<u8>) -> (u16, Value) {
-        let mut stream = TcpStream::connect(&server.authority).await.unwrap();
-        stream.write_all(header.as_bytes()).await.unwrap();
-        tokio::task::yield_now().await;
-        stream.write_all(&body).await.unwrap();
-        let mut response = Vec::new();
-        let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
-            .await
-            .unwrap();
-        let boundary = response.windows(4).position(|s| s == b"\r\n\r\n").unwrap() + 4;
-        let header = std::str::from_utf8(&response[..boundary]).unwrap();
-        (
-            header.split_whitespace().nth(1).unwrap().parse().unwrap(),
-            serde_json::from_slice(&response[boundary..]).unwrap_or(Value::Null),
-        )
-    }
-    fn call(id: Value, args: Value) -> Value {
-        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"pandacode_delegate","arguments":args}})
-    }
-    #[tokio::test]
-    async fn a_warm_server_keeps_its_address_and_serves_the_turn_it_is_rebound_to() {
-        let spec = json!({"type":"function","name":crate::session_titles::TOOL,"description":"Sidebar metadata","inputSchema":{"type":"object"}});
-        let placeholder = ToolHost {
-            tools: vec![spec.clone()],
-            approval_tools: HashSet::new(),
-            handler: Arc::new(|_, _| Box::pin(async { Err("not started".to_string()) })),
-        };
-        let server = Server::start_for_run(placeholder, "task".into(), Arc::new(|_| {}), "ask").await.unwrap().unwrap();
-        let address = server.claude_config();
-        let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":crate::session_titles::TOOL,"arguments":{"title":"Topic"}}});
-        let (_, before) = request(&server, call.clone(), "").await;
-        assert_eq!(before["result"]["isError"], true);
-        let live = ToolHost {
-            tools: vec![spec],
-            approval_tools: HashSet::new(),
-            handler: Arc::new(|_, _| Box::pin(async { Ok(json!({"staged":true})) })),
-        };
-        server.rebind(live, "task".into(), Arc::new(|_| {}), "ask").unwrap();
-        assert_eq!(server.claude_config(), address, "the agent already holds this address and token");
-        let (_, after) = request(&server, call, "").await;
-        assert_eq!(after["result"]["isError"], false);
-    }
-    #[tokio::test]
-    async fn title_metadata_is_optional_and_does_not_emit_transcript_activity() {
-        let (send, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let title_host = ToolHost {
-            tools: vec![json!({"type":"function","name":crate::session_titles::TOOL,"description":"Sidebar metadata","inputSchema":{"type":"object"}})],
-            approval_tools: HashSet::new(),
-            handler: Arc::new(|_, _| Box::pin(async { Ok(json!({"staged":true})) })),
-        };
-        let server = Server::start_for_run(title_host, "task".into(), Arc::new(move |e| { let _ = send.send(e); }), "plan").await.unwrap().unwrap();
-        assert_eq!(server.codex_config()[SERVER_NAME]["required"], false);
-        let (_, response) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":crate::session_titles::TOOL,"arguments":{"title":"Current topic"}}}), "").await;
-        assert_eq!(response["result"]["isError"], false);
-        assert!(events.try_recv().is_err());
-    }
-    #[tokio::test]
-    async fn title_tool_reference_survives_review_retry_and_manual_rename() {
-        use crate::{session_titles, storage::Store};
-
-        let db = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = db.add_project(&std::env::temp_dir()).unwrap();
-        let sid = db.create_session(&project.id, "claude", "sonnet", "ask").unwrap().id;
-        db.resume(&sid, "saved-claude-session").unwrap();
-        let saved_reference = json!({"type":"tool_reference","tool_name":"mcp__pandacode_architect__pandacode_title"});
-        let mut original_spec = None;
-
-        for turn_kind in ["user", "review", "retry", "manual"] {
-            if turn_kind == "manual" {
-                db.update(&sid, Some("My parser investigation".into()), None, None, None).unwrap();
-            }
-            let coordination = matches!(turn_kind, "review" | "retry")
-                .then_some(crate::architect::internal_turns::CoordinationKind::WorkerReview);
-            let turn = db.begin_task_turn_with_kind(&sid, "Inspect the parser architecture", coordination).unwrap();
-            let run = session_titles::TitleRun::prepare(&db, &sid, turn).unwrap();
-            assert_eq!(run.is_some(), turn_kind == "user");
-            let previous_title = db.session(&sid).unwrap().title;
-            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let catalog = session_titles::with_host(run.as_ref(), Some(host()), stopped.clone());
-            let (send, mut events) = tokio::sync::mpsc::unbounded_channel();
-            let server = Server::start_for_run(catalog, sid.clone(), Arc::new(move |event| { let _ = send.send(event); }), "ask")
-                .await.unwrap().unwrap();
-            let (_, initialized) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}), "").await;
-            assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
-            let (status, list) = request(&server, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}), "").await;
-            assert_eq!(status, 200);
-            let config = server.claude_config();
-            let server_name = config["mcpServers"].as_object().unwrap().keys().next().unwrap();
-            let title_spec = list["result"]["tools"].as_array().unwrap().iter().find(|tool| {
-                format!("mcp__{server_name}__{}", tool["name"].as_str().unwrap()) == saved_reference["tool_name"].as_str().unwrap()
-            }).expect("saved title reference must resolve in every resumed catalog");
-            if let Some(spec) = &original_spec {
-                assert_eq!(title_spec, spec);
-            } else {
-                original_spec = Some(title_spec.clone());
-            }
-            let suggested_title = if run.is_some() { "Parser architecture" } else { "Internal review update" };
-            let (_, response) = request(&server, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":title_spec["name"],"arguments":{"title":suggested_title}}}), "").await;
-            assert_eq!(response["result"]["isError"], false);
-            let result: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-            assert_eq!(result["staged"], run.is_some());
-            assert!(events.try_recv().is_err(), "metadata must not emit activity or approval");
-            assert!(server.current().approvals.lock().unwrap().is_empty());
-            assert_eq!(db.session(&sid).unwrap().title, previous_title);
-            db.message(&sid, "assistant", "Parser inspection finished.").unwrap();
-            db.finish_task_turn(&sid, true, false).unwrap();
-            if let Some(run) = run {
-                assert!(run.finish(&db, true).unwrap());
-                assert_eq!(db.session(&sid).unwrap().title, "Parser architecture");
-            } else {
-                assert_eq!(db.session(&sid).unwrap().title, previous_title);
-            }
-            let (_, delegated) = request(&server, call(json!(4), json!({"prompt":"Check parser tests"})), "").await;
-            assert_eq!(delegated["result"]["isError"], false);
-            let result: Value = serde_json::from_str(delegated["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-            assert_eq!(result["prompt"], "Check parser tests");
-            assert_eq!(db.session(&sid).unwrap().resume_id.as_deref(), Some("saved-claude-session"));
-            stopped.store(true, Ordering::SeqCst);
-            drop(server);
-        }
-    }
-    #[tokio::test]
-    async fn optional_preview_mcp_keeps_approval_plan_restrictions_and_visible_activity() {
-        for name in ["pandacode_run_project", "pandacode_preview_file"] {
-            for mode in ["ask", "auto", "plan", "full"] {
-                let count = Arc::new(AtomicUsize::new(0));
-                let called = count.clone();
-                let protected = ToolHost {
-                    tools: vec![json!({"type":"function","name":name,"description":"Preview","inputSchema":{"type":"object"}})],
-                    approval_tools: [name.into()].into(),
-                    handler: Arc::new(move |_, _| {
-                        called.fetch_add(1, Ordering::SeqCst);
-                        Box::pin(async { Ok(json!({"opened":true})) })
-                    }),
-                };
-                let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-                let server = Server::start_for_run(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), mode).await.unwrap().unwrap();
-                assert!(!server.required(), "preview availability must not block ordinary turns");
-                let request = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}), "");
-                let answer = async {
-                    if matches!(mode, "ask" | "auto") {
-                        let pending = loop {
-                            let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
-                            if event.kind == "approval" { break event.request_id.unwrap(); }
-                        };
-                        assert_eq!(count.load(Ordering::SeqCst), 0);
-                        // Declining even the static-file preview must prevent UI access.
-                        assert!(server.approve(&pending, false));
-                    }
-                };
-                let ((code, result), ()) = tokio::join!(request, answer);
-                assert_eq!(code, 200);
-                assert_eq!(result["result"]["isError"], mode != "full");
-                assert_eq!(count.load(Ordering::SeqCst), usize::from(mode == "full"));
-                assert!(server.current().approvals.lock().unwrap().is_empty());
-                let mut activity = false;
-                while let Ok(event) = events.try_recv() {
-                    assert_ne!(event.kind, "approval");
-                    activity |= event.kind == "tool";
-                }
-                assert!(activity, "preview actions must remain visible in the transcript");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn protected_mcp_tools_wait_for_scoped_approval_and_honor_denial() {
-        for mode in ["ask", "auto", "accept"] {
-            for approved in [true, false] {
-                let count = Arc::new(AtomicUsize::new(0));
-                let called = count.clone();
-                let mut protected = host();
-                protected.approval_tools.insert("pandacode_delegate".into());
-                protected.handler = Arc::new(move |_, _| {
-                    called.fetch_add(1, Ordering::SeqCst);
-                    Box::pin(async { Ok(json!({"started":true})) })
-                });
-                let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-                let server = Server::start_with_approvals(
-                    protected,
-                    "task".into(),
-                    Arc::new(move |event| {
-                        let _ = sender.send(event);
-                    }),
-                    mode,
-                )
-                .await
-                .unwrap();
-                let request = request(&server, call(json!(1), json!({})), "");
-                let answer = async {
-                    let pending = loop {
-                        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
-                            .await
-                            .unwrap()
-                            .unwrap();
-                        if event.kind == "approval" {
-                            break event.request_id.unwrap();
-                        }
-                    };
-                    assert_eq!(
-                        count.load(Ordering::SeqCst),
-                        0,
-                        "callback must not precede approval"
-                    );
-                    assert!(!server.approve("different-request", true));
-                    assert!(server.approve(&pending, approved));
-                    assert!(!server.approve(&pending, true), "approval is single use");
-                };
-                let ((code, result), ()) = tokio::join!(request, answer);
-                assert_eq!(code, 200);
-                assert_eq!(result["result"]["isError"], !approved);
-                assert_eq!(count.load(Ordering::SeqCst), usize::from(approved));
-                assert!(server.current().approvals.lock().unwrap().is_empty());
-            }
-        }
-    }
-    #[tokio::test]
-    async fn protected_mcp_tools_never_execute_in_plan_and_full_mode_needs_no_prompt() {
-        for mode in ["plan", "full"] {
-            let count = Arc::new(AtomicUsize::new(0));
-            let called = count.clone();
-            let mut protected = host();
-            protected.approval_tools.insert("pandacode_delegate".into());
-            protected.handler = Arc::new(move |_, _| {
-                called.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Ok(json!({})) })
-            });
-            let server = Server::start_with_approvals(
-                protected,
-                "task".into(),
-                Arc::new(|event| assert_ne!(event.kind, "approval")),
-                mode,
-            )
-            .await
-            .unwrap();
-            let (_, result) = request(&server, call(json!(1), json!({})), "").await;
-            assert_eq!(result["result"]["isError"], mode == "plan");
-            assert_eq!(count.load(Ordering::SeqCst), usize::from(mode == "full"));
-        }
-    }
-    #[tokio::test]
-    async fn a_call_the_client_gave_up_on_expires_its_approval() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let called = count.clone();
-        let mut protected = host();
-        protected.approval_tools.insert("pandacode_delegate".into());
-        protected.handler = Arc::new(move |_, _| {
-            called.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(json!({})) })
-        });
-        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "ask").await.unwrap();
-        let body = serde_json::to_vec(&call(json!(1), json!({}))).unwrap();
-        let mut stream = TcpStream::connect(&server.authority).await.unwrap();
-        stream.write_all(format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", server.authority, server.token, body.len()).as_bytes()).await.unwrap();
-        stream.write_all(&body).await.unwrap();
-        async fn next(events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>, kind: &str) -> String {
-            loop {
-                let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
-                if event.kind == kind { break event.request_id.unwrap(); }
-            }
-        }
-        let pending = next(&mut events, "approval").await;
-        // The harness timed out the call and closed its connection.
-        drop(stream);
-        assert_eq!(next(&mut events, "approval_cancelled").await, pending);
-        assert!(!server.approve(&pending, true), "a late Approve finds nothing");
-        tokio::task::yield_now().await;
-        assert_eq!(count.load(Ordering::SeqCst), 0);
-    }
-    #[tokio::test]
-    async fn cloud_cli_asks_even_in_full_mode() {
-        let name = "pandacode_cloud_cli";
-        let count = Arc::new(AtomicUsize::new(0));
-        let called = count.clone();
-        let protected = ToolHost {
-            tools: vec![json!({"type":"function","name":name,"description":"Deploy","inputSchema":{"type":"object"}})],
-            approval_tools: [name.into()].into(),
-            handler: Arc::new(move |_, _| {
-                called.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Ok(json!({})) })
-            }),
-        };
-        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "full").await.unwrap();
-        let request = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}), "");
-        let answer = async {
-            let pending = loop {
-                let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
-                if event.kind == "approval" { break event.request_id.unwrap(); }
-            };
-            assert_eq!(count.load(Ordering::SeqCst), 0);
-            assert!(server.approve(&pending, false));
-        };
-        let ((_, result), ()) = tokio::join!(request, answer);
-        assert_eq!(result["result"]["isError"], true);
-        assert_eq!(count.load(Ordering::SeqCst), 0);
-    }
-    #[tokio::test]
-    async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {
-        let mut protected = host();
-        protected.approval_tools.insert("pandacode_delegate".into());
-        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let server = Server::start_with_approvals(
-            protected,
-            "task".into(),
-            Arc::new(move |event| {
-                let _ = sender.send(event);
-            }),
-            "ask",
-        )
-        .await
-        .unwrap();
-        let args = json!({});
-        let context = server.current();
-        let mut authorization = Box::pin(context.authorize("pandacode_delegate", &args));
-        let event = tokio::select! {
-            _ = &mut authorization => panic!("Approval resolved before user input"),
-            event = events.recv() => event.unwrap(),
-        };
-        let id = event.request_id.unwrap();
-        drop(authorization);
-        assert!(!server.approve(&id, true));
-        assert!(server.current().approvals.lock().unwrap().is_empty());
-        assert_eq!(events.recv().await.unwrap().kind, "approval_cancelled");
-    }
-    #[tokio::test]
-    async fn initializes_lists_calls_and_emits_bounded_real_results() {
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let saved = observed.clone();
-        let server = Server::start(
-            host(),
-            "parent".into(),
-            Arc::new(move |e| saved.lock().unwrap().push(e)),
-        )
-        .await
-        .unwrap();
-        let (_,init)=request(&server,json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),"").await;
-        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
-        let (_, list) = request(
-            &server,
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-            "",
-        )
-        .await;
-        assert_eq!(list["result"]["tools"][0]["name"], "pandacode_delegate");
-        assert!(list["result"]["tools"][0].get("type").is_none());
-        let (_, result) = request(
-            &server,
-            call(json!("job"), json!({"prompt":"Implement 🐼"})),
-            "",
-        )
-        .await;
-        assert_eq!(result["id"], "job");
-        assert_eq!(result["result"]["isError"], false);
-        assert_eq!(
-            serde_json::from_str::<Value>(result["result"]["content"][0]["text"].as_str().unwrap())
-                .unwrap()["prompt"],
-            "Implement 🐼"
-        );
-        let events = observed.lock().unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].session_id, "parent");
-        assert_eq!(events[1].tool.as_ref().unwrap().status, "completed");
-        assert_eq!(
-            events[0].tool.as_ref().unwrap().id,
-            events[1].tool.as_ref().unwrap().id
-        );
-        assert!(server.claude_config()["mcpServers"][SERVER_NAME].is_object());
-        assert_eq!(server.kimi_config()["type"], "http");
-    }
-    #[tokio::test]
-    async fn rejects_auth_origin_host_smuggling_and_oversized_frames() {
-        let server = server().await;
-        let other = self::server().await;
-        for (header,code) in [
-            (format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\n\r\n",server.authority),401),
-            (format!("POST /mcp HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer {}\r\n\r\n",server.token),403),
-            (format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n\r\n",server.authority,other.token),401),
-            (format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: 99999999\r\n\r\n",server.authority,server.token),413),
-        ] { assert_eq!(raw(&server,header,vec![]).await.0,code); }
-        for (extra, code) in [
-            ("Origin: https://evil.example\r\n", 403),
-            ("Transfer-Encoding: chunked\r\n", 400),
-            ("Content-Length: 1\r\n", 400),
-            ("MCP-Protocol-Version: invalid\r\n", 400),
-        ] {
-            assert_eq!(
-                request(&server, call(json!(1), json!({})), extra).await.0,
-                code
-            );
-        }
-    }
-    #[tokio::test]
-    async fn rejects_protected_catalog_and_unknown_calls_and_reports_tool_errors() {
-        let mut protected = host();
-        protected.approval_tools.insert("pandacode_delegate".into());
-        assert!(Server::start(protected, "p".into(), Arc::new(|_| {}))
-            .await
-            .is_err());
-        let mut failing = host();
-        failing.handler = Arc::new(|_, _| Box::pin(async { Err("Worker unavailable".into()) }));
-        let server = Server::start(failing, "p".into(), Arc::new(|_| {}))
-            .await
-            .unwrap();
-        let (_, failed) = request(&server, call(json!(1), json!({})), "").await;
-        assert_eq!(failed["result"]["isError"], true);
-        assert_eq!(failed["result"]["content"][0]["text"], "Worker unavailable");
-        let mut unknown = call(json!(2), json!({}));
-        unknown["params"]["name"] = json!("pandacode_open_browser");
-        assert_eq!(
-            request(&server, unknown, "").await.1["error"]["code"],
-            -32602
-        );
-        assert_eq!(
-            request(&server, call(json!(3), json!([])), "").await.1["error"]["code"],
-            -32602
-        );
-        let mut oversized = host();
-        oversized.handler =
-            Arc::new(|_, _| Box::pin(async { Ok(json!("x".repeat(RESULT_LIMIT + 1))) }));
-        let big = Server::start(oversized, "p".into(), Arc::new(|_| {}))
-            .await
-            .unwrap();
-        assert_eq!(
-            request(&big, call(json!(4), json!({})), "").await.1["result"]["isError"],
-            true
-        );
-    }
-    #[tokio::test]
-    async fn moodboard_visual_is_returned_as_mcp_image_not_base64_text() {
-        let mut visual = host();
-        visual.handler = Arc::new(|_, _| {
-            Box::pin(async {
-                Ok(
-                    json!({"_pandacodeImage":{"mimeType":"image/jpeg","data":"/9j/2Q==","text":"Reference screenshot"}}),
-                )
-            })
-        });
-        let server = Server::start(
-            visual,
-            "p".into(),
-            Arc::new(|event| {
-                if event.kind == "tool_result" {
-                    assert!(!event.text.contains("/9j/"));
-                }
-            }),
-        )
-        .await
-        .unwrap();
-        let (_, response) = request(&server, call(json!(1), json!({})), "").await;
-        assert_eq!(response["result"]["isError"], false);
-        assert_eq!(response["result"]["content"][1]["type"], "image");
-        assert_eq!(response["result"]["content"][1]["mimeType"], "image/jpeg");
-    }
-    #[tokio::test]
-    async fn cancellation_and_drop_release_waiting_callbacks_without_blocking_other_requests() {
-        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        struct Guard(Arc<std::sync::atomic::AtomicBool>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
-        let signal = dropped.clone();
-        let mut waiting = host();
-        waiting.handler = Arc::new(move |_, _| {
-            let guard = Guard(signal.clone());
-            Box::pin(async move {
-                let _guard = guard;
-                std::future::pending().await
-            })
-        });
-        let server = server_from_host(waiting).await;
-        let cancelled = async {
-            let result = request(&server, call(json!("wait"), json!({})), "").await.1;
-            assert_eq!(result["result"]["isError"], true);
-            assert!(result["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("canceled"));
-        };
-        let interrupt = async {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            assert_eq!(
-                request(&server, call(json!("wait"), json!({})), "").await.1["error"]["code"],
-                -32600
-            );
-            assert!(request(
-                &server,
-                json!({"jsonrpc":"2.0","id":"ping","method":"ping"}),
-                ""
-            )
-            .await
-            .1["result"]
-                .is_object());
-            assert_eq!(request(&server,json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"wait"}}),"").await.0,202);
-        };
-        tokio::join!(cancelled, interrupt);
-        assert!(dropped.load(Ordering::SeqCst));
-        dropped.store(false, Ordering::SeqCst);
-        let call = request(&server, call(json!("next"), json!({})), "");
-        tokio::pin!(call);
-        tokio::select! {_=&mut call=>panic!("pending tool finished"),_=tokio::time::sleep(Duration::from_millis(30))=>{}}
-        let address = server.authority.clone();
-        server.stop();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(dropped.load(Ordering::SeqCst));
-        assert!(TcpStream::connect(address).await.is_err());
-    }
-    async fn server_from_host(host: ToolHost) -> Server {
-        Server::start(host, "p".into(), Arc::new(|_| {}))
-            .await
-            .unwrap()
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod protocol_tests {

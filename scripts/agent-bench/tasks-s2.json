@@ -1,0 +1,9 @@
+{
+ "about": "Batch S2 (docs/worker-tokens.md): S1's localization and report tasks from tasks-saver.json, run as read-only team workers under BASE (the launch every task had) and LEAN (claude_disallowed_tools(Some(true)) in providers.rs). Never edit after the batch starts.",
+ "harness": "2.1.317 (Claude Code)",
+ "exploreBinary": "34c3de0750ce1ecd43d534887cddb8c5f5a2abe695e85187447cf193037e1090",
+ "seeds": [1, 2, 3],
+ "estimateUsdPerRun": 0.16,
+ "loc": ["loc-model-picker-errors", "loc-opencode-efforts", "loc-cloud-credentials", "loc-skill-brief", "loc-streaming-paint", "loc-connect-keychain", "loc-all-keychain", "loc-usage-keychain", "loc-antigravity-fallback", "loc-cline-mcp", "loc-branch-switch", "loc-agent-env", "loc-team-stop", "out-csrf", "out-auth-transports", "out-cimd", "out-husky", "out-lint-sanitize", "out-ci-disks", "vsc-search-leak"],
+ "report": ["rep-review-deepseek", "rep-review-simulator", "rep-review-pi-launcher", "rep-explain-secrets", "rep-explain-queue", "rep-explain-saver-resend", "rep-fail-sidebar", "rep-fail-appimage"]
+}

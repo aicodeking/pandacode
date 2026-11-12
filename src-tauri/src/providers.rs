@@ -23,7 +23,9 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms};
+#[cfg(test)]
+pub(crate) use warm::launched as warm_launched;
+pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms, Renew as WarmRenew};
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
@@ -57,7 +59,10 @@ pub(crate) use launch::{command, pty_command, external_path, executable_path, wi
 mod kimi_stream_tests;
 #[cfg(test)]
 mod slash_command_tests;
+#[cfg(test)]
+mod claude_deny_tests;
 mod limits;
+mod explore_permissions;
 mod plan_reads;
 mod steering;
 mod subagents;
@@ -75,6 +80,10 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
+/// The tool row name and output saved when Claude or Codex compacts its context; the team
+/// brief (`architect::coordination`) looks for both to resend the full brief.
+pub(crate) const COMPACT_CONTEXT_TOOL: &str = "Compact context";
+pub(crate) const COMPACTED_OUTPUT: &str = "Conversation context compacted.";
 
 /// A frame buffer grown past 1 MiB by one large message gives the memory back once drained.
 fn should_shrink(len: usize, capacity: usize) -> bool {
@@ -104,6 +113,87 @@ pub(crate) const PROVIDERS: [(&str, &str); 19] = [
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
+/// Claude Code tools a team worker's brief already forbids: native subagents and workflows,
+/// other sessions, worktrees and cloud routines. Their definitions and listings ride every
+/// request of every step (docs/worker-tokens.md). `TaskStop` stays: it also stops background Bash.
+pub(crate) const CLAUDE_WORKER_DENIED_TOOLS: &str = "Agent,Task,Workflow,ListAgents,SendMessage,RemoteTrigger,CronDelete,CronList,EnterWorktree,ExitWorktree";
+/// The edit tools a read-only worker is told not to use.
+pub(crate) const CLAUDE_READ_ONLY_DENIED_TOOLS: &str = "Edit,Write,NotebookEdit";
+/// The denied tools Claude Code defers: history can hold a ToolSearch reference to one, removing
+/// its definition invalidates later requests, and adding one changes the deferred-tool list. So
+/// a conversation keeps the set it started with (`History::lists_native`); one the role denies
+/// but the conversation keeps is refused (`claude_refuses_native`).
+const CLAUDE_DEFERRED_TOOLS: [&str; 7] = ["SendMessage", "RemoteTrigger", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree", CLAUDE_NOTEBOOK_TOOL];
+const CLAUDE_NOTEBOOK_TOOL: &str = "NotebookEdit";
+/// The `PreToolUse` callback that refuses kept deferred tools (`claude_refusal_hooks`).
+const CLAUDE_REFUSAL_HOOK: &str = "pandacode-refuse-native";
+/// Denied to team workers only while Settings → Agents → Workers can use skills is off (it is on
+/// by default, so user rules naming a skill keep working); off saves its listing, about 8k
+/// cache-write tokens per worker with a real skills library.
+pub(crate) const CLAUDE_SKILL_TOOL: &str = "Skill";
+
+/// How a team worker's Claude Code launch is trimmed (`RunConfig::worker`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerTrim {
+    pub read_only: bool,
+    /// Settings → Agents → Workers can use skills.
+    pub skills: bool,
+    /// Settings → Agents → Trim worker tools (`architect::worker_trim_on`, off by default): the
+    /// token trim (`CLAUDE_WORKER_DENIED_TOOLS`, `Role::wants`). Read-only enforcement and the
+    /// Skill switch apply either way.
+    pub trim: bool,
+}
+
+/// Every tool `worker`'s role denies, in `--disallowedTools` order.
+fn claude_role_denied(worker: Option<WorkerTrim>) -> Vec<&'static str> {
+    let mut lists = vec![CLAUDE_SESSION_BOUND_TOOLS];
+    if let Some(trim) = worker {
+        if trim.trim {
+            lists.push(CLAUDE_WORKER_DENIED_TOOLS);
+        }
+        if trim.read_only {
+            lists.push(CLAUDE_READ_ONLY_DENIED_TOOLS);
+        }
+        if !trim.skills {
+            lists.push(CLAUDE_SKILL_TOOL);
+        }
+    }
+    lists.into_iter().flat_map(|list| list.split(',')).collect()
+}
+
+/// `--disallowedTools` for a Claude Code launch: `worker` is set for a team worker; `history` is
+/// what the conversation may hold, which decides the deferred tools.
+pub(crate) fn claude_disallowed_tools(worker: Option<WorkerTrim>, history: &crate::app_instructions::History) -> String {
+    let role = claude_role_denied(worker);
+    let kept = |tool: &str| history.lists_native(tool, role.contains(&tool));
+    let denied = role.iter().copied().filter(|tool| !CLAUDE_DEFERRED_TOOLS.contains(tool) || !kept(tool));
+    // A deferred tool the role now allows stays denied if the conversation started without it.
+    let sticky = CLAUDE_DEFERRED_TOOLS.iter().copied().filter(|tool| !role.contains(tool) && !kept(tool));
+    format!("--disallowedTools={}", denied.chain(sticky).collect::<Vec<_>>().join(","))
+}
+
+/// The deferred tools a launch leaves defined, for `app_instructions::remember_catalog`.
+pub(crate) fn claude_kept_natives(worker: Option<WorkerTrim>, history: &crate::app_instructions::History) -> Vec<String> {
+    let role = claude_role_denied(worker);
+    CLAUDE_DEFERRED_TOOLS.iter().filter(|tool| history.lists_native(tool, role.contains(*tool))).map(|tool| (*tool).to_owned()).collect()
+}
+
+/// Whether `name` is a deferred tool kept only so a resumed conversation holds its definition.
+fn claude_refuses_native(worker: Option<WorkerTrim>, name: &str) -> bool {
+    CLAUDE_DEFERRED_TOOLS.contains(&name) && claude_role_denied(worker).contains(&name)
+}
+
+/// The `initialize` hooks of a Claude Code launch. `can_use_tool` is not consulted in
+/// bypassPermissions, nor for edits in acceptEdits, so a `PreToolUse` callback refuses the
+/// deferred tools a resumed worker keeps. A new conversation denies them outright and needs none.
+fn claude_refusal_hooks(worker: Option<WorkerTrim>, resumed: bool) -> Value {
+    let refused: Vec<&str> = claude_role_denied(worker).into_iter().filter(|tool| CLAUDE_DEFERRED_TOOLS.contains(tool)).collect();
+    if !resumed || refused.is_empty() {
+        return Value::Null;
+    }
+    json!({"PreToolUse":[{"matcher":refused.join("|"),"hookCallbackIds":[CLAUDE_REFUSAL_HOOK]}]})
+}
 
 /// Never runs an agent-reviewed task under some other policy.
 fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
@@ -111,6 +201,11 @@ fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
         return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
     }
     Ok(())
+}
+
+/// Claude Code and its key-based relays: the launches that take `--disallowedTools`.
+pub(crate) fn claude_family(provider: &str) -> bool {
+    matches!(provider, "claude" | "glm" | "mimo")
 }
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
@@ -140,6 +235,12 @@ pub struct RunConfig {
     pub codex_settings: Option<Value>,
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
+    /// `None` for a lead or a plain task; a team worker's tool trim (`architect::worker_trim`).
+    pub worker: Option<WorkerTrim>,
+    /// A Claude-family launch's `--disallowedTools` argument, computed once per turn from the
+    /// conversation's history (`claude_disallowed_tools`) so the launch, the catalog record and
+    /// the warm key agree; `None` derives it at spawn.
+    pub disallowed_tools: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -619,7 +720,7 @@ pub(crate) fn tool_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 pub(crate) fn opencode_configuration(mode: &str) -> String {
-    acp::configuration(mode)
+    acp::configuration(mode, &[])
 }
 
 /// The saved Command Code key for discovery paths that build their own process.
@@ -1150,6 +1251,10 @@ struct Protocol {
     mcp_required: bool,
     codex_mcp_servers: Option<Value>,
     mcp_tool_names: HashSet<String>,
+    /// Listed PandaCode tools whose handler refuses every call this turn (`RunTools::refused`):
+    /// Claude's permission check lets them through so the user is never asked to approve a
+    /// call that fails.
+    refused_tools: HashSet<String>,
     text_streams: text_stream::TextStreams,
     text_sequence: u64,
     claude_message_id: String,
@@ -1280,6 +1385,7 @@ impl Protocol {
             codex_mcp_servers: None,
             mcp_required: true,
             mcp_tool_names: HashSet::new(),
+            refused_tools: HashSet::new(),
             text_streams: text_stream::TextStreams::default(),
             text_sequence: 0,
             claude_message_id: String::new(),
@@ -1534,10 +1640,10 @@ impl Protocol {
             "contextCompaction" => {
                 self.tool_update(
                     id,
-                    Some("Compact context"),
+                    Some(COMPACT_CONTEXT_TOOL),
                     Some(status),
                     None,
-                    completed.then(|| "Conversation context compacted.".into()),
+                    completed.then(|| COMPACTED_OUTPUT.into()),
                     step,
                 );
             }
@@ -1752,7 +1858,8 @@ impl Protocol {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
-                json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
+                let hooks = claude_refusal_hooks(self.config.worker, self.config.resume_id.is_some());
+                json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":hooks}})
             }
         }
     }
@@ -1975,6 +2082,9 @@ impl Protocol {
         match method.as_str() {
             "skills/changed" => self.commands_changed(&value, &mut step),
             "item/tool/call" => self.host_tool_request(value, &mut step),
+            "mcpServer/elicitation/request" if self.codex_auto_approval(params) => {
+                step.write.push(json!({"id":value["id"],"result":{"action":"accept","content":{},"_meta":null}}));
+            }
             "item/tool/requestUserInput" | "mcpServer/elicitation/request" => self.input_request(value, &mut step),
             "serverRequest/resolved" => self.resolved_request(&params["requestId"], &mut step),
             "thread/tokenUsage/updated" => {
@@ -2252,6 +2362,7 @@ impl Protocol {
                 }
             },
             "session/request_permission"=>{
+                if self.allow_pandacode_tools(&value,&mut step) {return Ok(step);}
                 let options=params["options"].as_array();
                 let is_question=options.is_some_and(|options|options.iter().filter(|o|o["kind"]=="allow_once").count()>1 || options.iter().any(|o| {
                     let id=string(o,"optionId");
@@ -2375,10 +2486,10 @@ impl Protocol {
                     );
                     self.tool_update(
                         &id,
-                        Some("Compact context"),
+                        Some(COMPACT_CONTEXT_TOOL),
                         Some("completed"),
                         None,
-                        Some("Conversation context compacted.".into()),
+                        Some(COMPACTED_OUTPUT.into()),
                         &mut step,
                     );
                 }
@@ -2544,15 +2655,25 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::schedules::tools::self_scoped(tool) || crate::architect::team_tool(tool))
+                    } else if claude_refuses_native(self.config.worker, &name) {
+                        // Listed only so a resumed conversation keeps its definition.
+                        step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":format!("{name} is not available to this worker.")}}}));
+                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || tool == EXPLORE_TOOL || crate::custom_tools::auto_allowed(tool) || crate::bots::tools::self_scoped(tool) || crate::schedules::tools::self_scoped(tool) || crate::architect::team_tool(tool) || self.refused_tools.contains(tool))
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
                         // title or snapshot named paths. They cannot edit the checkout.
+                        // Explore only reads the checkout. Tool list/save only read and
+                        // write tool files in app data; running one asks unless the task
+                        // has Full access (`mcp_host` authorizes it).
                         // Bot tools are registered only in a bot's own tasks and only
                         // touch that bot's memory, schedules and messages to its owner.
                         // Schedule tools here only wake or list this thread's own schedules.
                         // Team tools only exist in team turns and only change team state.
+                        // A refused tool (`refused_tools`, the host's own set) is listed only
+                        // so a resumed conversation keeps its definition; its handler refuses
+                        // the call, so the user is never asked to approve it. Codex and ACP
+                        // permission layers do not read this set and may still prompt for one.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
                         // Plan mode investigates: reads and web lookups anywhere run;
@@ -2565,6 +2686,14 @@ impl Protocol {
                             &mut step,
                         )?;
                     }
+                } else if value["request"]["subtype"] == "hook_callback" && value["request"]["callback_id"] == CLAUDE_REFUSAL_HOOK {
+                    let name = string(&value["request"]["input"], "tool_name");
+                    let output = if claude_refuses_native(self.config.worker, &name) {
+                        json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":format!("{name} is not available to this worker.")}})
+                    } else {
+                        json!({})
+                    };
+                    step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":output}}));
                 } else {
                     step.write.push(json!({"type":"control_response","response":{"subtype":"error","request_id":value["request_id"],"error":"Control request unsupported"}}));
                 }
@@ -2764,11 +2893,27 @@ pub async fn run(
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
 ) -> Result<(), String> {
-    run_with_tools(config, sink, input, None, Default::default()).await
+    run_with_tools(config, sink, input, RunTools::default(), Default::default()).await
 }
 
 tokio::task_local! {
     static HARNESS: Arc<std::sync::atomic::AtomicBool>;
+    /// This run's `RunTools::refused`, read where Claude's protocol is set up (the launch paths
+    /// in between are shared with tests and tool hosts that have no refused set).
+    static REFUSED: Arc<HashSet<String>>;
+}
+
+/// A run's PandaCode tool host and exactly the listed names its handler refuses
+/// (`app_instructions::RunHost`): the single set Claude's permission check auto-allows.
+#[derive(Default)]
+pub struct RunTools {
+    pub host: Option<ToolHost>,
+    pub refused: HashSet<String>,
+}
+
+/// The refused names of the run this task belongs to, or none outside a run.
+fn run_refused() -> HashSet<String> {
+    REFUSED.try_with(|refused| (**refused).clone()).unwrap_or_default()
 }
 
 /// Marks the run as having reached the harness: from here an error is the harness's (its CLI is
@@ -2783,12 +2928,14 @@ pub async fn run_with_tools(
     config: RunConfig,
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
-    host: Option<ToolHost>,
+    tools: RunTools,
     harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     let identity = Protocol::new(config.clone());
     sink(identity.event("status", "Starting agent", None));
-    let result = HARNESS.scope(harness, run_inner(config, sink.clone(), input, host)).await;
+    let RunTools { host, refused } = tools;
+    let run = HARNESS.scope(harness, run_inner(config, sink.clone(), input, host));
+    let result = REFUSED.scope(Arc::new(refused), run).await;
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
     }
@@ -2848,7 +2995,11 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
                 command.arg("--allow-dangerously-skip-permissions");
             }
             // These wait on a live session; PandaCode's process ends with the turn.
-            command.arg(format!("--disallowedTools={}", CLAUDE_SESSION_BOUND_TOOLS));
+            let denied = config.disallowed_tools.clone().unwrap_or_else(|| {
+                let history = crate::app_instructions::History::of(&config.session_id, &config.provider, config.resume_id.as_deref());
+                claude_disallowed_tools(config.worker, &history)
+            });
+            command.arg(denied);
             if use_model {
                 command.args(["--model", &config.model]);
             } else if config.provider == "glm" {
@@ -2978,6 +3129,10 @@ async fn run_process(
 fn optional_metadata_tool(name: &str) -> bool {
     name == crate::session_titles::TOOL || name == crate::turn_changes::TRACK_TOOL
 }
+/// A registered tool that only reads the checkout, so it never asks in any mode.
+pub(crate) const EXPLORE_TOOL: &str = "pandacode_explore";
+pub(crate) use explore_permissions::explore_name;
+use explore_permissions::opencode_allowed;
 // Preview, simulator, VM, design, cloud deploy, Jev, and bot tools are optional
 // transport capabilities, but retain their normal approval requirements and transcript
 // activity. They are not metadata tools.
@@ -2985,18 +3140,25 @@ fn optional_transport_tool(name: &str) -> bool {
     optional_metadata_tool(name)
         || matches!(
             name,
-            "pandacode_run_project" | "pandacode_preview_file" | "pandacode_cloud_cli"
+            "pandacode_run_project" | "pandacode_preview_file" | "pandacode_cloud_cli" | EXPLORE_TOOL
         )
         || name.starts_with("pandacode_simulator_")
         || name.starts_with("pandacode_vm_")
         || name.starts_with("pandacode_design_")
         || name.starts_with("pandacode_jev_")
         || name.starts_with("pandacode_bot_")
+        || custom_tool(name)
+}
+/// Agent-made tools (`custom_tools`): their catalog changes between turns, so a resumed Codex
+/// thread must see them through the per-run MCP server, not its first turn's dynamic tools.
+fn custom_tool(name: &str) -> bool {
+    matches!(name, crate::custom_tools::TOOL_LIST | crate::custom_tools::TOOL_SAVE | crate::custom_tools::TOOL_RUN)
 }
 fn per_run_mcp_tool(name: &str) -> bool {
     name.starts_with("pandacode_jev_")
         || optional_metadata_tool(name)
-        || matches!(name, "pandacode_run_project" | "pandacode_preview_file")
+        || matches!(name, "pandacode_run_project" | "pandacode_preview_file" | EXPLORE_TOOL)
+        || custom_tool(name)
 }
 
 fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>) {
@@ -3099,6 +3261,12 @@ async fn run_process_with_tools(
         (_, None) => (None, None),
         _ => return Err("Host tools are unavailable for this provider".into()),
     };
+    // Known only now: a cloud run does not list explore, and a bind can fail. Either way the
+    // allow rule must not cover a same-named tool on a user's own server.
+    let served = opencode_allowed(&config.provider, mcp.is_some(), &mcp_tool_names);
+    if !served.is_empty() {
+        command.env("OPENCODE_CONFIG_CONTENT", acp::configuration(&config.mode, &served));
+    }
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
@@ -3141,6 +3309,7 @@ async fn run_process_with_tools(
     // An optional bridge can fail to bind. In that case no local MCP tool is
     // registered, so a same-named user server must retain normal approvals.
     protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
+    protocol.refused_tools = run_refused();
     let mut jobs = tokio::task::JoinSet::new();
     let mut queued = VecDeque::new();
     let mut bytes = Vec::new();
@@ -3315,7 +3484,7 @@ mod coalesce_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn frame_buffer_shrinks_only_when_large_and_drained() {
         assert!(super::should_shrink(10, 2 * 1024 * 1024));
@@ -3382,7 +3551,7 @@ mod tests {
         assert!(validate_reasoning_effort("hermes", Some("bad\nflag")).is_err());
     }
 
-    pub(super) fn config(provider: &str) -> RunConfig {
+    pub(crate) fn config(provider: &str) -> RunConfig {
         RunConfig {
             session_id: "local".into(),
             provider: provider.into(),
@@ -3397,6 +3566,8 @@ mod tests {
             goal: None,
             codex_settings: None,
             images: Vec::new(),
+            worker: None,
+            disallowed_tools: None,
         }
     }
 
@@ -3408,7 +3579,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut local = config("claude");
         local.mode = "bogus".into();
-        assert!(run_with_tools(local, sink.clone(), rx, None, reached.clone()).await.is_err());
+        assert!(run_with_tools(local, sink.clone(), rx, RunTools::default(), reached.clone()).await.is_err());
         assert!(!reached.load(std::sync::atomic::Ordering::SeqCst));
         // A harness that cannot start is the harness's failure.
         let reached: Arc<std::sync::atomic::AtomicBool> = Default::default();
@@ -4764,6 +4935,8 @@ mod tests {
                 goal: None,
                 codex_settings: None,
                 images: Vec::new(),
+                worker: None,
+                disallowed_tools: None,
             };
             let mut task = tokio::spawn(run(cfg, sink, receiver));
             let outcome = match tokio::time::timeout(Duration::from_secs(90), &mut task).await {

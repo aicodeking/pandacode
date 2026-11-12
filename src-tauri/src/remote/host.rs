@@ -3286,6 +3286,7 @@ mod tests {
             parent_worker: None,
             resume_prompt: None,
             tool_catalog_version: 0,
+            token_saver: Default::default(),
         }
     }
 

@@ -230,6 +230,24 @@ fn compaction_completion_has_persistable_activity_without_inventing_assistant_te
         .is_some_and(|tool| tool.status == "completed" && tool.output.contains("compacted"))));
 }
 
+#[test]
+fn a_claude_compact_boundary_stored_like_a_run_is_found_as_a_compaction() {
+    let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+    let project = store.add_project(&std::env::temp_dir()).unwrap();
+    let session = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap().id;
+    assert_eq!(crate::app_instructions::new_compaction(&store, &session), None);
+    let mut claude = Protocol::new(RunConfig { session_id: session.clone(), ..tests::config("claude") });
+    let step = claude.receive(json!({"type":"system","subtype":"compact_boundary","session_id":"remote","uuid":"boundary","compact_metadata":{"trigger":"auto","pre_tokens":167000}})).unwrap();
+    assert!(!step.events.is_empty());
+    let assistant = std::sync::Mutex::new(String::new());
+    for mut event in step.events {
+        crate::save_agent_activity(&store, &assistant, &mut event, None).unwrap();
+    }
+    let row: i64 = store.db.query_row("SELECT id FROM messages WHERE session_id=?1 AND tool_id='compaction:boundary'", [&session], |row| row.get(0)).unwrap();
+    assert_eq!(crate::app_instructions::new_compaction(&store, &session), Some(row));
+    crate::app_instructions::forget(std::slice::from_ref(&session));
+}
+
 /// Explicit opt-in only: reads installed command metadata, never submits a prompt.
 #[tokio::test]
 #[ignore = "Set PANDACODE_SMOKE_COMMANDS=1 to inspect installed CLI command metadata"]
@@ -331,4 +349,68 @@ fn claude_rechecks_commands_against_fresh_initialization_before_submission() {
     config.prompt = "/terminal-only".into();
     let mut protocol = Protocol::new(config);
     assert!(protocol.receive(json!({"type":"control_response","response":{"request_id":"pandacode-init","subtype":"success","response":{"commands":[{"name":"terminal-only"}],"terminal_slash_commands":["terminal-only"]}}})).is_err());
+}
+
+/// One launch of `prompt` through the real instruction path (`instruct_launch`); `command` is
+/// what `prepare` derives from the slash-command resolution. Returns the message the harness gets.
+fn launched(provider: &str, prompt: &str, resume: Option<&str>, command: bool) -> (RunConfig, crate::app_instructions::Instructed) {
+    use crate::app_instructions::{instruct_launch, LaunchText, Role};
+    let store = std::sync::Mutex::new(crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap());
+    let session = format!("slash-notes-{}", uuid::Uuid::new_v4());
+    let mut config = RunConfig { session_id: session, prompt: prompt.into(), resume_id: resume.map(str::to_owned), ..tests::config(provider) };
+    let text = LaunchText { role: Role::Task, explore: None, offered: true, maintenance: command };
+    let instructed = instruct_launch(&store, &mut config, text);
+    (config, instructed)
+}
+
+/// Reproduced with Claude Code 2.1.322 and a project command `.claude/commands/foo.md` whose
+/// body is `ARGS=[$ARGUMENTS]`: everything after the name became the arguments, so the
+/// Standard-mode tracking note produced `ARGS=[(This turn your native edit tools are tracked
+/// automatically…)]` and `/foo hello` got the note appended. The init frame below is the shape
+/// Claude advertises such a command in. A native command's message now reaches it bare.
+#[test]
+fn hidden_notes_never_become_a_custom_commands_arguments() {
+    let init = json!({"type":"control_response","response":{"request_id":"pandacode-init","subtype":"success","response":{"commands":[{"name":"foo","description":"Echo arguments (project)","argumentHint":""}]}}});
+    for (typed, arguments) in [("/foo", ""), ("/foo hello", "hello")] {
+        // GLM launches with no settings file, so Standard mode always waits for its edits.
+        let (ordinary, _) = launched("glm", typed, Some("conv-1"), false);
+        assert!(ordinary.prompt.starts_with(typed) && ordinary.prompt.len() > typed.len(), "the regression: {:?}", ordinary.prompt);
+        let (config, instructed) = launched("glm", typed, Some("conv-1"), true);
+        assert_eq!(config.prompt, typed);
+        assert_eq!(instructed, crate::app_instructions::Instructed::default(), "nothing is recorded as sent");
+        assert!(!config.instructions.is_empty(), "the cached system prompt (and warm key) stay");
+        assert_eq!(crate::slash_commands::split_command(&config.prompt).map(|(_, args)| args), Some(arguments));
+        // What Claude receives for it.
+        let mut protocol = Protocol::new(RunConfig { provider: "claude".into(), ..config });
+        let step = protocol.receive(init.clone()).unwrap();
+        assert_eq!(step.write[0]["message"]["content"], typed);
+    }
+}
+
+/// Codex parses the text after `/review` as custom review instructions; a new conversation's app
+/// instructions (in the message for Codex) must not turn a bare `/review` into a custom review.
+/// They are owed to the next ordinary message instead.
+#[test]
+fn a_bare_review_stays_an_uncommitted_changes_review_and_owes_its_instructions() {
+    let (config, instructed) = launched("codex", "/review", None, true);
+    assert_eq!(config.prompt, "/review");
+    assert_eq!(instructed, crate::app_instructions::Instructed::default());
+    let mut protocol = Protocol::new(config.clone());
+    let step = thread_ready(&mut protocol).unwrap();
+    assert_eq!(step.write[0]["params"]["target"], json!({"type":"uncommittedChanges"}));
+    // The next ordinary message, now on a resumed thread, carries the full instructions once.
+    let store = std::sync::Mutex::new(crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap());
+    let next = |prompt: &str| {
+        let mut next = RunConfig { prompt: prompt.into(), resume_id: Some("thread".into()), ..config.clone() };
+        let text = crate::app_instructions::LaunchText { role: crate::app_instructions::Role::Task, explore: None, offered: true, maintenance: false };
+        let instructed = crate::app_instructions::instruct_launch(&store, &mut next, text);
+        (next.prompt, instructed)
+    };
+    let (sent, instructed) = next("fix it");
+    assert!(sent.starts_with("fix it") && sent.contains("File change tracking:"), "{sent}");
+    let (retry, _) = next("fix it");
+    assert_eq!(retry, sent, "a failed turn still owes them");
+    crate::app_instructions::instructed_as(&config.session_id, instructed.role.unwrap());
+    assert_eq!(next("and again").0, "and again", "paid once");
+    crate::app_instructions::forget(std::slice::from_ref(&config.session_id));
 }

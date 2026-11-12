@@ -76,6 +76,9 @@ embedded editor engine.
 - **Review every turn.** Saved [turn changes](docs/turn-changes.md) with
   unified/split diffs, an embedded [browser](docs/browser.md), and file previews.
 - **Token saver.** Per-task response-style packs that cut output tokens.
+- **Agent-made tools (opt-in).** Agents save repeated work as named scripts that every agent in the
+  project reuses; drag a useful one to Global in Settings. Off by default (no measured benefit
+  yet): turn on Settings → Tools & add-ons → Agent-made tools. See [agent-made tools](docs/custom-tools.md).
 - **Quick overlay.** A global shortcut (default ⌘/Ctrl + Shift + Space) opens a
   launcher for new and running tasks from anywhere.
 - **Agent usage.** Account limits and cost estimates for each installed harness
@@ -145,6 +148,16 @@ Discord, WhatsApp or a browser too.
   per-launch switch, so turn it off in Cline's own settings. With the switch on,
   Claude Code also stops fetching remote feature flags (it uses its defaults)
   and can't take sessions started remotely on this computer.
+- **The local code explorer reads without asking.** `pandacode_explore` is a
+  read-only search, outline and read tool agents call with no approval prompt;
+  it refuses secret files, but your harness's own deny rules (such as Claude
+  Code's `Read(...)` patterns) do not bind it. It is on by default only for
+  Claude Code, the one harness it was measured on; other harnesses (GLM and MiMo
+  included) get it only after you turn on their own switch listed under
+  Settings → Agents → **Local code explorer (pandacode_explore)** (stored as an
+  empty `explore-on-<provider>` file in PandaCode's app data, which you can also
+  create by hand). That main switch turns it off for every harness. See
+  [Agent tools](docs/agent-tools.md).
 
 A few automatic checks send no personal data — just plain requests for public
 information:

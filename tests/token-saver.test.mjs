@@ -31,7 +31,7 @@ test('RTK guidance needs rtk installed, and packs combine in one block', () => {
   updateThread('t2', { packs: ['lean-code', 'quiet-tools', 'rtk'] });
   const block = guidance(['lean-code', 'quiet-tools', 'rtk'], 'full', withRtk);
   assert.match(block, /least code that fully solves/);
-  assert.match(block, /rg -n pattern path/);
+  assert.match(block, /not broad listings/);
   assert.doesNotMatch(block, /caveman/i);
 });
 
@@ -86,4 +86,21 @@ test('the saver stamps when its configuration was sent, and reminders keep the s
   } finally {
     Date.now = realNow;
   }
+});
+
+test('guidance snapshot: all 96 pack, level and rtk combinations', async () => {
+  // token_saver.rs hashes the same 96 outputs to the same value (`guidance_snapshot`), so
+  // threads and team workers get identical text. Update both hashes when you change
+  // src/token-saver-packs.json on purpose.
+  const { createHash } = await import('node:crypto');
+  const ids = ['caveman', 'lean-code', 'quiet-tools', 'rtk'], out = [];
+  for (let mask = 0; mask < 16; mask++) for (const level of ['lite', 'full', 'ultra']) for (const rtk of [false, true]) {
+    out.push(guidance(ids.filter((_, i) => mask & (1 << i)), level, { rtk }));
+  }
+  assert.equal(createHash('sha256').update(out.join('\0')).digest('hex'), '6e2a8923af5b48bc63b6ac8cd8b48b19049095e727909c04228da63bd5390502');
+  assert.equal(guidance(['quiet-tools'], 'full', noRtk), 'Response style (PandaCode token saver, applies to this whole thread until changed; reader pays per token):\nKeep tool output small. Search with targeted patterns, not broad listings. Read only the line ranges you need, and do not read a file again unless it changed. Use quiet flags (git --no-pager, -q, --silent) and cap long output with head or tail. Run the tests closest to the change before the full suite.\n\nStart each prompt you give your own subagents (Task tool or similar) with one "Response style:" line that asks for this same style and its exceptions.');
+  // Only an active style mentions subagents; a switch-off does not.
+  assert.doesNotMatch(guidance([], 'full', noRtk), /subagents/);
+  assert.match(guidance(['caveman'], 'lite', noRtk), /reports to the lead \(keep findings complete and unambiguous\)/);
+  assert.match(guidance(['rtk'], 'lite', withRtk), /without the explore tool \(pandacode_explore\), also rtk read <file> and rtk grep <pattern>\./);
 });

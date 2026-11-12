@@ -1,0 +1,122 @@
+{
+  "note": "Held-out localization tasks, chosen on 2026-11-06 before batch E and never used to tune the engine. Report them apart from tasks.json. Do not edit: the doc's pre-registration records this file's sha256.",
+  "repos": {
+    "hono": {
+      "url": "https://github.com/honojs/hono.git",
+      "depth": 400,
+      "prune": [
+        ".claude",
+        ".mcp.json",
+        "CLAUDE.md"
+      ]
+    }
+  },
+  "localization": [
+    {
+      "id": "ho-realm-escape",
+      "repo": "hono",
+      "commit": "ed1d5f72135ccf7e09c17d64dc4af7588dd3e491",
+      "gold": [
+        "src/middleware/basic-auth/index.test.ts",
+        "src/middleware/basic-auth/index.ts",
+        "src/middleware/bearer-auth/index.test.ts",
+        "src/middleware/bearer-auth/index.ts",
+        "src/middleware/jwk/jwk.ts",
+        "src/middleware/jwt/index.test.ts",
+        "src/middleware/jwt/jwt.ts"
+      ],
+      "tags": ["held-out", "auth", "glob-narrow"],
+      "prompt": "Every middleware that sends a WWW-Authenticate challenge with a configurable realm must escape backslashes in the realm, not only double quotes. Which code would change for this, including the tests that cover it?"
+    },
+    {
+      "id": "ho-lambda-v2-headers",
+      "repo": "hono",
+      "commit": "8b7f9e97d661dbc8e933cf81dc36fec8d35b9146",
+      "gold": [
+        "adapters/aws-lambda/src/handler.test.ts",
+        "adapters/aws-lambda/src/handler.ts",
+        "src/adapter/aws-lambda/handler.test.ts",
+        "src/adapter/aws-lambda/handler.ts"
+      ],
+      "tags": ["held-out", "duplicate-code"],
+      "prompt": "An AWS Lambda request from API Gateway v2 that carries a header value with non-ASCII characters is answered with 400. The other event processors already encode such values; API Gateway v2 should do the same, in every package that ships the Lambda adapter. Which code would change for this, including tests?"
+    },
+    {
+      "id": "ho-accept-q0",
+      "repo": "hono",
+      "commit": "f147de5ea1eeadd4b4851ab075999673e140a303",
+      "gold": [
+        "src/helper/accepts/accepts.test.ts",
+        "src/helper/accepts/accepts.ts",
+        "src/middleware/language/index.test.ts",
+        "src/middleware/language/language.ts"
+      ],
+      "tags": ["held-out", "glob-narrow"],
+      "prompt": "A quality value of 0 in an Accept-style header means the range is not acceptable, but content negotiation still matches such entries (Accept: application/json;q=0 is served JSON), and so does language detection from the request header. Compression already ignores them. Which code would change so that the other consumers skip q=0 entries too, including tests?"
+    },
+    {
+      "id": "ho-content-type-case",
+      "repo": "hono",
+      "commit": "b20d4225c9aa9e615717ca74e437852cc9fd5b94",
+      "gold": [
+        "src/utils/body.test.ts",
+        "src/utils/body.ts",
+        "src/utils/buffer.test.ts",
+        "src/utils/buffer.ts",
+        "src/validator/validator.test.ts",
+        "src/validator/validator.ts"
+      ],
+      "tags": ["held-out"],
+      "prompt": "Request bodies sent with an upper- or mixed-case Content-Type media type (for example Multipart/Form-Data or Application/JSON) are not parsed or validated, because the media type is matched case-sensitively. Which code would change to match it case-insensitively while keeping parameters such as the boundary, including tests?"
+    },
+    {
+      "id": "loc-deepseek-efforts",
+      "commit": "cf05f25db7167186fea139931a9d672b186abf45",
+      "gold": [
+        "src-tauri/src/providers/acp.rs",
+        "src-tauri/src/providers/acp_catalog.rs",
+        "src-tauri/src/providers/deepseek.rs"
+      ],
+      "tags": ["held-out"],
+      "prompt": "The DeepSeek harness reports one reasoning-effort option shared by all its models, but PandaCode shows efforts only for the currently selected DeepSeek model. Every DeepSeek model should list the efforts. Which code would change for this?"
+    },
+    {
+      "id": "loc-trace-refold",
+      "commit": "e25a1104788afa5771612bdc2cdeb6b763effbdb",
+      "gold": [
+        "src/main.ts",
+        "src/tool-trace.css",
+        "src/trace-motion.ts",
+        "tests/streaming.spec.ts"
+      ],
+      "tags": ["held-out", "truncated-read"],
+      "prompt": "When an agent writes a text reply and then starts more tool calls, the live tool trace reopens the earlier steps and their result cards. Steps the agent has already narrated past should fold once to their summary and stay folded, while a group the reader opened by hand stays open. Which code would change for this, including styles and tests?"
+    },
+    {
+      "id": "loc-saver-measured",
+      "commit": "0ff804b10f12de3d6364e238d28c8a305f1d2034",
+      "gold": [
+        "src/token-saver-panel.ts",
+        "src/token-saver.css",
+        "src/token-saver.ts",
+        "tests/token-saver.spec.ts",
+        "tests/token-saver.test.mjs"
+      ],
+      "tags": ["held-out"],
+      "prompt": "The token saver panel shows only an estimate. It should also show what the thread actually spent since its current pack configuration went out (input, output and the cache-read share), from the task's recorded token usage. Which code would change for this, including styles and tests?"
+    },
+    {
+      "id": "loc-docker-cloud",
+      "commit": "7523279f42b697a0f63643abd7f97cdcaf19f8ee",
+      "gold": [
+        "src-tauri/src/cloud.rs",
+        "src-tauri/src/cloud/commands.rs",
+        "src-tauri/src/cloud/sandbox.rs",
+        "src/cloud-settings.ts",
+        "src/preview-vm.ts"
+      ],
+      "tags": ["held-out", "new-provider"],
+      "prompt": "Add Docker containers as a new cloud-agent provider: one container per task on a local or remote container engine, set up from the cloud sandbox settings. Apart from the new provider module itself, which existing code would change to register, connect and show it, including the browser preview mocks?"
+    }
+  ]
+}

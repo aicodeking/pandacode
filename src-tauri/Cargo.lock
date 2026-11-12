@@ -3319,6 +3319,7 @@ dependencies = [
  "ort",
  "portable-pty",
  "regex",
+ "regex-syntax",
  "reqwest 0.13.5",
  "rusqlite",
  "rustls",

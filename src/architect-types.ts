@@ -75,6 +75,8 @@ export interface TeamWorker extends WorkerProfile {
   attempt: number;
   abandoned?: boolean;
   checkpoint?: WorkerCheckpoint | null;
+  /** Token saver packs the lead gave it (workers never inherit one). */
+  tokenSaver?: { packs: string[]; level?: string } | null;
   createdAt: number;
   updatedAt: number;
 }

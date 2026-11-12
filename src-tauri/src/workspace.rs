@@ -1,8 +1,20 @@
 use serde::Serialize;
 mod file_search;
+mod secret_paths;
 mod text_search;
 pub use file_search::search_files;
+pub(crate) use secret_paths::{extension, home_folder, is_code_extension, refused_entry, root_refusal, secret_path, sensitive_name, HOME_PRIVATE, SYSTEM_ROOTS};
 pub use text_search::{search_text, TextSearchResult};
+pub(crate) use text_search::{open_inside_up_to, read_inside_up_to, whole_word_pattern, MAX_FILE_BYTES as MAX_READ_BYTES};
+/// A walk of a project as a search sees it. Gitignore rules apply; outside a repository only the
+/// project's own, as a stray `.gitignore` in a parent folder must not hide the project.
+pub(crate) fn project_walker(root: &Path) -> ignore::WalkBuilder {
+    let in_repo = root.ancestors().any(|path| path.join(".git").exists());
+    let mut walker = ignore::WalkBuilder::new(root);
+    walker.hidden(false).require_git(in_repo).parents(in_repo).max_depth(Some(MAX_WALK_DEPTH));
+    walker
+}
+const MAX_WALK_DEPTH: usize = 48;
 /// Build output and version-control folders that no listing should walk into.
 pub(crate) fn excluded_entry(name: &str, directory: bool) -> bool {
     file_search::excluded(std::ffi::OsStr::new(name), directory)
@@ -65,7 +77,7 @@ impl std::fmt::Display for PathError {
     }
 }
 
-fn scoped_path(root: &Path, value: &str) -> Result<PathBuf, String> {
+pub(crate) fn scoped_path(root: &Path, value: &str) -> Result<PathBuf, String> {
     resolve_scoped_path(root, value).map_err(|e| e.to_string())
 }
 

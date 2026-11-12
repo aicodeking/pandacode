@@ -16,6 +16,7 @@ import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
 import { call, subscribe } from './bridge';
 import { mount as mountCapabilities } from './capabilities-panel';
+import { mountCustomTools } from './custom-tools-settings';
 import { mountRemoteSettings } from './remote-settings';
 import { mountSchedulesSettings } from './schedules-settings';
 import type { RemoteHost } from './remote-types';
@@ -79,8 +80,54 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; descr
 const PLANS = new Set<ProviderId>(['glm', 'mimo']);
 
 const LONG_DETAIL = 80;
-const switchRow = (id: string, title: string, detail: string, checked: boolean) =>
-  `<div class="setting-row"><div><strong>${title}${detail.length > LONG_DETAIL ? ` ${infoMark(detail)}` : ''}</strong>${detail.length > LONG_DETAIL ? '' : `<small>${detail}</small>`}</div><input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}></div>`;
+const switchRow = (id: string, title: string, detail: string, checked: boolean, disabled = false) =>
+  `<div class="setting-row"><div><strong>${title}${detail.length > LONG_DETAIL ? ` ${infoMark(detail)}` : ''}</strong>${detail.length > LONG_DETAIL ? '<small class="setting-status" hidden></small>' : `<small>${detail}</small>`}</div><input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}${disabled ? ' disabled' : ''}></div>`;
+
+const UNREADABLE = 'Couldn’t read this setting.';
+/** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
+ * `set_<name>_enabled`; the row's id and default hint. */
+const NATIVE_SWITCHES = [
+  { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM and MiMo team workers; off removes Skill next run.' },
+  { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
+  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code; turn on other harnesses below. Deny rules don’t bind it.' },
+] as const;
+/** The explorer's harnesses (`providers::explore_name`): Claude Code is on by default, each other
+ * one opts in with its own switch, stored natively as an `explore-on-<provider>` marker. */
+const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
+  { id: 'claude', name: 'Claude Code' }, { id: 'glm', name: 'GLM' }, { id: 'mimo', name: 'MiMo' }, { id: 'codex', name: 'Codex' },
+  { id: 'kimi', name: 'Kimi Code' }, { id: 'opencode', name: 'OpenCode' }, { id: 'pi', name: 'Pi' }, { id: 'omp', name: 'Oh My Pi' }, { id: 'grok', name: 'Grok Build' },
+];
+const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {
+  const hint = id === 'claude' ? 'On by default while the switch above is on.' : 'Off by default: not measured. Takes effect while the switch above is on.';
+  return `<div class="setting-row"><div><strong>Explorer · ${name} ${infoMark(hint)}</strong><small class="setting-status" hidden></small></div><input type="checkbox" class="settings-switch" id="explore-${id}" aria-label="Local code explorer for ${name}" disabled></div>`;
+};
+/** Settings → Tools & add-ons → Agent-made tools: opt-in, off by default. */
+const CUSTOM_TOOLS_SWITCH = { id: 'custom-tools-enabled', name: 'custom_tools', title: 'Agent-made tools', hint: 'Agents save and run project scripts. Off by default: no measured gain.' } as const;
+
+/** One native switch: disabled until read, so an unreadable value is never shown; read at each
+ * run, so it needs nothing from the window; a refused save puts the switch back and says why. */
+function mountNativeSwitch(panel: HTMLElement, { id, name, hint: text, args = {}, locked = false }: { id: string; name: string; hint: string; args?: Record<string, unknown>; locked?: boolean }): () => void {
+  const input = panel.querySelector<HTMLInputElement>(`#${id}`)!;
+  // A hint behind the title's mark leaves its row an empty status line for errors.
+  const hint = input.closest('.setting-row')!.querySelector('small')!;
+  const say = (message: string, alert = false) => {
+    const quiet = message === text && hint.classList.contains('setting-status');
+    hint.textContent = quiet ? '' : message;
+    hint.hidden = quiet;
+    if (alert) hint.setAttribute('role', 'alert'); else hint.removeAttribute('role');
+  };
+  call<boolean>(`${name}_enabled`, args)
+    .then(on => { input.checked = on === true; input.disabled = locked; })
+    .catch(() => say(UNREADABLE));
+  const change = (event: Event) => {
+    if (event.target !== input) return;
+    const on = input.checked;
+    say(text);
+    call(`set_${name}_enabled`, { ...args, enabled: on }).catch(error => { input.checked = !on; say(error instanceof Error ? error.message : String(error), true); });
+  };
+  panel.addEventListener('change', change);
+  return () => panel.removeEventListener('change', change);
+}
 
 function mountAgentsDockSettings(host: HTMLElement): () => void {
   let disposed = false;
@@ -147,6 +194,8 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong><small>Used for new tasks.</small></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong><small>Keep installed agents up to date.</small></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        ${NATIVE_SWITCHES.map(row => switchRow(row.id, row.title, row.hint, false, true)).join('')}
+        ${EXPLORE_HARNESSES.map(exploreHarnessRow).join('')}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh">${icon('refresh')}Refresh agents</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
@@ -159,7 +208,9 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong><small>App tools, MCP servers, and skills.</small></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
         <div class="setting-row"><div><strong>Jev · Optional add-on</strong><small>Browser tests and decision assistance. Your agents work without it.</small></div><button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button></div>
+        ${switchRow(CUSTOM_TOOLS_SWITCH.id, CUSTOM_TOOLS_SWITCH.title, CUSTOM_TOOLS_SWITCH.hint, false, true)}
       </div>
+      <div id="custom-tools-settings"></div>
       <div id="capabilities-settings"></div>`;
     case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skills-library"></div>';
@@ -276,6 +327,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'teams' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
+    if (id === 'tools') cleanups.push(mountNativeSwitch(panel, CUSTOM_TOOLS_SWITCH));
+    if (id === 'tools') cleanups.push(mountCustomTools(panel.querySelector<HTMLElement>('#custom-tools-settings')!, call, subscribe as (name: string, callback: () => void) => Promise<() => void>));
     if (id === 'tools') cleanups.push(mountCapabilities(panel.querySelector<HTMLElement>('#capabilities-settings')!, call));
     if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));
@@ -284,6 +337,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
+    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row)));
+    if (id === 'agents') cleanups.push(...EXPLORE_HARNESSES.map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider }, locked: provider === 'claude' })));
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const embed = options.embed[slot.dataset.embed as keyof SettingsOptions['embed']];

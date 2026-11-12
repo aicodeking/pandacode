@@ -1,0 +1,57 @@
+{
+ "label": "POST-HOC calibration, written after Fv2's results were known",
+ "design": "Fv2: 2 seeds per arm, registered margins, bootstrap 2000 rounds",
+ "reps": 1000,
+ "stepReps": 400,
+ "rows": [
+  {
+   "gate": "recall (tuned, 20 tasks)",
+   "tasks": 20,
+   "beforeRuns": 120,
+   "margin": -0.05,
+   "noEffect": 0.925,
+   "trueLoss10": 0
+  },
+  {
+   "gate": "precision (tuned, 20 tasks)",
+   "tasks": 20,
+   "beforeRuns": 120,
+   "margin": -0.05,
+   "noEffect": 0.7,
+   "trueLoss10": 0
+  },
+  {
+   "gate": "edit pass (6 edits)",
+   "tasks": 6,
+   "beforeRuns": 36,
+   "margin": -0.05,
+   "noEffect": 0.259,
+   "trueLoss10": 0.09,
+   "observedRates": {
+    "noEffect": 0.364,
+    "trueLoss10": 0.126
+   }
+  },
+  {
+   "gate": "edit pass, edit2 (14 tasks)",
+   "tasks": 14,
+   "beforeRuns": 28,
+   "margin": -0.05,
+   "noEffect": 0.103,
+   "trueLoss10": 0.009,
+   "observedRates": {
+    "noEffect": 0.684,
+    "trueLoss10": 0.038
+   }
+  },
+  {
+   "gate": "edit steps non-superiority (20 tasks)",
+   "tasks": 20,
+   "beforeRuns": 64,
+   "margin": 0.05,
+   "noEffect": 0.1125,
+   "trueLoss10": 0,
+   "trueGain10": 0.7075
+  }
+ ]
+}

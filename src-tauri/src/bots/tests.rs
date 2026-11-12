@@ -443,6 +443,12 @@ fn telegram_answers_private_chats_mentions_and_replies() {
 }
 
 #[test]
+fn slack_replies_are_escaped_as_its_api_requires() {
+    assert_eq!(slack::escape("<!channel> a & b <https://evil.example|docs>"), "&lt;!channel&gt; a &amp; b &lt;https://evil.example|docs&gt;");
+    assert_eq!(slack::escape("&lt;"), "&amp;lt;", "already escaped text stays as typed");
+}
+
+#[test]
 fn slack_handles_mentions_in_threads_and_direct_messages() {
     let mention = json!({"type": "app_mention", "user": "U1", "channel": "C1", "ts": "1.2", "text": "<@B1> summarize"});
     assert_eq!(slack::inbound(&mention, "B1"), Some(("U1".into(), "C1|1.2".into(), "summarize".into())));

@@ -1,0 +1,488 @@
+{
+  "about": "Token saver benchmark tasks. `loc` and `edit` name tasks in tasks.json and reuse their gold, tests and sanity verdicts. `report` tasks: each rubric item is a list of case-insensitive regexes, anchored at word boundaries, that must all match one unit of the final answer (a line, or for a review one finding). `negativeControls` are answers no rubric may score more than 1 item on, except its own task. Pre-registered as S1v2 in docs/token-saver-benchmark.md; never edit after the batch starts.",
+  "workerModel": "sonnet",
+  "selectorModel": "opus",
+  "smokeTasks": [
+    "loc-connect-keychain",
+    "rep-explain-queue"
+  ],
+  "loc": [
+    "loc-model-picker-errors",
+    "loc-opencode-efforts",
+    "loc-cloud-credentials",
+    "loc-skill-brief",
+    "loc-streaming-paint",
+    "loc-connect-keychain",
+    "loc-all-keychain",
+    "loc-usage-keychain",
+    "loc-antigravity-fallback",
+    "loc-cline-mcp",
+    "loc-branch-switch",
+    "loc-agent-env",
+    "loc-team-stop",
+    "out-csrf",
+    "out-auth-transports",
+    "out-cimd",
+    "out-husky",
+    "out-lint-sanitize",
+    "out-ci-disks",
+    "vsc-search-leak"
+  ],
+  "edit": [
+    "edit-appimage-x11",
+    "edit-sidebar-sections",
+    "edit-projects-added-order",
+    "edit-recipe-harnesses",
+    "edit-connect-secrets",
+    "edit-npx-platforms"
+  ],
+  "report": [
+    {
+      "id": "rep-review-deepseek",
+      "kind": "review",
+      "commit": "17d751c",
+      "plant": [
+        {
+          "path": "src-tauri/src/provider_settings.rs",
+          "find": "remove_key(DEEPSEEK_KEY)?;\n        crate::agent_usage::invalidate(\"deepseek\");",
+          "replace": "remove_key(DEEPSEEK_KEY)?;"
+        },
+        {
+          "path": "src-tauri/src/provider_settings.rs",
+          "find": "Err(\"Noninteractive DeepSeek secure-store access is unavailable.\".into())",
+          "replace": "deepseek_key()"
+        }
+      ],
+      "prompt": "Review the uncommitted change in this checkout (see `git diff`): it makes DeepSeek usage checks read the saved key without any interactive prompt and refresh when the key changes. Read the code; do not build, run tests or edit anything. List every defect you find in the change. Finish your reply with one fenced json block of the form {\"findings\":[{\"file\":\"repo/relative/path\",\"line\":123,\"issue\":\"one sentence\"}]}.",
+      "rubric": [
+        {
+          "id": "remove-skips-invalidate",
+          "line": [
+            "\\bremov\\w*",
+            "\\b(invalidat\\w*|stale|cached?|refresh\\w*)\\b"
+          ]
+        },
+        {
+          "id": "linux-unlock-prompt",
+          "line": [
+            "\\b(linux|secret service|keyring|other platforms|non-?(mac|windows)\\w*)\\b|not\\(any",
+            "\\b(unlock\\w*|prompt\\w*|dialogs?|interactive\\w*)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-review-simulator",
+      "kind": "review",
+      "commit": "c9354ea",
+      "plant": [
+        {
+          "path": "src-tauri/src/simulator.rs",
+          "find": "if png.len() < 24 || &png[1..4] != b\"PNG\" || scale <= 0.0 { return None; }",
+          "replace": "if png.len() < 20 || &png[1..4] != b\"PNG\" { return None; }"
+        },
+        {
+          "path": "src-tauri/src/simulator.rs",
+          "find": "[\"com.apple.pearl-id\"].as_bool() != Some(true))",
+          "replace": "[\"com.apple.pearl-id\"].as_bool() == Some(true))"
+        }
+      ],
+      "prompt": "Review the uncommitted change in this checkout (see `git diff`): when a simulator's device profile has no screen size, it measures the screen from the device's capabilities or from a captured PNG frame. Read the code; do not build, run tests or edit anything. List every defect you find in the change. Finish your reply with one fenced json block of the form {\"findings\":[{\"file\":\"repo/relative/path\",\"line\":123,\"issue\":\"one sentence\"}]}.",
+      "rubric": [
+        {
+          "id": "short-png-panics",
+          "line": [
+            "\\b(png|frame|header|len|length|short|20|24)\\b",
+            "\\b(panic\\w*|out.of.bounds|bounds|index\\w*|slic\\w*|crash\\w*)\\b"
+          ]
+        },
+        {
+          "id": "scale-not-positive",
+          "line": [
+            "\\bscale\\b",
+            "\\b(zero|0\\.0|negative|divi\\w*|infinit\\w*|inf|nan|positive)\\b|<= ?0"
+          ]
+        },
+        {
+          "id": "home-button-inverted",
+          "line": [
+            "\\b(home.?button|pearl\\w*|face ?id)\\b",
+            "\\b(invert\\w*|backwards?|opposite|negat\\w*|revers\\w*|flip\\w*)\\b|== ?Some\\(true\\)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-review-pi-launcher",
+      "kind": "review",
+      "commit": "8f8df5e",
+      "plant": [
+        {
+          "path": "src-tauri/src/providers/launch.rs",
+          "find": ".trim().trim_start_matches('@');",
+          "replace": ".trim();"
+        },
+        {
+          "path": "src-tauri/src/providers/pi.rs",
+          "find": "mode(builder, 0o700);",
+          "replace": "mode(builder, 0o755);"
+        }
+      ],
+      "prompt": "Review the uncommitted change in this checkout (see `git diff`): it lets PandaCode find the Pi launcher behind Windows batch shims that call node without quotes. Read the code; do not build, run tests or edit anything. List every defect you find in the change. Finish your reply with one fenced json block of the form {\"findings\":[{\"file\":\"repo/relative/path\",\"line\":123,\"issue\":\"one sentence\"}]}.",
+      "rubric": [
+        {
+          "id": "at-prefix-not-stripped",
+          "line": [
+            "@",
+            "\\b(strip\\w*|trim\\w*|prefix\\w*)\\b"
+          ]
+        },
+        {
+          "id": "bridge-dir-world-readable",
+          "line": [
+            "\\b(0?o?755|world\\w*|other users|group|everyone)\\b",
+            "\\b(perm\\w*|mode|readab\\w*|access\\w*|secur\\w*|privat\\w*|0?o?700)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-explain-secrets",
+      "kind": "explain",
+      "at": "df884aa",
+      "prompt": "Explain how PandaCode stores app secrets such as provider API keys: where and how they are written on macOS, how concurrent writers are kept apart, what happens to secrets saved by older versions, and what Linux and Windows do. Read the code; do not edit anything. Cite the functions you rely on.",
+      "rubric": [
+        {
+          "id": "file-name",
+          "line": [
+            "\\bsecrets\\.json\\b"
+          ]
+        },
+        {
+          "id": "mode-0600",
+          "line": [
+            "\\b0o?600\\b"
+          ]
+        },
+        {
+          "id": "atomic-rename",
+          "line": [
+            "\\brenam\\w*",
+            "\\b(atomic\\w*|temp\\w*|tmp)\\b"
+          ]
+        },
+        {
+          "id": "fsync",
+          "line": [
+            "\\b(fsync\\w*|sync_all|sync_data)\\b"
+          ]
+        },
+        {
+          "id": "lock-file",
+          "line": [
+            "\\.lock\\b|\\block ?files?\\b|\\bflock\\b|\\badvisory lock"
+          ]
+        },
+        {
+          "id": "keychain-migrates",
+          "line": [
+            "\\bkeychain\\b",
+            "\\b(migrat\\w*|mov(e|ed|es)|cop(y|ied|ies))\\b|\\bsav\\w* (the value |it )?(to|in(to)?) the file\\b"
+          ]
+        },
+        {
+          "id": "keychain-deleted",
+          "line": [
+            "\\bkeychain\\b",
+            "\\b(delet\\w*|remov\\w*)\\b"
+          ]
+        },
+        {
+          "id": "os-stores",
+          "line": [
+            "\\b(secret service|credential manager)\\b"
+          ]
+        },
+        {
+          "id": "file-mode-env",
+          "line": [
+            "\\bPANDACODE_SECRETS_FILE\\b"
+          ]
+        },
+        {
+          "id": "why-no-keychain",
+          "line": [
+            "\\bkeychain\\b",
+            "\\b(re-?prompt\\w*|unsigned|team id|code.?sign\\w*|pinned to (the|each|a) build|every (app )?update)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-explain-queue",
+      "kind": "explain",
+      "at": "df884aa",
+      "prompt": "Explain how the native per-task message queue works: what it stores and where, its limits, how entries are ordered, how one is delivered so it is sent only once, and what happens when a delivery fails. Read the code; do not edit anything. Cite the functions you rely on.",
+      "rubric": [
+        {
+          "id": "limit-50",
+          "line": [
+            "\\b50\\b",
+            "\\b(entr(y|ies)|messages?|queued?|limit|cap|max\\w*|per task)\\b"
+          ]
+        },
+        {
+          "id": "text-128k",
+          "line": [
+            "\\b128\\s*(k|kib|kb)\\b|\\b128 ?\\* ?1024\\b|\\b131,?072\\b"
+          ]
+        },
+        {
+          "id": "attachments-1mib",
+          "line": [
+            "\\b1\\s*(mib|mb)\\b|\\b1024 ?\\* ?1024\\b|\\b1,?048,?576\\b|\\bone megabyte\\b",
+            "\\battach\\w*"
+          ]
+        },
+        {
+          "id": "sqlite-table",
+          "line": [
+            "\\bqueued_messages\\b"
+          ]
+        },
+        {
+          "id": "append-position",
+          "line": [
+            "\\bposition\\b",
+            "\\b(max|end|append\\w*|last|back)\\b"
+          ]
+        },
+        {
+          "id": "take-removes",
+          "line": [
+            "\\btake\\b",
+            "\\b(remov\\w*|delet\\w*)\\b"
+          ]
+        },
+        {
+          "id": "restore-front",
+          "line": [
+            "\\brestor\\w*",
+            "\\b(front|head|min)\\b"
+          ]
+        },
+        {
+          "id": "restore-skips-limit",
+          "line": [
+            "\\b(restor\\w*|put back|requeu\\w*)\\b",
+            "\\b(skip\\w*|bypass\\w*|ignor\\w*|exempt\\w*|not count\\w*)\\b",
+            "\\b(limit|cap|50)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-explain-saver-resend",
+      "kind": "explain",
+      "at": "df884aa",
+      "prompt": "Explain how PandaCode decides when to send the token saver guidance with an outgoing message, and what exactly it sends. Read the code; do not edit anything. Cite the functions you rely on.",
+      "rubric": [
+        {
+          "id": "on-change",
+          "line": [
+            "\\b(chang\\w*|differ\\w*|sentKey)\\b",
+            "\\b(packs?|level)\\b"
+          ]
+        },
+        {
+          "id": "remind-8",
+          "line": [
+            "\\bREMIND_EVERY\\b|\\b(every|each) (8|eight)(th)?\\b|\\b(8|eight)(th)? (messages?|turns?|sends?)\\b"
+          ]
+        },
+        {
+          "id": "stored-locally",
+          "line": [
+            "\\blocalStorage\\b|\\bpandacode\\.tokenSaver"
+          ]
+        },
+        {
+          "id": "rtk-needs-install",
+          "line": [
+            "\\brtk\\b",
+            "\\b(install\\w*|availab\\w*|present|missing)\\b"
+          ]
+        },
+        {
+          "id": "off-message",
+          "line": [
+            "\\b(off|normal style)\\b",
+            "\\b(empty|no packs|clear\\w*|remov\\w*|turn\\w*|switch\\w*|disabl\\w*|none)\\b"
+          ]
+        },
+        {
+          "id": "counter-reset",
+          "line": [
+            "\\b(turns?|count\\w*)\\b",
+            "\\b(reset\\w*|zero)\\b"
+          ]
+        },
+        {
+          "id": "header-text",
+          "line": [
+            "\\bResponse style \\(PandaCode token saver"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-fail-sidebar",
+      "kind": "failing",
+      "commit": "a592914",
+      "overlay": [
+        {
+          "path": "tests/sidebar-sections.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "prompt": "Run `node --test tests/sidebar-sections.test.mjs` in this checkout. Do not edit anything. Report which tests fail and, for each, the cause in the code under test. Finish your reply with one fenced json block of the form {\"failing\":[\"test name\"],\"causes\":[\"one sentence\"]}.",
+      "rubric": [
+        {
+          "id": "t-active-latest",
+          "line": [
+            "Active lists the latest start first"
+          ]
+        },
+        {
+          "id": "t-finished-keeps",
+          "line": [
+            "Finished keeps every finished task"
+          ]
+        },
+        {
+          "id": "t-only-three",
+          "line": [
+            "only Active, Finished and Settled"
+          ]
+        },
+        {
+          "id": "t-exactly-one",
+          "line": [
+            "puts every task in exactly one section"
+          ]
+        },
+        {
+          "id": "t-open-holds",
+          "line": [
+            "the open thread holds its section"
+          ]
+        },
+        {
+          "id": "cause-file",
+          "line": [
+            "\\bsidebar-sections\\.ts\\b|\\bsidebarSections\\b"
+          ]
+        },
+        {
+          "id": "cause-rest",
+          "line": [
+            "\\b(rest|other list|chats|falls? (out|into))\\b",
+            "\\b(stages?|review|unpinned|interrupted|not pinned)\\b"
+          ]
+        },
+        {
+          "id": "cause-sort",
+          "line": [
+            "\\b(compareResponded|latest response|responded|re-?sort\\w*|reorder\\w*)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rep-fail-appimage",
+      "kind": "failing",
+      "commit": "02f8dfe",
+      "overlay": [
+        {
+          "path": "scripts/release/appimage.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "prompt": "Run `node --test scripts/release/appimage.test.mjs` in this checkout. Do not edit anything. Report which tests fail and, for each, the cause in the code under test. Finish your reply with one fenced json block of the form {\"failing\":[\"test name\"],\"causes\":[\"one sentence\"]}.",
+      "rubric": [
+        {
+          "id": "t-gtk-hook",
+          "line": [
+            "the GTK hook keeps a GDK_BACKEND the user set"
+          ]
+        },
+        {
+          "id": "cause-file",
+          "line": [
+            "\\b(appimage\\.mjs|respectGdkBackend|FORCED_BACKEND)\\b"
+          ]
+        },
+        {
+          "id": "cause-commented",
+          "line": [
+            "\\bcomment\\w*",
+            "\\b(regex\\w*|pattern|match\\w*|FORCED_BACKEND|export GDK_BACKEND)\\b"
+          ]
+        },
+        {
+          "id": "cause-tauri",
+          "line": [
+            "\\b(tauri|plugin)\\b",
+            "\\b(2\\.12|version|bundl\\w*|templat\\w*|hook)\\b"
+          ]
+        }
+      ]
+    }
+  ],
+  "negativeControls": [
+    {
+      "id": "vague",
+      "answer": "I reviewed the code and the change looks mostly fine, but there may be an issue with error handling and caching on some platforms.\nSome tests fail because the code under test changed; the fix is in the module that handles this.\nSettings are saved to a file with the right permissions and loaded again on start.\nMessages are stored and delivered in order, and a failure is retried later.\n```json\n{\"findings\":[{\"file\":\"src/app.ts\",\"line\":10,\"issue\":\"Possible bug in the new code path.\"}]}\n```"
+    },
+    {
+      "id": "smoke:rep-explain-queue:NONE",
+      "task": "rep-explain-queue",
+      "answer": "The queue is implemented in `src-tauri/src/message_queue.rs`. The frontend in `src/main.ts` decides when entries are delivered.\n\n## What it stores and where\n- Entries live in the SQLite table `queued_messages`, created in the schema 23 migration in `storage.rs` (around line 395).\n- Columns are `id`, `session_id`, `position`, `text`, `attachments`, `created_at` and `updated_at`.\n- `session_id` references `sessions(id)` with `ON DELETE CASCADE`, so deleting a task deletes its queue.\n- `attachments` is a JSON text column with a `json_valid` check. The composer describes the attachments and native code treats them as opaque (`QueuedMessage`).\n- The table is in the app database, so the queue survives restarts.\n- The Tauri commands (`queue_list`, `queue_add`, `queue_update`, `queue_remove`, `queue_reorder`, `queue_take`, `queue_restore`) wrap the functions below.\n\n## Limits\nThese are enforced in `validate()` and `add()`:\n- **Count:** at most 50 entries per task (`MAX_PER_TASK`).\n- **Text:** at most 128 KiB (`MAX_TEXT`).\n- **Attachments:** the attachments value must be a JSON array of at most 1 MiB once encoded (`MAX_ATTACHMENTS`).\n- **Empty entries:** an entry with blank text and no attachments is rejected.\n- `update()` re-runs `validate()`. `add()` also requires the session to exist via `store.session()`.\n\n## Ordering\n- `add()` gives a new entry `position = MAX(position)+1` within its task, so it goes to the back.\n- `list()` orders by `session_id, position, created_at`.\n- `reorder()` takes the full id list in a transaction. It refuses with \"The queue changed. Try reordering again.\" unless the ids match the task's current entries exactly. It then rewrites `position` as 0..n.\n- `restore()` puts an entry back at `MIN(position)-1`, which is the front of the queue.\n- The frontend's `dispatchQueue()` normally delivers `queueOf(id)[0]`. The exception is \"Send now\", which delivers the entry in `sendFirst`.\n\n## Sending each entry only once\n- `take()` reads the entry with `get()` and then `remove()`s it, and returns it. Delivery therefore works on a row that no longer exists in the queue.\n- If the entry is already gone, `get()` fails with \"This queued message was already sent or removed.\" `update()` gives the same error.\n- `dispatchQueue()` in `main.ts` (around line 3010) adds more guards:\n  - It returns early if the task is running, finishing a stream, being configured or archived, if a bot owns the project, or if its queue is held.\n  - It skips an entry that is being steered (`steeringQueued`) or edited (`queueEditing`).\n  - `state.queueBusy` keeps two dispatches from overlapping on the same task.\n- If the task is limited (`limitActive`), the queue is held as `limited` and nothing is taken.\n- When all that passes, it calls `queue_take` and then `deliverQueued()`, which calls `architect_start` or `send_message`.\n\n## What happens when delivery fails\nThis is handled in the `catch` of `deliverQueued()` (around line 3042):\n1. It undoes the optimistic UI: it clears the pending prompt activity, drops the stream, sets the task to `idle`, and removes the optimistic mirror prompt.\n2. If the entry has an id, it calls `queue_restore`. That runs `restore()`, which re-inserts the entry with its original id, text, attachments and `created_at` at the front.\n   - `restore()` skips the 50-entry limit, because the entry already held its place, but it still re-runs `validate()`.\n   - If `restore` itself fails, the user is told \"A queued message could not be put back; it was not sent.\"\n3. It sets `queueHolds` to `failed` and rethrows. `dispatchQueue()` catches that, notifies the user (unless it is a remote refusal) and keeps the hold.\n4. The hold stops automatic delivery, so nothing is lost or sent out of order. It lasts until the user resumes. \"Send now\" bypasses it for that one entry.\n5. Entries without an id, such as the synthetic \"Continue where you left off.\" after a limit, were never queued, so nothing is restored for them.\n\nThe tests `queues_keep_order_and_survive_reorder_edit_and_take`, `a_failed_delivery_restores_the_entry_to_the_front` and `queues_validate_input_and_follow_their_task` in `message_queue.rs` cover these behaviours. I read the code but did not run them."
+    },
+    {
+      "id": "smoke:rep-explain-queue:CHOSEN",
+      "task": "rep-explain-queue",
+      "answer": "Native queue = `src-tauri/src/message_queue.rs`. Delivery driven by frontend `dispatchQueue` in `src/main.ts`.\n\n**Storage**\n- SQLite table `queued_messages` (migration `version < 23`, `storage.rs:395`): `id` PK, `session_id` FK → `sessions` `ON DELETE CASCADE`, `position`, `text`, `attachments` (JSON text, `json_valid` CHECK), `created_at`, `updated_at`. Index on `(session_id, position)`.\n- Durable: survives restart. Queue follows its task; deleting the task deletes its entries.\n- `attachments` is opaque to native code: composer's array (including `path` items).\n\n**Limits** (`add`, `validate`)\n- `MAX_PER_TASK` = 50 entries per task. `add` counts rows, errors beyond that.\n- `MAX_TEXT` = 128 KiB text.\n- `MAX_ATTACHMENTS` = 1 MiB of encoded JSON, and it must be an array.\n- Empty text with empty attachments rejected.\n- `add` also requires the session exists (`store.session`).\n- `update` re-validates the same way. `restore` validates but skips the 50 cap, since the entry already held its slot.\n\n**Ordering**\n- `add` sets `position = MAX(position)+1` for the session, so it appends.\n- `list` orders by `session_id, position, created_at`.\n- `reorder` takes a full id list. It must match the current entries exactly, or it errors \"queue changed\". Inside a transaction it rewrites positions 0..n.\n- `restore` sets `position = MIN(position)-1`, so a failed entry goes back to the front, and can go negative.\n\n**Exactly-once delivery** (`take`, `dispatchQueue`)\n- `take` does `get` then `remove`: it deletes the row and returns it. The entry is out of the DB before send starts, so nothing can send it twice. A second `take` fails with \"already sent or removed\". `update` on a taken entry fails with the same message.\n- `dispatchQueue` (`main.ts:3010`) guards first: skips if the task is running, held (`queueHolds`), `queueBusy`, being edited, or archived. It adds the id to `queueBusy`, calls `queue_take`, then `deliverQueued`, which calls `send_message` (or `architect_start` for teams).\n\n**Failure** (`deliverQueued` catch, `main.ts:3042`)\n- Rolls back the optimistic prompt and sets the status to idle.\n- Calls `queue_restore`, which re-inserts the same `id`, `text`, `attachments` and `created_at` at the front (`updated_at` becomes now). If restore also fails, it notifies \"could not be put back; it was not sent.\"\n- Sets `queueHolds[task] = 'failed'`, so nothing later sends out of order. The queue stays held until the user resumes. Send now bypasses the hold for the first entry.\n- Synthetic entries with no id (limit continuation) are never restored.\n- If `queue_take` itself fails, `dispatchQueue` sets the same `'failed'` hold and notifies.\n\nTests: `message_queue.rs` has `a_failed_delivery_restores_the_entry_to_the_front`, `queues_keep_order_and_survive_reorder_edit_and_take` and `queues_validate_input_and_follow_their_task`."
+    },
+    {
+      "id": "smoke:rep-explain-queue:ALL",
+      "task": "rep-explain-queue",
+      "answer": "**Storage** (`storage.rs`, schema step 23, `version < 23`)\n- Table `queued_messages(id, session_id, position, text, attachments, created_at, updated_at)` in the app SQLite DB.\n- `session_id` references `sessions(id) ON DELETE CASCADE`, so deleting a task drops its queue.\n- `attachments` is a JSON text column with a `json_valid` CHECK. Native code treats it as opaque (`QueuedMessage` in `message_queue.rs`).\n- Index `queued_messages_session` is on `(session_id, position)`.\n- Entries survive restarts because they are durable rows.\n\n**Limits** (`message_queue.rs`)\n- `add` rejects a task that already has `MAX_PER_TASK` = 50 entries.\n- `validate` is used by `add`, `update` and `restore`:\n  - text must be ≤ 128 KiB (`MAX_TEXT`);\n  - attachments must be a JSON array of ≤ 1 MiB encoded (`MAX_ATTACHMENTS`);\n  - the entry can't be empty, meaning blank text and no attachments.\n- `add` also requires the session to exist (`store.session`).\n\n**Ordering**\n- `add` sets `position = COALESCE(MAX(position),-1)+1` for that session, so new entries go to the back.\n- `list` orders by `session_id, position, created_at`.\n- `reorder` runs in a transaction. The submitted ids must match the task's current ids exactly (sorted compare), otherwise it errors with \"The queue changed\". It then rewrites `position` as 0..n.\n- `restore` inserts at `COALESCE(MIN(position),1)-1`, which is the front.\n\n**Deliver once**\n- `take` does `get` then `remove`: it deletes the row and returns the entry.\n- The row is gone before sending, so no other dispatcher can take it. A second `take` fails with \"already sent or removed\".\n- Frontend `dispatchQueue` (`src/main.ts:3010`) calls `queue_take` for the first entry (or the \"Send now\" entry), but only when:\n  - the task is idle (not running, not finishing a stream, not being configured);\n  - it isn't held (`queueHolds`), busy (`queueBusy`), or archived;\n  - the entry isn't being edited or steered.\n- It then calls `deliverQueued` (`main.ts:3029`), which sends through `send_message` (or `architect_start` for teams).\n- If the task is limit-blocked, `dispatchQueue` sets the hold to `limited` and sends nothing.\n\n**Failure** (`deliverQueued` catch, `main.ts:3042`)\n- It rolls back the optimistic UI: stream state, status `idle`, and the mirror prompt.\n- If the entry has an id, it calls `queue_restore` (`message_queue.rs:137`). That re-inserts the same id, text, attachments and `created_at` at the front, so nothing is lost or reordered. It skips the 50-entry limit because the entry already held its place.\n- If `queue_restore` itself fails, the user gets a toast: \"could not be put back; it was not sent.\"\n- Then it sets `queueHolds[task] = 'failed'` and rethrows. `dispatchQueue` also sets the hold to `failed` and shows a notice.\n- The queue stays held until the user resumes it.\n- Synthetic entries with no id, such as continue-after-limit, are never restored.\n\nTest `a_failed_delivery_restores_the_entry_to_the_front` covers the restore path."
+    },
+    {
+      "id": "smoke:loc-connect-keychain:NONE",
+      "answer": "The relay token and device key are stored through `secret_store`, so the change goes in a few places. The macOS backend is the main one. I read `src-tauri/src/secret_store.rs` and `src-tauri/src/remote/config.rs`. I didn't open `src-tauri/src/remote.rs`, `src-tauri/src/remote/socket.rs` or `src-tauri/Cargo.toml`. What I say about them comes from grep matches and `config.rs`.\n\n**Where the Keychain is used**\n- `src-tauri/src/secret_store.rs` has the `set`, `get` and `remove` functions. On macOS they call `security_framework::passwords::{set,get,delete}_generic_password`. Changing the backend here moves every secret in the app, not just Connect's. The cloud keys, bot channel secrets and saved connections also go through it.\n- `src-tauri/src/remote/config.rs` defines `SERVICE` and `accounts()`, which scope the account names per install. `read_key()` reads the device key straight through `secret_store::get`. It also has a macOS-specific error mapping (codes -25293 and -128) with the \"Choose Always Allow when Keychain asks\" message. If the key is stored elsewhere, that message needs rewording or removing.\n- `src-tauri/src/remote.rs` and `src-tauri/src/remote/socket.rs` hold the call sites that write the token and key: `secret_store::set` and `secret_store::remove` at remote.rs:190, 266–274, 326 and 432, and socket.rs:200.\n\n**Options**\n1. **Keep Connect's secrets away from the Keychain only.** Route the Connect calls through a small new store, such as a file in the app data dir with 0600 permissions. This leaves the other secrets in the Keychain. It is the narrower change, and the call sites above would switch to it.\n2. **Change the macOS backend for everything.** Replace the `target_os = \"macos\"` branches in `secret_store.rs` with the same `keyring` path Linux and Windows use, or with an encrypted file. It is a smaller diff, but it affects every stored secret and needs a migration from existing Keychain items.\n\nA plaintext file puts the device private key and relay token on disk unencrypted. That is a real security downgrade, so the project's own comments (\"Values never enter … the database\") argue for keeping some protection. Whichever you pick, existing users need a one-time read from the Keychain into the new store.\n\n```json\n{\"files\":[\"src-tauri/src/secret_store.rs\",\"src-tauri/src/remote/config.rs\",\"src-tauri/src/remote.rs\",\"src-tauri/src/remote/socket.rs\",\"src-tauri/Cargo.toml\"],\"functions\":[\"set\",\"get\",\"remove\",\"read_key\",\"load_or_create_key\",\"accounts\",\"legacy_accounts\",\"adoption\",\"keychain_accounts_are_scoped_per_install\",\"a_keychain_error_never_replaces_the_key\"]}\n```",
+      "sameTopic": "rep-explain-secrets"
+    },
+    {
+      "id": "smoke-S1v2:rep-review-simulator:NONE",
+      "task": "rep-review-simulator",
+      "answer": "Defects found by reading the diff. I did not build or run anything.\n\n1. **Panic on short PNG data.** `screen_from_png` only checks `png.len() < 20`, but it reads the height from bytes 20..24. A buffer of 20 to 23 bytes that passes the signature check panics with an out-of-bounds index. The guard should be `< 24`.\n2. **Weak PNG signature check.** It compares only bytes 1..4 to `\"PNG\"`. It never checks the full 8-byte signature or that the `IHDR` chunk sits at bytes 12..16.\n3. **Bad scale gives a wrong screen.** The scale from the profile or capabilities is not checked. A zero scale gives infinite dimensions, and `inf > 0.0` passes the final check. A negative scale gives negative dimensions, which are rejected. The 3.0 default is a guess that gives wrong point sizes on 2x devices, including iPads.\n4. **Wrong scale source.** The fallback scale comes from the Duo cover display (`duo::COVER`) in the capabilities. On a Duo, the screenshot is the main display, so the cover's scale is the wrong one to use.\n5. **Orientation can corrupt the cache.** The screenshot is measured as-is, so a landscape or rotated frame is stored as the screen. The result is cached in `self.screens`, keyed by device type, so a wrong measurement persists for every later device of that type.\n6. **`home_button` guess.** `home_button` is true only when `com.apple.pearl-id` is explicitly true. If the key is missing, which is likely for the new profiles that also omit the screen size, the device is treated as having a home button even if it has none.\n7. **Needs a booted device.** The frame fallback only works while the device is booted. The old behaviour reported a clear profile error. Now an unbooted device may fail on the screenshot, and the error text asks the user to boot it, but the lookup is cached per type and not retried.\n8. **Extra `plutil` call for every device.** `capabilities.plist` is now read for all devices, not just the Duo. That adds a process spawn for each device lookup, and the failure is silently ignored with `.ok()`.\n9. **Thin test coverage.** The test checks only a well-formed 24-byte PNG. It does not cover the 20 to 23 byte panic, a zero scale, or the order in which the fallbacks are tried.\n\n```json\n{\"findings\":[\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"Length guard `< 20` is too small: reading the height at bytes 20..24 panics for buffers of 20–23 bytes.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"PNG signature check only compares bytes 1..4 and does not verify the full signature or the IHDR chunk.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":221,\"issue\":\"A zero scale yields infinite dimensions that pass the `> 0.0` check, and a bad scale is not validated.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":290,\"issue\":\"The scale fallback uses the Duo cover display's scale and then a guessed 3.0, which gives wrong point sizes for the main screen.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":291,\"issue\":\"home_button is true only when pearl-id is explicitly true, so devices that omit the key are treated as having a home button.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":293,\"issue\":\"A frame measured from a possibly rotated screenshot is cached per device type, so a wrong orientation or size persists for later devices.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":279,\"issue\":\"capabilities.plist is now read for every device, adding a plutil spawn per lookup and silently ignoring failures.\"}\n]}\n```"
+    },
+    {
+      "id": "smoke-S1v2:rep-review-simulator:CHOSEN",
+      "task": "rep-review-simulator",
+      "answer": "Defects found in the change to `src-tauri/src/simulator.rs`. I read the diff and the surrounding code only. I did not build or run anything.\n\n1. **Panic on short input.** `screen_from_png` checks `png.len() < 20`, but `side(20)` reads bytes 20..24. A 20–23 byte buffer that passes the `PNG` check panics with an index out of bounds.\n2. **Weak PNG check.** It only tests `png[1..4] == \"PNG\"`. It doesn't check the full 8-byte signature or the `IHDR` chunk tag at bytes 12..16. Other data starting `?PNG` is read as dimensions.\n3. **Wrong scale source.** The fallback scale comes from `profile[\"mainScreenScale\"]`, then from the cover display's scale in `capabilities.plist`, then a hard-coded `3.0`. The cover scale belongs to a different display. The guessed 3.0 gives wrong point sizes on 2x devices such as iPads. The wrong size is then cached in `self.screens` for the whole device type.\n4. **Frame size is not the main screen size.** The screenshot is taken with `display = None`. On multi-display devices such as the Duo, or when the device is rotated or landscape, the frame may not be the main screen in portrait. The measured width and height can be wrong or swapped. They are cached under `device.device_type`.\n5. **Screenshot needs a booted device.** If the device is shut down, `screenshot` fails and `from_frame` silently returns `None`. The user then sees the new \"Boot the simulator\" message, though capabilities might have worked. The failure is also never cached, so every call retries a slow `xcrun` screenshot.\n6. **Extra work for every device.** `capabilities.plist` was read only for Duo devices. It is now read through `plutil` for all devices, even when `parse_screen` succeeds. This adds a process spawn per device.\n7. **`duo::parse_display(caps, duo::COVER)` runs twice.** It is called once in `cover` and again inside `from_frame`. The fallback should reuse the first result.\n8. **Weak test coverage.** The test never checks the 20–23 byte case, a non-IHDR PNG, a zero-sized image, or `home_button`. It also doesn't cover `from_frame` or the scale fallback chain.\n\n```json\n{\"findings\":[\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"Length guard `png.len() < 20` is too small; `side(20)` reads bytes 20..24 and panics on 20-23 byte input.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":219,\"issue\":\"Only `png[1..4] == \\\"PNG\\\"` is checked; the full signature and the IHDR chunk tag are not validated.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":291,\"issue\":\"Scale falls back to the cover display's scale or a hard-coded 3.0, which gives wrong point sizes on 2x devices, and the result is cached per device type.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":290,\"issue\":\"The screenshot uses display None, so on multi-display devices the frame may not be the main screen; rotation or landscape can swap width and height, and the wrong size is cached.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":290,\"issue\":\"A failed screenshot (for example a shut-down device) is silently swallowed and the misleading 'Boot the simulator' error shown; each retry repeats the slow xcrun call.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":279,\"issue\":\"capabilities.plist is now read through plutil for every device, not only Duo devices, even when parse_screen succeeds.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":291,\"issue\":\"duo::parse_display(caps, COVER) is computed twice; the second call in from_frame should reuse the first result.\"},\n{\"file\":\"src-tauri/src/simulator.rs\",\"line\":663,\"issue\":\"Test omits the 20-23 byte panic case, non-IHDR PNGs, zero dimensions, the home_button flag and the from_frame scale chain.\"}\n]}\n```"
+    },
+    {
+      "id": "smoke-S1v2:rep-explain-secrets:NONE",
+      "task": "rep-explain-secrets",
+      "answer": "**Nothing was edited.** I only read `src-tauri/src/secret_store.rs` and ran no tests or builds.\n\n**macOS storage**\n- `set()` and `get()` use one JSON file, `secrets.json`, in the app data directory. `setup()` sets that directory once at startup.\n- Entries are keyed `\"<service>/<account>\"` (`key()`). The file maps each key to its value as plain text. It is protected only by its 0600 permissions, not encrypted.\n- `set()` rejects values that are empty, over 4096 bytes, or contain control characters. It writes through `file_set()` and then `update()`.\n- `update()` reads the current file, applies the change, and writes it back. If the result is empty, it deletes the file instead.\n- `write_atomic()` does the write:\n  - It creates a temp file `secrets.json.<uuid>.tmp` with mode 0o600 on unix.\n  - It writes the bytes and calls `sync_all`.\n  - It renames the temp file over `secrets.json`.\n  - If any step fails, it removes the temp file.\n- `get()` goes through `file_get()`. A corrupt or unreadable file reads as `None`. `update()` never replaces a file it could not read.\n- `peek()` reads only the file and never touches the Keychain. It exists for background usage checks.\n- `remove()` deletes the entry from the file and also deletes any leftover Keychain item (`legacy::forget`).\n\n**Concurrent writers**\n- `update()` takes two locks:\n  - The process-wide mutex `WRITE`, which serializes read-modify-write cycles inside one process.\n  - An advisory file lock on `secrets.lock` in the same directory (`file.lock()`), so separate PandaCode processes can't interleave. The cloud bridge process reads provider keys too.\n- The atomic rename means a reader never sees a half-written file.\n- The `concurrent_writers_keep_every_key` test covers this. I didn't run it.\n\n**Secrets saved by older versions**\n- Older versions kept these secrets in the macOS Keychain. The module comment says Keychain items were pinned to the build that made them, so every update asked for the login password.\n- On a read, `file_get()` checks the file first. Only if the key is missing does it call `legacy::migrate()`:\n  - `Keychain.exists()` queries attributes only, so it can't prompt.\n  - If the item exists, `Keychain.read()` reads it once. This is the one call that may prompt.\n  - `file_set()` saves the value to the file, and only then does `Keychain.delete()` run.\n  - The `tried()` map remembers each key for the launch, so nothing is read twice. A failed or denied read isn't retried until the next launch.\n  - `migrate()` itself is not behind the `WRITE`/lock-file locks, but its save goes through `update()`, which is.\n\n**Linux and Windows**\n- By default they use the OS store through the `keyring` crate: Secret Service on Linux, Credential Manager on Windows. `set`, `get` and `remove` call `keyring::Entry` directly.\n- Setting `PANDACODE_SECRETS_FILE=1` (`file_mode()`) switches them to the same 0600 `secrets.json` path as macOS. The comment says `pandacode serve` sets this itself, because a server has no Secret Service agent to unlock.\n- In file mode, `legacy::NoStore` is used, so no migration happens and there is no old store to forget.\n- Other platforms return an error from `set` and `None` from `get`.\n\n**Blockers:** none."
+    },
+    {
+      "id": "smoke-S1v2:rep-explain-secrets:CHOSEN",
+      "task": "rep-explain-secrets",
+      "answer": "All of this is in `src-tauri/src/secret_store.rs`. I read the code and ran nothing.\n\n**macOS: where and how**\n- `set` validates the value: it is trimmed, non-empty, at most 4096 bytes, and has no control characters. It then calls `file_set`.\n- `file_set` calls `update`, which writes `secrets.json` in the app data dir. The dir is set once by `setup`.\n- The file is one JSON map (`type Map`, a `BTreeMap`). Keys are `\"<service>/<account>\"` from `key()`, and values are plaintext.\n- `write_atomic` writes a temp file `secrets.json.<uuid>.tmp`. It creates it with `create_new` and mode `0o600`, calls `sync_all`, and then renames it over the target. If the rename fails, it removes the temp file.\n- `update` deletes the file when the resulting map is empty.\n- `load` treats a missing file as the default (empty). Any other read or parse failure is an error.\n- `update` never replaces a file it could not read, so a corrupt file is kept.\n- `file_get` reads the file first. A corrupt file reads as `None` and skips migration.\n- `peek` reads only the file and never touches the Keychain. It is used for background usage checks.\n- `remove` deletes the key from the file, then calls `legacy::forget`.\n\n**Concurrent writers**\n- `update` takes two locks for the whole read-modify-write:\n  - The in-process `static WRITE: Mutex<()>`.\n  - An advisory file lock (`file.lock()`) on `<name>.lock` in the same dir, for example `secrets.lock`. This keeps separate app processes apart, such as the cloud bridge.\n- The `concurrent_writers_keep_every_key` test covers this.\n\n**Secrets saved by older versions**\n- Earlier versions stored them in the Keychain. `file_get` looks in the file first. If the key is missing, it calls `legacy::migrate` with the `Keychain` implementation.\n- `migrate` first calls `exists`, which queries attributes only and cannot prompt. If the item exists, it calls `read` once, which is the only call that may prompt.\n- It then saves the value to the file through `file_set` and deletes the Keychain item. If the save fails, the item is kept.\n- The `tried()` map remembers every item read this launch, including failed or denied reads. A failed read is not retried until the next launch. That gives at most one prompt per item.\n- The header comment says the reason: with no Apple Team ID, a Keychain item is pinned to the build that made it. Every update then asked for the login password on each read.\n\n**Linux and Windows**\n- By default they use the OS store through the `keyring` crate: Secret Service on Linux and Credential Manager on Windows. `set`, `get` and `remove` call `keyring::Entry` directly. There is no file and no migration.\n- If `PANDACODE_SECRETS_FILE=1` is set (`file_mode()`), they use the same `secrets.json` path as macOS. That path uses the same `file_get`, `file_set` and `update`. It uses the `NoStore` legacy stub, so nothing is migrated or forgotten. `pandacode serve` sets this variable itself.\n- The reason given for file mode is that a server has no Secret Service agent to unlock, and Secret Service cannot answer noninteractive reads.\n- On other platforms, `set` returns an error and `get` returns `None`.\n\nI made no edits and ran no checks."
+    }
+  ]
+}

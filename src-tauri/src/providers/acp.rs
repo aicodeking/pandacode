@@ -48,7 +48,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         }
         "opencode" => {
             command.arg("acp");
-            command.env("OPENCODE_CONFIG_CONTENT", configuration(&config.mode));
+            command.env("OPENCODE_CONFIG_CONTENT", configuration(&config.mode, &[]));
         }
         "grok" => {
             // Global flags precede `agent`; agent flags precede the `stdio` transport.
@@ -105,14 +105,20 @@ fn grok_read_only(tool: &Value) -> bool {
         || matches!(field(tool, "kind"), "read" | "search" | "fetch" | "think")
 }
 
-pub(super) fn configuration(mode: &str) -> String {
-    let permission = match mode {
+/// `served`: the auto-allowed PandaCode tools (explore, tool list/save) this run's bound server
+/// really lists, so OpenCode's own IDs for them run without asking. The last matching rule wins,
+/// and `*` sorts first.
+pub(super) fn configuration(mode: &str, served: &[&str]) -> String {
+    let mut permission = match mode {
         "full" => json!({"*":"allow"}),
         "auto" => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
         // Investigation stays open: web lookups run; reads outside the project ask.
         "plan" => json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow","external_directory":"ask"}),
         _ => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow"}),
     };
+    for name in served {
+        permission[format!("pandacode_architect_{name}")] = json!("allow");
+    }
     // Inline settings have the highest documented precedence and are private
     // to this process. Preserve existing inline settings, except permissions
     // which must follow the explicitly selected PandaCode policy.
@@ -364,6 +370,9 @@ impl Protocol {
                 .is_some_and(|id| id != self.remote_id)
             {
                 step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
+                return Ok(step);
+            }
+            if self.allow_pandacode_tools(&value, &mut step) {
                 return Ok(step);
             }
             // ACP modes aren't universally approval policies. Keep user prompts
@@ -1958,7 +1967,15 @@ mod tests {
                 assert!(step.events.iter().any(|event| event.kind == "status"));
             }
         }
-        let full: Value = serde_json::from_str(&configuration("full")).unwrap();
+        for mode in ["ask", "auto", "plan"] {
+            let unserved: Value = serde_json::from_str(&configuration(mode, &[])).unwrap();
+            assert!(!unserved.to_string().contains("pandacode_explore"), "{mode}: no rule for a tool this run does not list");
+            let config: Value = serde_json::from_str(&configuration(mode, &[crate::providers::EXPLORE_TOOL])).unwrap();
+            assert_eq!(config["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
+            assert_eq!(config["agent"]["plan"]["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
+            assert_eq!(config["permission"].as_object().unwrap().keys().next().unwrap(), "*", "{mode}");
+        }
+        let full: Value = serde_json::from_str(&configuration("full", &[])).unwrap();
         assert_eq!(full["permission"]["*"], "allow");
         assert_eq!(full["agent"]["build"]["permission"]["*"], "allow");
         assert_eq!(full["agent"]["plan"]["permission"]["*"], "allow");

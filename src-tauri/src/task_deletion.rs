@@ -85,6 +85,11 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     delete_owned(&store, sid, &ids)?;
+    // Per-task memory goes with the rows. Paths that delete rows without coming through here
+    // (a bot reset deletes its conversations directly) are covered by the startup pruning
+    // (`session_state::retain`).
+    crate::app_instructions::forget(&ids);
+    crate::architect::coordination::forget(&ids);
     Ok(DeletedSessions {
         deleted_session_ids: ids,
     })
@@ -164,6 +169,31 @@ mod tests {
         assert!(!progress.join(&parent).exists() && !progress.join(&child).exists());
         assert_eq!(crate::progress::list(&progress, &other).unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    #[test]
+    fn deleting_state_forgets_every_deleted_tasks_memory_and_no_other() {
+        use crate::app_instructions::{remember_catalog, History};
+        let (state, project) = test_state();
+        let (parent, child, other) = {
+            let store = state.store.lock().unwrap();
+            let parent = task(&store, &project);
+            let child = owned_worker(&store, &parent, &project);
+            (parent, child, task(&store, &project))
+        };
+        let natives = ["SendMessage".to_owned()];
+        for id in [&parent, &child, &other] {
+            remember_catalog(id, Some("conv-1"), None, &natives);
+            crate::custom_tools::test_note(id);
+        }
+        delete_state(&state, &parent).unwrap();
+        for id in [&parent, &child] {
+            assert_eq!(History::of(id, "claude", Some("conv-1")), History::unknown(false));
+            assert!(!crate::custom_tools::test_noted(id));
+        }
+        assert_eq!(History::of(&other, "claude", Some("conv-1")), History::holding(&["SendMessage"]));
+        assert!(crate::custom_tools::test_noted(&other));
+        crate::app_instructions::forget(std::slice::from_ref(&other));
     }
 
     #[test]
