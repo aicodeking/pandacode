@@ -177,6 +177,31 @@ fn reference(contributions: &Value, kind: &str, id: &Value, path: &str) -> Resul
     }
     Ok(())
 }
+fn menu_items<'a>(values: &'a [Value], contributions: Option<&Value>, owner: &str, owned: &mut BTreeSet<&'a str>, path: &str, depth: u64, count: &mut u64) -> Result<()> {
+    *count += values.len() as u64;
+    if depth > SCHEMA["x-menuLimits"]["depth"].as_u64().unwrap() || *count > SCHEMA["x-menuLimits"]["items"].as_u64().unwrap() { return Err(fail("LimitExceeded", path, vec![])); }
+    let mut checked_groups = BTreeSet::new();
+    for item in values {
+        let id = text(item, "id");
+        if id.starts_with("panda.") { return Err(fail("ReservedId", path, vec![id.to_owned()])); }
+        if !id.starts_with(&format!("{owner}/")) { return Err(fail("InvalidId", path, vec![id.to_owned()])); }
+        if !owned.insert(id) { return Err(fail("DuplicateId", path, vec![id.to_owned()])); }
+        let kind = text(item, "kind");
+        if kind == "separator" {
+            if item.as_object().unwrap().keys().any(|key| !["id", "kind", "visible"].contains(&key.as_str())) { return Err(invalid(path)); }
+            continue;
+        }
+        if item.get("title").is_none() || (if kind == "submenu" { item.get("items").is_none() || item.get("command").is_some() } else { item.get("command").is_none() || item.get("items").is_some() }) { return Err(invalid(path)); }
+        if (!["checkbox", "radio"].contains(&kind) && item.get("checked").is_some()) || (kind == "radio" && item.get("group").is_none()) || (kind != "radio" && item.get("group").is_some()) { return Err(invalid(path)); }
+        if kind == "radio" && item["checked"] == true && !checked_groups.insert(text(item, "group")) { return Err(invalid(path)); }
+        if let Some(contributions) = contributions {
+            if item.get("command").is_some() { reference(contributions, "commands", &item["command"], path)?; }
+            if item.get("icon").is_some() { reference(contributions, "icons", &item["icon"], path)?; }
+        }
+        if item.get("items").is_some() { menu_items(items(item, "items"), contributions, owner, owned, path, depth + 1, count)?; }
+    }
+    Ok(())
+}
 fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
     let input = input.as_array().ok_or_else(|| invalid("$"))?;
     if input.len() as u64 > SCHEMA["x-dataLimits"]["packages"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
@@ -229,6 +254,7 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         for menu in items(contributions, "menus") {
             reference(contributions, "commands", &menu["command"], &format!("{path}/contributes/menus"))?;
             if menu.get("icon").is_some() { reference(contributions, "icons", &menu["icon"], &format!("{path}/contributes/menus"))?; }
+            if menu.get("items").is_some() { menu_items(items(menu, "items"), Some(contributions), &id, &mut owned, &format!("{path}/contributes/menus"), 1, &mut 0)?; }
             menus.push(menu.clone());
         }
         for layout in items(contributions, "layouts") {
@@ -294,6 +320,10 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
             if !text(&value["definition"], "id").starts_with(&format!("{}/", text(&value["owner"], "extensionId"))) {
                 return Err(fail("InvalidId", "$/definition/id", vec![text(&value["definition"], "id").to_owned()]));
             }
+            if kind == "contribution" && value["definition"].get("items").is_some() {
+                let mut owned = BTreeSet::from([text(&value["definition"], "id")]);
+                menu_items(items(&value["definition"], "items"), None, text(&value["owner"], "extensionId"), &mut owned, "$/definition/items", 1, &mut 0)?;
+            }
         }
         Ok(json!({"ok": true, "value": value, "diagnostics": diagnostics}))
     })();
@@ -325,6 +355,32 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_menus_validate_shared_fixture_and_reject_malformed_trees() {
+        let mut manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sample-project-helper/extension.json")).unwrap();
+        let fixture: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/menus-v1.json")).unwrap();
+        manifest["contributes"]["menus"] = json!([{ "id":"sample.project-helper/header", "location":"panda.workspace.header.actions", "command":"sample.project-helper/hello", "items":fixture }]);
+        assert_eq!(validate_contract("packages", &json!([manifest]))["ok"], true);
+        let mut foreign = manifest.clone(); foreign["contributes"]["menus"][0]["items"][1]["id"] = json!("other.owner/reports");
+        assert_eq!(validate_contract("packages", &json!([foreign]))["error"]["code"], "InvalidId");
+        let mut duplicate = manifest.clone(); duplicate["contributes"]["menus"][0]["items"][1]["id"] = json!("sample.project-helper/header");
+        assert_eq!(validate_contract("packages", &json!([duplicate]))["error"]["code"], "DuplicateId");
+        let mut malformed = manifest.clone(); malformed["contributes"]["menus"][0]["items"][1]["command"] = json!("sample.project-helper/hello");
+        assert_eq!(validate_contract("packages", &json!([malformed]))["error"]["code"], "InvalidShape");
+        let mut radio = manifest.clone(); radio["contributes"]["menus"][0]["items"][1]["items"][0]["items"][5]["checked"] = json!(true);
+        assert_eq!(validate_contract("packages", &json!([radio]))["error"]["code"], "InvalidShape");
+        let registration = json!({"schemaVersion":1, "owner":{"extensionId":"sample.project-helper", "version":"1.0.0", "activationId":"test-1"}, "definition":manifest["contributes"]["menus"][0]});
+        assert_eq!(validate_contract("contribution", &registration)["ok"], true);
+        let mut foreign_registration = registration.clone(); foreign_registration["definition"]["items"][1]["id"] = json!("other.owner/item");
+        assert_eq!(validate_contract("contribution", &foreign_registration)["error"]["code"], "InvalidId");
+        let mut deep = json!([]);
+        for n in 0..6 { deep = json!([{ "id":format!("sample.project-helper/level-{n}"), "kind":"submenu", "title":"Deep", "items":deep }]); }
+        let mut too_deep = manifest.clone(); too_deep["contributes"]["menus"][0]["items"] = deep;
+        assert_eq!(validate_contract("packages", &json!([too_deep]))["error"]["code"], "LimitExceeded");
+        let mut many = manifest.clone(); many["contributes"]["menus"][0]["items"] = json!((0..128).map(|n| json!({"id":format!("sample.project-helper/item-{n}"), "kind":"submenu", "title":"Nested", "items":[{"id":format!("sample.project-helper/child-{n}"), "kind":"command", "title":"Child", "command":"sample.project-helper/hello"}]})).collect::<Vec<_>>());
+        assert_eq!(validate_contract("packages", &json!([many]))["error"]["code"], "LimitExceeded");
+    }
 
     #[test]
     fn layout_proposals_require_declaration_reject_cycles_and_incompatible_placements() {

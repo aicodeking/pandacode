@@ -10,7 +10,7 @@ const BRIEF_ROW = 48;
 /** Space between a menu and its trigger. */
 const GAP = 4;
 
-type ChoiceItem = {
+export type ChoiceItem = {
   id: string;
   label: string;
   description?: string;
@@ -29,6 +29,9 @@ type ChoiceItem = {
    * showing `short` (← and → move along it, like ↑ and ↓). Search results list them as plain rows. */
   segment?: string;
   short?: string;
+  /** Explicit state variants; legacy flat choices retain their radio/action behavior. */
+  kind?: 'checkbox' | 'radio';
+  children?: ChoiceItem[];
 };
 type ChoiceMenuOptions = {
   anchor: HTMLElement;
@@ -41,10 +44,30 @@ type ChoiceMenuOptions = {
   actions?: boolean;
   searchPlaceholder?: string;
   width?: number;
+  /** Host-validated small action catalogs can opt into all 128 rows. Legacy menus stay at 100. */
+  itemLimit?: number;
 };
 
 /** A bounded, transient menu. Callbacks own all application changes. */
 export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
+  // Defensive host boundary too: callers can accidentally supply cyclic objects even
+  // though extension JSON already has stricter depth/item budgets.
+  const seen = new Set<ChoiceItem[]>();
+  let count = 0;
+  function check(items: ChoiceItem[], depth: number): boolean {
+    if (depth > 5 || seen.has(items) || (depth > 1 && (count += items.length) > 512)) return false;
+    seen.add(items);
+    return items.every(item => !item.children || check(item.children, depth + 1));
+  }
+  if (!check(options.items, 1)) { options.onClose(); return () => {}; }
+  const tree: MenuTree = { anchor: options.anchor, panels: new Set(), levels: [], pending: false, close: () => {} };
+  const close = openLevel(options, tree);
+  tree.close = close;
+  return close;
+}
+
+type MenuTree = { anchor: HTMLElement; panels: Set<HTMLElement>; levels: { panel: HTMLElement; close: () => void; renderPending: () => void }[]; pending: boolean; close: (returnFocus?: boolean) => void };
+function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElement): () => void {
   const { anchor, title, onSelect, onClose, actions = false, searchPlaceholder } = options;
   let items: ChoiceItem[] = [], buttons: HTMLButtonElement[] = [], matches = 0;
   const panel = document.createElement('section');
@@ -64,12 +87,18 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   let closed = false, pending = false, positionFrame = 0;
   let active = -1;
   let typed = '', typedAt = 0;
+  let closeChild: (() => void) | undefined, childIndex = -1;
+  const contains = (target: Node | null) => [...tree.panels].some(panel => panel.contains(target));
 
   function close(returnFocus = true): void {
     if (closed) return;
     const focused = document.activeElement;
-    const restoreFocus = returnFocus && (panel.contains(focused) || focused === document.body);
+    const restoreFocus = returnFocus && (contains(focused) || focused === document.body);
     closed = true;
+    closeChild?.();
+    tree.panels.delete(panel);
+    tree.levels = tree.levels.filter(level => level.panel !== panel);
+    if (pending) { tree.pending = false; tree.levels.forEach(level => level.renderPending()); }
     cancelAnimationFrame(positionFrame);
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onEscape, true);
@@ -107,6 +136,17 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     const top = placeBelow ? rect.bottom + GAP : rect.top - panelHeight - GAP;
     panel.style.left = `${Math.max(leftEdge, Math.min(rect.left, leftEdge + width - panel.offsetWidth))}px`;
     panel.style.top = `${Math.max(topEdge, Math.min(top, topEdge + height - panelHeight))}px`;
+    if (parent) {
+      const rtl = getComputedStyle(anchor).direction === 'rtl';
+      const right = rect.right + GAP, left = rect.left - panel.offsetWidth - GAP;
+      const fitsRight = right + panel.offsetWidth <= leftEdge + width, fitsLeft = left >= leftEdge;
+      const x = rtl ? fitsLeft ? left : right : fitsRight ? right : left;
+      panel.style.left = `${Math.max(leftEdge, Math.min(x, leftEdge + width - panel.offsetWidth))}px`;
+      // When neither side fits, cascade vertically rather than covering the
+      // trigger row (which makes a real pointer hover/click impossible).
+      const y = fitsLeft || fitsRight ? rect.top : rect.bottom + GAP + panelHeight <= topEdge + height ? rect.bottom + GAP : rect.top - GAP - panelHeight;
+      panel.style.top = `${Math.max(topEdge, Math.min(y, topEdge + height - panelHeight))}px`;
+    }
     panel.dataset.placement = placeBelow ? 'below' : 'above';
   }
   function schedulePosition(event?: Event): void {
@@ -114,7 +154,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     if (!closed && !positionFrame) positionFrame = requestAnimationFrame(position);
   }
   function focusItem(index: number): void {
-    if (pending || closed || !buttons[index] || buttons[index].disabled) return;
+    if (tree.pending || closed || !buttons[index] || buttons[index].disabled) return;
     markActive(index);
     buttons[active].focus({ preventScroll: true });
     buttons[active].scrollIntoView({ block: 'nearest' });
@@ -128,12 +168,14 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   }
   function renderChoices(): void {
     const query = search?.value.trim().toLocaleLowerCase() ?? '';
+    const limit = Number.isInteger(options.itemLimit) ? Math.max(1, Math.min(128, options.itemLimit!)) : 100;
     items = []; matches = 0;
     let selected: ChoiceItem | undefined;
     for (const item of options.items) {
+      if (item.children && !item.children.length) continue;
       if (query && !item.label.toLocaleLowerCase().includes(query) && !item.description?.toLocaleLowerCase().includes(query)) continue;
       matches++;
-      if (items.length < 100) items.push({ ...item });
+      if (items.length < limit) items.push({ ...item });
       if (item.selected) selected = item;
     }
     // Keep a later current project visible on reopening, without rendering the
@@ -159,46 +201,56 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
         ? `<span id="${descriptionId}" class="choice-menu-description">${escape(item.description)}</span>`
         : `<span id="${descriptionId}" class="sr-only">${escape(item.description)}</span>` : '';
       // In an action menu a selected row is the current state (the branch checked out): checked, never re-run.
-      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? item.selected ? 'aria-current="true"' : '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description, undefined, true) : ''}${item.selected ? icon('check') : ''}</button>`;
+      const role = item.children ? 'menuitem' : item.kind ? `menuitem${item.kind}` : actions ? 'menuitem' : 'menuitemradio';
+      const state = item.children ? 'aria-haspopup="menu" aria-expanded="false"' : item.kind || !actions ? `aria-checked="${Boolean(item.selected)}"` : item.selected ? 'aria-current="true"' : '';
+      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${role}" ${state} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description, undefined, true) : ''}${item.selected ? icon('check') : ''}${item.children ? icon(getComputedStyle(anchor).direction === 'rtl' ? 'chevron-left' : 'chevron-right') : ''}</button>`;
     }).join('') + (open ? '</div>' : '');
     buttons = [...list.querySelectorAll<HTMLButtonElement>('.choice-menu-option')];
     for (const group of list.querySelectorAll<HTMLElement>('.choice-menu-segment-list')) trackSegment(group, group.querySelector<HTMLElement>(':scope>.selected'));
     const current = actions ? -1 : items.findIndex(item => item.selected && !item.disabled);
-    markActive(current >= 0 ? current : items.findIndex(item => !item.disabled && !(actions && item.selected)));
+    markActive(current >= 0 ? current : items.findIndex(item => !item.disabled && !(actions && item.selected && !item.kind && !item.children)));
     renderPending();
     buttons[active]?.scrollIntoView({ block: 'nearest' });
   }
   function renderPending(): void {
-    buttons.forEach((button, index) => { button.disabled = pending || Boolean(items[index].disabled); });
-    if (search) search.disabled = pending;
-    list.setAttribute('aria-busy', String(pending));
+    buttons.forEach((button, index) => { button.disabled = tree.pending || Boolean(items[index].disabled); });
+    if (search) search.disabled = tree.pending;
+    list.setAttribute('aria-busy', String(tree.pending));
     status.textContent = pending ? 'Applying…' : !items.length ? search?.value.trim() ? 'No matching options.' : 'No options available.' : matches > items.length ? `Showing ${items.length} of ${matches} options.${search ? ' Search to narrow the list.' : ''}` : '';
     status.hidden = !status.textContent;
     position();
   }
   async function select(index: number): Promise<void> {
-    if (closed || pending || !items[index] || items[index].disabled) return;
-    if (actions && items[index].selected) { close(); return; }
-    pending = true; error.hidden = true;
+    if (closed || tree.pending || !items[index] || items[index].disabled) return;
+    if (items[index].children) { openChild(index); return; }
+    if (actions && items[index].selected && !items[index].kind) { tree.close(); return; }
+    pending = true; tree.pending = true; error.hidden = true;
     panel.focus({ preventScroll: true });
-    renderPending();
-    try { await onSelect(items[index].id); close(); }
+    tree.levels.forEach(level => level.renderPending());
+    try { await onSelect(items[index].id); if (!closed) tree.close(); }
     catch (reason) {
       if (closed) return;
-      pending = false;
+      pending = false; tree.pending = false;
       error.textContent = reason instanceof Error ? reason.message : String(reason);
       error.hidden = false;
-      renderPending();
+      tree.levels.forEach(level => level.renderPending());
       focusItem(index);
     }
   }
+  function openChild(index: number): void {
+    const item = items[index];
+    if (closed || tree.pending || !item?.children?.length || item.disabled) return;
+    if (childIndex === index) return;
+    closeChild?.(); childIndex = index;
+    closeChild = openLevel({ ...options, anchor: buttons[index], point: undefined, title: item.label, searchPlaceholder: undefined, items: item.children, actions: true, onClose: () => { childIndex = -1; closeChild = undefined; } }, tree, panel);
+  }
   function onOutside(event: PointerEvent): void {
     const target = event.target;
-    if (target instanceof Node && !panel.contains(target) && !anchor.contains(target)) close(false);
+    if (target instanceof Node && !contains(target) && !tree.anchor.contains(target)) tree.close(false);
   }
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
-    event.preventDefault(); event.stopPropagation(); close();
+    if (event.key !== 'Escape' || isImeKey(event) || tree.levels.at(-1)?.panel !== panel) return;
+    event.preventDefault(); event.stopImmediatePropagation(); close();
   }
 
   list.addEventListener('click', event => {
@@ -207,7 +259,15 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   });
   list.addEventListener('focusin', event => {
     const index = buttons.indexOf(event.target as HTMLButtonElement);
-    if (index >= 0) markActive(index);
+    if (index >= 0) { if (childIndex >= 0 && childIndex !== index) closeChild?.(); markActive(index); }
+  });
+  list.addEventListener('pointermove', event => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('.choice-menu-option') : null;
+    const index = buttons.indexOf(button!);
+    if (index < 0 || button?.disabled || tree.pending || closed) return;
+    // No leave timer: crossing the gap or moving diagonally into the child cannot
+    // remove it. Only entering another enabled sibling changes the open branch.
+    if (index !== childIndex) { closeChild?.(); if (items[index].children) openChild(index); }
   });
   search?.addEventListener('input', () => {
     if (closed || pending) return;
@@ -217,13 +277,20 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     if (isImeKey(event)) return;
     // Restore the trigger before the browser's default Tab step, so the menu
     // does not jump to the end of the body or trap focus in a parent dialog.
-    if (event.key === 'Tab') { close(); return; }
-    if (pending) return;
+    if (event.key === 'Tab') { tree.close(); return; }
+    if (tree.pending) return;
     const enabled = buttons.flatMap((button, index) => button.disabled ? [] : [index]);
     if (!enabled.length) return;
     if (event.target === search && (event.key === 'Home' || event.key === 'End')) return;
     // Along a segmented row, → and ← step like ↓ and ↑.
     const segment = event.target instanceof Element && event.target.classList.contains('choice-menu-segment');
+    const rtl = getComputedStyle(anchor).direction === 'rtl';
+    if (!segment && event.key === (rtl ? 'ArrowLeft' : 'ArrowRight') && items[active]?.children) {
+      event.preventDefault(); openChild(active); return;
+    }
+    if (!segment && parent && event.key === (rtl ? 'ArrowRight' : 'ArrowLeft')) {
+      event.preventDefault(); close(); return;
+    }
     const key = segment && event.key === 'ArrowRight' ? 'ArrowDown' : segment && event.key === 'ArrowLeft' ? 'ArrowUp' : event.key;
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) {
       event.preventDefault();
@@ -253,11 +320,12 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     // Enter and Space retain native button activation.
   });
   panel.addEventListener('focusout', event => {
-    if (event.relatedTarget instanceof Node && !panel.contains(event.relatedTarget)) close(false);
+    if (event.relatedTarget instanceof Node && !contains(event.relatedTarget) && !(parent && tree.anchor.contains(event.relatedTarget))) tree.close(false);
   });
 
   anchor.setAttribute('aria-expanded', 'true');
   anchor.setAttribute('aria-controls', panel.id);
+  tree.panels.add(panel); tree.levels.push({ panel, close, renderPending });
   (anchor.closest('dialog[open]') ?? document.body).append(panel);
   renderChoices();
   showPopover(panel, anchor);

@@ -32,12 +32,12 @@ test('extensions install: conflict fails atomically and declarative conditions d
   assert.deepEqual(context.projectId, 'project-a');
 });
 
-test('extensions install: CI runs baseline, lifecycle, catalog and layout in both preview engines', () => {
+test('extensions install: CI runs baseline, lifecycle, catalog, layout and menus in both preview engines', () => {
   const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   assert.match(workflow, /npx playwright install --with-deps chromium webkit/);
   for (const command of [
-    'npx playwright test tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts --workers=1',
-    'npx playwright test -c playwright.webkit.config.ts tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts --workers=1',
+    'npx playwright test tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts --workers=1',
+    'npx playwright test -c playwright.webkit.config.ts tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts --workers=1',
   ]) assert.ok(workflow.includes(`run: ${command}`), command);
   assert.match(workflow, /PANDACODE_TEST_CHROME=/);
   assert.match(workflow, /BASELINE_REVISION=\$GITHUB_SHA/);

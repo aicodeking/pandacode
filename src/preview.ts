@@ -612,6 +612,10 @@ function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn =>
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
+/** Browser-only lifecycle injection while a transient extension surface owns focus. */
+(window as any).__previewDisableExtension = async (id: string) => {
+  await (await import('./extensions/manager')).enableExtension(id, false);
+};
 // Tests: how many listeners an event has now, e.g. to check a view stops listening when it should.
 (window as any).__previewListenerCount = (name: string) => listeners.get(name)?.size ?? 0;
 export function listen(name: string, callback: (event: any) => void): () => void { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(callback); return () => listeners.get(name)?.delete(callback); }

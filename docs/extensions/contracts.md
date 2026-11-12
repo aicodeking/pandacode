@@ -69,7 +69,7 @@ Manifest `contributes` holds the following bounded definitions:
 | Command | Owned `id`, `title`, optional declared `icon`, `action`. Only `{kind: "showMessage", message}` or `{kind: "openView", view}`. No JavaScript handler/string, shell command or private built-in command dispatch. |
 | Icon | Owned `id`, `asset`: relative `assets/…` path ending in `.svg`, `.png` or `.webp`; ASCII letters/digits/underscore/dot/slash/hyphen only. No empty, `.` or `..` segments, backslashes, percent encoding, absolute/URL paths. This checks the reference, **not the file contents**. |
 | View | Owned `id`, `title`, static `text`. No HTML, script, DOM handle or renderer promise. |
-| Menu contribution | Owned `id`, one of `panda.workspace.header.actions` / `panda.sidebar.footer`, declared `command`, optional declared `icon`, `group`, `order`, `before`/`after` IDs, `visible`/`enabled` AST. |
+| Menu contribution | Owned `id`, one of `panda.workspace.header.actions` / `panda.sidebar.footer`, declared `command`, optional declared `icon`, `group`, `order`, `before`/`after` IDs, `visible`/`enabled` AST and recursive `items`. |
 | Layout proposal | Owned `id`, `title`, action-slot `location`, bounded `rules: [{id, target, side: "before" or "after"}]`. Requires both `ui.contribute` and `ui.customize` declarations. Cycles are rejected by both validators. |
 
 Command/icon/view references must exist in the same package. Ordering references may name another package's menu
@@ -77,6 +77,32 @@ in the same submitted batch and location. Missing/cross-location targets fail. T
 constraints first, with location, group (default empty), numeric order (default 0), then ID as deterministic ties.
 Text ties use Unicode scalar order in both implementations. Cycles fail with `OrderingCycle` and sorted blocked
 IDs. Validation has no persistence side effects; the host's user overlay takes precedence over suggestions.
+
+### Nested menus (M3, experimental)
+
+A menu contribution without `items` keeps its existing direct-command behavior. With `items`, its declared
+command supplies the trigger title; opening the menu does **not** invoke that command. Each child has a unique
+package-owned `id` and `kind`: `command`, `submenu`, `separator`, `checkbox` or `radio`. Non-separators require
+`title`, optionally declare `icon` and `visible`/`enabled` expressions. Commands/checkboxes/radios require a declared
+`command`; submenus instead require an `items` array and cannot invoke a command. Checkboxes/radios accept
+`checked`; radios require a sibling-scoped `group` with at most one initially checked item. Separators allow only `id`, `kind` and optional `visible`.
+Unknown child fields and incompatible variant fields are rejected, not silently executed.
+
+Both validators limit each contributed menu to **five levels and 128 total children**, including separators and
+hidden items. IDs remain unique across the entire package, including nested children. The general JSON depth/node
+budget also rejects cyclic/non-JSON host objects before rendering. The shared renderer independently bounds host
+trees. Filtering removes empty submenus and leading/trailing/repeated separators. Missing decoded assets use the
+host help icon with a diagnostic; package markup never becomes a public rendering callback.
+
+Right opens a child and Left returns (mirrored in RTL); Up/Down/Home/End move within a level; Enter/Space activate
+once. Escape closes one level, then restores the original trigger. Menus flip or cascade vertically within narrow
+viewports and retain the branch while crossing pointer gaps. Checkbox/radio state is activation-local, not a
+settings/storage API. Every leaf invocation rechecks the root and all ancestor conditions against the captured
+opening context. Disable/uninstall/recovery closes the complete tree and invalidates callbacks; a removed trigger
+hands focus to a surviving visible host control. OS-native menus and secondary windows are not qualified here.
+
+`tests/fixtures/extensions/menus-v1.json` is the shared three-level laboratory item tree, to be combined with the
+sample package's header or sidebar contribution (not duplicated within one package, since IDs are unique).
 
 ### Selecting and reordering layouts (M2, experimental)
 

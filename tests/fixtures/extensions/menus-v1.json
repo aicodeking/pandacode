@@ -1,0 +1,17 @@
+[
+  { "id": "sample.project-helper/leading", "kind": "separator" },
+  { "id": "sample.project-helper/reports", "kind": "submenu", "title": "Reports", "icon": "sample.project-helper/info", "items": [
+    { "id": "sample.project-helper/formats", "kind": "submenu", "title": "Formats", "icon": "sample.project-helper/info", "items": [
+      { "id": "sample.project-helper/disabled", "kind": "command", "title": "Unavailable", "command": "sample.project-helper/hello", "enabled": false },
+      { "id": "sample.project-helper/summary", "kind": "command", "title": "Summary", "icon": "sample.project-helper/info", "command": "sample.project-helper/hello" },
+      { "id": "sample.project-helper/divider", "kind": "separator" },
+      { "id": "sample.project-helper/checked", "kind": "checkbox", "title": "Include details", "checked": true, "command": "sample.project-helper/hello" },
+      { "id": "sample.project-helper/radio-a", "kind": "radio", "title": "Brief", "checked": true, "group": "Length", "command": "sample.project-helper/hello" },
+      { "id": "sample.project-helper/radio-b", "kind": "radio", "title": "Full", "checked": false, "group": "Length", "command": "sample.project-helper/hello" }
+    ] },
+    { "id": "sample.project-helper/empty", "kind": "submenu", "title": "Empty", "items": [
+      { "id": "sample.project-helper/hidden", "kind": "command", "title": "Hidden", "visible": false, "command": "sample.project-helper/hello" }
+    ] }
+  ] },
+  { "id": "sample.project-helper/trailing", "kind": "separator" }
+]

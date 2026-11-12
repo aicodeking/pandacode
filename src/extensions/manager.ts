@@ -3,7 +3,8 @@ import { call, preview } from '../bridge';
 import { validateContract, type Json } from './contracts';
 import type { LayoutProposal } from './ordering';
 
-export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { layouts?: LayoutProposal[]; icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: { kind: string; message?: string } }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
+export type ExtensionMenuItem = { id: string; kind: 'command' | 'submenu' | 'separator' | 'checkbox' | 'radio'; title?: string; command?: string; icon?: string; checked?: boolean; group?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] };
+export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { layouts?: LayoutProposal[]; icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: { kind: string; message?: string } }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
 export type ExtensionSnapshot = { safeMode: boolean; packages: ExtensionPackage[]; diagnostics: string[] };
 let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: [] };
 const listeners = new Set<() => void>();
@@ -19,6 +20,16 @@ function accept(value: ExtensionSnapshot): void {
   if (!checked.ok) {
     snapshot.packages.forEach(item => { if (item.enabled) { item.enabled = false; item.reason = `Activation rejected: ${checked.error.code}`; } });
     snapshot.diagnostics.push(`Activation rejected: ${checked.error.code}`);
+  } else {
+    for (const item of snapshot.packages.filter(item => item.enabled)) {
+      const visit = (entries: { id: string; icon?: string; items?: ExtensionMenuItem[] }[]) => {
+        for (const entry of entries) {
+          if (entry.icon && !item.icons[entry.icon]) snapshot.diagnostics.push(`${entry.id}: missing icon asset; using a safe fallback host icon.`);
+          if (entry.items) visit(entry.items);
+        }
+      };
+      visit(item.manifest.contributes.menus ?? []);
+    }
   }
   if (snapshot.safeMode) snapshot.packages = [];
   generation++;

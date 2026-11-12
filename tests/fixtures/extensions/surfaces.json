@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "revision": "979b7d4e3c073e9bebf74f70bf80440a27564237",
-  "phase": "M2 header/sidebar catalog, persistent visibility/order and selected layout proposals; cross-container movement/replacement and other legacy rows remain unimplemented",
+  "phase": "M3 nested menus on header/sidebar actions, M2 catalog/visibility/order and selected layout proposals; other M3 adapters, cross-container movement/replacement and other legacy rows remain unimplemented",
   "catalog": {
     "surfaces": ["panda.workspace.header.actions", "panda.sidebar.footer"],
     "coreItems": ["panda.workspace.header.actions/sidebar-toggle", "panda.workspace.header.actions/view-menu", "panda.sidebar.footer/support", "panda.sidebar.footer/usage", "panda.sidebar.footer/settings", "panda.sidebar.footer/star", "panda.sidebar.footer/theme"],
@@ -13,8 +13,8 @@
     "scope": "Read-only discovery, public host UI commands, host user visibility/order for seven core items and contributed actions, and selected ui.customize layout proposals; sidebar visibility only; no replacement or package invocation permission"
   },
   "implementedAdapters": [
-    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show", "reorder"], "scope": "main-window declarative showMessage buttons, visibility and same-owner sibling ordering; responsive host placement remains protected; no cross-container movement/replacement", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
-    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show", "reorder"], "scope": "main-window declarative buttons, visibility/order and selected layout proposals for support/usage/settings/star/theme; owner-scoped disable/uninstall/recovery; no cross-container movement", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/contracts.rs", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute", "submenu", "hide", "show", "reorder"], "scope": "main-window declarative showMessage buttons and bounded nested menus with icons/checkbox/radio, visibility and same-owner sibling ordering; responsive host placement remains protected; no cross-container movement/replacement", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "tests/extensions-menus.test.mjs", "tests/extensions-menus.spec.ts", "src-tauri/src/extensions/contracts.rs", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute", "submenu", "hide", "show", "reorder"], "scope": "main-window declarative buttons and bounded nested menus with icons/checkbox/radio, visibility/order and selected layout proposals for support/usage/settings/star/theme; owner-scoped disable/uninstall/recovery; no cross-container movement", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts", "tests/extensions-menus.test.mjs", "tests/extensions-menus.spec.ts", "src-tauri/src/extensions/contracts.rs", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
     { "id": "panda.sidebar", "owner": "src/main.ts", "operations": ["hide", "show"], "scope": "global/project presentation visibility only, retaining host draft/task/terminal nodes and services", "tests": ["tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts"], "nativeUiQualification": "unverified; browser synthetic PTY continuity is not native PTY qualification" }
   ],
   "format": {
@@ -199,6 +199,7 @@
       ["team-model-add", "src/team-model-add.ts", "dialog.showModal()", "harness/model catalog and selected team model IDs"]
     ] },
     { "id": "panda.menus", "milestone": "M3", "plannedOperations": ["contribute", "submenu", "hide", "order"], "members": [
+      ["extension-actions", "src/extensions/header.ts", "openChoiceMenu({ anchor: button", "captured main-window header/sidebar context and activation; bounded nested icon/checkbox/radio menus; tests/extensions-menus.spec.ts; other menu adapters remain unimplemented"],
       ["team", "src/main.ts", "title: 'Team'", "task/team; automatic/classic setup"],
       ["attach", "src/main.ts", "title: 'Attach'", "draft/task; files, folder, project files, sketch, recipes, wake"],
       ["workspace-view", "src/main.ts", "title: 'Workspace view'", "window; Conversation, Board, opt-in GitHub"],
@@ -363,6 +364,7 @@
     ["src/connections.ts",[],0,1],
     ["src/conversation-import.ts",["close-dialog"],0,0],
     ["src/council-panel.ts",["council","council-accept","council-dismiss","council-keep-fixing","council-strip-toggle","open-team-worker"],0,0],
+    ["src/extensions/header.ts",[],0,1],
     ["src/github-hub.ts",[],0,1],
     ["src/github-pull.ts",["checks","file","merge-cancel","merge-confirm","merge-method","merge-start","open","refresh","section","unlink"],0,1],
     ["src/github.ts",["close-dialog"],3,0],

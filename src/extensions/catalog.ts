@@ -41,11 +41,11 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
-      { id: HEADER, owner: 'panda.core', type: 'action-slot', location: HEADER, label: 'Workspace header actions', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button'], windows: ['main'], available: true },
-      { id: FOOTER, owner: 'panda.core', type: 'action-slot', location: FOOTER, label: 'Sidebar footer', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button'], windows: ['main'], available: true },
+      { id: HEADER, owner: 'panda.core', type: 'action-slot', location: HEADER, label: 'Workspace header actions', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
+      { id: FOOTER, owner: 'panda.core', type: 'action-slot', location: FOOTER, label: 'Sidebar footer', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
     ];
     const activation = createDeclarativeActivation(state, 0);
-    const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true }))];
+    const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true }))];
     activation.dispose();
     const all = { surfaces, items };
     // Compare the full signature internally; only a bounded opaque revision leaves the host.

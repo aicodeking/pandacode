@@ -10,6 +10,7 @@ export type Diagnostic = { code: 'UnknownOptionalField' | 'UnknownOptionalCapabi
 export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | { ok: false; error: ContractError };
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
+export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
 const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts'];
 const capabilities = ['ui.contribute', 'ui.customize'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression'];
@@ -129,6 +130,31 @@ function packageId(id: string, path: string) {
   if (id.startsWith('panda.')) error('ReservedId', path, [id]);
 }
 
+function menuItems(items: ObjectValue[], owner: string, owned: Set<string>, path: string, reference?: (kind: string, value: Json, field: string) => void, depth = 1, budget = { count: 0 }): void {
+  if (depth > MENU_LIMITS.depth || (budget.count += items.length) > MENU_LIMITS.items) error('LimitExceeded', path);
+  const checkedGroups = new Set<string>();
+  for (const item of items) {
+    const id = item.id as string;
+    if (id.startsWith('panda.')) error('ReservedId', path, [id]);
+    if (!id.startsWith(`${owner}/`)) error('InvalidId', path, [id]);
+    if (owned.has(id)) error('DuplicateId', path, [id]);
+    owned.add(id);
+    if (item.kind === 'separator') {
+      if (Object.keys(item).some(key => !['id', 'kind', 'visible'].includes(key))) error('InvalidShape', path);
+      continue;
+    }
+    if (!item.title || (item.kind === 'submenu' ? !item.items || item.command !== undefined : !item.command || item.items !== undefined)) error('InvalidShape', path);
+    if (item.kind !== 'checkbox' && item.kind !== 'radio' && item.checked !== undefined || item.kind === 'radio' && !item.group || item.kind !== 'radio' && item.group !== undefined) error('InvalidShape', path);
+    if (item.kind === 'radio' && item.checked) {
+      if (checkedGroups.has(item.group as string)) error('InvalidShape', path);
+      checkedGroups.add(item.group as string);
+    }
+    if (item.command) reference?.('commands', item.command, 'menus');
+    if (item.icon) reference?.('icons', item.icon, 'menus');
+    if (item.items) menuItems(item.items as ObjectValue[], owner, owned, path, reference, depth + 1, budget);
+  }
+}
+
 /** Returns a deterministic topological order, or the sorted IDs still in a cycle. */
 function orderGraph(nodes: string[], edges: [string, string][], code: string, path: string, rank: (a: string, b: string) => number = (a, b) => a < b ? -1 : a > b ? 1 : 0): string[] {
   const remaining = new Set(nodes), result: string[] = [];
@@ -183,6 +209,7 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     for (const menu of (contributions.menus ?? []) as ObjectValue[]) {
       reference('commands', menu.command, 'menus');
       if (menu.icon) reference('icons', menu.icon, 'menus');
+      if (menu.items) menuItems(menu.items as ObjectValue[], id, owned, `${path}/contributes/menus`, reference);
       allMenus.push(menu);
     }
     for (const layout of (contributions.layouts ?? []) as ObjectValue[]) {
@@ -230,6 +257,7 @@ export function validateContract(kind: string, value: unknown): Validation {
       const entry = result as ObjectValue, owner = entry.owner as ObjectValue, definition = entry.definition as ObjectValue;
       packageId(owner.extensionId as string, '$/owner/extensionId');
       if (!(definition.id as string).startsWith(`${owner.extensionId}/`)) error('InvalidId', '$/definition/id', [definition.id as string]);
+      if (kind === 'contribution' && definition.items) menuItems(definition.items as ObjectValue[], owner.extensionId as string, new Set([definition.id as string]), '$/definition/items');
     }
     return { ok: true, value: result, diagnostics };
   } catch (cause) { return { ok: false, error: cause instanceof ContractFailure ? cause.detail : { schemaVersion: 1, code: 'InvalidShape', path: '$', ids: [] } }; }
