@@ -1968,15 +1968,15 @@ test.describe('workers full access note', () => {
     await panel(page).locator('.architect-worker-approvals .approval-card').getByRole('button', { name: 'Approve', exact: true }).click();
     await panel(page).getByRole('button', { name: 'Back to workers' }).click();
     await expect(note).toBeVisible();
-    // One visible line; the deploy and scheduling exception is the tip of its leading icon: a Tab stop whose tip shows
-    // on hover and keyboard focus and is its accessible description (and on the setup screen).
+    // One visible line; the deploy and scheduling exception is the tip and accessible name of its leading info button
+    // (shown on hover and keyboard focus; also on the setup screen).
     const text = note.locator('.architect-panel-access-text');
     expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access; only the lead needs approval.');
     const exception = "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.";
-    const mark = note.getByRole('img', { name: 'Deploy and scheduling exception' });
+    const mark = note.getByRole('button', { name: `Deploy and scheduling exception: ${exception}`, exact: true });
     await expect(mark).toHaveAttribute('data-tip', exception);
-    await expect(mark).toHaveAttribute('aria-description', exception);
-    await expect(mark).toHaveAttribute('tabindex', '0');
+    await mark.hover();
+    await expect(page.locator('.tip-bubble')).toHaveText(exception);
     await expect(note).not.toHaveAttribute('title', /.+/);
     await expect(mark).toHaveClass(/architect-panel-access-icon/);
     await expect(mark).toHaveAttribute('data-state-tone', 'worker-idle');
@@ -2243,6 +2243,23 @@ test.describe('compact workers round 17', () => {
     await expect(details).toContainText('See the full log for the stack trace.');
     // The live region announces failures; the error paragraph is not a status region of its own.
     await expect(details).not.toHaveAttribute('role');
+    // Opened, the sticky header says why in the danger tone, wrapped and clamped to three lines, full text in its title.
+    await item.locator('.architect-worker-row').click();
+    const head = panel(page).locator('.architect-worker-meta .architect-worker-error');
+    await expect(head).toHaveText(error);
+    await expect(head).toHaveAttribute('title', error);
+    const style = await head.evaluate(element => { const css = getComputedStyle(element); const probe = document.createElement('i'); probe.style.color = 'var(--ds-danger)'; element.append(probe); const danger = getComputedStyle(probe).color; probe.remove(); return { color: css.color, danger, wrap: css.whiteSpace, clamp: css.webkitLineClamp, lineHeight: parseFloat(css.lineHeight) || parseFloat(css.fontSize) * 1.2, height: element.getBoundingClientRect().height }; });
+    expect(style.color).toBe(style.danger);
+    expect(style.wrap).toBe('normal');
+    expect(style.clamp).toBe('3');
+    expect(style.height).toBeGreaterThan(style.lineHeight * 1.5);
+  });
+  test('the panel error uses the contrast-adjusted danger tone', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'failed', error: 'The lead could not start.', workers: [worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-panel-error')).toHaveText('The lead could not start.');
+    const tones = await panel(page).locator('.architect-panel-error').evaluate(element => { const probe = document.createElement('i'); probe.style.color = 'var(--ds-danger)'; element.parentElement!.append(probe); const danger = getComputedStyle(probe).color; probe.remove(); return { color: getComputedStyle(element).color, danger }; });
+    expect(tones.color).toBe(tones.danger);
   });
   test('a finished worker\'s elapsed time stays put when it is updated later', async ({ page }) => {
     const start = team('session-2', { workers: [worker('build', { status: 'completed', createdAt: 1_800_000_000_000, updatedAt: 1_800_006_300_000 })] });
@@ -2347,7 +2364,9 @@ test.describe('compact workers round 22', () => {
     // Keyboard focus: the hint shows.
     await page.keyboard.press('ArrowDown');
     await expect(hint).toBeVisible();
-    await expect(hint).toHaveText('↑↓ move · → details · ← hides · Enter opens');
+    await expect(hint).toHaveText('↑↓ move · → shows details · ← hides · Enter opens');
+    // It fits the default 400px panel without being cut.
+    expect(await hint.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await expect(hint).toHaveAttribute('aria-hidden', 'true');
     // A queue reason and a failure reason stand without the harness logo.
     await expect(panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-logo')).toHaveCount(0);

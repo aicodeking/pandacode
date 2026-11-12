@@ -71,9 +71,10 @@
    auto-approval) is body text with a little more weight. */
 .architect-worker-state.architect-worker-state-attention { color: var(--text); font-weight: var(--weight-medium); }
 .architect-worker-detail { padding: 6px 8px 10px; }
-/* The transcript header (name and model) is sticky at the top of the scroller, on an opaque copy of the flyout's tone
-   (its own fill is translucent), so it stays in view over a long transcript or a revealed approval card. */
-/* The pinned header is a band of the flyout's own glass, edge to edge of the scroller (its 6px + the detail's 8px). */
+/* The transcript header (name and model) is sticky at the top of the scroller, so it stays in view over a long
+   transcript or a revealed approval card. It is a translucent band of the flyout's own glass (`--dock-fill`, else
+   `--glass-warm`, over its blur), edge to edge of the scroller (its 6px + the detail's 8px); only the reduced
+   transparency, increased contrast and forced colours fallbacks below are solid. */
 .architect-worker-meta { display: flex; align-items: center; gap: 10px; position: sticky; top: 0; z-index: 1; margin: -6px -14px 12px; padding: 6px 14px; background: var(--dock-fill, var(--glass-warm)); -webkit-backdrop-filter: var(--dock-blur, blur(16px)); backdrop-filter: var(--dock-blur, blur(16px)); }
 @media (prefers-reduced-transparency: reduce) { .architect-worker-meta { background: var(--panel); -webkit-backdrop-filter: none; backdrop-filter: none; } }
 @media (prefers-contrast: more) { .architect-worker-meta { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; } }
@@ -129,7 +130,7 @@
 .architect-assist { height: 24px; padding: 0 7px; border-radius: var(--radius-sm); color: var(--accent-ink); font-size: var(--text-2xs); font-weight: 550; }
 html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-assist:hover { background: var(--raised); }
-.architect-panel-error { padding: 0 14px 8px; margin: 0; color: var(--danger); font-size: var(--text-2xs); line-height: 1.45; }
+.architect-panel-error { padding: 0 14px 8px; margin: 0; color: var(--ds-danger); font-size: var(--text-2xs); line-height: 1.45; }
 .architect-panel-scroll { overflow: auto; min-height: 0; overscroll-behavior: contain; padding: 0 6px 8px; scrollbar-gutter: stable; }
 .architect-panel-scroll.is-overflowing { mask-image: linear-gradient(to bottom, currentColor calc(100% - 24px), transparent); }
 /* One row per worker (38px, 2px apart): status glyph, then two lines: the name with a right-aligned status word and
@@ -138,7 +139,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-item { --elapsed-w: 3.9rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: var(--ds-radius-control); }
 .architect-worker-item[data-sub] { margin-inline-start: 22px; }
 .architect-worker-item[data-open], .architect-worker-item[data-open]:hover { background: var(--ds-card-inner); box-shadow: inset 0 0 0 1px var(--ds-border); }
-.architect-worker-item > .architect-worker-row { display: flex; width: 100%; min-width: 0; height: 38px; min-height: 0; align-items: center; justify-content: flex-start; gap: 8px; padding: 0 6px 0 8px; border-radius: var(--ds-radius-control); text-align: left; color: var(--muted); font-size: var(--ds-text-ui); }
+.architect-worker-item > .architect-worker-row { display: flex; width: 100%; min-width: 0; min-height: 38px; align-items: center; justify-content: flex-start; gap: 8px; padding: 0 6px 0 8px; border-radius: var(--ds-radius-control); text-align: left; color: var(--muted); font-size: var(--ds-text-ui); }
 /* One full-width hover for the whole item (row and caret together); an open item keeps that fill. */
 .architect-worker-item:hover { background: var(--ds-row-hover); }
 /* An open item keeps its single fill under the pointer (no second tint, so an open request card never looks
@@ -155,9 +156,12 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-glyph[data-state-tone] { color: var(--state-tone); }
 @media (prefers-reduced-motion: no-preference) { .architect-glyph-pulse { animation: state-pulse 1.6s ease-in-out infinite; } }
 /* The transcript header's copy (name, then model · status lines). */
-.architect-worker-meta .architect-worker-copy { display: flex; align-items: baseline; gap: 7px; min-width: 0; flex: 1; }
+/* It wraps only for a failure reason, which takes a line of its own; the facts start at no width and fill the name's
+   line, so they still ellipsize beside it. */
+.architect-worker-meta .architect-worker-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 7px; min-width: 0; flex: 1; }
 .architect-worker-meta .architect-worker-copy strong { flex: 0 1 auto; min-width: 0; font-weight: 550; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .architect-worker-meta .architect-worker-copy small { flex: 0 10 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.architect-worker-meta .architect-worker-copy small:not([role]) { flex: 1 10 0; }
 /* A row's copy: the name line (name, status word, elapsed) over the meta line (logo · model · effort · attempt). */
 .architect-worker-row .architect-worker-copy { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; line-height: 1.2; }
 .architect-worker-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -243,7 +247,9 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 @media (forced-colors: active) { .architect-progress { outline: 1px solid CanvasText; } .architect-progress-fill { background: Highlight; } .architect-worker-glyph[data-state-tone], .architect-tally-glyph[data-state-tone] { color: CanvasText; } .architect-worker-item[data-open] { outline: 1px solid CanvasText; outline-offset: -1px; } }
 /* Pausing or stopping is the user's choice: say so quietly, not in red. */
 .architect-panel-error.is-notice { color: var(--muted); }
-.architect-worker-error { display: block; color: var(--danger); white-space: normal; }
+.architect-worker-error { display: block; color: var(--ds-danger); white-space: normal; }
+/* The sticky header's failure reason: danger tone, wrapped and clamped to three lines (the full text is its title). */
+.architect-worker-meta .architect-worker-copy small.architect-worker-error { flex: 1 0 100%; color: var(--ds-danger); white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
 
 /* The tally's measuring copy: laid out off-screen so the full line can be measured without being shown. */
 .architect-panel-tally-measure { position: absolute; visibility: hidden; white-space: nowrap; pointer-events: none; font-size: var(--ds-text-chip); font-variant-numeric: tabular-nums; inset-inline-start: 0; top: 0; }
@@ -255,10 +261,10 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* One quiet line under the tally while the lead is not in Full access: workers still run with it. */
 .architect-panel-access { display: flex; align-items: flex-start; gap: 6px; margin: -4px 0 0; padding: 0 14px 8px; color: var(--muted); font-size: var(--ds-text-chip); line-height: 1.3; flex-shrink: 0; }
 .architect-panel-access[hidden] { display: none; }
-.architect-panel-access-icon { display: flex; flex: none; padding-top: 1px; color: var(--state-tone); }
+.architect-panel-access-icon { display: flex; flex: none; padding: 1px 0 0; border: 0; background: none; color: var(--state-tone); cursor: help; }
 .architect-panel-access-icon .icon { width: 12px; height: 12px; }
-/* One quiet line that wraps (never cut); the deploy and scheduling exception is the tip of its leading icon (a Tab
-   stop that shows it on keyboard focus) and on the setup screen. */
+/* One quiet line that wraps (never cut); the deploy and scheduling exception is the tip and accessible name of its
+   leading info button (shown on hover and keyboard focus) and on the setup screen. */
 .architect-panel-access-text { min-width: 0; overflow-wrap: anywhere; }
 .architect-panel-access-icon:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
 @media (prefers-contrast: more) { .architect-panel-access { color: var(--text); } }
