@@ -8,6 +8,14 @@ import { decodeToolActivity, groupToolRuns, renderToolGroup, renderToolStatus } 
 import { renderCoordination } from './coordination-message';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { decodeHandoff, historicalProvider } from './provider-handoff';
+import { attachToolImages } from './tool-image-viewer';
+import type { ToolImageLoader } from './tool-images';
+// The viewer's own styles; under `is-launcher` they also carry the tokens motion.css and design-system.css give the app.
+import './tool-images.css';
+
+/** Tool-row images in the launcher come from the same `tool_image` command as the app's transcript. */
+const overlayImageLoader: ToolImageLoader = (sessionId, path, maxEdge) =>
+  overlayCall<string>('tool_image', maxEdge ? { sessionId, path, maxEdge } : { sessionId, path });
 import type { Message, ProviderId, Session } from './types';
 
 const statusLabel = (value: string) => ({ running:'Working', waiting:'Needs attention', coordinating:'Coordinating', idle:'Ready', completed:'Completed', error:'Failed', failed:'Failed', stopped:'Stopped', interrupted:'Paused' }[value] || value);
@@ -39,6 +47,9 @@ export class OverlayThreadView {
     this.scroll = host.querySelector('.launcher-thread-scroll')!;
     this.history = host.querySelector('.launcher-thread-history')!;
     this.notice = host.querySelector('.launcher-thread-notice')!;
+    // Thumbnails in tool rows load with the thread shown when they rendered and open the viewer, never toggling the row.
+    // The launcher may not reveal files (`reveal_path` is the app's), so its viewer has no Reveal button.
+    attachToolImages(this.history, () => this.task?.sessionId ?? '', overlayImageLoader, { launcher: true });
     bindMessageActions(host, {
       content: (sessionId, key) => {
         if (this.task?.sessionId !== sessionId) return undefined;

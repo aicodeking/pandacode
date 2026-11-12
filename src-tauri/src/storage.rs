@@ -1615,6 +1615,22 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    /// The newest `limit` tool records of the session whose saved JSON contains
+    /// `fragment` (see `tool_images::search_fragment`). Only a cheap prefilter: the
+    /// caller parses and matches the records after releasing the store lock.
+    /// Newest first, older than message `before` when given, so callers can page with the lock
+    /// released between batches. Returns (message id, content).
+    pub fn tool_records_containing(&self, sid: &str, fragment: &str, before: Option<i64>, limit: usize) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.db.prepare_cached(
+            "SELECT id, content FROM messages WHERE session_id=?1 AND role='tool' AND instr(content,?2)>0 AND id<?3 ORDER BY id DESC LIMIT ?4",
+        ).map_err(|e| e.to_string())?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let before = before.unwrap_or(i64::MAX);
+        let rows = stmt
+            .query_map(params![sid, fragment, before, limit], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+    }
     /// RETURNING ties the timer to this exact insert even with concurrent tasks.
     pub fn start_turn_message(&self, sid: &str, content: &str) -> Result<i64> {
         self.db
@@ -2034,6 +2050,27 @@ mod tests {
             .create_session(&project.id, "claude", "sonnet", "auto")
             .unwrap();
         (store, session)
+    }
+
+    #[test]
+    fn tool_records_containing_reads_only_this_sessions_tool_records() {
+        let (store, session) = empty_session();
+        let other = store.create_session(&session.project_id, "claude", "sonnet", "auto").unwrap();
+        for n in 0..5 {
+            store.message(&session.id, "tool", &format!(r#"{{"type":"tool_activity","input":"/tmp/shot{n}.png"}}"#)).unwrap();
+        }
+        store.message(&session.id, "user", "/tmp/shot9.png").unwrap();
+        store.message(&other.id, "tool", r#"{"type":"tool_activity","input":"/tmp/shot7.png"}"#).unwrap();
+        let rows = store.tool_records_containing(&session.id, "shot", None, 3).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].1.contains("shot4.png"), "newest first: {rows:?}");
+        // The next page starts below the oldest id of the previous one.
+        let next = store.tool_records_containing(&session.id, "shot", Some(rows[2].0), 3).unwrap();
+        assert_eq!(next.len(), 2);
+        assert!(next[0].1.contains("shot1.png") && next[1].1.contains("shot0.png"), "{next:?}");
+        assert!(store.tool_records_containing(&session.id, "shot9", None, 10).unwrap().is_empty());
+        assert!(store.tool_records_containing(&session.id, "shot7", None, 10).unwrap().is_empty());
+        assert_eq!(store.tool_records_containing(&other.id, "shot7", None, 10).unwrap().len(), 1);
     }
 
     /// Usage-limit resumes list only flagged tasks whose reset has passed (serve mode).

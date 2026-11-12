@@ -4,18 +4,38 @@
 .tool-trace-summary{display:flex;align-items:center;width:fit-content;max-width:100%;min-height:28px}
 .tool-trace>:is(summary,.tool-trace-summary)>.tool-trace-icon{width:12px;height:12px;flex:none}
 .tool-trace-verb{flex:none;white-space:nowrap;color:var(--muted);font-weight:var(--weight-regular)}
-.tool-trace-chip{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:22ch;padding:0 6px;border-radius:var(--radius-sm);background:var(--raised);color:var(--text);font-size:var(--text-sm);line-height:1.55}
+/* A verb right before its object is one sentence: one space of the verb's own font apart, not the row's 6px flex gap. */
+.tool-trace-verb:has(+.tool-trace-object)::after{content:" ";white-space:pre}
+.tool-trace-verb:has(+.tool-trace-object){margin-inline-end:-6px}
+/* Narrow rows give way in order: the object (and quote) first, then the `+N more` tail, then the chip (down to ~6ch);
+ * the verb, badges, exit codes and chevron never shrink. Shrinking is weighted by size, hence the steep factors. */
+.tool-trace-chip{display:inline-flex;align-items:center;gap:4px;flex:0 1 auto;min-width:6ch;max-width:22ch;padding:0 6px;border:1px solid var(--ds-chip-border);border-radius:var(--radius-sm);background:var(--raised);color:var(--text);font-size:var(--text-sm);line-height:1.55}
+.tool-trace-join{flex:none;color:var(--muted)}
+/* A list comma hugs the chip before it: it cancels the row's whole 6px gap, so no space comes before it. */
+.tool-trace-join.is-comma{margin-inline-start:-6px}
 .tool-trace-chip .icon{width:11px;height:11px;flex:none;color:var(--muted)}
 .tool-trace-chip .brand-icon{width:12px;height:12px;flex:none}
 .tool-trace-chip b{font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tool-trace-object{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
-.tool-trace-object.is-mono{font-family:var(--mono);font-size:var(--thread-font)}
+.tool-trace-object{flex:0 100000 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+/* A result after the object (`· 1 passed`, `· no matches`) stays whole; the object before it ellipsizes. */
+.tool-trace-object.is-tally{flex:0 1 auto}
+/* Commands, paths and arguments: mono a step below the row so they do not shout; prose objects stay in the row's face. */
+.tool-trace{--trace-mono-scale:.9}
+.tool-trace-object.is-mono{font-family:var(--mono);font-size:calc(var(--trace-mono-scale,.9) * 1em)}
+/* Free text (a summary, a prompt) after the sentence: `· “Reviewed image rows”`, muted, clipped before the badges. */
+/* Shrinking is weighted by size, so a long quote would take a short object (`origin m…`) down with it: the quote gives way
+ * first (its shrink factor dwarfs the object’s), and the object only ellipsizes once the quote is gone. */
+.tool-trace-quote{flex:0 10000000 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+/* `+2 more commands`: plain muted prose after the sentence, never part of a mono object. */
+/* Whole while the object can still give way; only a row too narrow for both cuts it (`+2 more comm…`). */
+.tool-trace-more-steps{flex:0 100 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-family:inherit;white-space:nowrap}
 .tool-trace-delta{flex:none;font-family:var(--mono);font-size:var(--thread-font)}
 .tool-trace-delta ins,.tool-trace-diff ins{text-decoration:none;color:var(--ds-success)}
 .tool-trace-delta del,.tool-trace-diff del{text-decoration:none;color:var(--ds-danger)}
 .tool-trace>summary>.tool-trace-chevron{width:10px;height:10px;flex:none;color:var(--muted)}
 .tool-trace>summary:hover .tool-trace-verb,.tool-trace>summary:hover .tool-trace-object{color:var(--text)}
-.tool-trace[data-tool-status="failed"] .tool-trace-verb,.tool-trace[data-tool-failed]>:is(summary,.tool-trace-summary)>.tool-trace-verb{color:var(--danger)}
+/* Coloured by outcome (tool-activity.ts `toolFailed`), never the raw status: a search that found nothing is not red. */
+.tool-trace[data-tool-failed]>:is(summary,.tool-trace-summary)>.tool-trace-verb{color:var(--danger)}
 .tool-trace>:is(summary,.tool-trace-summary)>.tool-trace-badge{margin-left:2px}
 /* Outside the step rail (which shimmers instead) the running verb breathes. */
 @media(prefers-reduced-motion:no-preference){.tool-trace[data-tool-status="running"]:not(.is-steps .tool-trace) .tool-trace-verb{animation:state-pulse 1.6s ease-in-out infinite}}
@@ -39,6 +59,9 @@ html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,trans
 .tool-trace-badge.is-live{background:color-mix(in srgb,var(--ds-info) 14%,transparent);color:var(--ds-info)}
 .tool-trace-badge.is-live::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
 .tool-trace-badge.is-failed{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
+/* A destructive shell command: a quiet danger tone, outlined rather than filled, so it reads apart from a failure. */
+.tool-trace-badge.is-danger{background:transparent;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ds-danger) 40%,transparent);color:var(--ds-danger);font-weight:var(--weight-regular,400);cursor:help}
+.tool-trace-badge[data-trace-badge]:is(:focus,:focus-visible){outline:2px solid var(--focus);outline-offset:1px}
 .tool-activity .tool-trace-card pre{max-height:220px;padding:8px 12px;border:0;border-radius:0;background:var(--panel);font-size:var(--mono-size);line-height:var(--leading-code)}
 .tool-trace-list,.tool-trace-todos{display:grid;margin:0;padding:0;list-style:none}
 .tool-trace-list li{display:flex;align-items:baseline;gap:8px;min-width:0;padding:4px 0}
@@ -46,8 +69,8 @@ html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,trans
 .tool-trace-item-title{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--weight-strong)}
 .tool-trace-item-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .tool-trace-more{margin:0;color:var(--muted);font-size:var(--thread-font)}
-/* A lone short result (a screenshot size, one error line) without the card plate. */
-.tool-trace-inline{margin:0 0 2px;font-size:var(--thread-font)}
+/* A lone short result (a screenshot size, one error line) without the card plate; its text starts where card content does. */
+.tool-trace-inline{margin:0 0 2px;padding-inline:12px;font-size:var(--thread-font)}
 .tool-trace-list .tool-trace-more{display:block}
 .tool-trace-todos li{display:flex;align-items:flex-start;gap:6px;padding:2px 0}
 .tool-trace-todos .icon{width:12px;height:12px;flex:none;margin-top:3px;color:var(--muted)}
@@ -82,7 +105,7 @@ html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,trans
 .tool-trace:is([data-tool-family="browser"],[data-tool-family="vm"],[data-tool-family="simulator"],[data-tool-family="cloud"]){--trace-tint:var(--ds-tone-remote)}
 .tool-trace:is([data-tool-family="design"],[data-tool-family="moodboard"]){--trace-tint:var(--ds-tone-worktree)}
 .tool-trace[data-tool-status="running"]{--trace-tint:var(--ds-info)}
-.tool-trace:is([data-tool-status="failed"],[data-tool-failed]){--trace-tint:var(--ds-danger)}
+.tool-trace[data-tool-failed]{--trace-tint:var(--ds-danger)}
 .tool-trace-icon{transition:color var(--ds-ease-out) ease-out}
 .tool-trace>:is(summary,.tool-trace-summary)>.tool-trace-icon,.tool-trace>:is(summary,.tool-trace-summary) .tool-trace-chip .icon{color:var(--trace-tint)}
 /* Secondary disclosure inside a card (a subagent's prompt). */
@@ -122,12 +145,22 @@ html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,trans
 .tool-trace-bubble-head{display:flex;align-items:center;gap:5px;min-width:0;color:var(--muted);font-size:var(--thread-font)}
 .tool-trace-bubble-head b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-weight:var(--weight-medium)}
 
+/* Progress snapshot annotations: the label with a small tone dot. */
+.tool-trace-marks{display:grid;gap:4px;margin:0;padding:0;list-style:none;font-size:var(--thread-font)}
+.tool-trace-marks>li{display:flex;align-items:center;gap:8px;min-width:0;color:var(--text)}
+.tool-trace-mark-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.tool-trace-mark-dot[data-mark-tone="success"]{background:var(--ds-success)}
+.tool-trace-mark-dot[data-mark-tone="warning"]{background:var(--ds-warn)}
+.tool-trace-mark-dot:is([data-mark-tone="danger"],[data-mark-tone="error"]){background:var(--ds-danger)}
+.tool-trace-mark-dot[data-mark-tone="info"]{background:var(--ds-info)}
+@media(forced-colors:active){.tool-trace-mark-dot{background:CanvasText}}
+
 html[data-theme="dark"] .tool-activity .tool-trace-card pre,html[data-theme="dark"] .tool-trace-bubble{background:var(--bg)}
 @media(prefers-contrast:more){
-  .tool-trace-chip,.tool-trace-card,.tool-trace-roster>li,.tool-trace-files code,.tool-trace-list li{border-color:var(--text)}
+  .tool-trace-chip,.tool-trace-image>.tool-image-name,.tool-trace-card,.tool-trace-roster>li,.tool-trace-files code,.tool-trace-list li{border-color:var(--text)}
   .tool-trace-badge{outline:1px solid currentColor}
   .tool-activity .tool-trace-raw>summary{color:var(--text)}
-  .tool-trace-stack,.tool-group-status.is-running,.tool-trace-aside>summary,.tool-trace-verb,.tool-trace-object,.tool-trace-item-meta,.tool-trace-card-meta,.tool-trace-note,.tool-trace-more,.tool-trace-label,.tool-trace-route,.tool-trace-kv dt,.tool-trace-roster-text,.tool-trace-badge.is-quiet{color:var(--text)}
+  .tool-trace-stack,.tool-group-status.is-running,.tool-trace-aside>summary,.tool-trace-verb,.tool-trace-object,.tool-trace-item-meta,.tool-trace-card-meta,.tool-trace-note,.tool-trace-more,.tool-trace-more-steps,.tool-trace-join,.tool-trace-quote,.tool-trace-label,.tool-trace-route,.tool-trace-kv dt,.tool-trace-roster-text,.tool-trace-badge.is-quiet{color:var(--text)}
   .tool-trace{--trace-tint:var(--text)}
   .tool-trace-bubble{border-left-color:var(--text)}
 }
@@ -145,7 +178,16 @@ html[data-theme="dark"] .tool-activity .tool-trace-card pre,html[data-theme="dar
 /* The folded summary reads a touch lighter than the answer under it. */
 .turn-activity-label[data-mode="folded"],.is-steps:not(.live-activity) .turn-activity-label{gap:10px;color:var(--trace-folded)}
 /* One line: a long summary ellipsizes before its marks. */
-.is-steps .trace-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.is-steps .trace-summary-text{display:inline-flex;flex-wrap:wrap;align-items:baseline;min-width:0;overflow:hidden;white-space:nowrap}
+.is-steps .trace-summary-sentence{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.is-steps .trace-summary-text>.tool-group-status{flex-shrink:0;white-space:pre}
+/* A tally's ` · ` hangs into the room the item before it leaves (margin-right), so a tally that wraps to a new line puts
+   its separator left of the clipped edge: no line ever starts with `·`. */
+.trace-summary-text{--tally-sep:1em}
+.trace-summary-text>.tool-group-status{margin-left:calc(-1 * var(--tally-sep));margin-right:var(--tally-sep)}
+.trace-summary-text>.tool-group-status:last-child{margin-right:0}
+.trace-summary-text>.trace-summary-sentence:has(+.tool-group-status){margin-right:var(--tally-sep)}
+.trace-summary-text .tool-group-sep{display:inline-block;width:var(--tally-sep);text-align:center}
 .trace-sentence{display:inline-flex;align-items:center;gap:6px;min-width:0}
 html[data-theme="light"] .is-steps{--trace-head-verb:color-mix(in srgb,var(--text) 68%,var(--bg))}
 .turn-activity-label .trace-sentence .tool-trace-verb{color:var(--trace-head-verb)}
@@ -172,14 +214,15 @@ html[data-theme="light"] .is-steps{--trace-head-verb:color-mix(in srgb,var(--tex
 .is-steps .tool-group:has(+ .tool-group)>.tool-group-body{padding-bottom:0}
 .is-steps .tool-group-body .tool-activity{margin:0}
 /* A row ends where its card ends (card inset 28px + 528px), so a long object ellipsizes inside it. */
-.is-steps .tool-trace>summary{max-width:556px;min-height:32px;gap:6px;font-size:var(--thread-font);line-height:20px}
-.is-steps .tool-trace>summary>.tool-trace-icon{width:14px;height:14px;margin-right:12px;color:var(--muted)}
+/* Static rows (nothing to expand) share the summary's line exactly: same icon box, gap, height and tone. */
+.is-steps .tool-trace>:is(summary,.tool-trace-summary){max-width:min(556px,100%);min-height:32px;gap:6px;font-size:var(--thread-font);line-height:20px}
+.is-steps .tool-trace>:is(summary,.tool-trace-summary)>.tool-trace-icon{width:14px;height:14px;margin-right:12px;color:var(--muted)}
 .is-steps .tool-trace-chip{box-sizing:border-box;height:var(--row-sm);max-width:26ch;padding:0 7px;gap:5px;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--bg) 93%,var(--text));font-size:var(--text-sm);line-height:20px}
 /* Measured stems: ~1.15px in the chip label against ~1.28px in the verb, so medium, not bold. */
 .is-steps .tool-trace-chip b{font-weight:var(--weight-medium)}
 .is-steps .tool-trace-chip:has(>svg){padding-left:5px}
 .is-steps .tool-trace-chip .icon,.is-steps .tool-trace-chip .brand-icon{width:14px;height:14px}
-.is-steps .tool-trace-object.is-mono{font-size:var(--thread-font)}
+.is-steps .tool-trace-object.is-mono{font-size:calc(var(--trace-mono-scale,.9) * 1em)}
 .is-steps .tool-trace>summary>.tool-trace-chevron{width:12px;height:12px}
 .is-steps .tool-activity-body{margin:2px 0 8px 28px}
 /* The newest live step reads dark (and shimmers, trace-motion.css) until the next one starts. */
@@ -190,7 +233,7 @@ html[data-theme="light"] .is-steps{--trace-head-verb:color-mix(in srgb,var(--tex
 /* Cards opened by the choreography read like the reference; a card the reader opens keeps its raw record. */
 .live-activity .tool-trace[data-auto]>.tool-activity-body:has(>:not(.tool-activity-note,.tool-trace-raw))>.tool-trace-raw{display:none}
 /* The folded summary's marks, measured at 10.0 s: bare 16px icons, 4px apart, 10px after the text. */
-.is-steps .turn-activity-label .tool-trace-stack{gap:4px;margin-left:0}
+.is-steps .turn-activity-label .tool-trace-stack{flex:0 1000 auto;min-width:0;overflow:hidden;gap:4px;margin-left:0}
 .is-steps .turn-activity-label .tool-trace-stack :is(.icon,.brand-icon){width:16px;height:16px;padding:0;border:0;border-radius:0;background:none}
 
 /* --- Result rows (MCP records): 16px mark, bold title + muted meta, time on the right, body below ---- */
@@ -225,3 +268,54 @@ html[data-theme="dark"] .tool-trace-card{box-shadow:0 1px 2px rgb(0 0 0 / .3)}
 
 /* Micro-interactions: only without reduced motion. */
 @media(prefers-reduced-motion:no-preference){.tool-trace-verb,.tool-trace-object{transition:color var(--ds-ease-out) ease-out}.tool-trace-chevron,.tool-trace-raw>summary>.icon:last-child,.tool-trace-aside>summary>.icon:last-child{transition:rotate var(--ds-ease-out) ease-out}.tool-activity[open]>.tool-trace-card,.tool-activity[open] .tool-trace-raw-body{animation:tt-fade 160ms ease-out}@keyframes tt-fade{from{opacity:0}}}
+
+/* An image the agent viewed sits in the sentence as a thumbnail (tool-images.css); beside a chip only the thumb shows. */
+.tool-trace-image{display:inline-flex;align-items:center;flex:0 1 auto;min-width:0;max-width:32ch}
+.tool-trace-image.is-compact .tool-image-name{display:none}
+/* A viewed or generated image's name is a chip after its thumbnail, as beside a captured or encoded image's. */
+.tool-trace-image>.tool-image-name{display:inline-flex;align-items:center;box-sizing:border-box;max-width:22ch;padding:0 6px;border:1px solid var(--ds-chip-border);border-radius:var(--radius-sm);background:var(--raised);color:var(--text);font-size:var(--text-sm);font-weight:var(--weight-medium);line-height:1.55}
+.is-steps .tool-trace-image>.tool-image-name{height:var(--row-sm);max-width:26ch;padding:0 7px;background:color-mix(in srgb,var(--bg) 93%,var(--text));line-height:20px}
+/* Housekeeping rows (`Compacted context`) read faint. */
+.tool-trace[data-tool-quiet]>:is(summary,.tool-trace-summary) :is(.tool-trace-verb,.tool-trace-icon){color:var(--faint)}
+.is-steps .tool-trace[data-tool-quiet]>:is(summary,.tool-trace-summary)>.tool-trace-icon{color:var(--faint)}
+@media (prefers-contrast:more){ .tool-trace[data-tool-quiet]>:is(summary,.tool-trace-summary) :is(.tool-trace-verb,.tool-trace-icon){color:var(--text)}.is-steps .tool-trace[data-tool-quiet]>:is(summary,.tool-trace-summary)>.tool-trace-icon{color:var(--text)} }
+
+/* The destructive badge's tooltip (tool-trace-row.ts): one glass bubble fixed in the viewport (no pane clips it, no row paints
+ * over it), below the badge or above it near the bottom. One line per risk: the reason as text, the command as code that wraps
+ * only between words. Out of flow and out of the accessibility tree (the badge's aria-label says it). */
+.tool-trace-tip{position:fixed;z-index:1000;top:0;left:0;display:grid;gap:4px;width:max-content;max-width:min(360px,calc(100vw - 16px));padding:6px 10px;border:1px solid var(--glass-border);border-radius:var(--ds-radius-control);background:var(--glass-warm);backdrop-filter:blur(26px) saturate(1.45);-webkit-backdrop-filter:blur(26px) saturate(1.45);box-shadow:0 10px 28px -10px var(--glass-shadow-deep),0 2px 8px -4px var(--glass-shadow-near);color:var(--text);font-size:var(--text-xs);font-weight:var(--weight-regular,400);line-height:1.45;text-align:left;pointer-events:none;opacity:0;visibility:hidden}
+.tool-trace-tip[data-open]{opacity:1;visibility:visible}
+.tool-trace-tip-line{display:block;overflow-wrap:normal;word-break:normal}
+.tool-trace-tip-reason{margin-right:6px}
+.tool-trace-tip-reason::after{content:":"}
+.tool-trace-tip code{font-family:var(--mono);font-size:calc(var(--trace-mono-scale,.9) * 1em)}
+.tool-trace-tip-word{white-space:nowrap}
+.tool-trace-tip-word.is-long{white-space:normal;overflow-wrap:anywhere}
+@media(prefers-reduced-motion:no-preference){
+  .tool-trace-tip{transition:opacity var(--ds-ease-out) ease-out,visibility 0s linear var(--ds-ease-out)}
+  .tool-trace-tip[data-open]{transition:opacity var(--ds-ease-in) ease-out,visibility 0s}
+}
+@media(prefers-reduced-transparency:reduce){.tool-trace-tip{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(prefers-contrast:more){.tool-trace-tip{background:var(--bg);border-color:var(--text);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(forced-colors:active){.tool-trace-tip{background:Canvas;color:CanvasText;border-color:CanvasText}}
+
+/* A call the harness refused before it ran (`Blocked: [sleep] 60 …`): a quiet warning, its shield tinted --ds-warn so it is
+ * not missed beside a failure's red, its words muted. */
+.tool-trace[data-tool-blocked][data-tool-status]{--trace-tint:var(--ds-warn)}
+.tool-trace[data-tool-blocked]>:is(summary,.tool-trace-summary) .tool-trace-verb{color:var(--muted)}
+.tool-trace[data-tool-blocked]>:is(summary,.tool-trace-summary)>.icon:first-child{color:var(--ds-warn)}
+.tool-trace-note.is-blocked{color:var(--muted)}
+/* A refused or interrupted command keeps the shell card's terminal, its prompt faint: nothing ran to the end. */
+.tc-term:is(.is-blocked,.is-interrupted) .tc-dollar{color:var(--faint)}
+/* Interrupted (`Interrupted: [npm] test`): quiet like a stop, never red. */
+.tool-trace[data-tool-interrupted][data-tool-status]{--trace-tint:var(--faint)}
+.tool-trace-note.is-interrupted{color:var(--muted)}
+/* Why a call wrote or ran nothing (`· string to replace not found`): muted, shrinks before the sentence does. */
+.tool-trace-reason{flex:0 100 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.tool-trace-error-count{font-variant-numeric:tabular-nums}
+.tool-group-status.is-blocked{color:var(--muted)}
+@media(prefers-contrast:more){.tool-trace:is([data-tool-blocked],[data-tool-interrupted])[data-tool-status]{--trace-tint:var(--text)}.tool-trace-note:is(.is-blocked,.is-interrupted),.tool-trace-reason,.tool-group-status.is-blocked{color:var(--text)}}
+@media(forced-colors:active){.tool-trace[data-tool-blocked]>:is(summary,.tool-trace-summary)>.icon:first-child{color:CanvasText}}
+/* An image a command wrote: its thumbnail after the sentence, the file name beside it unless the sentence names it. */
+.tool-trace-produced{display:inline-flex;align-items:center;flex:0 1 auto;min-width:0;max-width:32ch}
+.tool-trace-produced.is-compact{flex:none}

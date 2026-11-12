@@ -1995,6 +1995,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewWorkspaceFiles.includes(path) || !isPreviewableFile(path)) throw new Error('This file cannot be previewed in the browser.');
       result = { path, name: path.split('/').pop(), url: 'http://127.0.0.1:4179/preview/' + encodeURIComponent(args.sessionId ?? args.projectId) + '/' + path.split('/').map(encodeURIComponent).join('/') }; break;
     }
+    case 'tool_image': {
+      // A drawn stand-in for an image an agent viewed (tool-row thumbnails).
+      // Absolute or checkout-relative, like the real command; never `..` or network paths.
+      if (!/^(file:\/\/)?[^\\]*\.(png|jpe?g|gif|webp)$/i.test(String(args.path)) || /(^|\/)\.\.(\/|$)|^(file:)?\/\//.test(String(args.path).replace(/^file:\/\/(?=\/[^/])/, ''))) throw new Error('Only PNG, JPEG, GIF and WebP images can be shown');
+      const name = String(args.path).split('/').pop()?.replace(/[<>&"']/g, '') ?? '';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" rx="10" fill="#1f3a5f"/><rect x="16" y="16" width="288" height="24" rx="6" fill="#3d6aa8"/><rect x="16" y="52" width="180" height="132" rx="8" fill="#e8eef7"/><text x="250" y="124" fill="#fffcef" font-family="sans-serif" font-size="14" text-anchor="middle">${name}</text></svg>`;
+      result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
+    }
     case 'workspace_image': {
       // A drawn stand-in for any workspace image a question shows.
       if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(String(args.path)) || String(args.path).includes('..')) throw new Error('Only workspace images can be shown');

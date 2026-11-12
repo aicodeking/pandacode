@@ -366,6 +366,119 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or_default()
 }
 
+/// Name, input and output for Codex app-server items beyond commands, file
+/// changes and tool calls. Only named fields are copied, each one bounded.
+type CodexItemDetails = (String, Option<String>, Option<String>);
+type Fields = serde_json::Map<String, Value>;
+const CODEX_ITEM_TEXT_LIMIT: usize = 2048;
+
+fn put_text(target: &mut Fields, key: &str, value: &Value) {
+    if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+        target.insert(key.into(), limited(text, CODEX_ITEM_TEXT_LIMIT).into());
+    }
+}
+fn put_texts(target: &mut Fields, key: &str, value: &Value, count: usize) {
+    let Some(values) = value.as_array() else { return; };
+    let texts: Vec<Value> = values.iter().filter_map(Value::as_str).take(count)
+        .map(|text| limited(text, 512).into()).collect();
+    if !texts.is_empty() { target.insert(key.into(), texts.into()); }
+}
+fn fields_input(fields: Fields) -> Option<String> {
+    (!fields.is_empty()).then(|| preview_json(&Value::Object(fields), TOOL_INPUT_LIMIT))
+}
+fn text_output(value: &Value) -> Option<String> {
+    value.as_str().filter(|text| !text.is_empty()).map(|text| limited(text, TOOL_OUTPUT_LIMIT))
+}
+
+fn codex_item_details(item: &Value) -> Option<CodexItemDetails> {
+    let mut input = Fields::new();
+    let (name, output) = match field(item, "type") {
+        "imageView" => {
+            put_text(&mut input, "path", &item["path"]);
+            ("View image".to_owned(), None)
+        }
+        "webSearch" => {
+            put_text(&mut input, "query", &item["query"]);
+            let action = &item["action"];
+            if action.is_object() {
+                let mut summary = Fields::new();
+                for key in ["type", "query", "url", "pattern"] { put_text(&mut summary, key, &action[key]); }
+                put_texts(&mut summary, "queries", &action["queries"], 8);
+                if !summary.is_empty() { input.insert("action".into(), summary.into()); }
+            }
+            ("web_search".to_owned(), web_search_links(&item["results"]))
+        }
+        "sleep" => {
+            if let Some(ms) = item["durationMs"].as_u64() { input.insert("durationMs".into(), ms.into()); }
+            ("sleep".to_owned(), None)
+        }
+        "collabAgentToolCall" => {
+            for key in ["prompt", "model", "reasoningEffort"] { put_text(&mut input, key, &item[key]); }
+            put_texts(&mut input, "receiverThreadIds", &item["receiverThreadIds"], 16);
+            let tool = limited(field(item, "tool"), 128);
+            (if tool.is_empty() { "Agent".into() } else { format!("Agent · {tool}") }, agent_states(&item["agentsStates"]))
+        }
+        "subAgentActivity" => {
+            for key in ["agentPath", "kind", "model", "reasoningEffort"] { put_text(&mut input, key, &item[key]); }
+            ("Sub-agent".to_owned(), None)
+        }
+        "imageGeneration" => {
+            put_text(&mut input, "revisedPrompt", &item["revisedPrompt"]);
+            let failure = item["failure"].is_object().then(|| limited(field(&item["failure"], "type"), 256));
+            ("Generate image".to_owned(), text_output(&item["savedPath"]).or(failure))
+        }
+        "plan" => ("Plan".to_owned(), text_output(&item["text"])),
+        "enteredReviewMode" => {
+            put_text(&mut input, "review", &item["review"]);
+            ("Review".to_owned(), None)
+        }
+        "exitedReviewMode" => ("Review".to_owned(), text_output(&item["review"])),
+        "functionCallOutput" => {
+            let name = limited(field(item, "name"), 128);
+            let name = match field(item, "namespace") { "" => name, namespace => format!("{} · {name}", limited(namespace, 128)) };
+            let output = item.get("output").filter(|value| !value.is_null()).map(|value| output_json(value, TOOL_OUTPUT_LIMIT));
+            (name, output)
+        }
+        _ => return None,
+    };
+    Some((name, fields_input(input), output))
+}
+
+/// `Links: [{"title","url"}]`, the shape the window's web card reads. The list
+/// stops before the bound so the JSON always stays whole.
+fn web_search_links(results: &Value) -> Option<String> {
+    const PREFIX: &str = "Links: ";
+    let mut links = Vec::new();
+    let mut bytes = PREFIX.len() + 2;
+    for result in results.as_array()?.iter().take(50) {
+        let pick = |keys: &[&str]| keys.iter().find_map(|key| result[*key].as_str().filter(|text| !text.is_empty()));
+        let Some(url) = pick(&["url", "link", "href"]).filter(|url| url.len() <= 2048) else { continue; };
+        let mut link = json!({"title": limited(pick(&["title", "name"]).unwrap_or(url), 256), "url": url});
+        if let Some(snippet) = pick(&["snippet", "description"]) { link["snippet"] = limited(snippet, 300).into(); }
+        let size = serde_json::to_string(&link).map_or(usize::MAX, |text| text.len() + 1);
+        if bytes.saturating_add(size) > TOOL_OUTPUT_LIMIT { break; }
+        bytes += size;
+        links.push(link);
+    }
+    (!links.is_empty()).then(|| format!("{PREFIX}{}", Value::Array(links)))
+}
+
+fn agent_states(states: &Value) -> Option<String> {
+    let states = states.as_object().filter(|states| !states.is_empty())?;
+    let mut preview = Preview::new(TOOL_OUTPUT_LIMIT);
+    for (index, (thread, state)) in states.iter().take(32).enumerate() {
+        if index > 0 { preview.text("\n"); }
+        preview.text(&limited(thread, 256));
+        preview.text(": ");
+        preview.text(field(state, "status"));
+        if let Some(message) = state["message"].as_str().filter(|message| !message.is_empty()) {
+            preview.text(" — ");
+            preview.text(&limited(message, CODEX_ITEM_TEXT_LIMIT));
+        }
+    }
+    Some(preview.finish())
+}
+
 fn content_preview(value: &Value, limit: usize) -> String {
     fn content(value: &Value, preview: &mut Preview, depth: usize) {
         if preview.truncated {
@@ -1888,17 +2001,12 @@ impl Protocol {
                 };
                 self.tool_update(id, Some(&name), Some(status), input, output, step);
             }
-            _ => {
-                // Keep a label for other provider activities without forwarding
-                // arbitrary nested protocol payloads as tool details.
-                self.tool_update(
-                    id,
-                    Some(field(item, "type")),
-                    Some(status),
-                    None,
-                    None,
-                    step,
-                );
+            kind => {
+                // Known activities keep a few named, bounded fields; others keep
+                // only a label, never arbitrary nested protocol payloads.
+                let (name, input, output) = codex_item_details(item)
+                    .unwrap_or_else(|| (limited(kind, 256), None, None));
+                self.tool_update(id, Some(&name), Some(status), input, output, step);
             }
         }
     }

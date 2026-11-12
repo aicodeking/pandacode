@@ -12,6 +12,7 @@ import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './f
 import { createAgentInput, type AgentInput } from './agent-input';
 import { TailText } from './tail-text';
 import { decodeToolActivity, renderToolActivity } from './tool-activity';
+import { attachToolImages } from './tool-image-viewer';
 import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamConfig, type TeamSnapshot, type TeamWorker, type ModelSelection, type TeamLibrary, type TeamSetup } from './architect-types';
 import { resetTime } from './usage-limit';
 import { mountTeamProfiles } from './team-profiles';
@@ -261,6 +262,8 @@ export class ArchitectView {
   private taskId = '';
   private team: TeamSnapshot | null = null;
   private panel?: HTMLElement;
+  /** Detaches the worker detail's image thumbnails (`attachToolImages`) when the panel closes. */
+  private releaseImages?: () => void;
   private selected = '';
   private live = new Map<string, WorkerLive>();
   private rows = new Map<string, HTMLButtonElement>();
@@ -368,6 +371,9 @@ export class ArchitectView {
     const panel = document.createElement('section'); panel.className = 'architect-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Workers');
     panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><div class="architect-panel-scroll"><div class="architect-worker-list"></div><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div>`;
     this.panel = panel; this.host.append(panel);
+    // Tool rows in a worker's history name that worker's files: thumbnails are stamped with the worker shown when
+    // they render, load near the viewport and open the viewer instead of toggling the row.
+    this.releaseImages = attachToolImages(panel.querySelector<HTMLElement>('.architect-worker-detail')!, () => this.worker()?.sessionId ?? '');
     const assist = document.createElement('button'); assist.type = 'button'; assist.className = 'architect-assist';
     assist.addEventListener('click', () => {
       const worker = this.worker(), target = worker?.sessionId ?? this.taskId;
@@ -409,7 +415,7 @@ export class ArchitectView {
     this.panel?.querySelector<HTMLButtonElement>('.architect-back')?.focus();
     await this.loadMessages();
   }
-  close(): void { this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear(); this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
+  close(): void { this.releaseImages?.(); this.releaseImages = undefined; this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear(); this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
   private async control(action: string): Promise<void> {
     if (this.busy || !this.team) return;
     this.busy = true; this.paint();

@@ -18,6 +18,13 @@ function agentName(entry: Entry): string {
   return name && !/[\\/]/.test(name) && !/^(?:subagent|agent)$/i.test(name) ? name : `#${entry.number}`;
 }
 
+/** `tool_image` only authorizes paths from the main thread's tool records, not the subagents table, so a subagent's
+ *  viewed image would be a thumbnail that never loads: its row keeps the file name, with no button and no card. */
+function dropImageButtons(root: Element): void {
+  root.querySelectorAll('.tool-image-card').forEach(card => card.remove());
+  root.querySelectorAll('[data-tool-image]').forEach(button => button.remove());
+}
+
 /** Native keeps a child's newest tools up to this many (`CHILD_TOOL_LIMIT`). */
 const TOOL_LIMIT = 64;
 /** Native cuts a list row's texts to this (`PREVIEW_CHARS`). */
@@ -314,6 +321,7 @@ export class Subagents {
           const template = document.createElement('template'); template.innerHTML = html;
           const next = template.content.firstElementChild as HTMLDetailsElement;
           next.dataset.snapshot = JSON.stringify(tool); next.open = old?.open ?? false;
+          dropImageButtons(next);
           const raw = next.querySelector<HTMLDetailsElement>('.tool-trace-raw');
           if (raw) raw.open = Boolean(old?.querySelector<HTMLDetailsElement>('.tool-trace-raw')?.open);
           const focusedIndex = old ? [...old.querySelectorAll('summary, pre')].findIndex(control => control === document.activeElement) : -1;

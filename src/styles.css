@@ -254,16 +254,19 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .turn-activity-body .tool-activity[data-tool-status="completed"] .tool-activity-status{display:none}
 .tool-group,.thinking-block{min-width:0;margin:2px 0;color:var(--muted)}
 .tool-group:not(:has(+ .tool-group)){margin-bottom:8px}
-.tool-group-summary{display:flex;align-items:center;gap:7px;min-height:30px;max-width:100%;width:fit-content;padding:2px 0;list-style:none;cursor:pointer;font-size:var(--thread-font);line-height:1.5;border-radius:var(--radius-xs);user-select:none}
+.tool-group-summary{display:flex;flex-wrap:wrap;align-items:center;gap:7px;min-height:30px;max-width:100%;width:fit-content;padding:2px 0;list-style:none;cursor:pointer;font-size:var(--thread-font);line-height:1.5;border-radius:var(--radius-xs);user-select:none}
 .tool-group-summary::-webkit-details-marker{display:none}
 .tool-group-summary:hover{color:var(--text)}
 .tool-group-summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
 .tool-group-summary>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);flex:none}
 .tool-group-summary>.icon:last-child{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
 .tool-group[open]>.tool-group-summary>.icon:last-child,.thinking-block[open]>.tool-group-summary>.icon:last-child{rotate:90deg}
-.tool-group-label{flex:none;font-weight:var(--weight-medium)}
+/* A long sentence ellipsizes (it grows from a zero basis, so it never pushes the tallies off its line while 12ch of it fits);
+ * the tallies after it (`· 2 failed`) stay whole and wrap to a second line only when even that does not fit. */
+.tool-group-label{flex:1 1 0;min-width:min(100%,12ch);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--weight-medium)}
+.tool-group-summary>.tool-trace-stack{flex:0 1000 auto;min-width:0;overflow:hidden}
 .tool-group-hint{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.tool-group-status{flex:none;font-size:var(--thread-font);color:var(--accent-ink)}
+.tool-group-status{flex:none;white-space:nowrap;font-size:var(--thread-font);color:var(--accent-ink)}
 .tool-group-status.has-failure{color:var(--danger)}
 .tool-group-body{min-width:0;padding:4px 0 2px 15px;margin:2px 0 4px 6px}
 .thinking-block{margin-bottom:8px}

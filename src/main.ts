@@ -21,6 +21,7 @@ import './usage-limit.css';
 import './document-viewer.css';
 import './tool-trace.css';
 import './tool-cards.css';
+import './tool-images.css';
 import './trace-motion.css';
 import './action-dock.css';
 import './inset-shell.css';
@@ -51,6 +52,8 @@ import { parseSkyTime } from './sky-math';
 import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
+import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
+import { attachToolImages, REVEAL_LABEL } from './tool-image-viewer';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
 import { botAvatarHtml } from './bot-avatars';
@@ -109,7 +112,7 @@ import { createTokenSaver } from './token-saver-panel';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
-import { isMac, isWindows, shortcut } from './platform';
+import { isMac, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
 import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
@@ -905,6 +908,16 @@ followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTransc
 const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
+// Images agents viewed (tool rows, cards, the live header) all come from `tool_image`: only paths the thread's tool
+// records name, absolute (/tmp screenshots included) or relative to the task's checkout. Network paths never load.
+// Rows and cards ask for a downscaled copy (`maxEdge`); only the viewer asks for the whole image.
+const toolImageLoader: ToolImageLoader = (sessionId, path, maxEdge) => isNetworkPath(path)
+  ? Promise.reject(new Error(NETWORK_PATH_ERROR))
+  : call<string>('tool_image', maxEdge ? { sessionId, path, maxEdge } : { sessionId, path });
+// Thumbnails load once near the viewport, whichever render inserted them, with the thread that rendered them (a
+// held transcript keeps showing the previous thread's rows after a switch); a click opens the viewer and never
+// toggles the row around it.
+attachToolImages(transcriptScroller, () => state.sessionId ?? '', toolImageLoader);
 const releaseTranscript = (): void => { if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
 // Rebuilding or measuring the composer briefly shrinks it; a layout read then grows the transcript
 // and clamps its scroll up. Re-pin in the mutation's microtask, before that clamp can paint or
@@ -2039,8 +2052,11 @@ function savedTurnActivity(key: string, label: string, activity: Message[], thre
   return activityHtml(key, foldedLabelHtml(tools as ToolActivity[]), savedActivityHtml(activity, true, thread), { steps: true, title: label });
 }
 function foldedLabelHtml(tools: ToolActivity[]): string {
-  const [sentence, failures] = summarizeTools(tools).split(' · ');
-  return `<span class="trace-summary-text">${escape(sentence)}${failures ? `<span class="tool-group-status has-failure"> · ${escape(failures)}</span>` : ''}</span>${toolStackHtml(tools)}`;
+  // Tallies after the sentence (`2 running`, `1 failed`, `1 blocked`, `1 interrupted`): only failures read as a failure.
+  const [sentence, ...tallies] = summarizeTools(tools).split(' · ');
+  const status = tallies.map(tally => `<span class="tool-group-status${/\bfailed$/.test(tally) ? ' has-failure' : /\b(blocked|denied|interrupted)$/.test(tally) ? ' is-blocked' : /\brunning$/.test(tally) ? ' is-running' : ''}"><span class="tool-group-sep"> · </span>${escape(tally)}</span>`).join('');
+  // The sentence ellipsizes; the tallies after it never shrink, so a narrow header still says what failed.
+  return `<span class="trace-summary-text"><span class="trace-summary-sentence">${escape(sentence)}</span>${status}</span>${toolStackHtml(tools)}`;
 }
 function savedToolKey(message: Message): string {
   const tool = decodeToolActivity(message.content);
@@ -2484,7 +2500,8 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
   } else if (last && !status) {
     const trace = describeTool(last);
     mode = 'step'; step = last.id;
-    const thumb = carded ? stepImage(last) : '';
+    // An image row already carries its thumbnail in the sentence (traceRowHtml).
+    const thumb = carded && !trace.image ? stepImage(last) : '';
     html = `${answerMs >= 0 ? traceGlyphHtml('bars') : traceGlyphHtml('step', trace.icon ?? kindIcon(trace.kind))}<span class="trace-sentence">${traceRowHtml(trace)}</span>${thumb ? `<img class="turn-card-thumb" alt="" data-thumb="${escape(thumb)}" hidden>` : ''}`;
   } else {
     mode = 'status';
@@ -2530,13 +2547,29 @@ function stepImage(tool: ToolActivity): string {
   const match = /"(?:file_path|path|image_path)"\s*:\s*"([^"]+\.(?:png|jpe?g|gif|webp))"/i.exec(tool.input) ?? /^\s*(\S+\.(?:png|jpe?g|gif|webp))\s*$/i.exec(tool.input);
   return match?.[1] ?? '';
 }
-const stepImages = new Map<string, Promise<string | null>>();
-function loadStepImage(label: HTMLElement): void {
-  const image = label.querySelector<HTMLImageElement>('img[data-thumb]'), sessionId = state.sessionId;
-  if (!image) return;
-  const path = image.dataset.thumb!, key = sessionId + '\0' + path;
-  if (!stepImages.has(key)) stepImages.set(key, call<string>('workspace_image', { sessionId, path }).then(url => url.startsWith('data:image/') ? url : null, () => null));
-  void stepImages.get(key)!.then(url => { if (url && image.isConnected) { image.src = url; image.hidden = false; } });
+/** The header thumbnail shares the tool rows' image cache: a success stays cached, and a failure is asked again
+ * when the header re-renders and a few times after `RETRY_MS` while the image stays. */
+/** Forced retries the header has asked per session and image: it re-renders on every step, so without a cap a
+ * missing image would be asked again about once a second for as long as it stays. */
+const stepImageForced = new Map<string, number>();
+const STEP_IMAGE_FORCED_LIMIT = 64;
+function forceStepImage(sessionId: string, path: string): boolean {
+  const key = sessionId + '\0' + path, tries = stepImageForced.get(key) ?? 0;
+  if (tries >= MAX_RETRIES) return false;
+  stepImageForced.delete(key);
+  stepImageForced.set(key, tries + 1);
+  while (stepImageForced.size > STEP_IMAGE_FORCED_LIMIT) stepImageForced.delete(stepImageForced.keys().next().value!);
+  return true;
+}
+function loadStepImage(label: HTMLElement, retry = true, sessionId = state.sessionId): void {
+  const image = label.querySelector<HTMLImageElement>('img[data-thumb]');
+  if (!image || !sessionId) return;
+  const path = image.dataset.thumb!;
+  void toolImageCache(toolImageLoader).get(sessionId, path, { retry: retry && forceStepImage(sessionId, path) }).then(url => {
+    if (!image.isConnected) return;
+    if (url) { image.src = url; image.hidden = false; return; }
+    retryLater(image, () => loadStepImage(label, false, sessionId));
+  });
 }
 function workingLabel(current: Stream): string {
   let label = current.inputs.size ? 'Waiting for your answer' : current.approvals.size ? 'Waiting for approval' : current.status;
@@ -5464,7 +5497,7 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
   await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
     { id: 'new', label: 'New task', icon: 'plus' },
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
-    { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
+    { id: 'reveal', label: REVEAL_LABEL, icon: 'folder', separator: true },
     { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
   ], onSelect: async choice => {
     closeChoiceMenu();

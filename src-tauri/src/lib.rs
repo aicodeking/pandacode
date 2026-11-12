@@ -37,6 +37,8 @@ mod cloud_agents;
 mod capabilities;
 mod vsix_themes;
 mod token_saver;
+mod tool_images;
+mod tool_images_auth;
 mod task_usage;
 mod skills;
 mod goal_state;
@@ -3521,6 +3523,33 @@ async fn workspace_image(
     blocking(move || workspace::image_data_url(&root, &path)).await
 }
 
+/// An image an agent viewed in this task (a Read of `/tmp/shot.png`, Codex
+/// `imageView`, Kimi `Reading media: <path>`, a relative progress snapshot).
+/// Served only when one of the session's tool records names the path in an
+/// image-bearing place; a relative path must stay inside the task's checkout.
+/// See `tool_images` and `tool_images_auth`.
+#[tauri::command]
+async fn tool_image(state: State<'_, AppState>, session_id: String, path: String, max_edge: Option<u32>) -> Result<String> {
+    let store = state.store.clone();
+    blocking(move || {
+        tool_images_auth::ensure_on_this_machine(&store, &session_id)?;
+        let key = path.trim().to_owned();
+        let root = || {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            let project_id = store.session(&session_id)?.project_id;
+            store.workspace_root(&project_id, Some(&session_id))
+        };
+        tool_images::load_sized(
+            &path,
+            root,
+            |spellings| tool_images_auth::session_viewed(&store, &session_id, &key, spellings),
+            tool_images::TOOL_IMAGE_LIMIT,
+            max_edge,
+        )
+    })
+    .await
+}
+
 #[tauri::command]
 async fn remote_resubscribe(app: tauri::AppHandle) -> Result<()> {
     remote::mirror::subscribe_soon(&app);
@@ -4035,6 +4064,8 @@ pub fn run() {
                     list_provider_models,
                     search_files,
                     open_external_url,
+                    // Thumbnails in the launcher thread's tool rows.
+                    tool_image,
                 ];
                 return handler(invoke);
             }
@@ -4424,6 +4455,7 @@ pub fn run() {
                 progress::progress_thumb,
                 progress::progress_clear,
                 workspace_image,
+                tool_image,
                 resolve_workspace_files,
                 prepare_file_preview,
                 get_run_script,
