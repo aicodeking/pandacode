@@ -1228,6 +1228,59 @@ fn a_skill_file_failing_partway_is_removed_and_a_retry_succeeds() {
     assert_eq!(fs::read_to_string(root.join(".claude/skills/release-notes/SKILL.md")).unwrap(), SKILL);
 }
 
+/// A re-activation that would add a file where the user put their own is refused before
+/// anything is written, and the previous version stays as recorded.
+#[test]
+fn an_update_adding_a_file_over_an_unrecorded_one_is_refused() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    let source = fx.folder("release-notes", &[("SKILL.md", SKILL)]);
+    fx.import(Kind::Skill, &source);
+    fx.library.activate("release-notes", "claude", Scope::Project, Some(&root), false).unwrap();
+    let before = fx.library.load("release-notes").unwrap().activations;
+    let folder = root.join(".claude/skills/release-notes");
+    fs::write(folder.join("extra.md"), "Mine.\n").unwrap();
+    fs::write(source.join("SKILL.md"), format!("{SKILL}See extra.md.\n")).unwrap();
+    fs::write(source.join("extra.md"), "Extra.\n").unwrap();
+    fx.import(Kind::Skill, &source);
+    let refused = fx.library.activate("release-notes", "claude", Scope::Project, Some(&root), false).unwrap_err();
+    assert!(refused.contains("extra.md already exists and PandaCode did not write it"), "{refused}");
+    assert_eq!(fs::read_to_string(folder.join("SKILL.md")).unwrap(), SKILL);
+    assert_eq!(fs::read_to_string(folder.join("extra.md")).unwrap(), "Mine.\n");
+    let after = fx.library.load("release-notes").unwrap().activations;
+    assert_eq!(serde_json::to_string(&after).unwrap(), serde_json::to_string(&before).unwrap());
+}
+
+/// A re-activation whose write fails after it replaced a file puts the previous version back
+/// byte for byte, so the record still matches the disk.
+#[cfg(unix)]
+#[test]
+fn an_update_failing_partway_restores_the_previous_version() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    let source = fx.folder("release-notes", &[("SKILL.md", SKILL), ("old.md", "Old.\n")]);
+    fx.import(Kind::Skill, &source);
+    fx.library.activate("release-notes", "claude", Scope::Project, Some(&root), false).unwrap();
+    let before = fx.library.load("release-notes").unwrap().activations;
+    fs::write(source.join("SKILL.md"), format!("{SKILL}See extra.md.\n")).unwrap();
+    fs::remove_file(source.join("old.md")).unwrap();
+    fs::write(source.join("extra.md"), "Extra.\n").unwrap();
+    fx.import(Kind::Skill, &source);
+    adapter::fail_point::set(|path| if path.ends_with("extra.md") { Err(std::io::Error::other("disk full")) } else { Ok(()) });
+    let refused = fx.library.activate("release-notes", "claude", Scope::Project, Some(&root), false);
+    adapter::fail_point::clear();
+    let refused = refused.unwrap_err();
+    assert!(refused.contains("disk full") && !refused.contains("Left in place"), "{refused}");
+    let folder = root.join(".claude/skills/release-notes");
+    assert_eq!(fs::read(folder.join("SKILL.md")).unwrap(), SKILL.as_bytes());
+    assert_eq!(fs::read(folder.join("old.md")).unwrap(), b"Old.\n");
+    assert!(!folder.join("extra.md").exists());
+    let after = fx.library.load("release-notes").unwrap().activations;
+    assert_eq!(serde_json::to_string(&after).unwrap(), serde_json::to_string(&before).unwrap());
+    assert!(after[0].files.iter().all(|w| adapter::file_hash(Path::new(&w.path)).as_deref() == Some(w.sha256.as_str())));
+    assert_eq!(git_status(&root), "");
+}
+
 /// A file this call wrote that was edited before a later file failed stays and is named.
 #[cfg(unix)]
 #[test]

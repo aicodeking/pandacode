@@ -104,7 +104,9 @@ Each activation records the harness, scope, project checkout, surface, the libra
 - Every file is checked before anything is deleted or written.
 - Recorded paths are checked too. A path in an activation's record that is not where that skill or rule is written for its harness and scope (its own skill folder, or its rule file) is never removed or rewritten. It is logged and reported as kept. So a damaged or edited record can't make PandaCode delete or rewrite other files.
 - The exclude line is added after these read-only checks pass and before any skill file is written. So a refused check, or a refused or failed exclude update, writes nothing.
-- If a skill file write fails partway, the files that call finished writing are removed. Finished files that had to stay are named in the error (`Left in place: …`).
+- A file the new version adds is refused up front if something PandaCode did not write is already at its path: `<path> already exists and PandaCode did not write it; move it away and try again.` So a file you put in a skill folder yourself never makes an update fail halfway.
+- If a skill file write fails partway on a first activation, the files that call finished writing are removed. Finished files that had to stay are named in the error (`Left in place: …`).
+- If it fails partway while updating an active skill, the previous version is put back the same way as for a failed save: its files are rewritten as recorded, the new files are removed, and the record still matches the disk.
 - A new skill file that failed partway is removed too, with folders left empty, but only while it holds nothing but a start of the new text. On macOS and Linux it must also still be the same file with no other links. So a retry of a first activation finds a free folder and works.
 - In project scope, a skill file's previous version is replaced through a temporary file and a rename, so the file whose write failed keeps its old version.
 - A rule file the call created is removed again when its write fails, but only while it holds nothing but a start of the new text. On macOS and Linux it must also still be the same file with no other links.

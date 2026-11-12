@@ -128,9 +128,10 @@ pub fn blocks_in(text: &str) -> (Vec<String>, bool) {
 /// Every file is checked ([`check_folder`]) before anything is removed or written. A file
 /// this call creates is created exclusively (a failed one is removed again); one replacing
 /// the previous version is, in project scope, replaced whole, so a failed write leaves the
-/// old file. A write that still fails partway removes the files this call wrote (previous
-/// ones it replaced, or no longer part of the item, stay gone) and returns, with the error,
-/// those of them it had to leave (edited, or behind a link).
+/// old file. A write that still fails partway removes the files this call created (previous
+/// ones no longer part of the item stay gone; ones it replaced keep the new version, for the
+/// caller to put back) and returns, with the error, those it had to leave (edited, or behind
+/// a link).
 pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous: &[Written], project: Option<&Path>) -> Result<Vec<Written>, (String, Vec<String>)> {
     check_folder(dir, id, files, previous, project).map_err(|e| (e, Vec::new()))?;
     let target = dir.join(id);
@@ -146,7 +147,7 @@ pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
             let _ = fs::remove_file(path);
         }
     }
-    let mut out = Vec::new();
+    let mut out: Vec<Written> = Vec::new();
     for (relative, bytes) in files {
         let path = target.join(relative);
         let wrote = path
@@ -164,8 +165,10 @@ pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
                 write_file_as(&path, bytes, project, Links::Skills, !replaced)
             });
         if let Err(e) = wrote {
-            // Only files that still hold what this call wrote go, with folders left empty.
-            let left = remove_folder(&out, project);
+            // Only files this call created that still hold what it wrote go, with folders left
+            // empty; a previous file it replaced is left for the caller to put back.
+            let created: Vec<Written> = out.into_iter().filter(|w| !previous.iter().any(|p| p.path == w.path)).collect();
+            let left = remove_folder(&created, project);
             let mut dir = path.parent();
             while let Some(empty) = dir.filter(|d| d.starts_with(&target) && fs::remove_dir(d).is_ok()) {
                 dir = empty.parent();
@@ -209,6 +212,12 @@ pub fn check_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
     }
     if target.exists() && previous.is_empty() {
         return Err(format!("{} already exists and PandaCode did not create it.", target.display()));
+    }
+    // A file the new version adds where the user put their own would fail its exclusive create
+    // halfway through the write; refused here, before anything changes.
+    let recorded = |path: &Path| previous.iter().any(|w| Path::new(&w.path) == path);
+    if let Some(path) = files.iter().map(|(relative, _)| target.join(relative)).find(|path| fs::symlink_metadata(path).is_ok() && !recorded(path)) {
+        return Err(format!("{} already exists and PandaCode did not write it; move it away and try again.", path.display()));
     }
     for written in previous {
         let path = Path::new(&written.path);

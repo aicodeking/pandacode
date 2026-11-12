@@ -519,10 +519,18 @@ impl Library {
                     restore = Restore::Folder(dir.clone(), snapshot(&dir.join(id), &old_files));
                 }
                 let added = add_exclude(&dir.join(id), true)?;
-                let written = adapter::write_folder(&dir, id, &files, previous_files, checkout).map_err(|(e, left)| {
-                    // Nothing stays hidden: files that had to stay are named and show in Git.
-                    format!("{e}{}{}", undo_exclude(&added), left_in_place(&left))
-                })?;
+                let written = match adapter::write_folder(&dir, id, &files, previous_files, checkout) {
+                    Ok(written) => written,
+                    Err((e, mut left)) => {
+                        // A re-activation puts the previous version back, as for a failed save;
+                        // nothing stays hidden: files that had to stay are named and show in Git.
+                        if let Restore::Folder(_, old) = &restore {
+                            let present = on_disk(&dir.join(id), old);
+                            left.extend(restore.apply(id, "folder", &present, checkout));
+                        }
+                        return Err(format!("{e}{}{}", undo_exclude(&added), left_in_place(&left)));
+                    }
+                };
                 if moved {
                     // The old copy goes once the new record is saved (below); its lines too.
                     release = excluded.drain(..).filter(|entry| Some(entry) != added.as_ref()).collect();
@@ -1020,6 +1028,20 @@ fn snapshot(target: &Path, written: &[Written]) -> Files {
             let relative = path.strip_prefix(target).ok()?.to_string_lossy().replace('\\', "/");
             let bytes = crate::workspace::read_regular_target(path, adapter::READ_LIMIT).ok()?;
             (sha256_hex(&bytes) == w.sha256).then_some((relative, bytes))
+        })
+        .collect()
+}
+
+/// The snapshot's paths under `target` as a failed write left them: the hash on disk where a
+/// file is there (the old version, or the new one that replaced it), the old one where it is
+/// gone, so [`Restore::apply`] rewrites each one.
+fn on_disk(target: &Path, snapshot: &Files) -> Vec<Written> {
+    snapshot
+        .iter()
+        .map(|(relative, bytes)| {
+            let path = target.join(relative);
+            let sha256 = adapter::file_hash(&path).unwrap_or_else(|| sha256_hex(bytes));
+            Written { path: path.to_string_lossy().into_owned(), sha256 }
         })
         .collect()
 }
