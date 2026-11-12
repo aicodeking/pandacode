@@ -63,10 +63,11 @@ function outcomeStatus(status: ToolActivity['status'], failed: boolean, blocked:
   return status === 'running' ? status : failed || blocked ? 'failed' : 'completed';
 }
 
-/** Caller owns the stable key and restores native details.open when replacing activity rows. */
-export function renderToolActivity(content: string | ToolActivity, key: string): string {
+/** Caller owns the stable key and restores native details.open when replacing activity rows. `lazyBody` (the tool's
+ *  message id) leaves a disclosure's body empty, marked `data-tool-body`, for the caller to fill when it opens. */
+export function renderToolActivity(content: string | ToolActivity, key: string, lazyBody?: string): string {
   const tool = typeof content === 'string' ? decodeToolActivity(content) : content;
-  if (!tool) return renderLegacyTool(content as string, key);
+  if (!tool) return renderLegacyTool(content as string, key, lazyBody);
   const named = { ...tool, name: tool.name.slice(0, MAX_LABEL) };
   const trace = describeTool(named);
   // A call the harness refused is quiet, not a failure: it keeps its own icon and reads `Blocked: …`.
@@ -86,10 +87,12 @@ export function renderToolActivity(content: string | ToolActivity, key: string):
   const title = trace.title ? ` title="${escape(trace.title)}"` : '';
   // Nothing beyond the row: a plain line, not an empty disclosure.
   if (!body) return `<div class="tool-activity tool-trace" ${attrs} data-static><div class="tool-trace-summary"${title}>${lead}${traceRowHtml(trace)}</div></div>`;
-  return `<details class="tool-activity tool-trace" ${attrs}${thread ? ` data-machine-thread="${escape(thread)}"` : ''}><summary${title}>${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${visible ? body : `<div class="tool-trace-frame">${body}</div>`}</div></details>`;
+  return `<details class="tool-activity tool-trace" ${attrs}${thread ? ` data-machine-thread="${escape(thread)}"` : ''}><summary${title}>${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary>${lazyBody === undefined ? `<div class="tool-activity-body">${visible ? body : `<div class="tool-trace-frame">${body}</div>`}</div>` : emptyBody(lazyBody)}</details>`;
 }
 
-function renderLegacyTool(content: string, key: string): string {
+const emptyBody = (id: string): string => `<div class="tool-activity-body" data-tool-body="${escape(id)}"></div>`;
+
+function renderLegacyTool(content: string, key: string, lazyBody?: string): string {
   const text = bounded(content).trim();
   const newline = text.indexOf('\n');
   const name = bounded(newline < 0 ? text : text.slice(0, newline), MAX_LABEL) || 'Tool activity';
@@ -97,7 +100,7 @@ function renderLegacyTool(content: string, key: string): string {
   const body = remainder
     ? `<pre class="tool-activity-legacy-body" tabindex="0" aria-label="Recorded tool details">${escape(remainder)}</pre>`
     : '<p class="tool-activity-note">Details were not recorded for this earlier tool call.</p>';
-  return `<details class="tool-activity" data-tool-key="${escape(key)}"><summary>${icon('terminal')}<span class="tool-activity-name">${escape(name)}</span>${icon('chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
+  return `<details class="tool-activity" data-tool-key="${escape(key)}"><summary>${icon('terminal')}<span class="tool-activity-name">${escape(name)}</span>${icon('chevron')}</summary>${lazyBody === undefined ? `<div class="tool-activity-body">${body}</div>` : emptyBody(lazyBody)}</details>`;
 }
 
 /** Generic status messages are plain rows, not empty expandable tool calls. */
@@ -128,7 +131,8 @@ export function toolStackHtml(tools: (ToolActivity | undefined)[]): string {
 /** Only failures read as a failure; refusals and interruptions are quiet. */
 const TALLY_TONES: Record<string, string> = { running: 'is-running', failed: 'has-failure' };
 
-export function renderToolGroup(entries: { key: string; content: string | ToolActivity }[], expanded = false, live = false): string {
+/** `lazy` draws each tool's body empty (see renderToolActivity), keyed by its entry's `id`. */
+export function renderToolGroup(entries: { key: string; content: string | ToolActivity; id?: string }[], expanded = false, live = false, lazy = false): string {
   if (!entries.length) return '';
   const tools = entries.map(entry => typeof entry.content === 'string' ? decodeToolActivity(entry.content) : entry.content);
   const running = tools.some(tool => tool?.status === 'running');
@@ -137,5 +141,5 @@ export function renderToolGroup(entries: { key: string; content: string | ToolAc
   const stack = toolStackHtml(tools);
   const status = groupTallies(summary).map(([count, word]) => `<span class="tool-group-status ${TALLY_TONES[word] ?? 'is-blocked'}"> · ${count} ${word}</span>`).join('');
   const sentence = summary.sentence;
-  return `<details class="tool-group" data-tool-group-key="${escape('group:' + entries[0].key)}"${running ? ' data-running' : ''}${expanded ? ' open' : ''}><summary class="tool-group-summary">${failed ? icon('alert') : ''}<span class="tool-group-label">${escape(sentence)}</span>${stack}${status}${icon('chevron')}</summary><div class="tool-group-body">${entries.map(entry => renderToolActivity(entry.content, entry.key)).join('')}</div></details>`;
+  return `<details class="tool-group" data-tool-group-key="${escape('group:' + entries[0].key)}"${running ? ' data-running' : ''}${expanded ? ' open' : ''}><summary class="tool-group-summary">${failed ? icon('alert') : ''}<span class="tool-group-label">${escape(sentence)}</span>${stack}${status}${icon('chevron')}</summary><div class="tool-group-body">${entries.map(entry => renderToolActivity(entry.content, entry.key, lazy ? entry.id ?? '' : undefined)).join('')}</div></details>`;
 }

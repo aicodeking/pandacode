@@ -51,7 +51,9 @@ html .workspace :is(#transcript,.thread-mirror-rows,#stream-region) .turn-card>.
 .turn-card-reply .markdown>:last-child{margin-bottom:0}
 .turn-card-reply[data-overflow]:not([data-open])>.turn-card-reply-body{max-height:calc(1em * 1.6 * 6);overflow:clip;
   -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 3.2em),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 3.2em),transparent)}
-.turn-card-reply-row{display:flex;align-items:center;gap:4px;min-height:34px;margin-top:2px}
+/* --reply-more-gap: what a shown Read more adds above the row; turn-card.ts measureReplies reads it to hold the scroll. */
+.turn-card-reply{--reply-more-gap:2px}
+.turn-card-reply-row{display:flex;align-items:center;gap:4px;min-height:34px;margin-top:var(--reply-more-gap)}
 .turn-card-reply-row>.message-actions,.turn-card-reply .live-message>.message-actions{margin:0 -6px 0 auto;padding:0}
 /* The live reply's own row sits in flow at the saved row's height, so the handoff swaps rows without a step. */
 html .turn-card-reply .live-message>.message-actions{position:static;justify-content:flex-end;min-height:34px;margin:2px -6px 0 auto}

@@ -177,11 +177,13 @@ successful (its `prepare` job checks with `gh run list --commit --event push
 --branch main`, using only `actions: read`; pull request and other branch runs
 of the same commit do not count, so the commit must be on `main` and pushed).
 If CI was still running, re-run the Release workflow once it passes; if CI was
-cancelled (CI never cancels a `main` push run that holds the concurrency slot,
-even one still `queued` for a runner, but a `pending` run waiting for that slot
-is replaced when a newer push or manual run on `main` arrives, and a manual
-cancel also does this; manual `workflow_dispatch` runs never hold the slot
-against a newer run), the gate names the run: re-run it with `gh run rerun <id>`, push
+cancelled (the `ci.yml` concurrency group is per ref and only a pull request
+run is cancelled in progress, so a push or manual `workflow_dispatch` run on
+`main` that holds the slot is never cancelled, even one still `queued` for a
+runner; a `pending` run waiting for the slot is replaced when a newer push or
+manual run on `main` arrives, and a manual cancel also does this. A manual run
+on `main` holds the slot like a push run and replaces a pending push run, so do
+not dispatch CI on `main` while waiting for a release gate run), the gate names the run: re-run it with `gh run rerun <id>`, push
 nothing newer to `main` until it finishes, then re-run the Release workflow. If
 CI failed, the gate reads the run's latest conclusion and names the run: if the
 failure was flaky or infrastructure (for example a job cancelled because the
