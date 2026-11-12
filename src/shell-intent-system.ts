@@ -77,16 +77,27 @@ const dropdb: Handler = (_program, args) => {
 /** `kill -9`, `kill -KILL`, `kill -s SIGKILL`: no chance to clean up. */
 const forceKill = (args: string[]) => args.some(arg => /^-(?:9|(?:SIG)?KILL)$/i.test(arg)) || /^(?:9|(?:SIG)?KILL)$/i.test(flagValue(args, ['-s', '-n']) ?? '');
 
+/** `kill -9 -1`, `kill -- -1`: PID -1 signals every process the user may signal (a leading `-N`/`-NAME` is the signal). */
+function signalsEveryProcess(args: string[]): boolean {
+  const skip = args[0] === '-s' || args[0] === '-n' ? 2 : args[0]?.startsWith('-') && args[0] !== '--' ? 1 : 0;
+  const pids = args.slice(skip);
+  return (pids[0] === '--' ? pids.slice(1) : pids).includes('-1');
+}
+const everyProcess: Desc = { ...destroys(desc('process', 'Stopped', 'every process', '', 'stop'), SEVERITY.tree), reason: 'Kills every process you own' };
+
 const kill: Handler = (program, args) => {
   if (program === 'kill') {
     const ids = positionals(args, set('-s', '-n')).filter(word => !isSubstitution(word));
     // `kill -0 PID` sends no signal: it only asks whether the process is still running.
     if (args.includes('-0') || /^0$/.test(flagValue(args, ['-s', '-n']) ?? '')) return desc('process', 'Checked', `process ${firstAndMore(ids, same)}`.trim(), 'is running', 'activity');
+    if (signalsEveryProcess(args)) return everyProcess;
     const stopped = desc('process', 'Stopped', 'process', firstAndMore(ids, same), 'stop');
     return forceKill(args) ? destroys(stopped) : stopped;
   }
   // `pkill -f vite`, `killall node`: a polite stop by name; only a forced kill (`-9`, `-KILL`) loses work.
   const [name] = positionals(args, set('-u', '-U', '-g', '-G', '-P', '-s', '-t', '--signal'));
+  // `pkill -u $USER`, `killall -u me`: no name, so every process the user runs.
+  if (name === undefined && flagValue(args, ['-u', '-U']) !== undefined) return everyProcess;
   const stopped = desc('process', 'Stopped processes matching', name ? clip(name, 40) : 'process', '', 'stop');
   // `pkill -f .`, `pkill -f ''`: a pattern that matches every process stops the whole session, the agent's shell included.
   if (program === 'pkill' && name !== undefined && MATCHES_ALL.test(name)) return { ...destroys(stopped, SEVERITY.tree), reason: 'Stops every process' };

@@ -1,6 +1,6 @@
 import { basename, clip, stripAnsi, unwrapHarness } from './tool-text.ts';
 import { exitCode } from './tool-trace-outcome.ts';
-import { mcpAction, parseFields, shellCommand, toolKind, type TraceKind } from './tool-trace.ts';
+import { mcpAction, parseFields, shellCommand, toolFailed, toolKind, type Tool, type TraceKind } from './tool-trace.ts';
 import { escape, fileIcon, icon } from './dom.ts';
 
 /** Rich, escaped result-card bodies per tool kind, in the reference's language: hairline rows with a
@@ -17,7 +17,6 @@ const DIFF_ROWS = 18;
 const MATCHES_PER_FILE = 3;
 const KEYS = 6;
 const OMITTED = '[Non-text content omitted]';
-const SIGNAL_EXITS = new Set([137, 143]);
 
 const str = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
 const field = (fields: Fields, ...keys: string[]) => {
@@ -128,10 +127,9 @@ function shellCard(tool: CardTool, fields: Fields, output: string): string {
   const command = shellCommand(tool.input, fields);
   if (!command) return '';
   const { code, body } = exitCode(output);
-  // A command stopped by a signal (143 SIGTERM, 137 SIGKILL: a server the turn moved on from) is neutral, not failed.
-  const signal = code !== undefined && SIGNAL_EXITS.has(code);
-  const failed = code !== undefined ? code !== 0 && !signal : tool.status === 'failed';
-  const badge = code !== undefined || failed ? `<span class="tc-badge${failed ? ' is-failed' : signal ? ' is-quiet' : ''}">${escape(code !== undefined ? `exit ${code}` : 'failed')}</span>` : '';
+  // The row's outcome: a search that found nothing (exit 1) or a command stopped by a signal (143/137) is not a failure.
+  const failed = toolFailed(tool as Tool);
+  const badge = exitBadgeHtml(code, failed);
   const where = /vm_exec$/.test(tool.name) ? field(fields, 'name', 'vm') : '';
   const text = stripAnsi(body);
   if (isUnifiedDiff(text)) return `<div class="tc-term${failed ? ' is-failed' : ''}">${termHead(command, where, badge)}</div>${diffSections(parsePatch(text))}`;
@@ -143,6 +141,13 @@ function shellCard(tool: CardTool, fields: Fields, output: string): string {
       + `<pre class="tc-term-out" tabindex="0" aria-label="Command output, last lines">${escape(tail.map(line => line.slice(0, 400)).join('\n'))}</pre>`
     : '';
   return `<div class="tc-term${failed ? ' is-failed' : ''}">${termHead(command, where, badge)}${out}</div>`;
+}
+/** A card's exit-code pill (tool-trace.css), right-aligned in its header: red only when the call failed, quiet for any other
+ *  nonzero exit (`no matches`, a signal stop), green for 0. */
+export function exitBadgeHtml(code: number | undefined, failed: boolean): string {
+  if (code === undefined && !failed) return '';
+  const tone = failed && code !== 0 ? ' is-failed' : code ? ' is-quiet' : '';
+  return `<span class="tool-trace-badge${tone}">${escape(code !== undefined ? `exit ${code}` : 'failed')}</span>`;
 }
 /** The output lines a card shows: the last ones, except that a typecheck's counted `error TS…` lines (the row says
  *  `2 errors`) lead, above the rest of the output. */
@@ -264,7 +269,7 @@ function isUnifiedDiff(text: string): boolean {
 function editCard(tool: CardTool, fields: Fields): string {
   const diff = diffSections(editDiffs(tool, fields));
   // A failed edit wrote nothing: its diff is what it tried.
-  return diff && tool.status === 'failed' ? `<span class="tc-label">Not applied</span>${diff}` : diff;
+  return diff && tool.status === 'failed' ? labelled('Not applied', diff) : diff;
 }
 function diffSections(files: FileDiff[]): string {
   let budget = DIFF_ROWS;
@@ -493,7 +498,11 @@ function mcpCard(tool: CardTool, fields: Fields, output: string): string {
   const result = records.length ? rows(records.map(recordRow), records.length)
     : json && typeof json === 'object' && !Array.isArray(json) ? keyValues(json as Fields, 'tc-kv-output')
       : output.trim() ? lineExcerpt(output, 5) : '';
-  return input + result;
+  // Two tables of the same shape each say what they hold, as tool-trace-cards' sections do; a lone one needs no label.
+  return input && result ? labelled('Arguments', input) + labelled('Result', result) : input + result;
+}
+function labelled(label: string, html: string): string {
+  return `<section class="tool-trace-section"><h5 class="tool-trace-label">${label}</h5>${html}</section>`;
 }
 
 // ── States ───────────────────────────────────────────────────────────────────
@@ -509,14 +518,9 @@ function runningCard(kind: TraceKind, tool: CardTool, fields: Fields): string {
   return command ? `<div class="tc-term">${termHead(command, /vm_exec$/.test(tool.name) ? field(fields, 'name', 'vm') : '')}${line}</div>` : line;
 }
 function failedCard(tool: CardTool, output: string): string {
-  // Devin's generic `Tool` asked for a tool by name: the card names that tool, never `Failed Tool`.
-  const asked = tool.name === 'Tool' ? field(parseFields(tool.input), 'tool', 'name') : '';
-  const title = tool.name === 'Tool' ? 'Unknown tool' : 'Failed';
-  const meta = tool.name === 'Tool' ? asked : tool.name;
+  // The row names the call (`Couldn't use [frobnicate]`); the card is the error it reported, in the calm section shape.
   const error = splitLines(stripAnsi(output).trim()).filter(line => line.trim()).slice(0, 4);
-  const out = error.length ? `<pre class="tc-failed-out">${escape(error.map(line => clip(line, 200)).join('\n'))}</pre>` : '';
-  return `<div class="tc-failed" role="alert">${iconMark('alert', 'tc-failed-mark')}<div class="tc-row-main"><div class="tc-row-line">`
-    + `<span class="tc-row-title">${title}</span><span class="tc-row-meta">${escape(clip(meta, 60))}</span></div>${out}</div></div>`;
+  return error.length ? labelled('Error', `<pre class="tc-failed-out">${escape(error.map(line => clip(line, 200)).join('\n'))}</pre>`) : '';
 }
 
 function body(kind: TraceKind, tool: CardTool, fields: Fields, output: string): string {

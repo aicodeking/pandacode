@@ -24,31 +24,40 @@ const HOSTILE = {
   'a wait on a long subject': 'until grep -q ' + '"'.repeat(5_000) + ' log; do sleep 1; done',
 };
 
-/** The fastest of a few runs after one warm-up, so a GC pause cannot fail the test but a backtracking pattern still does. */
-function fastest(work) {
+const timed = work => { const start = performance.now(); work(); return performance.now() - start; };
+
+/** Linear work may take this many times a plain `echo` record of the same size; a backtracking pattern takes thousands. */
+const RATIO = 20;
+
+/** `work` (on records of about `length` characters) under the budget. Wall-clock budgets flake under load, so it is also
+ * timed against a plain `echo a a …` record as long, interleaved in the same process: load slows both alike. */
+function assertFast(label, length, work, budget = BUDGET_MS) {
+  const plain = bash(`echo ${'a '.repeat(Math.ceil(length / 2))}`);
+  const baselineWork = () => { traceRowHtml(describeTool(plain)); toolPreview(plain); };
   work();
-  let best = Infinity;
+  baselineWork();
+  let elapsed = Infinity;
+  let baseline = Infinity;
   for (let run = 0; run < RUNS; run++) {
-    const start = performance.now();
-    work();
-    best = Math.min(best, performance.now() - start);
+    elapsed = Math.min(elapsed, timed(work));
+    baseline = Math.min(baseline, timed(baselineWork));
   }
-  return best;
+  const allowed = Math.max(budget, baseline * RATIO);
+  assert.ok(elapsed < allowed, `${label} took ${elapsed.toFixed(1)} ms, a plain record as long ${baseline.toFixed(1)} ms`);
 }
 
 for (const [name, command] of Object.entries(HOSTILE)) {
   test(`describeTool, traceRowHtml and toolPreview stay under ${BUDGET_MS} ms: ${name}`, () => {
     for (const tool of [bash(command), bash(command, 'failed', 'Exit code 1\n' + command.slice(0, 4000)), codex(command.slice(0, 20_000))]) {
-      const ms = fastest(() => { traceRowHtml(describeTool(tool)); toolPreview(tool); });
-      assert.ok(ms < BUDGET_MS, `${name} (${tool.name}, ${tool.status}) took ${ms.toFixed(1)} ms`);
+      assertFast(`${name} (${tool.name}, ${tool.status})`, tool.input.length + tool.output.length, () => { traceRowHtml(describeTool(tool)); toolPreview(tool); });
     }
   });
 }
 
 test('a group of hostile records summarizes under the budget', () => {
   const tools = Object.values(HOSTILE).map(command => bash(command));
-  const ms = fastest(() => summarizeTools(tools));
-  assert.ok(ms < BUDGET_MS * tools.length, `summary took ${ms.toFixed(1)} ms`);
+  const length = tools.reduce((sum, tool) => sum + tool.input.length, 0);
+  assertFast('summary', length, () => summarizeTools(tools), BUDGET_MS * tools.length);
 });
 
 test('legacy titles and outputs with long whitespace runs stay under the budget', () => {
@@ -60,7 +69,6 @@ test('legacy titles and outputs with long whitespace runs stay under the budget'
     { name: 'KillShell', status: 'completed', input: '{"shell_id":"b1"}', output: JSON.stringify({ message: '('.repeat(20_000) }) },
   ];
   for (const tool of tools) {
-    const ms = fastest(() => { traceRowHtml(describeTool(tool)); toolPreview(tool); });
-    assert.ok(ms < BUDGET_MS, `${tool.name.slice(0, 20)} took ${ms.toFixed(1)} ms`);
+    assertFast(tool.name.slice(0, 20), tool.name.length + tool.input.length + tool.output.length, () => { traceRowHtml(describeTool(tool)); toolPreview(tool); });
   }
 });

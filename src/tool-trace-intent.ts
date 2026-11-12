@@ -3,6 +3,7 @@ import { COMPLETE, PARTIAL, badge, clip, excerptCard, field, head, lines, linesP
 import { escape } from './dom.ts';
 import { brandFor } from './trace-brands.ts';
 import { describeShell, formatDuration, testSummary, testSummaryHtml } from './shell-intent.ts';
+import { IMAGE_EXTENSION } from './shell-intent-base.ts';
 import { ROW_TEXT, strings } from './tool-text.ts';
 import { generatedImagePath, imagePathOf } from './tool-names.ts';
 import { toolImageCardHtml } from './tool-images.ts';
@@ -17,7 +18,6 @@ export { shellRunningVerb, shellTrace, flagsOnly, type ShellRun } from './tool-t
 /** `settled`: the verb already reads as the outcome (`Tests failed`), so a failure keeps it rather than writing `Couldn't …`. */
 export type TraceParts = Omit<Trace, 'kind' | 'verb'> & { verb?: string; settled?: boolean };
 
-const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 const IMAGE_IN_TEXT = /(?:^|[\s"'(=:])((?:\/|[A-Za-z]:\\)[^\s"'()<>]+\.(?:png|jpe?g|gif|webp))\b/i;
 const DIMENSIONS = /\((\d{2,5})\s*[x×]\s*(\d{2,5})\)/;
 /** `image/png 1280x775`, `image/png image, 1280x775 px` (DeepSeek's and OpenCode's `read_image`). */
@@ -58,16 +58,31 @@ export function specialKind(tool: Tool): TraceKind | undefined {
 
 /** PandaCode tools that capture or post an image; any other tool's text that merely names a .png gets no thumbnail. */
 const IMAGE_TOOLS = /^(?:\w+_screenshot|progress_snapshot|capture_browser|read_moodboard_image|design_\w+)$/;
+/** The Rust `tool_image` rule (tool_images_auth/tool_names.rs, shared cases in tests/fixtures/image-tools.json): an MCP
+ *  tool's own name (never its server's) starting with one of these, or holding the whole word `screenshot` or `capture_browser`. */
+const MCP_IMAGE_STARTS = ['screenshot', 'take_screenshot', 'capture_screenshot', 'browser_take_screenshot', 'snapshot_image', 'pandacode_simulator_screenshot', 'pandacode_vm_screenshot'];
+const MCP_IMAGE_WORDS = /(?:^|_)(?:screenshot|capture_browser)(?:_|$)/;
 
-/** An image a PandaCode tool captured or was given (a screenshot path, a progress snapshot's image), else ''. */
+/** A third-party MCP screenshot tool (`mcp__puppeteer__puppeteer_screenshot`, `mcp__chrome-devtools__take_screenshot`). */
+export function mcpImageTool(name: string): boolean {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name.toLowerCase());
+  if (!match) return false;
+  const tool = match[2];
+  return MCP_IMAGE_STARTS.some(start => tool.startsWith(start)) || MCP_IMAGE_WORDS.test(tool);
+}
+
+/** An image a PandaCode tool captured or was given (a screenshot path, a progress snapshot's image), or a third-party
+ *  MCP screenshot reported in its output (`Screenshot saved: <path>`, a bare path, JSON `path`), else ''. */
 export function pandacodeImage(name: string, fields: Fields, output: string): string {
-  if (!IMAGE_TOOLS.test(pandacodeTool(name) ?? '')) return '';
-  const given = field(fields, 'image', 'image_path', 'screenshot', 'path');
-  if (IMAGE.test(given)) return given;
+  const own = IMAGE_TOOLS.test(pandacodeTool(name) ?? '');
+  if (!own && !mcpImageTool(name)) return '';
+  // Only PandaCode's own tools are trusted for a path they were given; another server's image is the one it reported.
+  const given = own ? field(fields, 'image', 'image_path', 'screenshot', 'path') : '';
+  if (IMAGE_EXTENSION.test(given)) return given;
   const json = parseJson(output);
   const saved = json && typeof json === 'object' && !Array.isArray(json) ? json as Fields : {};
   const named = field(saved, 'path', 'image', 'screenshot', 'file');
-  if (IMAGE.test(named)) return named;
+  if (IMAGE_EXTENSION.test(named)) return named;
   return IMAGE_IN_TEXT.exec(output.slice(0, 4000))?.[1] ?? '';
 }
 
@@ -331,8 +346,8 @@ function harnessTrace(name: string, fields: Fields, failed: boolean): TraceParts
   return { verb: tense(failed, row[0], row[1]), object: '', icon: row[2], ...(first ? { note: clip(first, QUESTION_LIMIT) } : {}) };
 }
 
-/** Claude Code's rarer harness tools, each a sentence: `Watched tail -f a.log`, `Messaged [worker-1] summary`,
- *  `Sent notification “…”`, `Scheduled wake-up in [5m] reason`, `Listed agents`. */
+/** Claude Code's rarer harness tools, each a sentence: `Watched tail -f a.log`, `Messaged [worker-1] · “summary”`,
+ *  `Sent notification “…”`, `Scheduled wake-up in [5m] · “reason”`, `Listed agents`. */
 function agentToolTrace(name: string, fields: Fields, failed: boolean): TraceParts | undefined {
   if (name === 'Monitor') return { verb: tense(failed, 'Watching', 'Watched'), object: clip(field(fields, 'command', 'description'), ROW_TEXT), mono: Boolean(field(fields, 'command')), icon: 'terminal' };
   if (name === 'ListAgents') return { verb: tense(failed, 'Listing agents', 'Listed agents'), object: '', icon: 'bot' };
@@ -343,13 +358,13 @@ function agentToolTrace(name: string, fields: Fields, failed: boolean): TracePar
   if (name === 'SendMessage') {
     const to = field(fields, 'to', 'recipient');
     const chip = to ? { icon: 'bot', label: clip(to, 40), title: to } : undefined;
-    return { verb: tense(failed, 'Messaging', 'Messaged'), chip, object: clip(field(fields, 'summary', 'message'), ROW_TEXT), icon: 'chat' };
+    return { verb: tense(failed, 'Messaging', 'Messaged'), chip, object: '', note: clip(field(fields, 'summary', 'message'), ROW_TEXT), icon: 'chat' };
   }
   if (name !== 'ScheduleWakeup') return undefined;
   const seconds = Number(fields.delaySeconds);
   const delay = Number.isFinite(seconds) && seconds > 0 ? formatDuration(seconds * 1000) : '';
   const chip = delay ? { icon: 'clock', label: delay, title: `${seconds}s` } : undefined;
-  return { verb: tense(failed, delay ? 'Scheduling wake-up in' : 'Scheduling wake-up', delay ? 'Scheduled wake-up in' : 'Scheduled wake-up'), chip, object: clip(field(fields, 'reason'), ROW_TEXT), icon: 'clock' };
+  return { verb: tense(failed, delay ? 'Scheduling wake-up in' : 'Scheduling wake-up', delay ? 'Scheduled wake-up in' : 'Scheduled wake-up'), chip, object: '', note: clip(field(fields, 'reason'), ROW_TEXT), icon: 'clock' };
 }
 
 /** Row parts for the tools above; undefined leaves the row to tool-trace.ts. `tool` is normalized. */
@@ -385,7 +400,7 @@ export function specialTrace(kind: TraceKind, tool: Tool, fields: Fields, failed
   if (harness) return harness;
   if (kind !== 'mcp') return undefined;
   if (replTool(name) && field(fields, 'code', 'source', 'title')) return replTrace(fields, failed);
-  if (browserScreenshot(name, fields)) return { verb: tense(failed, 'Taking a screenshot', 'Took a screenshot'), object: '', family: 'mcp', icon: 'camera' };
+  if (browserScreenshot(name, fields) || (mcpImageTool(name) && !pandacodeTool(name))) return { verb: tense(failed, 'Taking a screenshot', 'Took a screenshot'), object: '', family: 'mcp', icon: 'camera' };
   const url = githubFetch(name, fields);
   return url ? githubTrace(url, failed) : githubAppTrace(name, fields, failed);
 }

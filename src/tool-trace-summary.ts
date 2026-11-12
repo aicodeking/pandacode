@@ -221,13 +221,15 @@ export function summarizeGroup(tools: (Tool | undefined)[], options: { live?: bo
 
 const FILE_KINDS = new Set<TraceKind>(['edit', 'write']);
 
-/** A group's tallies after its sentence, in order: `[2, 'running']`, `[1, 'interrupted']`; zero counts dropped. */
+/** A group's tallies after its sentence, in order: `[2, 'running']`, `[1, 'failed']`, then the calls that never finished:
+ *  `[1, 'blocked']` when only one kind stopped, else one `[3, 'stopped']` so the sentence keeps its room; zero counts dropped. */
 export function groupTallies({ running, failed, blocked, denied, interrupted }: GroupSummary): [number, string][] {
-  const all: [number, string][] = [[running, 'running'], [failed, 'failed'], [blocked, 'blocked'], [denied, 'denied'], [interrupted, 'interrupted']];
-  return all.filter(([count]) => count > 0);
+  const stops: [number, string][] = ([[blocked, 'blocked'], [denied, 'denied'], [interrupted, 'interrupted']] as [number, string][]).filter(([count]) => count > 0);
+  const stopped: [number, string][] = stops.length > 1 ? [[stops.reduce((sum, [count]) => sum + count, 0), 'stopped']] : stops;
+  return ([[running, 'running'], [failed, 'failed']] as [number, string][]).filter(([count]) => count > 0).concat(stopped);
 }
 
-/** The group sentence with its state counts: `Ran 5 commands · 1 running · 3 failed · 1 blocked · 1 denied · 1 interrupted`. */
+/** The group sentence with its state counts: `Ran 5 commands · 1 running · 3 failed · 3 stopped`. */
 export function summarizeTools(tools: (Tool | undefined)[], options: { live?: boolean } = {}): string {
   const summary = summarizeGroup(tools, options);
   return summary.sentence + groupTallies(summary).map(([count, word]) => ` · ${count} ${word}`).join('');

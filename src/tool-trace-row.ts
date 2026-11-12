@@ -95,13 +95,21 @@ function chipsHtml(chips: TraceChip[], joined: boolean, more: boolean): string {
   }).join('');
 }
 
-/** The object, mono when it is code; counts and tallies after its first ` · ` (`main · 10 files`) are never code. */
-function objectHtml(object: string, mono: boolean): string {
+/** `[object, tally]`: a leading `· ` object is all tally; else only the tally the code appended (`trace.tally`) splits off,
+ *  so a ` · ` inside a quoted query stays prose. Code (mono) has no ` · ` of its own: its first one starts the counts. */
+function splitTally(object: string, mono: boolean, tally: string | undefined): [string, string] {
+  if (object.startsWith('· ')) return ['', object];
+  const at = tally && object.endsWith(' · ' + tally) ? object.length - tally.length - 3 : mono ? object.indexOf(' · ') : -1;
+  return at < 0 ? [object, ''] : [object.slice(0, at), object.slice(at)];
+}
+
+/** The object, mono when it is code; its tally (`main · 10 files`) is never code, and sits in its own span so a narrow row
+ *  cuts the object first. */
+function objectHtml(object: string, mono: boolean, tally?: string): string {
   if (!object) return '';
-  const at = mono ? (object.startsWith('· ') ? 0 : object.indexOf(' · ')) : -1;
-  const code = at < 0 ? object : object.slice(0, at);
-  const tally = at < 0 ? '' : `<span class="tool-trace-object${code ? ' is-tally' : ''}">${escape(object.slice(at))}</span>`;
-  return (code ? `<span class="tool-trace-object${mono ? ' is-mono' : ''}">${escape(code)}</span>` : '') + tally;
+  const [code, tail] = splitTally(object, mono, tally);
+  const tallyHtml = tail ? `<span class="tool-trace-object${code ? ' is-tally' : ''}">${escape(tail)}</span>` : '';
+  return (code ? `<span class="tool-trace-object${mono ? ' is-mono' : ''}">${escape(code)}</span>` : '') + tallyHtml;
 }
 
 /** `Verb [chip] object` (or `object [chip]` when the chip is a place), each with the thumbnail of an image it names. */
@@ -111,7 +119,7 @@ function sentenceHtml(trace: Trace, produced: Produced | undefined): string {
   // A viewed image sits in the sentence as a thumbnail button (tool-images.ts); beside a chip or a title it drops its file name.
   const compact = chips || (trace.kind !== 'image' && trace.object);
   const image = trace.image ? `<span class="tool-trace-image${compact ? ' is-compact' : ''}">${toolImageThumbHtml(trace.image)}</span>` : '';
-  const object = objectHtml(trace.object, trace.mono === true);
+  const object = objectHtml(trace.object, trace.mono === true, trace.tally);
   // A viewed image's thumbnail comes right after the verb (`Viewed [thumb] a.png`); a screenshot of a device after the device
   // it shows (`Took a screenshot of [Simulator] [thumb]`).
   const afterChips = image && chips && trace.kind !== 'image';
@@ -119,11 +127,10 @@ function sentenceHtml(trace: Trace, produced: Produced | undefined): string {
   const objectPart = (produced?.after === 'object' ? produced.html : '') + object;
   if (!trace.chipLast) return (afterChips ? '' : image) + chipPart + objectPart;
   // A place chip ends its phrase (`for “x” in [src]`); tallies after it (`· no matches`) follow the chip.
-  const text = trace.object.startsWith('· ') ? ` ${trace.object}` : trace.object;
-  const tallyAt = text.indexOf(' · ');
-  if (tallyAt < 0 || !chipPart) return image + objectPart + chipPart;
-  const tally = `<span class="tool-trace-object is-tally">${escape(text.slice(tallyAt + 1))}</span>`;
-  return image + objectHtml(text.slice(0, tallyAt), trace.mono === true) + chipPart + tally;
+  const [lead, tail] = splitTally(trace.object, trace.mono === true, trace.tally);
+  if (!tail || !chipPart) return image + objectPart + chipPart;
+  const tally = `<span class="tool-trace-object is-tally">${escape(tail.replace(/^ /, ''))}</span>`;
+  return image + objectHtml(lead, trace.mono === true) + chipPart + tally;
 }
 
 /** Why a call wrote or ran nothing (`· string to replace not found`): muted, after the sentence. */
@@ -137,7 +144,8 @@ const OVERFLOW_END = /\+\d+ more [a-z]+$/;
 function moreHtml(trace: Trace): string {
   if (!trace.more) return '';
   const after = trace.object.startsWith('· ') || trace.object.includes(' · ') || OVERFLOW_END.test(trace.object) || Boolean(trace.note || trace.reason);
-  return `<span class="tool-trace-more-steps">${after ? '· ' : ''}${escape(trace.more)}</span>`;
+  // A later step failed (`then`): the failure colour sits on the steps it hides, not on the lead's verb.
+  return `<span class="tool-trace-more-steps${trace.then ? ' is-failed' : ''}">${after ? '· ' : ''}${escape(trace.more)}</span>`;
 }
 
 export function traceRowHtml(trace: Trace): string {
@@ -146,7 +154,8 @@ export function traceRowHtml(trace: Trace): string {
   const tail = produced?.after === 'sentence' ? produced.html : '';
   const delta = trace.added !== undefined ? deltaHtml(trace.added, trace.removed) : '';
   const title = trace.title ? ` title="${escape(trace.title)}"` : '';
-  const verb = `<span class="tool-trace-verb"${title}>${escape(trace.verb)}</span>`;
+  // `is-lead`: the lead step succeeded and a later one failed, so the verb stays neutral on a failed row.
+  const verb = `<span class="tool-trace-verb${trace.then ? ' is-lead' : ''}"${title}>${escape(trace.verb)}</span>`;
   return `${verb}${sentenceHtml(trace, produced)}${quoteHtml(trace.note ?? '')}${reasonHtml(trace.reason)}${tail}${more}${delta}${exitHtml(trace)}${dangerHtml(trace)}`;
 }
 

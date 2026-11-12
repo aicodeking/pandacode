@@ -75,7 +75,7 @@ test('status events have no empty disclosure and empty tool output is explained'
 test('a failed call says so once (red icon + card badge), and a card-less record shows its raw sections open', () => {
   const failed = renderToolActivity({ ...activity, status: 'failed', output: 'boom' }, 'f');
   assert.doesNotMatch(failed, /tool-activity-status/);
-  assert.match(failed, /tc-badge is-failed/);
+  assert.match(failed, /tool-trace-badge is-failed/);
   assert.match(renderToolActivity({ ...activity, name: 'odd_tool', input: 'x', output: '' }, 'o'), /<details class="tool-trace-raw" open>/);
 });
 

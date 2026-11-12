@@ -3,6 +3,7 @@
   {"command": "screencapture -x /tmp/shot.png", "produced": "/tmp/shot.png"},
   {"command": "screencapture -x -R 0,0,800,600 shot.jpg", "cwd": "/repo", "produced": "/repo/shot.jpg"},
   {"command": "screencapture -x", "produced": null},
+  {"command": "screencapture -x ~/Desktop/s.png", "produced": null},
   {"command": "xcrun simctl io booted screenshot /tmp/sim.png", "produced": "/tmp/sim.png"},
   {"command": "xcrun simctl io 4F2A-77 screenshot --type=png out/sim.png", "cwd": "/repo", "produced": "/repo/out/sim.png"},
   {"command": "ffmpeg -i in.mp4 -frames:v 1 frame.png", "cwd": "/repo", "produced": "/repo/frame.png"},

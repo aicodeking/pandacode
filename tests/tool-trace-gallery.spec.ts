@@ -42,7 +42,7 @@ test('tool trace gallery collapsed groups', async ({ page }) => {
   await page.screenshot({ path: `${OUT}/collapsed.png`, fullPage: true });
 });
 
-for (const width of [420, 1100, 1440]) {
+for (const width of [380, 420, 1100, 1440]) {
   test(`group headers ellipsize the sentence and keep every tally inside the header (${width}px)`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/tool-trace-gallery.html?collapsed=1');
@@ -60,8 +60,8 @@ for (const width of [420, 1100, 1440]) {
     for (const header of headers) {
       expect(header.tallies.every(Boolean), header.text!).toBe(true);
       expect(header.inside, header.text!).toBe(true);
-      // One line while the gallery has room; at phone width the tallies may take a second line, never more.
-      expect(header.lines, header.text!).toBeLessThanOrEqual(width === 420 ? 2 : 1);
+      // One line at every width: the sentence ellipsizes before a tally wraps to a line that would start with `·`.
+      expect(header.lines, header.text!).toBe(1);
     }
     // A long sentence is cut by CSS (its tallies above stayed whole).
     expect(headers.some(header => header.cut && header.tallies.length)).toBe(true);
@@ -223,7 +223,7 @@ test('a blocked call reads quietly and its card shows the reason without tags', 
   const type = (selector: string) => page.locator(selector).first().evaluate(node => { const style = getComputedStyle(node); return `${style.fontFamily} ${style.fontSize}`; });
   expect(await type('.tc-term.is-blocked .tc-command')).toBe(await type('.tc-term:not(.is-blocked) .tc-command'));
   await expect(row.locator('.tool-trace-card, .tool-trace-inline').first()).not.toContainText('tool_use_error');
-  await expect(page.locator('.tool-group-status.is-blocked').first()).toHaveText(' · 1 blocked');
+  await expect(page.locator('.tool-group-status.is-blocked').first()).toHaveText(' · 3 stopped');
 });
 
 test('Escape closes the risk tooltip while the badge keeps focus', async ({ page }) => {
@@ -264,7 +264,7 @@ test('failed compounds keep their lead verb, empty greps are no matches, destruc
   await expect(compound2.locator(':scope > summary > .tool-trace-chip')).toHaveText('cargo test');
   await expect(compound2.locator(':scope > summary > .tool-trace-badge.is-failed')).toHaveText('exit 1');
   await expect(compound2.locator('.tool-test-runner')).toHaveText('cargo');
-  await expect(compound2.locator('.tc-badge.is-failed')).toHaveText('exit 1');
+  await expect(compound2.locator('.tool-trace-frame .tool-trace-badge.is-failed')).toHaveText('exit 1');
   await expect(compound2.locator('.tc-term-out')).not.toContainText('Exit code');
   // Every row opens on this page; a destructive one with no output still has a card to open to.
   const clean = page.locator('details.tool-trace', { hasText: 'untracked files' });
@@ -420,7 +420,7 @@ test('piped failures, refusals, diffs, stopped servers and program lists read as
   await expect(interrupted.locator(':scope > summary > .tool-trace-verb')).toHaveText('Interrupted:');
   await expect(interrupted).not.toHaveAttribute('data-tool-failed', /.*/);
   await expect(interrupted.locator('.tool-trace-note.is-interrupted')).toHaveText('Interrupted before it reported a result.');
-  await expect(page.locator('.tool-trace', { hasText: "Couldn't start" }).locator(':scope > summary > .tool-trace-chip')).toHaveText('cat');
+  await expect(page.locator('.tool-trace', { hasText: "Couldn't read" }).locator(':scope > summary > .tool-trace-chip')).toHaveText('subagent_state.rs');
   const edit = page.locator('.tool-trace', { hasText: 'design.tsx' }).first();
   await expect(edit.locator(':scope > summary > .tool-trace-reason')).toHaveText('· string to replace not found');
   // The row already gives the reason, so the card doesn't repeat it.
@@ -465,7 +465,7 @@ for (const width of [900, 1440]) {
     await seedTurn(page, ALL_TALLY_TOOLS, 9300);
     await page.locator('.task-item', { hasText: 'Tool gallery' }).click();
     const label = page.locator('.turn-card').last().locator('details.turn-activity > summary .turn-activity-label');
-    await expect(label.locator('.tool-group-status')).toHaveText([' · 2 failed', ' · 1 blocked', ' · 1 denied', ' · 1 interrupted']);
+    await expect(label.locator('.tool-group-status')).toHaveText([' · 2 failed', ' · 3 stopped']);
     const room = await label.evaluate(node => {
       const words = node.querySelector<HTMLElement>('.trace-summary-sentence')!;
       const text = words.firstChild!;
@@ -480,7 +480,7 @@ for (const width of [900, 1440]) {
       return { first40: range.getBoundingClientRect().width, shown: words.clientWidth, text: text.textContent, tallies };
     });
     expect(room.shown, JSON.stringify(room)).toBeGreaterThanOrEqual(room.first40 - 1);
-    expect(room.tallies).toEqual([true, true, true, true]);
+    expect(room.tallies).toEqual([true, true]);
     // A tally that wrapped never starts its line with `·`: its separator sits on the line of the item before it, or hangs
     // left of the clipped edge.
     const seps = await label.locator('.trace-summary-text').evaluate(box => {
@@ -491,7 +491,7 @@ for (const width of [900, 1440]) {
         return rect.right <= edge + 0.5 || Math.abs(rect.top - before.top) < before.height / 2;
       });
     });
-    expect(seps).toEqual([true, true, true, true]);
+    expect(seps).toEqual([true, true]);
     await page.screenshot({ path: `${OUT}/folded-all-tallies-${width}.png`, clip: { x: 0, y: 0, width, height: 900 } });
   });
 }
@@ -547,6 +547,126 @@ for (const width of [420, 760]) {
   });
 }
 
+// At 380px a search keeps its short place chip whole (`src` is under the chip's floor) and a readable piece of its pattern,
+// and `+1 more command` stays whole.
+test('narrow rows keep the quoted pattern readable and the `+N more` tail whole (380px)', async ({ page }) => {
+  await page.setViewportSize({ width: 380, height: 900 });
+  await page.goto('/tool-trace-gallery.html');
+  await expect(page.locator('body[data-ready="true"]')).toBeAttached();
+  const search = page.locator('.tool-trace > :is(summary, .tool-trace-summary) > .tool-trace-object', { hasText: /^for “pandacode_” in$/ });
+  const shown = await search.evaluate(node => {
+    const text = node.firstChild!, start = text.textContent!.indexOf('“') + 1, end = text.textContent!.indexOf('”');
+    // Characters wholly left of the ellipsis at the clipped edge.
+    const dots = node.appendChild(document.createElement('span'));
+    dots.textContent = '…';
+    const edge = node.getBoundingClientRect().right - dots.getBoundingClientRect().width;
+    dots.textContent = '0'.repeat(8);
+    const floor = dots.getBoundingClientRect().width;
+    dots.remove();
+    const range = document.createRange();
+    let count = 0;
+    for (let i = start; i < end; i++) { range.setStart(text, i); range.setEnd(text, i + 1); if (range.getBoundingClientRect().right <= edge) count++; }
+    const chip = node.parentElement!.querySelector<HTMLElement>(':scope > .tool-trace-chip > b')!;
+    return { count, width: node.getBoundingClientRect().width, floor, chipCut: chip.scrollWidth - chip.clientWidth };
+  });
+  // The chip (`src`) used to ellipsize to `s…`, then to an empty pill, so the object could hold ~8ch; now a chip never goes
+  // under min(7ch, its label), so `src` stays whole and the object gives way instead (`for “pa…`), the quote still showing.
+  expect(shown.chipCut, JSON.stringify(shown)).toBeLessThanOrEqual(1);
+  expect(shown.width, JSON.stringify(shown)).toBeGreaterThan(shown.floor / 2);
+  expect(shown.count, JSON.stringify(shown)).toBeGreaterThanOrEqual(2);
+  // The tail stays whole while its row's chip is above its floor (min(7ch, its label)); it gives way before the chip goes
+  // under that floor, so a chip down to its floor may come with a cut tail (`Committed [git c…] “Tight…” +1 more c…`).
+  const tails = await page.locator('.tool-trace > :is(summary, .tool-trace-summary) > .tool-trace-more-steps', { hasText: /^\+1 more command$/ })
+    .evaluateAll(nodes => nodes.map(node => {
+      const chip = node.parentElement!.querySelector<HTMLElement>(':scope > .tool-trace-chip');
+      const probe = chip && chip.appendChild(document.createElement('i'));
+      if (probe) probe.style.cssText = 'position:absolute;width:7ch';
+      const floor = probe ? probe.getBoundingClientRect().width : 0;
+      probe?.remove();
+      return { text: node.parentElement!.textContent, cut: node.scrollWidth - node.clientWidth, chip: chip?.getBoundingClientRect().width ?? 0, floor };
+    }));
+  expect(tails.length).toBeGreaterThanOrEqual(3);
+  for (const tail of tails) if (tail.cut > 1) expect(tail.chip, JSON.stringify(tail)).toBeLessThanOrEqual(tail.floor + 1);
+});
+
+// At 380px no chip collapses to an empty pill (`Read [ ] +2 more commands`): each keeps a floor of ~7ch (or its whole
+// label) and shows at least two characters before its ellipsis while the object, quote and `+N more` tail give way.
+test('narrow rows never collapse a chip to an empty pill (380px)', async ({ page }) => {
+  await page.setViewportSize({ width: 380, height: 900 });
+  await page.goto('/tool-trace-gallery.html');
+  await expect(page.locator('body[data-ready="true"]')).toBeAttached();
+  const chips = await page.locator('section[data-gallery-family] .tool-trace > :is(summary, .tool-trace-summary) > .tool-trace-chip > b')
+    .evaluateAll(labels => labels.flatMap(label => {
+      const length = label.textContent!.length;
+      if (!length || !label.getBoundingClientRect().width) return [];
+      const cut = label.scrollWidth > label.clientWidth;
+      // Characters wholly left of the ellipsis (or of the label's edge when it is whole).
+      // The ellipsis is measured in the label's font outside the chip, so it does not squeeze the label it measures.
+      const dots = document.body.appendChild(document.createElement('span'));
+      dots.style.cssText = `position:absolute;white-space:pre;font:${getComputedStyle(label).font}`;
+      dots.textContent = '…';
+      const edge = label.getBoundingClientRect().right - (cut ? dots.getBoundingClientRect().width : 0) + 0.5;
+      dots.remove();
+      const range = document.createRange();
+      let shown = 0;
+      const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+        for (let i = 0; i < text.textContent!.length; i++) {
+          range.setStart(text, i); range.setEnd(text, i + 1);
+          const rect = range.getBoundingClientRect();
+          if (rect.width && rect.right <= edge) shown++;
+        }
+      }
+      return [{ row: label.closest('.tool-trace')!.textContent!.replace(/\s+/g, ' ').trim(), width: label.clientWidth, shown, length }];
+    }));
+  expect(chips.length).toBeGreaterThan(20);
+  for (const chip of chips) {
+    expect(chip.width, JSON.stringify(chip)).toBeGreaterThan(0);
+    expect(chip.shown, JSON.stringify(chip)).toBeGreaterThanOrEqual(Math.min(2, chip.length));
+  }
+  // The rows still fit their box with every badge, exit code and chevron inside it.
+  expect(await rowOverflows(page, 'section[data-gallery-family]')).toEqual([]);
+});
+
+// A viewed image's long file name ellipsizes inside its chip (it used to be clipped mid-letter), beside a centred thumbnail.
+test('a long viewed-image name ellipsizes beside its thumbnail (380px)', async ({ page }) => {
+  await page.setViewportSize({ width: 380, height: 900 });
+  await page.goto('/tool-trace-gallery.html');
+  await expect(page.locator('body[data-ready="true"]')).toBeAttached();
+  await page.locator('section[data-gallery-family] .tool-trace').first().evaluate(async node => {
+    const { traceRowHtml } = await import('/src/tool-trace.ts' as string);
+    const row = traceRowHtml({ kind: 'image', verb: 'Viewed', object: '', image: '/tmp/pandacode-gallery/settings-dark-mode-wallpaper-comparison-final.png' });
+    node.insertAdjacentHTML('afterend', `<div class="tool-activity tool-trace" data-tool-status="completed" data-tool-kind="image" data-static data-image-probe><div class="tool-trace-summary">${row}</div></div>`);
+  });
+  const name = page.locator('[data-image-probe] .tool-trace-image > .tool-image-name');
+  await expect(name).toHaveText('settings-dark-mode-wallpaper-comparison-final.png');
+  await expect(name).toHaveCSS('text-overflow', 'ellipsis');
+  // text-overflow only applies to a block container: as an (inline-)flex box its text was an anonymous item, clipped bare.
+  expect(await name.evaluate(node => getComputedStyle(node).display)).toMatch(/^(block|inline-block|flow-root)$/);
+  const box = await name.evaluate(node => {
+    const thumb = node.parentElement!.querySelector('.tool-image-thumb')!.getBoundingClientRect(), rect = node.getBoundingClientRect();
+    return { scroll: node.scrollWidth, client: node.clientWidth, offset: Math.abs((thumb.top + thumb.bottom) / 2 - (rect.top + rect.bottom) / 2) };
+  });
+  expect(box.scroll, JSON.stringify(box)).toBeGreaterThan(box.client);
+  expect(box.offset, JSON.stringify(box)).toBeLessThanOrEqual(1);
+});
+
+// A chip is as wide as its label: a short one (`src`, `rg`, `w2`) ends one padding after its text, not padded out to a floor.
+test('short chips size to their label (1440px)', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/tool-trace-gallery.html');
+  await expect(page.locator('body[data-ready="true"]')).toBeAttached();
+  const slack = await page.locator('section[data-gallery-family] .tool-trace-chip').evaluateAll(chips => chips.flatMap(chip => {
+    const label = chip.querySelector<HTMLElement>(':scope > b');
+    if (!label || !chip.getBoundingClientRect().width || label.textContent!.length > 3) return [];
+    const style = getComputedStyle(chip);
+    const extra = chip.getBoundingClientRect().right - label.getBoundingClientRect().right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+    return [`${label.textContent} ${extra.toFixed(1)}`];
+  }));
+  expect(slack.length).toBeGreaterThan(2);
+  for (const entry of slack) expect(Math.abs(parseFloat(entry.split(' ').pop()!)), entry).toBeLessThanOrEqual(0.5);
+});
+
 // A lone note (`Screenshot 1280×800`, a saved path, one error line) has no card plate, but its text starts where a card's
 // content does, not on the card's outer edge.
 test('lone notes line up with card content', async ({ page }) => {
@@ -560,3 +680,4 @@ test('lone notes line up with card content', async ({ page }) => {
   expect(notes.length).toBeGreaterThanOrEqual(2);
   for (const note of notes) expect(Math.abs(note.inset - 12), `${note.text} ${note.inset}px`).toBeLessThanOrEqual(1);
 });
+

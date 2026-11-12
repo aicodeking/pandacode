@@ -353,14 +353,15 @@ fn changed_directory(argv: &[String], cwd: Option<String>) -> Option<String> {
     }
 }
 
-/// `path` as seen from `cwd`. A rooted path stays as given; a relative one is
+/// `path` as seen from `cwd`. An absolute path stays as given and a `~` one is
+/// dropped (`locatedPath` in `shell-intent-context.ts` never requests it); a relative one is
 /// joined to a known absolute directory (the record's own, or a literal `cd /abs`
 /// before it) and is `None` otherwise: a Claude `Bash` record carries no
 /// directory and the agent's cwd persists between calls, so `intro.jpg` may be
 /// anywhere.
 fn resolve(path: &str, cwd: Option<&str>) -> Option<String> {
     if path.starts_with(['/', '~']) {
-        return Some(path.to_owned());
+        return path.starts_with('/').then(|| path.to_owned());
     }
     let cwd = cwd.filter(|dir| dir.starts_with('/'))?;
     let mut rest = path;

@@ -16,22 +16,22 @@ const PLAYWRIGHT_FAILED = 'Exit code: 1\nWall time: 41.2 seconds\nOutput:\nRunni
 
 // --- 1. Failed checks say what failed, not that they never ran ---------------------------------
 
-test('a failed test run with a summary reads `Tests failed [runner] · 1 of 14`', () => {
+test('a failed test run with a summary reads `Tests failed [runner] · 1 of 14 tests`', () => {
   const trace = describeTool(codexCommand('npx playwright test', PLAYWRIGHT_FAILED));
   assert.equal(trace.verb, 'Tests failed');
   assert.equal(trace.chip?.label, 'playwright');
-  assert.equal(trace.object, '· 1 of 14');
-  assert.equal(plain(traceRowHtml(trace)), 'Tests failed playwright · 1 of 14');
+  assert.equal(trace.object, '· 1 of 14 tests');
+  assert.equal(plain(traceRowHtml(trace)), 'Tests failed playwright · 1 of 14 tests');
 });
 
 test('a test run that exits nonzero without a summary reads `Tests failed [runner]`', () => {
   const trace = describeTool(codexCommand('npm test', 'Exit code: 1\nWall time: 3 seconds\nOutput:\nError: something broke in setup\n    at main (a.js:1:1)\n'));
   assert.equal(trace.verb, 'Tests failed');
   assert.equal(trace.object, '');
-  // A completed record whose exit code is nonzero says the same, keeping its exit badge.
+  // A completed record whose exit code is nonzero says the same; the verb already says it failed, so no exit badge.
   const completed = describeTool(codexCommand('npm test', 'Exit code: 1\nWall time: 3 seconds\nOutput:\nError: boom\n', 'completed'));
   assert.equal(completed.verb, 'Tests failed');
-  assert.equal(completed.exit, 1);
+  assert.equal(completed.exit, undefined);
 });
 
 test('a runner that never started still reads `Couldn\'t run tests`', () => {
@@ -106,14 +106,14 @@ test('an image size shows once and an edit delta labels both sides', () => {
 test('team messages name the worker, else say it is a worker, else read `Sent team message`', () => {
   const send = (input, output = '') => describeTool(tool('mcp__pandacode_architect__pandacode_send_team_message', input, { output }));
   const named = send({ recipient: '9b326e2a-1111-4222-8333-944445555666', message: 'hi', workerName: 'Rows' });
-  assert.deepEqual([named.verb, named.chip?.label], ['Sent message to', 'Rows']);
+  assert.deepEqual([named.verb, named.chip?.label], ['Messaged', 'Rows']);
   const id = send({ recipient: '9b326e2a-1111-4222-8333-944445555666', message: 'hi' });
-  assert.deepEqual([id.verb, id.chip?.label, id.chip?.title], ['Sent message to worker', '9b326e2a', '9b326e2a-1111-4222-8333-944445555666']);
+  assert.deepEqual([id.verb, id.chip?.label, id.chip?.title], ['Messaged worker', '9b326e2a', '9b326e2a-1111-4222-8333-944445555666']);
   const none = send({ key: 'k', message: 'MiniMax run status' });
   assert.deepEqual([none.verb, none.chip], ['Sent team message', undefined]);
   // The answer names the architect it went to.
   const answered = send({ key: 'k', message: 'x' }, '{"duplicate":false,"mailbox":{"messages":[]},"messageId":1,"recipient":"architect","saved":true}');
-  assert.deepEqual([answered.verb, answered.chip?.label], ['Sent message to', 'architect']);
+  assert.deepEqual([answered.verb, answered.chip?.label], ['Messaged', 'architect']);
 });
 
 // --- 8. Unmapped titles ------------------------------------------------------------------------
@@ -383,7 +383,7 @@ test('Kimi reads name their line range', () => {
 
 test('team messages, cut follow-ups, questions and plan mode read as sentences', () => {
   const sent = tool('pandacode_send_team_message', { message: 'Thanks', to: 'Rows' });
-  assert.equal(plain(traceRowHtml(describeTool(sent))), 'Sent message to Rows · “Thanks”');
+  assert.equal(plain(traceRowHtml(describeTool(sent))), 'Messaged Rows · “Thanks”');
   const cut = tool('pandacode_followup_worker', '{\n  "files": [],\n  "key": "round8-fixes",\n  "prompt": "Council round 8: Correctness 7, Security 8');
   assert.equal(plain(traceRowHtml(describeTool(cut))), 'Followed up with a worker · “Council round 8: Correctness 7, Security 8”');
   const queued = { ...cut, output: '{"queued":true,"workerId":"00551630-7bc1-4444-85da-76e0e4067947"}' };
@@ -496,7 +496,7 @@ test('a team message carries the gist of what it said', () => {
   assert.equal(sent.chip?.label, 'Rows');
   // Kept whole: the row's CSS ellipsizes it to the room there is.
   assert.equal(sent.note, message);
-  assert.match(plain(traceRowHtml(sent)), /^Sent message to Rows · “Please check/);
+  assert.match(plain(traceRowHtml(sent)), /^Messaged Rows · “Please check/);
 });
 
 test('Codex legacy `Update files` that only add or only delete read `Created` / `Deleted`', () => {
@@ -687,7 +687,7 @@ test('the `+N more commands` tail gives way only after the object, and the image
   assert.ok(shrink(object) > shrink(more), 'the object shrinks before the `+N more` tail');
   const name = /\.tool-trace-image>\.tool-image-name\{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(name, /border:1px solid var\(--ds-[\w-]+\)/);
-  assert.match(name, /display:inline-flex;align-items:center/);
+  assert.match(name, /display:block;/);
   const chip = /\n\.tool-trace-chip\{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.equal(/border:[^;]+/.exec(name)?.[0], /border:[^;]+/.exec(chip)?.[0]);
 });
@@ -728,7 +728,7 @@ test('a wait whose log shows failed tests keeps the wait and tallies the check a
 test('a destructive step after failed tests never ran: the tests lead, the badge goes, the risk stays in the tooltip', () => {
   const trace = describeTool(bash('npm test && git push --force', '# tests 1\n# pass 0\n# fail 1\n', 'failed'));
   assert.equal(trace.verb, 'Tests failed');
-  assert.match(trace.object, /· 1 of 1$/);
+  assert.match(trace.object, /· 1 of 1 tests$/);
   assert.equal(trace.destructive, undefined);
   assert.deepEqual(trace.risks, ['Rewrites remote history: git push --force']);
   assert.match(trace.title ?? '', /git push --force/);

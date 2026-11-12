@@ -5,15 +5,18 @@ import {
   type Desc, type Handler, type ShellVerb,
 } from './shell-intent-base.ts';
 import {
-  DELETERS, SEVERITY, deletion, emptied, isCriticalPath, isHomeConfig, isHomeFolder, isScratchIn, isSystemPath, overwroteConfig, overwroteSystem, riskLine,
+  DELETERS, SEVERITY, deletion, emptied, isCriticalPath, isHomeConfig, isHomeFolder, isScratchIn, isShellStartup, isSystemPath, overwroteConfig, overwroteSystem, riskLine,
 } from './shell-intent-risk.ts';
 
 export { DELETERS };
 
 const editDesc = (verb: ShellVerb, file: string): Desc => desc('file', verb, basename(file), '', 'edit');
+/** A home dotfile or setting overwritten, or a shell startup file appended to; undefined for any other file. */
+const changedConfig = (file: string, append: boolean): Desc | undefined =>
+  append ? isShellStartup(file) ? overwroteConfig(file, undefined, 'Appended to') : undefined : isHomeConfig(file) ? overwroteConfig(file) : undefined;
 /** `echo … > f`: wrote f; a dotfile or setting under home is overwritten. */
 const wrote = (file: string, append: boolean): Desc => isSystemPath(file) ? overwroteSystem(file, append ? 'Appended to' : 'Overwrote')
-  : !append && isHomeConfig(file) ? overwroteConfig(file) : editDesc(append ? 'Appended to' : 'Wrote', file);
+  : changedConfig(file, append) ?? editDesc(append ? 'Appended to' : 'Wrote', file);
 const GLOB = /[*?[]/;
 /** `bench/*.md` alone reads as `[files] matching bench/*.md`, never a `*.md` chip. */
 const globbed = (files: string[]): [string, string] | undefined =>
@@ -21,6 +24,10 @@ const globbed = (files: string[]): [string, string] | undefined =>
 
 /** `sed -i`, `perl -pi`: one file reads `Edited a.ts`; several or a glob `Edited [3 files] in place`. */
 export function editedInPlace(files: string[], fallback: string): Desc {
+  const system = files.find(isSystemPath);
+  if (system) return overwroteSystem(system, 'Edited');
+  const config = files.find(isHomeConfig);
+  if (config) return overwroteConfig(config, undefined, 'Edited');
   if (!files.length) return editDesc('Edited', fallback);
   if (files.length === 1 && !GLOB.test(files[0]) && !isSubstitution(files[0])) return editDesc('Edited', files[0]);
   // `$(git ls-files)` names files only at run time.
@@ -31,11 +38,16 @@ const moreFiles = (count: number) => count > 0 ? `+${plural(count, 'file')}` : '
 /** A read file's chip; `/dev/null` stays whole, so the lead can tell a read of nothing from a file named `null`. */
 const readLabel = (file: string) => isDeviceStream(file) ? file : basename(file);
 
+/** `-i`, `-i.bak`, `-Ei`, `-ni`, `--in-place`: sed edits its files instead of printing them. */
+export const SED_IN_PLACE = /^-[Enrsuz]*i|^--in-place/;
+/** macOS's `-i ''` / `-Ei ''`: the empty backup suffix is the flag's own argument. */
+const isSuffix = (args: string[], i: number) => args[i] === '' && /^-[Enrsuz]*i$/.test(args[i - 1] ?? '');
+
 const readSed: Handler = (_program, args, seg) => {
   const script = flagValue(args, ['-e', '--expression']);
   const rest = positionals(args, set('-e', '-f', '--expression'));
   const files = script === undefined ? rest.slice(1) : rest;
-  if (args.some(arg => /^-i/.test(arg) || /^--in-place/.test(arg))) return sedInPlace(args, script, seg);
+  if (args.some(arg => SED_IN_PLACE.test(arg))) return sedInPlace(args, script, seg);
   if (!hasFlag(args, '-n') || !files.length) return undefined;
   const range = /^(\d+|\$)(?:,(\d+|\$))?p$/.exec((script ?? rest[0] ?? '').trim());
   const object = !range ? '' : range[2] ? `lines ${range[1]}–${range[2]}` : `line ${range[1]}`;
@@ -47,14 +59,14 @@ const DELETES_ALL = /^\s*(?:1\s*,\s*\$\s*)?d\s*$/;
 
 function sedInPlace(args: string[], script: string | undefined, scope: Scope): Desc {
   const files = sedTargets(args, script);
-  const program = script ?? positionals(args.filter((arg, i) => !(arg === '' && args[i - 1] === '-i')), set('-e', '-f', '--expression'))[0] ?? '';
+  const program = script ?? positionals(args.filter((_arg, i) => !isSuffix(args, i)), set('-e', '-f', '--expression'))[0] ?? '';
   if (!DELETES_ALL.test(program) || !files.length) return editedInPlace(files, 'sed');
   return files.length === 1 ? emptied(files[0], scope) : destroys(desc('file', 'Emptied', pathsLabel(files), '', 'trash'));
 }
 
 /** The files `sed -i` edits: positionals after the script, without macOS's `-i ''` suffix. */
 function sedTargets(args: string[], script: string | undefined): string[] {
-  const kept = args.filter((arg, i) => !(arg === '' && args[i - 1] === '-i'));
+  const kept = args.filter((_arg, i) => !isSuffix(args, i));
   const rest = positionals(kept, set('-e', '-f', '--expression'));
   return script === undefined ? rest.slice(1) : rest;
 }
@@ -209,15 +221,19 @@ const shred: Handler = (_program, args) => {
   return files.length ? destroys(desc('file', 'Shredded', pathsLabel(files), '', 'trash')) : undefined;
 };
 
+const RAW_DISK = /^\/dev\/(?:r?disk|sd|nvme|hd|mmcblk)/;
+
 /** `dd if=a of=b`: writes over `of`, which may be a whole disk; without `of=` it only reads `if`. */
 const dd: Handler = (_program, args, seg) => {
   const operand = (name: string) => args.find(arg => arg.startsWith(`${name}=`))?.slice(name.length + 1);
   const target = operand('of');
   const source = operand('if');
   if (!target || isDeviceStream(target)) return desc('read', 'Read', source ? clip(basename(source), 48) : 'stdin', target ? 'with dd' : '');
-  const overwrote = desc('file', 'Overwrote', clip(basename(target), 48), source ? `from ${clip(basename(source), 48)}` : '', 'trash');
-  if (isScratchIn(target, seg)) return overwrote;
-  return destroys(overwrote, /^\/dev\/r?disk|^\/dev\/(?:sd|nvme|hd|mmcblk)/.test(target) ? SEVERITY.critical : SEVERITY.other);
+  const from = source ? `from ${clip(basename(source), 48)}` : '';
+  // `of=/dev/disk2`: the device as written, so the row never reads as an ordinary file named `disk2`.
+  if (RAW_DISK.test(target)) return { ...destroys(desc('system', 'Wrote', clip(target, 48), from, 'trash'), SEVERITY.critical), reason: 'Writes a raw disk device' };
+  const overwrote = desc('file', 'Overwrote', clip(basename(target), 48), from, 'trash');
+  return isScratchIn(target, seg) ? overwrote : destroys(overwrote);
 };
 
 /** `tee f`: writes stdin to f; `tee f < /dev/null` empties it. */
@@ -228,8 +244,8 @@ const tee: Handler = (_program, args, seg) => {
   if (seg.input === '/dev/null' && !append) return files.length === 1 ? emptied(files[0], seg) : destroys(desc('file', 'Emptied', pathsLabel(files), '', 'trash'));
   const system = files.find(isSystemPath);
   if (system) return overwroteSystem(system, append ? 'Appended to' : 'Overwrote');
-  const config = append ? undefined : files.find(isHomeConfig);
-  return config ? overwroteConfig(config) : desc('file', append ? 'Appended to' : 'Wrote', firstAndMore(files), '', 'edit');
+  const config = files.map(file => changedConfig(file, append)).find(Boolean);
+  return config ?? desc('file', append ? 'Appended to' : 'Wrote', firstAndMore(files), '', 'edit');
 };
 
 /** `mkfs`, `mkfs.ext4`, `newfs_apfs`: erases the device. */

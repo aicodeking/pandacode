@@ -12,7 +12,8 @@ export const LEADING_KEYWORDS = /^(?:(?:if|then|do|else|elif|while|until|!|\{)\s
 
 /** `gated`: the step only runs when the step before it succeeded (`a && b`). */
 /** `dead`: the shell skips the step (`true || x`, `false && x`). */
-export interface Described { program: string; desc: Desc; gated?: boolean; dead?: boolean }
+/** `gated`: runs only after the step before it succeeded (`a && b`); `orElse`: only after it failed (`a || b`). */
+export interface Described { program: string; desc: Desc; gated?: boolean; orElse?: boolean; dead?: boolean }
 /** Shell functions defined earlier in the command: name → the meaningful steps of the body. */
 export type Functions = Map<string, Described[]>;
 /** A `for` loop's variable: its first literal item and how many there are (count 0: the list is not literal). */
@@ -31,9 +32,10 @@ export interface Context {
   /** Steps left to describe, shared by every depth: a compound longer than this reads as the raw command. */
   budget: Budget;
 }
-/** How many steps one describeShell call may still describe; `exhausted` once a step was skipped. `expansion`: characters
- * variable substitution may still add, shared by every step, so `A=$A$A` repeated cannot grow the work past it. */
-export interface Budget { left: number; exhausted: boolean; expansion: number }
+/** How many steps one describeShell call may still describe; `exhausted` once a step was skipped, whose text `unchecked`
+ * keeps for the fallback scan. `expansion`: characters variable substitution may still add, shared by every step, so
+ * `A=$A$A` repeated cannot grow the work past it. */
+export interface Budget { left: number; exhausted: boolean; expansion: number; unchecked: string[] }
 
 /** Steps one describeShell call describes at most, counting nested scripts and substitutions. */
 export const MAX_STEPS = 300;
@@ -44,7 +46,7 @@ export const MAX_EXPANSION = 64 * 1024;
 
 export const newContext = (base?: string): Context => ({
   depth: 0, functions: new Map(), vars: new Map(), scratch: new Set(SCRATCH_VARS), loops: new Map(), cwds: [], cwdUnknown: false,
-  budget: { left: MAX_STEPS, exhausted: false, expansion: MAX_EXPANSION }, ...(base && isAbsolute(base) ? { base: trimTrailing(base, '/') || '/' } : {}),
+  budget: { left: MAX_STEPS, exhausted: false, expansion: MAX_EXPANSION, unchecked: [] }, ...(base && isAbsolute(base) ? { base: trimTrailing(base, '/') || '/' } : {}),
 });
 /** `/x`, `C:\x`: a path that names one file wherever the shell stands (`~` depends on whose home, so it is not). */
 const isAbsolute = (path: string) => /^(?:\/|[A-Za-z]:[\\/])/.test(path);
@@ -126,7 +128,8 @@ export function recordCd(step: Step, ctx: Context): void {
 }
 
 /** A produced image's path made absolute: as written when absolute, else joined to the record's working directory;
- * unknown (undefined) without one, under `~`, or after a `cd` to an unknown place (as tool_images_auth/shell.rs reads it).
+ * unknown (undefined) without one, under `~`, or after a `cd` to an unknown place. tool_images_auth/shell.rs resolves
+ * paths the same way; both sides ignore `~` paths rather than guess the home directory.
  * `path` is already resolved against the last literal `cd`. */
 export function locatedPath(path: string | undefined, ctx: Context): string | undefined {
   if (!path || isAbsolute(path)) return path;

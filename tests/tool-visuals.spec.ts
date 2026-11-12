@@ -74,7 +74,8 @@ test('a failed reveal says so inside the viewer', async ({ page }) => {
   expect(errors.some(text => text.includes('reveal_path failed'))).toBe(true);
 });
 
-test('tool rows show viewed images, file reads and test results', async ({ page }) => {
+/** The seeded gallery with its image row, collecting page errors; the viewer's Copy path writes to `window.copied`. */
+async function openVisuals(page: Page) {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   // The viewer's Copy path writes here instead of the system clipboard.
@@ -82,16 +83,53 @@ test('tool rows show viewed images, file reads and test results', async ({ page 
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copied: string[] }).copied = [...((window as unknown as { copied?: string[] }).copied ?? []), text]; } } });
   });
   const card = await openSeeded(page);
-
   const imageRow = card.locator('details.tool-trace[data-tool-key="tool:visual-image"]');
-  await expect(imageRow.locator(':scope > summary .tool-trace-verb')).toHaveText('Viewed');
   const thumb = imageRow.locator(':scope > summary .tool-image-thumb');
+  return { card, imageRow, thumb, errors, viewer: page.locator('dialog.tool-image-viewer') };
+}
+
+test('tool rows show viewed images, file reads and test results', async ({ page }) => {
+  const { card, imageRow, thumb, errors } = await openVisuals(page);
+  await expect(imageRow.locator(':scope > summary .tool-trace-verb')).toHaveText('Viewed');
   await expect(thumb.locator('img')).toHaveAttribute('src', /^data:image\//);
   await expect(imageRow.locator(':scope > summary .tool-image-name')).toHaveText('settings-dark.png');
 
+  const sedRow = card.locator('details.tool-trace[data-tool-key="tool:visual-sed"]');
+  await expect(sedRow.locator(':scope > summary .tool-trace-verb')).toHaveText('Read');
+  await expect(sedRow.locator(':scope > summary .tool-trace-chip')).toHaveText('voice-input.spec.ts');
+  await expect(sedRow.locator(':scope > summary .tool-trace-object')).toHaveText('lines 210–222');
+
+  const testRow = card.locator('details.tool-trace[data-tool-key="tool:visual-tests"]');
+  await expect(testRow.locator(':scope > summary .tool-trace-verb')).toHaveText('Tests failed');
+  await expect(testRow.locator(':scope > summary .tool-trace-chip')).toHaveText('playwright');
+  // `Tests failed` already says it failed, so the row carries no exit-code badge.
+  await expect(testRow.locator(':scope > summary .tool-trace-badge')).toHaveCount(0);
+  await testRow.locator(':scope > summary').click();
+  const summary = testRow.locator('.tool-test-summary');
+  await expect(summary).toHaveAttribute('data-status', 'fail');
+  await expect(summary.locator('.tool-test-pass')).toHaveText('13 passed');
+  await expect(summary.locator('.tool-test-fail')).toHaveText('1 failed');
+  await expect(summary.locator('.tool-test-failure')).toContainText('dictation keeps the caret');
+
+  // The expanded image row shows the larger preview.
+  await imageRow.locator(':scope > summary .tool-trace-verb').click();
+  await expect(imageRow).toHaveAttribute('open', '');
+  await expect(imageRow.locator('.tool-image-card img')).toHaveAttribute('src', /^data:image\//);
+  // The row title names the file, so the card's caption carries only meta.
+  await expect(imageRow.locator('.tool-image-card .tool-image-name')).toHaveCount(0);
+  await sedRow.locator(':scope > summary .tool-trace-verb').click();
+  await expect(sedRow).toHaveAttribute('open', '');
+  if (process.env.TOOL_VISUALS_SHOT) {
+    await card.scrollIntoViewIfNeeded();
+    await card.screenshot({ path: `${SHOTS}/tool-visuals.png` });
+  }
+  expect(errors).toEqual([]);
+});
+
+test('a viewed image thumbnail opens a viewer that steps through the thread’s images', async ({ page }) => {
+  const { imageRow, thumb, errors, viewer } = await openVisuals(page);
   // Clicking the thumbnail opens the viewer and leaves the row closed.
   await thumb.click();
-  const viewer = page.locator('dialog.tool-image-viewer');
   await expect(viewer).toBeVisible();
   const image = viewer.locator('.tool-image-viewer-image');
   await expect(image).toHaveAttribute('src', /^data:image\//);
@@ -134,6 +172,19 @@ test('tool rows show viewed images, file reads and test results', async ({ page 
   await viewer.locator('[data-tool-image-action="next"]').click();
   await expect(viewer.locator('.tool-image-viewer-count')).toHaveText('2 of 2');
 
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
+  await expect(imageRow).not.toHaveAttribute('open', '');
+  expect(errors).toEqual([]);
+});
+
+test('the image viewer copies the shown image’s path and reveals it', async ({ page }) => {
+  const { thumb, errors, viewer } = await openVisuals(page);
+  await thumb.click();
+  await expect(viewer).toBeVisible();
+  await viewer.locator('[data-tool-image-action="next"]').click();
+  await expect(viewer.locator('.tool-image-viewer-count')).toHaveText('2 of 2');
+
   // Copy path copies the image on show and says so.
   const copy = viewer.locator('[data-tool-image-action="copy"]');
   // The label slot is as wide as the wider of "Copy path" and "Copied" (no reserved blank), and the button never
@@ -159,39 +210,6 @@ test('tool rows show viewed images, file reads and test results', async ({ page 
   await expect(reveal).toHaveText(/Mac/i.test(platform) ? 'Reveal in Finder' : /Win/i.test(platform) ? 'Show in Explorer' : 'Open folder');
   await reveal.click();
   await expect(viewer.locator('.tool-image-viewer-notice')).toHaveText('');
-
-  await page.keyboard.press('Escape');
-  await expect(viewer).toHaveCount(0);
-  await expect(imageRow).not.toHaveAttribute('open', '');
-
-  const sedRow = card.locator('details.tool-trace[data-tool-key="tool:visual-sed"]');
-  await expect(sedRow.locator(':scope > summary .tool-trace-verb')).toHaveText('Read');
-  await expect(sedRow.locator(':scope > summary .tool-trace-chip')).toHaveText('voice-input.spec.ts');
-  await expect(sedRow.locator(':scope > summary .tool-trace-object')).toHaveText('lines 210–222');
-
-  const testRow = card.locator('details.tool-trace[data-tool-key="tool:visual-tests"]');
-  await expect(testRow.locator(':scope > summary .tool-trace-verb')).toHaveText('Tests failed');
-  await expect(testRow.locator(':scope > summary .tool-trace-chip')).toHaveText('playwright');
-  await expect(testRow.locator(':scope > summary .tool-trace-badge')).toHaveText('exit 1');
-  await testRow.locator(':scope > summary').click();
-  const summary = testRow.locator('.tool-test-summary');
-  await expect(summary).toHaveAttribute('data-status', 'fail');
-  await expect(summary.locator('.tool-test-pass')).toHaveText('13 passed');
-  await expect(summary.locator('.tool-test-fail')).toHaveText('1 failed');
-  await expect(summary.locator('.tool-test-failure')).toContainText('dictation keeps the caret');
-
-  // The expanded image row shows the larger preview.
-  await imageRow.locator(':scope > summary .tool-trace-verb').click();
-  await expect(imageRow).toHaveAttribute('open', '');
-  await expect(imageRow.locator('.tool-image-card img')).toHaveAttribute('src', /^data:image\//);
-  // The row title names the file, so the card's caption carries only meta.
-  await expect(imageRow.locator('.tool-image-card .tool-image-name')).toHaveCount(0);
-  await sedRow.locator(':scope > summary .tool-trace-verb').click();
-  await expect(sedRow).toHaveAttribute('open', '');
-  if (process.env.TOOL_VISUALS_SHOT) {
-    await card.scrollIntoViewIfNeeded();
-    await card.screenshot({ path: `${SHOTS}/tool-visuals.png` });
-  }
   expect(errors).toEqual([]);
 });
 
@@ -326,7 +344,8 @@ for (const width of [420, 760]) {
     // Opened wide (the sidebar hides at phone width), then narrowed.
     const card = await openSeeded(page);
     await page.setViewportSize({ width, height: 900 });
-    await expect(card.locator('details.tool-trace[data-tool-key="tool:visual-tests"] .tool-trace-badge')).toBeVisible();
+    // A failed check carries no exit badge any more; its count still sits on the right of the row.
+    await expect(card.locator('details.tool-trace[data-tool-key="tool:visual-tests"] > summary .tool-trace-verb')).toHaveText('Tests failed');
     const overflows = await card.locator('.tool-trace > :is(summary, .tool-trace-summary)').evaluateAll(rows => rows.flatMap(row => {
       const box = row.getBoundingClientRect();
       if (!box.width) return [];

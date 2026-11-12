@@ -186,7 +186,8 @@ export const isDeviceStream = (path: string) => /^\/dev\/(?:null|zero|u?random|s
 export const isSubstitution = (word: string) => /\$\(|`|[<>]\(/.test(word);
 
 /** Formats `tool_image` serves (src-tauri/src/tool_images_auth/shell.rs): a .tiff or .heic output gets no thumbnail. */
-const IMAGE_FILE = /[^/]\.(?:png|jpe?g|gif|webp)$/i;
+export const IMAGE_EXTENSION = /\.(?:png|jpe?g|gif|webp)$/i;
+const IMAGE_FILE = new RegExp(`[^/]${IMAGE_EXTENSION.source}`, IMAGE_EXTENSION.flags);
 /** A literal image path (no variables, substitutions, globs, braces or `%03d` patterns). */
 export const isImagePath = (path: string | undefined): path is string => !!path && IMAGE_FILE.test(path) && !/[$`*?%{]/.test(path);
 /** The same description, naming the image it writes when `path` is one. */

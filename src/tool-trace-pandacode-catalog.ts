@@ -101,7 +101,7 @@ export const CATALOG: Record<string, Spec> = {
   team_notes: { family: 'team', icon: 'pin', verbs: ['Reading team notes', 'Read team notes'], row: noteRow, card: noteCard },
   team_directory: { family: 'team', icon: 'grid', verbs: ['Reading team directory', 'Read team directory'], row: directoryRow, card: directoryCard },
   send_team_message: {
-    family: 'team', icon: 'chat', verbs: ['Sending message to', 'Sent message to'],
+    family: 'team', icon: 'chat', verbs: ['Messaging', 'Messaged'],
     row: sendRow,
     card: sentCard,
   },
@@ -161,7 +161,7 @@ export const CATALOG: Record<string, Spec> = {
   },
   steer_task: { family: 'task', icon: 'arrow-right', verbs: ['Steering', 'Steered'], row: (f, o) => ({ chip: task(f, o) }), card: promptCard('text') },
   interrupt_task: { family: 'task', icon: 'stop', verbs: ['Interrupting', 'Interrupted'], row: (f, o) => ({ chip: task(f, o) }), card: rowOnly },
-  send_message: { family: 'task', icon: 'chat', verbs: ['Sending message to', 'Sent message to'], row: (f, o) => ({ chip: task(f, o) }), card: promptCard('text') },
+  send_message: { family: 'task', icon: 'chat', verbs: ['Messaging', 'Messaged'], row: (f, o) => ({ chip: task(f, o) }), card: promptCard('text') },
   queue_message: {
     family: 'task', icon: 'plan', verbs: ['Queuing message for', 'Queued message for'],
     row: (f, o) => ({ chip: task(f, o) ?? chip('this task', 'board') }),

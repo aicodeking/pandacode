@@ -142,7 +142,7 @@ test('wait, fetch, db and fallback', () => {
 const row = command => pick(describeShell(command), 'kind', 'verb', 'label', 'object');
 
 test('pipes into non-filters fall back to the raw command', () => {
-  for (const command of ['cat a.ts | sh', 'cat a.ts | bash', 'cat a.ts | zsh -s', 'grep -rl foo . | xargs rm', 'cat a.ts | tee b.ts',
+  for (const command of ['cat a.ts | sh', 'cat a.ts | bash', 'cat a.ts | zsh -s', 'cat a.ts | tee b.ts',
     'cat x.py | python3', 'cat a.js | node', 'ls | sudo rm -rf', 'grep foo a | sort -o out.txt', "rg foo | sed -i 's/a/b/' x"]) {
     const intent = describeShell(command);
     // The raw command, chipped by its leading program (never the generic `shell` when one is named).
@@ -155,6 +155,11 @@ test('pipes into non-filters fall back to the raw command', () => {
     "grep x f | cut -d: -f1 | tr a b | sed 's/a/b/' | nl | fold | tail -3 | less", 'rg foo | rg -v bar | grep baz | cat']) {
     assert.notEqual(describeShell(command).kind, 'shell', command);
   }
+});
+
+test('a pipe into xargs rm leads with the deletion', () => {
+  assert.deepEqual(pick(describeShell('grep -rl foo . | xargs rm'), 'verb', 'label', 'object', 'destructive'),
+    { verb: 'Deleted', label: 'files', object: 'listed by grep -rl foo .', destructive: true });
 });
 
 test('find with actions is not a listing', () => {

@@ -39,8 +39,8 @@
 .tc-excerpt.is-lines{white-space:pre-line}
 .tc-prompt span,.tc-label{margin-right:4px;color:var(--muted);font-size:var(--thread-font);font-weight:var(--weight-strong);letter-spacing:.03em;text-transform:uppercase}
 .tc-pill{flex:none;margin-left:auto;padding:0 6px;background:var(--fill-hover);border-radius:var(--radius-full);color:var(--muted);font-size:var(--thread-font);font-weight:var(--weight-strong)}
-.tc-pill[data-state="done"]{color:var(--success);background:color-mix(in srgb,var(--success) 14%,var(--panel))}
-.tc-pill[data-state="failed"]{color:var(--danger);background:color-mix(in srgb,var(--danger) 14%,var(--panel))}
+.tc-pill[data-state="done"]{color:var(--ds-success);background:color-mix(in srgb,var(--ds-success) 14%,var(--panel))}
+.tc-pill[data-state="failed"]{color:var(--ds-danger);background:color-mix(in srgb,var(--ds-danger) 14%,var(--panel))}
 .tc-pill[data-state="working"]{color:var(--accent-ink,var(--text));background:var(--accent-tint)}
 
 /* Code: numbered lines and diffs share one gutter grid. */
@@ -59,15 +59,15 @@
 .tc-sign{color:var(--muted);user-select:none}
 .tc-diff-line[data-sign="add"]{background:var(--diff-add-bg)}
 .tc-diff-line[data-sign="del"]{background:var(--diff-del-bg)}
-.tc-diff-line[data-sign="add"] .tc-sign{color:var(--success)}
-.tc-diff-line[data-sign="del"] .tc-sign{color:var(--danger)}
+.tc-diff-line[data-sign="add"] .tc-sign{color:var(--ds-success)}
+.tc-diff-line[data-sign="del"] .tc-sign{color:var(--ds-danger)}
 .tc-diff-file{display:grid;gap:0;padding:0!important}
 .tc-diff-file>.tc-head{padding:8px 12px}
 .tc-diff-file>.tc-diff{border-radius:0}
 .tc-diff.is-unnumbered .tc-diff-line{grid-template-columns:1.4ch minmax(0,1fr);padding-left:12px}
 .tc-delta{display:inline-flex;gap:var(--space-1);font-family:var(--mono);font-size:var(--mono-size)}
-.tc-delta ins{text-decoration:none;color:var(--success)}
-.tc-delta del{text-decoration:none;color:var(--danger)}
+.tc-delta ins{text-decoration:none;color:var(--ds-success)}
+.tc-delta del{text-decoration:none;color:var(--ds-danger)}
 
 /* Terminal */
 .tc-term{display:grid;overflow:hidden}
@@ -75,13 +75,9 @@
 .tc-term-out{max-height:240px;margin:0;padding:8px 12px;overflow:auto;background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:var(--mono-size);line-height:var(--leading-code);white-space:pre-wrap;overflow-wrap:anywhere}
 .tc-term .tc-earlier{padding:6px 12px 0;background:var(--panel);font-family:var(--mono)}
 .tc-term .tc-earlier+.tc-term-out{border-top:0}
-.tc-dollar{flex:none;color:var(--success);font-weight:700;user-select:none}
-.tc-term.is-failed .tc-dollar{color:var(--danger)}
+.tc-dollar{flex:none;color:var(--ds-success);font-weight:700;user-select:none}
+.tc-term.is-failed .tc-dollar{color:var(--ds-danger)}
 .tc-command{min-width:0;overflow-wrap:anywhere;color:var(--text)}
-.tc-badge{flex:none;margin-left:auto;color:var(--success);font-family:inherit;font-size:var(--text-xs);font-weight:var(--weight-medium)}
-.tc-badge.is-failed{color:var(--danger)}
-/* A signal exit (137/143: something stopped it) is neither a pass nor a failure. */
-.tc-badge.is-quiet{color:var(--muted)}
 
 /* Search hits */
 .tc-query{padding:0 5px;border-radius:var(--radius-sm);background:var(--panel);font-family:var(--mono);font-size:var(--mono-size)}
@@ -92,14 +88,12 @@
 .tc-hit-more{color:var(--muted);font-family:inherit;font-size:var(--thread-font)}
 
 /* Page, agent, skill, title, failure: one-row cards on the raised surface. */
-.tc-page,.tc-agent,.tc-skill,.tc-failed,.tc-title-card,.tc-result{display:flex;align-items:flex-start;gap:10px;min-width:0;font-size:var(--thread-font);line-height:1.45}
+.tc-page,.tc-agent,.tc-skill,.tc-title-card,.tc-result{display:flex;align-items:flex-start;gap:10px;min-width:0;font-size:var(--thread-font);line-height:1.45}
 .tc-result,.tc-title-card{display:grid;gap:2px}
 /* The agent's state pill ends left of the raw `</>` toggle in the card's corner. */
 .tc>.tc-agent{padding-right:38px}
 .tc-title-card b{font-size:var(--thread-font)}
 .tc-agent-mark,.tc-skill-mark{background:rgb(var(--accent-rgb) / .14);color:var(--accent-ink,var(--text))}
-.tc-failed{background:color-mix(in srgb,var(--danger) 6%,transparent)}
-.tc-failed-mark,.tc-failed .tc-row-title{color:var(--danger)}
 .tc-failed-out{margin:2px 0 0;padding:0!important;background:none!important;color:var(--muted);font-family:var(--mono);font-size:var(--mono-size);white-space:pre-wrap;overflow-wrap:anywhere}
 
 /* Key/value rows for MCP input and object results. */
@@ -115,13 +109,13 @@
 .tc-status svg{width:14px;height:14px}
 .tc-status .tc-fill{fill:currentColor;stroke:none}
 .tc-status .tc-tick{stroke:var(--bg);stroke-width:1.7}
-.tc-status[data-status="completed"]{color:var(--success)}
+.tc-status[data-status="completed"]{color:var(--ds-success)}
 .tc-status[data-status="in_progress"]{color:var(--accent)}
 .tc-status[data-status="pending"] circle{stroke-dasharray:2.2 2}
 .tc-todos .tc-row[data-status="completed"] .tc-row-title,.tc-todos .tc-row[data-status="cancelled"] .tc-row-title{color:var(--muted);font-weight:500;text-decoration:line-through}
 .tc-todos .tc-row-title{max-width:none;flex:1;white-space:normal}
 .tc-progress{display:inline-block;width:46px;height:4px;border-radius:var(--radius-full);background:var(--border);overflow:hidden}
-.tc-progress span{display:block;height:100%;background:var(--success)}
+.tc-progress span{display:block;height:100%;background:var(--ds-success)}
 
 /* Running: one quiet status line where the result will land, swept by the same soft band as the
    running step's header (trace-motion.css). */
@@ -145,8 +139,8 @@ html[data-theme="dark"] .tool-activity.tool-trace .tool-trace-frame>.tool-trace-
 
 html[data-theme="dark"] :is(.tc-lines,.tc-diff,.tc-term-out,.tc-term .tc-earlier){background:var(--bg)}
 @media(prefers-contrast:more){
-  .tc-rows,.tc-row,.tc-lines,.tc-diff,.tc-term,.tc-term-out,.tc-kv,.tc-kv dt,.tc-kv dd,.tc-page,.tc-agent,.tc-skill,.tc-failed,.tc-title-card,.tc-result,.tc-letter,.tc-query,.tc-pill{border-color:var(--text)}
-  .tc-running,.tc-badge.is-quiet,.tc-head-meta,.tc-head-right,.tc-dir,.tc-row-meta,.tc-row-time,.tc-more,.tc-excerpt,.tc-prompt,.tc-gutter,.tc-term-out,.tc-kv dt,.tc-label{color:var(--text);opacity:1}
+  .tc-rows,.tc-row,.tc-lines,.tc-diff,.tc-term,.tc-term-out,.tc-kv,.tc-kv dt,.tc-kv dd,.tc-page,.tc-agent,.tc-skill,.tc-title-card,.tc-result,.tc-letter,.tc-query,.tc-pill{border-color:var(--text)}
+  .tc-running,.tc-head-meta,.tc-head-right,.tc-dir,.tc-row-meta,.tc-row-time,.tc-more,.tc-excerpt,.tc-prompt,.tc-gutter,.tc-term-out,.tc-kv dt,.tc-label{color:var(--text);opacity:1}
   .tool-activity.tool-trace .tool-trace-frame>.tool-trace-raw>summary{border-color:var(--text);color:var(--text)}
   .tc-row-body{opacity:1}
   .tc-hit mark{outline:1px solid var(--text)}
