@@ -15,6 +15,9 @@ const RECORD_FOR: Duration = Duration::from_millis(800);
 const SETTLE: Duration = Duration::from_millis(500);
 /// Scheduling jitter allowed past `RECORD_FOR`; well under `SETTLE`.
 const SLACK: Duration = Duration::from_millis(150);
+/// Real-time audio runs past the meter's span: it includes what the device buffered before
+/// `record` started (864–896 ms seen on darwin-aarch64 for the 800 ms cap), so its bound is looser.
+const AUDIO_BOUND: Duration = Duration::from_millis(1100);
 const REQUIRE_MIC_ENV: &str = "PANDACODE_REQUIRE_REAL_MIC";
 
 #[test]
@@ -67,10 +70,30 @@ fn real_audio_lists_opens_and_records() {
     );
     assert!(metered <= RECORD_FOR + SLACK, "the probe recorded for {metered:?}, past its {RECORD_FOR:?} cap");
     assert!(audio <= Duration::from_secs(MAX_SECONDS), "{audio:?} of audio exceeds the {MAX_SECONDS} s buffer");
-    assert!(!paced || audio <= RECORD_FOR + SLACK, "{audio:?} of real-time audio is past the {RECORD_FOR:?} cap");
+    assert!(!paced || audio <= AUDIO_BOUND, "{audio:?} of real-time audio is past {AUDIO_BOUND:?} for the {RECORD_FOR:?} cap");
     assert!(!required || !pcm.samples.is_empty(), "{REQUIRE_MIC_ENV} is set but nothing was captured");
     if !pcm.samples.is_empty() {
         assert!(pcm.wav().expect("captured audio encodes").starts_with(b"RIFF"));
+    }
+    unprobed_falls_back_for_dictation(required);
+}
+
+/// Linux lists `jack` and `oss` without opening them (alsa-plugins defines both). With no server
+/// behind a saved one, dictation records from the default input while the mic test reports why.
+fn unprobed_falls_back_for_dictation(required: bool) {
+    let listed = capture::devices(None);
+    let Some(id) = listed.iter().map(|d| d.id.as_str()).find(|id| cfg!(target_os = "linux") && matches!(*id, "jack" | "oss")) else {
+        eprintln!("real_audio: no jack or oss input listed; dictation fallback not exercised");
+        return;
+    };
+    match capture::open_and_record(id, true, RECORD_FOR) {
+        Ok(samples) => eprintln!("real_audio: {id:?} opened itself ({samples} samples); dictation fallback not exercised"),
+        Err(error) => {
+            eprintln!("real_audio: mic test on saved {id:?} reports: {error}");
+            let samples = capture::open_and_record(id, false, RECORD_FOR).expect("dictation on a saved jack/oss falls back to the default input");
+            eprintln!("real_audio: dictation on saved {id:?} fell back to the default input and recorded {samples} samples");
+            assert!(!required || samples > 0, "{REQUIRE_MIC_ENV} is set but the fallback captured nothing");
+        }
     }
 }
 

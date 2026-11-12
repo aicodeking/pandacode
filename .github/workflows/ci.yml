@@ -8,8 +8,8 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  # A push run holding the slot (running, or queued for a runner) is never cancelled (the release gate counts only push runs); a pending one waiting is replaced by a newer run, and PR or manual runs are cancelled by newer ones.
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  # Only a pull_request run is cancelled in progress by a newer run in its group; a running push or manual run is never cancelled (the release gate counts push runs on main), though a pending run waiting for the slot is still replaced by a newer one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   web:
     name: Typecheck, unit tests, website
@@ -56,7 +56,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
+          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils libasound2-plugins
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
       - run: npm ci
       - run: npm run build
@@ -65,6 +65,8 @@ jobs:
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       # CI runners have no sound card, so ALSA's default can't capture and the smoke would skip. A
       # null default captures silence, and its hint makes cpal list `default` as the default input.
+      # libasound2-plugins (installed above) defines `jack`, which lists with no JACK server, so the
+      # smoke also checks that dictation on a saved `jack` falls back to this default.
       - name: Null ALSA default input
         run: printf '%s\n' 'pcm.!default { type null; hint { show on; description "CI null capture" } }' > ~/.asoundrc
       # The real audio smoke under the release profile, as in rust-platforms.
@@ -72,7 +74,12 @@ jobs:
         timeout-minutes: 55
         env:
           PANDACODE_REQUIRE_REAL_MIC: '1'
-        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture
+        shell: bash
+        # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run;
+        # `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
+        run: |
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/real-audio.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/real-audio.log"
 
   router:
     # x86_64 Linux builds without ONNX Runtime (see `panda_onnx` in src-tauri/build.rs), so Panda Router's
@@ -153,7 +160,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
+          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils libasound2-plugins
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
       - run: npm ci
       # The release startup smoke flaked on windows-11-arm (cold Node starts), so its tests run there too.
@@ -164,6 +171,8 @@ jobs:
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       # CI runners have no sound card, so ALSA's default can't capture and the smoke would skip. A
       # null default captures silence, and its hint makes cpal list `default` as the default input.
+      # libasound2-plugins (installed above) defines `jack`, which lists with no JACK server, so the
+      # smoke also checks that dictation on a saved `jack` falls back to this default.
       - name: Null ALSA default input
         if: runner.os == 'Linux'
         run: printf '%s\n' 'pcm.!default { type null; hint { show on; description "CI null capture" } }' > ~/.asoundrc
@@ -179,4 +188,9 @@ jobs:
         # has the null default above, so a runner with no input must fail instead of passing.
         env:
           PANDACODE_REQUIRE_REAL_MIC: ${{ runner.os != 'Windows' && '1' || '' }}
-        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture
+        shell: bash
+        # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run;
+        # `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
+        run: |
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/real-audio.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/real-audio.log"

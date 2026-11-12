@@ -405,6 +405,18 @@ fn open(device_name: Option<&str>, probe: bool) -> Result<Opened> {
     open_on(chosen)
 }
 
+/// Tests only: records from `device` through `open` (dictation when `probe` is false, the mic
+/// test when true) for `length`, and returns how many samples arrived.
+#[cfg(test)]
+pub(super) fn open_and_record(device: &str, probe: bool, length: Duration) -> Result<usize> {
+    let (stream, pcm, _) = open(Some(device), probe)?;
+    stream.play().map_err(|error| error.to_string())?;
+    std::thread::sleep(length);
+    drop(stream);
+    let samples = pcm.lock().map_err(|_| "Could not finish microphone audio.".to_owned())?.samples.len();
+    Ok(samples)
+}
+
 fn open_on(device: cpal::Device) -> Result<Opened> {
     let config = device.default_input_config().map_err(|_| {
         "Could not read the microphone format. Check your OS input device and permission."
