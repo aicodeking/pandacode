@@ -513,6 +513,30 @@ test.describe('architect teams', () => {
     }).toBe(true);
   });
 
+  test('a live turn keeps its Workers right after the dispatch row when later tool and text events arrive', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [] }) }, { 'session-2': [
+      { id: 301, sessionId: 'session-2', role: 'user', content: 'Build search and review it.', createdAt: 2000 },
+    ] as Message[] });
+    const event = (event: object) => page.evaluate(event => (window as any).__architectTest.event(event), { sessionId: 'session-2', ...event });
+    const tools = transcript(page).locator('.live-tools').last();
+    await event({ kind: 'tool', text: '', tool: { id: 'dispatch', name: 'mcp__pandacode_architect__pandacode_dispatch_workers', status: 'completed', input: '', output: 'Started.' } });
+    await expect(tools.locator('[data-tool-key="tool:dispatch"]')).toBeAttached();
+    await publish(page, team('session-2'));
+    await expect(tools.locator('#team-progress-host')).toBeAttached();
+    // The next tool event repaints the trace; the host it already holds must stay (cbb41a6d).
+    await event({ kind: 'tool', text: '', tool: { id: 'verify', name: 'Bash', status: 'running', input: 'npm test', output: '' } });
+    await event({ kind: 'text', text: 'Waiting on the workers.' });
+    await expect(tools.locator('[data-tool-key="tool:verify"]')).toBeAttached();
+    await expect(page.locator('#team-progress-host')).toHaveCount(1);
+    expect(await tools.evaluate(root => {
+      const host = root.querySelector(':scope > #team-progress-host');
+      return Boolean(host?.previousElementSibling?.matches('[data-tool-key="tool:dispatch"], :has([data-tool-key="tool:dispatch"])'));
+    })).toBe(true);
+    await tools.locator('.team-progress-toggle').click();
+    await expect(tools.locator('.team-progress-worker[data-worker-id="build"]')).toBeVisible();
+    await expect(tools.locator('.team-progress-worker[data-worker-id="review"]')).toBeVisible();
+  });
+
   test('keeps earlier workers above a resumed coordination turn', async ({ page }) => {
     const earlier = [worker('build', { status: 'completed', createdAt: 2500 }), worker('review', { status: 'completed', createdAt: 2500 })];
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: earlier }) }, { 'session-2': [
@@ -620,14 +644,19 @@ test.describe('architect teams', () => {
         { id: 306, sessionId: 'session-2', role: 'assistant', content: 'The review passed.', createdAt: 902000 },
       );
       const top = () => document.querySelector('#transcript .turn-card')!.getBoundingClientRect().top;
-      const seen = [top()];
+      const cards = () => document.querySelectorAll('#transcript .turn-card').length;
+      const seen = [top()], counts = [cards()];
       fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
-      const until = performance.now() + 700;
-      while (performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(top()); }
-      return { seen, live: Boolean(document.querySelector('.turn-card.is-live')), cards: document.querySelectorAll('#transcript .turn-card').length };
+      // Every frame until the saved card has taken over, then a few more to catch a late shift.
+      const handed = () => !document.querySelector('.turn-card.is-live') && /The review passed/.test(document.querySelector('#transcript .turn-card > .turn-card-reply')?.textContent ?? '');
+      const until = performance.now() + 10_000;
+      let after = 10;
+      while (after > 0 && performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(top()); counts.push(cards()); if (handed()) after--; }
+      return { seen, counts, live: Boolean(document.querySelector('.turn-card.is-live')), cards: cards() };
     }, [finished] as const);
     expect(samples.live).toBe(false);
     expect(samples.cards).toBe(1);
+    expect(Math.max(...samples.counts), 'never two cards at once').toBe(1);
     expect(Math.max(...samples.seen) - Math.min(...samples.seen)).toBeLessThan(2);
     await expect(transcript(page).locator('.turn-card > details.turn-activity')).not.toHaveAttribute('open', '');
   });
@@ -874,8 +903,11 @@ test.describe('architect teams', () => {
       const read = () => ({ top: document.querySelector('#transcript .turn-card')!.getBoundingClientRect().top, feet: document.querySelectorAll('#transcript .turn-card-foot').length });
       const seen = [read()];
       fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
-      const until = performance.now() + 700;
-      while (performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(read()); }
+      // Every frame until the saved footer counts the new run, then a few more to catch a late shift.
+      const handed = () => !document.querySelector('.turn-card.is-live') && /3 changed files/.test(document.querySelector('#transcript .turn-card-foot strong')?.textContent ?? '');
+      const until = performance.now() + 10_000;
+      let after = 10;
+      while (after > 0 && performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(read()); if (handed()) after--; }
       return { seen, live: document.querySelectorAll('.turn-card.is-live').length };
     }, [wakeTool, runChanges('run-c', [['src/c.ts', 'added', 4, 0]])] as const);
     expect(handoff.live).toBe(0);
