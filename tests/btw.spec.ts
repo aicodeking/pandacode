@@ -142,6 +142,8 @@ test('a deleted side thread is forgotten, so the next /btw starts a new one', as
   expect(await sideId(page)).not.toBe(first);
   expect(await calls(page, 'create_session')).toHaveLength(2);
   expect((await calls(page, 'create_session')).map(call => call.args.team)).toEqual([false, false]);
+  const mainId = await page.evaluate(() => (window as any).__mainId);
+  expect((await calls(page, 'create_session')).map(call => call.args.mainSessionId)).toEqual([mainId, mainId]);
 });
 
 test('a failed side send puts the /btw draft back', async ({ page }) => {

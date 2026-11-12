@@ -4414,7 +4414,7 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     link = { sideId: side.id, seenId: last.id, hiddenThrough: 0 };
   } else {
     // `team: false`: a side thread never picks up the saved default team.
-    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false });
+    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false, mainSessionId: main.id });
     link = { sideId: side.id, seenId: 0 };
   }
   const title = sideTitle(prompt);
