@@ -5,6 +5,7 @@ import { renderDocument } from './document-viewer';
 import { escape, fileIcon, icon } from './dom';
 import { isPreviewableFile } from './file-links';
 import type { OfficeKind } from './office-viewer';
+import { errorText } from './error-text';
 
 type Context = { projectId: string; sessionId?: string };
 /** `source` shows a viewer-handled file (e.g. an SVG) as text. */
@@ -107,7 +108,7 @@ export function createFileTabs(deps: Deps) {
       if (disposed || !body.isConnected) { dispose(); return; }
       disposeOffice = dispose; body.scrollTop = scroll;
     }).catch(error => {
-      if (!disposed && body.isConnected) body.innerHTML = `<div class="inspector-empty" role="alert">This file could not be opened: ${escape(error instanceof Error ? error.message : String(error))}</div>`;
+      if (!disposed && body.isConnected) body.innerHTML = `<div class="inspector-empty" role="alert">This file could not be opened: ${escape(errorText(error))}</div>`;
     });
   }
 

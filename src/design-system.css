@@ -183,6 +183,13 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 [data-state-tone]{color:var(--state-tone)}
 /* Account health (Settings → Connections, account pool): ready, near its limit, out until a reset. */
 [data-state-tone="ready"]{--state-tone:var(--ds-success)}[data-state-tone="near"],[data-state-tone="limited"]{--state-tone:var(--ds-warn)}
+/* A run that failed (team worker rows and tally): the danger tone, apart from the amber of "needs you". */
+[data-state-tone="failed"]{--state-tone:var(--ds-danger)}
+@media(forced-colors:active){[data-state-tone="failed"]{--state-tone:CanvasText}}
+/* A team worker that is not working yet or any more (queued, waiting, stopped): its icon stays muted. */
+[data-state-tone="worker-idle"]{--state-tone:var(--muted)}
+/* A failure: thread error rows (main.ts errorRowHtml) and error toasts (notify tone 'danger'). */
+[data-state-tone="danger"]{--state-tone:var(--ds-danger)}
 /* Accounts (Settings → Providers): one connection-card per pooled harness, then the Connections card.
  * Lists sit 2px inside the inner card, as rows do in .ds-card-inner. */
 .named-connections-card{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}

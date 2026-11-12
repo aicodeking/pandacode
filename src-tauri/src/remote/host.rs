@@ -614,14 +614,15 @@ fn cap_mode(call: Call, full_access: bool) -> Result<Call> {
     const SAFE: &str = "ask";
     if full_access {
         return Ok(match call {
-            Call::Start(start) => Call::Start(start::Start { full_access: Some(true), ..start }),
+            Call::Start(start) => Call::Start(start::Start { team: true, full_access: Some(true), ..start }),
             other => other,
         });
     }
     let refuse = || Err(full_access_off());
     Ok(match call {
         Call::Start(start) if start.mode.as_deref() == Some("full") => return refuse(),
-        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), full_access: Some(false), ..start }),
+        // No saved default team either (`team: false`): its workers would run in full access.
+        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), team: false, full_access: Some(false), ..start }),
         Call::Configure { mode: Some(mode), .. } if mode == "full" => return refuse(),
         other => other,
     })
@@ -639,6 +640,50 @@ pub(crate) fn allow_task_mode(stored: &str, requested: Option<&str>, full_access
         return Err(full_access_off());
     }
     Ok(())
+}
+
+/// Told to a remote device that would drive a team without "Full access for remote tasks".
+pub(crate) const TEAM_NEEDS_FULL_ACCESS: &str = "Team workers run with full access; allow full access for remote tasks to drive a team remotely.";
+
+/// Without "Full access for remote tasks", a task that leads a team (configured, active or
+/// not) is not prompted, steered or resumed remotely: its lead would dispatch workers, which
+/// always run in full access, whatever the lead's own mode.
+pub(crate) fn allow_remote_team(store: &crate::storage::Store, session_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let leads_team = crate::architect::leads_team(store, session_id)?;
+    if leads_team { Err(TEAM_NEEDS_FULL_ACCESS.into()) } else { Ok(()) }
+}
+
+/// [`allow_remote_team`] for a bot's thread on `channel` (its desktop thread for `bot.message`,
+/// `"schedule"` for `bot.runSchedule`), which the bot prompts; a thread not made yet leads no team.
+pub(crate) fn allow_remote_bot_team(store: &crate::storage::Store, bot_id: &str, channel: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let session: Option<String> = store
+        .db
+        .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?2", [bot_id, channel], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    session.map_or(Ok(()), |session| allow_remote_team(store, &session, full_access))
+}
+
+/// `allow_remote_team` off the async runtime.
+pub(crate) async fn allow_remote_team_for(state: &AppState, session_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let (store, id) = (state.store.clone(), session_id.to_owned());
+    crate::blocking(move || allow_remote_team(&*store.lock().map_err(|e| e.to_string())?, &id, full_access)).await
+}
+
+/// Whether an `input.respond` response only cancels or declines the question
+/// (`{action: "cancel" | "decline"}`, or a questions form sent back with no answers).
+fn declines_input(response: &Value) -> bool {
+    matches!(response["action"].as_str(), Some("cancel" | "decline"))
+        || (response.get("action").is_none() && response["answers"].as_object().is_some_and(|answers| answers.is_empty()))
 }
 
 /// The response to one request frame, or None when it has no usable id.
@@ -1332,7 +1377,7 @@ async fn queue_team_settled(app: tauri::AppHandle, session_id: String, team: Tea
     let id = session_id.clone();
     let data = crate::blocking(move || {
         let state = handle.state::<AppState>();
-        if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&id) {
+        if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&id) {
             return Ok(None);
         }
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -1582,6 +1627,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         Call::TeamResume { session_id } => {
             // Resuming starts agents again, so it follows the rule for prompts, not for Stop.
             allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, None, full_access)?;
+            allow_remote_team_for(&state, &session_id, full_access).await?;
             let store = state.store.clone();
             let id = session_id.clone();
             crate::blocking(move || {
@@ -1596,6 +1642,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             let key = send_key(from, &session_id, send_id.as_deref());
             once_per_send(key, async move {
                 allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, None, full_access)?;
+                // A steered lead can dispatch workers too.
+                allow_remote_team_for(&state, &session_id, full_access).await?;
                 message_queue::steer_task(app.clone(), state, session_id, text).await
             })
             .await
@@ -1619,12 +1667,22 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::Approve { session_id, request_id, approve } => {
             drivable_task(app, from, &session_id, full_access).await?;
+            // Approving lets a lead run the tool and dispatch full-access workers. Declining is allowed
+            // without the switch: the lead's turn goes on, but the phone adds no text and approves nothing.
+            if approve {
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+            }
             crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
             answered(app, session_id, "approval_cancelled", request_id);
             Ok(json!({}))
         }
         Call::Answer { session_id, request_id, response } => {
             drivable_task(app, from, &session_id, full_access).await?;
+            // An answer steers a lead like a prompt. Cancelling or declining is allowed without the switch:
+            // the lead's turn may go on, but with no text from the phone.
+            if !declines_input(&response) {
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+            }
             crate::respond_user_input(app.clone(), state, session_id.clone(), request_id.clone(), response).await?;
             answered(app, session_id, "input_cancelled", request_id);
             Ok(json!({}))
@@ -1747,8 +1805,12 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             let store = state.store.clone();
             once_per_send(key, async move {
                 let id = bot_id.clone();
-                tauri::async_runtime::spawn_blocking(move || super::methods::admin::allow_bot_mode(&*store.lock().map_err(|e| e.to_string())?, &id, full_access))
-                    .await
+                tauri::async_runtime::spawn_blocking(move || {
+                    let store = store.lock().map_err(|e| e.to_string())?;
+                    super::methods::admin::allow_bot_mode(&store, &id, full_access)?;
+                    allow_remote_bot_team(&store, &id, crate::bots::DESKTOP, full_access)
+                })
+                .await
                     .map_err(|e| e.to_string())??;
                 let session_id = crate::bots::bot_message(app.clone(), bot_id, text, None, None, None).await?;
                 Ok(json!({"sessionId": session_id}))
@@ -1776,6 +1838,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
 /// `task.send`: like Enter in the composer, a running task queues the message.
 async fn send_prompt(app: &tauri::AppHandle, from: &str, session_id: String, text: String, image_ids: Vec<String>, full_access: bool) -> Result<Value> {
     allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, None, full_access)?;
+    allow_remote_team_for(&app.state::<AppState>(), &session_id, full_access).await?;
     // Only images this caller just sent; they are now this task's. If the message is neither
     // sent nor queued they go back to the caller, so a retry with the same sendId finds them.
     images::claim(app, from, &image_ids)?;
@@ -1790,7 +1853,7 @@ async fn send_prompt(app: &tauri::AppHandle, from: &str, session_id: String, tex
 async fn deliver_prompt(app: &tauri::AppHandle, session_id: String, text: String, image_ids: Vec<String>) -> Result<Value> {
     let state = app.state::<AppState>();
     let _turn = task_send_lock(&session_id).await;
-    let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
+    let busy = || crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
     if busy()? {
         let queued: Vec<Value> = image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Image", "width": 0, "height": 0, "thumbnail": "", "source": "file"})).collect();
         let entry = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!(queued))?;
@@ -2741,7 +2804,7 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str,
 }
 
 fn bots_list(state: &AppState) -> Result<Value> {
-    let active: HashSet<String> = state.agents.lock().map_err(|e| e.to_string())?.keys().cloned().collect();
+    let active: HashSet<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let active_projects: HashSet<String> = store
         .sessions()?
@@ -3182,7 +3245,7 @@ fn live_run(agent: &crate::RunningAgent) -> Result<LiveRun> {
 /// already omits drafts and architect workers; mirrors are filtered and bot workspaces tagged here.
 fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
     let (last_event_by_session, pending_by_session) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut last_event = HashMap::new();
         let mut pending = HashMap::new();
         for (session_id, agent) in agents.iter() {
@@ -3338,7 +3401,7 @@ fn fit_project_icons(icons: impl IntoIterator<Item = (String, Option<String>)>) 
 /// not tasks here (deleted, or never were), so the viewer stops waiting on them.
 fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<(Vec<Value>, Vec<Value>)> {
     let (active_runs, pending_by_session) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut active_runs = HashMap::new();
         let mut pending = HashMap::new();
         for id in ids {
@@ -4072,6 +4135,9 @@ mod tests {
             provider: "codex".into(),
             model: "test-model".into(),
             reasoning_effort: None,
+            note: None,
+            effort_retried: false,
+            started_at: None,
             status: status.into(),
             assignment: "Inspect the implementation".into(),
             summary: "Worker summary".into(),
@@ -5131,6 +5197,138 @@ mod tests {
         assert!(off("full", Some("ask")).is_ok(), "switching it to an approving mode");
         assert!(off("ask", None).is_ok() && off("auto", None).is_ok());
         assert!(allow_task_mode("full", None, true).is_ok());
+    }
+
+    #[test]
+    fn a_remote_start_without_full_access_never_gets_the_default_team() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        // A saved default team that new tasks inherit.
+        let library = json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
+        store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
+        let params = json!({"projectId": project.id, "prompt": "Fix the parser.", "provider": "codex", "model": "default"});
+        let leads_team = |sid: &str| crate::architect::leads_team(&store, sid).unwrap();
+        for (full_access, team) in [(false, false), (true, true)] {
+            let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
+            assert_eq!(start.team, team);
+            let task = start::create_task(&store, &project.id, &start).unwrap();
+            assert_eq!(leads_team(&task.id), team, "full access for remote tasks: {full_access}");
+            if !team {
+                // A plain task: nothing it runs can dispatch a worker.
+                assert!(allow_remote_team(&store, &task.id, false).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn a_team_lead_takes_no_remote_prompt_or_resume_without_full_access() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        // An Ask lead: its own mode passes the task-mode rule, but its workers run in full access.
+        let lead = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        let plain = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        assert!(allow_task_mode(&lead.mode, None, false).is_ok());
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead.id]).unwrap();
+        // task.send, task.steer and task.teamResume all pass this gate.
+        assert_eq!(allow_remote_team(&store, &lead.id, false), Err(TEAM_NEEDS_FULL_ACCESS.into()));
+        assert!(allow_remote_team(&store, &lead.id, true).is_ok(), "allowed with full access for remote tasks");
+        assert!(allow_remote_team(&store, &plain.id, false).is_ok(), "a task without a team is unaffected");
+    }
+
+    #[test]
+    fn a_bot_thread_that_leads_a_team_takes_no_remote_prompt_without_full_access() {
+        let root = std::env::temp_dir().join(format!("pandacode-bot-team-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = crate::bots::BotInput { name: "Scout".into(), role: "r".into(), instructions: "i".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let bot = crate::bots::create(&store, &input, &root).unwrap();
+        assert!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, false).is_ok(), "no thread yet, no team");
+        let (desktop, _) = crate::bots::thread_session(&store, &bot, crate::bots::DESKTOP, crate::bots::DESKTOP, "Scout · You").unwrap();
+        crate::bots::thread_session(&store, &bot, "schedule", "schedule", "Scout · Scheduled work").unwrap();
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&desktop]).unwrap();
+        assert_eq!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, false), Err(TEAM_NEEDS_FULL_ACCESS.into()));
+        assert!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, true).is_ok(), "allowed with the switch");
+        assert!(allow_remote_bot_team(&store, &bot.id, "schedule", false).is_ok(), "the schedule thread leads no team");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A phone without the switch may still cancel or decline a lead's question, but not answer it.
+    #[test]
+    fn only_cancelling_or_declining_a_question_skips_the_team_gate() {
+        for stop in [json!({"action": "cancel", "content": null}), json!({"action": "decline", "content": null}), json!({"answers": {}})] {
+            assert!(declines_input(&stop), "{stop}");
+        }
+        for answer in [json!({"action": "accept", "content": {"a": 1}}), json!({"action": "accept"}), json!({"answers": {"q": {"answers": ["Ship it"]}}}), json!("free text"), json!(null), json!({"action": "accept", "answers": {}})] {
+            assert!(!declines_input(&answer), "{answer}");
+        }
+    }
+
+    /// Every remote way to prompt, steer, resume or start a team checks the team gate.
+    #[test]
+    fn every_remote_entry_that_drives_a_team_checks_the_team_gate() {
+        fn after<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            let at = source.find(start).unwrap_or_else(|| panic!("{start}"));
+            let rest = &source[at..];
+            &rest[..rest.find(end).unwrap_or(rest.len())]
+        }
+        let host = include_str!("host.rs");
+        let gate = "allow_remote_team_for(";
+        assert!(after(host, "async fn send_prompt(", "\n}\n").contains(gate), "task.send");
+        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
+            let body = after(host, call, "\n        Call::");
+            let at = body.find(gate).unwrap_or_else(|| panic!("{call}"));
+            assert!(body.find("crate::respond_").is_none_or(|respond| at < respond), "{call} checks before it responds");
+        }
+        assert!(after(host, "Call::Start(start) => Call::Start(start::Start { mode: Some(", "\n").contains("team: false"), "task.start");
+        let tools = include_str!("methods/tools.rs");
+        assert!(after(tools, "async fn run_recipe(", "\n}\n").contains(gate), "recipes.run");
+        let schedules = include_str!("methods/schedules.rs");
+        assert!(after(schedules, "fn check_target(", "\n}\n").contains("allow_remote_team(store, session_id, full_access)"), "schedules");
+        let team = include_str!("methods/team.rs");
+        let run = after(team, "impl Run for TeamStart", "\n}\n");
+        assert!(run.find("TEAM_NEEDS_FULL_ACCESS").unwrap() < run.find("start_keyed(").unwrap(), "team.start refuses before it starts");
+        assert!(super::super::methods::SWITCH_METHODS.contains(&"team.start"), "hello lists team.start as needing the switch");
+        let projects = include_str!("methods/projects.rs");
+        assert!(projects.contains("mode.as_deref(), full_access)?"), "chat.start applies the default team only with the switch");
+        // A start's default team is off unless a caller that saw the switch turns it on.
+        assert!(after(include_str!("start.rs"), "pub(crate) fn parse(", "\n}\n").contains("team: false,"), "start::parse fails closed");
+        assert!(after(host, "fn cap_mode(", "\n}\n").contains("team: true, full_access: Some(true)"), "task.start with the switch");
+        let github = include_str!("methods/github.rs");
+        assert!(after(github, "async fn solve_issue(", "\n}\n").contains("start.team = full_access;"), "github.startTask");
+        let composer = include_str!("methods/composer.rs");
+        assert!(after(composer, "fn new_side(", "\n}\n").contains("create_task_without_team("), "btw.ask");
+        assert!(after(composer, "fn queue_edit_allowed(", "\n}\n").contains("allow_remote_team(store, &task.id, full_access)"), "queue.update");
+        assert!(after(composer, "fn may_drain(", "\n}\n").contains("queue_edit_allowed(store, &task, full_access)"), "queue drain");
+        assert!(after(composer, "impl Run for QueueUpdate", "\n}\n").contains("queue_edit_allowed(store, "), "queue.update");
+        for run in ["impl Run for ResumeAtReset", "impl Run for ClearLimit"] {
+            assert!(after(composer, run, "\n}\n").contains(gate), "{run}");
+        }
+        let threads = include_str!("methods/threads.rs");
+        for run in ["impl Run for SetStage", "impl Run for Archive", "impl Run for SetGoal"] {
+            let body = after(threads, run, "\n}\n");
+            let at = body.find(gate).unwrap_or_else(|| panic!("{run}"));
+            assert!(["set_task_stage(", "update_session(", "update_task_details("].iter().all(|change| body.find(change).is_none_or(|c| at < c)), "{run} checks before it changes");
+        }
+        let git = include_str!("methods/git.rs");
+        assert!(after(git, "fn create_task_worktree(", "\n}\n").contains("if !trust.untrusted() {\n            crate::architect::profiles::apply_default("), "worktree.create");
+        let bot = after(host, "Call::BotMessage { bot_id, text, send_id } => {", "\n        Call::");
+        assert!(bot.find("allow_remote_bot_team(&store, &id, crate::bots::DESKTOP, full_access)").unwrap() < bot.find("bot_message(").unwrap(), "bot.message");
+        let admin = include_str!("methods/admin.rs");
+        let schedule = after(admin, "async fn run_schedule(", "\n}\n");
+        assert!(schedule.find("allow_remote_bot_team(store, &bot, \"schedule\", full_access)").unwrap() < schedule.find("bot_run_schedule_now(").unwrap(), "bot.runSchedule");
+        let failover = after(admin, "impl Run for Failover", "\n}\n");
+        assert!(failover.find("allow_remote_team(store, &session, full_access)").unwrap() < failover.find("bot_failover_decide(").unwrap(), "bot.failoverDecide");
+    }
+
+    #[test]
+    fn only_a_start_that_saw_the_switch_gets_the_default_team() {
+        let params = json!({"projectId": "p1", "prompt": "Fix it.", "provider": "codex", "model": "default"});
+        let Call::Start(parsed) = parse(true, "task.start", &params).unwrap() else { panic!("not a start") };
+        assert!(!parsed.team, "parse alone never applies the default team");
+        for full_access in [false, true] {
+            let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
+            assert_eq!(start.team, full_access);
+        }
     }
 
     #[test]

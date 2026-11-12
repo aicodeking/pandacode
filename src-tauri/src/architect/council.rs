@@ -100,7 +100,7 @@ pub(super) fn set(state: &AppState, session_id: &str, council: Option<CouncilCon
     if let Some(config) = &council {
         config.validate()?;
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     super::refuse_mirror(&store, session_id)?;
     let mut team = super::load(&store, session_id)?.ok_or("This task has no team.")?;
@@ -170,7 +170,7 @@ fn accepted(team: &TeamSnapshot) -> bool {
 /// The user accepts this cycle's scores: the gate lets the lead finish, Council stays on, and the next
 /// cycle reviews as usual. An idle team's lead is woken once to finish.
 pub(super) fn accept(state: &AppState, session_id: &str) -> Result<TeamSnapshot> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     super::refuse_mirror(&store, session_id)?;
     let mut team = super::load(&store, session_id)?.ok_or("This task has no team.")?;

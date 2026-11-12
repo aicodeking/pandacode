@@ -257,6 +257,7 @@ async fn run_schedule(ctx: Ctx<'_>, this: RunSchedule) -> Result<Value> {
     let (bot, id, full_access) = (this.bot_id, this.schedule_id.clone(), ctx.full_access);
     with_store(&ctx, move |store| {
         allow_bot_mode(store, &bot, full_access)?;
+        super::super::host::allow_remote_bot_team(store, &bot, "schedule", full_access)?;
         let found = schedule::list(store, &bot)?.iter().any(|s| s.id == id);
         if found { Ok(()) } else { Err("This schedule no longer exists.".into()) }
     })
@@ -338,7 +339,12 @@ impl Run for Failover {
             let ask = failover::bot_failover_pending(self.session_id.clone()).await?.ok_or("This message is no longer on hold.")?;
             if failover_runs_turn(self.action, ask.cause == failover::Cause::Limit && ask.resets_at.is_some()) {
                 let full_access = ctx.full_access;
-                with_store(&ctx, move |store| allow_bot_mode(store, &ask.bot_id, full_access)).await?;
+                let session = self.session_id.clone();
+                with_store(&ctx, move |store| {
+                    allow_bot_mode(store, &ask.bot_id, full_access)?;
+                    super::super::host::allow_remote_team(store, &session, full_access)
+                })
+                .await?;
             }
             failover::bot_failover_decide(ctx.app.clone(), self.session_id, self.action.into(), self.always).await?;
             Ok(json!({}))
@@ -639,6 +645,10 @@ impl Run for Respond {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             allow_link_access(self.link.as_ref().map(|(_, access)| access.as_str()), ctx.full_access)?;
+            if self.link.is_some() && !ctx.full_access {
+                let (store, id) = (ctx.state().store.clone(), self.request_id.clone());
+                crate::blocking(move || crate::remote::orchestrate::links::allow_remote_accept(&*store.lock().map_err(|e| e.to_string())?, &id, false)).await?;
+            }
             let (device, access) = self.link.map_or((None, None), |(device, access)| (Some(device), Some(access)));
             let status = crate::remote::orchestrate::links::orchestration_link_respond(ctx.app.clone(), self.request_id, device, access).await?;
             Ok(json!({"orchestration": status}))

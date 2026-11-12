@@ -54,9 +54,15 @@ pub(crate) fn removed_environment(provider: &str) -> &'static [&'static str] {
     }
 }
 
+/// The variables `configure` removes from a Claude process in `mode`; usage
+/// checks read the launch environment through the same list.
+pub(crate) fn stripped(mode: Mode) -> &'static [&'static str] {
+    if mode == Mode::Subscription { OVERRIDES } else { &[] }
+}
+
 fn apply_mode(command: &mut Command, provider: &str, mode: Mode) {
-    if provider == "claude" && mode == Mode::Subscription {
-        for name in OVERRIDES { command.env_remove(name); }
+    if provider == "claude" {
+        for name in stripped(mode) { command.env_remove(name); }
     }
 }
 

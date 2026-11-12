@@ -39,8 +39,8 @@ pub(crate) mod tools;
 /// Validators and task lookups feature files share with `host.rs`.
 #[allow(unused_imports)]
 pub(crate) use super::host::{
-    allow_task_mode, bounded_text, drivable_session_from, drivable_task, force_param, full_access_off, github_comment_target, id_param, invalidate_pull_cache, linked_pull, local_session_from, local_task, moodboard_add_target, workspace_session_from, name_param, once_per_action, optional_pull, run_schedule_target,
-    page_budget, path_param, send_id_param, task_root, task_send_lock, text_param, uuid_param, valid_id, MAX_TEXT, PAGE_BUDGET,
+    allow_remote_team, allow_remote_team_for, allow_task_mode, bounded_text, drivable_session_from, drivable_task, force_param, full_access_off, github_comment_target, id_param, invalidate_pull_cache, linked_pull, local_session_from, local_task, moodboard_add_target, workspace_session_from, name_param, once_per_action, optional_pull, run_schedule_target,
+    page_budget, path_param, TEAM_NEEDS_FULL_ACCESS, send_id_param, task_root, task_send_lock, text_param, uuid_param, valid_id, MAX_TEXT, PAGE_BUDGET,
 };
 
 /// The app protocol version `host.hello` reports. Hosts from before `host.hello` are
@@ -267,9 +267,9 @@ const BASE_FEATURES: [&str; 11] =
 /// they are off.
 /// `task.start` with a `repo` this computer has no project for refuses too
 /// (`start::refuse_clone`), but a start in an existing project does not, so it is not listed.
-pub(crate) const SWITCH_METHODS: [&str; 14] = [
+pub(crate) const SWITCH_METHODS: [&str; 15] = [
     "terminal.list", "terminal.open", "terminal.read", "terminal.write", "terminal.resize", "terminal.close", "runScript.start", "runScript.stop", "checks.run", "files.write", "skills.activate", "cloudAgents.start",
-    "moodboards.add", "projects.clone",
+    "moodboards.add", "projects.clone", "team.start",
 ];
 
 /// What `host.hello` answers: protocol, version, every method this host serves, its

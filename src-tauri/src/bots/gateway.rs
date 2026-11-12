@@ -37,6 +37,21 @@ fn pending() -> &'static Pending {
     PENDING.get_or_init(Default::default)
 }
 
+/// Forgets approvals the run withdrew (its pooled account changed, so they can never be
+/// answered): a bot conversation no longer reads as waiting on them. A message already posted
+/// to a chat channel stays there (channels offer no edit or delete); a reply to it skips to the
+/// next live request, as for any request answered elsewhere.
+pub(crate) fn approvals_withdrawn(session_id: &str, request_ids: &[String]) {
+    if let Ok(mut map) = pending().lock() {
+        if let Some(list) = map.get_mut(session_id) {
+            list.retain(|(id, _)| !request_ids.contains(id));
+            if list.is_empty() {
+                map.remove(session_id);
+            }
+        }
+    }
+}
+
 /// What an inbound text asks for, before it is treated as a message to the agent.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
@@ -174,13 +189,26 @@ fn image_attachments(image_ids: &[String]) -> Value {
     json!(image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Attached image"})).collect::<Vec<_>>())
 }
 
+/// Team workers run with full access, so a bot thread that leads a team takes no turn (started
+/// or queued) unless the bot itself is set to Full access; any allowed chat sender drives it.
+pub(crate) const TEAM_NEEDS_FULL_BOT: &str = "This bot's thread leads a team, and team workers run with full access; set the bot to Full access to use a team.";
+
+fn allow_team_turn(store: &Store, bot: &Bot, session_id: &str) -> Result<()> {
+    if bot.mode == "full" {
+        return Ok(());
+    }
+    let leads_team = crate::architect::leads_team(store, session_id)?;
+    if leads_team { Err(TEAM_NEEDS_FULL_BOT.into()) } else { Ok(()) }
+}
+
 async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String, image_ids: Option<Vec<String>>, sender_id: &str, force_queue: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let image_ids = image_ids.unwrap_or_default();
     if image_ids.len() > 4 {
         return Err("Attach up to four images per message.".into());
     }
-    let busy = state.agents.lock().map_err(|e| e.to_string())?.contains_key(session_id);
+    allow_team_turn(&*state.store.lock().map_err(|e| e.to_string())?, bot, session_id)?;
+    let busy = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(session_id);
     if busy {
         if !force_queue && steer_while_busy(bot, &image_ids, sender_id)
             && crate::message_queue::steer_task(app.clone(), app.state::<AppState>(), session_id.to_owned(), text.clone()).await.is_ok()
@@ -267,7 +295,12 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
             return Ok(session_id);
         }
         Command::Approve(approved, always) => {
-            answer_approval(app, &bot, &session_id, approved, always).await?;
+            if let Err(error) = answer_approval(app, &bot, &session_id, approved, always).await {
+                if error == TEAM_NEEDS_FULL_BOT {
+                    reply(app, &bot, &inbound.channel_id, &inbound.thread, TEAM_NEEDS_FULL_BOT).await;
+                }
+                return Err(error);
+            }
             return Ok(session_id);
         }
         Command::Message => {}
@@ -291,6 +324,9 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
     };
     if let Err(error) = start_or_queue(app, &bot, &session_id, turn, inbound.image_ids, &inbound.sender_id, force_queue).await {
         unbrief(app, &session_id, briefed, bot.memory_version);
+        if error == TEAM_NEEDS_FULL_BOT {
+            reply(app, &bot, &inbound.channel_id, &inbound.thread, TEAM_NEEDS_FULL_BOT).await;
+        }
         return Err(error);
     }
     let _ = app.emit("bots-changed", ());
@@ -376,8 +412,20 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     }
     let _ = app.emit("bots-changed", ());
     // Send the next queued message natively, so bot threads keep moving without the window.
-    // A failed run holds the queue until the next turn ends cleanly.
-    let next = if !successful { None } else { state.store.lock().ok().and_then(|store| message_queue::list(&store, Some(session_id)).ok()).and_then(|queue| queue.into_iter().next()) };
+    // A failed run holds the queue until the next turn ends cleanly, and so does a thread that
+    // came to lead a team on a bot without Full access (`allow_team_turn`): its sender is told why.
+    let next = if !successful { Ok(None) } else { state.store.lock().map_err(|e| e.to_string()).and_then(|store| next_queued(&store, &bot, session_id)) };
+    if next.as_ref().is_err_and(|error| error == TEAM_NEEDS_FULL_BOT) {
+        if thread.channel_id == "schedule" {
+            notify(app, &bot, TEAM_NEEDS_FULL_BOT).await;
+        } else {
+            reply(app, &bot, &thread.channel_id, &thread.external_id, TEAM_NEEDS_FULL_BOT).await;
+        }
+        if let Ok(store) = state.store.lock() {
+            let _ = super::log(&store, &bot.id, "error", "Queued message held: this thread leads a team and the bot isn't set to Full access", json!({"sessionId": session_id}));
+        }
+    }
+    let next = next.ok().flatten();
     let taken = next.and_then(|entry| state.store.lock().ok().and_then(|store| {
         let entry = message_queue::take(&store, &entry.id).ok()?;
         let delivery = super::shared_channels::promote_taken(&store, session_id, &entry.text);
@@ -409,6 +457,14 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     settled
 }
 
+/// The queued message to send next, if any; `TEAM_NEEDS_FULL_BOT` when one waits but the thread
+/// came to lead a team on a bot without Full access.
+fn next_queued(store: &Store, bot: &Bot, session_id: &str) -> Result<Option<message_queue::QueuedMessage>> {
+    let Some(entry) = message_queue::list(store, Some(session_id))?.into_iter().next() else { return Ok(None) };
+    allow_team_turn(store, bot, session_id)?;
+    Ok(Some(entry))
+}
+
 /// Prompt text and image ids for queued attachments, as the window's composer builds them.
 /// Serve's native queue drain (headless.rs) reuses it for non-bot tasks.
 pub(crate) fn queued_prompt(attachments: &Value) -> (String, Vec<String>) {
@@ -436,12 +492,11 @@ async fn answer(app: &tauri::AppHandle, session_id: &str, request_id: &str, appr
     Ok(())
 }
 
-pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str) {
+pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str, lasting_only: bool) {
     let state = app.state::<AppState>();
     let found = state.store.lock().ok().and_then(|store| owner_of(&store, session_id).ok().flatten());
     let Some((bot, thread)) = found else { return };
-    // Allow rules answer without asking; deny rules refuse.
-    let decision = state.store.lock().ok().and_then(|store| guard::decide(&store, &bot.id, text).ok());
+    let decision = state.store.lock().ok().and_then(|store| guard::decide(&store, &bot.id, text).ok()).map(|decision| rule_decision(decision, lasting_only));
     match decision {
         Some(guard::Decision::Allow) => {
             let _ = answer(app, session_id, request_id, true).await;
@@ -474,7 +529,23 @@ pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str,
     let _ = app.emit("bots-changed", ());
 }
 
+/// Allow rules answer without asking, deny rules refuse; a request whose approval would grant a
+/// lasting permission (the harness offers no one-time choice) is asked, never allowed by a rule.
+fn rule_decision(decision: guard::Decision, lasting_only: bool) -> guard::Decision {
+    match decision {
+        guard::Decision::Allow if lasting_only => guard::Decision::Ask,
+        decision => decision,
+    }
+}
+
+/// Approving a request lets the thread's turn go on, so a thread that came to lead a team
+/// mid-turn needs a Full access bot to approve, as a new turn does. A denial only holds it back.
+fn allow_approval(store: &Store, bot: &Bot, session_id: &str, approved: bool) -> Result<()> {
+    if approved { allow_team_turn(store, bot, session_id) } else { Ok(()) }
+}
+
 async fn answer_approval(app: &tauri::AppHandle, bot: &Bot, session_id: &str, approved: bool, always: bool) -> Result<()> {
+    allow_approval(&*app.state::<AppState>().store.lock().map_err(|e| e.to_string())?, bot, session_id, approved)?;
     // Requests answered in the desktop app meanwhile are gone; skip to the oldest live one.
     loop {
         let next = pending().lock().map_err(|e| e.to_string())?.get_mut(session_id).and_then(|list| (!list.is_empty()).then(|| list.remove(0)));
@@ -526,7 +597,7 @@ pub(crate) async fn stop_bot(app: &tauri::AppHandle, bot_id: &str) {
         super::threads(&store, bot_id).map(|threads| threads.into_iter().map(|thread| thread.session_id).collect()).unwrap_or_default()
     };
     for session in sessions {
-        let running = app.state::<AppState>().agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false);
+        let running = crate::run_requests::lock_agents(&app.state::<AppState>().agents).map(|agents| agents.contains_key(&session)).unwrap_or(false);
         if running {
             let _ = crate::stop_session(app.clone(), app.state::<AppState>(), session.clone()).await;
         }
@@ -539,6 +610,16 @@ pub(crate) async fn stop_bot(app: &tauri::AppHandle, bot_id: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn withdrawn_approvals_leave_the_bot_conversation() {
+        let session = "withdrawn-approvals-session";
+        super::pending().lock().unwrap().insert(session.into(), vec![("run:1".into(), "Run `ls`".into()), ("run:2".into(), "Run `pwd`".into())]);
+        super::approvals_withdrawn(session, &["run:1".to_string()]);
+        assert_eq!(super::pending().lock().unwrap().get(session).map(Vec::len), Some(1));
+        super::approvals_withdrawn(session, &["run:2".to_string()]);
+        assert!(!super::pending().lock().unwrap().contains_key(session), "no longer waiting");
+    }
+
     use super::*;
 
     #[test]
@@ -593,6 +674,54 @@ mod tests {
         restore_brief(&store, &session, 4, 5).unwrap();
         assert_eq!(super::super::brief_version_of(&store, &session).unwrap(), 6);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_team_leading_thread_takes_turns_only_on_a_full_access_bot() {
+        let root = std::env::temp_dir().join(format!("pandacode-bot-team-gate-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = super::super::BotInput { name: "Scout".into(), role: "r".into(), instructions: "i".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let mut bot = super::super::create(&store, &input, &root).unwrap();
+        let (session, _) = super::super::thread_session(&store, &bot, "telegram", "chat-1", "Scout · Ana").unwrap();
+        assert!(allow_team_turn(&store, &bot, &session).is_ok(), "no team: unchanged");
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&session]).unwrap();
+        for mode in ["ask", "auto", "review", "plan"] {
+            bot.mode = mode.into();
+            assert_eq!(allow_team_turn(&store, &bot, &session), Err(TEAM_NEEDS_FULL_BOT.into()), "{mode}");
+        }
+        bot.mode = "full".into();
+        assert!(allow_team_turn(&store, &bot, &session).is_ok());
+        // Checked before a turn is started or queued, so nothing runs for a refused message.
+        let source = include_str!("gateway.rs");
+        let start = &source[source.find("async fn start_or_queue(").unwrap()..];
+        let gate = start.find("allow_team_turn(").unwrap();
+        assert!(gate < start.find("message_queue::add(").unwrap() && gate < start.find("architect_start_in_project(").unwrap());
+        // A chat reply approving a pending request is gated too; a denial is not.
+        bot.mode = "ask".into();
+        assert_eq!(allow_approval(&store, &bot, &session, true), Err(TEAM_NEEDS_FULL_BOT.into()));
+        assert!(allow_approval(&store, &bot, &session, false).is_ok());
+        let answering = &source[source.find("async fn answer_approval(").unwrap()..];
+        assert!(answering.find("allow_approval(").unwrap() < answering.find("answer(app").unwrap());
+        // A queued message the gate holds is not sent; its sender is told once, at the turn end.
+        bot.mode = "ask".into();
+        assert!(next_queued(&store, &bot, &session).unwrap().is_none(), "nothing queued: nothing to tell");
+        let queued = message_queue::add(&store, &session, "next step", &json!([])).unwrap();
+        assert_eq!(next_queued(&store, &bot, &session).unwrap_err(), TEAM_NEEDS_FULL_BOT);
+        bot.mode = "full".into();
+        assert_eq!(next_queued(&store, &bot, &session).unwrap().unwrap().id, queued.id);
+        let finished = &source[source.find("pub(crate) async fn run_finished(").unwrap()..];
+        assert!(finished.contains("is_err_and(|error| error == TEAM_NEEDS_FULL_BOT)"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn allow_rules_never_grant_a_lasting_permission() {
+        use guard::Decision::{Allow, Ask, Deny};
+        assert!(matches!(rule_decision(Allow, false), Allow));
+        assert!(matches!(rule_decision(Allow, true), Ask));
+        assert!(matches!(rule_decision(Deny, true), Deny));
+        assert!(matches!(rule_decision(Ask, true), Ask));
     }
 
     #[test]

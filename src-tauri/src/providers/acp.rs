@@ -180,6 +180,11 @@ pub(super) fn choices(option: &Value) -> Vec<&Value> {
         .take(MODEL_CATALOG_LIMIT)
         .collect()
 }
+/// Phrases of the ACP startup errors for a reasoning effort the harness refuses (no adjustable
+/// effort; a level it does not offer), shared with the team scheduler that relaunches a worker
+/// without the effort (`architect::model_efforts::rejected`). The messages read as before.
+pub(crate) const NO_ADJUSTABLE_EFFORT: &str = "does not advertise an adjustable reasoning effort";
+pub(crate) const UNADVERTISED_CHOICE: &str = "does not advertise the selected";
 fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result<Value, String> {
     let offered = choices(option);
     if !offered.iter().any(|entry| entry["value"] == value) {
@@ -203,7 +208,7 @@ fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result
             shown
         };
         return Err(format!(
-            "The harness does not advertise the selected {setting} \"{value}\". It offers: {offers}. Refresh its models or choose the harness default."
+            "The harness {UNADVERTISED_CHOICE} {setting} \"{value}\". It offers: {offers}. Refresh its models or choose the harness default."
         ));
     }
     Ok(
@@ -893,7 +898,7 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 6, option, effort)?),
                 // Grok and Cline take the effort as a launch flag.
                 None if matches!(self.config.provider.as_str(), "grok" | "cline") => self.kimi_prompt(step),
-                None => return Err("This model does not advertise an adjustable reasoning effort. Choose harness settings.".into()),
+                None => return Err(format!("This model {NO_ADJUSTABLE_EFFORT}. Choose harness settings.")),
             }
         } else {
             self.kimi_prompt(step);
@@ -1963,7 +1968,10 @@ mod tests {
         assert_eq!(text, "Explain this project");
         let step = p.receive(grok_permission("edit", false)).unwrap();
         assert!(step.write.is_empty());
-        assert!(step.events.iter().any(|event| event.kind == "approval"));
+        let approval = step.events.iter().find(|event| event.kind == "approval").unwrap();
+        // Approving takes the one-time choice, never "allow all edits during this session".
+        assert!(approval.data.as_ref().is_none_or(|data| data[crate::providers::LASTING_ONLY].is_null()));
+        assert_eq!(p.approve(approval.request_id.as_ref().unwrap(), true).unwrap()["result"]["outcome"]["optionId"], "allow-once");
         let (mut p, text) = grok_ready("auto");
         assert!(!text.contains("Plan mode"));
         let step = p.receive(grok_permission("edit", false)).unwrap();

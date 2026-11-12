@@ -161,7 +161,9 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
+/// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
+pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -620,6 +622,23 @@ impl Store {
                 }
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
                   PRAGMA user_version=36;").map_err(|e| e.to_string())?;
+            }
+            if version < 37 {
+                // Whether a remote device last saved each schedule, so the team gate is checked
+                // again when it fires (`schedules::remote_team_gate`). Version 35's schema already
+                // carries the column on databases created since; ids an unreleased build kept in
+                // the settings row's `remoteSaved` list move into it (malformed settings JSON is skipped,
+                // never failing startup). Released version 36 recorded nothing, so a schedule saved from a
+                // phone there is indistinguishable: fail closed and mark every user-made schedule (agents'
+                // own wakeups stay unmarked); a skipped run tells the user to save it on the desktop.
+                let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name='saved_remotely')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !exists {
+                    migration.execute_batch("ALTER TABLE task_schedules ADD COLUMN saved_remotely INTEGER NOT NULL DEFAULT 0;").map_err(|e| e.to_string())?;
+                }
+                migration.execute_batch("UPDATE task_schedules SET saved_remotely=1 WHERE created_by='user';
+                  UPDATE task_schedules SET saved_remotely=1 WHERE id IN (SELECT j.value FROM scheduler_settings s, json_each(CASE WHEN json_valid(s.content) THEN s.content ELSE '{}' END,'$.remoteSaved') j WHERE s.id=1);
+                  UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
+                  PRAGMA user_version=37;").map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -1697,13 +1716,42 @@ impl Store {
         Ok(ids)
     }
     pub fn message(&self, sid: &str, role: &str, content: &str) -> Result<()> {
+        self.insert_message(sid, role, content).map(|_| ())
+    }
+    /// `message`, returning the new row's id (an error event carries it so the window can dismiss that row).
+    pub fn insert_message(&self, sid: &str, role: &str, content: &str) -> Result<i64> {
         self.db
             .execute(
                 "INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,?2,?3,?4)",
                 params![sid, role, content, now()],
             )
             .map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(self.db.last_insert_rowid())
+    }
+    /// Deletes only `role='error'` rows of `sid` whose id is listed; every other id is left alone.
+    /// Messages carry no derived state besides INSERT triggers, so a plain delete stays consistent.
+    /// A task that runs on another computer (`remote_device`) deletes nothing: its rows are copies
+    /// the mirror's backfill (`remote/mirror.rs` `oldest_copied`) could copy back, so the window
+    /// only hides them for the app session.
+    pub fn dismiss_error_messages(&self, sid: &str, ids: &[i64]) -> Result<usize> {
+        if ids.len() > MAX_DISMISS_ERROR_IDS {
+            return Err(format!("Dismiss at most {MAX_DISMISS_ERROR_IDS} errors at a time."));
+        }
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let mut deleted = 0;
+        {
+            let mut stmt = tx
+                .prepare("DELETE FROM messages WHERE session_id=?1 AND role='error' AND id=?2 AND NOT EXISTS (SELECT 1 FROM sessions WHERE id=?1 AND remote_device IS NOT NULL)")
+                .map_err(|e| e.to_string())?;
+            for id in ids {
+                deleted += stmt.execute(params![sid, id]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(deleted)
     }
     /// The newest `limit` tool records of the session whose saved JSON contains
     /// `fragment` (see `tool_images::search_fragment`). Only a cheap prefilter: the
@@ -2544,6 +2592,62 @@ mod tests {
             store.messages(&task.id, None).unwrap()[0].content,
             description
         );
+    }
+
+    #[test]
+    fn dismiss_error_messages_deletes_only_this_sessions_error_rows() {
+        let (store, task) = empty_session();
+        let other = store
+            .create_session(&task.project_id, "claude", "sonnet", "auto")
+            .unwrap();
+        for (sid, role) in [(&task.id, "error"), (&task.id, "error"), (&task.id, "user"), (&task.id, "assistant"), (&task.id, "tool"), (&other.id, "error")] {
+            store.message(sid, role, "x").unwrap();
+        }
+        let rows = |sid: &str| store.messages(sid, None).unwrap();
+        let mine = rows(&task.id);
+        let id = |role: &str, n: usize| mine.iter().filter(|m| m.role == role).nth(n).unwrap().id;
+        let (e1, e2, user, assistant, tool) = (id("error", 0), id("error", 1), id("user", 0), id("assistant", 0), id("tool", 0));
+        let foreign = rows(&other.id)[0].id;
+        assert_eq!(store.dismiss_error_messages(&task.id, &[user, assistant, tool, foreign, 9_999]).unwrap(), 0);
+        assert_eq!(rows(&task.id).len(), 5);
+        assert_eq!(store.dismiss_error_messages(&task.id, &[e1]).unwrap(), 1);
+        assert_eq!(store.dismiss_error_messages(&task.id, &[e1, e2]).unwrap(), 1);
+        let left: Vec<_> = rows(&task.id).iter().map(|m| m.role.clone()).collect();
+        assert_eq!(left, ["user", "assistant", "tool"]);
+        assert_eq!(rows(&other.id).len(), 1);
+    }
+
+    #[test]
+    fn dismiss_error_insert_message_returns_the_row_id() {
+        let (store, task) = empty_session();
+        let first = store.insert_message(&task.id, "error", "boom").unwrap();
+        let second = store.insert_message(&task.id, "error", "boom").unwrap();
+        assert!(second > first);
+        let ids: Vec<i64> = store.messages(&task.id, None).unwrap().iter().map(|m| m.id).collect();
+        assert_eq!(ids, [first, second]);
+        assert_eq!(store.dismiss_error_messages(&task.id, &[first]).unwrap(), 1);
+        let left: Vec<i64> = store.messages(&task.id, None).unwrap().iter().map(|m| m.id).collect();
+        assert_eq!(left, [second]);
+    }
+
+    #[test]
+    fn dismiss_error_messages_handles_empty_and_oversized_lists() {
+        let (store, task) = empty_session();
+        store.message(&task.id, "error", "x").unwrap();
+        assert_eq!(store.dismiss_error_messages(&task.id, &[]).unwrap(), 0);
+        let too_many: Vec<i64> = (0..=MAX_DISMISS_ERROR_IDS as i64).collect();
+        assert!(store.dismiss_error_messages(&task.id, &too_many).is_err());
+        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dismiss_error_messages_never_deletes_a_mirrored_copy() {
+        // A mirror's rows are copies of another computer's; the backfill could copy a deleted one back.
+        let (store, task) = empty_session();
+        let id = store.insert_message(&task.id, "error", "boom").unwrap();
+        store.db.execute("UPDATE sessions SET remote_device='dev',remote_session='host-task' WHERE id=?1", [&task.id]).unwrap();
+        assert_eq!(store.dismiss_error_messages(&task.id, &[id]).unwrap(), 0);
+        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
     }
 
     #[test]

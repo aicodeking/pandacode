@@ -953,6 +953,9 @@ fn worker(id: &str, status: &str, files: &[&str], depends: &[&str]) -> Worker {
         provider: "codex".into(),
         model: "default".into(),
         reasoning_effort: None,
+        note: None,
+        effort_retried: false,
+        started_at: None,
         status: status.into(),
         assignment: "Small task".into(),
         summary: String::new(),
@@ -1768,7 +1771,7 @@ fn read_only_scopes_allow_parallel_workers_across_teams_in_the_same_checkout() {
 }
 
 #[test]
-fn permission_revocation_applies_to_worker_retry_and_failed_work_can_be_abandoned() {
+fn workers_keep_full_access_across_retry_and_failed_work_can_be_abandoned() {
     let (state, sid) = state_fixture();
     {
         let store = state.store.lock().unwrap();
@@ -1798,7 +1801,8 @@ fn permission_revocation_applies_to_worker_retry_and_failed_work_can_be_abandone
     control_state(&state, &sid, "resume").unwrap();
     let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
     let (retry, _rx) = claim(&state, action);
-    assert_eq!(retry.config.mode, "ask");
+    // The lead left Full access, but workers never wait on approvals.
+    assert_eq!(retry.config.mode, WORKER_PERMISSION_MODE);
     finish(&state, &retry, "Still blocked.", false);
     call(&state,&sid,"pandacode_cancel_worker",json!({"workerId":ids["workerIds"][0],"reason":"Superseded by a smaller validated implementation."})).unwrap();
     assert!(call(
@@ -3001,7 +3005,7 @@ fn the_lead_is_told_to_route_first() {
     let note = routing::prompt_note(&config, true);
     assert!(note.contains("Router first") && note.contains("profileId \"auto\"") && note.contains("another harness first") && note.contains("your own model"), "{note}");
     let dispatch = catalog().into_iter().find(|t| t["name"] == "pandacode_dispatch_workers").unwrap();
-    assert!(dispatch["description"].as_str().unwrap().starts_with("Start assignments as one parallel batch; returns IDs. With profileId \"auto\""));
+    assert!(dispatch["description"].as_str().unwrap().starts_with("Start assignments as one parallel batch; returns IDs. profileId \"auto\""));
 }
 #[test]
 fn ranked_picks_say_their_tier() {
@@ -4875,4 +4879,960 @@ fn a_silent_workers_run_end_note_is_no_reply() {
     finish_silent(&state, &run);
     let worker = team_of(&state, &sid).workers[0].clone();
     assert_eq!((worker.status.as_str(), worker.nudged, worker.summary.as_str()), ("queued", true, ""), "asked to report");
+}
+
+#[test]
+fn workers_run_with_full_access_under_an_ask_lead() {
+    let (state, sid) = state_fixture();
+    assert_eq!(state.store.lock().unwrap().session(&sid).unwrap().mode, "ask");
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("engine","fast","src")]})).unwrap();
+    let worker_sid = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].session_id.clone();
+    assert_eq!(state.store.lock().unwrap().session(&worker_sid).unwrap().mode, "full");
+    // A worker session changed by hand is put back on its next run.
+    state.store.lock().unwrap().db.execute("UPDATE sessions SET mode='plan' WHERE id=?1", [&worker_sid]).unwrap();
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let (worker, _rx) = claim(&state, action);
+    assert_eq!(worker.config.mode, "full");
+}
+#[test]
+fn reasoning_effort_overrides_any_worker_pick() {
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers.push(WorkerProfile { id: "pi".into(), name: "Pi".into(), provider: "pi".into(), model: "p".into(), reasoning_effort: Some("low".into()) });
+        save(&store, &mut team).unwrap();
+    }
+    let result = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[
+        auto_assignment("roster", json!({"profileId":"kimi","reasoningEffort":"high"})),
+        auto_assignment("auto", json!({"profileId":"auto","reasoningEffort":"medium"})),
+        auto_assignment("own", json!({"reasoningEffort":"max"})),
+        auto_assignment("direct", json!({"provider":"codex","model":"m","reasoningEffort":"low"})),
+        auto_assignment("fitted", json!({"profileId":"pi","reasoningEffort":"max"})),
+        auto_assignment("plain", json!({"profileId":"pi"})),
+    ]})).unwrap();
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    let efforts: Vec<_> = team.workers.iter().map(|w| w.reasoning_effort.as_deref()).collect();
+    // pi has no "max": the nearest level it supports is used, and the result says so.
+    // The lead's own Claude model has no known catalog: max is kept (missing data never lowers it).
+    assert_eq!(efforts, vec![Some("high"), Some("medium"), Some("max"), Some("low"), Some("xhigh"), Some("low")]);
+    for worker in &team.workers {
+        assert_eq!(store.session(&worker.session_id).unwrap().reasoning_effort, worker.reasoning_effort);
+    }
+    let notes = result["routing"].to_string();
+    assert!(notes.contains("fitted: reasoningEffort max is not supported on p (pi); used xhigh"), "{notes}");
+    drop(store);
+    let listed = call(&state, &sid, "pandacode_list_workers", json!({})).unwrap();
+    assert_eq!(listed["workers"][0]["reasoningEffort"], "high");
+    assert_eq!(serde_json::to_value(&team.workers[0]).unwrap()["reasoningEffort"], "high");
+}
+#[test]
+fn reasoning_effort_errors_only_for_an_explicit_provider() {
+    let (state, sid) = auto_state();
+    let bad = |extra: Value| call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("x", extra)]})).unwrap_err();
+    let error = bad(json!({"provider":"claude","model":"opus","reasoningEffort":"minimal"}));
+    assert!(error.contains("Use one of: low, medium, high, xhigh, max"), "{error}");
+    // The lead's own claude model: "minimal" moves to the nearest supported level.
+    let result = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("own", json!({"reasoningEffort":"minimal"}))]})).unwrap();
+    assert!(result["routing"][0].as_str().unwrap().contains("used low"));
+    let store = state.store.lock().unwrap();
+    assert_eq!(load(&store, &sid).unwrap().unwrap().workers[0].reasoning_effort.as_deref(), Some("low"));
+}
+#[test]
+fn effort_is_fitted_to_the_provider_when_the_model_is_unknown() {
+    let fit = |provider: &str, effort: &str| model_efforts::fit(provider, "unlisted-model", Some(&effort.to_string()));
+    assert_eq!(fit("claude", "high"), (Some("high".into()), None));
+    assert_eq!(fit("pi", "max").0.as_deref(), Some("xhigh"));
+    assert_eq!(fit("claude", "off").0, None, "no reasoning never becomes low");
+    let (dropped, note) = fit("claude", "turbo");
+    assert!(dropped.is_none() && note.unwrap().contains("dropped"));
+    assert_eq!(model_efforts::fit("claude", "m", None), (None, None));
+}
+#[test]
+fn effort_is_fitted_to_the_models_own_levels() {
+    model_efforts::seed("codex", &[("fit-test-codex", &["low", "medium", "high"]), ("fit-test-codex-none", &[])]);
+    model_efforts::seed("claude", &[("fit-test-claude-no-max", &["low", "medium", "high"])]);
+    let max = Some("max".to_string());
+    // Codex accepts any ID provider-wide, but this model tops out at high.
+    let (effort, note) = model_efforts::fit("codex", "fit-test-codex", max.as_ref());
+    assert_eq!(effort.as_deref(), Some("high"));
+    assert!(note.unwrap().contains("fit-test-codex (codex); used high"));
+    assert_eq!(model_efforts::fit("claude", "fit-test-claude-no-max", max.as_ref()).0.as_deref(), Some("high"));
+    // A listed Codex model without efforts rejects every one, so none is sent.
+    assert_eq!(model_efforts::fit("codex", "fit-test-codex-none", max.as_ref()).0, None);
+    // Codex's `default` model is not checked by the harness, so the provider-wide check applies.
+    assert_eq!(model_efforts::fit("codex", "default", max.as_ref()).0.as_deref(), Some("max"));
+    let error = model_efforts::explicit("codex", "fit-test-codex", max.as_ref()).unwrap_err();
+    assert!(error.contains("Use one of: low, medium, high."), "{error}");
+    assert!(model_efforts::explicit("codex", "unlisted-model", max.as_ref()).is_ok());
+}
+#[test]
+fn dispatch_fits_effort_to_the_model_and_normalises_it() {
+    model_efforts::seed("codex", &[("fit-test-dispatch", &["low", "medium", "high"])]);
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers.push(WorkerProfile { id: "cx".into(), name: "Cx".into(), provider: "codex".into(), model: "fit-test-dispatch".into(), reasoning_effort: None });
+        save(&store, &mut team).unwrap();
+    }
+    let dispatch = |extra: Value| call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment(&format!("k{}", extra.to_string().len()), extra)]}));
+    let error = dispatch(json!({"provider":"codex","model":"fit-test-dispatch","reasoningEffort":"max"})).unwrap_err();
+    assert!(error.contains("Use one of: low, medium, high."), "{error}");
+    let result = dispatch(json!({"profileId":"cx","reasoningEffort":"xhigh"})).unwrap();
+    assert!(result["routing"][0].as_str().unwrap().contains("used high"), "{result}");
+    dispatch(json!({"profileId":"kimi","reasoningEffort":" High "})).unwrap();
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    let efforts: Vec<_> = team.workers.iter().map(|w| w.reasoning_effort.as_deref()).collect();
+    assert_eq!(efforts, vec![Some("high"), Some("high")]);
+    assert_eq!(store.session(&team.workers[1].session_id).unwrap().reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn an_unknown_catalog_never_lowers_effort() {
+    model_efforts::reset(false);
+    let keep = |provider: &str, model: &str, effort: &str| model_efforts::fit(provider, model, Some(&effort.to_string()));
+    assert_eq!(keep("claude", "unknown-opus-model", "max"), (Some("max".into()), None));
+    assert_eq!(keep("codex", "unknown-gpt-model", "xhigh"), (Some("xhigh".into()), None));
+    assert_eq!(keep("claude", "default", "max"), (Some("max".into()), None), "Claude's default model is not dropped");
+    assert_eq!(keep("claude", "unknown-haiku-model", "high"), (Some("high".into()), None), "the startup safety net handles it");
+    // A level the provider never accepts is still fitted, and a drop says what is used instead.
+    let (effort, note) = model_efforts::apply("kimi", "", Some(&"x y".to_string()), Some(&"high".to_string()));
+    assert_eq!(effort.as_deref(), Some("high"));
+    assert!(note.unwrap().ends_with("dropped, using the default high"));
+    // An inherited default is trusted as it is.
+    assert_eq!(model_efforts::apply("codex", "unknown-gpt-model", None, Some(&"xhigh".to_string())), (Some("xhigh".into()), None));
+}
+#[test]
+fn a_lead_at_max_and_a_roster_profile_at_xhigh_keep_their_effort() {
+    model_efforts::reset(false);
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        store.db.execute("UPDATE sessions SET reasoning_effort='max' WHERE id=?1", [&sid]).unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers.push(WorkerProfile { id: "rx".into(), name: "Rx".into(), provider: "codex".into(), model: "rx-model".into(), reasoning_effort: Some("xhigh".into()) });
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("own", json!({})), auto_assignment("rx", json!({"profileId":"rx"}))]})).unwrap();
+    for _ in 0..2 {
+        next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    }
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    let efforts: Vec<_> = team.workers.iter().map(|w| store.session(&w.session_id).unwrap().reasoning_effort).collect();
+    assert_eq!(efforts, vec![Some("max".to_string()), Some("xhigh".to_string())]);
+    assert!(team.workers.iter().all(|w| w.note.is_none()));
+}
+const CODEX_REFUSAL: &str = "The selected Codex model does not support this reasoning effort. Choose another effort or use harness settings.";
+/// Launches the worker and ends its run with `error`, as lib.rs does: model health first
+/// (`counts_against_model`), then the team. `reply` is harness output before the error.
+fn run_and_fail(state: &AppState, error: &str, reply: Option<&str>, model: &str) -> bool {
+    let (run, _rx) = claim(state, next_action_state(state, &mut |_| {}).unwrap().unwrap());
+    let sid = run.config.session_id.clone();
+    let mut agents = state.agents.lock().unwrap();
+    let counts = {
+        let store = state.store.lock().unwrap();
+        if let Some(reply) = reply {
+            store.message(&sid, "assistant", reply).unwrap();
+        }
+        let counts = counts_against_model(&store, run.team.as_ref(), &sid, error);
+        if counts {
+            crate::model_health::record_failure("codex", model, error);
+        }
+        store.finish_task_turn(&sid, false, false).unwrap();
+        counts
+    };
+    agents.remove(&sid);
+    completed_with_agents(state, &agents, &sid, run.team.as_ref(), false, false, Some(error), &mut |_| {});
+    counts
+}
+#[test]
+fn a_harness_that_refuses_the_effort_relaunches_the_worker_once_without_it() {
+    model_efforts::reset(false);
+    let model = "refusing-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("rf", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    assert!(!run_and_fail(&state, CODEX_REFUSAL, None, model), "the relaunched refusal is not the model's failure");
+    {
+        let store = state.store.lock().unwrap();
+        let worker = load(&store, &sid).unwrap().unwrap().workers[0].clone();
+        assert_eq!((worker.status.as_str(), worker.attempt, worker.failovers, worker.reasoning_effort.as_deref()), ("queued", 1, 0, None));
+        assert!(worker.note.as_deref().unwrap().contains("refused reasoningEffort max"), "{:?}", worker.note);
+        assert_eq!(worker.error, None);
+        assert_eq!(store.session(&worker.session_id).unwrap().reasoning_effort, None);
+        assert!(crate::model_health::is_healthy("codex", model), "not held against the model");
+    }
+    // Once only: a second refusal is an ordinary failure, and it counts against the model.
+    store_effort(&state, &sid, "high");
+    assert!(run_and_fail(&state, CODEX_REFUSAL, None, model));
+    let store = state.store.lock().unwrap();
+    let worker = load(&store, &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!(worker.status, "failed");
+    // The relaunch dropped the refused turn, so the assignment is in the transcript once.
+    let prompts: i64 = store.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user' AND content=?2", params![worker.session_id, worker.assignment], |r| r.get(0)).unwrap();
+    assert_eq!(prompts, 1);
+    drop(store);
+    crate::model_health::record_success("codex", model);
+}
+#[test]
+fn a_late_effort_error_is_an_ordinary_failure() {
+    model_efforts::reset(false);
+    let model = "late-refusal-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("late", json!({"provider":"codex","model":model,"reasoningEffort":"high"}))]})).unwrap();
+    // The harness had already replied, so the refusal is not at startup.
+    assert!(run_and_fail(&state, "Tool failed: invalid reasoning effort in nested call.", Some("Working on it."), model));
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.reasoning_effort.as_deref(), worker.effort_retried), ("failed", Some("high"), false));
+    crate::model_health::record_success("codex", model);
+    // Without an effort there is nothing to relaunch either: it counts.
+    let (state, _sid) = auto_state();
+    call(&state, &_sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("none", json!({"provider":"codex","model":model}))]})).unwrap();
+    assert!(run_and_fail(&state, CODEX_REFUSAL, None, model));
+    crate::model_health::record_success("codex", model);
+}
+#[test]
+fn a_team_stop_wins_over_an_unresolved_request() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("ps", json!({}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    // The team stops the worker in the same generation (as cancelling a parent's sub-workers does).
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].status = "stopped".into();
+        save(&store, &mut team).unwrap();
+    }
+    {
+        let mut agents = state.agents.lock().unwrap();
+        state.store.lock().unwrap().finish_task_turn(&worker_sid, false, true).unwrap();
+        agents.remove(&worker_sid);
+        completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, RunEnd::Unresolved("Stopped: an approval could not be resolved automatically (x); reassign the work or do it yourself."), &mut |_| {});
+    }
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.error.as_deref()), ("stopped", Some("Worker stopped.")));
+    // Paused, the stopped worker is picked back up by Resume.
+    control_state(&state, &sid, "pause").unwrap();
+    control_state(&state, &sid, "resume").unwrap();
+    assert_eq!(load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].status, "queued");
+}
+#[test]
+fn a_worker_session_cannot_be_continued_by_hand() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("mn", json!({}))]})).unwrap();
+    let worker_sid = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].session_id.clone();
+    for team_active in [true, false] {
+        if !team_active {
+            control_state(&state, &sid, "pause").unwrap();
+        }
+        let (tx, _rx) = crate::unbounded_channel();
+        let error = crate::prepare_task_run_in_project(&state, worker_sid.clone(), Some("Continue by hand".into()), vec![], tx, Arc::new(AtomicBool::new(false)), crate::RunAdmission::default()).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+    }
+}
+fn store_effort(state: &AppState, sid: &str, effort: &str) {
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, sid).unwrap().unwrap();
+    team.workers[0].reasoning_effort = Some(effort.into());
+    store.db.execute("UPDATE sessions SET reasoning_effort=?2 WHERE id=?1", params![team.workers[0].session_id, effort]).unwrap();
+    save(&store, &mut team).unwrap();
+}
+#[test]
+fn a_completed_worker_keeps_its_effort_note_and_no_error() {
+    model_efforts::reset(false);
+    model_efforts::seed("codex", &[("note-model", &["low", "medium", "high"])]);
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers.push(WorkerProfile { id: "nm".into(), name: "Nm".into(), provider: "codex".into(), model: "note-model".into(), reasoning_effort: None });
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("nm", json!({"profileId":"nm","reasoningEffort":"max"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &run, "Done; tests pass.", true);
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.error.as_deref()), ("completed", None));
+    assert!(worker.note.as_deref().unwrap().starts_with("Effort: reasoningEffort max is not supported on note-model (codex); used high"), "{:?}", worker.note);
+    let json = serde_json::to_value(&worker).unwrap();
+    assert!(json["note"].as_str().is_some() && json.get("effortRetried").is_none());
+    let listed = call(&state, &sid, "pandacode_list_workers", json!({})).unwrap();
+    assert!(listed["workers"][0]["note"].as_str().unwrap().contains("used high"));
+}
+fn effort_model(id: &str, levels: &[&str]) -> crate::providers::ModelInfo {
+    crate::providers::ModelInfo {
+        id: id.into(),
+        name: id.into(),
+        description: String::new(),
+        reasoning_efforts: levels.iter().map(|l| crate::providers::ReasoningEffortInfo { id: l.to_string(), name: l.to_string(), description: String::new() }).collect(),
+        default_reasoning_effort: None,
+        context_window: None,
+    }
+}
+#[test]
+fn catalog_lookups_wait_for_a_busy_slot_and_cache_failures_briefly() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let failing = |_: String| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        async { Err::<Vec<crate::providers::ModelInfo>, String>("Provider CLI is not installed".into()) }
+    };
+    runtime.block_on(model_efforts::warm_with(["neg-cache-test".to_string()], &failing));
+    runtime.block_on(model_efforts::warm_with(["neg-cache-test".to_string()], &failing));
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "a failure is not retried at once");
+    let tries = std::sync::atomic::AtomicUsize::new(0);
+    let busy = |_: String| {
+        let n = tries.fetch_add(1, Ordering::SeqCst);
+        async move {
+            if n < 2 { Err("Model discovery is already running".into()) } else { Ok(vec![effort_model("busy-model", &["low", "high"])]) }
+        }
+    };
+    runtime.block_on(model_efforts::warm_with(["busy-cache-test".to_string()], &busy));
+    assert_eq!(tries.load(Ordering::SeqCst), 3);
+    assert_eq!(model_efforts::model_levels("busy-cache-test", "busy-model"), Some(vec!["low".to_string(), "high".to_string()]));
+    // A refresh that fails keeps the old catalog, but it no longer lowers anything.
+    model_efforts::reset(true);
+    runtime.block_on(model_efforts::warm_with(["busy-cache-test".to_string()], &failing));
+    assert_eq!(model_efforts::model_levels("busy-cache-test", "busy-model"), None);
+}
+#[test]
+fn a_sub_workers_followup_takes_a_reasoning_effort() {
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let schema = &sub_worker_catalog()[1]["inputSchema"]["properties"];
+    assert!(schema.get("reasoningEffort").is_some(), "{schema}");
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let settle = || {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers.iter_mut().find(|w| w.id == child).unwrap().status = "completed".into();
+        save(&store, &mut team).unwrap();
+    };
+    let effort = || load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers.into_iter().find(|w| w.id == child).unwrap().reasoning_effort;
+    settle();
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"followup","workerId":child,"key":"lexer2","prompt":"Also add tests.","reasoningEffort":" High "})).unwrap();
+    assert_eq!(effort().as_deref(), Some("high"));
+    settle();
+    // A flag-like level is ignored, as for pandacode_followup_worker.
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"followup","workerId":child,"key":"lexer3","prompt":"More.","reasoningEffort":"--help"})).unwrap();
+    assert_eq!(effort().as_deref(), Some("high"));
+}
+#[test]
+fn followup_can_change_a_workers_effort() {
+    model_efforts::seed("codex", &[("followup-test", &["low", "medium", "high"])]);
+    let (state, sid) = auto_state();
+    let ids = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("w", json!({"provider":"codex","model":"followup-test"}))]})).unwrap();
+    let id = ids["workerIds"][0].as_str().unwrap().to_string();
+    let settle_worker = || {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].status = "completed".into();
+        save(&store, &mut team).unwrap();
+    };
+    settle_worker();
+    call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"w2","prompt":"Also add tests for it.","reasoningEffort":" Medium "})).unwrap();
+    {
+        let store = state.store.lock().unwrap();
+        let worker = &load(&store, &sid).unwrap().unwrap().workers[0];
+        assert_eq!(worker.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(store.session(&worker.session_id).unwrap().reasoning_effort.as_deref(), Some("medium"));
+    }
+    settle_worker();
+    let result = call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"w3","prompt":"Harder part next.","reasoningEffort":"max"})).unwrap();
+    assert!(result["effort"].as_str().unwrap().contains("used high"), "{result}");
+    let store = state.store.lock().unwrap();
+    let worker = &load(&store, &sid).unwrap().unwrap().workers[0];
+    assert_eq!(worker.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(requested_effort(&store, &worker.id).unwrap().as_deref(), Some("max"));
+}
+#[test]
+fn failover_fits_the_originally_requested_effort() {
+    // The first harness lists this model up to high; the lead asks for max.
+    model_efforts::seed("codex", &[("gpt-fo-effort", &["low", "medium", "high"])]);
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.catalog = ["codex", "cline"].iter().map(|p| profile(&format!("{p}-m"), p, "gpt-fo-effort", "gpt-fo-effort")).collect();
+        team.config.workers.push(profile("cxfo", "codex", "gpt-fo-effort", "Codex FO"));
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("fo", json!({"profileId":"cxfo","reasoningEffort":"max"}))]})).unwrap();
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    assert_eq!(team.workers[0].reasoning_effort.as_deref(), Some("high"));
+    team.workers[0].status = "failed".into();
+    assert!(fail_over(&store, &mut team, 0, "harness error").unwrap());
+    assert_eq!(team.workers[0].provider, "cline");
+    assert_eq!(team.workers[0].reasoning_effort.as_deref(), Some("max"), "the request, not the lowered level");
+    assert_eq!(store.session(&team.workers[0].session_id).unwrap().reasoning_effort.as_deref(), Some("max"));
+}
+#[test]
+fn a_worker_is_fitted_again_before_launch_from_the_cache() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("pl", json!({"provider":"codex","model":"prelaunch-test","reasoningEffort":"high"}))]})).unwrap();
+    // The catalog learned after dispatch says this model tops out at medium.
+    model_efforts::seed("codex", &[("prelaunch-test", &["low", "medium"])]);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let store = state.store.lock().unwrap();
+    assert_eq!(store.session(&action.sid).unwrap().reasoning_effort.as_deref(), Some("medium"));
+    let worker = &load(&store, &sid).unwrap().unwrap().workers[0];
+    assert_eq!(worker.reasoning_effort.as_deref(), Some("medium"));
+    assert!(worker.note.as_deref().unwrap().starts_with("Effort: reasoningEffort high is not supported"), "{:?}", worker.note);
+    assert_eq!(worker.error, None);
+}
+
+#[test]
+fn an_unresolved_request_stop_fails_the_worker_without_failover_or_health() {
+    let model = "unresolved-model";
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        // The same model on another harness: a harness failure would fail over to it.
+        team.config.catalog = ["codex", "cline"].iter().map(|p| profile(&format!("{p}-m"), p, model, model)).collect();
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("ur", json!({"provider":"codex","model":model}))]})).unwrap();
+    // The run's input stays open, so the stop can be sent.
+    let (run, _input) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    // The harness asks with no usable choice: the approvals sink stops the worker's turn.
+    let mut event = crate::AgentEvent {
+        session_id: worker_sid.clone(),
+        kind: "approval".into(),
+        text: "Run `deploy`".into(),
+        request_id: Some("7".into()),
+        data: Some(json!({"museChoices":{"approve":false,"deny":false}})),
+        tool: None,
+    };
+    let run_id = {
+        let agents = state.agents.lock().unwrap();
+        let agent = agents.get(&worker_sid).unwrap();
+        crate::save_approval_with_pending(&state.store, &agent.approvals, Some(&agent.pending_requests), &agent.run_id, &mut event).unwrap();
+        agent.run_id.clone()
+    };
+    let own_run = crate::worker_approvals::Run::of(state.agents.lock().unwrap().get(&worker_sid).unwrap());
+    assert!(crate::worker_approvals::resolve_if_worker(true, &own_run, &state.agents, &state.store, &mut event));
+    let reason = crate::worker_approvals::take_unresolved(&run_id).unwrap();
+    // As the run's end in lib.rs reports it.
+    {
+        let mut agents = state.agents.lock().unwrap();
+        state.store.lock().unwrap().finish_task_turn(&worker_sid, false, false).unwrap();
+        agents.remove(&worker_sid);
+        completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, RunEnd::Unresolved(&reason), &mut |_| {});
+    }
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.provider.as_str(), worker.failovers), ("failed", "codex", 0), "no failover to cline");
+    assert_eq!(worker.error.as_deref(), Some(reason.as_str()));
+    assert!(reason.contains("could not be resolved automatically (Run `deploy`)"), "{reason}");
+    assert!(crate::model_health::is_healthy("codex", model));
+}
+#[test]
+fn acp_effort_refusals_are_recognised() {
+    // The recorded ACP startup errors (`providers/acp.rs`), which read as they always have.
+    let refusals = [
+        "This model does not advertise an adjustable reasoning effort. Choose harness settings.",
+        "The harness does not advertise the selected thought_level \"turbo\". It offers: low, high. Refresh its models or choose the harness default.",
+        "The harness does not advertise the selected effort \"max\". It offers: low, high. Refresh its models or choose the harness default.",
+        "The selected Codex model does not support this reasoning effort. Choose another effort or use harness settings.",
+        "Unsupported reasoning effort for this provider",
+    ];
+    for refusal in refusals {
+        assert!(model_efforts::rejected(refusal), "{refusal}");
+    }
+    for other in ["The harness does not advertise the selected model \"vendor/missing\". It offers: a.", "Overloaded.", "This harness does not advertise the selected task mode."] {
+        assert!(!model_efforts::rejected(other), "{other}");
+    }
+}
+#[test]
+fn a_stale_catalog_never_lowers_an_effort() {
+    model_efforts::reset(false);
+    model_efforts::seed("codex", &[("stale-model", &["low", "medium"])]);
+    let max = Some("max".to_string());
+    assert_eq!(model_efforts::fit("codex", "stale-model", max.as_ref()).0.as_deref(), Some("medium"), "a fresh catalog lowers it");
+    model_efforts::reset(true);
+    assert_eq!(model_efforts::fit("codex", "stale-model", max.as_ref()), (Some("max".into()), None), "an expired one does not");
+}
+#[test]
+fn an_effort_relaunch_resends_the_prompt_that_launch_sent() {
+    model_efforts::reset(false);
+    let model = "resume-refusal-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("pk", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    // A parked worker resumes with its sub-workers' results rather than its assignment.
+    let resume = "Your sub-workers finished: parser done, tests pass. Continue.";
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].resume_prompt = Some(resume.into());
+        save(&store, &mut team).unwrap();
+    }
+    run_and_fail(&state, CODEX_REFUSAL, None, model);
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.resume_prompt.as_deref()), ("queued", Some(resume)));
+    let next = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(next.prompt, resume);
+    crate::model_health::record_success("codex", model);
+}
+#[test]
+fn effort_notes_accumulate_before_launch_and_a_plain_follow_up_clears_them() {
+    model_efforts::reset(false);
+    model_efforts::seed("codex", &[("notes-model", &["low", "medium", "high"])]);
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers.push(WorkerProfile { id: "nt".into(), name: "Nt".into(), provider: "codex".into(), model: "notes-model".into(), reasoning_effort: None });
+        save(&store, &mut team).unwrap();
+    }
+    let ids = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("nt", json!({"profileId":"nt","reasoningEffort":"max"}))]})).unwrap();
+    // A catalog learned since dispatch lowers it again before launch; both notes are kept.
+    model_efforts::seed("codex", &[("notes-model", &["low", "medium"])]);
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let note = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].note.clone().unwrap();
+    assert!(note.contains("used high") && note.contains("used medium"), "{note}");
+    finish(&state, &run, "Done; tests pass.", true);
+    let id = ids["workerIds"][0].as_str().unwrap();
+    call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"nt2","prompt":"Now document it."})).unwrap();
+    assert_eq!(load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].note, None);
+}
+
+#[test]
+fn a_thinking_switch_never_turns_thinking_off_for_a_positive_level() {
+    model_efforts::reset(false);
+    model_efforts::seed("kimi", &[("kimi-switch", &["on", "off"]), ("kimi-levels", &["off", "low", "high"])]);
+    let fit = |model: &str, effort: &str| model_efforts::fit("kimi", model, Some(&effort.to_string())).0;
+    for level in ["low", "high", "max", "minimal"] {
+        assert_eq!(fit("kimi-switch", level).as_deref(), Some("on"), "{level}");
+    }
+    assert_eq!(fit("kimi-switch", "off").as_deref(), Some("off"));
+    assert_eq!(fit("kimi-levels", "minimal").as_deref(), Some("low"), "never the nearer off");
+    assert_eq!(fit("kimi-levels", "max").as_deref(), Some("high"));
+    assert_eq!(fit("kimi-levels", "off").as_deref(), Some("off"));
+}
+#[test]
+fn an_effort_relaunch_keeps_change_records_and_notes() {
+    model_efforts::reset(false);
+    let model = "keep-rows-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("kr", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    {
+        let mut agents = state.agents.lock().unwrap();
+        let store = state.store.lock().unwrap();
+        store.message(&worker_sid, "system", "Approved automatically for a team worker: Run `ls`").unwrap();
+        store.message(&worker_sid, "changes", "{}").unwrap();
+        store.message(&worker_sid, "error", CODEX_REFUSAL).unwrap();
+        store.finish_task_turn(&worker_sid, false, false).unwrap();
+        drop(store);
+        agents.remove(&worker_sid);
+        completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, Some(CODEX_REFUSAL), &mut |_| {});
+    }
+    let store = state.store.lock().unwrap();
+    assert_eq!(load(&store, &sid).unwrap().unwrap().workers[0].status, "queued");
+    let count = |role: &str| store.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role=?2", params![worker_sid, role], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!((count("user"), count("error"), count("system"), count("changes")), (0, 0, 1, 1));
+    drop(store);
+    crate::model_health::record_success("codex", model);
+}
+
+#[test]
+fn off_and_none_fit_each_other_and_positive_levels_never_reach_them() {
+    model_efforts::reset(false);
+    model_efforts::seed("codex", &[("none-model", &["none", "low", "medium", "high"]), ("off-model", &["off", "low"])]);
+    let fit = |model: &str, effort: &str| model_efforts::fit("codex", model, Some(&effort.to_string())).0;
+    assert_eq!(fit("none-model", "off").as_deref(), Some("none"));
+    assert_eq!(fit("none-model", "none").as_deref(), Some("none"));
+    assert_eq!(fit("off-model", "none").as_deref(), Some("off"));
+    assert_eq!(fit("none-model", "minimal").as_deref(), Some("low"), "never the nearer none");
+    assert_eq!(fit("none-model", "max").as_deref(), Some("high"));
+}
+#[test]
+fn an_effort_relaunch_drops_only_the_prompt_that_launch_saved() {
+    model_efforts::reset(false);
+    let model = "anchor-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("an", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    {
+        let mut agents = state.agents.lock().unwrap();
+        let store = state.store.lock().unwrap();
+        // A later coordination row lands after the launch's prompt (it must survive the relaunch).
+        store.message(&worker_sid, "coordination", "Team note: keep the parser API stable.").unwrap();
+        store.message(&worker_sid, "error", CODEX_REFUSAL).unwrap();
+        store.finish_task_turn(&worker_sid, false, false).unwrap();
+        drop(store);
+        agents.remove(&worker_sid);
+        completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, Some(CODEX_REFUSAL), &mut |_| {});
+    }
+    let store = state.store.lock().unwrap();
+    let worker = load(&store, &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!(worker.status, "queued");
+    let count = |role: &str| store.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role=?2", params![worker_sid, role], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!((count("user"), count("coordination"), count("error")), (0, 1, 0));
+    drop(store);
+    crate::model_health::record_success("codex", model);
+}
+
+#[test]
+fn an_effort_relaunch_that_cannot_be_written_is_an_ordinary_failure() {
+    model_efforts::reset(false);
+    let model = "unwritable-relaunch-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("uw", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    // The relaunch's delete fails, so nothing is changed and the run stands as a failure.
+    state.store.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER refuse_delete BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT, 'refused'); END;").unwrap();
+    assert!(!run_and_fail(&state, CODEX_REFUSAL, None, model), "the relaunch was expected, so lib.rs skipped the health record");
+    let store = state.store.lock().unwrap();
+    let worker = load(&store, &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.reasoning_effort.as_deref(), worker.effort_retried), ("failed", Some("max"), false));
+    assert_eq!(store.session(&worker.session_id).unwrap().reasoning_effort.as_deref(), Some("max"), "both writes rolled back");
+    assert!(!crate::model_health::is_healthy("codex", model), "recorded once the relaunch could not be made");
+    store.db.execute_batch("DROP TRIGGER refuse_delete;").unwrap();
+    drop(store);
+    crate::model_health::record_success("codex", model);
+}
+#[test]
+fn a_launch_record_goes_when_the_worker_settles() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("lr", json!({}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    assert!(launch_prompt(&worker_sid, false).is_some(), "recorded at launch");
+    finish(&state, &run, "Done; tests pass.", true);
+    assert!(launch_prompt(&worker_sid, false).is_none(), "gone once the run settled");
+    let _ = sid;
+}
+
+#[test]
+fn a_blank_follow_up_effort_never_hides_the_earlier_request() {
+    let (state, sid) = auto_state();
+    let ids = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("bf", json!({"profileId":"kimi","reasoningEffort":"high"}))]})).unwrap();
+    let id = ids["workerIds"][0].as_str().unwrap().to_string();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].status = "completed".into();
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"bf2","prompt":"Also document it.","reasoningEffort":"  "})).unwrap();
+    let store = state.store.lock().unwrap();
+    assert_eq!(requested_effort(&store, &id).unwrap().as_deref(), Some("high"));
+    assert_eq!(load(&store, &sid).unwrap().unwrap().workers[0].reasoning_effort.as_deref(), Some("high"));
+}
+/// Runs the worker's launch and ends it with the Codex refusal, after `rows` (role, text) were
+/// written during the turn and `before` ran on the store.
+fn refuse_after(state: &AppState, rows: &[(&str, &str)], before: impl FnOnce(&Store, &str)) -> String {
+    let (run, _rx) = claim(state, next_action_state(state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    let mut agents = state.agents.lock().unwrap();
+    {
+        let store = state.store.lock().unwrap();
+        for (role, text) in rows {
+            store.message(&worker_sid, role, text).unwrap();
+        }
+        before(&store, &worker_sid);
+        store.finish_task_turn(&worker_sid, false, false).unwrap();
+    }
+    agents.remove(&worker_sid);
+    completed_with_agents(state, &agents, &worker_sid, run.team.as_ref(), false, false, Some(CODEX_REFUSAL), &mut |_| {});
+    worker_sid
+}
+#[test]
+fn a_reply_before_a_mid_turn_coordination_row_means_no_startup_refusal() {
+    model_efforts::reset(false);
+    let model = "mid-turn-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("mt", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    // The harness replied, then a coordination row arrived, then the error: not at startup.
+    refuse_after(&state, &[("assistant", "Looking at the parser now."), ("coordination", "Team note."), ("error", CODEX_REFUSAL)], |_, _| {});
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.effort_retried), ("failed", false));
+    crate::model_health::record_success("codex", model);
+}
+#[test]
+fn after_a_restart_the_relaunch_never_deletes_a_prompt() {
+    model_efforts::reset(false);
+    let model = "restart-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("rs", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    // No launch record (as after an app restart): the newest prompt row stands in for it.
+    let worker_sid = refuse_after(&state, &[("error", CODEX_REFUSAL)], |_, sid| {
+        launch_prompt(sid, true);
+    });
+    let store = state.store.lock().unwrap();
+    assert_eq!(load(&store, &sid).unwrap().unwrap().workers[0].status, "queued");
+    let prompts: i64 = store.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user'", [&worker_sid], |r| r.get(0)).unwrap();
+    assert_eq!(prompts, 1, "without the launch's own record nothing is deleted (the prompt may repeat)");
+    drop(store);
+    crate::model_health::record_success("codex", model);
+}
+
+#[test]
+fn a_blank_effort_asks_for_no_catalog_lookup() {
+    assert!(!wants_effort(&json!({"key":"a"})));
+    assert!(!wants_effort(&json!({"reasoningEffort":null})));
+    assert!(!wants_effort(&json!({"reasoningEffort":"   "})));
+    assert!(wants_effort(&json!({"reasoningEffort":" High "})));
+}
+#[test]
+fn only_errors_about_the_reasoning_effort_are_refusals() {
+    let recorded = [
+        "The selected Codex model does not support this reasoning effort. Choose another effort or use harness settings.",
+        "The selected Claude model does not support this reasoning effort. Choose another effort or use harness settings.",
+        "Unsupported reasoning effort for this provider",
+        "This model does not advertise an adjustable reasoning effort. Choose harness settings.",
+    ];
+    for error in recorded {
+        assert!(model_efforts::rejected(error), "{error}");
+    }
+    for unrelated in [
+        "Invalid API key. Set the reasoning effort in Settings once you are signed in.",
+        "Request failed: invalid JSON; reasoning effort was high",
+        "Overloaded.",
+        // Only the known shared phrases count: a generic mention is an ordinary failure.
+        "Error: invalid reasoning effort 'turbo'",
+    ] {
+        assert!(!model_efforts::rejected(unrelated), "{unrelated}");
+    }
+}
+
+#[test]
+fn an_effort_refusal_on_a_worker_its_team_stopped_still_counts_against_the_model() {
+    model_efforts::reset(false);
+    let model = "team-stopped-refusal-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("ts", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    let mut agents = state.agents.lock().unwrap();
+    {
+        let store = state.store.lock().unwrap();
+        // The team stopped this worker in the same generation (as when its parent settles).
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].status = "stopped".into();
+        save(&store, &mut team).unwrap();
+        // As lib.rs does: a relaunch is expected, so the health failure is skipped there.
+        assert!(!counts_against_model(&store, run.team.as_ref(), &worker_sid, CODEX_REFUSAL));
+        store.finish_task_turn(&worker_sid, false, false).unwrap();
+    }
+    agents.remove(&worker_sid);
+    completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, Some(CODEX_REFUSAL), &mut |_| {});
+    drop(agents);
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.effort_retried), ("stopped", false), "not relaunched");
+    assert!(!crate::model_health::is_healthy("codex", model), "the skipped failure is recorded");
+    crate::model_health::record_success("codex", model);
+}
+
+#[test]
+fn a_worker_abandoned_after_the_run_end_decided_still_has_its_refusal_recorded() {
+    model_efforts::reset(false);
+    let model = "abandoned-between-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("ab", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    let mut agents = state.agents.lock().unwrap();
+    let decided = {
+        let store = state.store.lock().unwrap();
+        // The run's end decides once: a relaunch, so lib.rs skips the health failure.
+        let decided = !counts_against_model(&store, run.team.as_ref(), &worker_sid, CODEX_REFUSAL);
+        assert!(decided);
+        // The lead cancels the worker before the team settles the run.
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].abandoned = true;
+        team.workers[0].status = "stopped".into();
+        save(&store, &mut team).unwrap();
+        store.finish_task_turn(&worker_sid, false, false).unwrap();
+        decided
+    };
+    agents.remove(&worker_sid);
+    completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, RunEnd::Harness { error: CODEX_REFUSAL, effort_relaunch: Some(decided) }, &mut |_| {});
+    drop(agents);
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.effort_retried), ("stopped", false), "not relaunched");
+    assert!(!crate::model_health::is_healthy("codex", model), "the decided-and-skipped failure is recorded");
+    crate::model_health::record_success("codex", model);
+}
+#[test]
+fn failover_without_a_requested_effort_takes_the_new_models_default() {
+    model_efforts::reset(false);
+    let model = "fo-default-model";
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.catalog = ["codex", "cline"].iter().map(|p| profile(&format!("{p}-m"), p, model, model)).collect();
+        // The first harness's roster profile carries its own default; the lead asks for none.
+        team.config.workers.push(WorkerProfile { id: "cxd".into(), name: "Cxd".into(), provider: "codex".into(), model: model.into(), reasoning_effort: Some("xhigh".into()) });
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("fd", json!({"profileId":"cxd"}))]})).unwrap();
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    assert_eq!(team.workers[0].reasoning_effort.as_deref(), Some("xhigh"));
+    team.workers[0].status = "failed".into();
+    assert!(fail_over(&store, &mut team, 0, "harness error").unwrap());
+    assert_eq!(team.workers[0].provider, "cline");
+    assert_eq!(team.workers[0].reasoning_effort, None, "the old harness's default is not carried over");
+    assert_eq!(store.session(&team.workers[0].session_id).unwrap().reasoning_effort, None);
+}
+
+#[test]
+fn an_effort_that_is_not_a_level_is_refused_or_ignored() {
+    assert_eq!(model_efforts::check(Some(" High ".into())), Ok(Some("high".into())));
+    assert_eq!(model_efforts::check(Some("  ".into())), Ok(None));
+    assert_eq!(model_efforts::check(Some("Extra_High".into())), Ok(Some("extra_high".into())), "catalog IDs with underscores");
+    for bad in ["x".repeat(33), "hi gh".into(), "max!".into(), "élevé".into(), "-x".into(), "--help".into(), "hi\tgh".into()] {
+        assert_eq!(model_efforts::check(Some(bad.clone())), Err(model_efforts::NOT_A_LEVEL), "{bad}");
+    }
+    let (state, sid) = auto_state();
+    let long = "x".repeat(40);
+    // An explicit provider gets the error.
+    let error = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("e1", json!({"provider":"codex","model":"m","reasoningEffort":long}))]})).unwrap_err();
+    assert!(error.contains("must be a level"), "{error}");
+    // Otherwise it is ignored with a note, and nothing inflated is kept.
+    let result = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("e2", json!({"profileId":"kimi","reasoningEffort":long}))]})).unwrap();
+    assert!(result["routing"][0].as_str().unwrap().contains("Ignored."), "{result}");
+    let store = state.store.lock().unwrap();
+    let worker = load(&store, &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!(worker.reasoning_effort, None);
+    assert!(requested_effort(&store, &worker.id).unwrap().is_none());
+}
+
+#[test]
+fn a_fork_of_a_worker_transcript_takes_the_leads_mode() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("fk", json!({}))]})).unwrap();
+    let store = state.store.lock().unwrap();
+    let worker_sid = load(&store, &sid).unwrap().unwrap().workers[0].session_id.clone();
+    assert_eq!((store.session(&sid).unwrap().mode.as_str(), store.session(&worker_sid).unwrap().mode.as_str()), ("ask", "full"));
+    store.message(&worker_sid, "assistant", "Parser done.").unwrap();
+    let at = store.db.last_insert_rowid();
+    let fork = crate::conversation_fork::at_message(&store, &worker_sid, at).unwrap();
+    assert_eq!(fork.mode, "ask", "the worker's full access does not carry into the user's chat");
+    // A /btw side thread of the worker takes the lead's mode too; without a main, the requested one.
+    assert_eq!(side_thread_mode(&store, Some(&worker_sid), Some("full".into())).unwrap().as_deref(), Some("ask"));
+    assert_eq!(side_thread_mode(&store, None, Some("full".into())).unwrap().as_deref(), Some("full"));
+    assert!(side_thread_mode(&store, Some("missing"), None).is_err());
+    // An ordinary task's fork keeps its own mode.
+    let own = store.create_session(&store.session(&sid).unwrap().project_id, "claude", "default", "plan").unwrap();
+    store.message(&own.id, "user", "Plan the refactor.").unwrap();
+    let at = store.db.last_insert_rowid();
+    assert_eq!(crate::conversation_fork::at_message(&store, &own.id, at).unwrap().mode, "plan");
+}
+
+#[test]
+fn a_catalog_level_the_provider_check_rejects_is_never_used() {
+    model_efforts::reset(false);
+    model_efforts::seed("claude", &[("odd-model", &["low", "turbo"])]);
+    let turbo = Some("turbo".to_string());
+    // The run would fail the provider check before the harness starts, so it is not kept.
+    assert_eq!(model_efforts::fit("claude", "odd-model", turbo.as_ref()).0, None);
+    let error = model_efforts::explicit("claude", "odd-model", turbo.as_ref()).unwrap_err();
+    assert!(error.ends_with("Use one of: low."), "{error}");
+}
+#[test]
+fn the_team_stopping_a_worker_is_read_as_stopped() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("st", json!({}))]})).unwrap();
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    let worker_sid = team.workers[0].session_id.clone();
+    let admission = Admission { parent: sid.clone(), generation: team.generation };
+    assert!(!stopped_by_team(&store, Some(&admission), &worker_sid));
+    team.workers[0].status = "stopped".into();
+    save(&store, &mut team).unwrap();
+    assert!(stopped_by_team(&store, Some(&admission), &worker_sid));
+    assert!(!stopped_by_team(&store, Some(&admission), &sid), "never the lead");
+}
+#[test]
+fn a_relaunch_decided_before_the_team_moved_on_still_records_health() {
+    model_efforts::reset(false);
+    let model = "generation-moved-model";
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("gm", json!({"provider":"codex","model":model,"reasoningEffort":"max"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker_sid = run.config.session_id.clone();
+    let decided = !counts_against_model(&state.store.lock().unwrap(), run.team.as_ref(), &worker_sid, CODEX_REFUSAL);
+    assert!(decided);
+    // The team is paused (a new generation) before the run settles.
+    control_state(&state, &sid, "pause").unwrap();
+    let mut agents = state.agents.lock().unwrap();
+    state.store.lock().unwrap().finish_task_turn(&worker_sid, false, false).unwrap();
+    agents.remove(&worker_sid);
+    completed_with_agents(&state, &agents, &worker_sid, run.team.as_ref(), false, false, RunEnd::Harness { error: CODEX_REFUSAL, effort_relaunch: Some(decided) }, &mut |_| {});
+    drop(agents);
+    assert!(!crate::model_health::is_healthy("codex", model), "recorded although the team did not settle the run");
+    crate::model_health::record_success("codex", model);
+}
+
+#[test]
+fn workers_always_run_in_full_access() {
+    assert_eq!(WORKER_PERMISSION_MODE, "full");
+}
+
+#[test]
+fn no_reasoning_never_becomes_some_reasoning() {
+    model_efforts::reset(false);
+    model_efforts::seed("codex", &[("no-off-model", &["low", "high"])]);
+    let off = Some("off".to_string());
+    assert_eq!(model_efforts::fit("codex", "no-off-model", off.as_ref()).0, None, "never low");
+    let (effort, note) = model_efforts::apply("codex", "no-off-model", off.as_ref(), Some(&"high".to_string()));
+    assert_eq!(effort, None, "the model's default, not the inherited high");
+    assert!(note.unwrap().ends_with("using the model's default"));
+    assert_eq!(model_efforts::fit("codex", "no-off-model", Some(&"none".to_string())).0, None);
+}
+
+#[test]
+fn the_worker_only_check_leaves_a_running_lead_alone() {
+    let (state, sid) = auto_state();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("ro", json!({}))]})).unwrap();
+    let store = state.store.lock().unwrap();
+    let worker_sid = load(&store, &sid).unwrap().unwrap().workers[0].session_id.clone();
+    assert!(refuse_worker(&store, &sid).is_ok(), "a lead is not a worker");
+    assert!(check_manual(&store, &sid).is_err(), "the general check still holds an active team");
+    assert!(refuse_worker(&store, &worker_sid).unwrap_err().contains("managed by its architect"));
+}
+
+#[test]
+fn a_launched_worker_carries_its_run_start_and_a_requeued_one_does_not() {
+    let (state, sid) = auto_state();
+    let ids = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("sa", json!({"profileId":"kimi"}))]})).unwrap();
+    let id = ids["workerIds"][0].as_str().unwrap().to_string();
+    let worker = || load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!(worker().started_at, None, "queued, not started");
+    assert!(serde_json::to_value(worker()).unwrap().get("startedAt").is_none());
+    let before = storage::now();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let started = worker().started_at.expect("set when the scheduler launched the run");
+    assert!(started >= before);
+    assert_eq!(serde_json::to_value(worker()).unwrap()["startedAt"], started);
+    finish(&state, &run, "Done; tests pass.", true);
+    // A follow-up queues it again: the next run gets its own start.
+    call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"sa2","prompt":"Also document it."})).unwrap();
+    assert_eq!((worker().status.as_str(), worker().started_at), ("queued", None));
+    assert!(serde_json::to_value(worker()).unwrap().get("startedAt").is_none());
+}
+
+#[test]
+fn leads_team_is_true_only_for_a_task_with_a_saved_team() {
+    let path = std::env::temp_dir().join(format!("pandacode-leads-team-{}.db", storage::id()));
+    let store = Store::open(&path).unwrap();
+    let project = store.add_project(&std::env::temp_dir()).unwrap();
+    let lead = store.create_session(&project.id, "codex", "default", "full").unwrap().id;
+    let plain = store.create_session(&project.id, "codex", "default", "full").unwrap().id;
+    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead]).unwrap();
+    assert!(leads_team(&store, &lead).unwrap());
+    assert!(!leads_team(&store, &plain).unwrap());
+    assert!(!leads_team(&store, "missing").unwrap());
+    drop(store);
+    let _ = std::fs::remove_file(path);
 }

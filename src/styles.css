@@ -304,6 +304,49 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .work-area[data-tiles]>.conversation-pane .account-switch-note{margin-inline:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}
 @media(min-width:651px){.work-area>.conversation-pane .account-switch-note{margin-inline:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}}
 .message-error{display:flex;gap:9px;padding:12px;margin-bottom:20px;color:var(--danger);background:var(--tone-danger-bg);border-radius:var(--radius-sm);font-size:var(--thread-font)}
+/* Thread errors (main.ts errorRowHtml): one compact row per distinct error, with a count, a disclosure and a dismiss. */
+.thread-errors{display:flex;flex-direction:column;gap:4px;margin-bottom:20px}
+.thread-errors:empty{display:none}
+.thread-errors>.message-error{margin:0}
+/* What an emptied turn's error box leaves (main.ts dismissedNoteHtml): quiet meta text, no box. */
+.errors-dismissed-note{margin:0 0 20px;font-size:var(--ds-text-sub);line-height:20px;color:var(--faint)}
+.turn-card>.errors-dismissed-note{margin:0;padding:2px 10px 0}
+.message-error.error-row{display:block;padding:0;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);color:var(--text);font-size:var(--thread-font)}
+/* Clear of the floating action dock, as .account-switch-note is: the row's buttons sit at its right edge. A box on its
+   own keeps a margin; inside a turn card the box runs the card's full width, like the card's header and reply, and only
+   the controls (×, disclosure, Dismiss all) and the detail's text keep clear. */
+.work-area[data-tiles]>.conversation-pane{--error-dock-clear:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}
+@media(min-width:651px){.work-area>.conversation-pane{--error-dock-clear:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}}
+.conversation-pane .thread-errors:not(.turn-card-errors){margin-inline-end:var(--error-dock-clear,0px)}
+.conversation-pane .turn-card-errors .error-row-head,.conversation-pane .turn-card-errors .error-dismiss-all-row{padding-inline-end:calc(var(--error-dock-clear,0px) + 3px)}
+.conversation-pane .turn-card-errors .error-row-detail{margin-inline-end:var(--error-dock-clear,10px)}
+/* Inside a card (already a legible plate over a wallpaper) a row is the card's quiet inner fill, the alert icon carries the tone. */
+.workspace[data-scene] .conversation-pane .turn-card-errors .message-error.error-row{background:var(--ds-card-inner)}
+.error-row-head{display:flex;align-items:center;gap:8px;min-height:34px;padding:2px 3px 2px 10px}
+.error-row-icon{flex:none;display:grid;width:16px;height:16px}
+.error-row-icon>.icon{width:16px;height:16px}
+.error-row-summary{flex:1;min-width:0;padding:3px 0;line-height:1.4;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
+.error-row-count{flex:none;padding:0 7px;border:1px solid var(--ds-border);border-radius:999px;color:var(--muted);font-size:var(--ds-text-meta);font-variant-numeric:tabular-nums;line-height:1.6}
+.error-row-button{flex:none;display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);cursor:pointer;
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.error-row-button{--press:.9}
+.error-row-button>.icon{width:15px;height:15px}
+.error-row-toggle>.icon{transition:rotate var(--ds-ease-out) ease-out}
+.error-row-toggle[aria-expanded="true"]>.icon{rotate:90deg}
+.error-row-button:hover,.error-dismiss-all:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.error-row-button:active,.error-dismiss-all:active{background:var(--ds-row-press)}
+.error-row-button:focus-visible,.error-dismiss-all:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.error-row-detail:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.error-row .secondary-button{flex:none}
+.error-row-detail{max-height:240px;margin:0 10px 10px 34px;padding:8px 10px;overflow:auto;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card-inner);color:var(--text);
+  font:var(--text-sm)/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
+.error-row-detail[hidden]{display:none}
+.error-dismiss-all-row{display:flex;justify-content:flex-end}
+.error-dismiss-all{min-height:28px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-meta);cursor:pointer;
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+@media(prefers-contrast:more){.message-error.error-row,.error-row-count,.error-row-detail{border-color:var(--border)}.error-row-count,.error-row-button,.error-dismiss-all{color:var(--text)}}
+@media(forced-colors:active){.message-error.error-row,.error-row-count,.error-row-detail{border:1px solid CanvasText}.error-row-icon{color:CanvasText}.error-row-button,.error-dismiss-all{color:ButtonText}}
+@media(prefers-reduced-motion:reduce){.error-row-button,.error-dismiss-all,.error-row-toggle>.icon{transition:none}}
 .composer-area{padding:0 30px 17px;margin:0 auto;width:100%;max-width:950px;flex-shrink:0}
 .composer{border:1px solid transparent;border-radius:var(--radius-md);background:var(--bg);box-shadow:0 2px 5px rgb(0 0 0 / .025), 0 8px 24px rgb(0 0 0 / .035);transition:border-color var(--ds-ease-in) ease-out,box-shadow var(--ds-ease-in) ease-out}
 .composer:focus-within{border-color:transparent;box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .12), 0 8px 24px rgb(0 0 0 / .035)}
@@ -1032,3 +1075,21 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
  * when it settles. Only then: permanently, an unanchored WKWebView jumps when scrolling up. */
 #transcript>*{contain-intrinsic-size:auto 300px}
 #transcript[data-window-resizing]>*{content-visibility:auto}
+.toast{padding-right:40px}
+/* A long notice is clamped to 5 lines; with the pointer on it or focus in it (tabbing to its buttons) the whole text
+   shows, a jump rather than an animation, scrolling past 60vh. Screen readers read the full text either way. */
+.toast:is(:hover,:focus-within){-webkit-line-clamp:none;max-height:min(60vh,480px);overflow-y:auto}
+.toast-close{position:absolute;top:5px;right:5px;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.toast-close:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.toast-close:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.toast-close .icon{width:14px;height:14px}
+.toast-count{margin-left:.35em;color:var(--muted);font-variant-numeric:tabular-nums}
+/* Error toasts (notify tone 'danger'): a danger alert mark (data-state-tone="danger", design-system.css) takes the accent dot's place. */
+.toast[data-danger]::before{content:none}
+.toast-icon{position:absolute;left:9px;top:calc(10px + .725em - 7px);display:grid;width:14px;height:14px}
+.toast-icon .icon{width:14px;height:14px}
+@media(forced-colors:active){.toast-icon{color:CanvasText}}
+/* The bot failover error is a thread error card (main.ts renderBotFailover): only its spacing differs. */
+.message-error.error-row.bot-failover-error{margin:0 0 8px;font-size:var(--text-sm)}
+@media(forced-colors:active){.toast-close{color:ButtonText}}
+@media(prefers-reduced-motion:reduce){.toast-close{transition:none}}

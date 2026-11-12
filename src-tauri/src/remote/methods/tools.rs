@@ -202,6 +202,8 @@ async fn run_recipe(ctx: Ctx<'_>, this: RecipesRun) -> Result<Value> {
     // The mode check comes first, so a refused device never reaches the dry run at all.
     let mode = workspace_task(&ctx.state(), &this.session_id).await?.mode;
     allow_task_mode(&mode, None, ctx.full_access)?;
+    // Its messages would prompt a team lead, whose workers run in full access.
+    super::allow_remote_team_for(&ctx.state(), &this.session_id, ctx.full_access).await?;
     let (_, _, plan) = plan_for(&ctx, &this.session_id, &this.name).await?;
     if let Some(step) = plan.steps.iter().find(|step| step.status == "blocked") {
         return Err(format!("Step {} is blocked: {}", step.index + 1, step.reason));
@@ -214,7 +216,7 @@ async fn run_recipe(ctx: Ctx<'_>, this: RecipesRun) -> Result<Value> {
     let session_id = this.session_id;
     // Background lane: never check-then-send beside a `task.send` or `schedules.runNow`.
     let _turn = super::task_send_lock(&session_id).await;
-    let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
+    let busy = || crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
     // Like the desktop's Run: one message per step, through the task's queue. A busy
     // task queues each; an idle one gets the first now and the rest after each run.
     let (mut sent, mut queued) = (0, 0);

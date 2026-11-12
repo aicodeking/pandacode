@@ -255,10 +255,34 @@ approval policy: remote prompts get no more power than local ones. Access (remot
 sender in presence, replay) is checked again when a queued request runs, not only when it arrives.
 
 **Full access for remote tasks** (`remote_full_access` in `remote.json`, off by default): while
-off, `task.start` without a mode starts in `ask`; an explicit `full` in `task.start` or
+off, `task.start` without a mode starts in `ask` and makes a plain task: the saved default agent
+team is not applied (its workers would run with full access), so no team is started remotely; an explicit `full` in `task.start` or
 `task.configure`, and any `task.send`, `task.steer` or mode-less `task.configure` on a task whose
-stored mode is `full`, are refused with `Full access is off for remote tasks on <host>.` This
-prevents accidents; it is not a boundary against a device that can also answer approvals.
+stored mode is `full`, are refused with `Full access is off for remote tasks on <host>.` A task
+that leads an agent team (one with a team configured, active or not) is also refused for
+`task.send`, `task.steer` and `task.teamResume`, whatever the lead's own mode, with `Team workers
+run with full access; allow full access for remote tasks to drive a team remotely.`: team workers
+always run with full access ([architect-workers.md](architect-workers.md)). The same sentence
+refuses `recipes.run` on a team lead, a `queue.update` of a lead's queued prompt (and a headless
+host's queue drain into one), `usage.clearLimit` and `usage.resumeAtReset {on: true}` on a lead,
+`thread.setStage` and `thread.archive` (either way) on a lead (a stage change can wake the lead),
+`thread.setGoal` on a lead (the lead reads its goal like a prompt), an `approval.respond` with
+`approve: true` or an `input.respond` that answers a lead's question (an answer steers the lead
+like a prompt; `approve: false`, and a response that only cancels or declines, `{action: "cancel"
+| "decline"}` or a questions form with no answers, stay allowed so a phone can still stop it),
+`bot.message` when the bot's desktop thread leads a team, `bot.runSchedule` when its scheduled-work
+thread does, a `bot.failoverDecide` that runs a held lead's turn, a `schedules.create`/`update`, `runNow` or enable that
+targets one (a schedule last saved from a remote device is checked again each time it fires: if its
+thread has since come to lead a team and the switch is off, the run is recorded as skipped with the
+reason, `schedules::remote_team_gate`, which says to save it again on the desktop; saving it there clears the mark; schedules version 36 could not tell apart, so the schema 37 migration marks every user-made schedule (agent wakeups excepted) as saved remotely, failing closed; which turns a phone drove is not recorded, so while this computer hosts remote devices an agent's `pandacode_schedule_message` to another thread gets the same mark and gate, and its `pandacode_queue_message` or `pandacode_steer_task` into a different thread that leads a team is refused as a tool error (`agent_tools::allow_cross_thread_team`)), an `orchestration.respond` that accepts a lead's link request (`links::allow_remote_accept`; declining stays allowed), and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
+`github.startTask` make their task without the saved default team, and so does `worktree.create`
+when it makes a new task for a started one (`start::parse` leaves `team`
+off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved
+default team, with or without the switch, as on the desktop. Reports from threads a lead
+launched on linked computers ([machine-orchestration.md](machine-orchestration.md)) still wake
+the lead (`orchestrate::wake`) whatever the switch: the lead started those threads itself, so their
+reports are its own work coming back, not a remote prompt. This prevents
+accidents; it is not a boundary against a device that can also answer a plain task's approvals.
 Shells sit beyond any task's mode, so while it is off `terminal.list`, `terminal.open`,
 `terminal.read`, `terminal.write` (a shell's scrollback holds whatever was typed or printed),
 `terminal.resize`, `terminal.close`,
@@ -1011,7 +1035,7 @@ Round 24:
 | `task.workspaceImage` | `{ sessionId, path, variant: "thumb" | "full", offset? }` | The same chunk shape as `task.attachment`. Uses the local task's workspace image checks: relative paths only, no traversal or escaping symlinks, image types only, and a maximum source size of 8 MiB. Like `files.image`, it refuses paths into `.git`, secret files below Full and hard-linked files. Mirrors are refused. |
 
 | `task.send` | `{ sessionId, text }` | `{ queued: boolean }`. Queued if the task is running, like Enter. If the run ended between the check and the queue add, the host takes the entry back and sends it. |
-| `task.teamResume` | `{ sessionId }` | `{}`. The desktop's Resume (`architect_control` with `resume`) for a team that is `paused`, `failed` or `interrupted`; any other team is refused. Resuming starts agents, so it needs the `control` scope and a task stored in `full` needs Full access for remote tasks, as for `task.send`. Hosts without it answer `Unknown method.`, and the phone and desktop mirror say to update that computer. |
+| `task.teamResume` | `{ sessionId }` | `{}`. The desktop's Resume (`architect_control` with `resume`) for a team that is `paused`, `failed` or `interrupted`; any other team is refused. Resuming starts agents, so it needs the `control` scope and Full access for remote tasks, since its workers run with full access (and as for `task.send`). Hosts without it answer `Unknown method.`, and the phone and desktop mirror say to update that computer. |
 | `task.stop` | `{ sessionId }` | `{}`. For a task whose team is running or waiting this is the desktop Stop button (`architect_control` with `stop`): the team is paused, unsettled workers are marked stopped, and the architect's and workers' runs are stopped, also between architect turns when no agent of the task itself runs. Otherwise it stops the task's run (`stop_session`). |
 | `task.steer` | `{ sessionId, text }` | `{}` (as `steer_task`) |
 | `task.configure` | `{ sessionId, provider?, model?, effort?, mode? }` | `{}`. `provider` and `model` together (a provider not installed there is refused as in `task.start`); `effort: null` clears it; `mode` changes permissions. |
@@ -1150,22 +1174,22 @@ paged replies take `offset` and answer `next`.
 | Method | Scope | RO / lane | Params → notes |
 |---|---|---|---|
 | `thread.rename` | control | O | `sessionId, title` |
-| `thread.archive` | control | O | `sessionId, archived` (the phone's Archived section and Undo) |
+| `thread.archive` | control | O | `sessionId, archived` (the phone's Archived section and Undo). On a team lead it needs Full access for remote tasks. |
 | `thread.delete` | full | O | `sessionId` |
 | `thread.pin` | control | O | `sessionId, pinned` |
 | `thread.fork` | control | O | `sessionId, messageId, before?` |
 | `thread.export` | view | RO | `sessionId, offset?, token?` → `{ text, offset, next, total, token, version }`. Offset 0 snapshots the Markdown and answers a `token` (per device and task, 10 min); later pages pass it back and read that snapshot; an unknown or expired token is refused (`This export changed or expired. Export again.`). Without a token (older phones) each page rebuilds and `version` (a hash) shows a change. |
-| `thread.goal` / `thread.setGoal` | view / control | RO / O | `sessionId` / `sessionId, description` |
-| `thread.setStage` | control | O | `sessionId, stage` (a known task stage) |
+| `thread.goal` / `thread.setGoal` | view / control | RO / O | `sessionId` / `sessionId, description`. `thread.setGoal` on a team lead needs Full access for remote tasks. |
+| `thread.setStage` | control | O | `sessionId, stage` (a known task stage). On a team lead it needs Full access for remote tasks. |
 | `slash.list` | view | RO | `sessionId, force?` → `{ commands, warnings, truncated }`; `force` (re-scan the harness) needs control |
 | `slash.resolve` | control | B | `sessionId, text`. Waits in the background lane up to 30 s (Round 20). Refused for a bot's thread. |
-| `btw.ask` | control | B | `sessionId, text, sideId?, seenId?` → `{ sideId, title, seenId, created }`. Reuses `sideId` only if this host linked it to the task, it is in the same project and not archived; otherwise makes a new side thread (a fork at the last message for a worktree task, else a new task with the task's provider, model and mode, which must pass the Full-access rule). Refused for bot conversations and while the side thread is still answering; a side thread made by a failed ask is deleted. |
+| `btw.ask` | control | B | `sessionId, text, sideId?, seenId?` → `{ sideId, title, seenId, created }`. Reuses `sideId` only if this host linked it to the task, it is in the same project and not archived; otherwise makes a new side thread (a fork at the last message for a worktree task, else a new task with the task's provider, model and mode, which must pass the Full-access rule, and never the saved default team). Refused for bot conversations and while the side thread is still answering; a side thread made by a failed ask is deleted. |
 | `queue.list` | view | RO | `sessionId` |
-| `queue.update` / `queue.remove` / `queue.reorder` | control | O | `sessionId, id, text` / `sessionId, id` / `sessionId, ids` |
+| `queue.update` / `queue.remove` / `queue.reorder` | control | O | `sessionId, id, text` / `sessionId, id` / `sessionId, ids`. `queue.update` on a team lead needs Full access for remote tasks. |
 | `queue.restore` | control | O | `sessionId, id`. Puts back the exact entry (text, attachments) a `queue.remove` took out in the last 60 s, at its old index; at most 8 held per task. Idempotent; no mode check (it only restores what was queued). Refused once the task has a newer user message or the hold expired: `This message can no longer be put back.` Delivery is checked before the idempotency check, so an entry that was restored and later sent reports that it can't be put back. The demo host does the same. |
 | `usage.get` | view | RO | `sessionId?, refresh?` (token ledger) |
 | `usage.limits` | view | RO | `provider, refresh?`; `refresh` (asks the provider) needs control |
-| `usage.resumeAtReset` / `usage.clearLimit` | control | O | `sessionId, on` / `sessionId` |
+| `usage.resumeAtReset` / `usage.clearLimit` | control | O | `sessionId, on` / `sessionId`. Resuming (`on: true`) or clearing a team lead's limit needs Full access for remote tasks. |
 | `git.status` / `git.branches` / `worktree.status` | view | RO | `sessionId`. Staged renames and copies carry `origPath`. |
 | `git.stage` | control | O | `sessionId, paths \| all, unstage?` → `{ count, skipped? }` for `all`. Named paths: up to 5,000; `all`: up to 50,000 files, folder and submodule rows skipped and counted, run over pathspec chunks. Refused while a background git call holds the checkout (`Another git change is still running on this checkout.`). `unstage` of a staged rename or copy is `origPath`-aware: unstaging its `path` also restores its `origPath` in the index, so the old name does not stay staged as a deletion. |
 | `git.discard` | control | O | `sessionId, paths, skipFolders?` (1–500 files) → `{ count, skipped? }`. With `skipFolders` (Discard all) folder and submodule rows are left out and counted in `skipped`; without it a named folder is refused. Git runs over 8 KiB pathspec chunks. Restores tracked files from HEAD and deletes only the untracked files it names; discarding a rename's new path also restores the old one; refused while any agent works in the checkout or another git change holds it; `allow_task_mode`; change gate; idempotent. |
@@ -1174,7 +1198,7 @@ paged replies take `offset` and answer `next`.
 | `git.switchBranch` | full | O | `sessionId, branch`. Refused while a background git call holds the checkout, as `git.stage`. |
 | `worktree.merge` | full | B | `sessionId`. Hooks as `git.commit`. |
 | `worktree.remove` | full | B | `sessionId, deleteBranch?` |
-| `worktree.create` | full | B | `sessionId, branch?` (default: from the task's issue or title, under `pandacode/`). Refused while the agent runs or when the task already has one; holds the project's checkout lock. An unstarted task moves into the new worktree (the desktop's `attach_worktree`); a started one gets a new task there with its harness and model (`create_worktree`). `git worktree add` never runs hooks; with the switch off a repository whose config names programs (filters) is refused. Reply `{sessionId, moved, branch}` (no local path since Round 20). |
+| `worktree.create` | full | B | `sessionId, branch?` (default: from the task's issue or title, under `pandacode/`). Refused while the agent runs or when the task already has one; holds the project's checkout lock. An unstarted task moves into the new worktree (the desktop's `attach_worktree`); a started one gets a new task there with its harness and model (`create_worktree`), and the saved default team only with Full access for remote tasks. `git worktree add` never runs hooks; with the switch off a repository whose config names programs (filters) is refused. Reply `{sessionId, moved, branch}` (no local path since Round 20). |
 | `pull.create` | full | B | `sessionId, title, body?, base?, draft?, sendId?`. The push runs hooks as `git.commit`. |
 | `pull.review` | full | B | `sessionId, event: approve\|request_changes\|comment, body?, sendId?` → `{ number }`. `gh pr review` on the task's linked pull request through `run_gh_as` with the phone's trust; the body goes as `--body=` and is required except for approve. A once-method (`sendId`); clears the pull cache. Needs Full, like `github.comment`, because it speaks on GitHub as the user's `gh` account. |
 | `turn.summary` / `turn.diff` | view | RO | `sessionId, messageId` / `+ path`. Below Full, `turn.diff` refuses a secret file (by its path or a rename's old path), as `files.read` does. |
@@ -1183,7 +1207,7 @@ paged replies take `offset` and answer `next`.
 | `github.item` | view | RO | `projectId, kind: issue\|pull\|run, number \| runId` |
 | `github.search` | view | RO | `projectId, query` |
 | `github.comment` | full | B | `projectId, kind?: issue\|pull, number, body, sendId?` |
-| `github.startTask` | full | S | `projectId, issueNumber, provider, model, worktree?, mode?, effort?, startId` (titled `Fix #N: …`). `startId` is required (`Missing startId.`), so a retry after a lost reply never starts a second task. |
+| `github.startTask` | full | S | `projectId, issueNumber, provider, model, worktree?, mode?, effort?, startId` (titled `Fix #N: …`). Without Full access for remote tasks the task gets no saved default team. `startId` is required (`Missing startId.`), so a retry after a lost reply never starts a second task. |
 | `schedules.list` / `schedules.runs` | view | RO | `sessionId?` / `sessionId?, scheduleId?, limit?` |
 | `schedules.runNow` | control | B | `scheduleId, sendId?` (sends under the thread's send lock) |
 | `schedules.setEnabled` / `schedules.snooze` | control | O | `scheduleId, enabled` / `scheduleId, minutes` (1 min–7 days) |
@@ -1227,7 +1251,7 @@ paged replies take `offset` and answer `next`.
 | `moodboards.list` / `moodboards.image` | view | RO | `target` → `{ boards: [{ id, name, imageCount, updatedAt, images: [{ id, name, caption, width, height, createdAt }] }], truncated }` / `target, boardId, imageId, full?, offset?` → a `data_page` (JPEG thumbnail, or the agent-size image with `full`), paged like `progress.media`. Bot projects are refused; board membership is checked in one query. |
 | `moodboards.add` | full | B | `projectId, board, imageId, name?` → `{ board }` (the desktop's `MoodboardDetail`, oldest images dropped to fit). Also needs Full access for remote tasks. `imageId` is an upload from this device's `image.put`, claimed as `task.send` claims one (given back if the add fails, removed from the capture folder after it); the desktop's `add_moodboard_image` decodes it into the board in app storage. `board` is a board id and `name` a plain file name (no folders, `..`, leading dot or control characters; default `Image from phone.png`). Emits `moodboards-changed { projectId, boardId }`. |
 | `deploy.targets` | view | RO | — → `{ targets: [{ id, connected, note? }] }` with `id` one of the desktop Deploy menu's targets in its order (`vercel`, `cloudflare`, `railway`, `netlify`, `aws`, `gcloud`, from `src/deploy.ts`). `connected` is decided as `deployItems()` does (`cloud_connections` lists that provider connected); `note` is the menu's "Connect it in Settings → Agents → Cloud sandboxes" for one that is not. No tokens, accounts or project details. |
-| `team.start` | full | S | `projectId`, the `task.start` fields (no `repo`, `worktree` or `branch`), `auto?` or `profileId` (not both); `startId` (required, as for `chat.start`) shared with `task.startStatus` |
+| `team.start` | full | S | Needs Full access for remote tasks (team workers run with full access). `projectId`, the `task.start` fields (no `repo`, `worktree` or `branch`), `auto?` or `profileId` (not both); `startId` (required, as for `chat.start`) shared with `task.startStatus` |
 
 ### Starting a task on another computer
 

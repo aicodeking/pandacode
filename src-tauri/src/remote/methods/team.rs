@@ -217,6 +217,10 @@ fn parse_team_start(params: &Value) -> Result<Box<dyn Run>> {
 impl Run for TeamStart {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
+            // Team workers always run in full access, so a team starts remotely only with the switch.
+            if !ctx.full_access {
+                return Err(super::TEAM_NEEDS_FULL_ACCESS.into());
+            }
             let mut request = *self;
             request.start.mode = capped_mode(request.start.mode.take(), ctx.full_access)?;
             // The switch as admitted decides the checkout gate below, as for `task.start`.

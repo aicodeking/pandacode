@@ -143,6 +143,9 @@ async function chooseModel(page: Page, button: string, provider: string, model: 
   await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).toBeHidden();
   await expect(setup(page)).toBeVisible();
   await expect(setup(page).getByRole('button', { name: button, exact: true })).toContainText(model);
+  // Workers' permissions: full access, approvals granted under the lead; scopes only coordinate edits.
+  // Two short lines: scopes once, then access.
+  expect(await setup(page).locator('.architect-workspace-line').allTextContents()).toEqual(['Write scopes decide who edits what; overlaps wait.', 'Workers have full access; approvals are automatic (deploy and scheduling go back to the lead).']);
 }
 
 async function seedHistory(page: Page, sessionId: string, workerId: string, text = ''): Promise<void> {
@@ -399,7 +402,7 @@ test.describe('architect teams', () => {
     await openWorkers(page).click();
     await page.clock.runFor(250);
     await expect(panel(page).locator('.architect-worker-row')).toHaveCount(2);
-    await expect(panel(page).locator('.architect-panel-count')).toHaveText('2 tasks');
+    await expect(panel(page).locator('.architect-panel-count')).toHaveText('2 workers');
     await expect(page.locator('.task-item')).toHaveCount(visibleTasks);
     await expect(panel(page).getByRole('button', { name: 'Pause team', exact: true })).toBeVisible();
     await panel(page).getByRole('button', { name: 'Pause team', exact: true }).click();
@@ -1345,14 +1348,65 @@ test.describe('architect teams', () => {
     await expect(tools).toHaveAttribute('open', '');
   });
 
+  test('a worker approval reaches the panel only when auto-approval failed, and is the user\'s', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'running', workers: [worker('review', { status: 'queued' }), worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-worker-row').first()).toHaveAttribute('data-worker-id', 'build');
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval', requestId: 'failed-review', text: 'Run the worker verification command?' }));
+    // It needs the user: warn tone, first in the list, and counted in the tally and the trigger.
+    const state = row(page, 'review').locator('.architect-worker-state');
+    // A short word on the row; the full state is its title and what screen readers hear.
+    await expect(state.locator('[aria-hidden="true"]')).toHaveText('Approve?');
+    await expect(state).toHaveAttribute('title', 'Needs you: approval');
+    await expect(state.locator('.sr-only')).toHaveText('Needs you: approval');
+    // The tone is a class on the word; data-state-tone is only on the leading icon.
+    await expect(state).toHaveClass(/architect-worker-state-attention/);
+    // Plain text, not a tone: the warn tone stays on the leading glyph.
+    expect(await state.evaluate(element => getComputedStyle(element).color === getComputedStyle(document.body).color)).toBe(true);
+    await expect(state).not.toHaveAttribute('data-tone');
+    await expect(row(page, 'review').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'near');
+    // The same alert mark as the tally and the request, not the waiting dots.
+    await expect(row(page, 'review').locator('.architect-worker-glyph')).toHaveAttribute('data-glyph', 'alert');
+    await expect(panel(page).locator('.architect-worker-row').first()).toHaveAttribute('data-worker-id', 'review');
+    // Read once: the "needs you" button says it, so the readable copy leaves it out.
+    await expect(panel(page).locator('.architect-panel-tally-text').getByRole('button', { name: '1 needs you' })).toBeVisible();
+    await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 working');
+    // The row only says so; it never carries the decision. Enter opens the transcript with the request focused.
+    await expect(panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-more')).toBeHidden();
+    await expect(panel(page).locator('.architect-worker-list').getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await row(page, 'review').focus();
+    await page.keyboard.press('Enter');
+    const card = panel(page).locator('.architect-worker-approvals .approval-card');
+    await expect(card).toBeFocused();
+    await expect(card).toHaveRole('group');
+    await expect(card).toHaveAccessibleName(/^Reviewer needs you: approval: Run the worker verification command\?$/);
+    await expect(card).toContainText('Automatic approval didn’t apply; your decision is needed.');
+    await card.getByRole('button', { name: 'Approve', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(card).toHaveCount(0);
+    // Focus moves to the transcript's back button, never to the page.
+    await expect(panel(page).getByRole('button', { name: 'Back to workers' })).toBeFocused();
+    expect((await calls(page, 'respond_approval')).map((call: any) => call.args)).toEqual([{ sessionId: 'worker-review', requestId: 'failed-review', approved: true }]);
+    await panel(page).getByRole('button', { name: 'Back to workers' }).click();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval', requestId: 'failed-review', text: 'Run the worker verification command?' }));
+    await expect(state.locator('[aria-hidden="true"]')).toHaveText('Approve?');
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval_cancelled', requestId: 'failed-review', text: '' }));
+    // Queued with a reason: no word on screen (the reason says it); the full status stays for screen readers.
+    await expect(statusOf(row(page, 'review'))).toHaveText('Queued');
+    await expect(state).not.toHaveClass(/architect-worker-state-attention/);
+    await expect(row(page, 'review').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'worker-idle');
+  });
   test('routes worker approvals to the worker session without changing its parent', async ({ page }) => {
     await installArchitect(page, { 'session-2': team('session-2', { status: 'waiting', workers: [worker('build', { status: 'waiting' })] }) });
     await seedHistory(page, 'session-2', 'build');
     await openWorkers(page).click(); await row(page, 'build').click();
     for (const [requestId, decision] of [['approve-build', 'Approve'], ['deny-build', 'Deny']] as const) {
       await page.evaluate(requestId => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId, text: 'Run the worker verification command?' }), requestId);
+      // Only a failed auto-approval arrives here: its decision is in view, not behind a disclosure.
       const card = panel(page).locator('.architect-worker-approvals .approval-card');
+      await expect(card).toContainText('Needs approval');
       await expect(card).toContainText('Run the worker verification command?');
+      await expect(card.getByRole('button', { name: decision, exact: true })).toBeVisible();
       await expect(transcript(page)).not.toContainText('Run the worker verification command?');
       await card.getByRole('button', { name: decision, exact: true }).click();
       await expect(card).toHaveCount(0);
@@ -1367,7 +1421,1054 @@ test.describe('architect teams', () => {
     await installArchitect(page, { 'session-2': team('session-2', { status: 'running', workers: [worker('build', { status: 'running' })] }) });
     await expect(openWorkers(page)).toBeVisible();
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'ask-build', text: 'Run the worker verification command?' }));
-    await expect(page.locator('#toast')).toContainText('A worker needs your input');
+    await expect(page.locator('#toast')).toContainText('A worker needs your approval');
     await expect(openWorkers(page)).toHaveAttribute('aria-label', 'Agents: 1 running');
+  });
+});
+
+
+/* The Workers panel lists one dense line per worker, those that need the reader first, under a
+ * one-line tally and a thin progress bar; each line unfolds its assignment and summary. The
+ * `?workers` preview (src/preview-architect.ts) seeds a running team with a worker in every state. */
+
+/** The tally as drawn, in words: the "needs you" button, each glyph count's title and the "+N" label. */
+const visibleTally = (tally: Locator) => tally.evaluate(element => [...element.children].map(child => child.classList.contains('architect-tally-count') ? child.getAttribute('title')
+  : child.classList.contains('architect-tally-more') ? child.getAttribute('aria-label')!.replace(/^(Show|Hide) /, '') : child.textContent));
+/** Waits for the panel's open spring to settle: the tally's box holds still across two frames. */
+const panelSettled = (page: Page) => expect.poll(() => panel(page).locator('.architect-panel-tally').evaluate(element => new Promise(resolve => {
+  const before = JSON.stringify(element.getBoundingClientRect());
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve(before === JSON.stringify(element.getBoundingClientRect()))));
+}))).toBe(true);
+/** An element's text as drawn: screen-reader-only text left out. */
+const drawnText = (locator: Locator) => locator.evaluate(element => { const copy = element.cloneNode(true) as HTMLElement; copy.querySelectorAll('.sr-only').forEach(node => node.remove()); return copy.textContent!.trim(); });
+const tallySum = (parts: (string | null)[]) => parts.reduce((sum, part) => sum + Number(/^\d+/.exec(part ?? '')?.[0] ?? 0), 0);
+/** A row's full status, as screen readers hear it (Working and Done have no visible word). */
+const statusOf = (row: Locator) => row.locator('.architect-worker-state.sr-only, .architect-worker-state > .sr-only');
+const compactItem = (page: Page, id: string) => panel(page).locator(`.architect-worker-item[data-worker-id="${id}"]`);
+
+async function openShowcase(page: Page): Promise<void> {
+  await page.goto('/?workers');
+  await page.locator('#navigation .task-item').first().waitFor();
+  const toggle = page.locator('#agents-toggle');
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(panel(page)).toBeVisible();
+  // The showcase's failed auto-approval arrives just after the team.
+  await expect(compactItem(page, 'styles').locator('.architect-worker-state')).toHaveAttribute('title', 'Needs you: approval');
+}
+
+test.describe('compact workers list', () => {
+test('workers are dense rows ordered by status, with effort and attempt chips', async ({ page }) => {
+  await openShowcase(page);
+  const rows = panel(page).locator('.architect-worker-row');
+  await expect(rows).toHaveCount(6);
+  // Needs the user first, then failed, working, queued, stopped, and finished work last.
+  await expect.poll(() => rows.evaluateAll(rows => rows.map(row => (row as HTMLElement).dataset.workerId))).toEqual(['styles', 'index', 'search', 'docs', 'audit', 'tests']);
+  // Every row is one 38px line, a failed one too (its reason is cut, never wrapped).
+  for (const height of await rows.evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height))) {
+    expect(height).toBeGreaterThanOrEqual(36); expect(height).toBeLessThanOrEqual(38);
+  }
+  // Effort and attempt sit on the meta line, so the name keeps the first line; status and elapsed share a column.
+  const meta = compactItem(page, 'styles').locator('.architect-worker-meta-line');
+  await expect(meta).toContainText('x-high');
+  await expect(meta).toContainText('×2');
+  // Visible status words share one right edge; Working and Done show none (the glyph says it), only reader text.
+  const edges = await rows.evaluateAll(rows => rows.flatMap(row => [...row.querySelectorAll('.architect-worker-state:not(.sr-only)')].map(word => word.getBoundingClientRect().right)));
+  // Approve? and Stopped: a queued row with a reason ("Waiting for a dependency") shows no word beside it.
+  expect(edges.length).toBe(2);
+  await expect(compactItem(page, 'docs').locator('.architect-worker-state:not(.sr-only)')).toHaveCount(0);
+  await expect(statusOf(compactItem(page, 'docs'))).toHaveText('Queued');
+  expect(new Set(edges.map(Math.round)).size).toBe(1);
+  await expect(compactItem(page, 'search').locator('.architect-worker-state:not(.sr-only)')).toHaveCount(0);
+  await expect(statusOf(compactItem(page, 'search'))).toHaveText('Working');
+  await expect(statusOf(compactItem(page, 'tests'))).toHaveText('Done');
+  await expect(compactItem(page, 'docs').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'worker-idle');
+  // Stopped has a mark of its own (ring and square), still muted, unlike queued's waiting dots.
+  await expect(compactItem(page, 'audit').locator('.architect-worker-glyph')).toHaveAttribute('data-glyph', 'stopped');
+  await expect(compactItem(page, 'audit').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'worker-idle');
+  await expect(compactItem(page, 'docs').locator('.architect-worker-glyph')).toHaveAttribute('data-glyph', 'pending');
+  expect(await compactItem(page, 'audit').locator('.architect-worker-glyph').innerHTML()).not.toBe(await compactItem(page, 'docs').locator('.architect-worker-glyph').innerHTML());
+  // Every status word fits its column untruncated.
+  expect(await panel(page).locator('.architect-worker-state:not(.sr-only)').evaluateAll(words => words.every(word => word.scrollWidth <= word.clientWidth + 1))).toBe(true);
+  // Elapsed time is spoken in full.
+  await expect(compactItem(page, 'search').locator('.architect-worker-row')).toHaveAccessibleName(/^Make search results stream as they arrive, Working, running \d+ minutes? — open transcript$/);
+  // Long runs stay compact: over an hour and over a day, each fitting the column, in full in the title.
+  // 75 minutes reads "75m" (minutes up to 90m), never a floored "1h".
+  await expect(compactItem(page, 'tests').locator('.architect-worker-elapsed')).toHaveText('75m');
+  // A finished row's time says "ran" (a faint prefix), so it never reads like "1h ago"; a running one does not.
+  await expect(compactItem(page, 'tests').locator('.architect-worker-elapsed')).toHaveAttribute('data-ran', '');
+  expect(await compactItem(page, 'tests').locator('.architect-worker-elapsed').evaluate(cell => getComputedStyle(cell, '::before').content)).toMatch(/^"ran\s"/);
+  await expect(compactItem(page, 'search').locator('.architect-worker-elapsed')).not.toHaveAttribute('data-ran');
+  expect(await compactItem(page, 'search').locator('.architect-worker-elapsed').evaluate(cell => getComputedStyle(cell, '::before').content)).toBe('none');
+  await expect(compactItem(page, 'tests').locator('.architect-worker-elapsed')).toHaveAttribute('title', 'ran 1 hour 15 minutes');
+  await expect(compactItem(page, 'audit').locator('.architect-worker-elapsed')).toHaveText('1d');
+  await expect(compactItem(page, 'audit').locator('.architect-worker-row')).toHaveAccessibleName('Audit search accessibility, Stopped, ran 1 day 2 hours — open transcript');
+  expect(await panel(page).locator('.architect-worker-elapsed').evaluateAll(cells => cells.every(cell => cell.scrollWidth <= cell.clientWidth + 1))).toBe(true);
+  // The meta line uses the full width, under the elapsed column too (no reserve).
+  const metaRight = await compactItem(page, 'search').locator('.architect-worker-meta-line').evaluate(meta => ({ right: meta.getBoundingClientRect().right, pad: getComputedStyle(meta).paddingInlineEnd }));
+  const elapsedRight = await compactItem(page, 'search').locator('.architect-worker-elapsed').evaluate(cell => cell.getBoundingClientRect().right);
+  expect(metaRight.pad).toBe('0px');
+  expect(Math.abs(metaRight.right - elapsedRight)).toBeLessThanOrEqual(1);
+  // A queued row has no time and no status word: its elapsed column takes no width, and the name runs to the edge.
+  const docsElapsed = compactItem(page, 'docs').locator('.architect-worker-elapsed');
+  await expect(docsElapsed).toHaveText('');
+  await expect(docsElapsed).toHaveCSS('display', 'none');
+  const docsLine = await compactItem(page, 'docs').locator('.architect-worker-copy > .architect-worker-line').first().evaluate(line => ({ right: line.getBoundingClientRect().right, name: line.querySelector('strong')!.getBoundingClientRect().right }));
+  expect(Math.abs(docsLine.right - docsLine.name)).toBeLessThanOrEqual(1);
+  await expect(compactItem(page, 'search').locator('.architect-worker-effort [aria-hidden="true"]')).toHaveText('high');
+  await expect(compactItem(page, 'search').locator('.architect-worker-effort .sr-only')).toHaveText('reasoning effort high');
+  await expect(compactItem(page, 'styles').locator('.architect-worker-effort [aria-hidden="true"]')).toHaveText('x-high');
+  await expect(compactItem(page, 'docs').locator('.architect-worker-effort')).toHaveCount(0);
+  await expect(compactItem(page, 'index').locator('.architect-worker-attempt [aria-hidden="true"]')).toHaveText('×2');
+  await expect(compactItem(page, 'index').locator('.architect-worker-attempt .sr-only')).toHaveText('attempt 2');
+  await expect(compactItem(page, 'search').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'team');
+  // Failed reads as failed: the danger tone, never the amber of "needs you".
+  await expect(compactItem(page, 'index').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'failed');
+  const toneOf = (locator: Locator) => locator.evaluate(element => getComputedStyle(element).color);
+  expect(await toneOf(compactItem(page, 'index').locator('.architect-worker-glyph'))).not.toBe(await toneOf(panel(page).locator('.architect-panel-tally-text .architect-tally-icon')));
+  await expect(compactItem(page, 'tests').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'ready');
+  await expect(compactItem(page, 'search').locator('.architect-worker-elapsed')).toHaveText(/^\d+m$/);
+  // A long name is cut to one line and keeps its full text in a title.
+  const name = compactItem(page, 'search').locator('.architect-worker-copy strong');
+  await expect(name).toHaveAttribute('title', 'Make search results stream as they arrive');
+  // The tally fits the panel: the minor buckets move to its title when space is short.
+  const tally = panel(page).locator('.architect-panel-tally-text');
+  await expect(tally.locator('.architect-tally-asking')).toHaveText('1 needs you');
+  await expect(tally.locator('.architect-tally-icon')).toHaveAttribute('data-state-tone', 'near');
+  // Counted in the rows' order; a shortened line keeps a visible "+N more" so its counts add up to the workers.
+  await expect(tally).toHaveAttribute('title', '1 needs you · 1 failed · 1 working · 1 queued · 1 stopped · 1 done');
+  // Words first, glyphs as the fallback: at the default width the minor buckets (queued, stopped) fold into "+2 more"
+  // while failed, working and done keep their words. "needs you" keeps its words: it is a button.
+  await expect.poll(() => drawnText(tally)).toBe('1 needs you1 failed1 working1 done+2 more');
+  for (const count of await tally.locator('.architect-tally-count').all()) { expect(await count.textContent()).toBe(await count.getAttribute('title')); await expect(count).toHaveAttribute('data-worded', ''); }
+  // Wide enough, every bucket reads its words.
+  await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '600px'; });
+  await expect.poll(() => drawnText(tally)).toBe('1 needs you1 failed1 working1 queued1 stopped1 done');
+  for (const count of await tally.locator('.architect-tally-count').all()) { expect(await count.textContent()).toBe(await count.getAttribute('title')); await expect(count).toHaveAttribute('data-worded', ''); }
+  // Narrower, the kept buckets go compact: the glyph (in its tone) and the number, the word in the title.
+  await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '340px'; });
+  await expect.poll(() => drawnText(tally)).toBe('1 needs you111+2 more');
+  await expect(tally.locator('.architect-tally-count').first().locator('.architect-tally-glyph')).toHaveAttribute('data-state-tone', 'failed');
+  for (const count of await tally.locator('.architect-tally-count').all()) expect(await count.textContent()).toBe((await count.getAttribute('title'))!.split(' ')[0]);
+  await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '760px'; });
+  await expect.poll(() => visibleTally(tally)).toEqual(['1 needs you', '1 failed', '1 working', '1 queued', '1 stopped', '1 done']);
+  await expect(tally.locator('.architect-tally-more')).toHaveCount(0);
+  await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 failed · 1 working · 1 queued · 1 stopped · 1 done');
+  // Read once: the visible line is hidden from screen readers except its button; the live copy speaks it.
+  expect(await tally.evaluate(element => [...element.children].every(child => child.tagName === 'BUTTON' || child.classList.contains('architect-tally-more') || child.getAttribute('aria-hidden') === 'true'))).toBe(true);
+  expect(await tally.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  // The tally counts the workers, so the header's task count steps aside.
+  await expect(panel(page).locator('.architect-panel-count')).toBeHidden();
+  const bar = panel(page).getByRole('progressbar', { name: 'Workers done' });
+  // Only done counts as progress: the failed and stopped workers do not.
+  await expect(bar).toHaveAttribute('aria-valuenow', '1');
+  await expect(bar).toHaveAttribute('aria-valuemax', '6');
+  // Every row stays folded, the one that needs the user too: its row says so, and its transcript holds the request.
+  await expect(panel(page).locator('.architect-worker-more:visible')).toHaveCount(0);
+  await expect(statusOf(compactItem(page, 'styles'))).toHaveText('Needs you: approval');
+  if (process.env.PANDACODE_SHOT) await panel(page).screenshot({ path: process.env.PANDACODE_SHOT });
+});
+
+test('a row unfolds its assignment and summary by click and keyboard, and opens its transcript', async ({ page }) => {
+  await openShowcase(page);
+  const failed = compactItem(page, 'index'), expand = failed.locator('.architect-worker-expand'), more = failed.locator('.architect-worker-more');
+  const rowButton = failed.locator('.architect-worker-row');
+  // The row only opens the transcript (no expanded state); the caret is the disclosure, and the row's
+  // description says whether the details are shown.
+  await expect(rowButton).not.toHaveAttribute('aria-expanded');
+  await expect(rowButton).toHaveAccessibleName(/^Rebuild the index on change, Failed, ran \d+ minutes? — open transcript$/);
+  await expect(rowButton).toHaveAccessibleDescription(/Details hidden/);
+  await expect(expand).not.toHaveAttribute('aria-hidden');
+  await expect(expand).toHaveAttribute('aria-expanded', 'false');
+  await expect(expand).toHaveAttribute('aria-controls', /^architect-worker-more-/);
+  // A neutral name; aria-expanded carries the state (the tooltip may say Show or Hide).
+  await expect(expand).toHaveAccessibleName('Details for Rebuild the index on change');
+  await expand.click();
+  await expect(expand).toHaveAttribute('aria-expanded', 'true');
+  await expect(rowButton).toHaveAccessibleDescription(/Details shown/);
+  await expect(more).toBeVisible();
+  await expect(more).toContainText('The sample build step failed');
+  await expect(more).toContainText('Rebuild the index on change: sample assignment.');
+  // The adjusted-effort note is in the details too (not only the meta line's title), below the error.
+  await expect(more.locator('.architect-worker-error + .architect-worker-more-quiet')).toHaveText('Asked for high effort; this model ran at medium.');
+  // The footer is the write scope only; model and effort are already on the row.
+  await expect(more.locator('.architect-worker-more-foot small')).toHaveText('Write scope: src/index.ts');
+  await expand.click();
+  await expect(more).toBeHidden();
+
+  // Keyboard: arrows walk the rows, right unfolds and left folds.
+  const row = failed.locator('.architect-worker-row');
+  await row.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(expand).toHaveAttribute('aria-expanded', 'true');
+  await expect(rowButton).toHaveAccessibleDescription(/Details shown/);
+  await page.keyboard.press('ArrowLeft');
+  await expect(expand).toHaveAttribute('aria-expanded', 'false');
+  await expect(rowButton).toHaveAccessibleDescription(/Details hidden/);
+  await page.keyboard.press('ArrowDown');
+  await expect(compactItem(page, 'search').locator('.architect-worker-row')).toBeFocused();
+
+  // Enter on the current row opens its transcript; a failed auto-approval there is brought into view and focused.
+  await compactItem(page, 'styles').locator('.architect-worker-row').focus();
+  await page.keyboard.press('Enter');
+  await expect(panel(page).locator('.architect-worker-approvals .approval-card')).toBeFocused();
+  await expect(panel(page).locator('.architect-worker-approvals .approval-card')).toBeInViewport();
+  // The worker's header (name and model) stays in view above it, whole.
+  await expect(panel(page).locator('.architect-worker-meta')).toBeInViewport({ ratio: 1 });
+  expect(await panel(page).locator('.architect-worker-meta').evaluate(meta => meta.getBoundingClientRect().top >= meta.closest('.architect-panel-scroll')!.getBoundingClientRect().top - 0.5)).toBe(true);
+  // Deny and Approve sit apart from the request and from each other.
+  const actions = panel(page).locator('.architect-worker-approvals .approval-card > div');
+  expect(await actions.evaluate(row => {
+    const [deny, approve] = [...row.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+    const request = row.parentElement!.querySelector('.architect-worker-request')!.getBoundingClientRect();
+    return { gap: approve.left - deny.right >= 8, below: deny.top - request.bottom >= 8 };
+  })).toEqual({ gap: true, below: true });
+  await panel(page).getByRole('button', { name: 'Back to workers' }).click();
+
+  // A finished worker shows its summary; its transcript is one click away.
+  const done = compactItem(page, 'tests');
+  await done.locator('.architect-worker-expand').click();
+  await expect(done.locator('.architect-worker-more')).toContainText('Added three cases');
+  await done.getByRole('button', { name: 'Open transcript', exact: true }).click();
+  await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
+  await expect(panel(page).locator('.architect-panel-tally')).toBeHidden();
+  await panel(page).getByRole('button', { name: 'Back to workers' }).click();
+  await expect(panel(page).locator('.architect-panel-tally')).toBeVisible();
+});
+});
+
+test.describe('compact workers keyboard', () => {
+  test('the list is one Tab stop: arrows move the current row, the caret is not a stop', async ({ page }) => {
+    await openShowcase(page);
+    const rows = panel(page).locator('.architect-worker-row');
+    await expect(rows).toHaveCount(6);
+    await expect(panel(page).locator('.architect-worker-row[tabindex="0"]')).toHaveCount(1);
+    await expect(panel(page).locator('.architect-worker-expand:not([tabindex="-1"])')).toHaveCount(0);
+    // The row opens the transcript; its description (meta line, details state, the one hint) tells it unfolds.
+    const first = rows.first();
+    await expect(first).not.toHaveAttribute('aria-expanded');
+    await expect(first).not.toHaveAttribute('aria-controls');
+    await expect(first).toHaveAttribute('aria-keyshortcuts', 'ArrowRight ArrowLeft Enter');
+    await expect(first).not.toHaveAttribute('aria-description');
+    // Each row: only its short details state and "Right arrow shows details"; the full hint is said once, by the list.
+    // Each row: its meta line and its details state only; the keyboard hint is said once, by the list.
+    await expect(first).toHaveAccessibleDescription(/GPT-6-Astra.*reasoning effort x-high.*attempt 2 Details hidden$/);
+    await expect(panel(page).locator('.architect-worker-list')).toHaveAccessibleDescription(/Home and End jump to the first and last\. Right arrow shows details, left arrow hides them, Enter opens the transcript/);
+    // A note is information, not an error.
+    const docs = compactItem(page, 'docs');
+    await docs.locator('.architect-worker-row').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(docs.locator('.architect-worker-more-quiet')).toContainText('has no reasoning effort setting');
+    await expect(docs.locator('.architect-worker-error')).toHaveCount(0);
+    // The queue reason is on the meta line (cut when short of room) and whole in the details.
+    await expect(docs.locator('.architect-worker-meta-line')).toContainText('Waiting for a dependency');
+    await expect(docs.locator('.architect-worker-more-queue')).toHaveText('Waiting for a dependency');
+    await page.keyboard.press('ArrowLeft');
+    await rows.first().focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(rows.nth(1)).toBeFocused();
+    await expect(rows.nth(1)).toHaveAttribute('tabindex', '0');
+    await expect(rows.first()).toHaveAttribute('tabindex', '-1');
+    await page.keyboard.press('End');
+    await expect(rows.last()).toBeFocused();
+    // Tab leaves the list rather than walking every row and caret.
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => document.activeElement?.closest('.architect-worker-item') === null || !!document.activeElement?.closest('.architect-worker-more'))).toBe(true);
+    await page.keyboard.press('Shift+Tab');
+    await expect(rows.last()).toBeFocused();
+  });
+});
+
+test.describe('compact workers tally', () => {
+  test('"needs you" jumps to the worker, and the full tally returns when the panel widens', async ({ page }) => {
+    await openShowcase(page);
+    const tally = panel(page).locator('.architect-panel-tally-text');
+    await tally.getByRole('button', { name: '1 needs you' }).click();
+    await expect(compactItem(page, 'styles').locator('.architect-worker-row')).toBeFocused();
+    const full = '1 needs you · 1 failed · 1 working · 1 queued · 1 stopped · 1 done';
+    await expect(tally).toHaveAttribute('title', full);
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '320px'; });
+    // Narrow, it ends with a "+N" button that names what it hides; the visible counts still add up.
+    await expect.poll(async () => (await visibleTally(tally)).at(-1)).toMatch(/^\d+ more: /);
+    expect(tallySum(await visibleTally(tally))).toBe(6);
+    const more = tally.locator('.architect-tally-more');
+    // A real button: keyboard focus and Enter unfold the hidden counts on a line of their own, and fold them again.
+    await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText(full.replace('1 needs you · ', ''));
+    await expect(more).toHaveAttribute('title', /stopped/);
+    // On screen it says "+N more"; its accessible name still lists what it hides.
+    await expect(more).toHaveText(/^\+\d more$/);
+    await expect(more).toHaveAccessibleName(/^Show \d more: /);
+    const hidden = panel(page).locator('#architect-tally-hidden');
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    await expect(more).toHaveAttribute('aria-controls', 'architect-tally-hidden');
+    await expect(hidden).toBeHidden();
+    await more.focus();
+    await expect(more).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(hidden).toBeVisible();
+    // Open, the button says "Hide" (its name still starts with what it says), and the unfolded line uses the same
+    // compact glyph counts, each saying its word to screen readers.
+    await expect(more).toHaveText('Hide');
+    await expect(more).toHaveAccessibleName(/^Hide \d more: /);
+    await expect(hidden.locator('.architect-tally-count[title="1 stopped"] .architect-tally-glyph svg')).toHaveCount(1);
+    await expect(hidden.locator('.architect-tally-count[title="1 stopped"] .sr-only')).toHaveText('1 stopped');
+    expect(await drawnText(hidden)).toMatch(/^1+$/);
+    // The shown counts plus the unfolded ones add up to every worker.
+    expect(tallySum((await visibleTally(tally)).slice(0, -1)) + tallySum(await visibleTally(hidden))).toBe(6);
+    expect(await tally.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await page.keyboard.press('Enter');
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    await expect(more).toHaveText(/^\+\d more$/);
+    await expect(more).toHaveAccessibleName(/^Show \d more: /);
+    await expect(hidden).toBeHidden();
+    // Its one focus ring is inset and inside the tally's clip box.
+    await page.keyboard.press('Shift');
+    await tally.getByRole('button', { name: '1 needs you' }).focus();
+    const ring = await tally.getByRole('button', { name: '1 needs you' }).evaluate(button => {
+      const style = getComputedStyle(button), box = button.getBoundingClientRect(), clip = button.parentElement!.getBoundingClientRect();
+      return { visible: button.matches(':focus-visible'), style: style.outlineStyle, offset: style.outlineOffset, inside: box.top >= clip.top - 0.5 && box.bottom <= clip.bottom + 0.5 && box.left >= clip.left - 0.5 };
+    });
+    expect(ring).toEqual({ visible: true, style: 'solid', offset: '-2px', inside: true });
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '760px'; });
+    await expect.poll(() => visibleTally(tally)).toEqual(full.split(' · '));
+  });
+});
+
+test.describe('worker approval card reveal', () => {
+  test('a short window keeps the sticky worker header in view over the revealed card, which names its worker', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 700 });
+    await openShowcase(page);
+    await compactItem(page, 'styles').locator('.architect-worker-row').focus();
+    await page.keyboard.press('Enter');
+    const card = panel(page).locator('.architect-worker-approvals .approval-card');
+    await expect(card).toBeFocused();
+    await expect(card).toHaveAccessibleName(/ needs you: approval: /);
+    const name = await panel(page).locator('.architect-worker-meta strong').textContent();
+    expect((await card.getAttribute('aria-label'))!.startsWith(`${name} needs you: approval: `)).toBe(true);
+    const meta = panel(page).locator('.architect-worker-meta');
+    await expect(meta).toHaveCSS('position', 'sticky');
+    // The pinned band runs edge to edge of the scroller (inside any scrollbar gutter).
+    expect(await meta.evaluate(element => {
+      const scroller = element.closest('.architect-panel-scroll')!, box = element.getBoundingClientRect(), outer = scroller.getBoundingClientRect();
+      return Math.abs(box.left - outer.left - scroller.clientLeft) <= 0.5 && Math.abs(box.right - (outer.left + scroller.clientLeft + scroller.clientWidth)) <= 0.5;
+    })).toBe(true);
+    // Whole and inside the scroller, and the card's top is not under it.
+    await expect.poll(() => meta.evaluate(element => {
+      const box = element.getBoundingClientRect(), scroller = element.closest('.architect-panel-scroll')!.getBoundingClientRect();
+      const card = document.querySelector('.architect-worker-approvals .approval-card')!.getBoundingClientRect();
+      return box.top >= scroller.top - 0.5 && box.bottom <= scroller.bottom + 0.5 && card.top >= box.bottom - 0.5;
+    })).toBe(true);
+    await expect(meta).toBeInViewport({ ratio: 1 });
+    await expect(card).toBeInViewport();
+  });
+});
+
+test.describe('compact workers tally announcements', () => {
+  test('a repaint with unchanged counts leaves the tally untouched, and its live region holds plain text', async ({ page }) => {
+    const start = team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued' })] });
+    await installArchitect(page, { 'session-2': start });
+    await openWorkers(page).click();
+    const live = panel(page).locator('.architect-panel-live');
+    // Opening the panel announces nothing.
+    await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 working · 1 queued');
+    await expect(live).toHaveText('');
+    await expect(live).toHaveAttribute('aria-live', 'polite');
+    await expect(live.locator('button')).toHaveCount(0);
+    await expect(panel(page).locator('.architect-panel-tally-text')).not.toHaveAttribute('aria-live');
+    await page.evaluate(() => {
+      const tally = document.querySelector('.architect-panel-tally')!;
+      (window as any).__tallyMutations = 0;
+      new MutationObserver(records => { (window as any).__tallyMutations += records.length; }).observe(tally, { subtree: true, childList: true, characterData: true, attributes: true });
+    });
+    // A summary changes (a repaint) but no count does.
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 2, workers: [worker('build', { status: 'running', summary: 'Half done.' }), worker('review', { status: 'queued' })] });
+    await panel(page).locator('.architect-worker-item[data-worker-id="build"] .architect-worker-expand').click();
+    await expect(panel(page).locator('.architect-worker-item[data-worker-id="build"] .architect-worker-more')).toContainText('Half done.');
+    expect(await page.evaluate(() => (window as any).__tallyMutations)).toBe(0);
+    // Working → done is not announced; a failure is.
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 3, workers: [worker('build', { status: 'completed' }), worker('review', { status: 'queued' })] });
+    await expect(panel(page).locator('.architect-panel-tally-text')).toHaveAttribute('title', '1 queued · 1 done');
+    await expect(live).toHaveText('');
+    // What a screen reader finds on the tally is current, though nothing was announced.
+    const readable = panel(page).locator('.architect-panel-tally-readable');
+    await expect(readable).toHaveText('1 queued · 1 done');
+    await expect(readable).not.toHaveAttribute('aria-live');
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 4, workers: [worker('build', { status: 'completed' }), worker('review', { status: 'failed' })] });
+    await expect(live).toHaveText('1 failed · 1 done');
+  });
+});
+
+test.describe('compact workers states', () => {
+  test('an empty team is a sentence, not a list; a queued worker shows its reason without an effort', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'running', workers: [] }) });
+    await openWorkers(page).click();
+    const list = panel(page).locator('.architect-worker-list');
+    await expect(list).toContainText('The architect is planning its first assignments.');
+    await expect(list).not.toHaveAttribute('role');
+    await expect(list).not.toHaveAttribute('aria-label');
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), team('session-2', { revision: 2, workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued', dependsOn: ['build'] })] }));
+    await expect(list).toHaveAttribute('role', 'list');
+    await expect(list).toHaveAttribute('aria-label', 'Workers');
+    const meta = panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-meta-line');
+    // Queued: only the reason on the meta line (the model is in the details); the effort is its own label, never cut.
+    await expect(meta.locator('small')).toHaveAttribute('title', /^Waiting for .+$/);
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '220px'; });
+    const effort = meta.locator('.architect-worker-effort');
+    await expect(effort.locator('[aria-hidden="true"]')).toHaveText('medium');
+    await expect(effort).toBeVisible();
+    expect(await effort.evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().width > 0)).toBe(true);
+    expect(await meta.locator('small').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = ''; });
+    // The whole reason is in the row's title and in its unfolded details.
+    const queued = panel(page).locator('.architect-worker-item[data-worker-id="review"]');
+    await expect(queued.locator('.architect-worker-row')).toHaveAttribute('title', /^Reviewer · Waiting for .+$/);
+    await queued.locator('.architect-worker-expand').click();
+    await expect(queued.locator('.architect-worker-more-queue')).toHaveText(/^Waiting for .+$/);
+    await expect(panel(page).locator('.architect-worker-item[data-worker-id="build"] .architect-worker-effort [aria-hidden="true"]')).toHaveText('high');
+  });
+  test('a long request scrolls in a labelled region with a hint, above Approve', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    await row(page, 'build').click();
+    const command = Array.from({ length: 60 }, (_, line) => `rm -rf ./build/output-${line} && echo "cleaned ${line}" # step ${line} of a long cleanup`).join('\n');
+    await page.evaluate(text => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'long-build', text }), command);
+    // The one legacy path: the transcript's card.
+    const card = panel(page).locator('.architect-worker-approvals .approval-card');
+    const request = card.locator('.architect-worker-request');
+    await expect(request).toHaveText(command);
+    await expect(card.locator('.architect-worker-more-label')).toHaveText('Request');
+    const layout = await card.evaluate(element => {
+      const request = element.querySelector<HTMLElement>('.architect-worker-request')!, approve = [...element.querySelectorAll<HTMLElement>('button')].find(button => button.textContent === 'Approve')!;
+      const line = parseFloat(getComputedStyle(request).lineHeight);
+      return { scrolls: request.scrollHeight > request.clientHeight + 1, lines: Math.round((request.clientHeight - 12) / line), font: getComputedStyle(request).fontFamily, below: approve.getBoundingClientRect().top >= request.getBoundingClientRect().bottom };
+    });
+    // Capped at twelve lines; the rest scrolls, and Approve stays below.
+    expect(layout).toMatchObject({ scrolls: true, lines: 12, below: true });
+    expect(layout.font).toMatch(/mono/i);
+    await expect(request).toHaveRole('region');
+    await expect(request).toHaveAccessibleName('Request (scroll for more)');
+    await expect(request).toHaveAttribute('tabindex', '0');
+    await expect(card.locator('.architect-worker-request-hint')).toBeVisible();
+    await expect(card.locator('.architect-worker-request-hint')).toHaveText('Scroll to read the full request');
+    await request.focus();
+    await expect(request).toBeFocused();
+    await page.keyboard.press('End');
+    await expect.poll(() => request.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    // A short request needs neither: no Tab stop, no hint.
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval_cancelled', requestId: 'long-build', text: '' }));
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'short-build', text: 'Run the tests?' }));
+    await expect(request).toHaveText('Run the tests?');
+    await expect(request).not.toHaveAttribute('tabindex');
+    await expect(card.locator('.architect-worker-request-hint')).toBeHidden();
+  });
+  test('an open row still shows hover, and the keyboard row lights its caret', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued' })] }) });
+    await openWorkers(page).click();
+    const item = panel(page).locator('.architect-worker-item[data-worker-id="build"]');
+    await item.locator('.architect-worker-expand').click();
+    await page.mouse.move(2, 2);
+    const fill = () => item.evaluate(element => getComputedStyle(element).backgroundColor);
+    const rowFill = () => item.locator('.architect-worker-row').evaluate(element => getComputedStyle(element).backgroundColor);
+    // Fills fade (~180 ms): read each only once it has settled (two reads a fade apart agree).
+    const settled = async (read: () => Promise<string>) => {
+      let value = '';
+      await expect.poll(async () => { const first = await read(); await page.waitForTimeout(250); value = await read(); return first === value; }, { timeout: 5000 }).toBe(true);
+      return value;
+    };
+    const open = await settled(fill), rowOpen = await settled(rowFill);
+    // Open is its own, persistent look (card fill and hairline), not the hover fill of a closed row.
+    const closed = panel(page).locator('.architect-worker-item[data-worker-id="review"]');
+    await closed.locator('.architect-worker-row').hover();
+    const hovered = await settled(() => closed.evaluate(element => getComputedStyle(element).backgroundColor));
+    expect(hovered).not.toBe(open);
+    expect(await item.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe('none');
+    await page.mouse.move(2, 2);
+    // The open card keeps its single fill under the pointer (no second tint on its header); the caret brightens.
+    const caretColor = () => item.locator('.architect-worker-expand').evaluate(element => getComputedStyle(element).color);
+    const caretIdle = await settled(caretColor);
+    await item.locator('.architect-worker-row').hover();
+    await expect.poll(caretColor).not.toBe(caretIdle);
+    expect(await settled(rowFill)).toBe(rowOpen);
+    expect(await settled(fill)).toBe(open);
+    await item.locator('.architect-worker-more').hover({ position: { x: 40, y: 10 } });
+    expect(await settled(fill)).toBe(open);
+    // Buttons inside a hovered item add no second fill.
+    await item.getByRole('button', { name: 'Open transcript', exact: true }).hover();
+    expect(await item.getByRole('button', { name: 'Open transcript', exact: true }).evaluate(button => getComputedStyle(button).backgroundColor)).toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+    await page.mouse.move(2, 2);
+    await page.keyboard.press('Shift');
+    await panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-row').focus();
+    const caret = panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-expand');
+    // One focus indicator: the row's ring; the caret only brightens (no ring of its own).
+    const idle = await panel(page).locator('.architect-worker-item[data-worker-id="build"] .architect-worker-expand').evaluate(element => getComputedStyle(element).color);
+    await expect.poll(() => caret.evaluate(element => getComputedStyle(element).color)).not.toBe(idle);
+    expect(await caret.evaluate(element => getComputedStyle(element).boxShadow)).toBe('none');
+  });
+});
+
+test.describe('compact workers order', () => {
+  const ids = (page: Page) => panel(page).locator('.architect-worker-row').evaluateAll(rows => rows.map(row => (row as HTMLElement).dataset.workerId));
+  test('rows hold still under the pointer and keyboard focus, and reorder once the reader leaves', async ({ page }) => {
+    const start = team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued' })] });
+    await installArchitect(page, { 'session-2': start });
+    await openWorkers(page).click();
+    await expect.poll(() => ids(page)).toEqual(['build', 'review']);
+    // The pointer rests on the list: build finishing does not move it under the pointer.
+    await row(page, 'review').hover();
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 2, workers: [worker('build', { status: 'completed' }), worker('review', { status: 'queued' })] });
+    await expect(statusOf(row(page, 'build'))).toHaveText('Done');
+    expect(await ids(page)).toEqual(['build', 'review']);
+    await page.mouse.move(2, 2);
+    await expect.poll(() => ids(page)).toEqual(['review', 'build']);
+    // Keyboard focus holds the order too, and keeps its row.
+    await row(page, 'build').focus();
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 3, workers: [worker('build', { status: 'completed' }), worker('review', { status: 'failed' })] });
+    await expect(statusOf(row(page, 'review'))).toHaveText('Failed');
+    // Build works again and review stops: working now comes before stopped, but the focused order holds.
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 4, workers: [worker('build', { status: 'running' }), worker('review', { status: 'stopped' })] });
+    await expect(statusOf(row(page, 'build'))).toHaveText('Working');
+    expect(await ids(page)).toEqual(['review', 'build']);
+    await expect(row(page, 'build')).toBeFocused();
+    await panel(page).locator('.architect-close').focus();
+    await expect.poll(() => ids(page)).toEqual(['build', 'review']);
+    // A sub-worker arriving while the order is held joins its parent, not the end (unheld, review would lead).
+    await row(page, 'review').hover();
+    const child = { ...worker('build', { status: 'running' }), id: 'build-child', name: 'Build helper', sessionId: 'worker-build-child', parentWorker: 'build' };
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 5, workers: [worker('build', { status: 'completed' }), worker('review', { status: 'failed' }), child] });
+    await expect(row(page, 'build-child')).toBeAttached();
+    expect(await ids(page)).toEqual(['build', 'build-child', 'review']);
+  });
+});
+
+test.describe('workers full access note', () => {
+  // Workers always run with full access and auto-approval; the panel says so while the lead is in another mode.
+  async function pickMode(page: Page, name: string): Promise<void> {
+    await page.locator('#mode-picker-trigger').click();
+    await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name, exact: true }).click();
+    await expect(page.locator('#mode-picker-trigger')).toHaveText(name);
+    if (!(await panel(page).isVisible())) await page.locator('#agents-toggle').click();
+    await expect(panel(page)).toBeVisible();
+  }
+  test('shows one quiet line for a lead in Standard (ask), and none in Full access', async ({ page }) => {
+    await openShowcase(page);
+    await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('data-mode', 'ask');
+    const note = panel(page).locator('.architect-panel-access');
+    // While an (older host's) approval waits on the user, the line would contradict it: hidden until it is answered.
+    await expect(statusOf(compactItem(page, 'styles'))).toHaveText('Needs you: approval');
+    await expect(note).toBeHidden();
+    // Answered in the worker's transcript (the one place for it), the line comes back.
+    await compactItem(page, 'styles').locator('.architect-worker-row').click();
+    await panel(page).locator('.architect-worker-approvals .approval-card').getByRole('button', { name: 'Approve', exact: true }).click();
+    await panel(page).getByRole('button', { name: 'Back to workers' }).click();
+    await expect(note).toBeVisible();
+    // One visible line; the deploy and scheduling exception is in the tooltip, in visually hidden text inside the note
+    // (screen readers and keyboard users get it without hovering), and on the setup screen.
+    const text = note.locator('.architect-panel-access-text');
+    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access; you approve only this lead.');
+    await expect(text.locator('.sr-only')).toHaveText(' Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.');
+    await expect(text).toContainText('Deploy and scheduling tools are the exception');
+    // The tooltip adds what the line leaves out, rather than repeating it.
+    await expect(note).toHaveAttribute('title', "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.");
+    await expect(note.locator('.architect-panel-access-icon')).toHaveAttribute('data-state-tone', 'worker-idle');
+    // One line at the default width (two would be ~38px with the note's bottom padding).
+    expect(await text.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(20);
+    // In a narrow panel it wraps rather than being cut.
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '220px'; });
+    expect(await text.evaluate(span => getComputedStyle(span).textOverflow !== 'ellipsis' && span.scrollWidth <= span.clientWidth + 1)).toBe(true);
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = ''; });
+  });
+  test('follows the lead\'s mode: hidden in Full access, back in Standard', async ({ page }) => {
+    // A settled team, so the lead's mode picker is free to change.
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [worker('build', { status: 'completed' })] }) });
+    await openWorkers(page).click();
+    const note = panel(page).locator('.architect-panel-access');
+    await pickMode(page, 'Full access');
+    await expect(note).toBeHidden();
+    // A Plan (Codex: Read only) or Standard lead cannot edit freely itself: the note says its workers still can.
+    await pickMode(page, 'Read only');
+    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers can edit files, though this lead is read-only.');
+    expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(28);
+    await pickMode(page, 'Standard');
+    await expect(note).toBeVisible();
+    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers have full access; you approve only this lead.');
+    // Like the tally, it belongs to the list: hidden while a worker's transcript is open.
+    await row(page, 'build').click();
+    await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
+    await expect(note).toBeHidden();
+    await panel(page).getByRole('button', { name: 'Back to workers' }).click();
+    await expect(note).toBeVisible();
+    // Dismissed, it stays away for this team for the session (reopening the panel too).
+    const dismiss = note.getByRole('button', { name: 'Dismiss the full-access note' });
+    expect(await dismiss.evaluate(element => { const box = element.getBoundingClientRect(); return box.width >= 24 && box.height >= 24; })).toBe(true);
+    await dismiss.click();
+    await expect(note).toBeHidden();
+    await panel(page).getByRole('button', { name: 'Close workers' }).click();
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-panel-access')).toBeHidden();
+  });
+});
+
+test.describe('compact workers focus on filled buttons', () => {
+  test('a row\'s inset focus ring clears its elapsed time', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    const target = row(page, 'build');
+    await page.keyboard.press('Shift');
+    await target.focus();
+    const box = await target.evaluate(element => {
+      const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+      const elapsed = element.querySelector('.architect-worker-elapsed')!.getBoundingClientRect();
+      // The ring is drawn inside the row: its inner edge sits offset + width in from the row's right edge.
+      const ringInner = rect.right + parseFloat(style.outlineOffset) - parseFloat(style.outlineWidth);
+      return { visible: element.matches(':focus-visible'), height: (element as HTMLElement).offsetHeight, clear: elapsed.width === 0 || elapsed.right <= ringInner };
+    });
+    expect(box).toEqual({ visible: true, height: 38, clear: true });
+  });
+  test('the progress track keeps an outline in forced colors', async ({ page }) => {
+    await page.emulateMedia({ forcedColors: 'active' });
+    await openShowcase(page);
+    expect(await panel(page).locator('.architect-progress').evaluate(element => ({ style: getComputedStyle(element).outlineStyle, width: getComputedStyle(element).outlineWidth }))).toEqual({ style: 'solid', width: '1px' });
+  });
+  test('Approve (a filled button) gets an outer focus ring', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    await row(page, 'build').click();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'ring-build', text: 'Run the worker verification command?' }));
+    const card = panel(page).locator('.architect-worker-approvals .approval-card');
+    const approve = card.getByRole('button', { name: 'Approve', exact: true });
+    await page.keyboard.press('Shift');
+    await approve.focus();
+    expect(await approve.evaluate(button => ({ visible: button.matches(':focus-visible'), offset: getComputedStyle(button).outlineOffset, style: getComputedStyle(button).outlineStyle }))).toEqual({ visible: true, offset: '2px', style: 'solid' });
+    const deny = card.getByRole('button', { name: 'Deny', exact: true });
+    await deny.focus();
+    expect(await deny.evaluate(button => getComputedStyle(button).outlineOffset)).toBe('-2px');
+  });
+});
+
+test.describe('compact workers round 9', () => {
+  test('needs-you and failed changes are announced with a transcript open', async ({ page }) => {
+    const start = team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'running' })] });
+    await installArchitect(page, { 'session-2': start });
+    await openWorkers(page).click();
+    await row(page, 'build').click();
+    await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
+    await expect(panel(page).locator('.architect-panel-tally')).toBeHidden();
+    const live = panel(page).locator('.architect-panel-live');
+    // The live region sits outside anything a transcript hides.
+    expect(await live.evaluate(element => !element.closest('[hidden]') && element.parentElement!.classList.contains('architect-panel'))).toBe(true);
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 2, workers: [worker('build', { status: 'running' }), worker('review', { status: 'failed' })] });
+    await expect(live).toHaveText('1 failed · 1 working');
+  });
+  test('a failed answer shows a plain sentence and logs the details', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    const logged: string[] = [];
+    page.on('console', message => { if (message.type() === 'error') logged.push(message.text()); });
+    await page.evaluate(() => { (window as any).__architectTest.failures.respond_approval = 'worker run not found'; });
+    await row(page, 'build').click();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'gone-build', text: 'Run the worker verification command?' }));
+    const approval = panel(page).locator('.architect-worker-approvals .approval-card');
+    await approval.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(approval.locator('small[role="alert"]')).toHaveText('Couldn’t send your answer. The worker may have stopped.');
+    await expect(approval.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    await expect.poll(() => logged.some(text => text.includes('Could not answer the worker approval'))).toBe(true);
+  });
+  test('a sub-worker keeps its indent outside its hover fill', async ({ page }) => {
+    const child = { ...worker('build', { status: 'running' }), id: 'build-child', name: 'Build helper', sessionId: 'worker-build-child', parentWorker: 'build' };
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), child] }) });
+    await openWorkers(page).click();
+    const parent = panel(page).locator('.architect-worker-item[data-worker-id="build"]'), sub = panel(page).locator('.architect-worker-item[data-worker-id="build-child"]');
+    await sub.hover();
+    const [parentLeft, subLeft] = await Promise.all([parent.evaluate(element => element.getBoundingClientRect().left), sub.evaluate(element => element.getBoundingClientRect().left)]);
+    expect(Math.round(subLeft - parentLeft)).toBe(22);
+  });
+  test('a worker approval notifies only while that worker\'s run is active', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'completed' }), worker('review', { status: 'running' })] }) });
+    await expect(openWorkers(page)).toBeVisible();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'late-build', text: 'Run the worker verification command?' }));
+    await page.waitForTimeout(300);
+    await expect(page.locator('#toast')).not.toContainText('A worker needs your approval');
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval', requestId: 'live-review', text: 'Run the worker verification command?' }));
+    await expect(page.locator('#toast')).toContainText('A worker needs your approval');
+  });
+  test('notifications share the panel\'s definition of an active worker (queued counts; unknown counts)', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued' })] }) });
+    await expect(openWorkers(page)).toBeVisible();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval', requestId: 'queued-review', text: 'Run the worker verification command?' }));
+    await expect(page.locator('#toast')).toContainText('A worker needs your approval');
+  });
+});
+
+test.describe('compact workers round 13', () => {
+  test('working and failed rows give their name the room a status word would take', async ({ page }) => {
+    const name = 'Rewrite the search index loader so it streams partial results quickly';
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', name }), worker('review', { status: 'stopped', name }), { ...worker('review', { status: 'failed', name }), id: 'fix', sessionId: 'worker-fix' }] }) });
+    await openWorkers(page).click();
+    const width = (id: string) => panel(page).locator(`.architect-worker-item[data-worker-id="${id}"] .architect-worker-copy strong`).evaluate(element => element.clientWidth);
+    // Same name: working and failed rows have no status word (the glyph says it), so they show clearly more of the
+    // name than the stopped one.
+    expect(await width('build')).toBeGreaterThan(await width('review') + 20);
+    expect(await width('fix')).toBeGreaterThan(await width('review') + 20);
+    await expect(statusOf(row(page, 'build'))).toHaveText('Working');
+    await expect(statusOf(row(page, 'fix'))).toHaveText('Failed');
+    await expect(row(page, 'fix').locator('.architect-worker-state:not(.sr-only)')).toHaveCount(0);
+    await expect(row(page, 'review').locator('.architect-worker-state:not(.sr-only) [aria-hidden="true"]')).toHaveText('Stopped');
+  });
+  test('done and failed marks are cut out of the disc, not painted in the panel colour', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'completed' }), worker('review', { status: 'failed' })] }) });
+    await openWorkers(page).click();
+    for (const id of ['build', 'review']) {
+      const glyph = row(page, id).locator('.architect-worker-glyph');
+      expect(await glyph.innerHTML()).not.toContain('var(--panel)');
+      await expect(glyph.locator('path[fill-rule="evenodd"]')).toHaveCount(1);
+    }
+  });
+  test('a settled or skipped worker never shows a request', async ({ page }) => {
+    const start = team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'completed' })] });
+    await installArchitect(page, { 'session-2': start });
+    await openWorkers(page).click();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval', requestId: 'stale-review', text: 'Run the worker verification command?' }));
+    await expect(statusOf(row(page, 'review'))).toHaveText('Done');
+    await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 working · 1 done');
+    await row(page, 'review').click();
+    await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
+    await expect(panel(page).locator('.architect-worker-approvals .approval-card')).toHaveCount(0);
+    await panel(page).getByRole('button', { name: 'Back to workers' }).click();
+    // Skipped (abandoned) too, even while its status still says running.
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 2, workers: [worker('build', { status: 'running', abandoned: true }), worker('review', { status: 'completed' })] });
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'skipped-build', text: 'Run the worker verification command?' }));
+    await expect(statusOf(row(page, 'build'))).toHaveText('Skipped');
+    await expect(panel(page).locator('.architect-tally-asking')).toHaveCount(0);
+  });
+});
+
+test.describe('compact workers round 14', () => {
+  test('an adjusted effort is marked, with its note in the title and "adjusted" for screen readers', async ({ page }) => {
+    await openShowcase(page);
+    const adjusted = compactItem(page, 'index').locator('.architect-worker-effort');
+    await expect(adjusted).toHaveAttribute('data-adjusted', '');
+    await expect(adjusted).toHaveAttribute('title', 'Reasoning effort: medium. Asked for high effort; this model ran at medium.');
+    await expect(adjusted.locator('.sr-only')).toHaveText('reasoning effort medium, adjusted');
+    // On a failed row the reason wins the space: the effort label is off screen (kept for screen readers) and the
+    // title and details say it instead. Rows that did not fail say it in words (round 18).
+    await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('medium');
+    expect(await adjusted.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+    await expect(compactItem(page, 'index').locator('.architect-worker-adjusted')).toBeHidden();
+    const plain = compactItem(page, 'search').locator('.architect-worker-effort');
+    await expect(plain).not.toHaveAttribute('data-adjusted');
+    await expect(plain.locator('.sr-only')).toHaveText('reasoning effort high');
+  });
+  test('tally buttons are at least 24px tall, and the progress bar is legible', async ({ page }) => {
+    await openShowcase(page);
+    // Measured once the panel's open spring has settled (it scales the bar while it runs).
+    await panelSettled(page);
+    // Narrow enough that the line ends with "+N more" (at the default width every count fits).
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px'; });
+    const tally = panel(page).locator('.architect-panel-tally-text');
+    for (const button of [tally.locator('.architect-tally-asking'), tally.locator('.architect-tally-more')]) {
+      await expect(button).toBeVisible();
+      // 24px in CSS; the drawn box may be a hair under while the panel's open spring settles.
+      expect(await button.evaluate(element => parseFloat(getComputedStyle(element).height))).toBeGreaterThanOrEqual(24);
+      expect(Math.round(await button.evaluate(element => element.getBoundingClientRect().height))).toBeGreaterThanOrEqual(24);
+    }
+    const bar = await panel(page).locator('.architect-progress').evaluate(element => element.getBoundingClientRect());
+    expect(bar.width).toBeGreaterThanOrEqual(40); expect(bar.height).toBeGreaterThanOrEqual(4);
+    expect(await tally.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  });
+});
+
+test.describe('compact workers round 17', () => {
+  test('the row\'s computed description brings back its meta line: model, adjusted effort, failure reason', async ({ page }) => {
+    await openShowcase(page);
+    // The aria-label names the row; the description (computed, not just DOM) carries what the label replaces.
+    await expect(compactItem(page, 'search').locator('.architect-worker-row')).toHaveAccessibleDescription(/^GPT-6-Astra reasoning effort high Details hidden$/);
+    const failed = compactItem(page, 'index').locator('.architect-worker-row');
+    await expect(failed).toHaveAccessibleDescription(/^The sample build step failed: index\.ts has a type error\. reasoning effort medium, adjusted attempt 2 Details hidden/);
+    // At the default width the reason wins the space on its one line: no harness logo beside it, and its effort and
+    // attempt labels are off screen (still in the description above, the title and the details below).
+    const reason = compactItem(page, 'index').locator('.architect-worker-meta-line small');
+    const lines = await reason.evaluate(element => Math.round(element.getBoundingClientRect().height / parseFloat(getComputedStyle(element).lineHeight)));
+    expect(lines).toBe(1);
+    expect(await compactItem(page, 'index').locator('.architect-worker-row').evaluate(row => row.getBoundingClientRect().height)).toBeLessThanOrEqual(38);
+    await expect(compactItem(page, 'index').locator('.architect-worker-meta-line .architect-worker-logo')).toHaveCount(0);
+    // The attempt and effort labels are off screen: a bare effort word after the error would read like a severity.
+    for (const label of ['attempt', 'effort']) expect(await compactItem(page, 'index').locator(`.architect-worker-meta-line .architect-worker-${label}`).evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+    await expect(compactItem(page, 'index').locator('.architect-worker-row')).toHaveAttribute('title', /Effort: medium \(adjusted\) · Attempt 2$/);
+    // Meaningful text shows: at least 30 characters are visible.
+    const visible = await reason.evaluate(element => {
+      const text = element.firstChild!, box = element.getBoundingClientRect(), range = document.createRange();
+      let count = 0;
+      for (let at = 0; at < text.textContent!.length; at++) { range.setStart(text, at); range.setEnd(text, at + 1); const rect = range.getBoundingClientRect(); if (rect.bottom <= box.bottom + 1 && rect.right <= box.right + 1) count++; }
+      return count;
+    });
+    expect(visible).toBeGreaterThanOrEqual(30);
+    // Open, the meta line trades the cut reason (now whole in the details) for the model, effort and attempt.
+    await compactItem(page, 'index').locator('.architect-worker-expand').click();
+    // The same words as the closed row's labels: "(adjusted)" and "×2", with "attempt 2" for screen readers.
+    await expect.poll(() => drawnText(compactItem(page, 'index').locator('.architect-worker-meta-line small'))).toMatch(/^Claude Sonnet .* · medium \(adjusted\) · ×2$/);
+    await expect(compactItem(page, 'index').locator('.architect-worker-meta-line small .sr-only')).toHaveText('attempt 2');
+    await expect(compactItem(page, 'index').locator('.architect-worker-more .architect-worker-error')).toContainText('The sample build step failed');
+    // The facts already say the effort and attempt: no labels repeat them after the meta.
+    await expect(compactItem(page, 'index').locator('.architect-worker-meta-line :is(.architect-worker-effort, .architect-worker-attempt)')).toHaveCount(0);
+    // Rows that did not fail keep the words.
+    await expect(compactItem(page, 'styles').locator('.architect-worker-effort [aria-hidden="true"]')).toHaveText('x-high');
+  });
+  test('a failed row says why on its meta line; its full error is in the title and details', async ({ page }) => {
+    const error = 'The build step failed: index.ts has a type error.\nSee the full log for the stack trace.';
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'failed', error })] }) });
+    await openWorkers(page).click();
+    const item = panel(page).locator('.architect-worker-item[data-worker-id="review"]');
+    const reason = item.locator('.architect-worker-meta-line small');
+    await expect(reason).toHaveText('The build step failed: index.ts has a type error.');
+    await expect(reason).toHaveAttribute('title', error);
+    await item.locator('.architect-worker-expand').click();
+    const details = item.locator('.architect-worker-error');
+    await expect(details).toContainText('See the full log for the stack trace.');
+    // The live region announces failures; the error paragraph is not a status region of its own.
+    await expect(details).not.toHaveAttribute('role');
+  });
+  test('a finished worker\'s elapsed time stays put when it is updated later', async ({ page }) => {
+    const start = team('session-2', { workers: [worker('build', { status: 'completed', createdAt: 1_800_000_000_000, updatedAt: 1_800_006_300_000 })] });
+    await installArchitect(page, { 'session-2': start });
+    await openWorkers(page).click();
+    const elapsed = row(page, 'build').locator('.architect-worker-elapsed');
+    await expect(elapsed).toHaveText('2h');
+    await expect(elapsed).toHaveAttribute('title', 'ran 1 hour 45 minutes');
+    // A later snapshot (a summary arriving hours afterwards) does not make the run look longer.
+    await page.evaluate(snapshot => (window as any).__architectTest.publish(snapshot), { ...start, revision: 2, workers: [worker('build', { status: 'completed', summary: 'All done.', createdAt: 1_800_000_000_000, updatedAt: 1_800_014_400_000 })] });
+    await row(page, 'build').locator('xpath=..').locator('.architect-worker-expand').click();
+    await expect(panel(page).locator('.architect-worker-item[data-worker-id="build"] .architect-worker-more')).toContainText('All done.');
+    await expect(elapsed).toHaveText('2h');
+    await expect(elapsed).toHaveAttribute('title', 'ran 1 hour 45 minutes');
+  });
+});
+
+test.describe('compact workers round 18', () => {
+  test('a working row with an adjusted effort says it in words', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', note: 'Asked for x-high; this model ran at high.' })] }) });
+    await openWorkers(page).click();
+    const adjusted = row(page, 'build').locator('.architect-worker-effort');
+    await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('high');
+    await expect(row(page, 'build').locator('.architect-worker-adjusted')).toHaveText('(adjusted)');
+    await expect(row(page, 'build').locator('.architect-worker-adjusted')).toHaveAttribute('title', 'Reasoning effort: high. Asked for x-high; this model ran at high.');
+    await expect(row(page, 'build')).toHaveAccessibleDescription(/reasoning effort high, adjusted/);
+  });
+  test('a narrow row cuts "(adjusted)" before the model name', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', model: 'claude-sonnet-4-5', reasoningEffort: 'high', note: 'Asked for x-high; this model ran at high.' })] }) });
+    await openWorkers(page).click();
+    const meta = row(page, 'build').locator('.architect-worker-meta-line');
+    const widths = () => meta.evaluate(line => {
+      const model = line.querySelector('small')!, marker = line.querySelector('.architect-worker-adjusted') as HTMLElement;
+      return { modelCut: model.scrollWidth > model.clientWidth, marker: marker.getBoundingClientRect().width, markerCut: marker.scrollWidth > marker.clientWidth };
+    });
+    // Wide: both whole.
+    await expect.poll(widths).toEqual({ modelCut: false, marker: expect.any(Number), markerCut: false });
+    // Narrower: the marker ellipsizes while the model name is still whole.
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '290px'; });
+    await expect.poll(async () => { const now = await widths(); return !now.modelCut && now.markerCut && now.marker > 0; }).toBe(true);
+    // Narrowest: the marker is gone before the name gives way; the effort word stays.
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '220px'; });
+    await expect.poll(async () => { const now = await widths(); return now.modelCut && now.marker === 0; }).toBe(true);
+    await expect(row(page, 'build').locator('.architect-worker-effort [aria-hidden="true"]')).toBeVisible();
+  });
+});
+
+test.describe('compact workers round 19', () => {
+  test('a long assignment scrolls in a labelled region with a hint, by keyboard too', async ({ page }) => {
+    const assignment = Array.from({ length: 30 }, (_, line) => `Step ${line + 1}: check the search index, then report what changed.`).join('\n');
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', assignment }), worker('review', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    const item = panel(page).locator('.architect-worker-item[data-worker-id="build"]');
+    await item.locator('.architect-worker-expand').click();
+    const box = item.locator('.architect-worker-more-text[data-scroll-label="Assignment"]');
+    await expect(box).toHaveRole('region');
+    await expect(box).toHaveAccessibleName('Assignment (scroll for more)');
+    await expect(box).toHaveAttribute('tabindex', '0');
+    await expect(item.locator('.architect-worker-scroll-hint')).toBeVisible();
+    await expect(item.locator('.architect-worker-scroll-hint')).toHaveText('Scroll for more');
+    await box.focus();
+    await page.keyboard.press('End');
+    await expect.poll(() => box.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    // A short one is plain text: no region, no Tab stop, no hint.
+    const other = panel(page).locator('.architect-worker-item[data-worker-id="review"]');
+    await other.locator('.architect-worker-expand').click();
+    const short = other.locator('.architect-worker-more-text[data-scroll-label="Assignment"]');
+    await expect(short).not.toHaveAttribute('role');
+    await expect(short).not.toHaveAttribute('tabindex');
+    await expect(other.locator('.architect-worker-scroll-hint')).toBeHidden();
+  });
+});
+
+test.describe('compact workers round 22', () => {
+  test('the setup note\'s info mark stays inline with its text', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [worker('build', { status: 'completed' })] }) });
+    await openWorkers(page).click();
+    await panel(page).getByRole('button', { name: 'View team setup' }).click();
+    const note = setup(page).locator('.architect-workspace-note', { hasText: 'Next architect turn' });
+    await expect(note).toBeVisible();
+    const layout = await note.evaluate(element => {
+      const mark = element.querySelector('.info-mark') as HTMLElement, box = element.getBoundingClientRect(), markBox = mark.getBoundingClientRect();
+      return { display: getComputedStyle(mark).display, sameLine: markBox.top < box.top + parseFloat(getComputedStyle(element).lineHeight) };
+    });
+    expect(layout).toEqual({ display: 'inline-flex', sameLine: true });
+  });
+  test('a follow-up run measures its elapsed time from its own start', async ({ page }) => {
+    const now = Date.now();
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', createdAt: now - 2 * 3_600_000, startedAt: now - 5 * 60_000 })] }) });
+    await openWorkers(page).click();
+    await expect(row(page, 'build').locator('.architect-worker-elapsed')).toHaveText(/^[56]m$/);
+  });
+  test('row keys show only while a row has keyboard focus; queued and failed rows drop the logo', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued', dependsOn: ['build'] }), { ...worker('review', { status: 'failed', error: 'The build step failed.' }), id: 'fix', sessionId: 'worker-fix' }] }) });
+    await openWorkers(page).click();
+    const hint = panel(page).locator('.architect-worker-keyhint');
+    await expect(hint).toBeHidden();
+    // Pointer focus: no hint.
+    await panel(page).locator('.architect-panel-summary').click();
+    await row(page, 'build').focus();
+    await expect(hint).toBeHidden();
+    // Keyboard focus: the hint shows.
+    await page.keyboard.press('ArrowDown');
+    await expect(hint).toBeVisible();
+    await expect(hint).toHaveText('→ details · Enter opens');
+    await expect(hint).toHaveAttribute('aria-hidden', 'true');
+    // A queue reason and a failure reason stand without the harness logo.
+    await expect(panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-logo')).toHaveCount(0);
+    await expect(panel(page).locator('.architect-worker-item[data-worker-id="fix"] .architect-worker-logo')).toHaveCount(0);
+    const color = (id: string) => panel(page).locator(`.architect-worker-item[data-worker-id="${id}"] .architect-worker-meta-line small`).evaluate(element => getComputedStyle(element).color);
+    // One tone for the whole meta line (state tones stay on the leading icon).
+    expect(await color('fix')).toBe(await color('build'));
+  });
+});
+
+test.describe('compact workers round 23', () => {
+  test('a council reviewer that finished below target has its own mark, not the queued ring or the done check', async ({ page }) => {
+    const seat = (id: string, lens: string, score: number, createdAt: number) => ({ ...worker('review', { status: 'completed', council: { round: 1, lens, score } }), id, sessionId: `worker-${id}`, createdAt });
+    await installArchitect(page, { 'session-2': team('session-2', {
+      config: { ...config(), council: { target: 9.5, maxRounds: 3, reviewers: 2 } },
+      // An earlier cycle's reviewers are rows (the current cycle's sit in the Council scorecard).
+      councilSince: 1_800_000_000_010, councilStatus: { state: 'waiting', round: 0, lowest: null, target: 9.5, stale: false },
+      workers: [seat('low', 'Correctness', 8, 1_800_000_000_000), seat('high', 'Security', 9.5, 1_800_000_000_002), worker('build', { status: 'queued' })],
+    }) });
+    await openWorkers(page).click();
+    const glyph = (id: string) => compactItem(page, id).locator('.architect-worker-glyph');
+    await expect(compactItem(page, 'low').locator('.architect-worker-state:not(.sr-only) > [aria-hidden="true"]')).toHaveText('Below');
+    // A verdict, not a request: muted and regular, unlike the needs-you words.
+    await expect(compactItem(page, 'low').locator('.architect-worker-state:not(.sr-only)')).not.toHaveClass(/architect-worker-state-attention/);
+    await expect(glyph('low')).toHaveAttribute('data-glyph', 'below');
+    await expect(glyph('low')).toHaveAttribute('data-state-tone', 'worker-idle');
+    await expect(glyph('high')).toHaveAttribute('data-glyph', 'completed');
+    // Unlike the dashed ring of work that has not started, and the green check of a passing reviewer.
+    const markup = (id: string) => glyph(id).innerHTML();
+    expect(await markup('low')).not.toBe(await markup('build'));
+    expect(await markup('low')).not.toBe(await markup('high'));
+  });
+  test('a long assignment fades until scrolled to its end, ends on text, and keeps its hint right under it', async ({ page }) => {
+    const assignment = Array.from({ length: 30 }, (_, line) => `Step ${line + 1}: check the search index.`).join('\n') + '\n\n\n';
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', assignment })] }) });
+    await openWorkers(page).click();
+    const item = panel(page).locator('.architect-worker-item[data-worker-id="build"]');
+    await item.locator('.architect-worker-expand').click();
+    const box = item.locator('.architect-worker-more-text[data-scroll-label="Assignment"]');
+    expect(await box.evaluate(element => element.textContent!.endsWith('Step 30: check the search index.'))).toBe(true);
+    await expect(box).toHaveAttribute('data-overflowing', '');
+    expect(await box.evaluate(element => getComputedStyle(element).maskImage || getComputedStyle(element).webkitMaskImage)).not.toBe('none');
+    const gap = await item.evaluate(element => element.querySelector('.architect-worker-scroll-hint')!.getBoundingClientRect().top - element.querySelector('.architect-worker-more-text')!.getBoundingClientRect().bottom);
+    expect(gap).toBeGreaterThanOrEqual(0); expect(gap).toBeLessThanOrEqual(6);
+    await box.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(box).toHaveAttribute('data-at-end', '');
+    expect(await box.evaluate(element => getComputedStyle(element).maskImage || getComputedStyle(element).webkitMaskImage)).toBe('none');
+  });
+  test('an open failed row stays compact, and its transcript header uses the row\'s words with the effort', async ({ page }) => {
+    await openShowcase(page);
+    const failed = compactItem(page, 'index');
+    await failed.locator('.architect-worker-expand').click();
+    // Open, its meta line shows model · effort · attempt (no empty line), the full error is below, and the facts are
+    // not repeated in the details.
+    const metaLine = failed.locator('.architect-worker-meta-line small');
+    await expect(metaLine).toBeVisible();
+    // The whole meta line, as drawn: the effort once, the attempt not cut.
+    await expect.poll(() => drawnText(failed.locator('.architect-worker-meta-line'))).toMatch(/^Claude Sonnet [^·]* · medium \(adjusted\) · ×2$/);
+    expect(await metaLine.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await expect(metaLine).toHaveAttribute('title', /^Claude Sonnet .* · medium \(adjusted\) · attempt 2\. Asked for high effort; this model ran at medium\.$/);
+    await expect(failed.locator('.architect-worker-more .architect-worker-more-model')).toHaveCount(0);
+    await expect(failed.locator('.architect-worker-more .architect-worker-error')).toBeVisible();
+    // Folded again, the reason returns.
+    await failed.locator('.architect-worker-expand').click();
+    await expect(metaLine).toHaveText(/^The sample build step failed/);
+    await failed.locator('.architect-worker-expand').click();
+    // Bounded: the row, the full error (two lines here), the assignment capped at three lines, the footer.
+    expect(await failed.evaluate(element => element.getBoundingClientRect().height)).toBeLessThan(250);
+    // Its transcript header: model, effort (adjusted) and the row's own status word.
+    await failed.locator('.architect-worker-row').click();
+    await expect(panel(page).locator('.architect-worker-meta small').first()).toHaveText(/^Claude Sonnet .* · medium \(adjusted\) · Failed$/);
+  });
+  test('a narrow tally never cuts its "+N more" button', async ({ page }) => {
+    await openShowcase(page);
+    await panelSettled(page);
+    const tally = panel(page).locator('.architect-panel-tally-text');
+    // Swept across widths (300, 376, 436 and 515px once cut it): whenever the button is there it is whole, and the
+    // line is never ellipsized.
+    test.setTimeout(60_000);
+    // The once-bad widths plus a coarse sweep (a 2px sweep took longer than the default timeout under load).
+    const widths = [...new Set([300, 376, 436, 515, ...Array.from({ length: 28 }, (_, index) => 250 + index * 10)])];
+    for (const width of widths) {
+      await page.evaluate(px => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = `${px}px`; }, width);
+      await expect.poll(() => tally.evaluate(element => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const button = element.querySelector('.architect-tally-more')?.getBoundingClientRect(), box = element.getBoundingClientRect();
+        resolve(element.scrollWidth <= element.clientWidth && (!button || (button.width > 0 && button.left >= box.left && button.right <= box.right)));
+      })))), { message: `width ${width}px` }).toBe(true);
+      expect(tallySum(await visibleTally(tally)), `width ${width}px`).toBe(6);
+    }
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px'; });
+    await expect(tally.locator('.architect-tally-more')).toBeVisible();
+    // Words first, glyphs as the fallback: a wide panel shows every bucket in words; narrower (the default 400px), the
+    // minor buckets (queued, stopped) fold into "+N more" while failed, working and done keep their words; narrower
+    // still, those go compact ("needs you" keeps its words), then are cut.
+    const shape = () => tally.evaluate(element => ({ worded: element.querySelectorAll('.architect-tally-count[data-worded]').length, counts: element.querySelectorAll('.architect-tally-count').length, more: Boolean(element.querySelector('.architect-tally-more')) }));
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '400px'; });
+    await expect.poll(shape).toEqual({ worded: 3, counts: 3, more: true });
+    expect(await visibleTally(tally)).toEqual(['1 needs you', '1 failed', '1 working', '1 done', '2 more: 1 queued, 1 stopped']);
+    const seen = new Set<string>();
+    for (const width of [...widths, 560, 600, 640]) {
+      await page.evaluate(px => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = `${px}px`; }, width);
+      await tally.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const now = await shape();
+      seen.add(`${now.worded ? 'worded' : 'compact'}${now.more ? '+more' : ''}`);
+      // Never a mix: the shown counts are all worded or all compact.
+      expect(now.worded === 0 || now.worded === now.counts, `width ${width}px`).toBe(true);
+      if (now.worded && !now.more) expect(now, `width ${width}px`).toEqual({ worded: 5, counts: 5, more: false });
+    }
+    expect([...seen].sort()).toEqual(['compact+more', 'worded', 'worded+more']);
+    await expect(tally.locator('.architect-tally-asking')).toHaveText('1 needs you');
+  });
+  test('the keyboard hint sits after the rows, in view for a lower row, and never hides the tally', async ({ page }) => {
+    await openShowcase(page);
+    const hint = panel(page).locator('.architect-worker-keyhint');
+    const tally = panel(page).locator('.architect-panel-tally-text');
+    // Directly after the rows (before Team messages), not over the tally line.
+    expect(await hint.evaluate(element => element.closest('.architect-panel-scroll') !== null && element.previousElementSibling?.matches('.architect-worker-list') && (element.nextElementSibling?.matches('.team-messages') ?? true))).toBe(true);
+    await expect(panel(page).locator('.architect-worker-keyhint + .team-messages')).toHaveCount(1);
+    // Hidden, it takes no space.
+    await expect(hint).toHaveCSS('display', 'none');
+    // Measure once the panel's open spring has settled.
+    await panelSettled(page);
+    const tallyBox = await panel(page).locator('.architect-panel-tally').boundingBox();
+    const listTop = await panel(page).locator('.architect-worker-list').boundingBox();
+    await page.keyboard.press('Shift');
+    await compactItem(page, 'styles').locator('.architect-worker-row').focus();
+    await page.keyboard.press('End');
+    await expect(compactItem(page, 'tests').locator('.architect-worker-row')).toBeFocused();
+    await expect(hint).toBeVisible();
+    await expect(hint).toBeInViewport();
+    // The tally keeps every count (and "needs you") in view, and nothing above the hint moves.
+    await expect(tally).toHaveCSS('visibility', 'visible');
+    await expect(tally.locator('.architect-tally-asking')).toBeVisible();
+    const tallyNow = (await panel(page).locator('.architect-panel-tally').boundingBox())!;
+    for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(tallyNow[key] - tallyBox![key])).toBeLessThanOrEqual(1);
+    expect(Math.abs((await panel(page).locator('.architect-worker-list').boundingBox())!.y - listTop!.y)).toBeLessThanOrEqual(1);
+    const lastRow = (await compactItem(page, 'tests').boundingBox())!, hintBox = (await hint.boundingBox())!;
+    expect(hintBox.y).toBeGreaterThanOrEqual(lastRow.y + lastRow.height - 1);
   });
 });

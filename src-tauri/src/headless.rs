@@ -189,7 +189,7 @@ fn start_services(app: tauri::AppHandle) {
                 .and_then(|store| store.due_limit_resumes(crate::storage::now() + 1000).ok())
                 .unwrap_or_default();
             for session_id in due {
-                if state.agents.lock().map(|agents| agents.contains_key(&session_id)).unwrap_or(true) {
+                if crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).unwrap_or(true) {
                     continue;
                 }
                 println!("serve: resuming {session_id} at its usage-limit reset");
@@ -236,7 +236,7 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
         let now = crate::storage::now();
         let eligible = {
             let state = app.state::<AppState>();
-            if state.agents.lock().map(|agents| agents.contains_key(&session_id)).unwrap_or(true) {
+            if crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).unwrap_or(true) {
                 return;
             }
             let Ok(store) = state.store.lock() else { return };

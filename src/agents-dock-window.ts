@@ -3,6 +3,7 @@ import './motion.css';
 import './agents-dock.css';
 import { call } from './bridge';
 import { icon } from './dom';
+import { errorText } from './error-text';
 import './theme';
 import { palette } from './palette';
 import { renderAgentRows, startElapsedTick, subscribeDockEvent, type AgentsDockSnapshot } from './agents-dock';
@@ -16,6 +17,7 @@ const getWindow = async () => (await import('@tauri-apps/api/window')).getCurren
 root.innerHTML = `<button type="button" class="agents-dock-orb" data-tauri-drag-region aria-expanded="false" aria-controls="agents-dock-panel" title="Running agents">${icon('bot')}<span class="agents-dock-window-count" aria-hidden="true" hidden></span></button>
   <section class="agents-dock-window-panel" id="agents-dock-panel" role="dialog" aria-label="Running agents" hidden>
     <header class="agents-dock-window-head" data-tauri-drag-region><strong></strong><button type="button" data-action="collapse" aria-label="Collapse widget" title="Collapse (Esc)">${icon('minimize')}</button><button type="button" data-action="unpin" aria-label="Unpin widget" title="Unpin widget">${icon('close')}</button></header>
+    <div class="agents-dock-window-error-row"><span class="agents-dock-window-error-icon" data-state-tone="danger" aria-hidden="true" hidden>${icon('alert')}</span><span class="agents-dock-window-error" role="alert"></span><button type="button" data-action="dismiss-error" aria-label="Dismiss error" hidden>${icon('close')}</button></div>
     <div class="agents-dock-window-list"></div>
   </section>`;
 const orb = root.querySelector<HTMLButtonElement>('.agents-dock-orb')!;
@@ -23,6 +25,8 @@ const orbCount = root.querySelector<HTMLElement>('.agents-dock-window-count')!;
 const panel = root.querySelector<HTMLElement>('.agents-dock-window-panel')!;
 const heading = root.querySelector<HTMLElement>('.agents-dock-window-head strong')!;
 const list = root.querySelector<HTMLElement>('.agents-dock-window-list')!;
+const alertRow = root.querySelector<HTMLElement>('.agents-dock-window-error-row')!;
+const alertText = alertRow.querySelector<HTMLElement>('.agents-dock-window-error')!;
 let snapshot: AgentsDockSnapshot = { agents: [] };
 let receivedAt = Date.now();
 let expanded = false;
@@ -71,17 +75,38 @@ const onPointerDown = (event: PointerEvent) => {
   if (!target?.closest('[data-tauri-drag-region]') || target.closest('button:not(.agents-dock-orb)')) return;
   void getWindow().then(window => window.startDragging()).catch(() => undefined);
 };
+let said = '';
+/** Shows a failed action in the panel; a later success clears it. The live region (the text only, not the Dismiss button) is always in the DOM (empty it takes
+ * no room) and is rewritten only when the text changes, so assistive tech announces each failure once. */
+function say(text = ''): void {
+  if (text === said) return;
+  said = text;
+  alertText.textContent = text;
+  alertRow.classList.toggle('is-open', text !== '');
+  for (const node of alertRow.querySelectorAll<HTMLElement>('.agents-dock-window-error-icon, button')) node.hidden = text === '';
+}
+const failure = (cause: unknown) => errorText(cause, 'The action failed. Try again.');
 const onClick = async (event: MouseEvent) => {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
   window.clearTimeout(intentTimer);
-  if (target.closest('[data-action="unpin"]')) { await call('agents_dock_unpin').catch(() => undefined); return; }
+  if (target.closest('[data-action="unpin"]')) {
+    try { await call('agents_dock_unpin'); say(); } catch (cause) { say(failure(cause)); }
+    return;
+  }
+  if (target.closest('[data-action="dismiss-error"]')) {
+    say();
+    (list.querySelector<HTMLElement>('[data-agent-id]') ?? panel.querySelector<HTMLElement>('[data-action="collapse"]'))?.focus();
+    return;
+  }
   if (target.closest('[data-action="collapse"]')) { void setExpanded(false, { focus: true }); return; }
   // A click is a pointer; Enter/Space on the orb arrive as a click with detail 0.
   if (target.closest('.agents-dock-orb')) { void setExpanded(true, { focus: event.detail === 0 }); return; }
   const row = target.closest<HTMLElement>('[data-agent-id]');
   if (row?.dataset.agentId) {
-    await call('agents_dock_open_task', { sessionId: row.dataset.agentId }).catch(() => undefined);
+    // A failed open keeps the panel expanded so the message stays in view.
+    try { await call('agents_dock_open_task', { sessionId: row.dataset.agentId }); } catch (cause) { say(failure(cause)); return; }
+    say();
     void setExpanded(false);
   }
 };

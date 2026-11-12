@@ -462,7 +462,7 @@ pub async fn connection_delete(state: tauri::State<'_, crate::AppState>, id: Str
     // The running-agent check and the save happen under the agents lock (agents → connections,
     // the order `connection_assign` uses), so no task can start on this connection in between.
     let (snapshot, affected, removed) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut runtime = runtime()?;
         let affected: Vec<String> = runtime.data.tasks.iter().filter(|(_, c)| **c == id).map(|(task, _)| task.clone()).collect();
         if affected.iter().any(|task| agents.contains_key(task)) {
@@ -499,7 +499,7 @@ pub async fn connection_assign(
     session_id: String,
     connection_id: Option<String>,
 ) -> Result<Snapshot> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before changing its connection.".into());
     }
     if session_id.is_empty() || session_id.len() > 128 {

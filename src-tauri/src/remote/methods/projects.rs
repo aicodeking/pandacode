@@ -390,7 +390,7 @@ async fn start_chat(app: &tauri::AppHandle, from: &str, full_access: bool, start
         cancel.commit()?;
         let state = app.state::<AppState>();
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        let task = crate::chats::create(&store, &crate::chats::root(), &start.provider, &start.model, mode.as_deref())?;
+        let task = crate::chats::create(&store, &crate::chats::root(), &start.provider, &start.model, mode.as_deref(), full_access)?;
         if start.effort.is_some() {
             store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
         }

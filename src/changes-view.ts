@@ -2,6 +2,7 @@ import type { GitFile, GitStatus } from './types';
 import type { DiffViewerController } from './diff-viewer';
 import { escape, fileIcon, icon } from './dom';
 import './changes-view.css';
+import { errorText } from './error-text';
 
 export interface ChangesViewDeps {
   loadDiff(path: string, staged: boolean): Promise<string>;
@@ -10,6 +11,7 @@ export interface ChangesViewDeps {
   openFile(path: string): void;
   refresh(): void;
   notify(message: string): void;
+  notifyError?(message: string): void;
   choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
   worktree?(): void;
@@ -372,7 +374,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   async function run(task: Promise<void>, failure: string): Promise<void> {
-    try { await task; } catch (reason) { deps.notify(reason instanceof Error && reason.message ? reason.message : failure); }
+    try { await task; } catch (reason) { (deps.notifyError ?? deps.notify)(errorText(reason, failure)); }
   }
 
   function openCommit(): void {
@@ -394,7 +396,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       await deps.commit(text);
       if (!disposed) closeCommit();
     } catch (reason) {
-      deps.notify(reason instanceof Error && reason.message ? reason.message : 'Commit failed');
+      (deps.notifyError ?? deps.notify)(errorText(reason, 'Commit failed'));
     } finally {
       committing = false;
       if (!disposed) totals();
@@ -402,7 +404,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function copy(path: string): void {
-    void navigator.clipboard.writeText(path).then(() => deps.notify('Copied path'), () => deps.notify('Unable to copy path'));
+    void navigator.clipboard.writeText(path).then(() => deps.notify('Copied path'), () => (deps.notifyError ?? deps.notify)('Unable to copy path'));
   }
 
   function fileMenu(anchor: HTMLElement, path: string): void {

@@ -1,7 +1,10 @@
-//! Read-only subscription limits. Credentials and provider responses never cross IPC.
+//! Subscription limits. Credentials and provider responses never cross IPC.
+//! Limits are only read; no credential is ever written. For an expired Claude
+//! Code login, PandaCode may run Claude Code itself to refresh it
+//! (`agent_usage_claude_cli.rs`).
 
 use crate::account_config::var;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -29,6 +32,31 @@ pub(crate) struct Usage {
     pub stale: bool,
     pub source: Option<String>,
     pub dashboard_url: Option<String>,
+    /// When a Refresh may ask a rate-limited service again (ms since the epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<u64>,
+    /// When an automatic check (opening the panel) will ask it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_retry_at: Option<u64>,
+    /// What fixes an error, when known: `refresh` (press Refresh: a Keychain
+    /// latch or a timeout), `retry` (a passing problem: try again later),
+    /// `claude` (open Claude Code), `unlock` (unlock the Keychain),
+    /// `rateLimited` (wait, then Refresh), `apiConnection` (Claude uses an
+    /// API key or other connection), `updateClaude` (Claude Code too old to
+    /// refresh its login on request), `expired` (an expired login), `settings`
+    /// (expired, and running Claude Code is turned off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<&'static str>,
+    /// A manual Refresh may ask again at once (a Keychain latch or a timeout,
+    /// which the Refresh itself lifts); never sent.
+    #[serde(skip)]
+    pub refresh_now: bool,
+    /// Whose reading this is (Claude: profile key, account hint); never sent.
+    #[serde(skip)]
+    pub owner: Option<(String, Option<String>)>,
+    /// Which Claude message this is, for decisions (never the text); never sent.
+    #[serde(skip)]
+    pub cause: Option<crate::agent_usage_claude::Cause>,
 }
 
 impl Usage {
@@ -44,7 +72,27 @@ impl Usage {
             stale: false,
             source: None,
             dashboard_url: None,
+            retry_at: None,
+            auto_retry_at: None,
+            action: None,
+            refresh_now: false,
+            owner: None,
+            cause: None,
         }
+    }
+
+    /// This (earlier) reading standing in for `failed`, marked stale: it
+    /// carries the failure's message, fix, times and `cause`, so the cache
+    /// treats it as that failure (a "still running" answer is never kept).
+    pub(crate) fn standing_in_for(mut self, failed: &Usage) -> Self {
+        self.stale = true;
+        self.message = failed.message.clone();
+        self.retry_at = failed.retry_at;
+        self.auto_retry_at = failed.auto_retry_at;
+        self.refresh_now = failed.refresh_now;
+        self.action = failed.action;
+        self.cause = failed.cause;
+        self
     }
 }
 
@@ -67,14 +115,14 @@ impl UsageWindow {
     }
 }
 
-fn percentage(value: &Value) -> Option<f64> {
+pub(crate) fn percentage(value: &Value) -> Option<f64> {
     value
         .as_f64()
         .filter(|v| v.is_finite())
         .map(|v| v.clamp(0.0, 100.0))
 }
 
-fn plan_name(value: &str) -> Option<String> {
+pub(crate) fn plan_name(value: &str) -> Option<String> {
     Some(
         match value {
             "free" => "Free",
@@ -92,7 +140,7 @@ fn plan_name(value: &str) -> Option<String> {
     )
 }
 
-fn text_field(value: &Value, max: usize) -> Option<String> {
+pub(crate) fn text_field(value: &Value, max: usize) -> Option<String> {
     value
         .as_str()
         .map(|s| {
@@ -183,69 +231,7 @@ fn codex_limits(account: &Value, limits: Result<Value, String>) -> Usage {
     }
 }
 
-fn claude_usage(value: &Value, plan: Option<String>) -> Usage {
-    let mut result = Usage::empty(
-        "claude",
-        "unavailable",
-        "Claude did not report subscription usage limits.",
-    );
-    result.plan = plan;
-    result.source = Some("Claude OAuth usage".into());
-    result.dashboard_url = Some("https://claude.ai/settings/usage".into());
-    for (key, label) in [
-        ("five_hour", "5 hours"),
-        ("seven_day", "Weekly"),
-        ("seven_day_opus", "Weekly · Opus"),
-        ("seven_day_sonnet", "Weekly · Sonnet"),
-        ("seven_day_oauth_apps", "Weekly · OAuth apps"),
-    ] {
-        let window = &value[key];
-        if let Some(used) = percentage(&window["utilization"]) {
-            result.windows.push(UsageWindow::new(
-                label,
-                used,
-                reset_string(&window["resets_at"]),
-            ));
-        }
-    }
-    for window in value["limits"].as_array().into_iter().flatten().take(16) {
-        if window["kind"] != "weekly_scoped" || window["is_active"] == false {
-            continue;
-        }
-        let Some(used) = percentage(&window["percent"]) else {
-            continue;
-        };
-        let Some(model) = text_field(&window["scope"]["model"]["display_name"], 64) else {
-            continue;
-        };
-        let label = format!("Weekly · {model}");
-        if !result
-            .windows
-            .iter()
-            .any(|existing| existing.label == label)
-        {
-            result.windows.push(UsageWindow::new(
-                label,
-                used,
-                reset_string(&window["resets_at"]),
-            ));
-        }
-    }
-    if value["extra_usage"]["is_enabled"] == true {
-        if let Some(used) = percentage(&value["extra_usage"]["utilization"]) {
-            result
-                .windows
-                .push(UsageWindow::new("Extra usage budget", used, None));
-        }
-    }
-    if !result.windows.is_empty() {
-        result.status = "ready".into();
-        result.message = None;
-    }
-    result
-}
-
-fn reset_string(value: &Value) -> Option<String> {
+pub(crate) fn reset_string(value: &Value) -> Option<String> {
     value
         .as_str()
         .filter(|s| {
@@ -305,27 +291,52 @@ pub(crate) fn http_client() -> Result<reqwest::Client, FetchError> {
         .map_err(|_| FetchError::Unavailable)
 }
 
-pub(crate) async fn request_json(request: reqwest::RequestBuilder) -> Result<Value, FetchError> {
-    let mut response = request.send().await.map_err(|_| FetchError::Unavailable)?;
-    if !response.status().is_success() {
-        return Err(FetchError::Http(response.status().as_u16()));
-    }
+/// One bounded HTTPS exchange: the status, a `Retry-After` header and the
+/// JSON body when there is one. Error bodies are read too (OAuth errors carry
+/// their code there); an oversized successful body is `Invalid`.
+pub(crate) struct Reply {
+    pub status: u16,
+    pub retry_after: Option<String>,
+    pub body: Option<Value>,
+}
+
+pub(crate) async fn exchange(request: reqwest::RequestBuilder) -> Result<Reply, FetchError> {
     const LIMIT: usize = 256 * 1024;
-    if response.content_length().is_some_and(|n| n > LIMIT as u64) {
+    let mut response = request.send().await.map_err(|_| FetchError::Unavailable)?;
+    let status = response.status().as_u16();
+    let success = response.status().is_success();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 64)
+        .map(str::to_owned);
+    let mut bytes = Vec::new();
+    let mut oversized = response.content_length().is_some_and(|n| n > LIMIT as u64);
+    while !oversized {
+        let Some(chunk) = response.chunk().await.map_err(|_| FetchError::Unavailable)? else {
+            break;
+        };
+        oversized = bytes.len() + chunk.len() > LIMIT;
+        if !oversized {
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+    if oversized && success {
+        bytes.fill(0);
         return Err(FetchError::Invalid);
     }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| FetchError::Unavailable)?
-    {
-        if bytes.len() + chunk.len() > LIMIT {
-            return Err(FetchError::Invalid);
-        }
-        bytes.extend_from_slice(&chunk);
+    let body = (!oversized).then(|| serde_json::from_slice(&bytes).ok()).flatten();
+    bytes.fill(0);
+    Ok(Reply { status, retry_after, body })
+}
+
+pub(crate) async fn request_json(request: reqwest::RequestBuilder) -> Result<Value, FetchError> {
+    let reply = exchange(request).await?;
+    if !(200..300).contains(&reply.status) {
+        return Err(FetchError::Http(reply.status));
     }
-    serde_json::from_slice(&bytes).map_err(|_| FetchError::Invalid)
+    reply.body.ok_or(FetchError::Invalid)
 }
 
 #[derive(Default)]
@@ -337,7 +348,7 @@ struct Entry {
 }
 
 #[derive(Default)]
-struct CacheSlot {
+pub(crate) struct CacheSlot {
     entry: Mutex<Entry>,
     generation: AtomicU64,
 }
@@ -378,7 +389,76 @@ pub(crate) fn invalidate(provider: &str) {
     }
 }
 
-async fn cached<F, Fut, P, Stamp>(slot: &CacheSlot, refresh: bool, source: P, fetch: F) -> Usage
+/// Like `invalidate`, and also every named connection's cached reading.
+pub(crate) fn invalidate_all(provider: &str) {
+    invalidate(provider);
+    for slot in connection_slots().values() {
+        slot.generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The cache generations of `provider`'s default slot and of the named
+/// connection slot `connection` (made if missing): any bump drops a reading.
+#[cfg(test)]
+pub(crate) fn generations(provider: &str, connection: &str) -> (u64, u64) {
+    let default = cache().get(provider).map_or(0, |slot| slot.generation.load(Ordering::SeqCst));
+    let named = connection_slots().entry(connection.into()).or_default().generation.load(Ordering::SeqCst);
+    (default, named)
+}
+
+/// Cache slots of named connections, keyed by id and revision, so an edited
+/// connection never shows the old account.
+// ponytail: slots of deleted or edited connections stay until restart; tiny.
+fn connection_slots() -> std::sync::MutexGuard<'static, HashMap<String, Arc<CacheSlot>>> {
+    static SLOTS: OnceLock<std::sync::Mutex<HashMap<String, Arc<CacheSlot>>>> = OnceLock::new();
+    SLOTS.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Which profile the Claude card for `setup` (`""` or a connection id) checks.
+fn note_claude_check(setup: &str, owner: &Option<(String, Option<String>)>) {
+    if let Some((key, account)) = owner {
+        let dir = crate::secret_store::dir().map(std::path::Path::to_path_buf);
+        crate::agent_usage_claude::note_check(setup, crate::agent_usage_claude_limits::Profile { key: key.clone(), account: account.clone(), dir });
+    }
+}
+
+/// Whose Claude reading a check would give now (`None` for other providers).
+async fn owner_now(provider: &str, env: &[(String, String)]) -> Option<(String, Option<String>)> {
+    if provider != "claude" {
+        return None;
+    }
+    crate::agent_usage_claude::owner_now(&crate::agent_usage_claude_env::ClaudeEnv::launch(env)).await
+}
+
+#[cfg(test)]
+pub(crate) async fn cached<F, Fut, P, Stamp>(slot: &CacheSlot, refresh: bool, source: P, fetch: F) -> Usage
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Usage>,
+    P: Fn() -> Stamp,
+    Stamp: Future<Output = Option<u64>>,
+{
+    cached_for(slot, refresh, None, source, fetch).await
+}
+
+/// How soon a Refresh may ask a provider again: ten seconds, or at once when
+/// the last answer asked to unlock the Keychain (`action: unlock`) or was a
+/// Keychain latch or timeout that the Refresh itself lifts (`refresh_now`),
+/// even when a saved reading stands in for it (status ready, stale).
+const REFRESH_MINIMUM: Duration = Duration::from_secs(10);
+
+/// Whether a manual Refresh skips the minimum for this last result.
+fn refresh_fixes(result: &Usage) -> bool {
+    result.refresh_now || result.action == Some("unlock")
+}
+
+/// `owner`: whose reading a check would give now (Claude); a cached reading
+/// of another owner (an account switch or sign-out since) is never served.
+/// `source`: the local provenance stamp (`provenance`); a change drops the
+/// cached reading, and a change during the fetch discards its result, except
+/// a Claude reading of the very owner the check began with: Claude Code
+/// rewriting its own files while PandaCode runs it to refresh the login.
+async fn cached_for<F, Fut, P, Stamp>(slot: &CacheSlot, refresh: bool, owner: Option<(String, Option<String>)>, source: P, fetch: F) -> Usage
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Usage>,
@@ -397,15 +477,18 @@ where
             ..Entry::default()
         };
     }
-    let ttl = Duration::from_secs(if refresh { 10 } else { 60 });
+    let minimum = if entry.result.as_ref().is_some_and(refresh_fixes) { Duration::ZERO } else { REFRESH_MINIMUM };
+    let ttl = if refresh { minimum } else { Duration::from_secs(60) };
     if entry.attempted_at.is_some_and(|at| at.elapsed() < ttl) {
-        if let Some(result) = &entry.result {
+        if let Some(result) = entry.result.as_ref().filter(|result| owner.is_none() || result.owner.is_none() || result.owner == owner) {
             return result.clone();
         }
     }
     let mut result = fetch().await;
     let current = source().await;
-    if provenance.is_none() || current != provenance || slot.generation.load(Ordering::SeqCst) != generation {
+    let same_owner = owner.is_some() && result.owner == owner;
+    let moved = current != provenance && !(same_owner && current.is_some());
+    if provenance.is_none() || moved || slot.generation.load(Ordering::SeqCst) != generation {
         *entry = Entry::default();
         return Usage::empty(
             &result.provider,
@@ -413,16 +496,16 @@ where
             "The agent configuration changed. Refresh to check the current account.",
         );
     }
-    if result.status == "error" {
-        if let Some(prior) = &entry.result {
-            if !prior.windows.is_empty() {
-                let mut stale = prior.clone();
-                stale.stale = true;
-                stale.message = result.message;
-                result = stale;
-            }
-        }
+    if let Some(stale) = stand_in(&entry, &result) {
+        result = stale;
     }
+    // "Still refreshing" is never kept: reopening the panel asks again and
+    // shows what the run saved.
+    if result.cause == Some(crate::agent_usage_claude::Cause::StillRunning) {
+        *entry = Entry { generation, ..Entry::default() };
+        return result;
+    }
+    entry.provenance = current;
     entry.attempted_at = Some(Instant::now());
     entry.result = Some(result.clone());
     result
@@ -514,123 +597,77 @@ fn file_state(path: &Path, hash: &mut impl Hasher) {
     }
 }
 
-struct ClaudeCredential {
-    token: String,
-    plan: Option<String>,
-}
-fn unreadable_claude_login() -> Box<Usage> {
-    Box::new(Usage::empty("claude", "unavailable", "No readable Claude login was found. Open Claude Code to verify its sign-in or unlock protected storage, or view usage in your Claude account."))
-}
-
-fn parse_claude_credential(bytes: &[u8], now: u64) -> Result<ClaudeCredential, Box<Usage>> {
-    // Deserialize only the documented fields. In particular refresh tokens,
-    // account identities, and unrelated provider credentials are ignored.
-    #[derive(Deserialize)]
-    struct File {
-        #[serde(rename = "claudeAiOauth")]
-        oauth: Option<OAuth>,
+/// The earlier reading, marked stale and carrying the failure's message and
+/// fix, when it may stand in for a failed one with nothing to show.
+fn stand_in(entry: &Entry, failed: &Usage) -> Option<Usage> {
+    if failed.status != "error" || !failed.windows.is_empty() {
+        return None;
     }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct OAuth {
-        access_token: String,
-        expires_at: Option<u64>,
-        scopes: Option<Vec<String>>,
-        subscription_type: Option<String>,
-    }
-    let missing = unreadable_claude_login;
-    if bytes.len() > 256 * 1024 {
-        return Err(missing());
-    }
-    let oauth = serde_json::from_slice::<File>(bytes)
-        .ok()
-        .and_then(|file| file.oauth)
-        .ok_or_else(missing)?;
-    if oauth.access_token.is_empty()
-        || oauth.access_token.len() > 16 * 1024
-        || !oauth.access_token.bytes().all(|b| b.is_ascii_graphic())
-    {
-        return Err(missing());
-    }
-    if oauth.expires_at.is_some_and(|expiry| expiry <= now) {
-        return Err(Box::new(Usage::empty(
-            "claude",
-            "signedOut",
-            "The saved Claude login has expired. Open Claude Code to sign in again, then refresh.",
-        )));
-    }
-    if !oauth
-        .scopes
-        .as_ref()
-        .is_some_and(|scopes| scopes.iter().any(|scope| scope == "user:profile"))
-    {
-        return Err(Box::new(Usage::empty("claude", "unavailable", "This Claude credential cannot read subscription usage. Sign in with Claude Code instead of an inference-only setup token.")));
-    }
-    Ok(ClaudeCredential {
-        token: oauth.access_token,
-        plan: oauth.subscription_type.as_deref().and_then(plan_name),
-    })
+    let prior = entry.result.as_ref().filter(|prior| !prior.windows.is_empty() && may_stand_in(prior, failed, entry.attempted_at))?;
+    Some(prior.clone().standing_in_for(failed))
 }
 
-pub(crate) fn claude_override(inherit: bool, env: impl Fn(&str) -> Option<String>, settings: &Value) -> bool {
-    // Settings apply to the CLI even when PandaCode strips inherited credential
-    // environment variables. Helpers are detected, never executed here.
-    if settings["apiKeyHelper"]
-        .as_str()
-        .is_some_and(|s| !s.trim().is_empty())
-    {
+/// How old an in-memory Claude reading may be to stand in when its account
+/// is unknown.
+const UNKNOWN_ACCOUNT_STANDIN: Duration = Duration::from_secs(15 * 60);
+
+/// Whether an earlier reading may stand in for a failed one. For Claude, only
+/// one of the same profile and the same account (or, when no account is
+/// known, one under 15 minutes old); its saved reading is tried first
+/// (`agent_usage_claude_limits::or_saved`).
+fn may_stand_in(prior: &Usage, failed: &Usage, at: Option<Instant>) -> bool {
+    if failed.provider != "claude" {
         return true;
     }
-    let connection = |env: &dyn Fn(&str) -> Option<String>| {
-        let present = |name| env(name).is_some_and(|s| !s.trim().is_empty());
-        let enabled = |name| {
-            env(name).is_some_and(|s| {
-                !matches!(s.trim().to_ascii_lowercase().as_str(), "" | "0" | "false")
-            })
-        };
-        [
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_CUSTOM_HEADERS",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "ANTHROPIC_PROFILE",
-            "ANTHROPIC_FEDERATION_RULE_ID",
-            "ANTHROPIC_IDENTITY_TOKEN_FILE",
-        ]
-        .iter()
-        .any(|key| present(key))
-            || [
-                "CLAUDE_CODE_USE_BEDROCK",
-                "CLAUDE_CODE_USE_VERTEX",
-                "CLAUDE_CODE_USE_FOUNDRY",
-            ]
-            .iter()
-            .any(|key| enabled(key))
-            || env("ANTHROPIC_BASE_URL").is_some_and(|s| {
-                !matches!(
-                    s.trim(),
-                    "" | "https://api.anthropic.com" | "https://api.anthropic.com/"
-                )
-            })
-    };
-    connection(&|name| settings["env"][name].as_str().map(str::to_owned))
-        || inherit && connection(&env)
+    match (&prior.owner, &failed.owner) {
+        (Some((key, hint)), Some((now_key, now_hint))) if key == now_key && hint == now_hint => {
+            hint.is_some() || at.is_some_and(|at| at.elapsed() < UNKNOWN_ACCOUNT_STANDIN)
+        }
+        _ => false,
+    }
 }
 
-#[cfg(target_os = "macos")]
-fn claude_service(config: Option<&str>, secure: Option<&str>) -> String {
-    use sha2::{Digest, Sha256};
-    // Claude hashes the raw NFC-normalized config string, without resolving
-    // symlinks, expanding ~, or removing a trailing slash. The secure-storage
-    // override takes precedence, including an explicitly empty override.
-    let Some(scope) = secure.or(config).filter(|s| !s.is_empty()) else {
-        return "Claude Code-credentials".into();
-    };
-    let normalized = objc2_foundation::NSString::from_str(scope)
-        .precomposedStringWithCanonicalMapping()
-        .to_string();
-    let hash = format!("{:x}", Sha256::digest(normalized));
-    format!("Claude Code-credentials-{}", &hash[..8])
+/// A Claude card still checking: whether PandaCode is running Claude Code
+/// for it ("Asking Claude Code…"), and its saved reading to show meanwhile.
+#[derive(Serialize)]
+pub(crate) struct ClaudeWaiting {
+    pub asking: bool,
+    pub saved: Option<Usage>,
+}
+
+/// The most setups one poll asks about (the panel's cards).
+const WAITING_LIMIT: usize = 64;
+
+/// For each Claude setup whose card is still checking (`""`: the global one,
+/// else a connection id), one poll for all: whether PandaCode is running
+/// Claude Code for it and its saved reading. Answered from the profile the
+/// setup's last check noted: no login files, Keychain, connection secrets or
+/// network per poll, only PandaCode's small saved-reading file.
+#[tauri::command]
+pub(crate) async fn agent_usage_asking_claude(window: tauri::WebviewWindow, connections: Vec<String>) -> crate::Result<HashMap<String, ClaudeWaiting>> {
+    if window.label() != "main" {
+        return Err("Usage limits are available only in the main application window.".into());
+    }
+    if connections.len() > WAITING_LIMIT || connections.iter().any(|id| id.len() > 200) {
+        return Err("Too many usage cards to check.".into());
+    }
+    Ok(claude_waiting(connections).await)
+}
+
+/// `agent_usage_asking_claude` past its checks.
+pub(crate) async fn claude_waiting(connections: Vec<String>) -> HashMap<String, ClaudeWaiting> {
+    let mut answers = HashMap::new();
+    for id in connections {
+        let saved = crate::agent_usage_claude::saved_for(&id).await;
+        let asking = asking_claude(Some(id.as_str()));
+        answers.insert(id, ClaudeWaiting { asking, saved });
+    }
+    answers
+}
+
+/// `agent_usage_asking_claude` past its window check.
+pub(crate) fn asking_claude(connection: Option<&str>) -> bool {
+    crate::agent_usage_claude::asking_for(connection.unwrap_or_default())
 }
 
 /// `connection` reads one named connection through its own config folder and
@@ -653,7 +690,10 @@ pub(crate) async fn agent_usage(
 
 pub(crate) async fn query_usage(provider: String, refresh: bool) -> crate::Result<Usage> {
     let slot = cache().get(provider.as_str()).ok_or("Unknown agent.")?;
-    Ok(cached(slot, refresh, || provenance(&provider, None), || bounded(&provider, &[])).await)
+    let owner = owner_now(&provider, &[]).await;
+    note_claude_check("", &owner);
+    let known = owner.clone();
+    Ok(cached_for(slot, refresh, owner, || provenance(&provider, None), || bounded(&provider, &[], refresh, known)).await)
 }
 
 async fn connection_usage(provider: String, id: &str, refresh: bool) -> crate::Result<Usage> {
@@ -661,49 +701,103 @@ async fn connection_usage(provider: String, id: &str, refresh: bool) -> crate::R
         .filter(|c| c.provider == provider)
         .ok_or("This connection no longer exists.")?;
     // Revisions select a fresh slot; local provenance also covers saved environment edits.
-    // ponytail: slots of deleted or edited connections stay until restart; tiny.
-    static SLOTS: OnceLock<std::sync::Mutex<HashMap<String, Arc<CacheSlot>>>> = OnceLock::new();
-    let slot = SLOTS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(format!("{}#{}", connection.id, connection.revision))
-        .or_default()
-        .clone();
-    let fetch_connection = connection.clone();
-    Ok(cached(&slot, refresh, || provenance(&provider, Some(&connection)), || async {
-        let name = fetch_connection.name.clone();
-        match tokio::task::spawn_blocking(move || crate::connections::launch(&fetch_connection)).await {
-            Ok(Ok(launch)) => bounded(&provider, &launch.env).await,
-            _ => Usage::empty(&provider, "unavailable", &format!("The saved values of “{name}” could not be read. Check the connection in Settings.")),
+    let slot = connection_slots().entry(format!("{}#{}", connection.id, connection.revision)).or_default().clone();
+    let name = connection.name.clone();
+    let launched = connection.clone();
+    let Ok(Ok(launch)) = tokio::task::spawn_blocking(move || crate::connections::launch(&launched)).await else {
+        return Ok(Usage::empty(&provider, "unavailable", &format!("The saved values of “{name}” could not be read. Check the connection in Settings.")));
+    };
+    let owner = owner_now(&provider, &launch.env).await;
+    note_claude_check(id, &owner);
+    let known = owner.clone();
+    Ok(cached_for(&slot, refresh, owner, || provenance(&provider, Some(&connection)), || async { bounded(&provider, &launch.env, refresh, known).await }).await)
+}
+
+/// The deadline for one provider's check, counted once it has a slot.
+const CHECK_DEADLINE: Duration = Duration::from_secs(35);
+
+/// `owner`: whose Claude reading this is, already worked out (`owner_now`).
+async fn bounded(provider: &str, env: &[(String, String)], refresh: bool, owner: Option<(String, Option<String>)>) -> Usage {
+    let late = async {
+        if provider == "claude" {
+            crate::agent_usage_claude::late(&crate::agent_usage_claude_env::ClaudeEnv::launch(env)).await
+        } else {
+            Usage::empty(provider, "error", "The usage check timed out. Try again later.")
         }
-    })
-    .await)
+    };
+    // A Claude check may run Claude Code (and, on a manual refresh, wait on a
+    // Keychain dialog): its own deadline must end before this one, so no
+    // result is lost.
+    let deadline = match (provider, refresh) {
+        ("claude", true) => crate::agent_usage_claude::MANUAL_DEADLINE + Duration::from_secs(5),
+        ("claude", false) => crate::agent_usage_claude::DEADLINE + Duration::from_secs(5),
+        _ => CHECK_DEADLINE,
+    };
+    bounded_with(provider, deadline, fetch_provider(provider, env, refresh, owner), late).await
 }
 
-async fn bounded(provider: &str, env: &[(String, String)]) -> Usage {
-    static LIMIT: Semaphore = Semaphore::const_new(3);
-    tokio::time::timeout(Duration::from_secs(35), async {
-        let Ok(_permit) = LIMIT.acquire().await else {
-            return FetchError::Unavailable.into_usage(provider);
-        };
-        fetch_provider(provider, env).await
-    })
-    .await
-    .unwrap_or_else(|_| {
-        Usage::empty(
-            provider,
-            "error",
-            "The usage check timed out. Try again later.",
-        )
-    })
+/// At most three checks at once. The wait for a slot does not count toward
+/// a check's deadline (each slot holder is bounded, so the wait is too). Past
+/// the deadline the answer is `late`: for Claude, its saved reading.
+async fn bounded_with(
+    provider: &str,
+    deadline: Duration,
+    fetch: impl Future<Output = Usage>,
+    late: impl Future<Output = Usage>,
+) -> Usage {
+    let Ok(permit) = LIMIT.acquire().await else {
+        return FetchError::Unavailable.into_usage(provider);
+    };
+    match tokio::time::timeout(deadline, PERMIT.scope(std::cell::RefCell::new(Some(permit)), fetch)).await {
+        Ok(result) => result,
+        Err(_) => late.await,
+    }
 }
 
-async fn fetch_provider(provider: &str, env: &[(String, String)]) -> Usage {
+/// Runs `check` holding one shared slot, as `bounded_with` does (tests).
+#[cfg(test)]
+pub(crate) async fn with_slot<T>(check: impl Future<Output = T>) -> T {
+    let permit = LIMIT.acquire().await.expect("slots");
+    PERMIT.scope(std::cell::RefCell::new(Some(permit)), check).await
+}
+
+/// Whether the current check holds its shared slot (tests).
+#[cfg(test)]
+pub(crate) fn holds_slot() -> bool {
+    PERMIT.try_with(|slot| slot.borrow().is_some()).unwrap_or(false)
+}
+
+/// The three shared check slots (`bounded_with`).
+static LIMIT: Semaphore = Semaphore::const_new(3);
+
+tokio::task_local! {
+    /// The slot the current check holds, so it can give it up while it waits.
+    static PERMIT: std::cell::RefCell<Option<tokio::sync::SemaphorePermit<'static>>>;
+}
+
+/// Runs `wait` without holding the current check's shared slot (a Claude
+/// check waiting on a run of Claude Code), so other providers' cards don't
+/// wait behind it; the slot is taken back afterwards. Outside a bounded check
+/// it just runs `wait`.
+pub(crate) async fn without_slot<T>(wait: impl Future<Output = T>) -> T {
+    let held = PERMIT.try_with(|slot| slot.borrow_mut().take().is_some()).unwrap_or(false);
+    let result = wait.await;
+    if held {
+        if let Ok(permit) = LIMIT.acquire().await {
+            let _ = PERMIT.try_with(|slot| *slot.borrow_mut() = Some(permit));
+        }
+    }
+    result
+}
+
+async fn fetch_provider(provider: &str, env: &[(String, String)], refresh: bool, owner: Option<(String, Option<String>)>) -> Usage {
     let effective = crate::account_config::environment(provider, env);
     let mut result = match provider {
         "codex" => fetch_codex(&effective).await,
-        "claude" => fetch_claude(&effective).await,
+        "claude" => {
+            let env = crate::agent_usage_claude_env::ClaudeEnv::launch(env);
+            crate::agent_usage_claude::fetch_claude(&env, refresh, owner).await
+        }
         _ if !env.is_empty() => Usage::empty(provider, "unsupported", "Limits are read for each Claude Code and Codex connection. This harness's limits are shown for its global setup only."),
         "kimi" | "glm" | "opencode" | "antigravity" | "deepseek" => {
             crate::agent_usage_providers::fetch(provider).await
@@ -771,749 +865,19 @@ async fn fetch_codex(env: &[(String, String)]) -> Usage {
     result
 }
 
+/// Claude's config folder resolved as Claude is launched (saved provider
+/// variables, then this process's: `ClaudeEnv`), so cost estimates
+/// (`usage_ledger`) read the same folder the limits do.
 pub(crate) fn claude_config_dir() -> Option<PathBuf> {
-    claude_config_dir_in(&crate::account_config::environment("claude", &[]))
+    crate::agent_usage_claude_env::ClaudeEnv::launch(&[]).config_dir()
 }
 
-fn claude_config_dir_in(env: &[(String, String)]) -> Option<PathBuf> {
-    crate::account_config::config_dir("claude", env)
-}
-
-async fn fetch_claude(env: &[(String, String)]) -> Usage {
-    let Some(config) = claude_config_dir_in(env) else {
-        return Usage::empty("claude", "unavailable", "Claude's configuration directory could not be determined. Use an absolute CLAUDE_CONFIG_DIR path.");
-    };
-    let settings = match crate::agent_usage_providers::credential_bytes(&config.join("settings.json")).await {
-        Ok(Some(mut bytes)) => { let parsed = serde_json::from_slice::<Value>(&bytes); bytes.fill(0); match parsed {
-            Ok(value) => value,
-            Err(_) => return Usage::empty("claude", "unavailable", "Claude's settings could not be read. Check its configuration before viewing subscription usage."),
-        } },
-        Ok(None) => Value::Null,
-        Err(_) => return Usage::empty("claude", "unavailable", "Claude's settings could not be read. Check its configuration before viewing subscription usage."),
-    };
-    if claude_override(
-        true,
-        |name| var(env, name),
-        &settings,
-    ) {
-        return Usage::empty("claude", "unavailable", "Claude is configured with an API key, custom endpoint, or environment credentials. Saved Claude subscription limits do not describe that connection.");
-    }
-    let (credential, source) = match read_claude_credential(&config, env).await {
-        Ok(value) => value,
-        Err(result) => return *result,
-    };
-    let client = match http_client() {
-        Ok(client) => client,
-        Err(error) => return error.into_usage("claude"),
-    };
-    // Fixed first-party endpoint; redirect following is disabled. Neither the
-    // refresh token nor a response body is forwarded to the webview or logged.
-    let response = request_json(
-        client
-            .get("https://api.anthropic.com/api/oauth/usage")
-            .bearer_auth(&credential.token)
-            .header("anthropic-beta", "oauth-2025-04-20")
-            .header("Accept", "application/json"),
-    )
-    .await;
-    let mut result = match response {
-        Ok(value) => claude_usage(&value, credential.plan),
-        Err(error) => error.into_usage("claude"),
-    };
-    result.source = Some(source.into());
-    result
-}
-
-async fn read_claude_credential(
-    config: &Path,
-    env: &[(String, String)],
-) -> Result<(ClaudeCredential, &'static str), Box<Usage>> {
-    let unavailable = unreadable_claude_login;
-    #[cfg(not(target_os = "macos"))]
-    let _ = env;
-    #[cfg(target_os = "macos")]
-    {
-        let service = claude_service(
-            var(env, "CLAUDE_CONFIG_DIR").as_deref(),
-            var(env, "CLAUDE_SECURESTORAGE_CONFIG_DIR").as_deref(),
-        );
-        let keychain =
-            tokio::task::spawn_blocking(move || crate::usage_keychain::read_claude(&service)).await;
-        match keychain {
-            Ok(Ok(Some(mut bytes))) => {
-                let result = parse_claude_credential(&bytes, crate::storage::now().max(0) as u64);
-                bytes.fill(0);
-                return result.map(|credential| (credential, "Claude Code login · Keychain"));
-            }
-            Ok(Ok(None)) => {}
-            _ => return Err(unavailable()),
-        }
-    }
-    let mut bytes =
-        crate::agent_usage_providers::credential_bytes(&config.join(".credentials.json"))
-            .await
-            .map_err(|_| unavailable())?
-            .ok_or_else(unavailable)?;
-    let result = parse_claude_credential(&bytes, crate::storage::now().max(0) as u64);
-    bytes.fill(0);
-    result.map(|credential| (credential, "Claude Code login · local credential file"))
+/// For tests elsewhere: a fresh cache slot (see `cached`).
+#[cfg(test)]
+pub(crate) fn tests_slot() -> CacheSlot {
+    CacheSlot::default()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    struct LocalLogin {
-        root: PathBuf,
-        dir: PathBuf,
-        provider: &'static str,
-        env: Vec<(String, String)>,
-    }
-
-    impl LocalLogin {
-        fn new(provider: &'static str, named: bool) -> Self {
-            let root = std::env::temp_dir().join(format!("quota-source-{}", uuid::Uuid::new_v4()));
-            let dir = root.join(if named { "named" } else if provider == "claude" { ".claude" } else { ".codex" });
-            std::fs::create_dir_all(&dir).unwrap();
-            let mut env: Vec<_> = [
-                "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS",
-                "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID",
-                "ANTHROPIC_IDENTITY_TOKEN_FILE", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-                "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_BASE_URL", "CODEX_API_KEY", "OPENAI_API_KEY",
-            ].into_iter().map(|name| (name.into(), String::new())).collect();
-            env.extend([
-                ("HOME".into(), root.to_string_lossy().into_owned()),
-                ("USERPROFILE".into(), root.to_string_lossy().into_owned()),
-                (if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }.into(),
-                    if named { dir.to_string_lossy().into_owned() } else { String::new() }),
-            ]);
-            let login = Self { root, dir, provider, env };
-            login.write("account-a@example.test");
-            login
-        }
-
-        fn write(&self, email: &str) {
-            let (name, value) = if self.provider == "claude" {
-                (".config.json", json!({"oauthAccount":{"emailAddress":email,"planDisplayName":"Max"}}))
-            } else {
-                use base64::Engine;
-                let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"email":email}).to_string());
-                ("auth.json", json!({"auth_mode":"chatgpt","tokens":{"id_token":format!("h.{claims}.s")}}))
-            };
-            std::fs::write(self.dir.join(name), value.to_string()).unwrap();
-        }
-
-        async fn stamp(&self) -> Option<u64> {
-            Some(local_provenance(self.provider, &self.env))
-        }
-
-        fn usage(&self, percent: f64) -> Usage {
-            let mut result = Usage::empty(self.provider, "ready", "");
-            result.email = crate::account_identity::local(self.provider, &self.env).email;
-            result.windows.push(UsageWindow::new("Primary", percent, None));
-            result
-        }
-    }
-
-    impl Drop for LocalLogin {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[tokio::test]
-    async fn local_login_changes_invalidate_default_and_named_quota_caches() {
-        for provider in ["claude", "codex"] {
-            for named in [false, true] {
-                let login = LocalLogin::new(provider, named);
-                let slot = CacheSlot::default();
-                let first = cached(&slot, false, || login.stamp(), || async { login.usage(17.0) }).await;
-                assert_eq!(first.email.as_deref(), Some("account-a@example.test"));
-                login.write("account-b-longer@example.test");
-                let next = cached(&slot, true, || login.stamp(), || async { login.usage(42.0) }).await;
-                assert_eq!(next.email.as_deref(), Some("account-b-longer@example.test"));
-                assert_eq!(next.windows[0].used_percent, 42.0);
-                login.write("account-c-even-longer@example.test");
-                let failed = cached(&slot, false, || login.stamp(), || async {
-                    Usage::empty(provider, "error", "Synthetic failure")
-                }).await;
-                assert!(failed.windows.is_empty());
-                assert!(!failed.stale);
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn local_login_change_during_fetch_rejects_the_obsolete_windows() {
-        for provider in ["claude", "codex"] {
-            let login = LocalLogin::new(provider, true);
-            let slot = CacheSlot::default();
-            let obsolete = cached(&slot, false, || login.stamp(), || async {
-                let result = login.usage(17.0);
-                tokio::task::yield_now().await;
-                login.write("account-b-longer@example.test");
-                result
-            }).await;
-            assert_eq!(obsolete.status, "unavailable");
-            assert!(obsolete.windows.is_empty());
-            assert!(obsolete.email.is_none());
-            assert!(slot.entry.lock().await.result.is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn token_refresh_metadata_rejects_success_then_recovers_and_caches_same_login() {
-        use base64::Engine;
-        use std::sync::atomic::AtomicUsize;
-
-        for provider in ["claude", "codex"] {
-            for named in [false, true] {
-                let login = LocalLogin::new(provider, named);
-                let path = login.dir.join(if provider == "claude" { ".config.json" } else { "auth.json" });
-                let mut metadata: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                if provider == "codex" {
-                    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({
-                        "email":"account-a@example.test",
-                        "https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}
-                    }).to_string());
-                    metadata["tokens"]["id_token"] = json!(format!("h.{claims}.s"));
-                }
-                metadata["lastRefresh"] = json!("before");
-                std::fs::write(&path, metadata.to_string()).unwrap();
-                let identity = crate::account_identity::local(provider, &login.env);
-                assert_eq!(identity.email.as_deref(), Some("account-a@example.test"));
-                assert_eq!(identity.plan.as_deref(), Some(if provider == "claude" { "Max" } else { "Plus" }));
-                let before = login.stamp().await;
-                let before_len = std::fs::metadata(&path).unwrap().len();
-                let slot = CacheSlot::default();
-                let count = AtomicUsize::new(0);
-                let rejected = cached(&slot, false, || login.stamp(), || async {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    let mut result = login.usage(17.0);
-                    result.plan = identity.plan.clone();
-                    metadata["lastRefresh"] = json!("after-synthetic-token-refresh");
-                    std::fs::write(&path, metadata.to_string()).unwrap();
-                    result
-                }).await;
-                assert_ne!(before_len, std::fs::metadata(&path).unwrap().len());
-                assert_ne!(before, login.stamp().await);
-                assert_eq!(identity, crate::account_identity::local(provider, &login.env));
-                assert_eq!(count.load(Ordering::SeqCst), 1);
-                // Even a same-login rewrite conservatively discards the successful reply.
-                assert_eq!(rejected.status, "unavailable");
-                assert!(rejected.email.is_none());
-                assert!(rejected.plan.is_none());
-                assert!(rejected.windows.is_empty());
-                assert!(!rejected.stale);
-                {
-                    let entry = slot.entry.lock().await;
-                    assert!(entry.result.is_none());
-                    assert!(entry.attempted_at.is_none());
-                }
-                let recovered = cached(&slot, true, || login.stamp(), || async {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    let mut result = login.usage(42.0);
-                    result.plan = identity.plan.clone();
-                    result
-                }).await;
-                assert_eq!(count.load(Ordering::SeqCst), 2);
-                assert_eq!(recovered.status, "ready");
-                assert_eq!(recovered.email, identity.email);
-                assert_eq!(recovered.plan, identity.plan);
-                assert_eq!(recovered.windows[0].used_percent, 42.0);
-                assert!(!recovered.stale);
-                let reused = cached(&slot, false, || login.stamp(), || async {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    login.usage(99.0)
-                }).await;
-                assert_eq!(count.load(Ordering::SeqCst), 2);
-                assert_eq!(serde_json::to_value(reused).unwrap(), serde_json::to_value(recovered).unwrap());
-            }
-        }
-    }
-
-    #[test]
-    fn local_provenance_tracks_credential_config_and_legacy_file_state() {
-        for provider in ["claude", "codex"] {
-            let login = LocalLogin::new(provider, false);
-            let paths = if provider == "claude" {
-                vec![login.dir.join(".credentials.json"), login.dir.join("settings.json"), login.root.join(".claude.json")]
-            } else {
-                vec![login.dir.join("auth.json"), login.dir.join("config.toml")]
-            };
-            for path in paths {
-                let before = local_provenance(provider, &login.env);
-                std::fs::write(&path, "synthetic-local-state").unwrap();
-                let written = local_provenance(provider, &login.env);
-                assert_ne!(before, written);
-                assert_eq!(written, local_provenance(provider, &login.env));
-                std::fs::remove_file(&path).unwrap();
-                assert_ne!(written, local_provenance(provider, &login.env));
-            }
-            let mut moved = login.env.clone();
-            moved.push((if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }.into(), login.root.join("other").to_string_lossy().into_owned()));
-            assert_ne!(local_provenance(provider, &login.env), local_provenance(provider, &moved));
-        }
-    }
-
-    #[test]
-    fn provenance_environment_keeps_connection_paths_authoritative_without_secret_reads() {
-        for provider in ["claude", "codex"] {
-            let login = LocalLogin::new(provider, true);
-            let config = if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" };
-            let credential = if provider == "claude" { "CLAUDE_CODE_OAUTH_TOKEN" } else { "CODEX_API_KEY" };
-            let mut connection = crate::connections::Connection {
-                provider: provider.into(),
-                env: login.env.iter().cloned().collect(),
-                secret_env: vec![config.into(), credential.into()],
-                config_dir: Some(login.dir.to_string_lossy().into_owned()),
-                ..Default::default()
-            };
-            let effective = provenance_environment(provider, Some(&connection));
-            assert_eq!(crate::account_config::config_dir(provider, &effective), Some(login.dir.clone()));
-            assert_eq!(var(&effective, credential).as_deref(), Some("<protected>"));
-            assert_eq!(crate::account_identity::local(provider, &effective), crate::account_identity::Identity::default());
-            connection.config_dir = None;
-            assert_eq!(crate::account_config::config_dir(provider, &provenance_environment(provider, Some(&connection))), None);
-        }
-    }
-
-    #[tokio::test]
-    async fn quota_cache_unknown_provenance_clears_old_and_rejects_new_results() {
-        let slot = CacheSlot::default();
-        cached(&slot, false, || async { Some(1) }, || async {
-            claude_usage(&json!({"five_hour":{"utilization":17}}), None)
-        }).await;
-        let result = cached(&slot, false, || async { None }, || async {
-            claude_usage(&json!({"five_hour":{"utilization":42}}), None)
-        }).await;
-        assert_eq!(result.status, "unavailable");
-        assert!(result.windows.is_empty());
-        assert!(slot.entry.lock().await.result.is_none());
-    }
-
-    #[test]
-    fn codex_account_identity_survives_missing_limits() {
-        let account = json!({"account":{"type":"chatgpt","planType":"plus","email":" user\u{7}@example.test "},"accessToken":"NEVER_EXPOSE"});
-        let result = codex_usage(&account, &Value::Null);
-        let encoded = serde_json::to_value(&result).unwrap();
-        assert_eq!(encoded["email"], "user@example.test");
-        assert_eq!(result.plan.as_deref(), Some("Plus"));
-        assert!(!encoded.to_string().contains("NEVER_EXPOSE"));
-        let failure = codex_limits(&account, Err("PRIVATE_ERROR_WITH_TOKEN".into()));
-        assert_eq!(failure.status, "error");
-        assert_eq!(failure.email.as_deref(), Some("user@example.test"));
-        assert_eq!(failure.plan.as_deref(), Some("Plus"));
-        assert!(failure.windows.is_empty());
-        assert!(!serde_json::to_string(&failure).unwrap().contains("PRIVATE_ERROR_WITH_TOKEN"));
-    }
-
-    #[test]
-    fn codex_prefers_named_limits_and_omits_missing_percentages() {
-        let result = codex_usage(
-            &json!({"account":{"type":"chatgpt","planType":"plus","email":"user@example.test"}}),
-            &json!({
-                "rateLimitsByLimitId":{"codex":{"limitName":"Codex","primary":{"usedPercent":17.5,"windowDurationMins":300,"resetsAt":1800576000},"secondary":{"usedPercent":null,"windowDurationMins":10080}}},
-                "rateLimits":{"primary":{"usedPercent":99}},"accessToken":"SECRET"
-            }),
-        );
-        assert_eq!(result.status, "ready");
-        assert_eq!(result.windows.len(), 1);
-        assert_eq!(result.windows[0].used_percent, 17.5);
-        assert_eq!(result.windows[0].label, "Codex · 5 hours");
-        assert_eq!(result.plan.as_deref(), Some("Plus"));
-        let encoded = serde_json::to_string(&result).unwrap();
-        assert_eq!(result.email.as_deref(), Some("user@example.test"));
-        assert!(!encoded.contains("SECRET"));
-    }
-
-    #[test]
-    fn codex_signed_out_and_key_accounts_never_show_unrelated_limits() {
-        let limits = json!({"rateLimits":{"primary":{"usedPercent":9}}});
-        assert_eq!(
-            codex_usage(&json!({"account":null}), &limits).status,
-            "signedOut"
-        );
-        let key = codex_usage(&json!({"account":{"type":"apiKey"}}), &limits);
-        assert_eq!(key.status, "unavailable");
-        assert!(key.windows.is_empty());
-        assert!(key.email.is_none());
-    }
-
-    #[test]
-    fn claude_omits_unknown_windows_instead_of_claiming_zero() {
-        let result = claude_usage(
-            &json!({
-                "five_hour":{"utilization":24.5,"resets_at":"2026-09-23T01:00:00Z"},
-                "seven_day":{"utilization":null},
-                "seven_day_sonnet":{"utilization":101},
-                "extra_usage":{"is_enabled":false,"utilization":0},
-                "refreshToken":"SECRET"
-            }),
-            Some("Max".into()),
-        );
-        assert_eq!(result.status, "ready");
-        assert_eq!(result.windows.len(), 2);
-        assert_eq!(result.windows[0].used_percent, 24.5);
-        assert_eq!(result.windows[1].used_percent, 100.0);
-        assert!(!serde_json::to_string(&result).unwrap().contains("SECRET"));
-        assert_eq!(
-            claude_usage(&json!({"five_hour":null}), None).status,
-            "unavailable"
-        );
-    }
-
-    #[test]
-    fn claude_credentials_require_profile_scope_and_valid_access_token() {
-        let credential = |expires, scopes| {
-            serde_json::to_vec(&json!({"claudeAiOauth":{
-            "accessToken":"synthetic-token", "refreshToken":"NEVER_RETURN", "expiresAt":expires,
-            "scopes":scopes, "subscriptionType":"max"}}))
-            .unwrap()
-        };
-        let valid = parse_claude_credential(
-            &credential(9000, json!(["user:profile", "user:inference"])),
-            1000,
-        );
-        assert!(valid.is_ok());
-        let valid = valid.ok().unwrap();
-        assert_eq!(valid.token, "synthetic-token");
-        assert_eq!(valid.plan.as_deref(), Some("Max"));
-        assert_eq!(
-            parse_claude_credential(&credential(1000, json!(["user:profile"])), 1000)
-                .err()
-                .unwrap()
-                .status,
-            "signedOut"
-        );
-        assert_eq!(
-            parse_claude_credential(&credential(9000, json!(["user:inference"])), 1000)
-                .err()
-                .unwrap()
-                .status,
-            "unavailable"
-        );
-    }
-
-    #[test]
-    fn unreadable_login_does_not_claim_claude_is_signed_out() {
-        for bytes in [b"{}".as_slice(), b"invalid-json".as_slice()] {
-            assert_eq!(
-                parse_claude_credential(bytes, 1000).err().unwrap().status,
-                "unavailable"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn credential_client_rejects_cleartext_before_connecting() {
-        let error = http_client()
-            .ok()
-            .unwrap()
-            .get("http://127.0.0.1:9/")
-            .bearer_auth("synthetic-test-token")
-            .send()
-            .await
-            .err()
-            .unwrap();
-        assert!(error.is_builder());
-    }
-
-    #[tokio::test]
-    async fn simultaneous_and_rapid_forced_refreshes_share_one_fetch() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let count = AtomicUsize::new(0);
-        let entry = CacheSlot::default();
-        let login = LocalLogin::new("claude", true);
-        let fetch = || async {
-            count.fetch_add(1, Ordering::SeqCst);
-            tokio::task::yield_now().await;
-            Usage::empty("claude", "ready", "")
-        };
-        let (first, second) =
-            tokio::join!(cached(&entry, false, || login.stamp(), fetch), cached(&entry, true, || login.stamp(), fetch));
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        assert_eq!(first.checked_at, second.checked_at);
-    }
-
-    #[tokio::test]
-    async fn failed_refresh_preserves_prior_windows_but_signout_clears_them() {
-        let entry = CacheSlot {
-            entry: Mutex::new(Entry {
-                result: Some(claude_usage(&json!({"five_hour":{"utilization":4}}), None)),
-                attempted_at: Some(Instant::now() - Duration::from_secs(61)),
-                generation: 0,
-                provenance: Some(0),
-            }),
-            generation: AtomicU64::new(0),
-        };
-        let prior = entry.entry.lock().await.result.as_ref().unwrap().checked_at;
-        let failed = cached(&entry, true, || async { Some(0) }, || async {
-            FetchError::Unavailable.into_usage("claude")
-        })
-        .await;
-        assert!(failed.stale);
-        assert_eq!(failed.windows[0].used_percent, 4.0);
-        assert_eq!(failed.checked_at, prior);
-        entry.entry.lock().await.attempted_at = Some(Instant::now() - Duration::from_secs(11));
-        let signed_out = cached(&entry, true, || async { Some(0) }, || async {
-            FetchError::Http(401).into_usage("claude")
-        })
-        .await;
-        assert!(!signed_out.stale);
-        assert!(signed_out.windows.is_empty());
-    }
-
-    #[tokio::test]
-    async fn account_change_during_fetch_discards_old_response() {
-        let slot = CacheSlot::default();
-        let result = cached(&slot, false, || async { Some(0) }, || async {
-            slot.generation.fetch_add(1, Ordering::SeqCst);
-            claude_usage(&json!({"five_hour":{"utilization":50}}), None)
-        })
-        .await;
-        assert!(result.windows.is_empty());
-        assert!(slot.entry.lock().await.result.is_none());
-    }
-
-    #[tokio::test]
-    async fn quota_cache_switches_provenance_within_both_ttls() {
-        for refresh in [false, true] {
-            let slot = CacheSlot::default();
-            let source = AtomicU64::new(1);
-            let stamp = || async { Some(source.load(Ordering::SeqCst)) };
-            cached(&slot, false, stamp, || async {
-                claude_usage(&json!({"five_hour":{"utilization":17}}), None)
-            }).await;
-            source.store(2, Ordering::SeqCst);
-            let result = cached(&slot, refresh, stamp, || async {
-                claude_usage(&json!({"five_hour":{"utilization":42}}), None)
-            }).await;
-            assert_eq!(result.windows[0].used_percent, 42.0);
-        }
-    }
-
-    #[tokio::test]
-    async fn quota_cache_new_account_failure_never_keeps_old_windows() {
-        let slot = CacheSlot::default();
-        let source = AtomicU64::new(1);
-        let stamp = || async { Some(source.load(Ordering::SeqCst)) };
-        cached(&slot, false, stamp, || async {
-            let mut result = claude_usage(&json!({"five_hour":{"utilization":17}}), None);
-            result.email = Some("account-a@example.test".into());
-            result
-        }).await;
-        source.store(2, Ordering::SeqCst);
-        let result = cached(&slot, true, stamp, || async {
-            let mut result = Usage::empty("claude", "error", "Synthetic failure");
-            result.email = Some("account-b@example.test".into());
-            result
-        }).await;
-        assert!(result.windows.is_empty());
-        assert!(!result.stale);
-        assert_eq!(result.email.as_deref(), Some("account-b@example.test"));
-        let again = cached(&slot, false, stamp, || async { panic!("same source stays throttled") }).await;
-        assert_eq!(again.status, "error");
-    }
-
-    #[tokio::test]
-    async fn quota_cache_rejects_obsolete_inflight_reply() {
-        let slot = CacheSlot::default();
-        let source = AtomicU64::new(1);
-        let stamp = || async { Some(source.load(Ordering::SeqCst)) };
-        let started = tokio::sync::Notify::new();
-        let changed = tokio::sync::Notify::new();
-        let old = cached(&slot, false, stamp, || async {
-            started.notify_one();
-            changed.notified().await;
-            claude_usage(&json!({"five_hour":{"utilization":17}}), None)
-        });
-        let current = async {
-            started.notified().await;
-            source.store(2, Ordering::SeqCst);
-            changed.notify_one();
-            cached(&slot, false, stamp, || async {
-                claude_usage(&json!({"five_hour":{"utilization":42}}), None)
-            }).await
-        };
-        let (obsolete, current) = tokio::join!(old, current);
-        assert!(obsolete.windows.is_empty());
-        assert_eq!(obsolete.status, "unavailable");
-        assert_eq!(current.windows[0].used_percent, 42.0);
-        assert_eq!(slot.entry.lock().await.result.as_ref().unwrap().windows[0].used_percent, 42.0);
-    }
-
-    #[test]
-    fn subscription_mode_ignores_inherited_relay_but_respects_explicit_settings() {
-        let env =
-            |name: &str| (name == "ANTHROPIC_BASE_URL").then(|| "https://relay.example".into());
-        assert!(claude_override(true, env, &Value::Null));
-        assert!(!claude_override(false, env, &Value::Null));
-        assert!(claude_override(
-            false,
-            |_| None,
-            &json!({"apiKeyHelper":"some-helper"})
-        ));
-        assert!(claude_override(
-            true,
-            |_| None,
-            &json!({"env":{"ANTHROPIC_API_KEY":"synthetic-key"}})
-        ));
-        assert!(!claude_override(
-            true,
-            |name| (name == "CLAUDE_CODE_USE_BEDROCK").then(|| "false".into()),
-            &Value::Null
-        ));
-    }
-
-    #[test]
-    fn connection_environment_selects_its_own_config_folder_and_login() {
-        let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
-        let work = [
-            pair("CLAUDE_CONFIG_DIR", "/tmp/old"),
-            pair("CLAUDE_CONFIG_DIR", "/Users/me/.claude-work"),
-        ];
-        // The connection's last value wins; anything it doesn't set comes from PandaCode's environment.
-        assert_eq!(
-            var(&work, "CLAUDE_CONFIG_DIR").as_deref(),
-            Some("/Users/me/.claude-work")
-        );
-        assert_eq!(var(&work, "PATH"), std::env::var("PATH").ok());
-        assert_eq!(
-            claude_config_dir_in(&work),
-            Some(PathBuf::from("/Users/me/.claude-work"))
-        );
-        assert_eq!(
-            claude_config_dir_in(&[pair("CLAUDE_CONFIG_DIR", "relative")]),
-            None
-        );
-        assert_eq!(claude_config_dir_in(&[]), claude_config_dir());
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            claude_service(var(&work, "CLAUDE_CONFIG_DIR").as_deref(), None),
-            claude_service(Some("/Users/me/.claude-work"), None)
-        );
-    }
-
-    #[tokio::test]
-    async fn connections_of_harnesses_without_a_connection_reader_never_show_global_limits() {
-        let env = [("KIMI_SHARE_DIR".to_owned(), "/tmp/kimi-work".to_owned())];
-        let usage = fetch_provider("kimi", &env).await;
-        assert_eq!(usage.status, "unsupported");
-        assert!(usage.windows.is_empty());
-    }
-
-    #[tokio::test]
-    async fn claude_connection_with_its_own_api_key_is_not_a_subscription() {
-        let dir =
-            std::env::temp_dir().join(format!("pandacode-usage-conn-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let env = [
-            (
-                "CLAUDE_CONFIG_DIR".to_owned(),
-                dir.to_string_lossy().into_owned(),
-            ),
-            ("ANTHROPIC_API_KEY".to_owned(), "synthetic-key".to_owned()),
-        ];
-        let usage = fetch_claude(&env).await;
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(usage.status, "unavailable");
-        assert!(usage.message.unwrap().contains("API key"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn keychain_lookup_is_scoped_to_exact_config_not_global_fallback() {
-        use sha2::{Digest, Sha256};
-        assert_eq!(claude_service(None, None), "Claude Code-credentials");
-        let config = "/tmp/claude-profile/";
-        let hash = format!("{:x}", Sha256::digest(config));
-        assert_eq!(
-            claude_service(Some(config), None),
-            format!("Claude Code-credentials-{}", &hash[..8])
-        );
-        assert_eq!(
-            claude_service(Some(config), Some("")),
-            "Claude Code-credentials"
-        );
-        assert_ne!(
-            claude_service(Some(config), None),
-            claude_service(Some("/tmp/claude-profile"), None)
-        );
-        assert_eq!(
-            claude_service(Some("/tmp/e\u{301}"), None),
-            claude_service(Some("/tmp/é"), None)
-        );
-    }
-
-    #[test]
-    fn claude_model_scoped_limits_preserve_real_percentages() {
-        let result = claude_usage(
-            &json!({"limits":[
-                {"kind":"weekly_scoped","group":"weekly","percent":12,"is_active":true,"scope":{"model":{"id":"sonnet","display_name":"Sonnet"}},"resets_at":"2026-09-24T12:00:00Z"},
-                {"kind":"weekly_scoped","percent":99,"is_active":false,"scope":{"model":{"display_name":"Retired"}}}
-            ]}),
-            None,
-        );
-        assert_eq!(result.windows.len(), 1);
-        assert_eq!(result.windows[0].label, "Weekly · Sonnet");
-        assert_eq!(result.windows[0].used_percent, 12.0);
-    }
-
-    #[tokio::test]
-    async fn normal_ttl_and_forced_minimum_have_distinct_budgets() {
-        let slot = CacheSlot {
-            entry: Mutex::new(Entry {
-                result: Some(claude_usage(&json!({"five_hour":{"utilization":4}}), None)),
-                attempted_at: Some(Instant::now() - Duration::from_secs(11)),
-                generation: 0,
-                provenance: Some(0),
-            }),
-            generation: AtomicU64::new(0),
-        };
-        let normal = cached(&slot, false, || async { Some(0) }, || async {
-            panic!("The 60-second cache should avoid this request")
-        })
-        .await;
-        assert_eq!(normal.windows[0].used_percent, 4.0);
-        let refreshed = cached(&slot, true, || async { Some(0) }, || async {
-            claude_usage(&json!({"five_hour":{"utilization":9}}), None)
-        })
-        .await;
-        assert_eq!(refreshed.windows[0].used_percent, 9.0);
-    }
-
-    #[tokio::test]
-    #[ignore = "Opt-in real read-only usage checks; no inference or explicit token refresh"]
-    async fn live_installed_usage() {
-        let configured = std::env::var("PANDACODE_USAGE_SMOKE_PROVIDERS")
-            .unwrap_or_else(|_| "codex,claude".into());
-        for provider in configured
-            .split(',')
-            .map(str::trim)
-            .filter(|id| cache().contains_key(*id))
-        {
-            if crate::providers::executable(provider).is_none() {
-                continue;
-            }
-            invalidate(provider);
-            let result = query_usage(provider.into(), true).await.unwrap();
-            eprintln!(
-                "usage provider={provider} status={} windows={}",
-                result.status,
-                result.windows.len()
-            );
-            assert_eq!(result.provider, provider);
-            for window in result.windows {
-                assert!(
-                    window.used_percent.is_finite() && (0.0..=100.0).contains(&window.used_percent)
-                );
-                assert!(window
-                    .resets_at
-                    .as_ref()
-                    .is_none_or(|reset| reset.len() <= 64));
-            }
-        }
-    }
-}
+#[path = "agent_usage_tests.rs"]
+mod tests;

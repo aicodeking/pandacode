@@ -618,6 +618,8 @@ async fn solve_issue(app: &tauri::AppHandle, from: &str, full_access: bool, task
     params["prompt"] = json!(solve_prompt(number, &title));
     let mut start = super::super::start::parse(&params)?;
     start.mode = capped_mode(start.mode.take(), full_access)?;
+    // The saved default team only with the switch: its workers always run in full access.
+    start.team = full_access;
     // Every Git call of the start (fetch, worktree, checkout) runs with the caller's trust.
     start.full_access = Some(full_access);
     let reply = super::super::start::run_cancellable(app, from, start, cancel).await?;

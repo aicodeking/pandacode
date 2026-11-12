@@ -91,6 +91,9 @@ pub(crate) struct Start {
     pub effort: Option<String>,
     /// Images the viewer sent with `image.put` for the first prompt.
     pub image_ids: Vec<String>,
+    /// Whether the saved default team may be applied. Off unless the caller saw "Full access for
+    /// remote tasks" (`parse` leaves it off): a team's workers always run in full access.
+    pub team: bool,
     /// Whether the caller may use "Full access for remote tasks", which decides the
     /// [`workspace::Trust`] of every Git call the start makes. `None` (a parsed `task.start`)
     /// reads the setting when the start runs.
@@ -127,6 +130,8 @@ pub(crate) fn parse(params: &Value) -> Result<Start> {
         mode: name_param(params, "mode")?,
         effort: name_param(params, "effort")?,
         image_ids: super::images::ids_param(params)?,
+        // Fail closed: only a caller that checked the switch turns the default team on.
+        team: false,
         full_access: None,
     })
 }
@@ -543,7 +548,7 @@ fn reserve_in_place(project_id: &str, busy: impl FnOnce() -> Result<bool>) -> Re
 
 /// Whether a local agent is running in the project's main checkout.
 fn busy_in_place(state: &AppState, project_id: &str) -> Result<bool> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(agents.keys().any(|id| store.session(id).is_ok_and(|task| task.project_id == project_id && task.worktree_path.is_none())))
 }
@@ -707,7 +712,11 @@ fn attach(store: &Mutex<crate::storage::Store>, root: &Path, branch: &str, made:
 
 /// The host task a start makes.
 pub(super) fn create_task(store: &crate::storage::Store, project: &str, start: &Start) -> Result<crate::storage::Session> {
-    let task = crate::architect::profiles::create_user_task(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?;
+    let task = if start.team {
+        crate::architect::profiles::create_user_task(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?
+    } else {
+        crate::architect::profiles::create_task_without_team(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?
+    };
     if start.effort.is_some() {
         store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
     }

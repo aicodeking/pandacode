@@ -20,6 +20,7 @@ interface TeamRun { snapshot: TeamSnapshot; runs: WorkerRun[]; batchStart: numbe
 
 const storageKey = 'pandacode.preview.architect-configs';
 const libraryKey = 'pandacode.preview.architect-library';
+const showcase = typeof location !== 'undefined' && new URLSearchParams(location.search).has('workers');
 const sampleNotice = 'Browser preview — sample output only. No model, command, or file operation is running.';
 
 /** The preview demonstrates coordination without starting any model or shell. */
@@ -146,6 +147,34 @@ export function createPreviewArchitect(host: PreviewHost) {
     if (!library.lastSetup.config.auto) Object.assign(parent, structuredClone(library.lastSetup.architect));
     configs.set(parent.id, structuredClone(library.lastSetup.config)); persist();
   }
+  /** `?workers`: a running team with a worker in every state, for the compact workers list. */
+  function seedShowcase(parent: Session): void {
+    const now = Date.now(), minute = 60_000;
+    const profiles: WorkerProfile[] = [
+      { id: 'builder', name: 'Builder', provider: 'codex', model: 'gpt-6-astra', reasoningEffort: 'high' },
+      { id: 'reviewer', name: 'Reviewer', provider: 'claude', model: 'sonnet', reasoningEffort: 'medium' },
+      { id: 'scout', name: 'Scout', provider: 'claude', model: 'haiku', reasoningEffort: null },
+    ];
+    const config: TeamConfig = { auto: true, workers: profiles, maxParallel: 3, maxRounds: 4, maxAssignments: 8, workspace: 'shared', summaryLimit: 1800 };
+    const sample = (id: string, profile: number, name: string, changes: Partial<TeamWorker>): TeamWorker => ({
+      ...profiles[profile], id, name, sessionId: `${parent.id}-showcase-${id}`, profileId: profiles[profile].id, status: 'running',
+      assignment: `${name}: sample assignment. Explore the relevant files, make one focused change and report back with a concise summary.\n\n${sampleNotice}`,
+      summary: '', dependsOn: [], files: [`src/${id}.ts`], attempt: 1, createdAt: now - 4 * minute, updatedAt: now - minute, ...changes,
+    });
+    const workers: TeamWorker[] = [
+      // A follow-up: created a while ago, its current run started two minutes back.
+      sample('search', 0, 'Make search results stream as they arrive', { createdAt: now - 26 * minute, startedAt: now - 2 * minute }),
+      sample('styles', 0, 'Compact the results list styles', { reasoningEffort: 'xhigh', attempt: 2, createdAt: now - 95_000 }),
+      sample('tests', 1, 'Review the search tests', { status: 'completed', summary: 'Added three cases for empty, partial and streamed results; all pass.', createdAt: now - 80 * minute, updatedAt: now - 5 * minute }),
+      sample('index', 1, 'Rebuild the index on change', { status: 'failed', attempt: 2, error: 'The sample build step failed: index.ts has a type error.', note: 'Asked for high effort; this model ran at medium.', createdAt: now - 12 * minute, updatedAt: now - 7 * minute }),
+      sample('docs', 2, 'Document the search shortcuts', { status: 'queued', dependsOn: ['search'], readOnly: true, note: 'Claude Haiku 4.5 has no reasoning effort setting, so it runs at its default.' }),
+      sample('audit', 2, 'Audit search accessibility', { status: 'stopped', createdAt: now - 27 * 60 * minute, updatedAt: now - 60 * minute }),
+    ];
+    const runs = workers.map((worker): WorkerRun => ({ worker, output: '', cursor: 0, messages: [{ id: host.nextMessageId(), sessionId: worker.sessionId, role: 'user', content: worker.assignment, createdAt: worker.createdAt }] }));
+    teams.set(parent.id, { snapshot: { sessionId: parent.id, config, status: 'running', round: 1, revision: 1, workers, updatedAt: now }, runs, batchStart: 0, messages: [] });
+    // The legacy fallback: an older host that does not auto-approve asks the user directly.
+    window.setTimeout(() => host.agent({ sessionId: workers[1].sessionId, kind: 'approval', requestId: 'showcase-approval', text: `Run \`npm run lint\` in the shared checkout? ${sampleNotice}` }), 250);
+  }
   /** What native sends, set explicitly: the mock keeps no copy of native's state machine. */
   const status = (council: CouncilConfig, over: Partial<CouncilStatus> = {}): CouncilStatus => ({ state: 'waiting', round: 0, lowest: null, target: council.target, stale: false, notice: null, ...over });
   /** Rests the team asking the user, as native does: status 'asking' with native's notice, and a refusal for the lead in
@@ -167,6 +196,7 @@ export function createPreviewArchitect(host: PreviewHost) {
   function active(team: TeamRun | undefined): boolean { return !!team && ['running', 'waiting', 'paused'].includes(team.snapshot.status); }
   function get(sessionId: unknown): TeamSnapshot | null {
     const parent = host.parent(sessionId);
+    if (showcase && !teams.has(parent.id)) seedShowcase(parent);
     let team = teams.get(parent.id);
     const config = configs.get(parent.id);
     if (!team && config) {

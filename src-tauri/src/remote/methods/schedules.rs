@@ -12,7 +12,7 @@
 //! run one whose thread is in Full access (`allow_task_mode`). A bot's thread (target or
 //! watched) needs a Full device and the bot's own mode rule, as `task.send` does
 //! (`drivable_session_from`, Round 21).
-use super::{allow_task_mode, drivable_session_from, id_param, local_session_from, Access, Ctx, Method, Reply, Run, MAX_TEXT, PAGE_BUDGET};
+use super::{allow_remote_team, allow_task_mode, drivable_session_from, id_param, local_session_from, Access, Ctx, Method, Reply, Run, MAX_TEXT, PAGE_BUDGET};
 use crate::schedules::{self as desktop, ScheduleInput};
 use crate::Result;
 use serde_json::{json, Value};
@@ -56,7 +56,9 @@ fn fit(mut items: Vec<Value>, wrap: impl Fn(&[Value], bool) -> Value) -> Value {
 /// drive a bot's thread from a device below Full.
 fn check_target(store: &crate::storage::Store, session_id: &str, device_full: bool, full_access: bool) -> Result<()> {
     let task = drivable_session_from(store, session_id, device_full, full_access)?;
-    allow_task_mode(&task.mode, None, full_access)
+    allow_task_mode(&task.mode, None, full_access)?;
+    // A scheduled prompt to a team lead would dispatch workers, which run in full access.
+    allow_remote_team(store, session_id, full_access)
 }
 
 /// Runs `work` with the store locked, off the async runtime.
@@ -314,8 +316,9 @@ async fn save(ctx: Ctx<'_>, this: Save) -> Result<Value> {
     .await?;
     let (app, state) = (ctx.app.clone(), ctx.state());
     let schedule = match (this.schedule_id, before) {
-        (Some(id), Some(before)) => desktop::schedule_update(app, state, id, keep_chain(this.input, &this.named, &before)).await?,
-        _ => desktop::schedule_create(app, state, this.input).await?,
+        // Marked as saved remotely, so the gate is checked again when it fires (`remote_team_gate`).
+        (Some(id), Some(before)) => desktop::save_update(&app, &state, &id, &keep_chain(this.input, &this.named, &before), true)?,
+        _ => desktop::save_create(&app, &state, &this.input, true)?,
     };
     Ok(json!({"schedule": with_cadence(&schedule)}))
 }
@@ -464,6 +467,17 @@ mod tests {
         assert_eq!(check_target(&store, &bot_task.id, false, true).unwrap_err(), super::super::super::host::BOT_THREAD_REFUSED);
         assert!(check_target(&store, &bot_task.id, true, false).is_ok());
         let _ = std::fs::remove_dir_all(&bot_home);
+    }
+
+    /// A schedule on a team lead would prompt it, and its workers run in full access.
+    #[test]
+    fn a_team_lead_is_scheduled_only_with_full_access_for_remote_tasks() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let lead = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead.id]).unwrap();
+        assert_eq!(check_target(&store, &lead.id, true, false).unwrap_err(), super::super::TEAM_NEEDS_FULL_ACCESS);
+        assert!(check_target(&store, &lead.id, true, true).is_ok());
     }
 
     /// Round 21 source scan: runNow / setEnabled(true) and save check target and watch threads

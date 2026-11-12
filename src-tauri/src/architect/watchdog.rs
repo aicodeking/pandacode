@@ -69,7 +69,7 @@ pub(super) fn forgive_sleep(state: &AppState, now: i64, last_tick: i64) -> Resul
     if now.saturating_sub(last_tick) <= SLEEP_GAP_MS {
         return Ok(false);
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     for agent in agents.values() {
         agent.last_event.store(now, Ordering::SeqCst);
     }
@@ -83,7 +83,7 @@ pub(super) fn stop_silent(
     now: i64,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) -> Result<usize> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let silent = agents
         .iter()
         .filter(|(_, agent)| {
@@ -149,7 +149,7 @@ pub(super) fn stop_silent(
 /// running: `reconcile` never looks at inactive teams, so this runs once at startup and settles
 /// every active worker without a process in such a team as stopped. Returns how many it settled.
 pub(super) fn settle_stale(state: &AppState, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<usize> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let teams = {
         // A row that is not even JSON is listed too, so the load below reports it instead of the query failing.
@@ -195,7 +195,7 @@ pub(super) fn reconcile(
     now: i64,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) -> Result<bool> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Ok(false);
     }

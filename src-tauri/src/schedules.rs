@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,
   enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL CHECK(created_by IN ('user','agent')),
   created_by_session TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   run_count INTEGER NOT NULL DEFAULT 0, max_runs INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
-  trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT,
+  trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT, saved_remotely INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS task_schedules_due ON task_schedules(enabled,next_run_at);
 CREATE INDEX IF NOT EXISTS task_schedules_session ON task_schedules(session_id);
@@ -152,6 +152,32 @@ pub(crate) fn set_settings(store: &Store, settings: &SchedulerSettings) -> Resul
     let content = serde_json::to_string(settings).map_err(|e| e.to_string())?;
     store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content", [content]).map_err(|e| e.to_string())?;
     self::settings(store)
+}
+
+/// Records where schedule `id` was last saved: from a remote device (PandaConnect) or not (the
+/// desktop, an agent).
+pub(crate) fn mark_saved_remotely(store: &Store, id: &str, remote: bool) -> Result<()> {
+    store.db.execute("UPDATE task_schedules SET saved_remotely=?2 WHERE id=?1", params![id, remote]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn saved_remotely(store: &Store, id: &str) -> Result<bool> {
+    Ok(store.db.query_row("SELECT saved_remotely FROM task_schedules WHERE id=?1", [id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.unwrap_or(false))
+}
+
+/// Recorded when a schedule saved from a remote device (or carried over from before version 37,
+/// which did not record it) fires at a thread that now leads a team
+/// while "Full access for remote tasks" is off: the team's workers would run in full access.
+pub(crate) const REMOTE_TEAM_SKIP: &str = "Skipped: this schedule may have been saved from a remote device and its thread now leads a team, whose workers run with full access. Allow full access for remote tasks, or open the schedule on this computer and save it again to clear this.";
+
+/// Whether a firing schedule may send: one saved from a remote device reaches a thread that
+/// leads a team only while the host allows full access for remote tasks (as at save time).
+pub(crate) fn remote_team_gate(store: &Store, schedule: &TaskSchedule, remote_full_access: bool) -> Result<Option<&'static str>> {
+    if remote_full_access || !saved_remotely(store, &schedule.id)? {
+        return Ok(None);
+    }
+    let leads_team = crate::architect::leads_team(store, &schedule.session_id)?;
+    Ok(leads_team.then_some(REMOTE_TEAM_SKIP))
 }
 
 const COLUMNS: &str = "t.id,t.session_id,s.title,s.project_id,p.name,t.title,t.prompt,t.kind,t.interval_minutes,t.time_of_day,t.days,t.watch_session_id,w.title,t.only_on_success,t.next_run_at,t.last_run_at,t.enabled,t.created_by,t.created_by_session,t.run_count,t.max_runs,t.created_at,t.updated_at,c.title,t.trigger_ok,t.workflow_id,t.chain_from_id";
@@ -633,20 +659,37 @@ pub async fn schedules_list(state: State<'_, AppState>, session_id: Option<Strin
 
 #[tauri::command]
 pub async fn schedule_create(app: tauri::AppHandle, state: State<'_, AppState>, input: ScheduleInput) -> Result<TaskSchedule> {
-    let schedule = create(&*lock(&state)?, &input, "user", None, crate::storage::now())?;
-    changed(&app, Some(&schedule.session_id));
+    save_create(&app, &state, &input, false)
+}
+
+/// Creates a user's schedule, recording whether a remote device saved it (`remote_team_gate`).
+pub(crate) fn save_create(app: &tauri::AppHandle, state: &State<'_, AppState>, input: &ScheduleInput, remote: bool) -> Result<TaskSchedule> {
+    let schedule = {
+        let store = lock(state)?;
+        let schedule = create(&store, input, "user", None, crate::storage::now())?;
+        mark_saved_remotely(&store, &schedule.id, remote)?;
+        schedule
+    };
+    changed(app, Some(&schedule.session_id));
     Ok(schedule)
 }
 
 #[tauri::command]
 pub async fn schedule_update(app: tauri::AppHandle, state: State<'_, AppState>, schedule_id: String, input: ScheduleInput) -> Result<TaskSchedule> {
+    save_update(&app, &state, &schedule_id, &input, false)
+}
+
+/// Edits a schedule, recording whether a remote device saved it (`remote_team_gate`).
+pub(crate) fn save_update(app: &tauri::AppHandle, state: &State<'_, AppState>, schedule_id: &str, input: &ScheduleInput, remote: bool) -> Result<TaskSchedule> {
     let (before, schedule) = {
-        let store = lock(&state)?;
-        let before = get(&store, &schedule_id)?;
-        (before, update(&store, &schedule_id, &input, crate::storage::now())?)
+        let store = lock(state)?;
+        let before = get(&store, schedule_id)?;
+        let schedule = update(&store, schedule_id, input, crate::storage::now())?;
+        mark_saved_remotely(&store, schedule_id, remote)?;
+        (before, schedule)
     };
     // Moving a schedule to another thread changes both threads' lists.
-    changed(&app, (before.session_id == schedule.session_id).then_some(schedule.session_id.as_str()));
+    changed(app, (before.session_id == schedule.session_id).then_some(schedule.session_id.as_str()));
     Ok(schedule)
 }
 

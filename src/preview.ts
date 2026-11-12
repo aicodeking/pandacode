@@ -6,6 +6,7 @@ import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessageP
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { isPreviewableFile } from './file-links';
+import { DISMISS_BATCH } from './thread-errors';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
 import { namedTeamSetup } from './team-mode';
@@ -148,6 +149,7 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
   return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: 'onnx', latencyMs: 12 };
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
+let previewClaudeRefresh = true;
 let previewTelemetryOff = false;
 /** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
 const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
@@ -161,7 +163,7 @@ const previewEnvState = { global: [] as [string, string][], providers: {} as Rec
 const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
 function previewProviderConfiguration(): Record<string, unknown> {
   return {
-    executablePaths: {}, claudeConnectionMode: previewClaudeMode,
+    executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
@@ -622,6 +624,17 @@ export function samplePick(kind: 'files' | 'folder'): string[] {
 function agent(event: AgentEvent) { emit('agent-event', event); }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** tests: a live `error` event for any task, saved first like lib.rs `save_agent_activity` does: the row goes into the
+ * thread (newest id) and the event carries it as `data.messageId`; `{ saved: false }` is an event the backend could
+ * not save (no row, no id). Returns the saved id. */
+(window as any).__previewError = (sessionId: string, text: string, options: { saved?: boolean } = {}): number | undefined => {
+  if (options.saved === false) { agent({ sessionId, kind: 'error', text }); return undefined; }
+  const list = (messages[sessionId] ??= []);
+  id = Math.max(id, ...list.map(message => message.id)) + 1;
+  list.push({ id, sessionId, role: 'error', content: text.length > 8192 ? text.slice(-8192) : text, createdAt: Date.now() });
+  agent({ sessionId, kind: 'error', text, data: { messageId: id } });
+  return id;
+};
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -987,8 +1000,10 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
     usage: [
       { provider: 'claude', status: 'ready', plan: 'Max', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
       { provider: 'codex', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 97, resetsAt: hours(0.6) }] },
+      ...((window as any).__trayExtraUsage ?? []),
     ],
     checking: false,
+    askingClaude: Boolean((window as any).__trayAskingClaude),
   };
 }
 /** The Running agents widget's commands (header and pinned window). */
@@ -1618,6 +1633,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (typeof args.off !== 'boolean') throw new Error('Choose on or off.');
       previewTelemetryOff = args.off; result = previewPrivacy(); break;
     }
+    case 'provider_set_claude_cli_refresh': previewClaudeRefresh = Boolean(args.enabled); return invoke<T>('provider_configuration', {});
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
@@ -1691,6 +1707,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       previewConnections = { ...previewConnections, tasks: args.connectionId ? { ...tasks, [args.sessionId]: args.connectionId } : tasks }; result = previewConnections; break;
     }
     case 'provider_claude_status': result = {mode: previewClaudeMode, source: 'Saved Claude login', environmentVariables: [], endpoint: null, savedLogin: 'signedIn', conflict: false}; break;
+    case 'agent_usage_asking_claude': result = Object.fromEntries(((args.connections ?? []) as string[]).map(id => [id, { asking: false, saved: null }])); break;
     case 'usage_ledger': result = sampleUsageLedger(); break;
     case 'prompt_activity': result = sampleUsageLedger().rows.filter((_, i) => i % 3 === 0).map(row => [row[0], i2p(row[1]), 1 + (row[0] % 7)]); break;
     case 'agent_usage': {
@@ -2046,7 +2063,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
+    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
       result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
@@ -2116,6 +2133,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         s.resumeId = null; s.goalState = null; s.codexSettings = null;
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
+    }
+    case 'dismiss_error_messages': {
+      const ids: unknown = args.ids;
+      if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+      const wanted = new Set<number>(ids), list = messages[session(args.sessionId).id] ?? [];
+      const kept = list.filter(message => !(message.role === 'error' && wanted.has(message.id)));
+      messages[args.sessionId] = kept; result = list.length - kept.length; break;
     }
     case 'get_messages': {
       const synced = mirrorSynced.get(args.sessionId);

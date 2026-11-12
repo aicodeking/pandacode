@@ -3,6 +3,7 @@ import { call, preview, subscribe } from './bridge';
 import { escape, icon } from './dom';
 import { hidePopover, showPopover } from './popover-motion';
 import type { LocalServer } from './types';
+import { errorText } from './error-text';
 
 export interface JevConfiguration {
   enabled: boolean;
@@ -41,7 +42,6 @@ const running = (report: JevReport) => report.status === 'starting' || report.st
 const statuses: Record<JevReport['status'], string> = { starting: 'Starting browser', running: 'Testing', done: 'Agent finished', blocked: 'Blocked', failed: 'Run failed', cancelled: 'Cancelled', limit: 'Limit reached' };
 const verificationLabels: Record<JevReport['verification'], string> = { passed: 'Checks passed', failed: 'Checks failed', not_checked: 'Not checked' };
 const duration = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.round(ms % 60_000 / 1000)}s`;
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 type JevView = { host: HTMLElement; close(): void; alive(): boolean; cleanup(callback: () => void): void };
 

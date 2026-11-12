@@ -214,14 +214,14 @@ fn version_36_adds_machine_threads() {
         store.db.execute_batch("DROP TABLE machine_threads; ALTER TABLE sessions DROP COLUMN restart_interrupted; ALTER TABLE sessions DROP COLUMN stop_requested; PRAGMA user_version=35;").unwrap();
     }
     let store = Store::open(&path).unwrap();
-    assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (36, 36));
+    assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (crate::storage::SCHEMA_VERSION, crate::storage::SCHEMA_VERSION));
     let columns: i64 = store.db.query_row("SELECT (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('restart_interrupted','stop_requested'))+(SELECT COUNT(*) FROM pragma_table_info('machine_threads') WHERE name='reported_by')", [], |r| r.get(0)).unwrap();
     assert_eq!(columns, 3);
     // Running the step again (a half-applied upgrade) changes nothing.
     store.db.execute_batch("PRAGMA user_version=35;").unwrap();
     drop(store);
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 36);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::storage::SCHEMA_VERSION);
     let indexed: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='machine_threads_parent')", [], |r| r.get(0)).unwrap();
     assert!(indexed);
     let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -1152,4 +1152,18 @@ fn an_idle_tick_needs_no_links_and_no_threads() {
     let id = store.create_session(&project, "codex", "gpt", "ask").unwrap().id;
     record_child(&store, &parent, &id).unwrap();
     assert!(!threads::check_none(&store).unwrap());
+}
+
+#[test]
+fn a_phone_without_full_access_cannot_accept_a_team_leads_link_request() {
+    let (store, project, lead) = store();
+    let plain = store.create_session(&project, "codex", "gpt", "ask").unwrap().id;
+    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead]).unwrap();
+    let (lead_request, plain_request) = (links::insert_for_test(&lead), links::insert_for_test(&plain));
+    assert_eq!(links::allow_remote_accept(&store, &lead_request, false), Err(super::super::host::TEAM_NEEDS_FULL_ACCESS.into()));
+    assert!(links::allow_remote_accept(&store, &lead_request, true).is_ok(), "allowed with full access for remote tasks");
+    assert!(links::allow_remote_accept(&store, &plain_request, false).is_ok(), "a task without a team is unaffected");
+    assert!(links::allow_remote_accept(&store, "gone", false).is_ok());
+    links::take_for_test(&lead_request);
+    links::take_for_test(&plain_request);
 }

@@ -13,7 +13,7 @@ const isAccess = (value: unknown): value is Access => value === 'view' || value 
 /** Methods that also need the host's "Full access for remote tasks" switch, for a host that
  * answers host.hello without listing them (`fullAccessSwitch`). Kept equal to SWITCH_METHODS in
  * src-tauri/src/remote/methods/mod.rs (tests/capabilities.test.ts compares them). */
-export const SWITCH_METHODS: ReadonlySet<string> = new Set(['terminal.list', 'terminal.open', 'terminal.read', 'terminal.write', 'terminal.resize', 'terminal.close', 'runScript.start', 'checks.run', 'files.write', 'skills.activate', 'cloudAgents.start', 'moodboards.add', 'projects.clone', 'runScript.stop']);
+export const SWITCH_METHODS: ReadonlySet<string> = new Set(['terminal.list', 'terminal.open', 'terminal.read', 'terminal.write', 'terminal.resize', 'terminal.close', 'runScript.start', 'checks.run', 'files.write', 'skills.activate', 'cloudAgents.start', 'moodboards.add', 'projects.clone', 'runScript.stop', 'team.start']);
 
 /** `hello`: the host answered host.hello. `legacy`: an older host answered 'Unknown method.' and
  * serves only the methods from before host.hello (minus any it refused since, `missing`). */

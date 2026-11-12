@@ -434,10 +434,7 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
         events.iter().for_each(|event| inner.viewer.card(event));
     }
     for mut event in events {
-        if let Some(event) = event.as_object_mut() {
-            event.remove("seq");
-            event.remove("prev");
-        }
+        local_event(&mut event);
         let _ = app.emit("agent-event", event);
     }
     if changed {
@@ -2022,9 +2019,32 @@ fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
     Ok((id, created))
 }
 
+/// A host event as this window sees it: no relay `seq` or `prev`, and no error `messageId`, which names a
+/// row in the host's database (this window would dismiss a row of its own copy by it).
+fn local_event(event: &mut Value) {
+    let Some(object) = event.as_object_mut() else { return };
+    object.remove("seq");
+    object.remove("prev");
+    if object.get("kind").and_then(Value::as_str) == Some("error") {
+        if let Some(data) = object.get_mut("data").and_then(Value::as_object_mut) {
+            data.remove("messageId");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dismiss_error_ids_from_the_host_do_not_reach_this_window() {
+        let mut error = json!({"seq": 4, "sessionId": "s", "kind": "error", "text": "boom", "data": {"messageId": 12, "code": 1}});
+        super::local_event(&mut error);
+        assert_eq!(error, json!({"sessionId": "s", "kind": "error", "text": "boom", "data": {"code": 1}}));
+        let mut changes = json!({"seq": 5, "kind": "turn_changes", "data": {"messageId": 3}});
+        super::local_event(&mut changes);
+        assert_eq!(changes, json!({"kind": "turn_changes", "data": {"messageId": 3}}));
+    }
 
     fn store() -> (Store, String) {
         let store = Store::open(Path::new(":memory:")).unwrap();

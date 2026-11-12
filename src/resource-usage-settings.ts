@@ -1,5 +1,6 @@
 import { call, preview } from './bridge';
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 import type { Metrics } from './types';
 
 const megabytes = (value: number) => `${(value / 1048576).toFixed(1)} MB`;
@@ -32,7 +33,7 @@ export function mountResourceUsage(host: HTMLElement): () => void {
       for (const cell of cells) cell.textContent = format(cell.dataset.metric as keyof Metrics, metrics);
     } catch (cause) {
       console.error('Reading resource usage failed', cause);
-      if (!disposed) for (const cell of cells) cell.innerHTML = `<span title="${escape(String(cause))}">Unavailable</span>`;
+      if (!disposed) for (const cell of cells) cell.innerHTML = `<span title="${escape(errorText(cause))}">Unavailable</span>`;
     } finally {
       if (!disposed) button.disabled = false;
     }

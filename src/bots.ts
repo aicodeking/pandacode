@@ -1,6 +1,7 @@
 import './bots.css';
 import './bots-settings.css';
 import { escape, icon, morph } from './dom';
+import { errorText } from './error-text';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { Provider, ProviderId, ProviderModel, ReasoningEffort } from './types';
@@ -84,6 +85,7 @@ export interface BotsOptions {
   /** Opens the bot's own conversation in the workspace, like any task. */
   openChat(botId: string): void;
   notify(text: string): void;
+  notifyError?(text: string): void;
   /** Open on this bot, or on the New bot form. */
   initialBot?: string;
   startNew?: boolean;
@@ -180,7 +182,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   const pane = host.querySelector<HTMLElement>('.bots-detail')!;
 
   const context: PanelContext = {
-    call: options.call, notify: options.notify, openTask: id => options.openTask(id), running: options.running,
+    call: options.call, notify: options.notify, notifyError: options.notifyError, openTask: id => options.openTask(id), running: options.running,
     detail: () => detail, reload: () => load(), rerender: () => render(),
     work: action => work(action),
     confirm: (title, text, button, action) => { confirming = { title, text, button, action }; render(); pane.querySelector<HTMLButtonElement>('.bots-confirm .secondary-button')?.focus(); },
@@ -211,7 +213,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     busy = true; error = ''; host.setAttribute('aria-busy', 'true');
     try { await action(); } catch (cause) { error = message(cause); render(); } finally { busy = false; host.removeAttribute('aria-busy'); }
   }
-  function message(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause); }
+  function message(cause: unknown): string { return errorText(cause); }
   function working(bot: Bot): boolean { return bot.id === detail?.bot.id && detail.threads.some(thread => options.running(thread.sessionId)); }
 
   function botModelChoices(provider: ProviderId, catalog: ProviderModel[], selected: string): ProviderModel[] {
@@ -227,6 +229,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   }
   function loadFormModels(providerId: ProviderId, select: HTMLSelectElement, preferred: string): void {
     const generation = ++formModelGeneration;
+    pane.querySelectorAll('.bots-model-note').forEach(note => note.remove());
     const provider = options.providers.find(item => item.id === providerId);
     if (!provider) return;
     const apply = (catalog: ProviderModel[]) => {
@@ -251,7 +254,14 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       }).finally(() => modelCatalogRequests.delete(providerId));
       modelCatalogRequests.set(providerId, pending);
     }
-    void pending.then(apply).catch(() => undefined);
+    void pending.then(apply).catch((err: unknown) => {
+      if (disposed || generation !== formModelGeneration || !select.isConnected) return;
+      const note = document.createElement('div');
+      note.className = 'bots-model-note';
+      const reason = errorText(err, '');
+      note.innerHTML = `<span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="bots-model-note-text" role="alert">Models could not load${reason ? `: ${escape(reason)}` : ''}</span><button type="button" class="secondary-button" data-bots-action="models-retry">Retry</button>`;
+      (select.closest('.bc-brain') ?? select.closest('label') ?? select).after(note);
+    });
   }
   function hydrateFormModels(): void {
     const form = pane.querySelector<HTMLFormElement>('.bots-form');
@@ -424,7 +434,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       setSaved('saved');
       refreshHeader();
     } catch (cause) {
-      if (disposed) options.notify(message(cause)); else { setSaved('error'); error = message(cause); render(); }
+      if (disposed) (options.notifyError ?? options.notify)(message(cause)); else { setSaved('error'); error = message(cause); render(); }
     } finally {
       saving = false;
       if (pendingSave) void flushSave();
@@ -486,7 +496,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     if (dialog && title) { title.textContent = editing === 'new' ? 'New bot' : 'Bots'; dialog.setAttribute('aria-label', title.textContent); }
     renderList();
     const confirm = confirming ? `<div class="bots-confirm" role="alertdialog" aria-label="${escape(confirming.title)}"><b>${escape(confirming.title)}</b><p>${escape(confirming.text)}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-bots-action="confirm-cancel">Cancel</button><button type="button" class="primary-button danger" data-bots-action="confirm-run">${escape(confirming.button)}</button></div></div>` : '';
-    const alert = error ? `<p class="bots-error" role="alert">${escape(error)}</p>` : '';
+    const alert = error ? `<div class="message-error error-row bots-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary bots-error-text" role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-bots-action="dismiss-error" aria-label="Dismiss error">${icon('close')}</button></div></div>` : '';
     if (loading) { pane.innerHTML = '<p class="dialog-loading" role="status">Loading bots…</p>'; return; }
     // Keep a half-typed setting (a new memory, a schedule prompt) and its caret through background refreshes.
     const typing = pane.contains(document.activeElement) ? document.activeElement as HTMLInputElement | HTMLTextAreaElement : null;
@@ -603,6 +613,8 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const action = target.dataset.botsAction;
     if (moreOpen && action !== 'more') moreOpen = false;
     if (action === 'new') { editing = 'new'; draft = newDraft(); nameError = ''; confirming = null; render(); pane.querySelector<HTMLInputElement>('input[name=name]')?.focus(); }
+    else if (action === 'dismiss-error') { error = ''; render(); pane.querySelector<HTMLElement>('[role=tab][aria-selected=true],.bots-form input[name=name],button')?.focus(); }
+    else if (action === 'models-retry') { const select = pane.querySelector<HTMLSelectElement>('.bots-form select[name=model]'), provider = pane.querySelector<HTMLSelectElement>('.bots-form select[name=provider]'); if (select && provider) { loadFormModels(provider.value as ProviderId, select, select.value); select.focus(); } }
     else if (action === 'cancel-edit') { editing = null; nameError = ''; render(); }
     else if (action === 'more') { moreOpen = !moreOpen; render(); if (moreOpen) pane.querySelector<HTMLElement>('.bp-menu [role=menuitem]')?.focus(); }
     else if (action === 'avatar') { avatarOpen = !avatarOpen; render(); pane.querySelector<HTMLElement>(avatarOpen ? '.bp-avatar-pop button' : '.bp-avatar-button')?.focus(); }

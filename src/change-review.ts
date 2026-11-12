@@ -4,6 +4,7 @@ import { escape, icon } from './dom';
 import type { TurnChanges, TurnChangeDiff } from './types';
 import { changeCounts, changeNotice } from './turn-changes';
 import { mountDiffViewer, type DiffViewerController } from './diff-viewer';
+import { errorText } from './error-text';
 
 export function mountChangeReview(host: HTMLElement, sessionId: string, changes: TurnChanges, initialPath?: string, review?: () => void): () => void {
   let disposed = false, request = 0, controller: DiffViewerController | undefined;
@@ -31,7 +32,7 @@ export function mountChangeReview(host: HTMLElement, sessionId: string, changes:
       await controller.ready;
     } catch (error) {
       if (disposed || current !== request) return;
-      viewer.innerHTML = `<div class="change-review-error" role="alert"><p>${escape(error instanceof Error ? error.message : String(error))}</p><button type="button" class="secondary-button">Retry</button></div>`;
+      viewer.innerHTML = `<div class="change-review-error" role="alert"><p>${escape(errorText(error))}</p><button type="button" class="secondary-button">Retry</button></div>`;
       viewer.querySelector('button')!.addEventListener('click', () => { void select(path); });
     }
   }

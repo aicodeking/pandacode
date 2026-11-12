@@ -184,6 +184,38 @@ test('provider connections show Claude credential conflicts and let users prefer
   await expect(card.getByRole('status')).toContainText('Environment API key');
 });
 
+test('the Claude Code card lets PandaCode run Claude Code to refresh an expired login, on by default', async ({ page }) => {
+  const calls: unknown[] = [];
+  await page.exposeFunction('__refreshCall', (args: unknown) => { calls.push(args); });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_set_claude_cli_refresh') { await window.__refreshCall(args); await new Promise(resolve => setTimeout(resolve, 400)); }
+      switch(command) {`) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#claude-connection');
+  await card.locator(':scope > summary').click();
+  const refresh = card.getByRole('switch', { name: 'Let PandaCode ask Claude Code for usage when it can’t read it' });
+  await expect(refresh).toBeChecked(); // on by default
+  await expect(refresh).toHaveAccessibleDescription(/^On by default\..*an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over.*no model call.*never writes Claude Code credentials/);
+  await expect(card.getByRole('img', { name: 'About asking Claude Code for usage' })).toBeVisible();
+  await refresh.click();
+  await expect(refresh).toBeDisabled(); // while saving, like the other controls
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).not.toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('PandaCode no longer runs Claude Code.');
+  await refresh.click();
+  await expect(refresh).toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('PandaCode asks Claude Code for usage when it can’t read it.');
+  expect(calls).toEqual([{ enabled: false }, { enabled: true }]);
+});
+
 async function delayedConnections(page: Page): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();

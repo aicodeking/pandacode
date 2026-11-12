@@ -7,6 +7,7 @@ import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './f
 import { renderToolActivity } from './tool-activity';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { SubagentActivity } from './types';
+import { errorText } from './error-text';
 
 /** `full` is false for a list row (`list_subagents`), which has no tools and a short preview. */
 type Entry = { value: SubagentActivity; revision: number; number: number; full: boolean };
@@ -72,7 +73,7 @@ export class Subagents {
       },
       report: error => {
         const notice = this.panel?.querySelector<HTMLElement>('.subagent-action-notice');
-        if (notice) { notice.textContent = error instanceof Error ? error.message : String(error); notice.hidden = false; }
+        if (notice) { notice.textContent = errorText(error); notice.hidden = false; }
       },
     });
     // Capture Escape before the main task's stop shortcut or Board dismissal.
@@ -164,7 +165,7 @@ export class Subagents {
       if (value && known && known.revision <= revision && this.tasks.get(taskId) === task) this.upsert(task, value, revision, true);
     } catch (error) {
       const notice = this.panel?.querySelector<HTMLElement>('.subagent-action-notice');
-      if (notice && this.selected === agentId) { notice.textContent = `Couldn’t load this subagent’s full work: ${error instanceof Error ? error.message : String(error)}`; notice.hidden = false; }
+      if (notice && this.selected === agentId) { notice.textContent = `Couldn’t load this subagent’s full work: ${errorText(error)}`; notice.hidden = false; }
     } finally {
       if (this.fetching === agentId) this.fetching = '';
       if (taskId === this.sessionId) this.schedule();

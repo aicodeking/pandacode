@@ -1224,9 +1224,16 @@ pub(crate) fn run_finished(app: &tauri::AppHandle, session_id: &str, successful:
 }
 
 /// Called when a run asks for approval; bot conversations forward it to their channel.
-pub(crate) fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str) {
+/// `lasting_only`: approving would grant a lasting permission, so no allow rule answers it.
+pub(crate) fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str, lasting_only: bool) {
     let (app, session_id, request_id, text) = (app.clone(), session_id.to_owned(), request_id.to_owned(), text.to_owned());
-    tauri::async_runtime::spawn(async move { gateway::approval_requested(&app, &session_id, &request_id, &text).await });
+    tauri::async_runtime::spawn(async move { gateway::approval_requested(&app, &session_id, &request_id, &text, lasting_only).await });
+}
+
+/// The run withdrew these approvals (its pooled account changed): bot conversations stop
+/// waiting on them (`gateway::approvals_withdrawn`).
+pub(crate) fn approvals_withdrawn(session_id: &str, request_ids: &[String]) {
+    gateway::approvals_withdrawn(session_id, request_ids);
 }
 
 /// Logs activity from async code without holding the store lock across an await.

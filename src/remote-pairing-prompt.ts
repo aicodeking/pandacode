@@ -4,6 +4,7 @@
 import './remote-pairing-prompt.css';
 import { escape } from './dom';
 import type { RemoteHost } from './remote-types';
+import { errorText } from './error-text';
 
 export type GrantScope = 'pending' | 'view' | 'control' | 'full' | 'blocked';
 export interface DeviceGrant { deviceId: string; name: string; platform: string; fingerprint: string; scope: GrantScope; online: boolean; requested: boolean }
@@ -49,7 +50,7 @@ export function mountPairingPrompt(host: RemoteHost): () => void {
     if (target.hasAttribute('data-later')) { element.remove(); return; }
     const scope = target.hasAttribute('data-block') ? 'blocked' : element.querySelector('select')!.value;
     target.disabled = true;
-    void host.call('remote_set_device_grant', { deviceId, scope }).then(() => element.remove(), error => { target.disabled = false; host.notify(error instanceof Error ? error.message : String(error)); });
+    void host.call('remote_set_device_grant', { deviceId, scope }).then(() => element.remove(), error => { target.disabled = false; (host.notifyError ?? host.notify)(errorText(error)); });
   });
   const unlisten: Promise<() => void>[] = [
     host.listen('remote://device-pending', (pending: DevicePending) => { if (pending?.deviceId) show(pending); }),

@@ -135,6 +135,8 @@ impl Run for Archive {
             // same guard (Round 24), so a device that may archive a thread may also undo it.
             let task = drivable_task(ctx.app, ctx.from, &self.session_id, ctx.full_access).await?;
             allow_task_mode(&task.mode, None, ctx.full_access)?;
+            // The stage change can wake a lead, which dispatches full-access workers.
+            super::allow_remote_team_for(&ctx.state(), &self.session_id, ctx.full_access).await?;
             let stage = if self.archived { "completed" } else { REOPENED };
             // A legacy archive flag blocks stage changes; reopening clears it, as on the desktop.
             if task.archived && !self.archived {
@@ -396,6 +398,8 @@ impl Run for SetGoal {
             let task = drivable_task(ctx.app, ctx.from, &self.session_id, ctx.full_access).await?;
             // The goal is text the task's agent reads: like a prompt, a full task needs the switch.
             allow_task_mode(&task.mode, None, ctx.full_access)?;
+            // A lead reads it too, and dispatches full-access workers.
+            super::allow_remote_team_for(&ctx.state(), &self.session_id, ctx.full_access).await?;
             let task = crate::update_task_details(ctx.state(), self.session_id, task.title, self.description).await?;
             changed(ctx.app);
             Ok(goal_reply(&task))
@@ -420,6 +424,8 @@ impl Run for SetStage {
             // A stage change calls `orchestrate::retry`, which can wake this task's agent to
             // report settled machine threads: a full task needs the switch, as for a prompt.
             allow_task_mode(&task.mode, None, ctx.full_access)?;
+            // A woken lead dispatches workers, which run in full access.
+            super::allow_remote_team_for(&ctx.state(), &self.session_id, ctx.full_access).await?;
             let task = crate::set_task_stage(ctx.app.clone(), ctx.state(), self.session_id, self.stage).await?;
             changed(ctx.app);
             Ok(goal_reply(&task))
