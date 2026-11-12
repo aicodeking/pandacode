@@ -235,6 +235,7 @@ const providers: Provider[] = [
   { id: 'devin', name: 'Devin CLI', installed: true, path: '/sample/bin/devin', version: 'devin 3000.11.216 (sample)', models: [] },
   { id: 'zcode', name: 'ZCode', installed: true, path: '/sample/bin/zcode', version: '3.16.3', models: [] },
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
+  { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -326,6 +327,13 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     // A long catalog (over the team limit of 10) for Settings → Model routing.
     ...Array.from({ length: 12 }, (_, i) => ({ id: `nous/sample-${i + 1}`, name: `Nous Sample ${i + 1}`, description: 'Sample Hermes provider model.' })),
   ],
+  // Shaped like `cursor-agent acp`'s parameterized catalog: each base model lists its own thinking levels.
+  cursor: ([
+    ['default', 'Default', [], '', 0], ['auto-smart', 'Auto', [], '', 0],
+    ['composer-2.5', 'Composer 2.5', [], '', 0],
+    ['claude-opus-5', 'Claude Opus 5', ['low', 'medium', 'high', 'xhigh', 'max'], 'high', 200000],
+    ['gpt-5.5', 'GPT-5.5', ['none', 'low', 'medium', 'high', 'extra-high'], 'medium', 272000],
+  ] as [string, string, string[], string, number][]).map(([id, name, efforts, effort, context]) => ({ id, name, description: id === 'default' ? 'Use the model last chosen in Cursor.' : '', reasoningEfforts: efforts.map(value => ({ id: value, name: value === 'xhigh' || value === 'extra-high' ? 'Extra High' : value[0].toUpperCase() + value.slice(1), description: '' })), ...(effort ? { defaultReasoningEffort: effort } : {}), ...(context ? { contextWindow: context } : {}) })),
   muse: ['muse-wonder-1.0', 'muse-spark-1.3'].map(id => ({ id, name: id, description: '', reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'high', contextWindow: 1007997 })),
   opencode: openCodePreviewModels,
   glm: [

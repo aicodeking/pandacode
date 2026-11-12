@@ -576,7 +576,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             }
         }
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes" | "cursor") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -616,7 +616,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
         args.push(
             match provider {
                 "codex" | "muse" => "resume",
-                "claude" | "glm" | "mimo" | "grok" | "devin" | "hermes" => "--resume",
+                "claude" | "glm" | "mimo" | "grok" | "devin" | "hermes" | "cursor" => "--resume",
                 "cline" => "--id",
                 _ => "--session",
             }
@@ -709,6 +709,11 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 args.push("--yolo".into());
             }
         }
+        "cursor" => match context.mode {
+            "plan" => args.push("--plan".into()),
+            "full" => args.push("--force".into()),
+            _ => {}
+        },
         "cline" => {
             args.push("-i".into());
             if context.mode == "plan" {
@@ -755,7 +760,9 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
             "pi" | "omp" | "cline" => args.extend(["--thinking".into(), effort.into()]),
             "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
-            _ => {} // The Kimi TUI restores its persisted thinking setting.
+            // The Kimi TUI restores its persisted thinking setting; Cursor's
+            // effort parameter is named per model, so its CLI keeps the saved one.
+            _ => {}
         }
     }
     // Never pass a slash command as a positional prompt, invoke a shell, or alter
@@ -1509,6 +1516,24 @@ mod tests {
         };
         let args = harness_arguments(&context).unwrap();
         assert_eq!(args, ["--resume", "session-123", "--yolo", "--model", "nous/hermes-3-llama-3.1-405b"]);
+    }
+
+    #[test]
+    fn cursor_console_resumes_with_its_mode_and_model() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "cursor",
+            resume_id: Some("aa1e2638-6c14-4a30-8eb8-e7ad3e2238ce"),
+            model: Some("gpt-5.5"),
+            reasoning_effort: Some("high"),
+            mode: "plan",
+        };
+        let args = harness_arguments(&context).unwrap();
+        assert_eq!(args, ["--resume", "aa1e2638-6c14-4a30-8eb8-e7ad3e2238ce", "--plan", "--model", "gpt-5.5"]);
+        let full = harness_arguments(&HarnessContext { resume_id: None, model: None, reasoning_effort: None, mode: "full", ..context }).unwrap();
+        assert_eq!(full, ["--force"]);
+        let standard = harness_arguments(&HarnessContext { resume_id: None, model: None, reasoning_effort: None, mode: "ask", ..context }).unwrap();
+        assert!(standard.is_empty());
     }
 
     #[test]

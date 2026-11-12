@@ -44,6 +44,7 @@ mod commandcode;
 mod extra_models;
 mod github_copilot;
 mod devin;
+mod cursor;
 pub(crate) mod hermes;
 mod glm;
 mod mimo;
@@ -97,7 +98,7 @@ const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 19] = [
+pub(crate) const PROVIDERS: [(&str, &str); 20] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -117,6 +118,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 19] = [
     ("devin", "Devin CLI"),
     ("zcode", "ZCode"),
     ("hermes", "Hermes Agent"),
+    ("cursor", "Cursor CLI"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
@@ -765,7 +767,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
@@ -773,8 +775,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
         // Kimi's thinking option lists on/off or the model's levels (low/high/max).
-        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes", Some(value)) => {
-            // grok and cline pass it as an argv value: a leading dash would read as a flag.
+        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes" | "cursor", Some(value)) => {
             !value.is_empty()
                 && !value.starts_with('-')
                 && value.len() <= 64
@@ -825,7 +826,7 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     launch::find(executable_name(name))
-        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else if name == "zcode" { zcode::bundled() } else if name == "antigravity" { launch::find("agy") } else { None })
+        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "cursor" { cursor::agent_alias() } else if name == "devin" { devin::bundled() } else if name == "zcode" { zcode::bundled() } else if name == "antigravity" { launch::find("agy") } else { None })
 }
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
@@ -846,6 +847,7 @@ fn executable_name(name: &str) -> &str {
         "commandcode" => "command-code",
         "github-copilot" => "copilot",
         "hermes" => "hermes",
+        "cursor" => "cursor-agent",
         other => other,
     }
 }
@@ -1212,7 +1214,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -1245,6 +1247,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "devin" => devin::models(&path).await,
         "zcode" => zcode::models(&path).await,
         "hermes" => hermes::models(&path).await,
+        "cursor" => cursor::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -2210,8 +2213,9 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
-                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
+                let capabilities = if self.config.provider == "cursor" { cursor::client_capabilities() } else { json!({}) };
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":capabilities,"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
                 json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
@@ -2255,10 +2259,7 @@ impl Protocol {
                 json!({"id":request["id"],"result":result})
             }
             "devin" => devin::decision(&request, approved),
-            // ACP: a one-time choice first. With only a lasting one (`allow_always`), approving
-            // takes it: only the user's own approval of such a request. PandaCode's automatic
-            // paths never approve one (`LASTING_ONLY`): a team worker's declines or stops the turn.
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" | "cursor" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -2286,7 +2287,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -2329,7 +2330,7 @@ impl Protocol {
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "zcode" => self.zcode(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -3541,7 +3542,7 @@ fn configure_command_with_agents(
         "zcode" => zcode::configure(command),
         "muse" => muse::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
-        "github-copilot" | "devin" | "hermes" => acp::configure(command, config),
+        "github-copilot" | "devin" | "hermes" | "cursor" => acp::configure(command, config),
         "kimi" => {
             if use_model {
                 command.args(["--model", &config.model]);
@@ -3676,6 +3677,7 @@ async fn run_inner(
         "devin",
         "zcode",
         "hermes",
+        "cursor",
     ]
     .contains(&config.provider.as_str())
     {
@@ -3918,7 +3920,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
+            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "cursor",
             Some(host),
         ) => (
             None,
@@ -4361,6 +4363,16 @@ mod tests {
         assert!(validate_reasoning_effort("hermes", Some("bad\nflag")).is_err());
     }
 
+    #[test]
+    fn cursor_is_registered_with_its_cli_and_catalog_defined_efforts() {
+        assert!(PROVIDERS.contains(&("cursor", "Cursor CLI")));
+        assert_eq!(executable_name("cursor"), "cursor-agent");
+        for effort in ["extra-high", "xhigh", "true", "none"] {
+            assert!(validate_reasoning_effort("cursor", Some(effort)).is_ok(), "{effort}");
+        }
+        assert!(validate_reasoning_effort("cursor", Some("bad\nflag")).is_err());
+    }
+
     pub(super) fn config(provider: &str) -> RunConfig {
         RunConfig {
             session_id: "local".into(),
@@ -4544,7 +4556,7 @@ mod tests {
         for provider in ["claude", "glm", "mimo"] {
             assert!(review_supported(provider, "review").is_ok());
         }
-        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes"] {
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes", "cursor"] {
             assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
             assert!(review_supported(provider, "ask").is_ok());
         }
