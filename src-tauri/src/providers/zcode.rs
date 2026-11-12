@@ -409,12 +409,16 @@ impl Protocol {
     /// get `-32601`, which recorded servers answer and carry on from.
     fn zcode_frame(&mut self, value: Value, step: &mut Step) -> Result<(), String> {
         match (field(&value, "method"), value.get("id").is_some()) {
-            ("interaction/requestPermission", true) if self.config.mode == "full" => {
+            ("interaction/requestPermission", true)
+                if self.config.mode == "full" && !super::lasting_only(&value) =>
+            {
                 // yolo should not ask; a policy request that still arrives takes
                 // the offered one-time allow, never a standing grant.
                 step.write.push(permission_decision(&value, true));
             }
             ("interaction/requestPermission", true) => {
+                // Offering only a lasting allow (e.g. `allow_project` adding rules) is
+                // never answered automatically, even in Full: it asks, marked `LASTING_ONLY`.
                 let params = &value["params"];
                 let text = format!(
                     "{}\n{}\n{}",
@@ -423,6 +427,13 @@ impl Protocol {
                     preview_json(&params["input"], TOOL_INPUT_LIMIT),
                 );
                 self.approval(value, text, step);
+                // A denial needs no offered option (`permission_decision` falls back to a
+                // plain deny), so a team worker's automatic answer can always decline it.
+                if let Some(data) = step.events.last_mut().and_then(|event| event.data.as_mut()) {
+                    if data[super::LASTING_ONLY] == true {
+                        data[super::LASTING_DECLINABLE] = json!(true);
+                    }
+                }
             }
             ("interaction/requestUserInput", true) => step.write.push(
                 json!({"id": value["id"], "result": {"action": "decline",
@@ -1076,6 +1087,37 @@ mod tests {
             step.write[0]["result"].get("permissionUpdates").is_none(),
             "never a standing grant",
         );
+    }
+
+    #[test]
+    fn full_access_asks_when_only_a_lasting_allow_is_offered() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.mode = "full".into();
+        let mut p = Protocol::new(config);
+        p.initial();
+        p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let step = p
+            .receive(json!({"id": "perm_1", "method": "interaction/requestPermission", "params": {
+                "requestId": "perm_1", "sessionId": "sess_test", "toolCallId": "call_1",
+                "toolName": "Bash", "reason": "Organization policy", "riskLevel": "medium",
+                "input": {"command": "ls"},
+                "options": [
+                    {"optionId": "allow_project", "kind": "allow_always", "name": "Always",
+                     "response": {"decision": "allow", "permissionUpdates": [{"type": "addRules"}]}},
+                ],
+            }}))
+            .unwrap();
+        assert!(step.write.is_empty(), "never granted automatically");
+        let approval = step.events.iter().find(|e| e.kind == "approval").expect("asks instead");
+        let data = approval.data.as_ref().unwrap();
+        assert_eq!(data[super::super::LASTING_ONLY], true);
+        assert_eq!(data[super::super::LASTING_DECLINABLE], true);
+        // The automatic decline answers with a plain denial, no rule updates.
+        let id = approval.request_id.clone().unwrap();
+        let denied = p.approve(&id, false).unwrap();
+        assert_eq!(denied["result"]["decision"], "deny");
+        assert!(denied["result"].get("permissionUpdates").is_none());
     }
 
     #[test]

@@ -223,6 +223,12 @@ async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, tex
     super::failover::before_turn(app, bot, session_id);
     let (is_team, request) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
+        // Re-checked under the lock that reads the team: a team saved since the check above
+        // must not start its full-access workers from a bot that is not Full.
+        if let Err(error) = allow_team_turn(&store, bot, session_id) {
+            super::failover::clear_images(session_id);
+            return Err(error);
+        }
         // The bot message or channel assignment this turn carries is now the one running.
         let request = super::shared_channels::promote_taken(&store, session_id, &text);
         (crate::architect::load(&store, session_id)?.is_some(), request)

@@ -270,13 +270,16 @@ fn run(store: &Store, session_id: &str, name: &str, args: &Value, running: &Hash
                     _ => Some(AGENT_DEFAULT_MAX_RUNS),
                 };
             }
-            let schedule = create(store, &input, "agent", Some(&me.id), now)?;
             // Which turns a phone drove is not recorded, so while this computer hosts remote
             // devices a message to another thread counts as saved remotely: it then reaches a
             // thread that leads a team only with Full access for remote tasks (`remote_team_gate`).
+            // Row and mark commit together, as in `create_marked`.
+            let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+            let schedule = create(store, &input, "agent", Some(&me.id), now)?;
             if name == MESSAGE && hosting {
                 super::mark_saved_remotely(store, &schedule.id, true)?;
             }
+            transaction.commit().map_err(|e| e.to_string())?;
             let mut scheduled = describe(store, &schedule, false)?;
             scheduled["stopsAfter"] = json!(stops_after(&schedule));
             Ok((json!({"scheduled": scheduled}), Some(schedule.session_id)))

@@ -461,3 +461,14 @@ fn a_remote_save_and_its_mark_land_together_or_not_at_all() {
     assert_eq!(get(&store, &made.id).unwrap().prompt, "Check the deploy");
     assert!(saved_remotely(&store, &made.id).unwrap());
 }
+
+#[test]
+fn an_agents_remote_message_and_its_mark_land_together_or_not_at_all() {
+    let store = store();
+    let running = std::collections::HashSet::new();
+    store.db.execute_batch("CREATE TRIGGER reject_mark BEFORE UPDATE OF saved_remotely ON task_schedules BEGIN SELECT RAISE(ABORT,'injected mark failure'); END;").unwrap();
+    let failed = tools::dispatch(&store, "b", "pandacode_schedule_message", &json!({"taskId": "a", "text": "Go", "inMinutes": 5}), &running, true, NOW).unwrap_err();
+    assert!(failed.contains("injected mark failure"), "{failed}");
+    let count: i64 = store.db.query_row("SELECT COUNT(*) FROM task_schedules", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0, "no unmarked schedule left behind");
+}

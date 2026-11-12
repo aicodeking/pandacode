@@ -696,6 +696,7 @@ fn allow_remote_lasting(state: &AppState, session_id: &str, request_id: &str, fu
         return Ok(());
     }
     let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    // Not running: no pending request to approve, so the approval itself finds nothing to grant.
     let Some(agent) = agents.get(session_id) else { return Ok(()) };
     let requests = agent.pending_requests.lock().map_err(|e| e.to_string())?;
     allow_lasting(&requests, request_id, full_access)
