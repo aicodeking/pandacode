@@ -8,6 +8,7 @@ import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import type { AgentUsage } from './agent-usage';
 import type { ProviderId } from './types';
+import { errorText } from './error-text';
 
 /* The menu bar popover: a slim list of running, waiting and finished tasks plus plan usage. */
 interface TrayTask { id: string; title: string; project: string; provider: ProviderId; at: number; failed?: boolean }
@@ -28,8 +29,10 @@ refreshTheme();
 window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') location.reload(); });
 
 const host = document.querySelector<HTMLDivElement>('#app')!;
-host.innerHTML = `<main class="tray" aria-label="PandaCode"><header class="tray-header"><img class="tray-mark" src="/icon.svg" alt=""><strong>PandaCode</strong><span class="tray-summary"></span><button type="button" class="tray-icon-button tray-open-app" aria-label="Open PandaCode" title="Open PandaCode">${icon('external')}</button></header><div class="tray-body"></div><footer class="tray-footer"><button type="button" class="tray-open-app">Open PandaCode</button><button type="button" class="tray-quit">Quit</button></footer></main>`;
+host.innerHTML = `<main class="tray" aria-label="PandaCode"><header class="tray-header"><img class="tray-mark" src="/icon.svg" alt=""><strong>PandaCode</strong><span class="tray-summary"></span><button type="button" class="tray-icon-button tray-open-app" aria-label="Open PandaCode" title="Open PandaCode">${icon('external')}</button></header><div class="tray-alert"><span class="tray-alert-icon" data-state-tone="danger" aria-hidden="true" hidden>${icon('alert')}</span><span class="tray-alert-text" role="alert"></span><button type="button" class="tray-icon-button tray-alert-dismiss" aria-label="Dismiss error" hidden>${icon('close')}</button></div><div class="tray-body"></div><footer class="tray-footer"><button type="button" class="tray-open-app">Open PandaCode</button><button type="button" class="tray-quit">Quit</button></footer></main>`;
 const body = host.querySelector<HTMLDivElement>('.tray-body')!;
+const alertBox = host.querySelector<HTMLDivElement>('.tray-alert')!;
+const alertText = alertBox.querySelector<HTMLElement>('.tray-alert-text')!;
 const summary = host.querySelector<HTMLSpanElement>('.tray-summary')!;
 let snapshot: TraySnapshot | null = null;
 
@@ -69,6 +72,27 @@ function usageBlock(usage: AgentUsage): string {
   return `<div class="tray-usage"><div class="tray-usage-head"><span class="tray-logo">${providerLogo(usage.provider)}</span><span>${escape(name(usage.provider))}</span>${plan}${stale}</div>${windows}</div>`;
 }
 
+/** Why the last click or load failed (open, refresh, show, quit); shown above the list until dismissed or the next action. */
+let failure = '';
+let loadFailed = false;
+/** The live region (text only, never the Dismiss button) stays put and is rewritten only when the text changes, so a screen reader announces it once. */
+function setFailure(text: string): void {
+  if (text === failure) return;
+  failure = text;
+  alertText.textContent = text;
+  alertBox.classList.toggle('is-open', text !== '');
+  for (const node of alertBox.querySelectorAll<HTMLElement>('.tray-alert-icon, .tray-alert-dismiss')) node.hidden = text === '';
+  resize();
+}
+function fail(error: unknown): void {
+  loadFailed = false;
+  setFailure(errorText(error));
+  if (snapshot) { snapshot = { ...snapshot, checking: false }; render(); }
+}
+function resize(): void {
+  void call('tray_resize', { height: Math.ceil(host.querySelector('.tray')!.getBoundingClientRect().height) }).catch(() => undefined);
+}
+
 function render(): void {
   if (!snapshot) return;
   const { running, waiting, finished, usage, checking } = snapshot;
@@ -81,24 +105,28 @@ function render(): void {
   const focused = (document.activeElement as HTMLElement | null)?.dataset.id;
   body.innerHTML = `${sections || '<p class="tray-quiet tray-empty">No agents running.</p>'}<section class="tray-section tray-plan"><h2>Plan usage<button type="button" class="tray-icon-button tray-refresh${checking ? ' checking' : ''}" aria-label="Refresh usage" title="Refresh usage"${checking ? ' aria-busy="true"' : ''}>${icon('refresh')}</button></h2>${usageBody}</section>`;
   if (focused) body.querySelector<HTMLElement>(`.tray-row[data-id="${CSS.escape(focused)}"]`)?.focus();
-  void call('tray_resize', { height: Math.ceil(host.querySelector('.tray')!.getBoundingClientRect().height) }).catch(() => undefined);
+  resize();
 }
 
 async function load(): Promise<void> {
-  try { snapshot = await call<TraySnapshot>('tray_snapshot'); render(); }
-  catch (error) { body.innerHTML = `<p class="tray-quiet">${escape(String(error))}</p>`; }
+  try { snapshot = await call<TraySnapshot>('tray_snapshot'); if (loadFailed) { loadFailed = false; setFailure(''); } render(); }
+  catch (error) { setFailure(errorText(error)); loadFailed = true; }
 }
 
 host.addEventListener('click', event => {
   const target = (event.target as HTMLElement).closest<HTMLElement>('button');
   if (!target) return;
-  if (target.classList.contains('tray-row')) void call('tray_open', { sessionId: target.dataset.id });
-  else if (target.classList.contains('tray-refresh')) { if (snapshot) { snapshot = { ...snapshot, checking: true }; render(); } void call('tray_refresh_usage'); }
-  else if (target.classList.contains('tray-open-app')) void call('tray_show_app');
-  else if (target.classList.contains('tray-quit')) void call('tray_quit');
+  if (target.classList.contains('tray-alert-dismiss')) { loadFailed = false; setFailure(''); host.querySelector<HTMLElement>('.tray-open-app')?.focus(); return; }
+  // A failure stays up (and is announced once) until an action succeeds or it is dismissed.
+  const act = (done: Promise<unknown>) => void done.then(() => { loadFailed = false; setFailure(''); }, fail);
+  if (target.classList.contains('tray-row')) act(call('tray_open', { sessionId: target.dataset.id }));
+  else if (target.classList.contains('tray-refresh')) { if (snapshot) { snapshot = { ...snapshot, checking: true }; render(); } act(call('tray_refresh_usage')); }
+  else if (target.classList.contains('tray-open-app')) act(call('tray_show_app'));
+  else if (target.classList.contains('tray-quit')) act(call('tray_quit'));
 });
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { void call('tray_hide'); return; }
+  // Best-effort: the popover closing is the only feedback and a failed hide has nothing to tell the user.
+  if (event.key === 'Escape') { void call('tray_hide').catch(() => undefined); return; }
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
   const rows = [...body.querySelectorAll<HTMLElement>('.tray-row')];
   if (!rows.length) return;

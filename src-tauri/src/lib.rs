@@ -373,6 +373,36 @@ mod task_agent_tests {
     }
 
     #[test]
+    fn dismiss_error_event_carries_its_saved_row_id() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let assistant = Mutex::new(String::new());
+        let mut first = event(&task.id, "error", "boom");
+        save_agent_activity(&store, &assistant, &mut first, None).unwrap();
+        let mut repeat = event(&task.id, "error", "boom");
+        repeat.data = Some(serde_json::json!({"code": 7}));
+        save_agent_activity(&store, &assistant, &mut repeat, None).unwrap();
+        let mut odd = event(&task.id, "error", "boom");
+        odd.data = Some(serde_json::json!("opaque"));
+        save_agent_activity(&store, &assistant, &mut odd, None).unwrap();
+        let ids: Vec<i64> = store.message_page(&task.id, None).unwrap().messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(first.data.unwrap()["messageId"], ids[0]);
+        let repeat = repeat.data.unwrap();
+        assert_eq!((repeat["messageId"].as_i64(), repeat["code"].as_i64()), (Some(ids[1]), Some(7)));
+        assert_eq!(odd.data, Some(serde_json::json!("opaque")));
+        // Only error events get an id; a failed write leaves the event without one.
+        let mut note = event(&task.id, "note", "fine");
+        save_agent_activity(&store, &assistant, &mut note, None).unwrap();
+        assert!(note.data.is_none());
+        store.db.execute_batch("CREATE TRIGGER reject_error BEFORE INSERT ON messages WHEN NEW.role='error' BEGIN SELECT RAISE(ABORT,'nope'); END;").unwrap();
+        let mut unsaved = event(&task.id, "error", "boom");
+        assert!(save_agent_activity(&store, &assistant, &mut unsaved, None).is_err());
+        assert!(unsaved.data.is_none());
+    }
+
+    #[test]
     fn assistant_boundaries_preserve_separate_commentary_and_final_rows_without_tools() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -781,6 +811,11 @@ async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_
     Ok(task)
 }
 #[tauri::command]
+async fn dismiss_error_messages(state: State<'_, AppState>, session_id: String, ids: Vec<i64>) -> Result<usize> {
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.dismiss_error_messages(&session_id, &ids)).await
+}
+#[tauri::command]
 async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, session_ids: Vec<String>) -> Result<Vec<Session>> {
     let store = state.store.clone();
     let tasks = blocking(move || store.lock().map_err(|e| e.to_string())?.reorder_sessions(&session_ids)).await?;
@@ -1154,6 +1189,18 @@ fn bounded_tail(text: &mut String, limit: usize) {
     }
 }
 
+/// Adds `messageId` to an event's data object (kept when it has other fields); data that is
+/// not an object is left alone, so the event simply has no id.
+fn attach_message_id(activity: &mut AgentEvent, id: i64) {
+    match activity.data.as_mut() {
+        None => activity.data = Some(serde_json::json!({ "messageId": id })),
+        Some(serde_json::Value::Object(data)) => {
+            data.insert("messageId".into(), id.into());
+        }
+        Some(_) => {}
+    }
+}
+
 fn flush_assistant(db: &Store, sid: &str, assistant: &Mutex<String>) -> Result<()> {
     let mut text = assistant.lock().map_err(|error| error.to_string())?;
     if !text.is_empty() {
@@ -1289,7 +1336,14 @@ fn save_agent_activity(
                 .and_then(|content| db.tool_message(&activity.session_id, &tool.id, &content))
             } else {
                 bounded_tail(&mut activity.text, 8192);
-                db.message(&activity.session_id, &activity.kind, &activity.text)
+                db.insert_message(&activity.session_id, &activity.kind, &activity.text)
+                    .map(|id| {
+                        // The window dismisses a live error by its saved row (dismiss_error_messages);
+                        // an error never saved carries no id.
+                        if activity.kind == "error" {
+                            attach_message_id(activity, id);
+                        }
+                    })
             };
             // Keep recording tool/error activity if a response write fails,
             // while still surfacing that persistence error to the turn owner.
@@ -4249,6 +4303,8 @@ pub fn run() {
                     overlay::overlay_open_task,
                     task_controls::fork_session_at_message,
                     task_controls::get_message_content,
+                    // Deletes only role='error' rows of the given session: reads nothing new.
+                    dismiss_error_messages,
                     list_providers,
                     list_provider_models,
                     search_files,
@@ -4518,6 +4574,7 @@ pub fn run() {
                 relink_project,
                 list_sessions,
                 pin_session,
+                dismiss_error_messages,
                 reorder_sessions,
                 get_task,
                 configure_window_appearance,

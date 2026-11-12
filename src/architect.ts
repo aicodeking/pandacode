@@ -26,6 +26,7 @@ import { councilSummaryHtml } from './council-panel';
 import { renderCoordination } from './coordination-message';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { AgentEvent, Message, MessagePage, Provider, ProviderId, ProviderModel, Session, ToolActivity } from './types';
+import { errorText } from './error-text';
 
 type SetupOptions = {
   task: Session; team: TeamSnapshot | null; library: TeamLibrary; providers: Provider[];
@@ -704,7 +705,7 @@ export class ArchitectView {
       card.querySelectorAll<HTMLButtonElement>('button').forEach((button, index) => button.addEventListener('click', async () => {
         card.querySelectorAll('button').forEach(b => { b.disabled = true; });
         try { await call('respond_approval', { sessionId: worker.sessionId, requestId: id, approved: index === 1 }); live?.approvals.delete(id); card.remove(); }
-        catch (error) { card.querySelector('small')!.textContent = String(error); card.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
+        catch (error) { card.querySelector('small')!.textContent = errorText(error); card.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
       })); approvals.append(card);
     }
     const inputs = panel.querySelector<HTMLElement>('.architect-worker-inputs')!;

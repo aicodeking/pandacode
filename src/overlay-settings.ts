@@ -1,4 +1,5 @@
 import './overlay-settings.css';
+import { errorText } from './error-text';
 import { overlayCall, type OverlayPreferences } from './overlay-client';
 import { isMac, isWindows } from './platform';
 import { infoMark } from './tooltip';
@@ -35,24 +36,24 @@ export function mountOverlaySettings(host: HTMLElement): () => void {
       await overlayCall('overlay_recording',{active:true}); suspended = true;
       if (disposed) { await endRecording(); return; }
       recording = true; preparing = false; controls(); input.focus(); message('Press your shortcut. Escape cancels.');
-      recordingTimeout = window.setTimeout(() => { void endRecording().catch(error => message(String(error),true)); message('Recording timed out. Your shortcut is unchanged.'); }, 28000);
-    } catch (error) { if (!disposed) message(String(error),true); }
+      recordingTimeout = window.setTimeout(() => { void endRecording().catch(error => message(errorText(error), true)); message('Recording timed out. Your shortcut is unchanged.'); }, 28000);
+    } catch (error) { if (!disposed) message(errorText(error), true); }
     finally { preparing = false; if (!disposed) controls(); }
   }
   function keydown(event: KeyboardEvent): void {
     if (!recording) return;
     if (event.key === 'Tab' || event.key === 'Escape') {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
-      void endRecording().catch(error => message(String(error),true)); message(''); return;
+      void endRecording().catch(error => message(errorText(error), true)); message(''); return;
     }
     event.preventDefault(); event.stopPropagation();
     if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) { message(isMac ? 'Include Command, Control, Option, or Shift.' : `Include Control, Alt, Shift, or the ${isWindows ? 'Windows' : 'Super'} key.`); return; }
     if (!/^(Key[A-Z]|Digit[0-9]|Space|F[1-9][0-9]?|Arrow(?:Up|Down|Left|Right)|Enter|Backspace|Delete|Home|End|PageUp|PageDown)$/.test(event.code)) return;
     const modifiers = [event.metaKey ? isMac ? 'Command' : 'Super' : '',event.ctrlKey ? 'Control' : '',event.altKey ? 'Alt' : '',event.shiftKey ? 'Shift' : ''].filter(Boolean);
     input.value = [...modifiers,event.code].join('+');
-    void endRecording().then(() => { if (!disposed) { message('Shortcut captured. Save to apply.'); save.focus(); } }).catch(error => message(String(error),true));
+    void endRecording().then(() => { if (!disposed) { message('Shortcut captured. Save to apply.'); save.focus(); } }).catch(error => message(errorText(error), true));
   }
-  function blur(): void { if (recording) void endRecording().catch(error => message(String(error),true)); }
+  function blur(): void { if (recording) void endRecording().catch(error => message(errorText(error), true)); }
 
   async function persist(event?: Event): Promise<void> {
     event?.preventDefault(); event?.stopPropagation(); if (busy || recording || !preferences) return;
@@ -60,12 +61,12 @@ export function mountOverlaySettings(host: HTMLElement): () => void {
     try {
       const next = await overlayCall<OverlayPreferences>('overlay_save_preferences',{enabled:enabled.checked,shortcut:input.value});
       if (!disposed) { update(next); if (!next.error) message('Saved'); }
-    } catch (error) { if (!disposed) { enabled.checked = preferences.enabled; message(String(error instanceof Error ? error.message : error), true); } }
+    } catch (error) { if (!disposed) { enabled.checked = preferences.enabled; message(errorText(error), true); } }
     finally { busy = false; if (!disposed) controls(); }
   }
-  async function openLauncher(): Promise<void> { try { await overlayCall('overlay_toggle'); } catch (error) { if (!disposed) message(String(error), true); } }
+  async function openLauncher(): Promise<void> { try { await overlayCall('overlay_toggle'); } catch (error) { if (!disposed) message(errorText(error), true); } }
   record.addEventListener('click', beginRecording); input.addEventListener('keydown',keydown); window.addEventListener('blur',blur);
   form.addEventListener('submit', persist); enabled.addEventListener('change', persist); open.addEventListener('click', openLauncher);
-  void overlayCall<OverlayPreferences>('overlay_preferences').then(value => { if (!disposed) { update(value); controls(); } }).catch(error => { if (!disposed) message(String(error), true); });
+  void overlayCall<OverlayPreferences>('overlay_preferences').then(value => { if (!disposed) { update(value); controls(); } }).catch(error => { if (!disposed) message(errorText(error), true); });
   return () => { disposed = true; void endRecording().catch(error => console.warn('Shortcut restore failed.',error)); record.removeEventListener('click',beginRecording); input.removeEventListener('keydown',keydown); window.removeEventListener('blur',blur); form.removeEventListener('submit', persist); enabled.removeEventListener('change', persist); open.removeEventListener('click', openLauncher); };
 }

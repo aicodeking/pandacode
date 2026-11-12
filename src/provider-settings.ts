@@ -5,6 +5,7 @@ import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { ConnectionSnapshot } from './connections';
 import type { ProviderId } from './types';
+import { errorText } from './error-text';
 
 type ClaudeMode = 'inherit' | 'subscription';
 interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables: string[]; endpoint: string | null; savedLogin: 'signedIn' | 'notSignedIn' | 'otherCredentials' | 'unknown'; conflict: boolean; }
@@ -238,7 +239,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       render(configuration); message(success);
       await saved();
       return true;
-    } catch (error) { if (!disposed) { message(String(error), true); onFailure?.(); } return false; }
+    } catch (error) { if (!disposed) { message(errorText(error), true); onFailure?.(); } return false; }
     finally {
       pending = false;
       if (!disposed) { claudeMode.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
@@ -299,7 +300,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
           const input = host.querySelector<HTMLInputElement>(`[data-executable="${target.dataset.chooseExecutable}"]`)!;
           input.value = path; editedPaths.add(input);
         }
-      } catch (error) { if (!disposed) message(String(error), true); }
+      } catch (error) { if (!disposed) message(errorText(error), true); }
     }
   };
   const input = (event: Event) => {
@@ -337,7 +338,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     void perform(() => call('provider_set_mimo_endpoint', { endpoint: chosen }), 'MiMo endpoint saved.').finally(() => { endpointEdited = false; });
   };
   host.addEventListener('submit', submit); host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', change);
-  void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(String(error), true); });
+  void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(errorText(error), true); });
   void checkClaude();
   if (named) void import('./connections').then(({ mountConnections }) => { if (!disposed) unmountNamed = mountConnections(host.querySelector<HTMLElement>('#named-connections')!, named.harnesses, named.saved); });
   return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };

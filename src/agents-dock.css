@@ -47,6 +47,16 @@ html.agents-dock-window,html.agents-dock-window>body,body.agents-dock-window{bac
 .agents-dock-window-list{display:flex;flex:1;flex-direction:column;gap:1px;min-height:0;padding:0 5px 6px;overflow:auto}
 .agents-dock-window-list .agents-dock-row{padding:8px 7px}
 .agents-dock-window-empty{margin:auto;padding:10px;text-align:center;color:var(--muted);font-size:.75rem}
+.agents-dock-window-error-row{display:flex;align-items:center;gap:7px;min-height:34px;margin:0 8px 4px;padding:2px 3px 2px 8px;border:1px solid var(--glass-line);border-radius:var(--radius-md);background:var(--glass-fill-hover);color:var(--text);font-size:var(--text-sm)}
+.agents-dock-window-error-row [hidden]{display:none}
+.agents-dock-window-error-row:not(.is-open){min-height:0;margin:0;padding:0;border:0;overflow:hidden}
+.agents-dock-window-error-icon{flex:none;display:grid}.agents-dock-window-error-icon[data-state-tone="danger"]{color:var(--danger)}.agents-dock-window-error-icon>.icon{width:15px;height:15px}
+.agents-dock-window-error{flex:1;min-width:0;padding:2px 0;line-height:1.4;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
+.agents-dock-window-error-row button{flex:none;display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border-radius:var(--radius-md);color:var(--muted);--press:.9}
+.agents-dock-window-error-row button .icon{width:15px;height:15px}
+.agents-dock-window-error-row button:hover{background:var(--glass-fill-hover);color:var(--text)}
+.agents-dock-window-error-row button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 @media(prefers-reduced-motion:reduce){.agents-dock-trigger.is-working>.icon,.agents-dock-orb.is-working .icon{animation:none}}
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.agents-dock-popover,.agents-dock-window-panel,.agents-dock-orb{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
-@media(prefers-contrast:more){.agents-dock-popover,.agents-dock-window-panel,.agents-dock-orb{border-color:var(--text)}}
+@media(prefers-contrast:more){.agents-dock-popover,.agents-dock-window-panel,.agents-dock-orb{border-color:var(--text)}.agents-dock-window-error-row{border-color:var(--text)}.agents-dock-window-error-icon[data-state-tone],.agents-dock-window-error-row button{color:var(--text)}}
+@media(forced-colors:active){.agents-dock-window-error-row{border-color:CanvasText;color:CanvasText}.agents-dock-window-error-icon[data-state-tone]{color:CanvasText}.agents-dock-window-error-row button{color:ButtonText}}

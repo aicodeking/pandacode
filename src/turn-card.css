@@ -7,7 +7,7 @@
 html .workspace :is(#transcript,.thread-mirror-rows,#stream-region) .turn-card>.turn-activity{margin:0;padding:0}
 
 /* Blank room under the last card after its trace folds (main.ts `tailRoom`), so the thread above holds still. */
-#transcript::after{content:"";display:block;flex:none;height:var(--tail-room,0px)}
+#transcript::after{content:"";display:block;flex:none;height:calc(var(--tail-room,0px) + var(--toast-clear,0px))}
 
 /* ---------- Header ---------- */
 .turn-card>.turn-activity>.turn-activity-summary,.turn-card-head{display:flex;align-items:center;gap:8px;width:auto;max-width:none;min-height:38px;padding:2px var(--ds-row-pad-x);
@@ -81,7 +81,9 @@ html[data-theme="dark"] .turn-card-more{color:color-mix(in srgb,var(--accent) 70
 /* ---------- Errors and footer ---------- */
 .turn-card-errors:empty{display:none}
 .turn-card-errors{display:flex;flex-direction:column;gap:4px;padding:4px 0 0}
+.turn-card-errors.thread-errors{margin:0}
 .turn-card-errors .message-error{margin:0;border-radius:var(--ds-radius-inner);color:var(--ds-danger)}
+.turn-card-errors .message-error.error-row{color:var(--text);background:var(--ds-card-inner)}
 html .turn-changes.turn-card-foot{display:flex;flex-direction:row;align-items:center;gap:4px;min-height:40px;margin:0;padding:4px 0 0;border:0;border-radius:0;background:none;box-shadow:none;container-type:normal;font-size:var(--ds-text-body)}
 .turn-card-foot-open{flex:1;display:flex;align-items:center;gap:10px;min-width:0;min-height:36px;padding:0 var(--ds-row-pad-x);border:0;border-radius:var(--ds-radius-inner);background:transparent;color:var(--text);text-align:left;cursor:pointer;
   transition:background-color var(--ds-ease-out) ease-out}

@@ -6,6 +6,7 @@ import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessageP
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { isPreviewableFile } from './file-links';
+import { DISMISS_BATCH } from './thread-errors';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
 import { namedTeamSetup } from './team-mode';
@@ -622,6 +623,17 @@ export function samplePick(kind: 'files' | 'folder'): string[] {
 function agent(event: AgentEvent) { emit('agent-event', event); }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** tests: a live `error` event for any task, saved first like lib.rs `save_agent_activity` does: the row goes into the
+ * thread (newest id) and the event carries it as `data.messageId`; `{ saved: false }` is an event the backend could
+ * not save (no row, no id). Returns the saved id. */
+(window as any).__previewError = (sessionId: string, text: string, options: { saved?: boolean } = {}): number | undefined => {
+  if (options.saved === false) { agent({ sessionId, kind: 'error', text }); return undefined; }
+  const list = (messages[sessionId] ??= []);
+  id = Math.max(id, ...list.map(message => message.id)) + 1;
+  list.push({ id, sessionId, role: 'error', content: text.length > 8192 ? text.slice(-8192) : text, createdAt: Date.now() });
+  agent({ sessionId, kind: 'error', text, data: { messageId: id } });
+  return id;
+};
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -2116,6 +2128,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         s.resumeId = null; s.goalState = null; s.codexSettings = null;
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
+    }
+    case 'dismiss_error_messages': {
+      const ids: unknown = args.ids;
+      if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+      const wanted = new Set<number>(ids), list = messages[session(args.sessionId).id] ?? [];
+      const kept = list.filter(message => !(message.role === 'error' && wanted.has(message.id)));
+      messages[args.sessionId] = kept; result = list.length - kept.length; break;
     }
     case 'get_messages': {
       const synced = mirrorSynced.get(args.sessionId);

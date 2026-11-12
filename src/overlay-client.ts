@@ -1,4 +1,5 @@
 import type { AgentEvent, Message, Provider, ProviderId, ProviderModel, Session, SubagentActivity } from './types';
+import { DISMISS_BATCH, dismissJournal, parseDismissJournal } from './thread-errors';
 /** The launcher has its own tiny bridge and never imports the workspace preview. */
 export interface LaunchContext { projectId: string | null; provider: string; model: string; mode: string; reasoningEffort?: string | null }
 export interface OverlayPreferences { enabled: boolean; shortcut: string; context: LaunchContext; error: string | null; modelSelection?: {provider:string;model:string;reasoningEffort?:string|null} | null }
@@ -88,6 +89,14 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
   }
   if (command === 'overlay_snapshot') return { tasks, projects:[{id:'preview-project',name:'PandaCode',path:'/Projects/PandaCode'}], context:effectiveContext(), activeCount:tasks.filter(t => ['running','waiting','coordinating'].includes(t.status)).length } as T;
   if (command === 'overlay_thread') return previewThread(String(args.sessionId), args.subagentId as string | undefined) as T;
+  if (command === 'dismiss_error_messages') {
+    const ids = args.ids;
+    if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+    const sessionId = String(args.sessionId), thread = previewThread(sessionId);
+    const messages = thread.messages.filter(message => !(message.role === 'error' && ids.includes(message.id)));
+    threads.set(`${sessionId}:`, { ...thread, messages });
+    return (thread.messages.length - messages.length) as T;
+  }
   if (command === 'get_message_content') {
     const message = previewThread(String(args.sessionId)).messages.find(message => message.id === args.messageId && ['user','assistant'].includes(message.role));
     if (!message) throw new Error('This message is no longer available.');
@@ -134,3 +143,50 @@ export function syncOverlayContext(context: LaunchContext): void {
     void overlayCall('overlay_sync_context', {context:value}).then(() => { savedContext = serialized; }).catch(error => console.warn('Launcher context could not be saved.', error));
   }, 250);
 }
+
+/** The launcher's own key: the main window rewrites `pandacode.errors.pendingDeletes` from its state alone, so sharing
+ * it would let either window erase the other's pending deletes. Same format (thread-errors.ts). */
+const JOURNAL_KEY = 'pandacode.launcher.pendingDeletes';
+/** Adds (or, with `add` false, removes) ids for a thread, merging into whatever is stored now. */
+export function journal(sessionId: string, ids: number[], add: boolean): void {
+  try {
+    const saved = parseDismissJournal(localStorage.getItem(JOURNAL_KEY)), left = new Set(saved.get(sessionId) ?? []);
+    for (const id of ids) if (add) left.add(id); else left.delete(id);
+    saved.set(sessionId, [...left]);
+    const raw = dismissJournal(saved);
+    if (raw) localStorage.setItem(JOURNAL_KEY, raw); else localStorage.removeItem(JOURNAL_KEY);
+  } catch (error) { console.error('Could not keep dismissed errors for the next launch', error); }
+}
+/** Ids an earlier launcher run dismissed but never confirmed deleting; their rows stay hidden while the replay runs. */
+export const replayedDismissals = new Set<number>();
+/** Failed replays of one thread's entry are counted here (its own key, so the journal format stays shared). */
+const REPLAY_FAILS_KEY = 'pandacode.launcher.replayFailures';
+/** After this many launches in which the replay failed, the entry is dropped: the call itself keeps failing. */
+export const MAX_REPLAY_FAILURES = 3;
+function replayFailures(sessionId: string, change: 'add' | 'clear'): number {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REPLAY_FAILS_KEY) ?? '{}') as Record<string, unknown>, now = Number(saved[sessionId]) || 0;
+    const next = change === 'add' ? now + 1 : 0, rest = { ...saved };
+    if (next) rest[sessionId] = next; else delete rest[sessionId];
+    if (Object.keys(rest).length) localStorage.setItem(REPLAY_FAILS_KEY, JSON.stringify(rest)); else localStorage.removeItem(REPLAY_FAILS_KEY);
+    return next;
+  } catch (error) { console.error('Could not count failed replays', error); return 0; }
+}
+/** At load (not when a thread first opens): deletes what the last run left in the journal. The native delete returns
+ * Ok(0) for a thread or row that is gone, so such an entry clears; one repeats only while the call itself fails, and
+ * `MAX_REPLAY_FAILURES` launches of that end it. */
+async function replayJournal(): Promise<void> {
+  let raw: string | null = null;
+  try { raw = localStorage.getItem(JOURNAL_KEY); } catch (error) { console.error('Could not read dismissed errors', error); }
+  for (const [sessionId, ids] of parseDismissJournal(raw)) {
+    for (const id of ids) replayedDismissals.add(id);
+    try {
+      for (let at = 0; at < ids.length; at += DISMISS_BATCH) await overlayCall('dismiss_error_messages', { sessionId, ids: ids.slice(at, at + DISMISS_BATCH) });
+      journal(sessionId, ids, false); replayFailures(sessionId, 'clear');
+    } catch (error) {
+      console.error('dismiss_error_messages failed', error);
+      if (replayFailures(sessionId, 'add') >= MAX_REPLAY_FAILURES) { journal(sessionId, ids, false); replayFailures(sessionId, 'clear'); }
+    }
+  }
+}
+void replayJournal();

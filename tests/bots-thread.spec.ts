@@ -73,6 +73,7 @@ async function installFailoverPreview(page: Page): Promise<void> {
     replaceCase(/case ["']bot_failover_decide["']:[\s\S]*?break;\s*}/, `case "bot_failover_decide": {
       const fixture = window.__botFailoverFixture;
       fixture.calls.push({ command, args: structuredClone(args) });
+      if (fixture.fail) throw new Error(fixture.fail);
       fixture.ask = null;
       result = null;
       break;
@@ -147,6 +148,47 @@ test.describe('bot conversation', () => {
     await card.getByRole('button', { name: 'Dismiss' }).click();
     await expect(card).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as any).__botFailoverFixture.calls)).toEqual([{ command: 'bot_failover_decide', args: { sessionId: expect.any(String), action: 'wait', always: false } }]);
+  });
+
+  test('a failed decision on a held message shows the error card, alert on its text only, and Dismiss removes it', async ({ page }) => {
+    await installFailoverPreview(page);
+    await openSample(page, 'Ledger');
+    const botId = await sidebar(page).getByRole('button', { name: /^Chat with Ledger/ }).getAttribute('data-bot');
+    // The held message arrives as the backend sends it (`bot-failover`): no real turn and no reload needed.
+    const sessionId = await page.locator('#prompt').getAttribute('data-session-id');
+    expect(sessionId).toBeTruthy();
+    await expect.poll(() => page.evaluate(() => (window as any).__botHasListener('bot-failover'))).toBe(true);
+    await page.evaluate(({ botId, sessionId }) => {
+      const fixture = (window as any).__botFailoverFixture;
+      fixture.botId = botId; fixture.fail = 'This message is no longer on hold.';
+      fixture.ask = { botId, sessionId, cause: 'limit', provider: 'claude', model: 'opus', target: { provider: 'codex', model: 'gpt-5' }, resetsAt: null };
+      (window as any).__botEmit('bot-failover', fixture.ask);
+    }, { botId, sessionId });
+    const card = page.locator('#composer-area .bot-failover');
+    await expect(card).toBeVisible();
+    await card.getByRole('button', { name: 'Dismiss' }).click();
+    // The same error card as a thread's: leading danger icon, the text announced, the card itself not an alert.
+    const error = page.locator('#bot-failover-bar .bot-failover-error');
+    await expect(error).toHaveClass(/message-error/);
+    await expect(error).toHaveClass(/error-row/);
+    await expect(error.locator('.error-row-head > .error-row-icon[data-state-tone="danger"]')).toHaveCount(1);
+    await expect(error.locator('.error-row-summary')).toHaveText('This message is no longer on hold.');
+    await expect(error.locator('[role="alert"]')).toHaveCount(1);
+    await expect(error.locator('.error-row-summary')).toHaveAttribute('role', 'alert');
+    await expect(error).not.toHaveAttribute('role', /.+/);
+    // The held message is still offered, so the reader can try again.
+    await expect(card).toBeVisible();
+    // A composer rebuild redraws the bar, but the same error is announced only the first time it shows.
+    await error.evaluate(node => { (node as any).__old = true; });
+    await page.evaluate(() => (window as any).__previewEmit('queue-changed', { sessionId: document.querySelector<HTMLTextAreaElement>('#prompt')!.dataset.sessionId }));
+    await expect.poll(() => error.evaluate(node => Boolean((node as any).__old))).toBe(false);
+    await expect(error.locator('.error-row-summary')).toHaveText('This message is no longer on hold.');
+    await expect(error.locator('[role="alert"]')).toHaveCount(0);
+    await error.getByRole('button', { name: 'Dismiss error', exact: true }).click();
+    await expect(error).toHaveCount(0);
+    await expect(card).toBeVisible();
+    // Focus continues from the hold card, not from <body>.
+    await expect(card.getByRole('button').first()).toBeFocused();
   });
 
   test('messages are bubbles with a day separator and the bot as author', async ({ page }) => {

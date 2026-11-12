@@ -2,6 +2,7 @@ import './opencode-model-settings.css';
 import { call } from './bridge';
 import { icon } from './dom';
 import { tokenCount } from './model-catalog';
+import { errorText } from './error-text';
 import type { ProviderModel } from './types';
 
 interface Catalog {
@@ -96,7 +97,7 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
       if (!result.error || result.models.length) models = result.models;
       message(result.error || '');
       status.classList.toggle('error', Boolean(result.error));
-    } catch (error) { if (!disposed) message(String(error), true); }
+    } catch (error) { if (!disposed) message(errorText(error), true); }
     finally { loading = false; if (!disposed) render(); }
   }
   async function save(): Promise<void> {
@@ -107,7 +108,7 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
       if (disposed) return;
       persisted = new Set(ids); selected = new Set(ids);
       saved(); message('Models saved. Available in every model selector.');
-    } catch (error) { if (!disposed) message(String(error), true); }
+    } catch (error) { if (!disposed) message(errorText(error), true); }
     finally { saving = false; if (!disposed) render(); }
   }
   function change(event: Event): void {

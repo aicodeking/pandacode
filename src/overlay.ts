@@ -1,6 +1,7 @@
 import './overlay.css';
 import { escape, icon, isImeKey } from './dom';
 import { mountExternalLinks } from './external-links';
+import { errorText } from './error-text';
 import { providerLogo } from './provider-logos';
 import { nativeOverlay, overlayCall, type OverlaySnapshot, type OverlayTask, type LaunchContext } from './overlay-client';
 import type { FileEntry, ProviderId, ProviderModel } from './types';
@@ -70,11 +71,11 @@ async function chooseModel(): Promise<void> {
           const name = modelNames.get(`${provider}:${model}`) || fallbackModel(provider,model).name;
           try { localStorage.setItem('pandacode.launcher-model-label',JSON.stringify({provider,model,name})); } catch { /* Selection itself is saved natively. */ }
           showFeedback('');
-        } catch (error) { showFeedback(String(error),true); throw error; }
+        } catch (error) { showFeedback(errorText(error),true); throw error; }
         finally { modelSaving = false; render(); }
       },
     });
-  } catch (error) { if (request === pickerRequest) showFeedback(String(error),true); }
+  } catch (error) { if (request === pickerRequest) showFeedback(errorText(error),true); }
   finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === 'Loading harnesses…') showFeedback(''); render(); } }
 }
 
@@ -104,7 +105,7 @@ async function openThread(task: OverlayTask): Promise<void> {
     const view = await threadLoading;
     if (request !== threadRequest || !visible) return;
     view.setVisible(true); view.open(task); threadPresented = true;
-  } catch (error) { if (request === threadRequest) { threadLoading = undefined; backToAgents(); showFeedback(String(error),true); } }
+  } catch (error) { if (request === threadRequest) { threadLoading = undefined; backToAgents(); showFeedback(errorText(error),true); } }
 }
 function removeDeletedSessions(sessionIds: string[]): void {
   for (const id of sessionIds) deletedSessions.add(id);
@@ -161,7 +162,7 @@ async function refresh(): Promise<void> {
     snapshot = next;
     if (visible) { render(); threadView?.refresh(); }
   }
-  catch (error) { if (visible) showFeedback(String(error),true); }
+  catch (error) { if (visible) showFeedback(errorText(error),true); }
   finally { refreshing = false; if (visible) timer = window.setTimeout(refresh,1500); }
 }
 function setVisible(value: boolean): void {
@@ -178,7 +179,7 @@ async function submit(event?: Event): Promise<void> {
     await overlayCall('overlay_launch',{prompt:prompt.value.trim(),projectId:project.value});
     prompt.value = ''; fileMentions.refresh(); showFeedback('Task started. You can keep working.');
     clearTimeout(timer); void refresh();
-  } catch (error) { showFeedback(String(error instanceof Error ? error.message : error),true); }
+  } catch (error) { showFeedback(errorText(error),true); }
   finally { busy = false; render(); prompt.focus({preventScroll:true}); }
 }
 agentButton.addEventListener('click',() => void chooseModel());
@@ -204,7 +205,7 @@ window.addEventListener('keydown',event => {
   if (event.key === 'ArrowDown' && event.target === search) { event.preventDefault(); list.querySelector<HTMLButtonElement>('[data-task]')?.focus(); }
 });
 window.addEventListener('pagehide',() => { setVisible(false); fileMentions.dispose(); });
-mountExternalLinks(document, url => overlayCall('open_external_url', { url }), error => showFeedback(error instanceof Error ? error.message : String(error), true));
+mountExternalLinks(document, url => overlayCall('open_external_url', { url }), error => showFeedback(errorText(error), true));
 if (nativeOverlay) {
   void import('@tauri-apps/api/event').then(({listen}) => listen<boolean>('overlay-visibility',event => setVisible(event.payload)));
   void import('@tauri-apps/api/event').then(({listen}) => listen<{sessionIds: string[]}>('sessions-deleted', event => removeDeletedSessions(event.payload.sessionIds)));
