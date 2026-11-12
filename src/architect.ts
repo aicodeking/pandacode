@@ -389,7 +389,8 @@ export class ArchitectView {
     // Messages between teammates stay on the host of a team on another computer.
     if (!this.options.remote?.(this.taskId)) {
       this.teamMessages = new TeamMessages(this.team);
-      panel.querySelector('.architect-worker-list')!.after(this.teamMessages.host);
+      // After the keyboard hint, so the hint sits right under the rows.
+      panel.querySelector('.architect-worker-keyhint')!.after(this.teamMessages.host);
     }
     this.list = new WorkerList(panel, {
       needsInput: sessionId => this.needsInput(sessionId),
@@ -516,9 +517,9 @@ export class ArchitectView {
     if (access.hidden !== hideAccess) access.hidden = hideAccess;
     // A Plan (read-only) or Standard lead may not edit freely itself, so the note says plainly that its workers can.
     // Worded without picker labels, which differ by harness (Codex calls Plan "Read only").
-    // At most two lines at the default 400px panel (the tooltip adds the deploy and scheduling exception).
+    // One line at the default 400px panel (the tooltip adds the deploy and scheduling exception).
     const accessLine = leadMode === 'plan' ? 'Workers can edit files, though this lead is read-only.'
-      : leadMode === 'ask' ? 'Workers run with full access; only this lead asks you for approval.' : 'Workers have full access; approvals are automatic.';
+      : leadMode === 'ask' ? 'Workers have full access; you approve only this lead.' : 'Workers have full access; approvals are automatic.';
     const accessText = access.querySelector('.architect-panel-access-text')!.firstChild!;
     if (accessText.textContent !== accessLine) accessText.textContent = accessLine;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
@@ -568,10 +569,13 @@ export class ArchitectView {
   private revealApproval(): void {
     const card = this.panel?.querySelector<HTMLElement>('.architect-worker-approvals .approval-card');
     if (!card) return;
-    // The transcript header (name and model) stays in view: scrolled to the top first, then only as far as the card
-    // needs, so a card that fits under the header leaves it where it is.
-    this.panel?.querySelector<HTMLElement>('.architect-worker-meta')?.scrollIntoView({ block: 'start' });
-    card.scrollIntoView({ block: 'nearest' }); card.focus({ preventScroll: true });
+    // The transcript header (name and model) is sticky, so it stays in view however far the card needs to scroll.
+    card.scrollIntoView({ block: 'nearest' });
+    // A card scrolled to the top edge would sit under the sticky header: nudge it down by the overlap.
+    const head = this.panel?.querySelector<HTMLElement>('.architect-worker-meta'), scroller = card.closest<HTMLElement>('.architect-panel-scroll');
+    const overlap = head && scroller ? head.getBoundingClientRect().bottom - card.getBoundingClientRect().top : 0;
+    if (overlap > 0) scroller!.scrollTop -= overlap;
+    card.focus({ preventScroll: true });
   }
   /** Answers a worker's approval from its transcript card (forwarded by an older or unusual host). */
   private async respondApproval(sessionId: string, requestId: string, approved: boolean, host: HTMLElement): Promise<void> {
@@ -754,7 +758,7 @@ export class ArchitectView {
       // hosts auto-grant or clear them); when one arrives, the decision is the user's.
       const card = document.createElement('div'); card.className = 'approval-card architect-needs-approval'; card.dataset.requestId = id;
       card.innerHTML = `<strong class="architect-worker-alert"><span class="architect-worker-alert-icon" data-state-tone="near">${icon('alert')}</span><span>Needs approval</span></strong><p class="architect-approval-reason">Automatic approval didn’t apply; your decision is needed.</p>${requestHtml(text)}<div><button class="secondary-button" type="button">Deny</button><button class="primary-button" type="button">Approve</button></div><small role="alert"></small>`;
-      card.tabIndex = -1; card.setAttribute('role', 'group'); card.setAttribute('aria-label', approvalLabel(text));
+      card.tabIndex = -1; card.setAttribute('role', 'group'); card.setAttribute('aria-label', approvalLabel(worker.name, text));
       card.querySelectorAll<HTMLButtonElement>('button').forEach((button, index) => button.addEventListener('click', () => { void this.respondApproval(worker.sessionId, id, index === 1, card); }));
       approvals.append(card); markScrollRegions(card);
     }

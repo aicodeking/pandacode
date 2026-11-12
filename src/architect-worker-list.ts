@@ -104,24 +104,24 @@ export function reviewerRow(worker: TeamWorker, team: TeamSnapshot): ReviewerRow
 }
 /** The rows' own order: needs you, failed, working, waiting or queued, paused or stopped, done, skipped. */
 const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'paused', 'stopped', 'done', 'skipped', 'idle'];
-/** Buckets that leave the line for its title when the panel is narrow. */
-const TALLY_MINOR = new Set(['queued', 'stopped', 'skipped', 'idle']);
+/** Buckets folded into "+N more" first when the panel is narrow: needs you, failed, working and done keep their words. */
+const TALLY_MINOR = new Set(['queued', 'stopped', 'skipped', 'idle', 'paused', 'waiting']);
 /** Each bucket's glyph and tone in the tally: the same marks the rows lead with. */
 const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'failed'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
-/** Then these, first-first, when the line still does not fit: "working" outlasts "done" (the progress bar already
- *  shows completion) and only "failed" outlasts "working". */
-const TALLY_DROP = ['paused', 'waiting', 'done', 'working', 'failed'];
-/** One count: the rows' glyph and its words ("2 working") when `worded`, else the glyph and the bare number, its word
- *  in the title. On the tally line it is hidden from screen readers (the readable copy says it); on the unfolded "+N"
+/** Then these, first-first, when even the compact line does not fit: "working" outlasts "done" (the progress bar
+ *  already shows completion) and only "failed" outlasts "working". */
+const TALLY_DROP = ['done', 'working', 'failed'];
+/** One count: its words alone ("2 working") when `worded` (the words say what the 11px glyph cannot, and leave room
+ *  at the default width), else the rows' glyph and the bare number, its word in the title. On the tally line it is hidden from screen readers (the readable copy says it); on the unfolded "+N"
  *  line it says its word to them. */
 const tallyCount = (key: string, count: number, text: string, spoken: boolean, worded = false): string => {
   const [glyph, tone] = TALLY_GLYPHS[key] ?? ['idle', 'worker-idle'];
   const mark = `<span class="architect-tally-glyph" data-state-tone="${tone}" aria-hidden="true">${workerGlyphs[glyph]}</span>`;
   return spoken ? `<span class="architect-tally-count" title="${escape(text)}">${mark}<span aria-hidden="true">${count}</span><span class="sr-only">${escape(text)}</span></span>`
-    : `<span class="architect-tally-count"${worded ? ' data-worded' : ''} title="${escape(text)}" aria-hidden="true">${mark}${escape(worded ? text : String(count))}</span>`;
+    : `<span class="architect-tally-count"${worded ? ' data-worded' : ''} title="${escape(text)}" aria-hidden="true">${worded ? escape(text) : `${mark}${count}`}</span>`;
 };
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
- *  full line, a short one without the minor buckets, and the share of settled workers. Empty buckets are left out. */
+ *  full line, ever shorter fallbacks for a narrow panel, and the share of settled workers. Empty buckets are left out. */
 export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) => string): { text: string; readable: string; html: string; variants: { text: string; html: string; hidden: string }[]; settled: number; total: number; needsYou: number; failed: number } {
   const counts = new Map<string, number>();
   for (const worker of workers) { const key = bucket(worker); counts.set(key, (counts.get(key) ?? 0) + 1); }
@@ -129,10 +129,10 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
   const parts = [...TALLY_ORDER, ...[...counts.keys()].filter(key => !TALLY_ORDER.includes(key))].filter(key => counts.get(key)).map(key => [key, label(key, counts.get(key)!)] as const);
   const settled = workers.filter(worker => worker.abandoned || ['completed', 'failed', 'stopped'].includes(worker.status)).length;
   // The visible line is hidden from screen readers (a readable copy says it in words), except the "needs you" button,
-  // which keeps its words after a warn-toned icon since it acts. Words first: every bucket reads "2 working" after the
-  // rows' own glyph (at 11px some glyphs look alike). Too wide, the other buckets go compact (glyph and count, the word
-  // in the title); still too wide, the minor buckets drop first and the line ends with a "+N" button that unfolds the
-  // hidden counts on a line of their own (aria-expanded), its title naming them too.
+  // which keeps its words after a warn-toned icon since it acts. Every count reads "2 working" (at 11px some glyphs
+  // look alike). Too wide, the minor buckets fold into a "+N more" button that unfolds them
+  // on a line of their own (aria-expanded), its title naming them too; then the kept buckets go compact (glyph and
+  // count, the word in the title); then TALLY_DROP leaves in order, "needs you" always staying.
   const html = (list: (readonly [string, string])[], hidden: (readonly [string, string])[], worded = false) => {
     const more = hidden.reduce((sum, [key]) => sum + counts.get(key)!, 0), names = hidden.map(([, text]) => text).join(', ');
     return [...list.map(([key, text]) => key === 'needs you'
@@ -140,17 +140,16 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
       : tallyCount(key, counts.get(key)!, text, false, worded)),
     ...more ? [`<button type="button" class="architect-tally-more" aria-expanded="false" aria-controls="architect-tally-hidden" aria-label="${escape(`Show ${more} more: ${names}`)}" title="${escape(names)}" data-label="+${more} more" data-names="${escape(`${more} more: ${names}`)}">+${more} more</button>`] : []].join('');
   };
-  // Ever shorter lines for a narrow panel: the minor buckets go first, then TALLY_DROP in order, "failed" last of
-  // all; "needs you" always stays. Each drop is counted in "+N more", which is never cut.
-  const full = parts.map(([, text]) => text).join(' · ');
-  const variants = [{ text: full, html: html(parts, [], true), hidden: '' }, { text: full, html: html(parts, []), hidden: '' }];
-  const order = [...TALLY_MINOR, ...TALLY_DROP];
-  for (let step = 1; step <= order.length; step++) {
-    const gone = new Set(order.slice(0, step));
-    if (!parts.some(([key]) => gone.has(key)) || !parts.some(([key]) => key === order[step - 1])) continue;
+  const variant = (gone: Set<string>, worded: boolean) => {
     const kept = parts.filter(([key]) => !gone.has(key)), hidden = parts.filter(([key]) => gone.has(key));
     const dropped = hidden.reduce((sum, [key]) => sum + counts.get(key)!, 0);
-    variants.push({ text: [...kept.map(([, text]) => text), `+${dropped} more`].join(' · '), html: html(kept, hidden), hidden: hidden.map(([key, text]) => tallyCount(key, counts.get(key)!, text, true)).join('') });
+    return { text: [...kept.map(([, text]) => text), ...dropped ? [`+${dropped} more`] : []].join(' · '), html: html(kept, hidden, worded), hidden: hidden.map(([key, text]) => tallyCount(key, counts.get(key)!, text, true)).join('') };
+  };
+  const variants = [variant(new Set(), true)];
+  if (parts.some(([key]) => TALLY_MINOR.has(key))) variants.push(variant(TALLY_MINOR, true));
+  variants.push(variant(TALLY_MINOR, false));
+  for (let step = 1; step <= TALLY_DROP.length; step++) {
+    if (parts.some(([key]) => key === TALLY_DROP[step - 1])) variants.push(variant(new Set([...TALLY_MINOR, ...TALLY_DROP.slice(0, step)]), false));
   }
   // The readable copy leaves out "needs you": its button, just before, already says it.
   const readable = parts.filter(([key]) => key !== 'needs you').map(([, text]) => text).join(' · ');
@@ -192,8 +191,8 @@ export function markScrollRegions(root: HTMLElement): void {
 const scrollHint = '<p class="architect-worker-scroll-hint" hidden>Scroll for more</p>';
 /** One definition of a worker still at work (unknown counts as active): only such a worker can need the user. */
 export const workerActive = (worker?: TeamWorker | null): boolean => !worker || (!worker.abandoned && ['running', 'waiting', 'parked', 'queued'].includes(worker.status));
-/** The name of an approval request's group: what it asks, shortened. */
-export const approvalLabel = (text: string): string => `Needs you: approval: ${text.length > 120 ? `${text.slice(0, 119)}…` : text}`;
+/** The name of an approval request's group: who asks and what, shortened. */
+export const approvalLabel = (worker: string, text: string): string => `${worker} needs you: approval: ${text.length > 120 ? `${text.slice(0, 119)}…` : text}`;
 /** Updates a container's keyed parts in place: unchanged parts (and any control focused in them) are left alone,
  *  changed ones are replaced, and focus on a replaced "Open transcript" returns to the new one. */
 function patchParts(host: HTMLElement, parts: [string, string][]): void {
