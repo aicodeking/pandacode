@@ -3,6 +3,7 @@
   "$id": "pandacode:extensions:contracts:1",
   "x-dataLimits": { "bytes": 262144, "depth": 32, "nodes": 8192, "packages": 64, "numberBytes": 32 },
   "x-menuLimits": { "depth": 5, "items": 128 },
+  "x-projectReads": { "capabilities": ["projects.files.metadata", "projects.files.read", "projects.git.read"], "resources": ["metadata", "file", "git"], "scope": "exact-relative-file-or-local-head", "fileBytes": 131072, "pageBytes": 4096, "pathBytes": 1024, "pathComponents": 32, "links": "denied", "git": "local-HEAD-only-no-process" },
   "$defs": {
     "text": { "type": "string", "minLength": 1, "maxLength": 256 },
     "id": { "type": "string", "maxLength": 160, "pattern": "^[a-z][a-z0-9-]*[.][a-z][a-z0-9-]*(/[a-z][a-z0-9-]*)?$" },

@@ -3,6 +3,7 @@ import { isImeKey } from '../dom';
 import { onExtensionsChanged } from './manager';
 import { createContextClient, type ContextReply, type SummaryPage, type ContextResource } from './context-state';
 import type { Json } from './contracts';
+import { projectReadControls } from './project-reads';
 
 /** Nonmodal host surface: navigation remains available, but queries never read active context. */
 export function openProjectContext(id: string, version: string, context: Record<string, Json>, trigger: HTMLElement, onClose?: () => void): () => void {
@@ -68,8 +69,9 @@ export function openProjectContext(id: string, version: string, context: Record<
   button(navigation, 'Refresh task summaries', () => { resource = 'tasks'; void query(); });
   for (const target of ['harnesses', 'connections', 'jobs'] as const) button(navigation, `Watch ${target}`, () => { resource = target; watch(); });
   const nextButton = button(navigation, 'Next page', () => { if (page?.nextCursor !== null) void query(true); }); nextButton.disabled = true;
+  const disposeReads = projectReadControls(client, panel);
   const close = () => {
-    if (ended) return; ended = true; pending++; stopStream(); client.dispose(); unsubscribe(); panel.remove();
+    if (ended) return; ended = true; pending++; stopStream(); disposeReads(); client.dispose(); unsubscribe(); panel.remove();
     if (panel.contains(document.activeElement) || document.activeElement === document.body) {
       const target = trigger.isConnected && trigger.checkVisibility() ? trigger : document.querySelector<HTMLElement>('#prompt:not([disabled])'); target?.focus({ preventScroll: true });
     }

@@ -1,11 +1,12 @@
 //! Host-owned, read-only captured context. No extension identity or core storage DTO crosses IPC.
 use super::{contracts, packages::{ExtensionPackages, Snapshot}};
 use super::inventory;
+use super::project_reads;
 use crate::storage::Store;
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{Duration, Instant}};
 use tauri::Manager;
 
 const DEADLINE: Duration = Duration::from_secs(2);
@@ -24,14 +25,23 @@ enum Request {
     Events { handle: String, subscription: String, cursor: String },
     Unsubscribe { handle: String, subscription: String },
     Release { handle: String },
+    ReadConsent { handle: String, capability: String, path: String, allow: bool },
+    Read { handle: String, resource: String, path: String, cursor: Option<u32>, revision: Option<String> },
+    CancelRead { handle: String },
 }
 #[derive(Clone)]
 struct Invocation { id: String, version: String, owner: String, context: Value, expires: Instant }
 #[derive(Default)]
-struct Broker { handles: BTreeMap<String, Invocation>, grants: BTreeSet<(String, String, String, String)>, subscriptions: BTreeMap<String, Subscription>, journal: inventory::Journal }
+struct Broker { handles: BTreeMap<String, Invocation>, grants: BTreeSet<(String, String, String, String)>, subscriptions: BTreeMap<String, Subscription>, journal: inventory::Journal, read_grants: BTreeMap<(String, String, String, String, String), project_reads::Authority>, cancellations: CancelTokens }
 struct Subscription { handle: String, resource: String, limit: u32, offset: u64, cursor: String, sequence: u64, snapshot: Value }
-#[derive(Default)]
-pub struct ContextBroker { broker: Mutex<Broker>, busy: Arc<AtomicBool> }
+type CancelTokens = Arc<Mutex<BTreeMap<String, Arc<AtomicU64>>>>;
+pub struct ContextBroker { broker: Mutex<Broker>, busy: Arc<AtomicBool>, cancellations: CancelTokens }
+impl Default for ContextBroker {
+    fn default() -> Self {
+        let broker = Broker::default(); let cancellations = broker.cancellations.clone();
+        Self { broker: Mutex::new(broker), busy: Arc::new(AtomicBool::new(false)), cancellations }
+    }
+}
 /// Called only by the existing owned-agent lifecycle. Text/data/tool payloads never enter the stream.
 pub fn record_job(app: &tauri::AppHandle, id: &str, kind: &str, status: &str) {
     if let Ok(mut broker) = app.state::<ContextBroker>().broker.lock() {
@@ -83,6 +93,16 @@ fn owner(snapshot: &Snapshot, id: &str, version: &str, context: &Value) -> Reply
     Err("PermissionDenied")
 }
 fn project_id(context: &Value) -> &str { context["projectId"].as_str().unwrap_or("") }
+fn read_root(store: &Store, invocation: &Invocation) -> Result<String, &'static str> {
+    store.db.query_row("SELECT CASE WHEN length(path)<=4096 THEN path ELSE NULL END FROM projects WHERE id=?1", [project_id(&invocation.context)], |row| row.get::<_, Option<String>>(0))
+        .optional().map_err(|_| "HostUnavailable")?.ok_or("NotFound")?.ok_or("LimitExceeded")
+}
+fn cancel_read(tokens: &CancelTokens, handle: &str) -> Reply {
+    if handle.len() > 64 { return Err("LimitExceeded"); }
+    let tokens = tokens.try_lock().map_err(|_| "Timeout")?;
+    let token = tokens.get(handle).ok_or("StaleContext")?;
+    token.fetch_add(1, Ordering::AcqRel); Ok(Value::Null)
+}
 fn revision(store: &Store) -> Result<String, &'static str> {
     let external: i64 = store.db.query_row("PRAGMA data_version", [], |row| row.get(0)).map_err(|_| "HostUnavailable")?;
     Ok(format!("{external}:{}", store.db.total_changes()))
@@ -129,12 +149,19 @@ impl Broker {
         self.handles.retain(|_, invocation| owner.is_some_and(|owner| invocation.owner != owner));
         self.grants.retain(|(extension, _, _, _)| owner.is_some_and(|owner| extension != owner));
         self.subscriptions.retain(|_, subscription| self.handles.contains_key(&subscription.handle));
+        self.read_grants.retain(|(extension, _, _, _, _), _| owner.is_some_and(|owner| extension != owner));
+        if let Ok(mut tokens) = self.cancellations.lock() { tokens.retain(|handle, token| { let keep = self.handles.contains_key(handle); if !keep { token.fetch_add(1, Ordering::AcqRel); } keep }); }
     }
+    #[cfg(test)]
     fn execute(&mut self, label: &str, snapshot: &Snapshot, store: &Store, raw: Value, deadline: Instant) -> Reply {
+        self.execute_guarded(label, snapshot, store, raw, deadline, None)
+    }
+    fn execute_guarded(&mut self, label: &str, snapshot: &Snapshot, store: &Store, raw: Value, deadline: Instant, cancellation: Option<(Arc<AtomicU64>, u64)>) -> Reply {
         if label != "main" { return Err("PermissionDenied"); }
         if raw.to_string().len() > 8192 { return Err("LimitExceeded"); }
         let request: Request = serde_json::from_value(raw).map_err(|_| "InvalidShape")?;
         self.handles.retain(|_, invocation| invocation.expires > Instant::now());
+        if let Ok(mut tokens) = self.cancellations.lock() { tokens.retain(|handle, _| self.handles.contains_key(handle)); }
         self.subscriptions.retain(|_, subscription| self.handles.contains_key(&subscription.handle));
         if Instant::now() >= deadline { return Err("Timeout"); }
         if let Request::Capture { id, version, context } = request {
@@ -148,16 +175,44 @@ impl Broker {
             let handle = uuid::Uuid::new_v4().to_string();
             let owner = manifest["id"].as_str().ok_or("PermissionDenied")?.to_owned();
             self.handles.insert(handle.clone(), Invocation { id, version, owner: owner.clone(), context, expires: Instant::now() + LIFETIME });
+            self.cancellations.lock().map_err(|_| "HostUnavailable")?.insert(handle.clone(), Arc::new(AtomicU64::new(0)));
             return Ok(json!({"schemaVersion":1,"handle":handle,"owner":owner}));
         }
-        let handle = match &request { Request::Consent { handle, .. } | Request::Query { handle, .. } | Request::Subscribe { handle, .. } | Request::Events { handle, .. } | Request::Unsubscribe { handle, .. } | Request::Release { handle } => handle, _ => unreachable!() };
+        let handle = match &request { Request::Consent { handle, .. } | Request::Query { handle, .. } | Request::Subscribe { handle, .. } | Request::Events { handle, .. } | Request::Unsubscribe { handle, .. } | Request::ReadConsent { handle, .. } | Request::Read { handle, .. } | Request::CancelRead { handle } | Request::Release { handle } => handle, _ => unreachable!() };
         if handle.len() > 64 { return Err("LimitExceeded"); }
-        if matches!(request, Request::Release { .. }) { self.handles.remove(handle); self.subscriptions.retain(|_, subscription| &subscription.handle != handle); return Ok(Value::Null); }
+        if matches!(request, Request::Release { .. }) { self.handles.remove(handle); self.subscriptions.retain(|_, subscription| &subscription.handle != handle); self.cancellations.lock().map_err(|_| "HostUnavailable")?.remove(handle); return Ok(Value::Null); }
         let invocation = self.handles.get(handle).ok_or("StaleContext")?.clone();
         let manifest = owner(snapshot, &invocation.id, &invocation.version, &invocation.context)?;
         if manifest["id"] != invocation.owner { return Err("PermissionDenied"); }
         let key = |capability: &str| (invocation.owner.clone(), invocation.version.clone(), project_id(&invocation.context).to_owned(), capability.to_owned());
+        let read_handle = handle.clone();
         match request {
+            Request::CancelRead { .. } => {
+                cancel_read(&self.cancellations, &read_handle)
+            }
+            Request::ReadConsent { capability, path, allow, .. } => {
+                if !project_reads::CAPABILITIES.contains(&capability.as_str()) || !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == &capability)) { return Err("PermissionDenied"); }
+                project_reads::resource_path(&path, capability == "projects.git.read")?;
+                let key = (invocation.owner.clone(), invocation.version.clone(), project_id(&invocation.context).to_owned(), capability, path);
+                if allow {
+                    if self.read_grants.len() >= MAX_GRANTS && !self.read_grants.contains_key(&key) { return Err("LimitExceeded"); }
+                    let root = read_root(store, &invocation)?;
+                    self.read_grants.insert(key, project_reads::Authority::grant(std::path::Path::new(&root))?);
+                } else { self.read_grants.remove(&key); }
+                Ok(Value::Null)
+            }
+            Request::Read { resource, path, cursor, revision, .. } => {
+                let capability = match resource.as_str() { "metadata" => "projects.files.metadata", "file" => "projects.files.read", "git" => "projects.git.read", _ => return Err("UnsupportedCapability") };
+                if !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == capability)) { return Err("PermissionDenied"); }
+                let key = (invocation.owner.clone(), invocation.version.clone(), project_id(&invocation.context).to_owned(), capability.to_owned(), path.clone());
+                let authority = self.read_grants.get(&key).ok_or("PermissionDenied")?;
+                let root = read_root(store, &invocation)?;
+                let token = self.cancellations.lock().map_err(|_| "HostUnavailable")?.get(&read_handle).cloned().ok_or("StaleContext")?;
+                let (token, generation) = cancellation.unwrap_or_else(|| { let generation = token.load(Ordering::Acquire); (token, generation) });
+                let result = project_reads::query(authority, std::path::Path::new(&root), &resource, &path, (cursor.unwrap_or(0), revision.as_deref()), deadline, || token.load(Ordering::Acquire) != generation)?;
+                if read_root(store, &invocation)? != root { return Err("StaleContext"); }
+                Ok(result)
+            }
             Request::Consent { capability, allow, .. } => {
                 if !["projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary"].contains(&capability.as_str()) || !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == &capability)) { return Err("PermissionDenied"); }
                 if allow {
@@ -224,6 +279,20 @@ impl Broker {
 pub async fn extensions_context(window: tauri::WebviewWindow, app: tauri::AppHandle, request: Value) -> Value {
     if window.label() != "main" { return failure("PermissionDenied"); }
     let state = app.state::<ContextBroker>();
+    // Cancellation bypasses the single-worker admission and all database/package locks. The opaque
+    // captured handle is main-window-bound; cancellation never grants data or controls a core job.
+    if request["op"] == "cancelRead" {
+        return envelope((|| {
+            let Request::CancelRead { handle } = serde_json::from_value(request).map_err(|_| "InvalidShape")? else { return Err("InvalidShape"); };
+            cancel_read(&state.cancellations, &handle)
+        })());
+    }
+    let cancellation = if request["op"] == "read" {
+        let Some(handle) = request["handle"].as_str() else { return failure("InvalidShape"); };
+        let Ok(tokens) = state.cancellations.try_lock() else { return failure("Timeout"); };
+        let Some(token) = tokens.get(handle).cloned() else { return failure("StaleContext"); };
+        let generation = token.load(Ordering::Acquire); Some((token, generation))
+    } else { None };
     if state.busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return failure("Timeout"); }
     struct Permit(Arc<AtomicBool>);
     impl Drop for Permit { fn drop(&mut self) { self.0.store(false, Ordering::Release); } }
@@ -231,6 +300,7 @@ pub async fn extensions_context(window: tauri::WebviewWindow, app: tauri::AppHan
     let deadline = Instant::now() + DEADLINE;
     let work = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
+        let delivery = cancellation.clone();
         let result = (|| {
             let packages = app.state::<ExtensionPackages>();
             let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
@@ -239,9 +309,10 @@ pub async fn extensions_context(window: tauri::WebviewWindow, app: tauri::AppHan
             let store = state.store.try_lock().map_err(|_| "Timeout")?;
             let broker = app.state::<ContextBroker>();
             let mut broker = broker.broker.try_lock().map_err(|_| "Timeout")?;
-            broker.execute("main", &snapshot, &store, request, deadline)
+            broker.execute_guarded("main", &snapshot, &store, request, deadline, cancellation)
         })();
-        if Instant::now() >= deadline { failure("Timeout") } else { envelope(result) }
+        if delivery.is_some_and(|(token, generation)| token.load(Ordering::Acquire) != generation) { failure("Cancelled") }
+        else if Instant::now() >= deadline { failure("Timeout") } else { envelope(result) }
     });
     bounded_reply(DEADLINE, work).await
 }
@@ -274,6 +345,52 @@ mod tests {
         assert_eq!(call(broker, snapshot, store, json!({"op":"consent","handle":handle,"capability":capability,"allow":allow}))["ok"], true);
     }
     fn query(handle: &str, resource: &str) -> Value { json!({"op":"query","handle":handle,"resource":resource,"limit":1}) }
+    #[test]
+    fn read_cancel_endpoint_does_not_wait_for_the_busy_broker_or_admit_another_worker() {
+        let state = ContextBroker::default(); let token = Arc::new(AtomicU64::new(0));
+        state.cancellations.lock().unwrap().insert("opaque".into(), token.clone());
+        let _busy_broker = state.broker.lock().unwrap(); state.busy.store(true, Ordering::Release);
+        assert_eq!(cancel_read(&state.cancellations, "opaque").unwrap(), Value::Null);
+        assert_eq!(token.load(Ordering::Acquire), 1); assert!(state.busy.load(Ordering::Acquire));
+        assert_eq!(cancel_read(&state.cancellations, "other").unwrap_err(), "StaleContext");
+    }
+    #[test]
+    fn project_reads_require_declared_exact_resource_consent_captured_project_and_cancel_generation() {
+        let (mut broker, _, store) = fixture();
+        let root = std::env::temp_dir().join(format!("panda-broker-reads-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap(); std::fs::write(root.join("readme.txt"), "A authorized").unwrap();
+        store.db.execute("UPDATE projects SET path=?1 WHERE id='A'", [root.to_str().unwrap()]).unwrap();
+        let manifest = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/project-reads/extension.json")).unwrap();
+        let mut snapshot = super::super::packages::context_test_snapshot(manifest);
+        let context = |project: &str| json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","revision":1,"projectId":project});
+        let mut capture = |project: &str| call(&mut broker, &snapshot, &store, json!({"op":"capture","id":"sample.project-reads/header","version":"1.0.0","context":context(project)}))["value"]["handle"].as_str().unwrap().to_owned();
+        let a = capture("A"); let b = capture("B");
+        let read = |handle: &str, resource: &str, path: &str| json!({"op":"read","handle":handle,"resource":resource,"path":path});
+        consent(&mut broker, &snapshot, &store, &a, "projects.summary", true);
+        assert_eq!(call(&mut broker, &snapshot, &store, read(&a, "file", "readme.txt"))["error"]["code"], "PermissionDenied");
+        let grant = |capability: &str, path: &str, allow: bool| json!({"op":"readConsent","handle":a,"capability":capability,"path":path,"allow":allow});
+        assert_eq!(call(&mut broker, &snapshot, &store, grant("projects.files.metadata", "readme.txt", true))["ok"], true);
+        assert_eq!(call(&mut broker, &snapshot, &store, read(&a, "metadata", "readme.txt"))["value"]["items"][0]["bytes"], 12);
+        assert_eq!(call(&mut broker, &snapshot, &store, read(&a, "file", "readme.txt"))["error"]["code"], "PermissionDenied");
+        assert_eq!(call(&mut broker, &snapshot, &store, grant("projects.files.read", "readme.txt", true))["ok"], true);
+        assert_eq!(call(&mut broker, &snapshot, &store, read(&a, "file", "readme.txt"))["value"]["content"], "A authorized");
+        assert_eq!(broker.execute("tray", &snapshot, &store, read(&a, "file", "readme.txt"), Instant::now() + DEADLINE).unwrap_err(), "PermissionDenied");
+        let mut forged = read(&a, "file", "readme.txt"); forged["projectId"] = json!("B");
+        assert_eq!(call(&mut broker, &snapshot, &store, forged)["error"]["code"], "InvalidShape");
+        assert_eq!(call(&mut broker, &snapshot, &store, json!({"op":"write","handle":a,"path":"readme.txt","content":"mutation"}))["error"]["code"], "InvalidShape");
+        for request in [read(&b, "file", "readme.txt"), read(&a, "file", "other.txt"), read(&a, "git", ".")] { assert_eq!(call(&mut broker, &snapshot, &store, request)["error"]["code"], "PermissionDenied"); }
+        let token = broker.cancellations.lock().unwrap()[&a].clone(); let generation = token.load(Ordering::Acquire);
+        assert_eq!(call(&mut broker, &snapshot, &store, json!({"op":"cancelRead","handle":a}))["ok"], true);
+        assert_eq!(broker.execute_guarded("main", &snapshot, &store, read(&a, "file", "readme.txt"), Instant::now() + DEADLINE, Some((token, generation))).unwrap_err(), "Cancelled");
+        // Cancellation is per request generation, not a permanent revocation or a core task stop.
+        assert_eq!(call(&mut broker, &snapshot, &store, read(&a, "file", "readme.txt"))["ok"], true);
+        call(&mut broker, &snapshot, &store, grant("projects.files.read", "readme.txt", false));
+        assert_eq!(call(&mut broker, &snapshot, &store, read(&a, "file", "readme.txt"))["error"]["code"], "PermissionDenied");
+        snapshot.packages[0].manifest["permissions"] = json!(["ui.contribute", "projects.summary"]);
+        assert_eq!(call(&mut broker, &snapshot, &store, grant("projects.files.read", "readme.txt", true))["error"]["code"], "PermissionDenied");
+        broker.invalidate(None); assert!(broker.read_grants.is_empty()); assert!(broker.cancellations.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn inventory_stream_snapshot_cursor_scope_terminal_gap_reconnect_and_disposal() {
         let (mut broker, snapshot, store) = fixture();

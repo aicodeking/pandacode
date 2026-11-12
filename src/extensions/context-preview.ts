@@ -3,11 +3,13 @@ import { validateContract, type Json } from './contracts.ts';
 import { createDeclarativeActivation } from './activation.ts';
 import { contextFailure, type ContextReply, type SummaryPage } from './context-state.ts';
 import type { ExtensionSnapshot } from './manager.ts';
+import { readCapability, readPath, previewProjectRead, type ProjectReadData } from './project-reads-preview.ts';
 import { capabilityFor, createInventoryJournal, inventoryItems, type InventoryData } from './context-inventory.ts';
-type Data = InventoryData & { projects: { id: string; name: string }[]; tasks: { id: string; projectId: string; status: string; draft?: boolean }[] };
+type Data = InventoryData & ProjectReadData & { projects: { id: string; name: string; path?: string }[]; tasks: { id: string; projectId: string; status: string; draft?: boolean }[] };
 type Invocation = { id: string; version: string; context: Record<string, Json>; owner: string; expires: number };
 export function createPreviewContextBroker() {
   const handles = new Map<string, Invocation>(), grants = new Set<string>();
+  const readGrants = new Map<string, string>();
   const journal = createInventoryJournal();
   const subscriptions = new Map<string, { handle: string; resource: string; limit: number; cursor: string; offset: number; sequence: number; snapshot: SummaryPage }>();
   const grantKey = (invocation: Invocation, capability: string) => JSON.stringify([invocation.owner, invocation.version, invocation.context.projectId ?? '', capability]);
@@ -24,7 +26,7 @@ export function createPreviewContextBroker() {
     const fail = contextFailure;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('InvalidShape');
     if (new TextEncoder().encode(JSON.stringify(raw)).length > 8192) return fail('LimitExceeded');
-    const shapes: Record<string, string[]> = { capture: ['op', 'id', 'version', 'context'], consent: ['op', 'handle', 'capability', 'allow'], query: ['op', 'handle', 'resource', 'limit', 'cursor', 'revision'], subscribe: ['op', 'handle', 'resource', 'limit'], events: ['op', 'handle', 'subscription', 'cursor'], unsubscribe: ['op', 'handle', 'subscription'], release: ['op', 'handle'] };
+    const shapes: Record<string, string[]> = { capture: ['op', 'id', 'version', 'context'], consent: ['op', 'handle', 'capability', 'allow'], query: ['op', 'handle', 'resource', 'limit', 'cursor', 'revision'], subscribe: ['op', 'handle', 'resource', 'limit'], events: ['op', 'handle', 'subscription', 'cursor'], unsubscribe: ['op', 'handle', 'subscription'], release: ['op', 'handle'], read: ['op', 'handle', 'resource', 'path', 'cursor', 'revision'], readConsent: ['op', 'handle', 'capability', 'path', 'allow'], cancelRead: ['op', 'handle'] };
     if (!shapes[String(raw.op)] || Object.keys(raw).some(key => !shapes[String(raw.op)].includes(key))) return fail('InvalidShape');
     for (const [key, invocation] of handles) if (invocation.expires <= Date.now()) handles.delete(key);
     for (const [key, subscription] of subscriptions) if (!handles.has(subscription.handle)) subscriptions.delete(key);
@@ -50,6 +52,23 @@ export function createPreviewContextBroker() {
       if (!invocation) return fail('StaleContext');
       if (resolve(snapshot, invocation.id, invocation.version, invocation.context) !== invocation.owner) return fail('PermissionDenied');
       const manifest = snapshot.packages.find(item => item.manifest.id === invocation.owner)!.manifest as typeof snapshot.packages[number]['manifest'] & { permissions: string[] };
+      if (raw.op === 'cancelRead') return { ok: true, value: null };
+      if (raw.op === 'readConsent' || raw.op === 'read') {
+        const capability = raw.op === 'readConsent' ? raw.capability : readCapability(raw.resource);
+        if (typeof capability !== 'string' || !['projects.files.metadata', 'projects.files.read', 'projects.git.read'].includes(capability) || !manifest.permissions.includes(capability)) return fail('PermissionDenied');
+        const error = readPath(raw.path, capability === 'projects.git.read'); if (error) return fail(error);
+        const key = JSON.stringify([invocation.owner, invocation.version, invocation.context.projectId ?? '', capability, raw.path]);
+        const project = data.projects.find(project => project.id === invocation.context.projectId);
+        if (raw.op === 'readConsent') {
+          if (typeof raw.allow !== 'boolean') return fail('InvalidShape');
+          if (raw.allow) { if (!project) return fail('NotFound'); if (readGrants.size >= 256 && !readGrants.has(key)) return fail('LimitExceeded'); readGrants.set(key, project.path ?? project.id); } else readGrants.delete(key);
+          return { ok: true, value: null };
+        }
+        if (!readGrants.has(key)) return fail('PermissionDenied');
+        if (!project) return fail('NotFound');
+        if (readGrants.get(key) !== (project.path ?? project.id)) return fail('StaleContext');
+        return previewProjectRead(data, project.id, String(raw.resource), String(raw.path), raw.cursor, raw.revision);
+      }
       const stream = typeof raw.subscription === 'string' ? subscriptions.get(raw.subscription) : undefined;
       if (raw.op === 'events' || raw.op === 'unsubscribe') {
         if (typeof raw.subscription !== 'string' || raw.subscription.length > 64) return fail('LimitExceeded');
@@ -119,6 +138,7 @@ export function createPreviewContextBroker() {
   return Object.assign(dispatch, { record: journal.record, subscriptionCount: () => subscriptions.size, invalidate(owner?: string) {
     for (const [key, invocation] of handles) if (owner === undefined || invocation.owner === owner) handles.delete(key);
     for (const key of grants) if (owner === undefined || JSON.parse(key)[0] === owner) grants.delete(key);
+    for (const key of readGrants.keys()) if (owner === undefined || JSON.parse(key)[0] === owner) readGrants.delete(key);
     for (const [id, stream] of subscriptions) if (!handles.has(stream.handle)) subscriptions.delete(id);
   } });
 }

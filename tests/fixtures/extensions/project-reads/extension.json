@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.project-reads",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "projects.summary", "projects.files.metadata", "projects.files.read", "projects.git.read"],
+  "contributes": {
+    "commands": [{ "id": "sample.project-reads/inspect", "title": "Project reads", "action": { "kind": "showProjectContext" } }],
+    "menus": [{ "id": "sample.project-reads/header", "location": "panda.workspace.header.actions", "command": "sample.project-reads/inspect", "presentation": "button", "text": "Project reads" }]
+  }
+}
