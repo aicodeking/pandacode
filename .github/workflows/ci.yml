@@ -75,11 +75,13 @@ jobs:
         env:
           PANDACODE_REQUIRE_REAL_MIC: '1'
         shell: bash
-        # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run;
+        # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run,
+        # and require the jack/oss fallback line, which the test skips silently if jack is missing.
         # `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
         run: |
           cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/real-audio.log"
           grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/real-audio.log"
+          grep -q 'fell back to the default input' "$RUNNER_TEMP/real-audio.log"
 
   router:
     # x86_64 Linux builds without ONNX Runtime (see `panda_onnx` in src-tauri/build.rs), so Panda Router's
@@ -141,7 +143,7 @@ jobs:
           # Linux arm64 pinned to plain ARMv8-A, never the runner's CPU.
           - { os: ubuntu-24.04-arm, target: linux-aarch64, transcribe_cmake: '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a' }
     runs-on: ${{ matrix.os }}
-    # Clippy plus the up-to-55-minute release smoke on the rows that run it.
+    # Clippy plus the up-to-75-minute release smoke on the rows that run it.
     timeout-minutes: 120
     env:
       TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
@@ -182,15 +184,17 @@ jobs:
       # the smoke lists devices, opens the default if one exists, and passes without one.
       - name: Real audio smoke (release profile)
         if: runner.os == 'macOS' || matrix.target == 'windows-x86_64' || matrix.target == 'linux-aarch64'
-        # The release build alone took ~34 min on darwin-x86_64.
-        timeout-minutes: 55
+        # The release build alone took ~34 min on darwin-x86_64, and the whole step up to 43 min.
+        timeout-minutes: 75
         # macOS runners have virtual inputs (Null Audio Device, Apple Virtual Sound Device) and Linux
         # has the null default above, so a runner with no input must fail instead of passing.
         env:
           PANDACODE_REQUIRE_REAL_MIC: ${{ runner.os != 'Windows' && '1' || '' }}
         shell: bash
         # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run;
-        # `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
+        # on Linux also require the jack/oss fallback line, which the test skips silently if jack is
+        # missing. `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
         run: |
           cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/real-audio.log"
           grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/real-audio.log"
+          if [ "$RUNNER_OS" = Linux ]; then grep -q 'fell back to the default input' "$RUNNER_TEMP/real-audio.log"; fi

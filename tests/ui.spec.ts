@@ -314,7 +314,8 @@ async function installHistoryFixture(page: Page, total: number, formatted = fals
   });
   await page.reload();
   await chooseProjectFilter(page, 'pandacode');
-  await expect(page.locator('#transcript .message-content')).toHaveCount(Math.min(total, 100));
+  // A long thread draws a window of its newest turns, not the whole page.
+  await expect(page.locator(`#transcript [data-message-id="${500 + (total - 1) * 3}"]`)).toHaveCount(1);
   await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
 }
 const olderRequests = (page: Page) => page.evaluate(() => (window as any).__historyFixture.calls.filter((call: any) => call.beforeId));
@@ -324,6 +325,19 @@ const scrollHistoryTop = (page: Page) => page.locator('#transcript').evaluate(el
   element.scrollTop = 0;
   element.dispatchEvent(new Event('scroll'));
 });
+/** Scrolls up a step at a time until history message `index` (from 0) is drawn; checked in the task that scrolls, so a drawn page never asks for the next. */
+async function drawHistory(page: Page, index: number): Promise<void> {
+  const id = String(500 + index * 3);
+  await expect(async () => {
+    const drawn = await page.locator('#transcript').evaluate((element, wanted) => {
+      if (element.querySelector(`[data-message-id="${wanted}"]`)) return true;
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event('scroll'));
+      return false;
+    }, id);
+    expect(drawn).toBe(true);
+  }).toPass({ timeout: 15_000, intervals: [50] });
+}
 
 for (const total of [100, 101, 251]) {
   test(`automatically prepends a ${total}-message conversation without history buttons`, async ({ page }) => {
@@ -333,18 +347,21 @@ for (const total of [100, 101, 251]) {
     expect(await olderRequests(page)).toHaveLength(0);
     do {
       const previous = loaded;
+      // Held from before the top is reached: the scroll that gets there may already ask for the next page.
+      await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+      await drawHistory(page, total - loaded);
       const first = page.locator('#transcript [data-message-id]').first();
       const anchorId = await first.getAttribute('data-message-id');
       // Capture the first visible message after the user's upward scroll, before IPC resolves.
-      await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
       await scrollHistoryTop(page);
       const anchorY = await historyOffset(first);
       if (loaded < total) {
         await expect.poll(async () => (await olderRequests(page)).length).toBe(Math.ceil(previous / 100));
-        await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+        await page.evaluate(() => (window as any).__historyFixture.release());
         loaded = Math.min(total, loaded + 100);
-        await expect(content).toHaveCount(loaded);
+        await expect.poll(() => content.count()).toBeGreaterThan(previous);
         await expect.poll(async () => Math.abs(await historyOffset(page.locator(`#transcript [data-message-id="${anchorId}"]`)) - anchorY)).toBeLessThan(2);
+        await drawHistory(page, total - loaded);
       }
       await expect(content).toHaveText(Array.from({ length: loaded }, (_, index) => `History message ${total - loaded + index + 1}`));
     } while (loaded < total);
@@ -365,23 +382,28 @@ for (const total of [100, 101, 251]) {
 test('retains existing formatted response nodes when earlier history is prepended', async ({ page }) => {
   await installHistoryFixture(page, 251, true);
   const response = page.locator('#transcript [data-message-id="953"] .message-content');
+  await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+  await drawHistory(page, 151);
   await expect(response.locator('pre code')).toContainText('const retained = true;');
   const originalResponse = await response.elementHandle();
-  await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
   await scrollHistoryTop(page);
   await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
   const readingY = await historyOffset(response);
-  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await page.evaluate(() => (window as any).__historyFixture.release());
+  await expect.poll(() => page.locator('#transcript .message-content').count()).toBeGreaterThan(100);
+  await expect.poll(async () => Math.abs(await historyOffset(response) - readingY)).toBeLessThan(2);
+  await drawHistory(page, 51);
   await expect(page.locator('#transcript .message-content')).toHaveCount(200);
   expect(await originalResponse!.evaluate(node => node === document.querySelector('#transcript [data-message-id="953"] .message-content'))).toBe(true);
   await expect(page.locator('#transcript .message-content pre code')).toHaveCount(100);
-  await expect.poll(async () => Math.abs(await historyOffset(response) - readingY)).toBeLessThan(2);
   await expect(response.locator('pre code')).toContainText('const retained = true;');
 });
 
 test('deduplicates pending history loads and ignores pages from a previously selected thread', async ({ page }) => {
+  // Three pages, so the second lands with the third still to come: the partly loaded thread draws 52–251.
   await installHistoryFixture(page, 251);
   await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+  await drawHistory(page, 151);
   await scrollHistoryTop(page);
   await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
   await scrollHistoryTop(page);
@@ -391,15 +413,31 @@ test('deduplicates pending history loads and ignores pages from a previously sel
   await chooseProjectFilter(page, 'orbit');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await expect(page.locator('#transcript .markdown pre code')).toContainText('createSearchIndex');
-  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await page.evaluate(() => (window as any).__historyFixture.release());
   await expect(page.locator('#transcript')).not.toContainText('History message');
   await chooseProjectFilter(page, 'pandacode');
-  await expect(page.locator('#transcript .message-content')).toHaveCount(100);
+  // The page from the other thread was dropped, so this one is asked for again. Still held for the page after it.
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.release = undefined; });
+  await drawHistory(page, 151);
   await scrollHistoryTop(page);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__historyFixture.release)).toBe('function');
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; const go = fixture.release; fixture.release = undefined; go(); });
+  // Drawing to the top of the second page asks for the third, which stays held: the thread is partly loaded.
+  await drawHistory(page, 51);
   await expect(page.locator('#transcript .message-content')).toHaveCount(200);
   await expect(page.locator('#transcript .message-content').first()).toHaveText('History message 52');
   await expect(page.locator('#transcript .message-content').last()).toHaveText('History message 251');
-  expect(await olderRequests(page)).toHaveLength(2);
+  // The dropped page and its retry asked for the same messages, then the third page once: nothing else was asked for.
+  const asked = (await olderRequests(page)).map((call: { beforeId: number }) => call.beforeId);
+  expect(asked).toHaveLength(3);
+  expect(asked[1]).toBe(asked[0]);
+  expect(asked[2]).not.toBe(asked[1]);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__historyFixture.release)).toBe('function');
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await drawHistory(page, 0);
+  await expect(page.locator('#transcript .message-content')).toHaveCount(251);
+  await expect(page.locator('#transcript .message-content').first()).toHaveText('History message 1');
+  expect(await olderRequests(page)).toHaveLength(3);
 });
 
 for (const view of ['conversation', 'board'] as const) {
@@ -409,13 +447,27 @@ for (const view of ['conversation', 'board'] as const) {
       await showView(page, 'Board');
       await page.getByRole('button', { name: 'Open task: Explore the project', exact: true }).click();
     }
+    // The loaded page drawn, then the older one fetched: it lands above the reader, who still reads where they were.
+    // Held, since drawing the last loaded turn already brings the reader within reach of the top and asks for it.
+    await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+    await drawHistory(page, 51);
+    const anchor = page.locator('#transcript [data-message-id="653"]');
     await scrollHistoryTop(page);
+    await expect(anchor).toBeInViewport();
+    await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
+    const heldY = await historyOffset(anchor);
+    await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+    await expect(page.locator('#transcript [data-message-id="650"]')).toHaveCount(1);
+    await expect.poll(async () => Math.abs(await historyOffset(anchor) - heldY)).toBeLessThan(2);
+    await expect(anchor).toBeInViewport();
+    await drawHistory(page, 0);
     await expect(page.locator('#transcript .message-content')).toHaveCount(151);
     await page.evaluate(() => {
       const fixture = (window as any).__historyFixture;
       fixture.emit({ sessionId: 'session-4', kind: 'status', text: 'Starting agent' });
     });
-    const anchor = page.locator('#transcript [data-message-id="653"]');
+    // Drawing the rest went on to the top; the reader goes back to the same message for the streaming check.
+    await anchor.evaluate(node => node.scrollIntoView({ block: 'center' }));
     await expect(anchor).toBeInViewport();
     const readingY = await historyOffset(anchor);
     await page.evaluate(() => (window as any).__historyFixture.emit({ sessionId: 'session-4', kind: 'text', text: 'A live reply' }));
@@ -426,6 +478,7 @@ for (const view of ['conversation', 'board'] as const) {
     await page.evaluate(() => (window as any).__historyFixture.emit({ sessionId: 'session-4', kind: 'text', text: ' continues smoothly.' }));
     await expect(page.locator('#stream-region .live-text')).toHaveText('A live reply continues smoothly.');
     await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
+    await drawHistory(page, 0);
     await scrollHistoryTop(page);
     const first = page.locator('#transcript [data-message-id="500"]');
     const firstY = await historyOffset(first);
@@ -444,7 +497,7 @@ for (const view of ['conversation', 'board'] as const) {
 
 test('retains loaded history when a completed tool-heavy turn spans multiple pages', async ({ page }) => {
   await installHistoryFixture(page, 151);
-  await scrollHistoryTop(page);
+  await drawHistory(page, 0);
   await expect(page.locator('#transcript .user-message')).toHaveCount(151);
   await page.evaluate(() => {
     const fixture = (window as any).__historyFixture;
@@ -3440,7 +3493,8 @@ test('⌘F finds text in the thread, in your messages and the agent’s, and ste
   // Matches come from both sides of the conversation, highlighted without touching the DOM.
   const owners = await page.evaluate(() => {
     const all = (CSS as any).highlights.get('thread-find');
-    return [...all].map((range: Range) => range.startContainer.parentElement!.closest('.message')!.classList.contains('user-message') ? 'user' : 'agent');
+    // A tool's details are searched too; those matches belong to neither side.
+    return [...all].map((range: Range) => { const owner = range.startContainer.parentElement!.closest('.message, .tool-activity-body')!; return owner.classList.contains('tool-activity-body') ? 'tool' : owner.classList.contains('user-message') ? 'user' : 'agent'; });
   });
   expect(owners).toContain('user'); expect(owners).toContain('agent');
   expect(await page.evaluate(() => (CSS as any).highlights.get('thread-find-current').size)).toBe(1);

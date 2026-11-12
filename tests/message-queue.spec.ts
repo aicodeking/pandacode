@@ -19,6 +19,11 @@ test.beforeEach(async ({ page }) => {
       if (command === 'send_message' && window.__holdAgent) { session(args.sessionId).status = 'running'; return; }
       if (command === 'steer_task' && window.__rejectSteer) throw new Error('No live run to steer.');
       if (command === 'queue_add' && window.__slowQueue) await new Promise(resolve => setTimeout(resolve, 300));
+      if (command === 'get_task' && args.sessionId === window.__holdDetails) {
+        window.__holdDetails = undefined;
+        const snapshot = structuredClone(session(args.sessionId));
+        return await new Promise(resolve => { window.__releaseDetails = () => resolve(snapshot); });
+      }
       switch (command) {`);
     await route.fulfill({ response, body: body + '\nwindow.__queueEmit = emit; window.__queueSession = session; window.__queueInvoke = invoke;\n' });
   });
@@ -106,6 +111,25 @@ test('a follow-up queued by an agent for an idle task is sent right away', async
     (window as any).__queueEmit('queue-changed', { sessionId: 'session-2' });
   });
   await expect.poll(async () => (await calls(page, 'send_message')).map(c => [c.args.sessionId, c.args.text])).toEqual([['session-2', 'Queued by the architect']]);
+});
+
+test('a queued message waiting on a thread load that a switch left still goes once its details land', async ({ page }) => {
+  // session-2's details are held, so its first load is still waiting for them when a follow-up is queued for it.
+  await page.evaluate(() => { (window as any).__holdDetails = 'session-2'; });
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseDetails)).toBe('function');
+  await page.evaluate(async () => {
+    await (window as any).__queueInvoke('queue_add', { sessionId: 'session-2', text: 'Queued while loading', attachments: [] });
+    (window as any).__queueEmit('queue-changed', { sessionId: 'session-2' });
+  });
+  await expect(rows(page).locator('.queue-text')).toHaveText(['Queued while loading']);
+  // Nothing goes while the load that knows the team is pending; then the reader moves on before it lands.
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(page.locator('.task-item[data-id="session-1"]')).toHaveAttribute('aria-current', 'page');
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+  await page.evaluate(() => (window as any).__releaseDetails());
+  await expect.poll(async () => (await calls(page, 'send_message')).map(c => [c.args.sessionId, c.args.text])).toEqual([['session-2', 'Queued while loading']]);
 });
 
 test('Send now delivers a held entry right away and keeps the rest held', async ({ page }) => {
