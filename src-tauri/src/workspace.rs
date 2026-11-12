@@ -580,7 +580,7 @@ pub fn refuse_untrusted_programs_for(root: &Path, trust: Trust, action: &str) ->
 /// Refuse a phone's commit, push, merge or worktree while hooks are skipped when the checkout
 /// has submodules (`.gitmodules`, or a `modules` folder in its Git directory): each carries
 /// its own config, which the top-level allowlist cannot vouch for.
-#[allow(dead_code)] // kept for tests (some Unix-only); callers use the *_for variants
+#[cfg_attr(any(not(test), not(unix)), allow(dead_code))] // only a Unix test calls it; callers use the *_for variants
 pub fn refuse_submodules(root: &Path) -> Result<(), String> {
     refuse_submodules_for(root, "change it")
 }
