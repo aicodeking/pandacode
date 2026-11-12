@@ -11,7 +11,7 @@ Rules an agent needs before writing any code. Detailed subsystem notes are in [d
 - `npx tsc --noEmit` — typecheck (also runs inside `npm run build`).
 - `npm test` — Node unit tests (`tests/*.test.mjs`).
 - `npm run test:release` — release script tests (`scripts/release/*.test.mjs`).
-- `npx playwright test` — browser suite against the Vite preview (`npm run dev` on 127.0.0.1:1420 is started/reused automatically; needs Google Chrome at `/Applications/Google Chrome.app`). A server already on the port is reused even if it serves another checkout, so in a second worktree set `PW_PORT=<free port>`. Full run ≈ 3.5 min at the default 4 workers (`PW_WORKERS=N` overrides); pass file paths or `-g "title"` for a subset.
+- `npx playwright test` — browser suite against the Vite preview (`npm run dev` on 127.0.0.1:1420 is started/reused automatically; needs Google Chrome at `/Applications/Google Chrome.app`). Use a verified free `PW_PORT`; browser suites are serialized per checkout before artifact cleanup. `PW_PROD=1` reuses one source-fingerprinted production build across engines/ports. Reports default to replaceable `playwright-report/latest/{chromium,webkit}`; explicitly retain important evidence with `PW_REPORT_DIR=playwright-report/archive/<issue-id>`. Old per-port artifacts require approved cleanup, never blanket retention or deletion. Full run ≈ 3.5 min at the default 4 workers (`PW_WORKERS=N` overrides); pass file paths or `-g "title"` for a subset. Details: [CONTRIBUTING.md](CONTRIBUTING.md#checks).
 - `npx playwright test -c playwright.webkit.config.ts` — the same suite in WebKit (the real target is WKWebView).
 
 ## UI conventions

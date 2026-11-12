@@ -75,6 +75,27 @@ The full browser suite takes several minutes; pass file paths or `-g "title"`
 for a subset. Ordinary tests never call paid models. Live provider tests are
 `#[ignore]`d and opt-in.
 
+Browser suites are **serialized per checkout**, including Chromium and WebKit. The
+configuration acquires a process lease before Playwright clears its output; a
+second suite fails immediately instead of overwriting an active build or report.
+`--list` is read-only. `PW_PORT` selects a free server port, not an artifact folder.
+
+With `PW_PROD=1`, tests reuse one production build in
+`node_modules/.cache/pandacode-browser-tests/production/`. Source, public assets,
+shared mobile modules, configuration, lockfile and build-environment changes
+invalidate it. Failed/interrupted builds are not reusable. An unchanged build is
+shared by subsequent Chromium and WebKit runs; changing ports does not copy it.
+
+Default results are replaceable, engine-specific `playwright-report/latest/chromium/`
+and `playwright-report/latest/webkit/` directories. Important failure/baseline
+evidence must be retained deliberately: set, for example,
+`PW_REPORT_DIR=playwright-report/archive/issue-id` before that run. Only dedicated
+subdirectories of `playwright-report/archive/` are accepted. Historical `port-*`
+reports and old `pandacode-perf-*` builds are not automatically removed: inventory
+them and obtain approval before cleanup. Do not treat every generated build as
+permanent reproduction evidence or launch another full suite without examining
+the preceding result.
+
 When a change alters how the app looks, refresh the README screenshots with
 `npm run screenshots` (needs `cwebp`, e.g. `brew install webp`). It captures the
 browser preview with the sample data in `scripts/screenshots/showcase.js` and

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Import conversations', exact: true });
 const row = (page: Page, title: string) => dialog(page).locator('.import-row', { hasText: title });

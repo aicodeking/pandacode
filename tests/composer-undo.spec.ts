@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
 const undoKey = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 // The inspector's slim tab strip: open views as tabs, a "+" menu for the rest,
 // closable tabs, and the open list and selection kept across reloads.

@@ -10,8 +10,10 @@ macOS) remains available even when Settings and the sidebar are hidden.
 
 **Reset project layout** clears only the current project's overlay. **Reset global layout** clears
 only the global overlay (including its extension-layout preference), not project choices.
-**Disable extension layouts** retains all user visibility choices and prevents future layout
-proposals; proposal activation/ordering is not delivered in this slice. These are host recovery
+**Disable extension layouts** retains user visibility and order choices while suppressing selected
+extension layout proposals. Proposal selection and same-owner sibling ordering are delivered in M2;
+see [Selecting and reordering layouts](contracts.md#selecting-and-reordering-layouts-m2-experimental).
+These are host recovery
 controls, outside customizable action slots. Safe mode ignores visibility overrides without erasing them.
 
 Overlays live in separate versioned local-storage records, not core settings or project storage.
@@ -44,8 +46,9 @@ made public by its proximity to the header. Only buttons can currently be contri
 Existing menu triggers are discoverable built-ins, not new contribution kinds.
 
 `inspect` means metadata, `contribute` means the implemented declarative button adapter,
-and `invoke` means an explicitly public core UI command. Hide/order/move/replace are not
-advertised before those adapters exist. Visibility is not authorization.
+and `invoke` means an explicitly public core UI command. Adopted items advertise `hide`, `show`
+and `reorder` for the delivered presentation adapters. Ordering stays within compatible same-owner
+sibling groups; cross-container movement and replacement are not delivered. Visibility is not authorization.
 
 ## Queries and unavailable locations
 

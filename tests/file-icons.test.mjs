@@ -41,8 +41,16 @@ test('README files take their extension icon, never the info circle that reads a
 });
 
 test('development resolves file icons without eagerly importing the entire asset library', async () => {
-  const server = await createServer({ server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true, include: [] } });
+  // noDiscovery is not part of Vite's optimizer hash. A partial unit-test graph
+  // must never be accepted as the application's complete dependency cache.
+  const cacheDir = fileURLToPath(new URL('../node_modules/.cache/pandacode-file-icons-test', import.meta.url)).replaceAll('\\', '/');
+  const server = await createServer({ cacheDir, server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true, include: [] } });
   try {
+    assert.equal(server.config.cacheDir, cacheDir, 'the unit server must not overwrite the app dependency optimizer cache');
+    assert.ok(server.config.server.watch.ignored.includes('**/.zvec-grep/**'), 'development must not watch the externally locked workspace index');
+    for (const directory of ['playwright-report', 'test-results', '_work']) {
+      assert.ok(server.config.server.watch.ignored.includes(`**/${directory}/**`), `development must not watch generated ${directory} artifacts`);
+    }
     const transformed = await server.transformRequest('/src/file-icons.ts');
     assert.ok(transformed);
     assert.match(transformed.code, /new URL\(\s*\/\* @vite-ignore \*\//);

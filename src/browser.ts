@@ -44,6 +44,10 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   <div class="browser-notice" role="status" hidden></div><div class="browser-viewport"><section class="browser-home"><div class="browser-home-heading"><h2>Local servers</h2>${tool('refresh-ports', 'Refresh local servers', 'refresh')}</div><div class="browser-servers" aria-label="Local servers"></div><p class="browser-home-hint">Open a server, or enter any website above.</p></section><div class="browser-guest-placeholder" hidden></div></div>`;
   const query = <T extends HTMLElement = HTMLElement>(selector: string) => host.querySelector<T>(selector)!;
   const address = query<HTMLInputElement>('.browser-address input'), viewport = query('.browser-viewport');
+  // Subscriptions mount asynchronously. Never expose a submit/close control before
+  // its listeners exist (an early form submit otherwise navigates the host page).
+  address.disabled = true;
+  host.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true; });
   const notice = query('.browser-notice'), placeholder = query('.browser-guest-placeholder');
   const button = (action: string) => query<HTMLButtonElement>(`[data-browser-action="${action}"]`);
   function tell(message: string): void { notice.textContent = message; notice.hidden = !message; scheduleBounds(); }
@@ -147,7 +151,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     subscribe('browser-element', attachElement),
   ]);
   const liveHost = document.createElement('section'); viewport.append(liveHost);
-  live = await mountJevLive(liveHost, { session: options.session, returned() { button('watch-jev').focus({ preventScroll: true }); }, changed(next, available) {
+  live = await mountJevLive(liveHost, { session: options.session, failed: fail, returned() { button('watch-jev').focus({ preventScroll: true }); }, changed(next, available) {
     if (disposed) return;
     watching = next; jevAvailable = available;
     if (watching && status.picking) {
@@ -221,6 +225,8 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   function restoreVisibility(): void { if (!document.hidden) syncBounds(true); }
   window.addEventListener('focus', restoreVisibility);
   document.addEventListener('visibilitychange', restoreVisibility);
+  address.disabled = false;
+  host.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = false; });
   updateControls(); void refreshServers(); if (!watching) address.focus();
   return {
     async navigate(url) {

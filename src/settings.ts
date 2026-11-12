@@ -1,5 +1,4 @@
 import './settings.css';
-import { mountSkillManager } from './skill-manager';
 import type { SkillManagerHost } from './skill-manager-model';
 import { mountProviderReadiness } from './provider-readiness';
 import { escape, icon } from './dom';
@@ -325,7 +324,13 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
       slot.closest('details')!.addEventListener('toggle', () => cleanups.push(mountCapabilities(slot, call)), { once: true });
     }
-    if (id === 'skills' && options.skills) cleanups.push(mountSkillManager(panel.querySelector<HTMLElement>('#skill-manager')!, options.skills));
+    if (id === 'skills' && options.skills) {
+      const slot = panel.querySelector<HTMLElement>('#skill-manager')!, skills = options.skills;
+      slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+      void import('./skill-manager').then(({ mountSkillManager }) => {
+        if (!disposed) cleanups.push(mountSkillManager(slot, skills));
+      }).catch(() => { if (!disposed) slot.innerHTML = '<p class="settings-embed-error" role="alert">This section couldn’t load. Close Settings and try again.</p>'; });
+    }
     if (id === 'rules' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));
     if (id === 'about') {

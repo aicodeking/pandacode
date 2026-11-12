@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
+import { writeFile } from 'node:fs/promises';
 
 type View = 'conversation' | 'board';
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
@@ -16,7 +18,26 @@ async function installControlledStreaming(page: Page): Promise<void> {
     const response = await route.fetch();
     const source = await response.text();
     expect(source).toContain('function followTranscript() {');
-    await route.fulfill({ response, body: source.replace('function followTranscript() {', 'function followTranscript() { window.__followCalls = (window.__followCalls || 0) + 1;') + `
+    let body = source.replace('function followTranscript() {', 'function followTranscript() { window.__followCalls = (window.__followCalls || 0) + 1;');
+    const handoffStart = body.indexOf('async function finishResponse('), handoffEnd = body.indexOf('let completedHistoryRequest', handoffStart);
+    expect(handoffStart).toBeGreaterThan(0); expect(handoffEnd).toBeGreaterThan(handoffStart);
+    let handoff = body.slice(handoffStart, handoffEnd);
+    // Stage observations live only in the isolated fixture, never in the product or its timings.
+    for (const [marker, stage] of [
+      ['await reloadSessions(); const generation', 'sessions'],
+      ['const saved = await latestMessagePage(sessionId);', 'messages'],
+      ['if (reply && !markdownCache.get(reply))', 'markdown'],
+      ['finishingStreams.delete(sessionId);\n    if (sessionId !== state.sessionId || generation', 'swap'],
+    ]) {
+      // Vite formats statements onto separate lines; preserve that whitespace.
+      const pattern = stage === 'sessions' ? /await reloadSessions\(\);\s*const generation/
+        : stage === 'swap' ? /finishingStreams\.delete\(sessionId\);\s*if \(sessionId !== state.sessionId \|\| generation/ : marker;
+      if (typeof pattern === 'string') expect(handoff).toContain(pattern); else expect(handoff).toMatch(pattern);
+      if (stage === 'sessions') handoff = handoff.replace(pattern, 'window.__handoffStages = [{ stage: "start", at: performance.now() }]; await reloadSessions(); window.__handoffStages.push({ stage: "sessions", at: performance.now() }); const generation');
+      else handoff = handoff.replace(pattern, `window.__handoffStages?.push({ stage: ${JSON.stringify(stage)}, at: performance.now() }); ${marker}`);
+    }
+    body = body.slice(0, handoffStart) + handoff + body.slice(handoffEnd);
+    await route.fulfill({ response, body: body + `
       window.__scrollFixture = {
         follow: followTranscript,
         spring(now) { easeFollow(now); return followFrame; },
@@ -115,6 +136,34 @@ async function startTurn(page: Page, view: View, expandActivity = true): Promise
   }
   return page.evaluate(() => (window as any).__latestStreamId);
 }
+
+test('plain Markdown streaming and completion do not wait for generative view styles', async ({ page }, info) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/src/generative-ui.css*', async route => { await held; await route.continue(); });
+  await installControlledStreaming(page);
+  try {
+    await page.goto('/?cards');
+    await page.locator('.task-item', { hasText: 'Turn cards' }).click();
+    await prompt(page).fill('Controlled streaming response');
+    await prompt(page).press('Enter');
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+    const id = await page.evaluate(() => (window as any).__latestStreamId);
+    await page.evaluate(id => {
+      const fixture = (window as any).__streamFixtures[id];
+      fixture.push('A **formatted** final answer.\n\n```\nconst answer = 42;\n```'); fixture.done();
+    }, id);
+    await expect(page.locator('#stream-region .turn-card')).toHaveCount(0);
+    await expect(transcript(page).locator('.turn-card').last().locator('.turn-card-reply')).toContainText('A formatted final answer.');
+    await expect(transcript(page).locator('.turn-card').last().locator('pre')).toContainText('const answer = 42;');
+    await expect(transcript(page).locator('.turn-card').last().getByRole('button', { name: 'Copy code', exact: true })).toBeAttached();
+  } finally {
+    const path = info.outputPath('handoff-stages.json');
+    await writeFile(path, JSON.stringify(await page.evaluate(() => (window as any).__handoffStages), null, 2) ?? 'null');
+    await info.attach('handoff-stages', { contentType: 'application/json', path });
+    release();
+  }
+});
 
 async function push(page: Page, id: string, text: string): Promise<void> {
   await page.evaluate(({ id, text }) => (window as any).__streamFixtures[id].push(text), { id, text });
@@ -718,6 +767,15 @@ test('completion refresh links a file that the agent mentioned before creating i
 });
 
 test.describe('streaming scroll regressions', () => {
+  test.afterEach(async ({ page }, info) => {
+    if (page.isClosed()) return;
+    const path = info.outputPath('handoff-stages.json');
+    await writeFile(path, JSON.stringify(await page.evaluate(() => ({
+      stages: (window as any).__handoffStages,
+      resources: performance.getEntriesByType('resource').map(entry => ({ name: entry.name, start: entry.startTime, duration: entry.duration })),
+    })), null, 2));
+    await info.attach('handoff-stages', { contentType: 'application/json', path });
+  });
   test.beforeEach(async ({ page }) => {
     await installControlledStreaming(page);
     await page.goto('/?cards');

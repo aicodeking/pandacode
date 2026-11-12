@@ -1,12 +1,14 @@
 import { defineConfig } from '@playwright/test';
+import { acquireBrowserRun, reportDirectory } from './scripts/playwright-artifacts.mjs';
 
-// PW_PORT points the suite at another dev server. A server already on the port is reused, so in a
-// second checkout pick a free port: 1420 may be serving a different checkout's code. Output then
-// goes to a per-port folder so concurrent runs don't collide. PW_PROD=1 serves a fresh production build.
+// Ports select servers, not permanent artifact directories. One suite owns this checkout at a time;
+// the lease is taken before Playwright can clear any previous output. Listing tests is read-only.
+acquireBrowserRun();
 const port = Number(process.env.PW_PORT ?? 1420);
-const prodDir = `node_modules/.cache/pandacode-perf-${port}`;
-// Outside test-results/, which every default run deletes; playwright-report/ is gitignored too.
-export const outputRoot = process.env.PW_PORT ? `playwright-report/port-${port}` : 'test-results';
+// Historical port-* evidence is left untouched. Latest results are replaceable; archive deliberately
+// with PW_REPORT_DIR when a particular failure or baseline must remain available.
+export const outputRoot = reportDirectory(process.cwd(), 'chromium', process.env.PW_REPORT_DIR);
+export const webkitOutputRoot = reportDirectory(process.cwd(), 'webkit', process.env.PW_REPORT_DIR);
 // The diff benchmark (~90 s) runs only when named or with PERF=1. Workers inherit the env.
 if (process.argv.some(arg => arg.includes('diff-perf'))) process.env.PERF = '1';
 export const perfSpecs = process.env.PERF === '1' ? ['**/diff-perf.spec.ts'] : [];
@@ -33,7 +35,7 @@ const config = defineConfig({
   },
   webServer: {
     command: process.env.PW_PROD
-      ? `npx vite build --outDir ${prodDir} --emptyOutDir && npx vite preview --outDir ${prodDir} --port ${port} --strictPort --host 127.0.0.1`
+      ? `node scripts/playwright-artifacts.mjs --preview ${port}`
       : port !== 1420 ? `npx vite --port ${port} --strictPort --host 127.0.0.1` : 'npm run dev',
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: !process.env.PW_PROD,

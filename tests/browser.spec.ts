@@ -1,10 +1,42 @@
 import { readFileSync } from 'node:fs';
 import { openInspectorTab } from './inspector-tab-helper';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 const browserPanel = (page: Page) => page.getByRole('region', { name: 'Browser', exact: true });
 const browserUrl = (page: Page) => page.getByRole('textbox', { name: 'Browser URL', exact: true });
 const attachments = (page: Page) => page.locator('.browser-context-attachments .browser-context-chip');
+
+test('browser workspace navigation and close do not wait for optional Jev styles', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  await page.route('**/src/jev-live.css*', async route => {
+    requested = true;
+    await held;
+    await route.continue();
+  });
+  try {
+    await installPreviewProbe(page);
+    // Isolate the module boundary from app boot and unrelated diff-worker startup.
+    await page.route('**/browser-readiness.html', route => route.fulfill({ contentType: 'text/html', body: `
+      <section role="region" aria-label="Browser"></section>
+      <script type="module">
+        const { mountBrowser } = await import('/src/browser.ts');
+        const host = document.querySelector('section');
+        const panel = await mountBrowser(host, { task: () => 'session-1', session: () => 'session-1', attach() {}, close() { void panel.close().then(() => { host.hidden = true; }); } });
+      </script>` }));
+    await page.goto('/browser-readiness.html');
+    await expect(browserUrl(page)).toBeVisible();
+    await navigate(page, 'localhost:3000');
+    await expect.poll(() => requested).toBe(true);
+    await page.getByRole('button', { name: 'Close browser', exact: true }).click();
+    await expect(browserUrl(page)).toBeHidden();
+    release();
+    await page.evaluate(async () => { await import('/src/jev-live.ts'); });
+    await expect(page.locator('.jev-live')).toHaveCount(0);
+  } finally { release(); }
+});
 
 async function installPreviewProbe(page: Page): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {

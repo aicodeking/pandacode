@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 const drawer = (page: Page) => page.locator('#terminal-drawer');
 const screen = (page: Page) => drawer(page).locator('.xterm-screen:visible');

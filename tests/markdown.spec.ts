@@ -231,7 +231,8 @@ test.describe('streamed markdown', () => {
     });
     await page.reload();
     await page.evaluate(reply => { (window as any).__markdownReply = reply; }, REPLY);
-    await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+    const modifier = await page.evaluate(() => /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl');
+    await page.getByRole('button', { name: `New task ${modifier} N`, exact: true }).click();
     // Type only once the New task page has drawn; before that the prompt still belongs to the thread that was open.
     await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
     const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });

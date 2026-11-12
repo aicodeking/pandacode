@@ -2,7 +2,7 @@
 import type { FileDiff, FileDiffMetadata, FileDiffOptions, VirtualizedFileDiff, Virtualizer } from '@pierre/diffs';
 import type { WorkerPoolManager } from '@pierre/diffs/worker';
 // A real module URL, not a blob: the app CSP allows no blob: workers.
-import DiffWorker from '@pierre/diffs/worker/worker.js?worker';
+import DiffWorker from './diff-highlight-worker?worker';
 import { likelyFileNames, patchKey, splitPatch, type PatchChunk } from './diff-prefetch';
 import './diff-viewer.css';
 

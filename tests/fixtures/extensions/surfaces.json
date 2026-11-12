@@ -8,7 +8,7 @@
     "publicCommands": ["panda.ui/toggle-sidebar", "panda.ui/open-settings", "panda.ui/toggle-theme"],
     "owner": "panda.core",
     "context": "Main window host UI only; responsive relocation preserves logical IDs; no DOM or IPC metadata",
-    "operations": ["inspect", "hide", "show"],
+    "operations": ["inspect", "hide", "show", "reorder"],
     "tests": ["tests/extensions-catalog.test.mjs", "tests/extensions-catalog.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts"],
     "scope": "Read-only discovery, public host UI commands, host user visibility/order for seven core items and contributed actions, and selected ui.customize layout proposals; sidebar visibility only; no replacement or package invocation permission"
   },

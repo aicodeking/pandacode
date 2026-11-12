@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 const form = (page: Page) => page.locator('.agent-input');
 const question = { kind: 'questions', questions: [{ id: 'theme', header: 'Theme', question: 'Which theme should I use?', options: [{ label: 'Yellow', description: 'Warm accents' }, { label: 'Green', description: 'Bamboo accents' }], isOther: true }] };

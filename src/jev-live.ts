@@ -1,4 +1,3 @@
-import './jev-live.css';
 import { call, subscribe } from './bridge';
 import { escape, icon } from './dom';
 import type { JevReport } from './jev';
@@ -14,7 +13,7 @@ export interface JevLiveView {
   leave(): void;
   close(): Promise<void>;
 }
-type Options = { session(): string | undefined; changed(watching: boolean, available: boolean): void; returned(): void };
+type Options = { session(): string | undefined; changed(watching: boolean, available: boolean): void; returned(): void; failed?(error: unknown): void };
 const active = (report?: JevReport) => report?.status === 'starting' || report?.status === 'running';
 const statuses: Record<JevReport['status'], string> = { starting: 'Starting browser', running: 'Testing', done: 'Finished', blocked: 'Blocked', failed: 'Test failed', cancelled: 'Cancelled', limit: 'Limit reached' };
 const duration = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms % 60_000 / 1000)}s`;
@@ -42,7 +41,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
   // Dismissing a view must not be undone by the next event from the same test.
   const dismissed = new Set<string>();
   const manualAfter = new Map<string, number>();
-  let disposed = false, session: string | undefined, selected: string | undefined, revision = 0, eventVersion = 0;
+  let disposed = false, stylesReady = false, session: string | undefined, selected: string | undefined, revision = 0, eventVersion = 0;
   let listPending: Promise<void> | undefined, stopping: string | undefined, finalRead: string | undefined;
   let sequence = -1, pendingFrame: JevFrame | undefined, frameTimer = 0, lastPaint = 0, timelineKey = '', optionKey = '';
   let lease: { sessionId: string; runId: string } | undefined, leaseTimer = 0, leaseQueue = Promise.resolve();
@@ -51,7 +50,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
   const wasDismissed = (report: JevReport) => dismissed.has(report.id) || report.createdAt <= (manualAfter.get(report.sessionId) ?? -Infinity);
   const alive = (ticket: number, task: string | undefined) => !disposed && ticket === revision && task === session && task === options.session();
   function tell(message: string) { query('.jev-live-error').textContent = message; query('.jev-live-error').hidden = !message; }
-  function notify() { options.changed(Boolean(selected), reports.size > 0); }
+  function notify() { options.changed(stylesReady && Boolean(selected), stylesReady && reports.size > 0); }
   function resetFrame() {
     clearTimeout(frameTimer); frameTimer = 0; pendingFrame = undefined; sequence = -1; lastPaint = 0;
     image.removeAttribute('src'); image.hidden = true; query('.jev-live-waiting').hidden = false;
@@ -89,7 +88,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
   }
   function render() {
     if (disposed) return;
-    const report = current(); host.hidden = !report;
+    const report = current(); host.hidden = !stylesReady || !report;
     const ordered = [...reports.values()].sort((a, b) => b.createdAt - a.createdAt);
     const optionsKey = JSON.stringify(ordered.map(run => [run.id, run.goal, run.status]));
     if (optionKey !== optionsKey) {
@@ -198,6 +197,8 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
   async function watch(runId?: string) {
     refresh(); const ticket = revision, task = session;
     if (!task || disposed) throw new Error('Choose a task to watch its browser tests.');
+    await styles;
+    if (!alive(ticket, task)) return;
     await listPending;
     if (!alive(ticket, task)) return;
     const id = runId ?? [...reports.values()].sort((a, b) => Number(active(b)) - Number(active(a)) || b.createdAt - a.createdAt)[0]?.id;
@@ -227,6 +228,10 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
   timeline.addEventListener('toggle', showTimeline);
   document.addEventListener('visibilitychange', visibility);
   const unlisten = await Promise.all([subscribe('jev-run', receiveReport), subscribe('jev-frame', receiveFrame)]);
+  // Subscribe before optional styles load, so startup cannot drop reports or frames.
+  // Only the live view waits for its appearance; ordinary browser controls stay usable.
+  const styles = import('./jev-live.css');
+  void styles.then(() => { if (!disposed) { stylesReady = true; render(); } }, error => { if (!disposed) options.failed?.(error); });
   refresh();
   return { watch, refresh, leave, url: () => current()?.events.at(-1)?.url || current()?.url, async close() {
     disposed = true; ++revision; selected = undefined; resetFrame(); syncLease();

@@ -1,5 +1,6 @@
 import { showHarness } from './model-picker-helper';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 // Settings is a full page (a region over the workspace) with a vertical list of groups.
 const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
@@ -10,6 +11,44 @@ const GROUPS = ['Recommended', 'General', 'Appearance', 'Voice', 'Agents', 'Sche
 const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
+
+test('settings organization opens Agents without loading the unopened Skills page', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  await page.route('**/src/skill-manager.css*', async route => {
+    requested = true;
+    await held;
+    await route.continue();
+  });
+  try {
+    await open(page);
+    await settings(page);
+    await tab(page, 'Agents').click();
+    await expect(page.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toBeEnabled();
+    expect(requested).toBe(false);
+    await back(page).click();
+    await expect(prompt(page)).toBeEnabled();
+  } finally { release(); }
+});
+
+test('settings organization disposes a pending Skills mount before reopening', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  await page.route('**/src/skill-manager.css*', async route => { requested = true; await held; await route.continue(); });
+  try {
+    await open(page); await settings(page);
+    await tab(page, 'Tools').click(); await tab(page, 'Skills').click();
+    await expect.poll(() => requested).toBe(true);
+    await expect(panel(page, 'Skills').getByText('Loading…', { exact: true })).toBeVisible();
+    await back(page).click(); release();
+    await page.evaluate(async () => { await import('/src/skill-manager.ts'); });
+    await expect(dialog(page).getByRole('searchbox', { name: 'Search skills', exact: true })).toHaveCount(0);
+    await settings(page); await tab(page, 'Tools').click(); await tab(page, 'Skills').click();
+    await expect(dialog(page).getByRole('searchbox', { name: 'Search skills', exact: true })).toBeVisible();
+  } finally { release(); }
+});
 
 for (const theme of ['dark', 'light']) for (const { width, scale } of [{ width: 460, scale: 1.4 }, { width: 540, scale: 1.6 }, { width: 1100, scale: 1 }]) {
   test(`settings organization keeps full Agents tabs readable at ${width}px ${scale * 100}% ${theme}`, async ({ page }, testInfo) => {

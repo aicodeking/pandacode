@@ -18,5 +18,16 @@ const devFileIcons = {
       'new URL(/* @vite-ignore */ `../node_modules/material-icon-theme/icons/${file}`, import.meta.url)');
   },
 };
+// The package marks only its web components as side-effectful, but its worker
+// registers message handlers at module scope. Preserve that one module in worker builds.
+const diffWorkerEffects = () => ({
+  name: 'diff-worker-effects',
+  transform(source: string, id: string) {
+    if (id.replaceAll('\\', '/').endsWith('/@pierre/diffs/dist/worker/worker.js')) return { code: source, map: null, moduleSideEffects: true };
+  },
+});
 // ES-module workers: the diff highlighter worker (@pierre/diffs) imports Shiki chunks.
-export default defineConfig({ clearScreen: false, plugins: [devFileIcons], esbuild: { tsconfigRaw }, server: { port: 1420, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } }, build: { target: 'es2022', assetsInlineLimit: 0, rollupOptions: { input: { main: 'index.html', 'agents-dock': 'agents-dock.html' } } }, worker: { format: 'es' } });
+// The optional workspace index owns exclusive RocksDB locks; it is not application source.
+// Test reports/planning output are not HMR inputs either; observing new reports
+// otherwise makes verification itself enqueue unrelated filesystem work.
+export default defineConfig({ clearScreen: false, plugins: [devFileIcons], esbuild: { tsconfigRaw }, optimizeDeps: { include: ['@pierre/diffs/worker/worker.js'] }, server: { port: 1420, strictPort: true, watch: { ignored: ['**/src-tauri/**', '**/.zvec-grep/**', '**/playwright-report/**', '**/test-results/**', '**/_work/**'] } }, build: { target: 'es2022', assetsInlineLimit: 0, rollupOptions: { input: { main: 'index.html', 'agents-dock': 'agents-dock.html' } } }, worker: { format: 'es', plugins: () => [diffWorkerEffects()] } });

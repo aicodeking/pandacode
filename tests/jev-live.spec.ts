@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 const live = (page: Page) => page.getByRole('region', { name: 'Jev live browser', exact: true });
 const frame = (page: Page) => live(page).getByRole('img', { name: 'Jev browser live view', exact: true });
@@ -86,7 +87,7 @@ async function watched(page: Page, runId: string, watching: boolean): Promise<bo
   return (await calls(page, 'jev_watch_run')).some(call => call.args.runId === runId && call.args.watching === watching);
 }
 
-test('auto-watches a running agent task, streams frames and actions, and preserves the frame element', async ({ page }) => {
+test('auto-watches a running agent task, streams frames and actions, and preserves the frame element', async ({ page }, info) => {
   await installProbe(page, true); await openBrowser(page);
   await expect(page.getByRole('button', { name: 'Attach screenshot', exact: true })).toBeDisabled();
   await emit(page, 'jev-run', report());
@@ -105,10 +106,10 @@ test('auto-watches a running agent task, streams frames and actions, and preserv
   await expect(live(page)).toContainText('New game');
   await emitFrame(page, await image(page, '#c6d9b5'), { sequence: 2, elapsedMs: 2_500 });
   expect(await frame(page).evaluate(element => element === (window as any).__jevLiveOriginalFrame)).toBe(true);
-  await page.screenshot({ path: '/private/tmp/pandacode-jev-live-dark.png' });
+  await page.screenshot({ path: info.outputPath('jev-live-dark.png') });
   await page.locator('#theme-toggle').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await page.screenshot({ path: '/private/tmp/pandacode-jev-live-light.png' });
+  await page.screenshot({ path: info.outputPath('jev-live-light.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   // Crossing the compact-layout breakpoint closes the inspector by design.
   await expect(page.getByRole('region', { name: 'Browser', exact: true })).toBeHidden();
@@ -120,7 +121,7 @@ test('auto-watches a running agent task, streams frames and actions, and preserv
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(391);
   expect(await live(page).evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-  await page.screenshot({ path: '/private/tmp/pandacode-jev-live-narrow.png' });
+  await page.screenshot({ path: info.outputPath('jev-live-narrow.png') });
   expect(await calls(page, 'jev_start')).toHaveLength(0);
 });
 
@@ -143,6 +144,24 @@ test('keeps reports, frames, and watch leases isolated when changing tasks', asy
   await expect.poll(() => watched(page, 'other-run', true)).toBe(true);
   await expect(live(page)).toContainText('Other task only');
   expect((await calls(page, 'jev_watch_run')).filter(call => call.args.runId === 'other-run').every(call => call.args.sessionId === 'session-4')).toBe(true);
+});
+
+test('Jev retains early reports and frames while only its optional styles are pending', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/src/jev-live.css*', async route => { await held; await route.continue(); });
+  try {
+    await installProbe(page); await openBrowser(page);
+    await emit(page, 'jev-run', report());
+    const source = await image(page); await emitFrame(page, source);
+    await expect(live(page)).toBeHidden();
+    release();
+    await expect(live(page)).toBeVisible();
+    await expect(frame(page)).toHaveAttribute('src', source);
+    await expect.poll(() => watched(page, 'run-1', true)).toBe(true);
+    await page.getByRole('button', { name: 'Close browser', exact: true }).click();
+    await expect.poll(() => watched(page, 'run-1', false)).toBe(true);
+  } finally { release(); }
 });
 
 test('lets the user choose between simultaneous runs and rejects frames from the other run', async ({ page }) => {

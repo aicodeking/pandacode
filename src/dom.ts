@@ -161,15 +161,20 @@ type Modules = { purify: typeof import('dompurify').default; enriched: typeof im
 let modules: Modules | undefined;
 let loading: Promise<Modules> | undefined;
 function loadModules(): Promise<Modules> {
-  // generative-ui defines <pandacode-ui> (generative UI views) before any HTML that holds one is used.
-  loading ??= Promise.all([import('dompurify'), import('./enriched-markdown'), import('./generative-ui')])
+  loading ??= Promise.all([import('dompurify'), import('./enriched-markdown')])
     .then(([purify, enriched]) => (modules = { purify: purify.default, enriched }), error => { loading = undefined; throw error; });
   return loading;
 }
 let fallback: Promise<(value: string) => string | Promise<string>> | undefined;
+/** Define view/code elements before using them, without making ordinary text wait for their styles. */
+async function markdownElements(html: string): Promise<string> {
+  if (/<pandacode-ui[\s>]/.test(html)) await import('./generative-ui');
+  else if (/<pandacode-code[\s>]/.test(html)) await import('./markdown-code');
+  return html;
+}
 async function unsafeHtml(enriched: Modules['enriched'], value: string): Promise<string> {
   try {
-    return enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref });
+    return await markdownElements(enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref }));
   } catch {
     fallback ??= import('marked').then(m => {
       const links = new m.Renderer(); const renderLink = links.link;
@@ -183,7 +188,7 @@ async function unsafeHtml(enriched: Modules['enriched'], value: string): Promise
         return template.innerHTML;
       };
     });
-    return (await fallback)(value);
+    return markdownElements(await (await fallback)(value));
   }
 }
 /** Markdown to safe HTML through the Enriched Markdown engine (md4c), with `marked` as a

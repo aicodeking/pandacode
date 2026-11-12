@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 import { openInspectorTab } from './inspector-tab-helper';
 
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
@@ -88,6 +89,20 @@ async function dragInspector(page: Page, targetWidth: number): Promise<void> {
   await page.mouse.move(handle.x + handle.width / 2 + width - targetWidth, handle.y + handle.height / 2, { steps: 6 });
   await page.mouse.up();
 }
+
+test('layout preferences start real diff workers without a raw development dependency waterfall', async ({ page }) => {
+  const raw: string[] = [];
+  const engines: string[] = [];
+  page.on('request', request => {
+    if (/\/node_modules\/(?:@pierre\/(?:diffs|theming)|@shikijs|shiki|diff)\//.test(request.url())) raw.push(request.url());
+  });
+  page.on('console', message => {
+    if (message.text().startsWith('PandaCode diff engine:')) engines.push(message.text());
+  });
+  await open(page);
+  await expect.poll(() => engines).toContain('PandaCode diff engine: worker-wasm');
+  expect(raw).toEqual([]);
+});
 
 async function recordTerminalCalls(page: Page): Promise<void> {
   await page.addInitScript(() => { (window as any).__layoutTerminalCalls = []; });

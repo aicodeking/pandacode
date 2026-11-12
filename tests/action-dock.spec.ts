@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 import { openInspectorTab } from './inspector-tab-helper';
 
 const dock = (page: Page) => page.getByRole('toolbar', { name: 'Workspace actions', exact: true });

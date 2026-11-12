@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './browser-phase';
 
 // Tauri's file-drop handler claims every drag at the native view, so WKWebView never sends the page dragover or drop
 // (wry `drag_drop.rs`). These specs discard the browser's own drag events the same way, so a drag can only work here the

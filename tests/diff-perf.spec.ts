@@ -8,7 +8,8 @@ import { expect, test, type Page } from '@playwright/test';
 // (src/preview.ts, BENCH_DIFFS); `&benchFiles=a,b` lists only those. Skipped by plain
 // `npx playwright test`; it runs when named or with PERF=1.
 // PW_PORT starts this checkout's own server (never another worktree's on 1420) and
-// writes to playwright-report/port-<port>/; PW_PROD=1 measures a production build.
+// uses the latest engine-specific report folder; PW_PROD=1 reuses a source-verified production build.
+// Use PW_REPORT_DIR=playwright-report/archive/<case-id> to retain an important measurement explicitly.
 //   Chromium dev:  PW_PORT=1437 npx playwright test tests/diff-perf.spec.ts
 //   Chromium prod: PW_PROD=1 PW_PORT=1438 npx playwright test tests/diff-perf.spec.ts
 //   WebKit (the real target is WKWebView), dev and prod:
