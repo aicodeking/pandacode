@@ -779,7 +779,10 @@ async fn create_worktree(ctx: Ctx<'_>, this: WorktreeCreate) -> Result<Value> {
     let _checkout = lock_task_checkout(&ctx, &this.session_id, &task.project_id, true).await?;
     let branch = this.branch.clone().unwrap_or_else(|| suggested_branch(&task));
     let (store, session_id, trust) = (ctx.state().store.clone(), this.session_id.clone(), trust_of(&ctx));
-    let (saved, moved) = crate::blocking(move || create_task_worktree(&store, &session_id, &branch, trust)).await?;
+    let created = crate::blocking(move || create_task_worktree(&store, &session_id, &branch, trust)).await;
+    // As on the desktop: a new worktree changes which folders the skill switches resolve to.
+    crate::skill_manager::projects_changed();
+    let (saved, moved) = created?;
     changed(&ctx);
     // No `path`: the phone never reads it, and an absolute path names the user (Round 20).
     Ok(json!({ "sessionId": saved.id, "moved": moved, "branch": saved.worktree_branch }))

@@ -9,6 +9,7 @@ export interface RemoteHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   listen(name: string, callback: (event: any) => void): Promise<() => void>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   openUrl(url: string): Promise<void>;
 }
 /** A computer the Run on menu can show, including an offline last-seen row. */

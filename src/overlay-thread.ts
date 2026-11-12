@@ -1,15 +1,62 @@
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
-import { overlayCall, overlayEvents, type OverlayTask, type OverlayThread } from './overlay-client';
+import { journal, overlayCall, overlayEvents, replayedDismissals, type OverlayTask, type OverlayThread } from './overlay-client';
 import { streamMarkdown } from './streaming-markdown';
 import { captureTranscriptAnchor } from './transcript-scroll';
 import { groupTurns, turnLabel, type TranscriptTurn } from './turn-activity';
+import { errorText } from './error-text';
+import { DISMISS_BATCH, errorSummary, groupErrors } from './thread-errors';
 import { decodeToolActivity, groupToolRuns, renderToolGroup, renderToolStatus } from './tool-activity';
 import { renderCoordination } from './coordination-message';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { decodeHandoff, historicalProvider } from './provider-handoff';
+import { attachToolImages } from './tool-image-viewer';
+import type { ToolImageLoader } from './tool-images';
+// The viewer's own styles; under `is-launcher` they also carry the tokens motion.css and design-system.css give the app.
+import './tool-images.css';
+
+/** Tool-row images in the launcher come from the same `tool_image` command as the app's transcript. */
+const overlayImageLoader: ToolImageLoader = (sessionId, path, maxEdge) =>
+  overlayCall<string>('tool_image', maxEdge ? { sessionId, path, maxEdge } : { sessionId, path });
 import type { Message, ProviderId, Session } from './types';
 
+/** The overlay is narrow: a row's summary keeps to about two lines; the rest opens below it. */
+const OVERLAY_ERROR_SUMMARY = 160;
+/** How long Undo stays on offer before the saved rows are deleted: the main window's Undo toast (`hideToastLater` for an
+ * undo in src/main.ts) shows for the same 5000 ms. */
+const UNDO_MS = 5000;
+/** While the Undo line has focus or the pointer, the window is held; this is how often that is looked at again. */
+const UNDO_RECHECK_MS = 2000;
+/** One error group, like the thread's row: danger icon, clamped summary, `×N`, a chevron button for the rest of the text
+ * (a focusable region named by the summary) and a dismiss button described by the summary. No whitespace between tags:
+ * the box keeps `white-space: pre-wrap`. */
+function errorRowHtml(content: string, count: number, ids: number[], open: boolean): string {
+  const { summary, detail: whole } = errorSummary(content, OVERLAY_ERROR_SUMMARY), summaryId = `launcher-error-${String(ids[0]).replace('-', 'n')}`, detailId = `${summaryId}-detail`;
+  // A clamped summary comes with the full text as its detail: show only what follows the summary, so no sentence repeats.
+  const cut = summary.endsWith('…') && whole !== null && whole.startsWith(summary.slice(0, -1));
+  const detail = cut ? `…${whole.slice(summary.length - 1)}` : whole;
+  const repeat = count > 1 ? `<span class="launcher-error-count"><span aria-hidden="true"> ×${count}</span><span class="sr-only">Repeated ${count} times</span></span>` : '';
+  const toggle = detail === null ? '' : `<button type="button" class="launcher-error-toggle" aria-label="Error details" aria-describedby="${summaryId}" aria-expanded="${open}" aria-controls="${detailId}">${icon('chevron')}</button>`;
+  const more = detail === null ? '' : `<div class="launcher-error-detail" id="${detailId}" role="region" aria-labelledby="${summaryId}" tabindex="0"${open ? '' : ' hidden'}>${escape(detail)}</div>`;
+  return `<div class="launcher-error-row" data-error-ids="${ids.join(' ')}"><span class="launcher-error-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="launcher-error-summary" id="${summaryId}">${escape(summary)}</span>${repeat}${toggle}<button type="button" class="launcher-error-dismiss" aria-label="Dismiss error" aria-describedby="${summaryId}">${icon('close')}</button>${more}</div>`;
+}
+/** Like the main window's fold: a turn with no prompt, step, reply, note or changes joins the turn before it (never a
+ * handoff), so a run of failures reads as one group. Dismissed ids are dropped first; an emptied errors-only turn goes. */
+export function foldErrorTurns(turns: TranscriptTurn[], hidden: ReadonlySet<number>): TranscriptTurn[] {
+  const shown: TranscriptTurn[] = [];
+  for (const turn of turns) {
+    const errors = hidden.size ? turn.errors.filter(message => !hidden.has(message.id)) : turn.errors;
+    const alone = !turn.user && !turn.coordination && !turn.handoff && !turn.activity.length && !turn.final && !turn.notes.length && !turn.changes;
+    const previous = shown.at(-1);
+    if (alone && !errors.length) continue;
+    // An errors-only turn has no prompt, so `groupTurns` gives it no duration of its own: the previous turn's is kept.
+    if (alone && previous && !previous.handoff) shown[shown.length - 1] = { ...previous, errors: [...previous.errors, ...errors] };
+    else shown.push(errors === turn.errors ? turn : { ...turn, errors });
+  }
+  return shown;
+}
+/** A dismissal waiting out its Undo window: the native delete runs at expiry or earlier (see `flushUndo`). */
+interface PendingDismissal { ids: number[]; saved: number[]; sessionId: string; generation: number; timer: number; first: string }
 const statusLabel = (value: string) => ({ running:'Working', waiting:'Needs attention', coordinating:'Coordinating', idle:'Ready', completed:'Completed', error:'Failed', failed:'Failed', stopped:'Stopped', interrupted:'Paused' }[value] || value);
 
 /** The selected transcript is loaded on demand; the launcher never mounts the workspace. */
@@ -26,6 +73,14 @@ export class OverlayThreadView {
   private messages = new Map<number, Message>();
   private turns = new Map<string, HTMLElement>();
   private activityMessages = new WeakMap<HTMLElement, Message[]>();
+  /** Error rows dismissed here, by saved id: hidden at once, deleted natively (`dismiss_error_messages`), and put
+   * back if that fails. Rows without a saved id (live, id <= 0) are hidden in this view only. */
+  private dismissedErrors = new Set<number>();
+  private errorsHtml = new WeakMap<HTMLElement, string>();
+  private openErrors = new Set<string>();
+  private undo?: PendingDismissal;
+  private undoBox: HTMLElement;
+  private undoText: HTMLElement;
   private initial = true;
   private latest?: OverlayThread;
   private unsubscribe?: () => void;
@@ -35,10 +90,25 @@ export class OverlayThreadView {
   constructor(private host: HTMLElement, private back: () => void, private opened?: (task: OverlayTask) => void) {
     host.className = 'launcher-thread'; host.hidden = true;
     host.setAttribute('aria-label', 'Agent conversation');
-    host.innerHTML = `<header class="launcher-thread-heading"><button class="launcher-thread-back" aria-label="Back to active agents">${icon('back')}</button><span class="launcher-thread-provider"></span><div><h2></h2><p></p></div></header><div class="launcher-thread-scroll" tabindex="0" aria-label="Conversation"><div class="launcher-thread-history"></div><p class="launcher-thread-empty" role="status">Loading conversation…</p><p class="launcher-thread-notice" role="status" hidden></p><button class="launcher-thread-retry" hidden>Retry loading conversation</button></div><footer class="launcher-thread-footer"><span class="launcher-thread-status" role="status"></span><button class="launcher-thread-app">Open in app ${icon('forward')}</button></footer>`;
+    host.innerHTML = `<header class="launcher-thread-heading"><button class="launcher-thread-back" aria-label="Back to active agents">${icon('back')}</button><span class="launcher-thread-provider"></span><div><h2></h2><p></p></div></header><div class="launcher-thread-scroll" tabindex="0" aria-label="Conversation"><div class="launcher-thread-history"></div><p class="launcher-thread-empty" role="status">Loading conversation…</p><p class="launcher-thread-notice" role="status" hidden></p><button class="launcher-thread-retry" hidden>Retry loading conversation</button></div><div class="launcher-thread-undo" hidden><span role="status"></span><button type="button" aria-keyshortcuts="Meta+Z Control+Z">Undo</button></div><footer class="launcher-thread-footer"><span class="launcher-thread-status" role="status"></span><button class="launcher-thread-app">Open in app ${icon('forward')}</button></footer>`;
     this.scroll = host.querySelector('.launcher-thread-scroll')!;
     this.history = host.querySelector('.launcher-thread-history')!;
     this.notice = host.querySelector('.launcher-thread-notice')!;
+    // Thumbnails in tool rows load with the thread shown when they rendered and open the viewer, never toggling the row.
+    // The launcher may not reveal files (`reveal_path` is the app's), so its viewer has no Reveal button.
+    attachToolImages(this.history, () => this.task?.sessionId ?? '', overlayImageLoader, { launcher: true });
+    this.undoBox = host.querySelector('.launcher-thread-undo')!;
+    this.undoText = this.undoBox.querySelector('span')!;
+    // Cmd/Ctrl+Z undoes the pending dismissal, as in the main window; a text field keeps its own undo.
+    document.addEventListener('keydown', event => {
+      const field = (event.target as Element | null)?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable=false])');
+      if (event.defaultPrevented || !this.undo || this.host.hidden || field || event.shiftKey || event.altKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return;
+      event.preventDefault(); this.undoDismissal();
+    });
+    for (const id of replayedDismissals) this.dismissedErrors.add(id); // a replay at launch keeps its rows gone
+    // The launcher hiding must not lose a pending delete.
+    document.addEventListener('visibilitychange', () => { if (document.hidden) void this.flushUndo(); });
+    window.addEventListener('pagehide', () => void this.flushUndo());
     bindMessageActions(host, {
       content: (sessionId, key) => {
         if (this.task?.sessionId !== sessionId) return undefined;
@@ -62,6 +132,14 @@ export class OverlayThreadView {
       if (task) void overlayCall('overlay_open_task', {sessionId:task.sessionId, ...(task.subagentId ? {subagentId:task.subagentId} : {})}).catch(error => this.error(error));
     });
     host.querySelector('.launcher-thread-retry')!.addEventListener('click', () => this.refresh());
+    host.addEventListener('click', event => {
+      const target = event.target as Element, dismiss = target.closest<HTMLElement>('.launcher-error-dismiss'), toggle = target.closest<HTMLElement>('.launcher-error-toggle');
+      const all = target.closest<HTMLElement>('.launcher-error-dismiss-all');
+      if (all) this.dismissRows([...(all.closest('.launcher-thread-errors')?.querySelectorAll<HTMLElement>('.launcher-error-row') ?? [])]);
+      else if (dismiss) this.dismissRows([dismiss.closest<HTMLElement>('.launcher-error-row')!]);
+      else if (toggle) this.toggleError(toggle);
+      else if (target.closest('.launcher-thread-undo button')) this.undoDismissal();
+    });
     this.scroll.addEventListener('scroll', () => {
       if (this.scroll.scrollTop < 40 && !this.initial && this.scroll.scrollHeight > this.scroll.clientHeight + 80) void this.loadOlder();
     });
@@ -87,6 +165,7 @@ export class OverlayThreadView {
     this.refresh(); this.host.querySelector<HTMLButtonElement>('.launcher-thread-back')!.focus();
   }
   close(): void {
+    void this.flushUndo();
     this.generation++; this.task = undefined; clearTimeout(this.timer); this.timer = 0;
     this.unsubscribe?.(); this.unsubscribe = undefined; this.loading = false; this.queued = false; this.olderLoading = false;
     this.messages.clear(); this.turns.clear(); this.history.replaceChildren(); this.host.hidden = true; this.hasOlder = false;
@@ -98,6 +177,7 @@ export class OverlayThreadView {
   }
   setVisible(value: boolean): void {
     this.active = value;
+    if (!value) void this.flushUndo();
     if (value) this.refresh(); else { clearTimeout(this.timer); this.timer = 0; }
   }
   refresh(): void {
@@ -189,7 +269,7 @@ export class OverlayThreadView {
       child.tools.forEach((tool,i) => add(i+1,'tool',JSON.stringify({type:'tool_activity',version:1,...tool})));
       if (child.response) add(Number.MAX_SAFE_INTEGER,'assistant',child.response);
     } else if (thread.liveText) messages.push({id:Number.MAX_SAFE_INTEGER,sessionId:this.task.sessionId,role:'assistant',content:thread.liveText,createdAt:Date.now()});
-    const grouped = groupTurns(messages), keys = new Set<string>();
+    const grouped = foldErrorTurns(groupTurns(messages), this.dismissedErrors), keys = new Set<string>();
     grouped.forEach((turn,index) => {
       const key = turn.handoff ? `handoff:${turn.handoff.id}` : String(turn.user?.id ?? turn.coordination?.id ?? turn.activity[0]?.id ?? turn.final?.id ?? turn.errors[0]?.id ?? index); keys.add(key);
       let node = this.turns.get(key);
@@ -262,7 +342,85 @@ export class OverlayThreadView {
       heading.dataset.provider = author;
     }
     if (turn.final) { response.dataset.messageId = String(turn.final.id); streamMarkdown(response.querySelector('div')!,turn.final.content,this.scroll); this.paintActions(response, turn.final); }
-    node.querySelector('.launcher-thread-errors')!.textContent = [...turn.errors, ...turn.notes].map(message => message.content).join('\n');
+    // Identical errors read once with their count (thread-errors.ts), one compact row each; notes follow as lines.
+    const box = node.querySelector<HTMLElement>('.launcher-thread-errors')!;
+    const groups = groupErrors(turn.errors.filter(message => !this.dismissedErrors.has(message.id)));
+    const all = groups.length > 1 ? '<div class="launcher-error-all"><button type="button" class="launcher-error-dismiss-all">Dismiss all</button></div>' : '';
+    const build = (withOpen: boolean) => all + groups.map(group => errorRowHtml(group.content, group.count, group.ids as number[], withOpen && this.openErrors.has(String(group.ids[0])))).join('')
+      + turn.notes.map(message => `<p class="launcher-thread-note">${escape(message.content)}</p>`).join('');
+    // Compared with every detail closed and rewritten only when that changes, so an opened detail or a focused button
+    // survives refreshes; a rewrite restores the opened details from `openErrors`.
+    const key = build(false);
+    if (this.errorsHtml.get(box) !== key) { box.innerHTML = build(true); this.errorsHtml.set(box, key); }
+  }
+  private toggleError(button: HTMLElement): void {
+    const row = button.closest<HTMLElement>('.launcher-error-row'), detail = row?.querySelector<HTMLElement>('.launcher-error-detail');
+    if (!row || !detail) return;
+    const open = button.getAttribute('aria-expanded') !== 'true', first = (row.dataset.errorIds ?? '').split(' ')[0];
+    button.setAttribute('aria-expanded', String(open)); detail.hidden = !open;
+    if (open) this.openErrors.add(first); else this.openErrors.delete(first);
+  }
+  /** Hides rows at once (one for a row's ×, all of a turn's for Dismiss all) and offers one Undo; the saved rows are deleted
+   * natively when the window passes (`flushUndo`). Focus moves to the next row's dismiss, else the conversation. */
+  private dismissRows(rows: HTMLElement[]): void {
+    const sessionId = this.task?.sessionId;
+    if (!rows.length || !sessionId) return;
+    void this.flushUndo(); // a second dismissal commits the first
+    const ids = rows.flatMap(row => (row.dataset.errorIds ?? '').split(' ').map(Number).filter(id => Number.isInteger(id)));
+    for (const id of ids) this.dismissedErrors.add(id);
+    const last = rows[rows.length - 1], first = rows[0];
+    const next = last.nextElementSibling?.querySelector<HTMLElement>('.launcher-error-dismiss') ?? first.previousElementSibling?.querySelector<HTMLElement>('.launcher-error-dismiss');
+    const firstKey = first.dataset.errorIds ?? '';
+    for (const row of rows) row.remove();
+    (next ?? this.scroll).focus({ preventScroll: true });
+    journal(sessionId, ids.filter(id => id > 0), true); // a quit before the delete lands replays it next launch
+    this.undo = { ids, saved: ids.filter(id => id > 0), sessionId, generation: this.generation, timer: window.setTimeout(() => this.undoExpired(), UNDO_MS), first: firstKey };
+    this.undoText.textContent = rows.length === 1 ? 'Error dismissed' : `${rows.length} errors dismissed`;
+    this.undoBox.hidden = false;
+  }
+  /** The window ran out: held while the Undo line has focus or the pointer (WCAG 2.2.1), looked at again shortly. */
+  private undoExpired(): void {
+    const pending = this.undo;
+    if (!pending) return;
+    if (this.undoBox.matches(':focus-within, :hover')) { pending.timer = window.setTimeout(() => this.undoExpired(), UNDO_RECHECK_MS); return; }
+    void this.flushUndo();
+  }
+  /** Empties the Undo line; focus inside it first moves to the first error row's dismiss, else the conversation. */
+  private clearUndoBox(): void {
+    if (this.undoBox.contains(document.activeElement)) (this.history.querySelector<HTMLElement>('.launcher-error-dismiss') ?? this.scroll).focus({ preventScroll: true });
+    this.undoText.textContent = ''; this.undoBox.hidden = true;
+  }
+  private undoDismissal(): void {
+    const pending = this.undo;
+    if (!pending) return;
+    clearTimeout(pending.timer); this.undo = undefined; this.clearUndoBox();
+    journal(pending.sessionId, pending.saved, false);
+    this.restore(pending.ids);
+    this.host.querySelector<HTMLElement>(`.launcher-error-row[data-error-ids="${pending.first}"] .launcher-error-dismiss`)?.focus({ preventScroll: true });
+  }
+  private restore(ids: number[]): void {
+    for (const id of ids) this.dismissedErrors.delete(id);
+    this.errorsHtml = new WeakMap(); // the cached markup lacks the row: force the repaint
+    if (this.latest) this.paint(this.latest);
+  }
+  /** Ends the Undo window now: deletes the saved ids in batches. A failure puts the rest back with the reason. */
+  private async flushUndo(): Promise<void> {
+    const pending = this.undo;
+    if (!pending) return;
+    clearTimeout(pending.timer); this.undo = undefined; this.clearUndoBox();
+    let done = 0;
+    try {
+      for (; done < pending.saved.length; done += DISMISS_BATCH) await overlayCall('dismiss_error_messages', { sessionId: pending.sessionId, ids: pending.saved.slice(done, done + DISMISS_BATCH) });
+      journal(pending.sessionId, pending.saved, false);
+    } catch (error) {
+      journal(pending.sessionId, pending.saved, false); // restored below, or nothing more to try
+      const deleted = new Set(pending.saved.slice(0, done));
+      for (const id of deleted) this.messages.delete(id);
+      const left = pending.ids.filter(id => !deleted.has(id));
+      if (pending.generation !== this.generation) { for (const id of left) this.dismissedErrors.delete(id); return; }
+      this.notice.textContent = `Couldn't dismiss the error. ${errorText(error)}`; this.notice.hidden = false;
+      this.restore(left);
+    }
   }
   private canFork(message: Message): boolean {
     return !this.task?.subagentId && message.id > 0 && message.id !== Number.MAX_SAFE_INTEGER && this.messages.has(message.id);
@@ -275,7 +433,7 @@ export class OverlayThreadView {
     article.dataset.actionKey = key;
   }
   private error(error: unknown): void {
-    this.notice.textContent = error instanceof Error ? error.message : String(error); this.notice.hidden = false;
+    this.notice.textContent = errorText(error); this.notice.hidden = false;
     this.host.querySelector<HTMLElement>('.launcher-thread-empty')!.hidden = true;
     this.host.querySelector<HTMLElement>('.launcher-thread-retry')!.hidden = false;
   }

@@ -3,6 +3,7 @@
  * Nothing reaches the network until the user signs in. */
 import './remote-settings.css';
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 import { infoMark } from './tooltip';
 import { mountOrchestrationSettings } from './machine-orchestration';
 import { APPROVE_SCOPES, SCOPE_HELP, SCOPE_LABELS, groupFingerprint, type DeviceGrant, type GrantScope, type PairCode } from './remote-pairing-prompt';
@@ -21,11 +22,13 @@ const pickOptions = (selected: string) => APPROVE_SCOPES.map(scope => `<option v
 const groupCode = (code: string) => code.length > 3 ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
 
 export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => void {
-  let status: RemoteStatus | undefined, devices: RemoteDevice[] = [], grants: DeviceGrant[] = [], error = '', statusError = '', devicesError = '', grantsError = '', devicesLoaded = false, loading = true, code: RemoteSignIn | undefined, expires = 0, signingIn = false, disposed = false, attempt = 0;
+  let status: RemoteStatus | undefined, devices: RemoteDevice[] = [], grants: DeviceGrant[] = [], error = '', statusError = '', devicesError = '', grantsError = '', errorTarget = '', devicesLoaded = false, loading = true, code: RemoteSignIn | undefined, expires = 0, signingIn = false, disposed = false, attempt = 0;
   let pairCode: PairCode | undefined, codeScope: GrantScope = 'control', pairTarget = '', pairInput = '', pairing = false, expiry: number | undefined;
   const picks: Record<string, string> = {};
-  const message = (e: unknown) => e instanceof Error ? e.message : String(e);
-  const fail = (e: unknown) => { error = message(e); render(); };
+  const message = (e: unknown) => errorText(e);
+  /** The control whose action failed (a selector): the banner is drawn under its row and Dismiss returns focus to it. */
+  const fail = (e: unknown, target = '') => { error = message(e); errorTarget = target; render(); };
+  const attr = (name: string, value: string) => `[${name}="${value.replace(/["\\]/g, '\\$&')}"]`;
   const failure = (title: string, detail: string) => `<div class="remote-load-error" role="alert">${icon('alert')}<span><strong>${escape(title)}</strong><small>${escape(detail)}</small></span><button type="button" class="secondary-button" data-retry>Retry</button></div>`;
   const grantOf = (id: string) => grants.find(grant => grant.deviceId === id);
 
@@ -80,7 +83,13 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     if (disposed) return;
     const active = document.activeElement instanceof HTMLElement && root.contains(document.activeElement) ? document.activeElement : undefined;
     const keep = active?.id, caret = active instanceof HTMLInputElement ? active.selectionStart : null;
-    main.innerHTML = `<div class="settings-group remote-settings">${body()}</div>${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}`;
+    main.innerHTML = `<div class="settings-group remote-settings">${body()}</div>`;
+    if (error) {
+      const holder = document.createElement('div');
+      holder.innerHTML = `<div class="message-error error-row remote-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary remote-error" role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-dismiss-error aria-label="Dismiss error">${icon('close')}</button></div></div>`;
+      const anchor = errorTarget ? main.querySelector(errorTarget)?.closest('.setting-row') : null;
+      if (anchor) anchor.after(holder.firstElementChild!); else main.append(holder.firstElementChild!);
+    }
     if (keep) { const again = main.querySelector<HTMLElement>(`#${CSS.escape(keep)}`); again?.focus(); if (again instanceof HTMLInputElement && caret !== null) again.setSelectionRange(caret, caret); }
     if (status?.signedIn && !unmountOrchestration) unmountOrchestration = mountOrchestrationSettings(orchestration, host);
     else if (!status?.signedIn && unmountOrchestration) { unmountOrchestration(); unmountOrchestration = undefined; orchestration.innerHTML = ''; }
@@ -117,17 +126,17 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
       await loadDevices();
     } catch (e) {
       if (mine !== attempt) return;
-      code = undefined; signingIn = false; error = message(e);
+      code = undefined; signingIn = false; error = message(e); errorTarget = '[data-sign-in]';
     }
     render();
   }
   function cancelSignIn(): void {
     attempt++; code = undefined; signingIn = false; error = ''; render();
-    void host.call('remote_sign_in_cancel').catch(fail);
+    void host.call('remote_sign_in_cancel').catch(e => fail(e, '[data-sign-in]'));
   }
   function setGrant(deviceId: string, scope: string): void {
     error = '';
-    void host.call('remote_set_device_grant', { deviceId, scope }).then(() => loadGrants()).then(() => render(), e => { error = message(e); void loadGrants().then(render); });
+    void host.call('remote_set_device_grant', { deviceId, scope }).then(() => loadGrants()).then(() => render(), e => { error = message(e); errorTarget = `${attr('data-device', deviceId)} select, ${attr('data-device', deviceId)} button`; void loadGrants().then(render); });
   }
   function showCode(next: PairCode | undefined): void {
     pairCode = next; window.clearTimeout(expiry);
@@ -138,20 +147,24 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     const target = (event.target as HTMLElement).closest<HTMLElement>('button');
     if (!target) return;
     const row = target.closest<HTMLElement>('.remote-device');
-    if (target.hasAttribute('data-retry')) void load();
+    if (target.hasAttribute('data-dismiss-error')) {
+      const back = errorTarget; error = ''; errorTarget = ''; render();
+      ((back ? main.querySelector<HTMLElement>(back) : null) ?? main.querySelector<HTMLElement>('button:not([disabled]),input'))?.focus();
+    }
+    else if (target.hasAttribute('data-retry')) void load();
     else if (target.hasAttribute('data-sign-in')) void signIn();
     else if (target.hasAttribute('data-cancel')) cancelSignIn();
-    else if (target.hasAttribute('data-copy') && code) void navigator.clipboard.writeText(code.userCode).then(() => host.notify('Code copied'), () => host.notify('Couldn’t copy; select the code instead'));
-    else if (target.hasAttribute('data-sign-out')) void host.call<RemoteStatus>('remote_sign_out').then(next => { apply(next); devices = []; devicesLoaded = true; devicesError = ''; error = ''; render(); }, fail);
-    else if (target.dataset.revoke) void host.call('remote_revoke_device', { deviceId: target.dataset.revoke }).then(() => { devices = devices.filter(d => d.id !== target.dataset.revoke); render(); }, fail);
+    else if (target.hasAttribute('data-copy') && code) void navigator.clipboard.writeText(code.userCode).then(() => host.notify('Code copied'), () => (host.notifyError ?? host.notify)('Couldn’t copy; select the code instead'));
+    else if (target.hasAttribute('data-sign-out')) void host.call<RemoteStatus>('remote_sign_out').then(next => { apply(next); devices = []; devicesLoaded = true; devicesError = ''; error = ''; render(); }, e => fail(e, '[data-sign-out]'));
+    else if (target.dataset.revoke) void host.call('remote_revoke_device', { deviceId: target.dataset.revoke }).then(() => { devices = devices.filter(d => d.id !== target.dataset.revoke); render(); }, e => fail(e, attr('data-revoke', target.dataset.revoke!)));
     else if (target.dataset.approve) setGrant(target.dataset.approve, row?.querySelector<HTMLSelectElement>('select[data-pick]')?.value ?? 'control');
     else if (target.dataset.block) setGrant(target.dataset.block, 'blocked');
-    else if (target.hasAttribute('data-code-new')) void host.call<PairCode>('remote_pair_code', { scope: codeScope }).then(showCode, fail);
-    else if (target.hasAttribute('data-code-cancel')) { showCode(undefined); void host.call('remote_pair_code_cancel').catch(fail); }
+    else if (target.hasAttribute('data-code-new')) void host.call<PairCode>('remote_pair_code', { scope: codeScope }).then(showCode, e => fail(e, '[data-code-new]'));
+    else if (target.hasAttribute('data-code-cancel')) { showCode(undefined); void host.call('remote_pair_code_cancel').catch(e => fail(e, '[data-code-new]')); }
     else if (target.hasAttribute('data-pair') && !pairing) {
       const name = devices.find(device => device.id === pairTarget)?.name ?? 'that computer';
       error = ''; pairing = true; render();
-      void host.call<{ scope: GrantScope }>('remote_pair_redeem', { deviceId: pairTarget, code: pairInput }).then(result => { pairInput = ''; host.notify(`Paired with ${name}: ${(SCOPE_LABELS[result.scope] ?? result.scope).toLowerCase()}`); }, e => { error = message(e); }).finally(() => { pairing = false; render(); });
+      void host.call<{ scope: GrantScope }>('remote_pair_redeem', { deviceId: pairTarget, code: pairInput }).then(result => { pairInput = ''; host.notify(`Paired with ${name}: ${(SCOPE_LABELS[result.scope] ?? result.scope).toLowerCase()}`); }, e => { error = message(e); errorTarget = '[data-pair]'; }).finally(() => { pairing = false; render(); });
     }
   });
   root.addEventListener('input', event => {
@@ -167,8 +180,8 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     if (input instanceof HTMLSelectElement && input.dataset.pick) { picks[input.dataset.pick] = input.value; return; }
     if (input instanceof HTMLSelectElement && input.dataset.grant) { setGrant(input.dataset.grant, input.value); return; }
     const args = input.id === 'remote-host' ? { enabled: (input as HTMLInputElement).checked } : input.id === 'remote-full-access' ? { fullAccess: (input as HTMLInputElement).checked } : undefined;
-    if (args) void host.call<RemoteStatus>('remote_set_host_enabled', args).then(next => { apply(next); render(); }, e => { (input as HTMLInputElement).checked = !(input as HTMLInputElement).checked; fail(e); });
-    if (input.id === 'remote-notify') void host.call<RemoteStatus>('remote_set_notify_enabled', { enabled: (input as HTMLInputElement).checked }).then(next => { apply(next); render(); }, e => { (input as HTMLInputElement).checked = !(input as HTMLInputElement).checked; fail(e); });
+    if (args) void host.call<RemoteStatus>('remote_set_host_enabled', args).then(next => { apply(next); render(); }, e => { (input as HTMLInputElement).checked = !(input as HTMLInputElement).checked; fail(e, `#${input.id}`); });
+    if (input.id === 'remote-notify') void host.call<RemoteStatus>('remote_set_notify_enabled', { enabled: (input as HTMLInputElement).checked }).then(next => { apply(next); render(); }, e => { (input as HTMLInputElement).checked = !(input as HTMLInputElement).checked; fail(e, `#${input.id}`); });
   });
   const unlisten: Promise<() => void>[] = [
     host.listen('remote://status', next => { if (!signingIn || next.signedIn) { apply(next); render(); } }),

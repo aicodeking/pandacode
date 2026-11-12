@@ -2,6 +2,7 @@ import './jev.css';
 import './jev-assist.css';
 import { call } from './bridge';
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 
 export type AssistKind = 'review' | 'rules' | 'context' | 'route';
 export interface AssistEvidence { id: string; label: string; text: string; truncated: boolean; path?: string; changeId?: string; }
@@ -30,7 +31,6 @@ const kinds: Record<AssistKind, { label: string; description: string; action: st
 };
 const labels: Record<string, string> = { supported: 'Supported', not_supported: 'Not supported', uncertain: 'Uncertain' };
 const views = new WeakMap<HTMLDialogElement, () => void>();
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const bytes = (size: number) => size < 1024 ? `${size} bytes` : `${(size / 1024).toFixed(1)} KB`;
 
 export function assistReportText(report: AssistReport): string {

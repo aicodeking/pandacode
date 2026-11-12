@@ -32,8 +32,7 @@ test('renders the command and recorded output with a stable disclosure key', () 
   const html = renderToolActivity(stored(long), 'message-5');
   assert.match(html, /data-tool-key="message-5"/);
   assert.match(html, /data-tool-status="completed"/);
-  assert.match(html, /tool-trace-verb">Ran<\/span><span class="tool-trace-chip" title="npm run test">/);
-  assert.match(html, /tool-trace-object is-mono">run test</);
+  assert.match(html, /tool-trace-verb">Ran tests<\/span><span class="tool-trace-chip" title="npm run test"><b>npm test<\/b>/);
   assert.match(html, /data-tool-kind="shell" data-tool-name="Bash"/);
   assert.ok(html.includes(toolPreview(long).replace('<!--trace-partial-->', '')));
   assert.match(html, /<div class="tool-trace-frame"><div class="tool-trace-card"[\s\S]*<\/div><details class="tool-trace-raw"><summary aria-label="Raw input and output"[\s\S]*<\/details><\/div><\/div><\/details>$/);
@@ -100,17 +99,17 @@ test('group summaries count calls, expose running/failure states and escape tool
     { key: 'x" onclick="bad', content: { ...activity, status: 'running' } },
     { key: 'read', content: stored({ ...activity, id: 'read', name: 'Read', status: 'failed' }) },
   ]);
-  // Completed calls lead; the running one and the failure are counted apart.
-  assert.match(html, /tool-group-label">Ran 1 command</);
+  // A failed call is only a tally, never a done verb (a saved record stuck at running reads as finished).
+  assert.match(html, /tool-group-label">Ran tests</);
   assert.match(html, /tool-group-status has-failure"> · 1 failed</);
   const live = renderToolGroup([{ key: 'run', content: { ...activity, status: 'running' } }, { key: 'read', content: stored({ ...activity, id: 'read', name: 'Read', status: 'failed' }) }], false, true);
-  assert.match(live, /tool-group-label">Running 1 command…</);
+  assert.match(live, /tool-group-label">Running tests…</);
   assert.match(live, /tool-group-status has-failure"> · 1 failed</);
   assert.match(html, /tool-group-status has-failure"> · 1 failed</);
   assert.match(html, /tool-trace-stack/);
   assert.ok(!html.includes('data-tool-group-key="group:x" onclick='));
   assert.equal(html.match(/class="tool-activity tool-trace"/g)?.length, 2);
   assert.match(renderToolGroup([{ key: 'legacy', content: 'Read README.md' }]), /tool-group-label">Used 1 tool</);
-  assert.match(renderToolGroup([{ key: 'a', content: activity }, { key: 'b', content: activity }]), /tool-group-label">Ran 2 commands</);
+  assert.match(renderToolGroup([{ key: 'a', content: activity }, { key: 'b', content: activity }]), /tool-group-label">Ran tests twice</);
   assert.equal(renderToolGroup([]), '');
 });

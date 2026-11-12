@@ -6,6 +6,7 @@ import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessageP
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { isPreviewableFile } from './file-links';
+import { DISMISS_BATCH } from './thread-errors';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
 import { namedTeamSetup } from './team-mode';
@@ -622,6 +623,17 @@ export function samplePick(kind: 'files' | 'folder'): string[] {
 function agent(event: AgentEvent) { emit('agent-event', event); }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** tests: a live `error` event for any task, saved first like lib.rs `save_agent_activity` does: the row goes into the
+ * thread (newest id) and the event carries it as `data.messageId`; `{ saved: false }` is an event the backend could
+ * not save (no row, no id). Returns the saved id. */
+(window as any).__previewError = (sessionId: string, text: string, options: { saved?: boolean } = {}): number | undefined => {
+  if (options.saved === false) { agent({ sessionId, kind: 'error', text }); return undefined; }
+  const list = (messages[sessionId] ??= []);
+  id = Math.max(id, ...list.map(message => message.id)) + 1;
+  list.push({ id, sessionId, role: 'error', content: text.length > 8192 ? text.slice(-8192) : text, createdAt: Date.now() });
+  agent({ sessionId, kind: 'error', text, data: { messageId: id } });
+  return id;
+};
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -2117,6 +2129,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
     }
+    case 'dismiss_error_messages': {
+      const ids: unknown = args.ids;
+      if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+      const wanted = new Set<number>(ids), list = messages[session(args.sessionId).id] ?? [];
+      const kept = list.filter(message => !(message.role === 'error' && wanted.has(message.id)));
+      messages[args.sessionId] = kept; result = list.length - kept.length; break;
+    }
     case 'get_messages': {
       const synced = mirrorSynced.get(args.sessionId);
       const history = (messages[args.sessionId] ?? []).filter(message => synced == null || message.id <= synced);
@@ -2456,6 +2475,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const path = String(args.path);
       if (!previewWorkspaceFiles.includes(path) || !isPreviewableFile(path)) throw new Error('This file cannot be previewed in the browser.');
       result = { path, name: path.split('/').pop(), url: 'http://127.0.0.1:4179/preview/' + encodeURIComponent(args.sessionId ?? args.projectId) + '/' + path.split('/').map(encodeURIComponent).join('/') }; break;
+    }
+    case 'tool_image': {
+      // A drawn stand-in for an image an agent viewed (tool-row thumbnails).
+      // Absolute or checkout-relative, like the real command; never `..` or network paths.
+      if (!/^(file:\/\/)?[^\\]*\.(png|jpe?g|gif|webp)$/i.test(String(args.path)) || /(^|\/)\.\.(\/|$)|^(file:)?\/\//.test(String(args.path).replace(/^file:\/\/(?=\/[^/])/, ''))) throw new Error('Only PNG, JPEG, GIF and WebP images can be shown');
+      const name = String(args.path).split('/').pop()?.replace(/[<>&"']/g, '') ?? '';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" rx="10" fill="#1f3a5f"/><rect x="16" y="16" width="288" height="24" rx="6" fill="#3d6aa8"/><rect x="16" y="52" width="180" height="132" rx="8" fill="#e8eef7"/><text x="250" y="124" fill="#fffcef" font-family="sans-serif" font-size="14" text-anchor="middle">${name}</text></svg>`;
+      result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
     }
     case 'workspace_image': {
       // A drawn stand-in for any workspace image a question shows.

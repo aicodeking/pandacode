@@ -39,6 +39,8 @@ mod cloud_agents;
 mod capabilities;
 mod vsix_themes;
 mod token_saver;
+mod tool_images;
+mod tool_images_auth;
 mod task_usage;
 mod skill_manager;
 mod skills;
@@ -414,6 +416,36 @@ mod task_agent_tests {
         assert_eq!(switch.kind, "note");
         assert_eq!(switch.text, body);
         assert_eq!(switch.data.unwrap()["accountPool"]["connectionId"], "b");
+    }
+
+    #[test]
+    fn dismiss_error_event_carries_its_saved_row_id() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let assistant = Mutex::new(String::new());
+        let mut first = event(&task.id, "error", "boom");
+        save_agent_activity(&store, &assistant, &mut first, None).unwrap();
+        let mut repeat = event(&task.id, "error", "boom");
+        repeat.data = Some(serde_json::json!({"code": 7}));
+        save_agent_activity(&store, &assistant, &mut repeat, None).unwrap();
+        let mut odd = event(&task.id, "error", "boom");
+        odd.data = Some(serde_json::json!("opaque"));
+        save_agent_activity(&store, &assistant, &mut odd, None).unwrap();
+        let ids: Vec<i64> = store.message_page(&task.id, None).unwrap().messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(first.data.unwrap()["messageId"], ids[0]);
+        let repeat = repeat.data.unwrap();
+        assert_eq!((repeat["messageId"].as_i64(), repeat["code"].as_i64()), (Some(ids[1]), Some(7)));
+        assert_eq!(odd.data, Some(serde_json::json!("opaque")));
+        // Only error events get an id; a failed write leaves the event without one.
+        let mut note = event(&task.id, "note", "fine");
+        save_agent_activity(&store, &assistant, &mut note, None).unwrap();
+        assert!(note.data.is_none());
+        store.db.execute_batch("CREATE TRIGGER reject_error BEFORE INSERT ON messages WHEN NEW.role='error' BEGIN SELECT RAISE(ABORT,'nope'); END;").unwrap();
+        let mut unsaved = event(&task.id, "error", "boom");
+        assert!(save_agent_activity(&store, &assistant, &mut unsaved, None).is_err());
+        assert!(unsaved.data.is_none());
     }
 
     #[test]
@@ -825,6 +857,11 @@ async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_
     Ok(task)
 }
 #[tauri::command]
+async fn dismiss_error_messages(state: State<'_, AppState>, session_id: String, ids: Vec<i64>) -> Result<usize> {
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.dismiss_error_messages(&session_id, &ids)).await
+}
+#[tauri::command]
 async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, session_ids: Vec<String>) -> Result<Vec<Session>> {
     let store = state.store.clone();
     let tasks = blocking(move || store.lock().map_err(|e| e.to_string())?.reorder_sessions(&session_ids)).await?;
@@ -1203,6 +1240,18 @@ fn bounded_tail(text: &mut String, limit: usize) {
     }
 }
 
+/// Adds `messageId` to an event's data object (kept when it has other fields); data that is
+/// not an object is left alone, so the event simply has no id.
+fn attach_message_id(activity: &mut AgentEvent, id: i64) {
+    match activity.data.as_mut() {
+        None => activity.data = Some(serde_json::json!({ "messageId": id })),
+        Some(serde_json::Value::Object(data)) => {
+            data.insert("messageId".into(), id.into());
+        }
+        Some(_) => {}
+    }
+}
+
 fn flush_assistant(db: &Store, sid: &str, assistant: &Mutex<String>) -> Result<()> {
     let mut text = assistant.lock().map_err(|error| error.to_string())?;
     if !text.is_empty() {
@@ -1338,7 +1387,14 @@ fn save_agent_activity(
                 .and_then(|content| db.tool_message(&activity.session_id, &tool.id, &content))
             } else {
                 bounded_tail(&mut activity.text, 8192);
-                db.message(&activity.session_id, &activity.kind, &activity.text)
+                db.insert_message(&activity.session_id, &activity.kind, &activity.text)
+                    .map(|id| {
+                        // The window dismisses a live error by its saved row (dismiss_error_messages);
+                        // an error never saved carries no id.
+                        if activity.kind == "error" {
+                            attach_message_id(activity, id);
+                        }
+                    })
             };
             // Keep recording tool/error activity if a response write fails,
             // while still surfacing that persistence error to the turn owner.
@@ -3780,6 +3836,33 @@ async fn workspace_image(
     blocking(move || workspace::image_data_url(&root, &path)).await
 }
 
+/// An image an agent viewed in this task (a Read of `/tmp/shot.png`, Codex
+/// `imageView`, Kimi `Reading media: <path>`, a relative progress snapshot).
+/// Served only when one of the session's tool records names the path in an
+/// image-bearing place; a relative path must stay inside the task's checkout.
+/// See `tool_images` and `tool_images_auth`.
+#[tauri::command]
+async fn tool_image(state: State<'_, AppState>, session_id: String, path: String, max_edge: Option<u32>) -> Result<String> {
+    let store = state.store.clone();
+    blocking(move || {
+        tool_images_auth::ensure_on_this_machine(&store, &session_id)?;
+        let key = path.trim().to_owned();
+        let root = || {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            let project_id = store.session(&session_id)?.project_id;
+            store.workspace_root(&project_id, Some(&session_id))
+        };
+        tool_images::load_sized(
+            &path,
+            root,
+            |spellings| tool_images_auth::session_viewed(&store, &session_id, &key, spellings),
+            tool_images::TOOL_IMAGE_LIMIT,
+            max_edge,
+        )
+    })
+    .await
+}
+
 #[tauri::command]
 async fn remote_resubscribe(app: tauri::AppHandle) -> Result<()> {
     remote::mirror::subscribe_soon(&app);
@@ -4339,10 +4422,14 @@ pub fn run() {
                     overlay::overlay_open_task,
                     task_controls::fork_session_at_message,
                     task_controls::get_message_content,
+                    // Deletes only role='error' rows of the given session: reads nothing new.
+                    dismiss_error_messages,
                     list_providers,
                     list_provider_models,
                     search_files,
                     open_external_url,
+                    // Thumbnails in the launcher thread's tool rows.
+                    tool_image,
                 ];
                 return handler(invoke);
             }
@@ -4606,6 +4693,7 @@ pub fn run() {
                 relink_project,
                 list_sessions,
                 pin_session,
+                dismiss_error_messages,
                 reorder_sessions,
                 get_task,
                 configure_window_appearance,
@@ -4760,6 +4848,7 @@ pub fn run() {
                 progress::progress_thumb,
                 progress::progress_clear,
                 workspace_image,
+                tool_image,
                 resolve_workspace_files,
                 prepare_file_preview,
                 get_run_script,

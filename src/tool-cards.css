@@ -19,8 +19,11 @@
 .tc-count{font-variant-numeric:tabular-nums}
 
 .tc-rows{display:grid;margin:0;padding:0;list-style:none}
+.tc-list{display:grid;gap:2px;margin:0;padding:8px 12px 8px 32px;font-size:var(--thread-font);line-height:1.45;overflow-wrap:anywhere}
+.tc-list::marker,.tc-list li::marker{color:var(--muted);font-variant-numeric:tabular-nums}
 .tc-row{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:8px 12px;font-size:var(--thread-font);line-height:1.45}
 .tc-row:first-child{border-top:0}
+.tc[data-kind="search"] .tc-row{padding-block:4px}
 .tc-row>.tc-mark{margin-top:1px}
 .tc-row-main{display:grid;gap:1px;flex:1;min-width:0}
 .tc-row-line{display:flex;align-items:baseline;gap:7px;min-width:0}
@@ -33,6 +36,7 @@
 .tc-rows .tc-row-body{display:block;white-space:nowrap;text-overflow:ellipsis}
 .tc-rows .tc-more{padding:6px 12px 7px}
 .tc-excerpt,.tc-prompt,.tc-empty{margin:0;overflow-wrap:anywhere;color:var(--muted)}
+.tc-excerpt.is-lines{white-space:pre-line}
 .tc-prompt span,.tc-label{margin-right:4px;color:var(--muted);font-size:var(--thread-font);font-weight:var(--weight-strong);letter-spacing:.03em;text-transform:uppercase}
 .tc-pill{flex:none;margin-left:auto;padding:0 6px;background:var(--fill-hover);border-radius:var(--radius-full);color:var(--muted);font-size:var(--thread-font);font-weight:var(--weight-strong)}
 .tc-pill[data-state="done"]{color:var(--success);background:color-mix(in srgb,var(--success) 14%,var(--panel))}
@@ -42,8 +46,14 @@
 /* Code: numbered lines and diffs share one gutter grid. */
 .tc-lines,.tc-diff{display:grid;max-height:260px;margin:0;padding:6px 0;overflow:auto;border:0;border-radius:var(--radius-md);background:var(--panel);font-family:var(--mono);font-size:var(--mono-size);line-height:var(--leading-code)}
 .tc>:is(.tc-lines,.tc-diff){padding:6px 0;border-radius:0}
-.tc-line,.tc-diff-line{display:grid;grid-template-columns:3.4ch minmax(0,1fr);gap:10px;padding:0 12px 0 4px;white-space:pre}
-.tc-diff-line{grid-template-columns:3.4ch 3.4ch 1.4ch minmax(0,1fr);gap:6px}
+.tc-lines,.tc-diff{--tc-gutter:3.4ch}
+/* Wide line numbers (`3414`) widen the gutter to the card's widest number, so columns never run together. */
+:is(.tc-lines,.tc-diff)[data-digits="4"]{--tc-gutter:4.4ch}
+:is(.tc-lines,.tc-diff)[data-digits="5"]{--tc-gutter:5.4ch}
+:is(.tc-lines,.tc-diff)[data-digits="6"]{--tc-gutter:6.4ch}
+:is(.tc-lines,.tc-diff)[data-digits="7"]{--tc-gutter:7.4ch}
+.tc-line,.tc-diff-line{display:grid;grid-template-columns:var(--tc-gutter) minmax(0,1fr);gap:10px;padding:0 12px 0 4px;white-space:pre}
+.tc-diff-line{grid-template-columns:var(--tc-gutter) var(--tc-gutter) 1.4ch minmax(0,1fr);gap:6px}
 .tc-gutter{text-align:right;color:var(--muted);opacity:.7;user-select:none;font-variant-numeric:tabular-nums}
 .tc-code{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .tc-sign{color:var(--muted);user-select:none}
@@ -70,6 +80,8 @@
 .tc-command{min-width:0;overflow-wrap:anywhere;color:var(--text)}
 .tc-badge{flex:none;margin-left:auto;color:var(--success);font-family:inherit;font-size:var(--text-xs);font-weight:var(--weight-medium)}
 .tc-badge.is-failed{color:var(--danger)}
+/* A signal exit (137/143: something stopped it) is neither a pass nor a failure. */
+.tc-badge.is-quiet{color:var(--muted)}
 
 /* Search hits */
 .tc-query{padding:0 5px;border-radius:var(--radius-sm);background:var(--panel);font-family:var(--mono);font-size:var(--mono-size)}
@@ -134,10 +146,43 @@ html[data-theme="dark"] .tool-activity.tool-trace .tool-trace-frame>.tool-trace-
 html[data-theme="dark"] :is(.tc-lines,.tc-diff,.tc-term-out,.tc-term .tc-earlier){background:var(--bg)}
 @media(prefers-contrast:more){
   .tc-rows,.tc-row,.tc-lines,.tc-diff,.tc-term,.tc-term-out,.tc-kv,.tc-kv dt,.tc-kv dd,.tc-page,.tc-agent,.tc-skill,.tc-failed,.tc-title-card,.tc-result,.tc-letter,.tc-query,.tc-pill{border-color:var(--text)}
-  .tc-running,.tc-head-meta,.tc-head-right,.tc-dir,.tc-row-meta,.tc-row-time,.tc-more,.tc-excerpt,.tc-prompt,.tc-gutter,.tc-term-out,.tc-kv dt,.tc-label{color:var(--text);opacity:1}
+  .tc-running,.tc-badge.is-quiet,.tc-head-meta,.tc-head-right,.tc-dir,.tc-row-meta,.tc-row-time,.tc-more,.tc-excerpt,.tc-prompt,.tc-gutter,.tc-term-out,.tc-kv dt,.tc-label{color:var(--text);opacity:1}
   .tool-activity.tool-trace .tool-trace-frame>.tool-trace-raw>summary{border-color:var(--text);color:var(--text)}
   .tc-row-body{opacity:1}
   .tc-hit mark{outline:1px solid var(--text)}
 }
 @media(prefers-reduced-transparency:reduce){.tc-hit mark{background:var(--accent);color:var(--on-accent)}}
 .tc-excerpt code{padding:0 4px;border-radius:var(--radius-sm);background:var(--raised);color:var(--text);font-family:var(--mono);font-size:.9em}
+
+/* Test-run summary above a shell card's output (shell-intent.ts `testSummaryHtml`): runner, counts,
+   a thin proportional meter and the duration on one line; up to five failing names below. Tokens only. */
+.tool-trace-card>.tool-test-summary{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0;padding:8px 40px 8px 12px;border-bottom:1px solid var(--ds-border);font-size:var(--thread-font);line-height:1.45}
+.tool-test-runner{flex:none;font-weight:var(--weight-medium);color:var(--text)}
+.tool-test-counts{display:inline-flex;gap:8px;flex:none;font-variant-numeric:tabular-nums}
+.tool-test-pass{color:var(--ds-success)}
+.tool-test-fail{color:var(--ds-danger);font-weight:var(--weight-medium)}
+.tool-test-skip{color:var(--faint)}
+.tool-test-meter{display:flex;flex:1 1 72px;min-width:48px;max-width:180px;height:4px;overflow:hidden;gap:1px;border-radius:2px;background:var(--ds-track)}
+.tool-test-meter>span{min-width:2px}
+.tool-test-meter-pass{background:var(--ds-success)}
+.tool-test-meter-fail{background:var(--ds-danger)}
+.tool-test-meter-skip{background:var(--ds-track-strong)}
+.tool-test-duration{flex:none;margin-left:auto;color:var(--faint);font-size:var(--text-xs);font-variant-numeric:tabular-nums}
+.tool-test-failures{flex-basis:100%;display:grid;gap:2px;margin:2px 0 0;padding:0;list-style:none}
+.tool-test-failure{position:relative;padding-left:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:var(--text-xs);color:var(--text)}
+.tool-test-failure::before{content:"";position:absolute;left:3px;top:.6em;width:5px;height:5px;border-radius:50%;background:var(--ds-danger)}
+@media (prefers-contrast:more){
+  .tool-trace-card>.tool-test-summary{border-bottom-color:var(--border)}
+  .tool-test-skip,.tool-test-duration{color:var(--text)}
+}
+@media (forced-colors:active){
+  .tool-test-meter{background:Canvas;outline:1px solid CanvasText}
+  .tool-test-meter>span{background:CanvasText}
+  .tool-test-failure::before{background:CanvasText}
+}
+
+/* The `</>` toggle sits over the card's top-right corner, so the card's first line keeps that corner free: an `exit 101`
+   badge at the end of a command line never hides under it (a test summary reserves the same room above). */
+.tool-trace-frame:has(>.tool-trace-raw)>.tool-trace-card>:first-child:is(.tool-trace-card-head,.tc-head,.tc-term-head),
+.tool-trace-frame:has(>.tool-trace-raw)>.tool-trace-card>.tc:first-child>:first-child:is(.tc-head,.tc-term-head),
+.tool-trace-frame:has(>.tool-trace-raw)>.tool-trace-card>.tc:first-child>.tc-term:first-child>.tc-term-head{padding-right:calc(var(--control-sm) + 16px)}

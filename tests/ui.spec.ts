@@ -3438,13 +3438,22 @@ test('motion is short and never gates input, and presses keep a button in place'
 
 test('the toast sits in the bottom-right corner and wraps long text', async ({ page }) => {
   const toast = page.locator('#toast');
-  await page.evaluate(() => { const toast = document.querySelector<HTMLElement>('#toast')!; toast.textContent = 'Could not open /Users/someone/projects/a-really-long-folder-name/with/a/deep/path/src/components/SomethingReallyLongFileName.tsx'; toast.hidden = false; });
+  const text = 'Could not open /Users/someone/projects/a-really-long-folder-name/with/a/deep/path/src/components/SomethingReallyLongFileName.tsx';
+  // Through the real notify path (a bot notice), so the toast has its text, live region and close button.
+  await page.evaluate(text => (window as any).__previewEmit('bot-notification', { botId: 'b', text }), text);
+  await expect(toast.locator('.toast-text')).toHaveText(text);
   const box = (await toast.boundingBox())!, viewport = page.viewportSize()!;
   expect(box.width).toBeLessThanOrEqual(361);
   expect(viewport.width - (box.x + box.width)).toBeLessThan(40);
-  expect(viewport.height - (box.y + box.height)).toBeLessThan(40);
+  // Bottom-right corner, unless that would cover the composer: then just above it (placeToast, an 8px gap).
+  const composerTop = await page.locator('#composer-area').evaluate(el => el.getBoundingClientRect().top);
+  const bottom = box.y + box.height;
+  if (viewport.height - bottom >= 40) expect(Math.abs(composerTop - 8 - bottom)).toBeLessThan(2);
   expect(await toast.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-  await expect(toast).toHaveAttribute('role', 'status');
+  // The live region is the text alone, so the close button is never read with it.
+  await expect(toast.locator('.toast-text')).toHaveAttribute('role', 'status');
+  await expect(toast).not.toHaveAttribute('role', /.+/);
+  await expect(toast.locator('[role="status"] button')).toHaveCount(0);
 });
 
 test('switching back to a thread draws it at once: formatted, at the bottom, with no loading frame', async ({ page }) => {

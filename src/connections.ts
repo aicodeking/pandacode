@@ -6,6 +6,7 @@ import { accountSignedOut, accountEmail, accountStatusIcon, accountPlan, account
 import type { AgentUsage } from './agent-usage';
 import { openChoiceMenu } from './choice-menu';
 import { escape, icon, isImeKey } from './dom';
+import { errorText } from './error-text';
 import { isWindows } from './platform';
 import { infoMark } from './tooltip';
 import type { ProviderId } from './types';
@@ -153,7 +154,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     const provider = anchor.dataset.poolProvider!, id = anchor.dataset.memberMenu!, m = members[provider]?.find(other => other.id === id); if (!m) return;
     const dir = snapshot.connections.find(c => c.id === id)?.configDir;
     closeMenu = openChoiceMenu({ anchor, title: `Actions for ${memberName(id)}`, actions: true, items: actions(m), onSelect: choice => {
-      if (choice === 'try') call('account_pool_clear', { provider, id }).then(() => refreshPools(), error => message(String(error), true, provider));
+      if (choice === 'try') call('account_pool_clear', { provider, id }).then(() => refreshPools(), error => message(errorText(error), true, provider));
       else if (choice === 'copy' && dir) copy(signInCommand(provider, dir), provider);
       else if (choice === 'edit') later(() => edit(id));
       else if (choice === 'delete') later(() => { confirming = id; redrawPools(); host.querySelector<HTMLElement>('[data-confirm-cancel]')?.focus(); });
@@ -189,12 +190,12 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
   }
   function startSignIn(id: string): void {
     signing = { ...signing, [id]: { id, state: 'starting' } }; redrawPools();
-    call('account_sign_in_start', { id }).catch(error => { if (!disposed) { signing = { ...signing, [id]: { id, state: 'failed', message: String(error instanceof Error ? error.message : error) } }; redrawPools(); } });
+    call('account_sign_in_start', { id }).catch(error => { if (!disposed) { signing = { ...signing, [id]: { id, state: 'failed', message: errorText(error) } }; redrawPools(); } });
   }
   function submitCode(id: string): void {
     const code = host.querySelector<HTMLInputElement>(`[data-sign-in-code="${CSS.escape(id)}"]`)?.value ?? '';
     if (!code.trim()) return;
-    call('account_sign_in_code', { id, code }).catch(error => message(String(error instanceof Error ? error.message : error), true, providerOf(id)));
+    call('account_sign_in_code', { id, code }).catch(error => message(errorText(error), true, providerOf(id)));
   }
   function signInEvent(event: SignIn): void {
     if (disposed || !signing[event.id]) return;
@@ -220,7 +221,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
         members = { ...members, [provider]: list };
         redrawPools();
         if (visible) void loadUsage(provider, all, refresh);
-      }).catch(error => { if (!disposed && generation === memberGeneration[provider]) message(String(error), true, provider); });
+      }).catch(error => { if (!disposed && generation === memberGeneration[provider]) message(errorText(error), true, provider); });
     })).then(() => undefined);
   }
   /** Reads usage one account at a time, so a slow CLI cannot crowd the others. `all` re-reads every account and
@@ -312,7 +313,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
         const selector = ownsFocus ? restoreFocus?.() : movedFocus;
         if (selector) host.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
       }
-    } catch (error) { if (!disposed) message(String(error instanceof Error ? error.message : error), true, provider); }
+    } catch (error) { if (!disposed) message(errorText(error), true, provider); }
     finally { host.removeAttribute('aria-busy'); }
   }
   function collect(form: HTMLFormElement): unknown {
@@ -340,11 +341,11 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     confirming = null;
     void perform(() => call<ConnectionSnapshot>('connection_delete', { id }), 'Connection deleted. Its tasks use the harness setup again.', false, provider, false, () => selector);
   };
-  const copy = (text: string, provider?: string) => navigator.clipboard.writeText(text).then(() => message('Command copied.', false, provider), error => message(String(error), true, provider));
+  const copy = (text: string, provider?: string) => navigator.clipboard.writeText(text).then(() => message('Command copied.', false, provider), error => message(errorText(error), true, provider));
   const click = (event: MouseEvent) => {
     const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[data-open-url]');
     const pool = (event.target as HTMLElement).closest<HTMLElement>('[data-pool]')?.dataset.pool;
-    if (link && host.contains(link)) { event.preventDefault(); call('open_external_url', { url: link.dataset.openUrl }).catch(error => message(String(error), true, pool)); return; }
+    if (link && host.contains(link)) { event.preventDefault(); call('open_external_url', { url: link.dataset.openUrl }).catch(error => message(errorText(error), true, pool)); return; }
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button'); if (!button || !host.contains(button)) return;
     if (button.hasAttribute('data-add-connection')) { editing = 'new'; render(); syncConfigVar(); host.querySelector<HTMLInputElement>('#connection-name')?.focus(); }
     else if (button.dataset.editConnection) edit(button.dataset.editConnection);
@@ -363,7 +364,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
       void perform(async () => { const account = await call<NewAccount>('connection_new_account', { provider }); id = account.id; return account.snapshot; }, 'Account added. Sign in in your browser to add it to the pool.', false, provider, true).then(() => { if (id && !disposed) startSignIn(id); });
     }
     else if (button.dataset.signIn) startSignIn(button.dataset.signIn);
-    else if (button.dataset.signInCancel) call('account_sign_in_cancel', { id: button.dataset.signInCancel }).catch(error => message(String(error instanceof Error ? error.message : error), true, pool));
+    else if (button.dataset.signInCancel) call('account_sign_in_cancel', { id: button.dataset.signInCancel }).catch(error => message(errorText(error), true, pool));
     else if (button.dataset.signInSubmit) submitCode(button.dataset.signInSubmit);
     else if (button.dataset.copyCommand) copy(button.dataset.copyCommand, pool);
   };
@@ -405,7 +406,7 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
   let unlisten: (() => void) | undefined;
   void (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)('account-sign-in', signInEvent).then(stop => { if (disposed) stop(); else unlisten = stop; });
   render();
-  void call<ConnectionSnapshot>('connections_list').then(next => { if (!disposed) { snapshot = next; if (!editing) render(); refreshPools(); } }).catch(error => { if (!disposed) message(String(error), true); });
+  void call<ConnectionSnapshot>('connections_list').then(next => { if (!disposed) { snapshot = next; if (!editing) render(); refreshPools(); } }).catch(error => { if (!disposed) message(errorText(error), true); });
   // Statuses refresh on focus and every minute, only while the section is on screen.
   let timer: number | undefined;
   const focus = () => {

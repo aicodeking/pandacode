@@ -4,6 +4,7 @@
  * resolves them. The host supplies the task and the queue, so this module imports no app state. */
 import './recipes.css';
 import { escape } from './dom';
+import { errorText } from './error-text';
 
 export interface RecipeStep { kind: 'prompt' | 'slash' | 'check' | 'approval'; text?: string; command?: string; requires?: string[] }
 export interface Recipe { name: string; description: string; steps: RecipeStep[]; scope?: 'project' | 'global' }
@@ -61,7 +62,7 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
     selected = recipe; plan = null; editing = null; message = ''; draw();
     try {
       plan = await host.call<RecipePlan>('recipes_dry_run', { recipe, provider: host.provider, slash: await host.slashCommands() });
-    } catch (error) { message = String(error); }
+    } catch (error) { message = errorText(error); }
     draw();
   }
 
@@ -95,9 +96,9 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
         busy = false; message = `Queued ${messages.length} ${messages.length === 1 ? 'message' : 'messages'}.`; draw();
         host.done?.(messages.length);
       }
-    } catch (error) { busy = false; message = error instanceof SyntaxError ? `Not valid JSON: ${error.message}` : String(error); draw(); }
+    } catch (error) { busy = false; message = error instanceof SyntaxError ? `Not valid JSON: ${error.message}` : errorText(error); draw(); }
   });
 
-  void reload().catch(error => { message = String(error); draw(); });
+  void reload().catch(error => { message = errorText(error); draw(); });
   draw();
 }

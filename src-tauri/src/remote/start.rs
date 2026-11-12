@@ -457,7 +457,9 @@ fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: boo
             std::fs::create_dir_all(home.join(CLONE_FOLDER)).map_err(|e| e.to_string())?;
             progress.report("downloading", None, None);
             clone_with_progress(repo, &destination, CLONE, lazy, cancel, |percent| progress.report("downloading", Some(percent), None))?;
-            Ok((state.store.lock().map_err(|e| e.to_string())?.add_project(&destination)?, true))
+            let added = state.store.lock().map_err(|e| e.to_string())?.add_project(&destination);
+            crate::skill_manager::projects_changed();
+            Ok((added?, true))
         }
     }
 }
@@ -702,7 +704,9 @@ impl Drop for Made {
 fn attach(store: &Mutex<crate::storage::Store>, root: &Path, branch: &str, made: Option<workspace::Worktree>, id: &str, trust: workspace::Trust) -> Result<workspace::Worktree> {
     let made = Made(root.to_owned(), Some(made.map_or_else(|| remote_worktree(root, branch, trust), Ok)?), trust);
     let checkout = made.1.as_ref().expect("just made");
-    store.lock().map_err(|e| e.to_string())?.attach_worktree(id, &checkout.path, &checkout.branch)?;
+    let attached = store.lock().map_err(|e| e.to_string())?.attach_worktree(id, &checkout.path, &checkout.branch);
+    crate::skill_manager::projects_changed();
+    attached?;
     Ok(made.keep().expect("just made"))
 }
 

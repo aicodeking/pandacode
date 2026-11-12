@@ -2,6 +2,7 @@ import type { TurnChangeDiff, TurnChangeFile, TurnChanges } from './types.ts';
 import type { CombinedChanges } from './turn-activity.ts';
 import { escape, fileIcon, icon } from './dom.ts';
 import { infoMark } from './tooltip.ts';
+import { errorText } from './error-text';
 
 /** A merged card's summary of several runs (combineChanges), as opposed to one run's snapshot. */
 export const isCombined = (changes: TurnChanges): changes is CombinedChanges => Array.isArray((changes as Partial<CombinedChanges>).runs);
@@ -105,7 +106,7 @@ export function mountCombinedReview(host: HTMLElement, sessionId: string, change
       await controller.ready;
     } catch (error) {
       if (disposed || current !== request) return;
-      viewer.innerHTML = `<div class="change-review-error" role="alert"><p>${escape(error instanceof Error ? error.message : String(error))}</p><button type="button" class="secondary-button">Retry</button></div>`;
+      viewer.innerHTML = `<div class="change-review-error" role="alert"><p>${escape(errorText(error))}</p><button type="button" class="secondary-button">Retry</button></div>`;
       viewer.querySelector('button')!.addEventListener('click', () => { void select(path, index); });
     }
   }
