@@ -82,6 +82,7 @@ use run_requests::{lock_agents, record_request_event, run_end, settle_account_sw
 mod jj;
 mod tray;
 mod headless;
+mod quit_guard;
 mod headless_bots;
 
 pub use usage_keychain::handle_usage_keychain_helper;
@@ -4202,6 +4203,15 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         if state.shutdown.load(Ordering::SeqCst) == 2 {
             return;
         }
+        // Cloud runs keep going on their machines; their bridges are killed below.
+        let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
+        let local = lock_agents(&state.agents).map(|a| a.keys().filter(|id| !cloud.contains(*id)).count()).unwrap_or(0);
+        let shutting_down = state.shutdown.load(Ordering::SeqCst) != 0;
+        if quit_guard::should_confirm_quit(local, headless::active(), quit_guard::confirmed(), shutting_down, code == Some(tauri::RESTART_EXIT_CODE)) {
+            api.prevent_exit();
+            quit_guard::ask(app, local);
+            return;
+        }
         api.prevent_exit();
         if state.shutdown.swap(1, Ordering::SeqCst) == 1 {
             return;
@@ -4209,8 +4219,6 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         jev::shutdown();
         app.state::<file_preview::FilePreviews>().shutdown();
-        // Cloud runs keep going on their machines; their bridges are killed below.
-        let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
         if let Ok(agents) = lock_agents(&state.agents) {
             for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
                 let _ = tx.send(RunInput::Stop);
