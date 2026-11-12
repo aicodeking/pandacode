@@ -1639,3 +1639,87 @@ fn another_repositorys_exclude_list_in_a_record_is_never_edited() {
     fx.library.deactivate("release-notes", "claude", Scope::Project, Some(&root)).unwrap();
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep\n/.claude/skills/release-notes/\n");
 }
+
+/// A record from a build up to 0.3.114 holds the unresolved line relative to the project
+/// (`/.claude/skills/x/` for a project at `app/` of its repository); deactivate removes that
+/// line too, while a foreign line in the record still stays.
+#[test]
+fn an_exclude_line_from_an_older_build_is_removed_on_deactivate() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    let sub = root.join("app");
+    fs::create_dir_all(&sub).unwrap();
+    fx.import(Kind::Skill, &fx.folder("release-notes", &[("SKILL.md", SKILL)]));
+    fx.library.activate("release-notes", "claude", Scope::Project, Some(&sub), false).unwrap();
+    let exclude = root.join(".git/info/exclude");
+    let text = fs::read_to_string(&exclude).unwrap().replace("/app/.claude/skills/release-notes/", "/.claude/skills/release-notes/");
+    fs::write(&exclude, format!("{text}/src/\n")).unwrap();
+    let mut meta = fx.library.load("release-notes").unwrap();
+    meta.activations[0].excluded = vec!["/.claude/skills/release-notes/".into(), "/src/".into()];
+    fx.library.save(&meta).unwrap();
+    fx.library.deactivate("release-notes", "claude", Scope::Project, Some(&sub)).unwrap();
+    let text = fs::read_to_string(&exclude).unwrap();
+    assert!(text.lines().any(|l| l == "/src/") && !text.contains("release-notes"), "{text}");
+}
+
+/// A user-scope update failing while it rewrites a file in place (half written) puts the
+/// previous version back whole, including a file the update had deleted.
+#[test]
+fn a_user_scope_update_failing_partway_restores_the_previous_version() {
+    let fx = Fixture::new();
+    let source = fx.folder("release-notes", &[("SKILL.md", SKILL), ("old.md", "Old.\n")]);
+    fx.import(Kind::Skill, &source);
+    fx.library.activate("release-notes", "claude", Scope::User, None, false).unwrap();
+    let before = fx.library.load("release-notes").unwrap().activations;
+    fs::write(source.join("SKILL.md"), format!("{SKILL}See extra.md.\n")).unwrap();
+    fs::remove_file(source.join("old.md")).unwrap();
+    fs::write(source.join("extra.md"), "Extra.\n").unwrap();
+    fx.import(Kind::Skill, &source);
+    let mut once = true;
+    adapter::fail_point::set(move |path| if path.ends_with("SKILL.md") && std::mem::take(&mut once) { Err(std::io::Error::other("disk full")) } else { Ok(()) });
+    let refused = fx.library.activate("release-notes", "claude", Scope::User, None, false);
+    adapter::fail_point::clear();
+    let refused = refused.unwrap_err();
+    assert!(refused.contains("disk full") && !refused.contains("Left in place"), "{refused}");
+    let folder = fx.home.join(".claude/skills/release-notes");
+    assert_eq!(fs::read(folder.join("SKILL.md")).unwrap(), SKILL.as_bytes());
+    assert_eq!(fs::read(folder.join("old.md")).unwrap(), b"Old.\n");
+    assert!(!folder.join("extra.md").exists());
+    let after = fx.library.load("release-notes").unwrap().activations;
+    assert_eq!(serde_json::to_string(&after).unwrap(), serde_json::to_string(&before).unwrap());
+}
+
+/// A skill with files under its own nested `skills/` folder leaves no empty folders behind,
+/// so the next first activation is not refused as the user's folder.
+#[test]
+fn deactivate_removes_nested_skills_folders() {
+    let fx = Fixture::new();
+    fx.import(Kind::Skill, &fx.folder("release-notes", &[("SKILL.md", SKILL), ("skills/a/b.md", "B.\n")]));
+    fx.library.activate("release-notes", "claude", Scope::User, None, false).unwrap();
+    let folder = fx.home.join(".claude/skills/release-notes");
+    assert!(folder.join("skills/a/b.md").is_file());
+    fx.library.deactivate("release-notes", "claude", Scope::User, None).unwrap();
+    assert!(!folder.exists());
+    assert!(fx.home.join(".claude/skills").is_dir());
+    fx.library.activate("release-notes", "claude", Scope::User, None, false).unwrap();
+}
+
+/// A top level `core.worktree` moved above the folder whose `.git` Git found is not trusted:
+/// the exclude list stays as it was and activation still succeeds.
+#[test]
+fn a_top_level_moved_above_the_found_git_folder_is_not_trusted() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    let proj = root.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    assert!(Command::new("git").args(["init", "-q"]).current_dir(&proj).status().unwrap().success());
+    assert!(Command::new("git").args(["config", "core.worktree"]).arg(&root).current_dir(&proj).status().unwrap().success());
+    let exclude = proj.join(".git/info/exclude");
+    let before = fs::read_to_string(&exclude).unwrap_or_default();
+    fx.import(Kind::Skill, &fx.folder("release-notes", &[("SKILL.md", SKILL)]));
+    fx.library.activate("release-notes", "claude", Scope::Project, Some(&proj), false).unwrap();
+    assert_eq!(fs::read_to_string(&exclude).unwrap_or_default(), before);
+    assert!(!fs::read_to_string(root.join(".git/info/exclude")).unwrap_or_default().contains("release-notes"));
+    assert!(adapter::found_at_top(&root.join("app"), &root));
+    assert!(!adapter::found_at_top(&proj, &root));
+}

@@ -522,12 +522,12 @@ impl Library {
                 let added = add_exclude(&dir.join(id), true)?;
                 let written = match adapter::write_folder(&dir, id, &files, previous_files, checkout) {
                     Ok(written) => written,
-                    Err((e, mut left)) => {
+                    Err((e, mut left, failed)) => {
                         // A re-activation puts the previous version back, as for a failed save;
                         // nothing stays hidden: files that had to stay are named and show in Git.
                         if let Restore::Folder(_, old) = &restore {
-                            let present = on_disk(&dir.join(id), old, &files);
-                            left.extend(restore.apply(id, "folder", &present, checkout));
+                            let present = on_disk(&dir.join(id), old, &files, failed.as_deref());
+                            left.extend(restore.apply(id, "folder", &present, checkout, &[]));
                         }
                         return Err(format!("{e}{}{}", undo_exclude(&added), left_in_place(&left)));
                     }
@@ -585,12 +585,13 @@ impl Library {
             // files where this call replaced them, nothing where it had none (unrecorded files
             // would be refused as the user's own next time). A moved copy was not touched yet.
             // The old lines stay with the previous record.
-            let left = restore.apply(id, surface, &written_now, checkout);
+            let left = restore.apply(id, surface, &written_now, checkout, surface_target.as_slice());
             return Err(format!("{e}{}{}", undo_exclude(&added), left_in_place(&left)));
         }
         if moved {
             // An edited file stays, unmanaged, and its line goes too, as on deactivate.
-            kept.extend(adapter::remove_folder(&old_files, checkout));
+            let folders = previous.as_ref().map(|a| folders_of(id, kind, a, base)).unwrap_or_default();
+            kept.extend(adapter::remove_folder(&old_files, &folders, checkout));
         }
         // Lines another activation still has files under stay and are handed to it.
         if let (false, Some(previous)) = (release.is_empty(), &previous) {
@@ -718,7 +719,7 @@ impl Library {
             (Scope::Project, None) => return (all(), Vec::new()),
         };
         let (files, mut kept) = self.vetted(id, kind, activation, base);
-        kept.extend(remove_written(id, &activation.surface, &files, checkout));
+        kept.extend(remove_written(id, &activation.surface, &files, checkout, &folders_of(id, kind, activation, base)));
         let heirs = match checkout {
             Some(base) => {
                 let own = own_lines(id, kind, activation, base, activation.excluded.clone(), checkouts);
@@ -920,18 +921,18 @@ struct Heir {
 /// ([`adapter::own_line`]). Any other line, from a damaged or edited record, is logged and left
 /// in the exclude list.
 fn own_lines(id: &str, kind: Kind, activation: &Activation, base: &Path, entries: Vec<String>, checkouts: &mut Checkouts) -> Vec<String> {
-    let targets = match adapter::surface(&activation.harness, kind, activation.scope, base) {
-        Surface::Folder(dir) if activation.harness == "codex" && activation.scope == Scope::Project => vec![(dir.join(id), true), (base.join(".codex/skills").join(id), true)],
-        Surface::Folder(dir) => vec![(dir.join(id), true)],
-        Surface::Block(file) => vec![(file, false)],
-        Surface::Prompt => Vec::new(),
-    };
+    let targets = adapter::targets(&activation.harness, kind, activation.scope, base, id);
     let checkout = checkouts.get(base).map(|(_, checkout)| checkout);
     let (own, other): (Vec<String>, Vec<String>) = entries.into_iter().partition(|line| targets.iter().any(|(path, folder)| adapter::own_line(checkout, base, path, *folder, line)));
     for line in &other {
         eprintln!("[skills] the recorded exclude line {line} is not one PandaCode adds for {id} in {}; it was left in place", base.display());
     }
     own
+}
+
+/// The skill folders `activation` of item `id` writes in `base` ([`adapter::targets`]).
+fn folders_of(id: &str, kind: Kind, activation: &Activation, base: &Path) -> Vec<PathBuf> {
+    adapter::targets(&activation.harness, kind, activation.scope, base, id).into_iter().filter(|(_, folder)| *folder).map(|(path, _)| path).collect()
 }
 
 /// Drops each of `entries` from `base`'s exclude list unless another activation in `others`
@@ -1024,15 +1025,18 @@ enum Restore {
 
 impl Restore {
     /// Undoes the write `written` of `surface`; returns the files it had to leave in place.
-    fn apply(self, id: &str, surface: &str, written: &[Written], checkout: Option<&Path>) -> Vec<String> {
+    /// `folders` are the skill folders a removal clears up to ([`adapter::remove_folder`]).
+    fn apply(self, id: &str, surface: &str, written: &[Written], checkout: Option<&Path>, folders: &[PathBuf]) -> Vec<String> {
         match self {
-            Restore::Remove => remove_written(id, surface, written, checkout),
-            Restore::Folder(dir, files) => adapter::write_folder(&dir, id, &files, written, checkout).map_or_else(|(e, mut left)| {
+            Restore::Remove => remove_written(id, surface, written, checkout, folders),
+            Restore::Folder(dir, files) => adapter::write_folder(&dir, id, &files, written, checkout).map_or_else(|(e, mut left, _)| {
                 eprintln!("[skills] could not put back the previous {id}: {e}");
-                // Every file not back to its previous version stays as it is now and is named.
+                // Every file not back to its previous version stays as it is now and is named,
+                // and so is every previous file the update had deleted and that is still gone.
                 let target = dir.join(id);
                 let old = |path: &Path| files.iter().find(|(relative, _)| target.join(relative) == path).map(|(_, bytes)| sha256_hex(bytes));
                 left.extend(written.iter().filter(|w| adapter::file_hash(Path::new(&w.path)).is_some_and(|hash| Some(hash) != old(Path::new(&w.path)))).map(|w| w.path.clone()));
+                left.extend(files.iter().map(|(relative, _)| target.join(relative)).filter(|path| fs::symlink_metadata(path).is_err()).map(|path| path.to_string_lossy().into_owned()));
                 left.sort();
                 left.dedup();
                 left
@@ -1063,17 +1067,18 @@ fn snapshot(target: &Path, written: &[Written]) -> Files {
 }
 
 /// The snapshot's paths under `target` as a failed write of `new` left them, so
-/// [`Restore::apply`] rewrites each one: the hash on disk where it is the old version or the new
-/// one this call wrote there, else the old one. So a file someone changed meanwhile (or one that
-/// is gone) still fails [`adapter::check_folder`]'s edited-on-disk check and is kept.
-fn on_disk(target: &Path, snapshot: &Files, new: &Files) -> Vec<Written> {
+/// [`Restore::apply`] rewrites each one: the hash on disk where it is the old version, the new
+/// one this call wrote there, or `failed` (the file the write failed on, possibly half written
+/// in place in user scope); else the old hash, which a missing file passes and a file someone
+/// changed meanwhile fails ([`adapter::check_folder`]'s edited-on-disk check), so that one is kept.
+fn on_disk(target: &Path, snapshot: &Files, new: &Files, failed: Option<&Path>) -> Vec<Written> {
     snapshot
         .iter()
         .map(|(relative, bytes)| {
             let path = target.join(relative);
             let old = sha256_hex(bytes);
             let ours = |hash: &String| {
-                *hash == old || new.iter().any(|(r, b)| (r == relative || adapter::same_file(&target.join(r), &path)) && sha256_hex(b) == *hash)
+                *hash == old || failed == Some(path.as_path()) || new.iter().any(|(r, b)| (r == relative || adapter::same_file(&target.join(r), &path)) && sha256_hex(b) == *hash)
             };
             let sha256 = adapter::file_hash(&path).filter(ours).unwrap_or(old);
             Written { path: path.to_string_lossy().into_owned(), sha256 }
@@ -1082,9 +1087,9 @@ fn on_disk(target: &Path, snapshot: &Files, new: &Files) -> Vec<Written> {
 }
 
 /// Removes the files of a `surface` write that still match; returns the ones left in place.
-fn remove_written(id: &str, surface: &str, files: &[Written], checkout: Option<&Path>) -> Vec<String> {
+fn remove_written(id: &str, surface: &str, files: &[Written], checkout: Option<&Path>, folders: &[PathBuf]) -> Vec<String> {
     match surface {
-        "folder" => adapter::remove_folder(files, checkout),
+        "folder" => adapter::remove_folder(files, folders, checkout),
         "block" => files.iter().filter(|w| !matches!(adapter::remove_block(w, id, checkout), Ok(true))).map(|w| w.path.clone()).collect(),
         _ => Vec::new(),
     }
