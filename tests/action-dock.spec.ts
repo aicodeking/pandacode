@@ -7,17 +7,17 @@ const rect = (page: Page, selector: string) => page.locator(selector).first().ev
 const overlaps = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 // Every animation the dock starts, recorded when it starts: counting running ones a round trip later races a
 // ~267 ms spring on a loaded machine (the cause of the old flakes).
-const recordDock = (page: Page) => page.evaluate(() => {
+const recordDock = (page: Page, buttonsOnly = false) => page.evaluate(buttonsOnly => {
   const w = window as unknown as { __dockStarted: string[]; __dockWrapped?: boolean };
   w.__dockStarted = [];
   if (w.__dockWrapped) return;
   w.__dockWrapped = true;
   const animate = Element.prototype.animate;
   Element.prototype.animate = function (this: Element, keyframes: Keyframe[] | PropertyIndexedKeyframes | null, options?: number | KeyframeAnimationOptions) {
-    if (this.closest('#action-dock')) w.__dockStarted.push(`${this.id || this.className}${typeof options === 'object' && options.pseudoElement ? options.pseudoElement : ''}`);
+    if (this.closest(buttonsOnly ? '#action-dock button' : '#action-dock')) w.__dockStarted.push(`${this.id || this.className}${typeof options === 'object' && options.pseudoElement ? options.pseudoElement : ''}`);
     return animate.call(this, keyframes, options);
   };
-});
+}, buttonsOnly);
 const dockStarted = (page: Page) => page.evaluate(() => (window as unknown as { __dockStarted: string[] }).__dockStarted);
 const dockAnimations = (page: Page) => page.evaluate(() => document.getAnimations().filter(animation => animation.playState === 'running' && ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest('#action-dock')).length);
 
@@ -169,6 +169,7 @@ test.describe('action dock', () => {
       };
     });
     await page.goto('/');
+    await expect(page.locator('#prompt')).toBeEnabled();
     await expect.poll(() => page.evaluate(() => (window as any).__dockEntrance.length as number), { timeout: 3000 }).toBeGreaterThan(3);
     const timing: { delay: number; duration: number }[] = await page.evaluate(() => (window as any).__dockEntrance);
     const delays = timing.map(entry => entry.delay).sort((a, b) => a - b);
@@ -300,7 +301,7 @@ test.describe('action dock', () => {
     }
   });
 
-  test('only the card takes the pointer, and a wheel over it scrolls the thread', async ({ page }) => {
+  test('only the card takes the pointer, and a wheel over it scrolls the thread', async ({ page }, testInfo) => {
     await open(page);
     const box = await rect(page, '#action-dock');
     const hit = (x: number, y: number) => page.evaluate(([px, py]) => {
@@ -317,8 +318,14 @@ test.describe('action dock', () => {
     await transcript.evaluate(node => { const room = document.createElement('div'); room.style.height = '3000px'; node.append(room); node.scrollTop = 1200; });
     await page.mouse.move(middleX, middleY);
     const before = await top();
+    await page.evaluate(() => {
+      const events: unknown[] = (window as any).__dockWheelEvents = [];
+      document.addEventListener('wheel', event => { if (events.length < 32) events.push({ delta: event.deltaY, mode: event.deltaMode, trusted: event.isTrusted, cancelable: event.cancelable, target: (event.target as Element).tagName, top: document.querySelector('#transcript')!.scrollTop }); }, true);
+      document.querySelector('#transcript')!.addEventListener('scroll', () => { if (events.length < 32) events.push({ scrollTop: document.querySelector('#transcript')!.scrollTop }); });
+    });
     await page.mouse.wheel(0, -200);
-    await expect.poll(top).toBeCloseTo(before - 200, 0);
+    try { await expect.poll(top).toBeCloseTo(before - 200, 0); }
+    finally { await testInfo.attach('dock-wheel-events', { body: JSON.stringify({ before, events: await page.evaluate(() => (window as any).__dockWheelEvents) }), contentType: 'application/json' }); }
     await page.mouse.wheel(0, 120);
     await expect.poll(top).toBeCloseTo(before - 80, 0);
   });
@@ -483,22 +490,12 @@ test.describe('action dock', () => {
       await expect(agents(page)).toBeVisible();
       await expect.poll(() => dockAnimations(page)).toBe(0);
       const other = page.locator('.task-item:not(.selected)').first();
-      const moved = await page.evaluate(async () => {
-        const seen = (window as any).__dockSeen = new Set<string>();
-        let watching = true;
-        const watch = () => {
-          for (const animation of document.getAnimations()) if (((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest('#action-dock button')) seen.add(((animation.effect as KeyframeEffect).target as Element).id || 'item');
-          if (watching) requestAnimationFrame(watch);
-        };
-        watch();
-        (window as any).__dockStop = () => { watching = false; };
-        return true;
-      });
-      expect(moved).toBe(true);
+      // Record new starts, not a finished fill animation from before the switch.
+      await recordDock(page, true);
       await other.click();
       await expect(agents(page)).toBeHidden();
       await page.waitForTimeout(400);
-      expect(await page.evaluate(() => { (window as any).__dockStop(); return [...(window as any).__dockSeen]; })).toEqual([]);
+      expect(await dockStarted(page)).toEqual([]);
       // Inside the thread the item still springs in.
       const animating = await page.evaluate(async id => {
         (window as any).__previewSubagent(id, { id: 'b', name: 'Agent b', status: 'running' });
@@ -547,14 +544,18 @@ test.describe('action dock', () => {
       const panel = await rect(page, '#agents-flyout'), dock = await rect(page, '#action-dock'), item = await rect(page, '#agents-toggle');
       expect(panel.right).toBeLessThanOrEqual(dock.left);
       expect(Math.abs(panel.top - item.top)).toBeLessThanOrEqual(2);
+      // Driver round trips are not elapsed reader time across the short hover gap.
+      await page.clock.install({ time: new Date(0) });
+      await page.clock.pauseAt(new Date(10_000));
       // Across the gap and onto the panel: it stays.
       await page.mouse.move(panel.right - 30, panel.top + 20, { steps: 6 });
-      await page.waitForTimeout(500);
+      await page.clock.runFor(500);
       await expect(flyout(page)).toBeVisible();
       // Off both: it closes after a short grace.
       await page.mouse.move(300, 600);
-      await page.waitForTimeout(100);
+      await page.clock.runFor(100);
       await expect(flyout(page)).toBeVisible();
+      await page.clock.runFor(200);
       await expect(flyout(page)).toBeHidden();
       await expect(agents(page)).toHaveAttribute('aria-expanded', 'false');
     });

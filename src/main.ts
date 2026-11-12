@@ -18,6 +18,8 @@ import './motion.css';
 import './sidebar-tree.css';
 import './inspector-bar.css';
 import './message-queue.css';
+import './extensions/extensions.css';
+import { threadActionSlot } from './extensions/thread-slots';
 import './schedules.css';
 import './bot-shared-channels.css';
 import './bots.css';
@@ -64,7 +66,7 @@ import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { mountDesktopBrand } from './brand-mark';
 import { starPanda } from './star-panda';
-import { bindMessageActions, messageActionsHtml } from './message-actions';
+import { bindMessageActions, messageActionsHtml as coreMessageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
@@ -540,6 +542,15 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
   mountExtensionActions($('.inspector-strip-actions'), 'panda.inspector.actions', context, notify, onContextChanged);
+  mountExtensionActions($('.header-actions'), 'panda.thread.header', context, notify, onContextChanged, () => Boolean(state.sessionId) && state.view === 'conversation');
+  const dockSlot = document.createElement('div'); dockSlot.className = 'extension-action-slot'; $('#action-dock').append(dockSlot);
+  mountExtensionActions(dockSlot, 'panda.actionDock.actions', context, notify, onContextChanged);
+  mountExtensionActions($('#agents-flyout'), 'panda.agents.actions', context, notify, onContextChanged);
+  const { mountThreadActions } = await import('./extensions/thread-actions');
+  mountThreadActions($('.workspace'), id => {
+    const task = state.sessions.find(task => task.id === id);
+    return task ? { revision: state.generation, projectId: task.projectId, sessionId: id } : undefined;
+  }, notify);
   const inspectorListeners = new Set<() => void>();
   refreshExtensionInspectorActions = () => inspectorListeners.forEach(listener => listener());
   for (const view of ['files', 'changes', 'search'] as const) {
@@ -1941,7 +1952,10 @@ function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): 
     : `<div class="turn-card-head"><span class="turn-activity-label">${label}</span>${time}</div>`;
   const final = turn.final;
   const reply = final ? replyHtml(messageHtml(final, true, false, thread), turn.key, messageActionsHtml(final.sessionId, final.id, final.id > 0)) : '';
-  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, thread)}${cardFootHtml(sessionId, earlierChangeSets(turn))}</section>`;
+  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${threadActionSlot('panda.thread.trace.actions', sessionId, 'trace', turn.key)}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, thread)}${cardFootHtml(sessionId, earlierChangeSets(turn))}</section>`;
+}
+function messageActionsHtml(sessionId: string, key: string | number, canFork = true, canEdit = false): string {
+  return coreMessageActionsHtml(sessionId, key, canFork, canEdit, threadActionSlot('panda.thread.message.actions', sessionId, 'message', String(key)));
 }
 /** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
  *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
@@ -2481,8 +2495,8 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   let parts = streamParts.get(region);
   if (region.dataset.sessionId !== sessionId || !parts || !region.contains(parts.output)) {
     const thinkingHtml = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>`;
-    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
-    const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
+    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(sessionId, 'live', false)}</article>`;
+    const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}${threadActionSlot('panda.thread.trace.actions', sessionId, 'trace', current.turnKey)}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     const switches = captureAccountSwitches(region);
@@ -2938,6 +2952,10 @@ function renderComposer(): void {
       fresh.replaceWith(oldPrompt);
     }
   }
+  // Accessories are independent siblings; never replace host input/attachment/queue nodes.
+  $('#composer .composer-actions').insertAdjacentHTML('afterbegin', threadActionSlot('panda.composer.actions', s.id));
+  $('#composer .composer-tools').insertAdjacentHTML('beforeend', threadActionSlot('panda.composer.tray', s.id));
+  $('#attachments').insertAdjacentHTML('afterend', threadActionSlot('panda.composer.attachments', s.id));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');

@@ -373,6 +373,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn thread_action_fixture_validates_without_task_control_authority() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/thread-laboratory/extension.json")).unwrap();
+        assert_eq!(validate_contract("packages", &json!([manifest]))["ok"], true);
+        assert_eq!(manifest["contributes"]["menus"].as_array().unwrap().len(), 9);
+        for menu in manifest["contributes"]["menus"].as_array().unwrap() {
+            let registration = json!({"schemaVersion":1, "owner":{"extensionId":"sample.thread-laboratory", "version":"1.0.0", "activationId":"test-1"}, "definition":menu});
+            assert_eq!(validate_contract("contribution", &registration)["ok"], true);
+            for kind in ["message", "trace", "team"] {
+                let context = json!({"schemaVersion":1, "windowId":"main", "surfaceId":menu["location"], "revision":1, "projectId":"project-a", "sessionId":"task-a", "selection":{"kind":kind, "ids":["object-a"]}});
+                assert_eq!(validate_contract("context", &context)["value"], context);
+            }
+        }
+        for kind in ["stop_session", "respond_approval", "respond_user_input", "send_message", "bridge.call"] {
+            let mut invalid = manifest.clone();
+            invalid["contributes"]["commands"][0]["action"] = json!({"kind":kind, "sessionId":"task-a"});
+            assert_eq!(validate_contract("packages", &json!([invalid]))["ok"], false);
+        }
+    }
+
+    #[test]
     fn view_action_locations_and_captured_object_contexts_validate_natively() {
         let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/view-laboratory/extension.json")).unwrap();
         assert_eq!(validate_contract("packages", &json!([manifest]))["ok"], true);

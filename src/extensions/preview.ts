@@ -2,6 +2,8 @@
 import manifest from '../../tests/fixtures/extensions/sample-project-helper/extension.json';
 import svg from '../../tests/fixtures/extensions/sample-project-helper/assets/info.svg?raw';
 import viewSvg from '../../tests/fixtures/extensions/view-laboratory/assets/info.svg?raw';
+import threadManifest from '../../tests/fixtures/extensions/thread-laboratory/extension.json';
+import threadSvg from '../../tests/fixtures/extensions/thread-laboratory/assets/info.svg?raw';
 import { validateContract } from './contracts';
 import type { ExtensionPackage, ExtensionSnapshot } from './manager';
 const key = 'pandacode.preview.extensions.v1';
@@ -14,7 +16,7 @@ function read(): ExtensionSnapshot {
     const packages: ExtensionPackage[] = JSON.parse(text);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
-    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
+    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export function previewExtensions(command: string, args: Record<string, unknown>): ExtensionSnapshot {
@@ -23,8 +25,9 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_snapshot') return snapshot;
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
   if (command === 'extensions_install') {
-    if (snapshot.packages.some(item => item.manifest.id === manifest.id)) throw new Error('Duplicate package ownership; already installed.');
-    snapshot.packages.push({ manifest: manifest as ExtensionPackage['manifest'], enabled: false, icons: { 'sample.project-helper/info': svg } });
+    const selected = new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
+    if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
+    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {} });
   } else if (command === 'extensions_uninstall') {
     snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
   } else if (command === 'extensions_enable') {
@@ -33,5 +36,5 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     item.enabled = args.enabled === true;
     item.reason = null;
   } else throw new Error('Unsupported extension preview command.');
-  localStorage.setItem(key, JSON.stringify(snapshot.packages)); return snapshot;
+  localStorage.setItem(key, JSON.stringify(snapshot.packages)); return read();
 }

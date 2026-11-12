@@ -326,6 +326,23 @@ mod tests {
         assert!(std::fs::read_dir(&packages.root).unwrap().all(|entry| !entry.unwrap().path().to_string_lossy().ends_with(".stage")));
     }
     #[test]
+    fn thread_action_laboratory_installs_enables_restarts_and_disables_as_a_real_archive() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/thread-laboratory/extension.json");
+        let svg = include_bytes!("../../../tests/fixtures/extensions/thread-laboratory/assets/info.svg");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        let bytes = archive(&[("extension.json", manifest), ("assets/info.svg", svg)]);
+        packages.install(&bytes).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.thread-laboratory", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        assert_eq!(restarted.packages[0].manifest["contributes"]["menus"].as_array().unwrap().len(), 9);
+        assert!(restarted.packages[0].icons.contains_key("sample.thread-laboratory/info"));
+        assert!(restarted.diagnostics.is_empty());
+        packages.enable("sample.thread-laboratory", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn safe_mode_returns_before_loading_or_touching_storage() {
         let storage = Storage::new(); let packages = storage.packages(true);
         // An invalid directory target proves even metadata/enumeration/creation is skipped.

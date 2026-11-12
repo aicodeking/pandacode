@@ -1,0 +1,29 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.thread-laboratory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.thread-laboratory/info", "asset": "assets/info.svg" }],
+    "commands": [
+      { "id": "sample.thread-laboratory/note", "title": "Thread note", "action": { "kind": "showMessage", "message": "Extension note only — no task control" } },
+      { "id": "sample.thread-laboratory/options", "title": "Thread options", "action": { "kind": "showDialog", "dialog": {
+        "title": "Action options", "successMessage": "Options confirmed", "cancelMessage": "Options cancelled",
+        "fields": [{ "id": "tags", "kind": "select", "label": "Action tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }, { "value": "beta", "label": "Beta" }] }]
+      } } }
+    ],
+    "menus": [
+      { "id": "sample.thread-laboratory/composer", "location": "panda.composer.actions", "command": "sample.thread-laboratory/note", "icon": "sample.thread-laboratory/info", "presentation": "button", "text": "Note", "badge": "3" },
+      { "id": "sample.thread-laboratory/tray", "location": "panda.composer.tray", "command": "sample.thread-laboratory/options", "icon": "sample.thread-laboratory/info", "items": [{ "id": "sample.thread-laboratory/tray-select", "kind": "command", "title": "Choose action tags", "command": "sample.thread-laboratory/options", "icon": "sample.thread-laboratory/info" }] },
+      { "id": "sample.thread-laboratory/attachments", "location": "panda.composer.attachments", "command": "sample.thread-laboratory/note", "icon": "sample.thread-laboratory/info", "presentation": "status", "text": "Accessory ready" },
+      { "id": "sample.thread-laboratory/header", "location": "panda.thread.header", "command": "sample.thread-laboratory/note", "icon": "sample.thread-laboratory/info", "presentation": "button", "text": "Note", "badge": "3" },
+      { "id": "sample.thread-laboratory/message", "location": "panda.thread.message.actions", "command": "sample.thread-laboratory/options", "icon": "sample.thread-laboratory/info", "items": [{ "id": "sample.thread-laboratory/message-select", "kind": "command", "title": "Choose action tags", "command": "sample.thread-laboratory/options", "icon": "sample.thread-laboratory/info" }] },
+      { "id": "sample.thread-laboratory/trace", "location": "panda.thread.trace.actions", "command": "sample.thread-laboratory/note", "icon": "sample.thread-laboratory/info", "presentation": "status", "text": "Trace accessory ready" },
+      { "id": "sample.thread-laboratory/dock", "location": "panda.actionDock.actions", "command": "sample.thread-laboratory/note", "icon": "sample.thread-laboratory/info", "presentation": "button", "text": "Note", "badge": "3" },
+      { "id": "sample.thread-laboratory/team", "location": "panda.team.actions", "command": "sample.thread-laboratory/options", "icon": "sample.thread-laboratory/info", "items": [{ "id": "sample.thread-laboratory/team-select", "kind": "command", "title": "Choose action tags", "command": "sample.thread-laboratory/options", "icon": "sample.thread-laboratory/info" }] },
+      { "id": "sample.thread-laboratory/agents", "location": "panda.agents.actions", "command": "sample.thread-laboratory/note", "icon": "sample.thread-laboratory/info", "presentation": "badge", "text": "Agents accessory ready" }
+    ]
+  }
+}

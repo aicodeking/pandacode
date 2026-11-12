@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { validateContract } from '../src/extensions/contracts.ts';
 import { createDeclarativeActivation } from '../src/extensions/activation.ts';
 import { createUiCatalog } from '../src/extensions/catalog.ts';
+import { THREAD_ACTION_SURFACES } from '../src/extensions/surfaces.ts';
 
 const read = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
 const sample = read('./fixtures/extensions/sample-project-helper/extension.json');
@@ -26,7 +27,7 @@ test('extensions menus: shared three-level fixture is validated without mutation
 test('extensions menus: discovery labels nested contributions as menu triggers, not direct command buttons', () => {
   const catalog = createUiCatalog(() => ({ safeMode: false, diagnostics: [], packages: [{ manifest: manifest(), icons: {}, enabled: true }] }));
   assert.equal(catalog.listItems({ owner: sample.id }).items[0].type, 'menu-trigger');
-  for (const surface of catalog.listSurfaces().items) assert.deepEqual(surface.supportedItemTypes, ['button', 'menu-trigger']);
+  for (const surface of catalog.listSurfaces().items) assert.deepEqual(surface.supportedItemTypes, THREAD_ACTION_SURFACES.includes(surface.id) ? ['button', 'menu-trigger', 'status', 'badge'] : ['button', 'menu-trigger']);
 });
 
 test('extensions menus: reject cycles, depth, total items, duplicate IDs, foreign IDs and malformed variants', () => {

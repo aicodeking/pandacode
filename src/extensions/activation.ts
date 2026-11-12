@@ -49,7 +49,7 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
         return false;
       }
       const entry = entries.find(entry => entry.menu.id === id || find(entry.menu.items ?? []));
-      if (!entry || !path.length && entry.menu.items) return;
+      if (!entry || !path.length && entry.menu.items || entry.menu.presentation === 'status' || entry.menu.presentation === 'badge') return;
       const leaf = path.at(-1);
       const command = leaf ? normalized.packages.find(manifest => manifest.id === entry.owner.extensionId)?.contributes.commands?.find(command => command.id === leaf.command) : entry.command;
       if (!command || !['showMessage', 'showDialog'].includes(command.action.kind)) return;

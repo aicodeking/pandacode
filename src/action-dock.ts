@@ -352,9 +352,13 @@ export function mountActionDock(dock: HTMLElement): void {
   dock.addEventListener('wheel', event => {
     const transcript = document.querySelector<HTMLElement>('#transcript');
     if (!transcript || event.ctrlKey || !floating(dock) || transcript.closest('[inert]')) return;
-    transcript.dispatchEvent(new WheelEvent('wheel', event));
+    // Own both defaults: WebKit also scrolls for the forwarded synthetic wheel.
+    // Listeners still receive reader intent, but only the bounded write scrolls.
+    event.preventDefault();
+    const forwarded = new WheelEvent('wheel', { deltaY: event.deltaY, deltaX: event.deltaX, deltaMode: event.deltaMode, bubbles: true, cancelable: true });
+    forwarded.preventDefault(); transcript.dispatchEvent(forwarded);
     transcript.scrollTop += event.deltaY * [1, WHEEL_LINE, transcript.clientHeight][event.deltaMode];
-  }, { passive: true });
+  }, { passive: false });
   rove(dock);
   requestAnimationFrame(() => { rove(dock); place(); });
 }

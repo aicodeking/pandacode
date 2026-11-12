@@ -5,7 +5,13 @@ export const VIEW_ACTION_SURFACES = [
   'panda.inspector.search.toolbar', 'panda.inspector.search.context',
   'panda.sidebar.project.context', 'panda.sidebar.task.context',
 ] as const;
-export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | typeof VIEW_ACTION_SURFACES[number];
+export const THREAD_ACTION_SURFACES = [
+  'panda.composer.actions', 'panda.composer.tray', 'panda.composer.attachments',
+  'panda.thread.header', 'panda.thread.message.actions', 'panda.thread.trace.actions',
+  'panda.actionDock.actions', 'panda.team.actions', 'panda.agents.actions',
+] as const;
+export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
+export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | typeof VIEW_ACTION_SURFACES[number] | ThreadActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

@@ -1,6 +1,15 @@
 .extension-header-actions { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
 .extension-header-actions[hidden] { display: none; }
 .extension-header-actions button { -webkit-app-region: no-drag; }
+.extension-action-slot:empty, .extension-action-slot:has(> [hidden]) { display: none; }
+.extension-action-slot { display: inline-flex; align-items: center; max-width: 100%; }
+.extension-action-slot .extension-header-actions { flex-wrap: wrap; }
+.extension-action-button, .extension-action-status, .extension-action-badge { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); }
+.extension-action-status { color: var(--muted); }
+.extension-action-badge { padding: 2px 5px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); color: var(--text); background: var(--ds-card-inner); }
+.extension-action-slot .icon { width: 16px; height: 16px; }
+[data-extension-location="panda.actionDock.actions"] { flex-direction: column; }
+@media (forced-colors: active) { .extension-action-badge { border-color: CanvasText; color: CanvasText; background: Canvas; } }
 .extension-sidebar-actions { flex-wrap: wrap; padding: 4px 7px; }
 [data-layout-hidden] { display: none !important; }
 .extension-dialog-field { display: grid; gap: var(--space-2); margin-block: 12px; }

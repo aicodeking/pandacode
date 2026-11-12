@@ -25,9 +25,10 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
   const confirmation = dialog.querySelector<HTMLElement>('.extension-dialog-confirm')!, submit = dialog.querySelector<HTMLButtonElement>('[type="submit"]')!;
   const owned = () => dialog.dataset.extensionDialog === token && dialog.contains(form);
   const focusTrigger = () => {
-    const replacement = trigger.isConnected ? trigger : triggerId ? [...document.querySelectorAll<HTMLElement>('[data-extension-contribution]')].find(node => node.dataset.extensionContribution === triggerId) : undefined;
+    const replacement = trigger.isConnected ? trigger : triggerId ? [...document.querySelectorAll<HTMLElement>('[data-extension-contribution]')].find(node => node.dataset.extensionContribution === triggerId && node.closest<HTMLElement>('[data-extension-session]')?.dataset.extensionSession === context.sessionId) : undefined;
     const eligible = (node: HTMLElement) => !node.closest('[inert]') && node.checkVisibility() && !(node as HTMLButtonElement).disabled;
-    (replacement && eligible(replacement) ? replacement : [...document.querySelectorAll<HTMLElement>('#prompt, button:not([disabled])')].find(eligible))?.focus({ preventScroll: true });
+    const prompt = document.querySelector<HTMLElement>('#prompt:not([disabled])');
+    (replacement && eligible(replacement) ? replacement : prompt && eligible(prompt) ? prompt : [...document.querySelectorAll<HTMLElement>('button:not([disabled])')].find(eligible))?.focus({ preventScroll: true });
   };
   function finish(value: DialogResult): void {
     if (ended) return;

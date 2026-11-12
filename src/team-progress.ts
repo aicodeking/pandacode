@@ -4,6 +4,7 @@ import { icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { fallbackModel } from './model-catalog';
 import { councilProgress, seatScore, seatVerdict, type CouncilSeatWorker } from './council';
+import { threadActionSlot } from './extensions/thread-slots';
 
 const pending = (worker: TeamWorker): boolean => !worker.abandoned && ['running', 'waiting', 'queued', 'parked'].includes(worker.status);
 const workerLabels: Record<TeamWorker['status'], string> = {
@@ -48,6 +49,7 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
     // The source's Lineage head: a muted label, a running count and a … that opens the team panel.
     list.innerHTML = `<div class="team-progress-head"><button type="button" class="team-progress-toggle" aria-expanded="false">${icon('chevron')}<span class="team-progress-label">Workers</span><span class="team-progress-count"></span></button><button type="button" class="icon-button team-progress-menu" data-action="open-team-progress" aria-label="Open team" title="Open team">${icon('more')}</button></div><button type="button" class="team-progress-more" data-action="open-team-progress" hidden></button>`;
     host.prepend(list);
+    list.querySelector('.team-progress-head')!.insertAdjacentHTML('afterbegin', threadActionSlot('panda.team.actions', team.sessionId, 'team'));
     const toggle = list.querySelector<HTMLButtonElement>('.team-progress-toggle')!, own = list;
     toggle.addEventListener('click', () => {
       const open = !own.hasAttribute('data-open');

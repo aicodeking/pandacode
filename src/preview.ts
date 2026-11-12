@@ -1478,6 +1478,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (new URLSearchParams(location.search).has('extensions-baseline')) {
     const fixture = (window as any).__extensionsBaseline ??= { version: 1, calls: [] };
     fixture.calls.push({ command, args: structuredClone(args) });
+    fixture.emitAgent ??= (event: AgentEvent) => agent(event);
+    if (command === 'send_message' && fixture.holdRun) { session(args.sessionId).status = 'running'; return undefined as T; }
     if (fixture.failOnce === command) { fixture.failOnce = null; throw new Error(`Baseline rejected ${command}`); }
     if (command === 'open_support') return undefined as T;
     if (command === 'get_run_script' && fixture.runScript) {

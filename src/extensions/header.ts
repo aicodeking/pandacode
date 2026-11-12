@@ -18,15 +18,19 @@ export function mountExtensionHeader(host: HTMLElement, context: () => Record<st
 /** Public action surfaces share validation, invocation and owner-scoped disposal. */
 export function mountExtensionActions(host: HTMLElement, location: ActionLocation, context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void, active: () => boolean = () => true, coreControls: ReadonlyArray<readonly [string, HTMLElement]> = []): () => void {
   const slot = document.createElement('div');
-  slot.className = 'extension-header-actions'; slot.dataset.tauriDragRegion = 'false';
+  slot.className = 'extension-header-actions'; slot.dataset.tauriDragRegion = 'false'; slot.dataset.extensionLocation = location;
   slot.setAttribute('role', 'group'); slot.setAttribute('aria-label', coreControls.length ? `${location.split('.')[2]} actions` : 'Extension actions');
   if (location === 'panda.sidebar.footer') { slot.classList.add('extension-sidebar-actions'); host.before(slot); }
   else host.append(slot);
   let registration: ReturnType<typeof createDeclarativeActivation> | undefined;
   let closeMenu: (() => void) | undefined;
   let closeDialog: (() => void) | undefined;
-  let conditions: { button: HTMLButtonElement; visible?: Json; enabled?: Json; hasItems: boolean }[] = [];
-  const fallbackFocus = () => [...document.querySelectorAll<HTMLElement>('button:not([disabled]), #prompt:not([disabled])')].find(element => !element.inert && element.checkVisibility())?.focus({ preventScroll: true });
+  let conditions: { button: HTMLElement; visible?: Json; enabled?: Json; hasItems: boolean }[] = [];
+  const fallbackFocus = () => {
+    const eligible = (element: HTMLElement) => !element.closest('[inert]') && element.checkVisibility();
+    const prompt = document.querySelector<HTMLElement>('#prompt:not([disabled])');
+    (prompt && eligible(prompt) ? prompt : [...document.querySelectorAll<HTMLElement>('button:not([disabled])')].find(eligible))?.focus({ preventScroll: true });
+  };
   const refreshConditions = () => {
     const captured = { ...context(), schemaVersion: 1, windowId: 'main', surfaceId: location };
     const allows = (condition: Json | undefined) => {
@@ -35,9 +39,11 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
       return result.ok && result.value === true;
     };
     for (const { button, visible, enabled, hasItems } of conditions) {
-      button.hidden = !allows(visible) || layout.isHidden(button.dataset.extensionContribution!, layoutProject()) || hasItems && allows(enabled) && !registration?.itemsFor(button.dataset.extensionContribution!, captured).length; button.disabled = !allows(enabled);
-      if ((button.hidden || button.disabled) && button.getAttribute('aria-expanded') === 'true') closeMenu?.();
-      if (document.activeElement === button && (button.hidden || button.disabled)) fallbackFocus();
+      const disabled = !allows(enabled);
+      button.hidden = !allows(visible) || layout.isHidden(button.dataset.extensionContribution!, layoutProject()) || hasItems && !disabled && !registration?.itemsFor(button.dataset.extensionContribution!, captured).length;
+      if (button instanceof HTMLButtonElement) button.disabled = disabled;
+      if ((button.hidden || disabled) && button.getAttribute('aria-expanded') === 'true') closeMenu?.();
+      if (document.activeElement === button && (button.hidden || disabled)) fallbackFocus();
     }
     if (active()) for (const [, node] of coreControls) if (node.parentElement !== slot) slot.append(node);
     slot.hidden = !active() || !coreControls.length && !conditions.some(({ button }) => !button.hidden);
@@ -58,9 +64,12 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
         const { menu, command, svg } = entry;
         if (menu.location !== location) continue;
         if (!command || !['showMessage', 'showDialog'].includes(command.action.kind)) continue;
-        const button = document.createElement('button'); button.type = 'button'; button.className = 'icon-button';
+        const passive = menu.presentation === 'status' || menu.presentation === 'badge';
+        const button = passive ? document.createElement('span') : document.createElement('button');
+        if (button instanceof HTMLButtonElement) button.type = 'button';
+        button.className = passive ? `extension-action-${menu.presentation}` : menu.presentation === 'button' ? 'extension-action-button ds-btn' : 'icon-button';
         button.dataset.extensionContribution = menu.id; button.dataset.tauriDragRegion = 'false';
-        button.setAttribute('aria-label', command.title); button.title = command.title;
+        button.setAttribute('aria-label', passive ? menu.text ?? command.title : command.title); button.title = command.title;
         if (svg) {
           // Native policy returns a restricted static SVG, never arbitrary package HTML.
           const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
@@ -70,6 +79,17 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
           }
         }
         if (!button.childNodes.length) { button.innerHTML = hostIcon('help'); button.dataset.extensionIconFallback = 'true'; }
+        if (passive || menu.presentation === 'button') {
+          const label = document.createElement('span'); label.textContent = menu.text ?? command.title; button.append(label);
+        }
+        if (menu.badge) {
+          const badge = document.createElement('span'); badge.className = 'extension-action-badge'; badge.textContent = menu.badge; button.append(badge);
+          button.setAttribute('aria-label', `${command.title}: ${menu.badge}`);
+        }
+        if (passive) {
+          if (menu.presentation === 'status') button.setAttribute('role', 'status');
+          slot.append(button); conditions.push({ button, visible: menu.visible, hasItems: false }); continue;
+        }
         if (menu.items) button.setAttribute('aria-haspopup', 'menu');
         button.addEventListener('pointerdown', event => { if (menu.items && closeMenu) event.preventDefault(); });
         button.addEventListener('click', () => {
