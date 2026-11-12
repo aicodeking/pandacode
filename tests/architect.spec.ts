@@ -563,7 +563,9 @@ test.describe('architect teams', () => {
     // The earlier rows come first, outside the host paintLiveActivity manages; the time carries on from their total.
     expect(await live.locator('.turn-activity-body').evaluate(body => [...body.children].map(child => child.className).slice(0, 2))).toEqual(['live-earlier', 'live-tools']);
     await expect(live.locator('.live-tools [data-tool-key="tool:review-diff"]')).toBeAttached();
-    await expect(live.locator('.turn-activity-label')).toContainText('Ran');
+    // The header mirrors the running step (`git diff` reads as "Diffed the working tree").
+    await expect(live.locator('.turn-activity-label')).toHaveAttribute('data-step', 'review-diff');
+    await expect(live.locator('.turn-activity-label .tool-trace-verb')).toHaveText('Diffed');
     await expect(live.locator('.turn-card-time')).toHaveText(/^[5-9]s$/);
     // Until the wake's first text the reply holds its skeleton, and the earlier text is still in the trace.
     await expect(live.locator('.turn-card-reply .live-message')).toBeHidden();
@@ -774,8 +776,11 @@ test.describe('architect teams', () => {
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': [...older, ...recent] });
     await expect(transcript(page).locator('.turn-card > .turn-card-reply').last()).toContainText('Delegated to the workers.');
     await expect(transcript(page).getByText('Older message 1', { exact: true })).toHaveCount(0);
-    await transcript(page).evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
-    await expect(transcript(page).getByText('Older message 1', { exact: true })).toBeAttached();
+    // The windowed transcript steps older turns in (and fetches the older page) over repeated scrolls to the top.
+    await expect(async () => {
+      await transcript(page).evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+      await expect(transcript(page).getByText('Older message 1', { exact: true })).toBeAttached({ timeout: 500 });
+    }).toPass({ timeout: 15_000 });
     const olderCalls = () => page.evaluate(() => (window as any).__architectTest.calls.filter((call: any) => call.command === 'get_messages' && call.args.beforeId).length);
     const before = await olderCalls();
     await page.evaluate(([wake, tool, saved]) => {
