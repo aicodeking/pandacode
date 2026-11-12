@@ -1,8 +1,9 @@
-//! Declarative extensions: bounded packages and host-owned presentation only.
+//! Bounded extension packages, host-owned presentation and explicitly trusted native execution.
 pub mod contracts;
 pub mod packages;
 pub mod windows;
 pub mod context;
 mod inventory;
 mod project_reads;
-mod runtime;
+pub mod runtime;
+mod supervisor;

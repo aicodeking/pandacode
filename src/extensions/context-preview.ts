@@ -17,9 +17,9 @@ export function createPreviewContextBroker() {
     const activation = createDeclarativeActivation(snapshot, 1);
     try {
       const command = activation.commands.find(entry => entry.command.id === id && entry.owner.version === version);
-      if (command && ['panda.commands', 'panda.shortcuts'].includes(String(context.surfaceId)) && activation.commandAction(id, context)?.kind === 'showProjectContext') return command.owner.extensionId;
+      if (command && ['panda.commands', 'panda.shortcuts'].includes(String(context.surfaceId)) && ['showProjectContext', 'runCommand'].includes(activation.commandAction(id, context)?.kind ?? '')) return command.owner.extensionId;
       const entry = activation.entries.find(entry => entry.owner.version === version && (entry.menu.id === id || JSON.stringify(entry.menu.items ?? []).includes(JSON.stringify(id))));
-      return entry && activation.actionFor(id, context)?.kind === 'showProjectContext' ? entry.owner.extensionId : undefined;
+      return entry && ['showProjectContext', 'runCommand'].includes(activation.actionFor(id, context)?.kind ?? '') ? entry.owner.extensionId : undefined;
     } finally { activation.dispose(); }
   }
   const dispatch = (raw: Record<string, unknown>, snapshot: ExtensionSnapshot, data: Data): ContextReply => {

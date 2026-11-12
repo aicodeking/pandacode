@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.project-summary",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "projects.summary", "jobs.summary"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.project-summary/summary"] },
+  "contributes": {
+    "commands": [{ "id": "sample.project-summary/summary", "title": "Executable project summary", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.project-summary/header", "location": "panda.workspace.header.actions", "command": "sample.project-summary/summary", "presentation": "button", "text": "Project summary" }]
+  }
+}

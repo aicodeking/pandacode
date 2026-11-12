@@ -1,0 +1,65 @@
+/** Host-owned executable command UI. No source, runtime path or raw bridge reaches package code. */
+import { call } from '../bridge';
+import { isImeKey } from '../dom';
+import { onExtensionsChanged } from './manager';
+import { openExtensionDialog } from './dialogs';
+import type { DialogDefinition } from './dialog-state';
+import type { ContextReply } from './context-state';
+import type { Json } from './contracts';
+
+export const EXECUTABLE_WARNING = 'This is trusted executable code under your normal OS account. It can read and write user-accessible files, access credentials available to your account, use the network, and start programs. PandaCode API grants are not an OS sandbox and do not constrain independent OS calls. No automatic elevation. Revoking trust stops future managed activation and owned work where possible; it cannot undo prior effects or contain deliberately hostile trusted code.';
+
+export function openExecutableCommand(id: string, version: string, context: Record<string, Json>, trigger: HTMLElement, notify: (message: string) => void, onClose?: () => void): () => void {
+  if (document.querySelector('[data-executable-command]')) return () => {};
+  const captured = structuredClone(context), requestId = crypto.randomUUID();
+  const panel = document.createElement('section'); panel.className = 'extension-context-inspector ds-card'; panel.dataset.executableCommand = id;
+  panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Executable command');
+  const heading = document.createElement('h2'); heading.textContent = 'Executable command';
+  const scope = document.createElement('p'); scope.textContent = `Captured project: ${String(captured.projectId ?? 'none')} · ${id.split('/')[0]}`;
+  const explanation = document.createElement('p'); explanation.textContent = 'Executable trust does not grant PandaCode context APIs. Allow project summaries for this captured project and launch, or run without API access.';
+  const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = 'Ready — no package code started';
+  let ended = false, running = false, handle: string | undefined, closeDialog: (() => void) | undefined;
+  const send = async <T>(command: string, request: Record<string, unknown>): Promise<ContextReply<T>> => {
+    try { return await call<ContextReply<T>>(command, { request }); } catch { return { ok: false, error: { schemaVersion: 1, code: 'HostUnavailable', path: '$', ids: [] } }; }
+  };
+  const ready = send<{ handle: string }>('extensions_context', { op: 'capture', id, version, context: captured }).then(async result => {
+    if (result.ok) { handle = result.value.handle; if (ended) await send('extensions_context', { op: 'release', handle }); }
+    return result;
+  });
+  const close = () => {
+    if (ended) return; ended = true; unsubscribe(); panel.remove(); closeDialog?.();
+    void send('extensions_runtime', { op: 'cancel', requestId });
+    if (handle) void send('extensions_context', { op: 'release', handle });
+    if (trigger.isConnected && trigger.checkVisibility()) trigger.focus({ preventScroll: true });
+    onClose?.();
+  };
+  const button = (text: string, action: () => void) => { const node = document.createElement('button'); node.type = 'button'; node.className = 'ds-btn'; node.textContent = text; node.onclick = action; return node; };
+  async function run(allow: boolean) {
+    if (ended || running) return; running = true; status.textContent = 'Starting supervised host…';
+    for (const button of panel.querySelectorAll<HTMLButtonElement>('[data-executable-run]')) button.disabled = true;
+    const result = await ready;
+    if (ended) return;
+    if (!result.ok) { status.textContent = result.error.code; return; }
+    if (allow) {
+      const grant = await send('extensions_context', { op: 'consent', handle, capability: 'projects.summary', allow: true });
+      if (ended) return;
+      if (!grant.ok) { status.textContent = grant.error.code; return; }
+    }
+    const reply = await send<{ schemaVersion: 1; dialogs: DialogDefinition[] }>('extensions_runtime', { op: 'activate', handle, requestId });
+    if (ended) return;
+    if (!reply.ok) { status.textContent = `${reply.error.code} — close; disable/enable explicitly to retry a quarantined host.`; return; }
+    status.textContent = 'Completed — owned host and subscriptions disposed';
+    const definition = reply.value.dialogs[0];
+    if (definition) {
+      panel.remove(); const transient = openExtensionDialog(definition, captured, id.split('/')[0], trigger); closeDialog = transient.close;
+      void transient.result.then(result => { if (!ended && result.kind === 'confirmed') notify(definition.successMessage); close(); });
+    }
+  }
+  const allow = button('Allow project summaries and run', () => { void run(true); }); allow.dataset.executableRun = '';
+  const deny = button('Run without API grants', () => { void run(false); }); deny.dataset.executableRun = '';
+  const cancel = button('Cancel executable command', close);
+  panel.append(heading, scope, explanation, status, allow, deny, cancel);
+  panel.addEventListener('keydown', event => { if (event.key === 'Escape' && !isImeKey(event)) { event.stopPropagation(); close(); } });
+  const unsubscribe = onExtensionsChanged(close);
+  document.body.append(panel); cancel.focus(); return close;
+}

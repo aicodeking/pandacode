@@ -1,4 +1,4 @@
-//! No extraction, executable runtime, install scripts or automatic network traffic.
+//! Bounded archive storage. Installation/discovery never executes code or install hooks.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,10 +15,12 @@ type Result<T> = std::result::Result<T, String>;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record { schema: u8, archive: String, checksum: String, enabled: bool }
+struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[serde(default)] executable_trust: Option<String> }
+#[derive(Clone, Serialize)]
+pub struct Executable { digest: String, trusted: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String> }
+pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable> }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String> }
@@ -26,7 +28,7 @@ pub struct Packages { root: PathBuf, pub(super) safe: bool }
 pub struct ExtensionPackages(pub Mutex<Packages>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
-    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None }], diagnostics: vec![] }
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None }], diagnostics: vec![] }
 }
 impl ExtensionPackages {
     pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe })) }
@@ -121,8 +123,14 @@ fn validate(bytes: &[u8]) -> Result<Package> {
     }
     let manifest = checked["value"]["packages"][0].clone();
     let contributions = &manifest["contributes"];
-    if contributions["views"].as_array().is_some_and(|a| !a.is_empty()) || contributions["commands"].as_array().into_iter().flatten().any(|c| c["action"]["kind"] != "showMessage" && c["action"]["kind"] != "showDialog") { return Err("This delivery supports declarative showMessage and showDialog only.".into()); }
+    if contributions["views"].as_array().is_some_and(|a| !a.is_empty()) || contributions["commands"].as_array().into_iter().flatten().any(|c| !["showMessage", "showDialog", "showProjectContext", "runCommand"].contains(&c["action"]["kind"].as_str().unwrap_or(""))) { return Err("Unsupported command or view.".into()); }
     let mut allowed = BTreeSet::from(["extension.json".to_string()]); let mut icons = BTreeMap::new();
+    let executable = if manifest.get("runtime").is_some() {
+        let (name, source) = files.get("main.cjs").ok_or("Missing executable entrypoint.")?;
+        if name != "main.cjs" || std::str::from_utf8(source).is_err() { return Err("Invalid executable entrypoint.".into()); }
+        allowed.insert(name.clone());
+        Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
+    } else { None };
     for icon in contributions["icons"].as_array().into_iter().flatten() {
         let asset = icon["asset"].as_str().unwrap();
         if !asset.ends_with(".svg") { return Err("This delivery supports static SVG icons only.".into()); }
@@ -131,7 +139,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         icons.insert(icon["id"].as_str().unwrap().to_owned(), static_svg(content)?); allowed.insert(asset.to_owned());
     }
     if files.values().any(|(name, _)| !allowed.contains(name)) { return Err("Undeclared package file; executable files and install hooks are unsupported.".into()); }
-    Ok(Package { manifest, icons, enabled: false, reason: None })
+    Ok(Package { manifest, icons, enabled: false, reason: None, executable })
 }
 
 impl Packages {
@@ -195,6 +203,10 @@ impl Packages {
         let mut package = validate(&bytes)?;
         if path.file_stem().and_then(|p| p.to_str()) != package.manifest["id"].as_str() { return Err("Extension record ownership mismatch.".into()); }
         package.enabled = record.enabled;
+        if let Some(executable) = &mut package.executable {
+            executable.trusted = record.executable_trust.as_ref() == Some(&record.checksum);
+            package.enabled &= executable.trusted;
+        }
         Ok((record, package))
     }
     pub(super) fn snapshot(&self) -> Snapshot {
@@ -220,7 +232,7 @@ impl Packages {
                         // A failed record remains manageable without trusting its contents.
                         if path.extension().and_then(|s| s.to_str()) == Some("json") {
                             if let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|id| safe_name(id)) {
-                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error) });
+                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None });
                             }
                         }
                     }
@@ -249,7 +261,7 @@ impl Packages {
         let path = self.root.join(format!("{}.json", package.manifest["id"].as_str().unwrap()));
         if path.symlink_metadata().is_ok() { return Err("Duplicate package ownership; already installed.".into()); }
         if std::fs::read_dir(&self.root).map_err(|_| "Cannot inspect extension storage.")?.count() >= MAX_PACKAGES { return Err("Installed package limit exceeded.".into()); }
-        self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false })
+        self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false, executable_trust: None })
     }
     fn enable(&self, id: &str, enabled: bool) -> Result<()> {
         if self.safe { return Err("Safe mode: activation is bypassed.".into()); }
@@ -258,12 +270,33 @@ impl Packages {
         let path = self.root.join(format!("{id}.json"));
         let (mut record, package) = self.record(&path)?;
         if enabled {
+            if package.executable.as_ref().is_some_and(|executable| !executable.trusted) { return Err("ExecutableTrustRequired: review this version and executable content first.".into()); }
             let mut manifests: Vec<Value> = self.snapshot().packages.into_iter().filter(|p| p.enabled && p.manifest["id"] != id).map(|p| p.manifest).collect();
             manifests.push(package.manifest);
             let checked = super::contracts::validate_contract("packages", &json!(manifests));
             if checked["ok"] != true { return Err(format!("Activation rejected: {}", checked["error"]["code"])); }
         }
         record.enabled = enabled; self.write(&path, &record)
+    }
+    pub(super) fn trust(&self, id: &str, digest: &str, allow: bool) -> Result<()> {
+        if self.safe || !safe_name(id) || id.contains('/') { return Err("PermissionDenied".into()); }
+        self.directory()?;
+        let path = self.root.join(format!("{id}.json"));
+        let (mut record, package) = self.record(&path)?;
+        if package.executable.is_none() || record.checksum != digest { return Err("StaleContext: executable content changed; review again.".into()); }
+        record.executable_trust = allow.then_some(record.checksum.clone());
+        if !allow { record.enabled = false; }
+        self.write(&path, &record)
+    }
+    /// Revalidate the stored archive on every activation; no mutable extracted code path.
+    pub(super) fn executable_source(&self, id: &str) -> Result<(String, String)> {
+        if self.safe || !safe_name(id) || id.contains('/') { return Err("PermissionDenied".into()); }
+        let (record, package) = self.record(&self.root.join(format!("{id}.json")))?;
+        if !package.enabled || !package.executable.is_some_and(|executable| executable.trusted) { return Err("PermissionDenied".into()); }
+        let bytes = STANDARD.decode(record.archive).map_err(|_| "HostUnavailable")?;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "HostUnavailable")?;
+        let mut source = String::new(); zip.by_name("main.cjs").map_err(|_| "HostUnavailable")?.take(MAX_FILE + 1).read_to_string(&mut source).map_err(|_| "HostUnavailable")?;
+        Ok((record.checksum, source))
     }
     fn uninstall(&self, id: &str) -> Result<()> {
         if self.safe { return Err("Safe mode: package changes are bypassed.".into()); }
@@ -313,15 +346,15 @@ pub fn extensions_install(app: tauri::AppHandle, state: tauri::State<'_, Extensi
 }
 #[tauri::command]
 pub fn extensions_enable(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String, enabled: bool) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; let snapshot = state.snapshot(); drop(state); if !enabled { super::context::invalidate(&app, Some(&id)); } super::windows::changed(&app); Ok(snapshot)
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; let snapshot = state.snapshot(); drop(state); if !enabled { super::runtime::stop(&app, Some(&id)); super::context::invalidate(&app, Some(&id)); } else { super::runtime::retry(&app, &id); } super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
 pub fn extensions_uninstall(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let snapshot = state.snapshot(); drop(state); super::context::invalidate(&app, Some(&id)); super::windows::changed(&app); Ok(snapshot)
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let snapshot = state.snapshot(); drop(state); super::runtime::stop(&app, Some(&id)); super::context::invalidate(&app, Some(&id)); super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
 pub fn extensions_safe_mode(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {
-    let mut state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.safe = true; let snapshot = state.snapshot(); drop(state); super::context::invalidate(&app, None); super::windows::changed(&app); Ok(snapshot)
+    let mut state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.safe = true; let snapshot = state.snapshot(); drop(state); super::runtime::stop(&app, None); super::context::invalidate(&app, None); super::windows::changed(&app); Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -344,6 +377,111 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    const EXECUTABLE_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/project-summary/extension.json");
+    const EXECUTABLE_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/project-summary/main.cjs");
+    fn executable(source: &str) -> Vec<u8> { archive(&[("extension.json", EXECUTABLE_MANIFEST.as_bytes()), ("main.cjs", source.as_bytes())]) }
+    #[test]
+    fn executable_install_discovery_refused_trust_restart_and_content_changes_never_execute() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&executable("throw new Error('MUST NOT EVALUATE AT INSTALL');")).unwrap();
+        let first = packages.snapshot(); let digest = first.packages[0].executable.as_ref().unwrap().digest.clone();
+        assert!(!first.packages[0].enabled); assert!(!first.packages[0].executable.as_ref().unwrap().trusted);
+        assert!(packages.enable("sample.project-summary", true).unwrap_err().contains("ExecutableTrustRequired"));
+        assert!(packages.executable_source("sample.project-summary").is_err());
+        packages.trust("sample.project-summary", &digest, false).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.trust("sample.project-summary", &digest, true).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled); // trust alone is not activation/enable.
+        packages.enable("sample.project-summary", true).unwrap();
+        assert!(storage.packages(false).snapshot().packages[0].executable.as_ref().unwrap().trusted);
+        let path = packages.root.join("sample.project-summary.json");
+        let (mut record, _) = packages.record(&path).unwrap();
+        let changed = executable(EXECUTABLE_SOURCE);
+        record.archive = STANDARD.encode(&changed); record.checksum = format!("{:x}", Sha256::digest(&changed));
+        packages.write(&path, &record).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        assert!(!packages.snapshot().packages[0].executable.as_ref().unwrap().trusted);
+        assert!(packages.trust("sample.project-summary", &digest, true).unwrap_err().contains("StaleContext"));
+        assert!(packages.executable_source("sample.project-summary").is_err());
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
+    /// Uses the application's actual archive/trust/capture/grant/DTO adapters and supervisor.
+    /// Also runnable by browser fixtures as a native process; no test entrypoint ships in the app.
+    #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn trusted_native_driver() {
+        let case = std::env::var("PANDACODE_EXTENSION_CASE").unwrap_or_else(|_| "summary".into());
+        let source = match case.as_str() {
+            "summary" => EXECUTABLE_SOURCE,
+            "loop" => include_str!("../../../tests/fixtures/extensions/project-summary/loop.cjs"),
+            "timeout" => include_str!("../../../tests/fixtures/extensions/project-summary/timeout.cjs"),
+            "allocation" => include_str!("../../../tests/fixtures/extensions/project-summary/allocation.cjs"),
+            "exception" => include_str!("../../../tests/fixtures/extensions/project-summary/exception.cjs"),
+            "cancel" => include_str!("../../../tests/fixtures/extensions/project-summary/late-ui.cjs"),
+            "native-os" => include_str!("../../../tests/fixtures/extensions/project-summary/native-os.cjs"),
+            _ => panic!("Unknown reviewed native case"),
+        };
+        let result = native_invocation(source, &case).await;
+        match case.as_str() {
+            "loop" | "timeout" => assert_eq!(result.as_ref().unwrap_err(), &"Timeout"),
+            "allocation" | "exception" => assert!(result.is_err()),
+            "cancel" => assert_eq!(result.as_ref().unwrap_err(), &"Cancelled"),
+            _ => assert_eq!(result.as_ref().unwrap().len(), 1),
+        }
+        println!("TRUSTED_RESULT {}", json!({"case":case,"status":result.as_ref().err().copied().unwrap_or("Complete"),"dialogs":result.as_ref().ok(),"native":true}));
+        if result.is_err() { assert_eq!(native_invocation(EXECUTABLE_SOURCE, "recovery").await.unwrap().len(), 1); }
+    }
+    #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    async fn native_invocation(source: &str, case: &str) -> std::result::Result<Vec<Value>, &'static str> {
+        use crate::extensions::{context::ContextBroker, supervisor};
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let runtime = supervisor::Runtime::packaged(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime"))?;
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&executable(source)).unwrap();
+        let digest = packages.snapshot().packages[0].executable.as_ref().unwrap().digest.clone();
+        assert!(packages.executable_source("sample.project-summary").is_err());
+        packages.trust("sample.project-summary", &digest, true).unwrap(); packages.enable("sample.project-summary", true).unwrap();
+        let snapshot = packages.snapshot();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        store.db.execute("INSERT INTO projects(id,name,path) VALUES ('project-1','orbit','/not-returned'),('project-2','other','/private')", []).unwrap();
+        let broker = ContextBroker::default();
+        let captured = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","projectId":"project-1","revision":1});
+        let capture = broker.test_call(&snapshot, &store, json!({"op":"capture","id":"sample.project-summary/header","version":"1.0.0","context":captured}));
+        let handle = capture["value"]["handle"].as_str().unwrap();
+        let (_, _, mut context) = broker.runtime_binding(&snapshot, handle).unwrap();
+        for capability in ["projects.summary", "jobs.summary"] { assert_eq!(broker.test_call(&snapshot, &store, json!({"op":"consent","handle":handle,"capability":capability,"allow":true}))["ok"], true); }
+        // Supported API does not permit payload identity/context claims, even under executable trust.
+        for forged in [json!({"op":"query","resource":"projects","limit":1,"handle":"other"}), json!({"op":"query","resource":"projects","limit":1,"extensionId":"panda.core"}), json!({"op":"query","resource":"projects","limit":1,"projectId":"project-2"}), json!({"op":"query","resource":"projects","limit":1,"windowId":"tray"}), json!({"op":"consent","capability":"projects.summary","allow":true})] {
+            assert_eq!(broker.runtime_call(&snapshot, &store, handle, forged)["ok"], false);
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        context["testRoot"] = json!(storage.0); context["testEndpoint"] = json!(format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await { use tokio::io::{AsyncReadExt, AsyncWriteExt}; let mut bytes = [0; 2048]; let _ = socket.read(&mut bytes).await; let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nloopback-only").await; }
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let from_stdin = case == "cancel" && std::env::var("PANDACODE_EXTENSION_CANCEL_FROM_STDIN").as_deref() == Ok("1");
+        let cancel_input = if from_stdin { let cancel = cancel.clone(); Some(std::thread::spawn(move || { let mut line = String::new(); let _ = std::io::stdin().read_line(&mut line); cancel.store(true, Ordering::Release); })) } else { None };
+        let cancel_timer = if case == "cancel" && !from_stdin { let cancel = cancel.clone(); Some(tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_millis(400)).await; cancel.store(true, Ordering::Release); })) } else { None };
+        let start = std::time::Instant::now();
+        let result = supervisor::run(&runtime, &packages.executable_source("sample.project-summary").unwrap().1, context, cancel, |method, params| {
+            if method == "dialog" {
+                let checked = super::super::contracts::validate_contract("command", &json!({"schemaVersion":1,"owner":{"extensionId":"sample.project-summary","version":"1.0.0","activationId":"native"},"definition":{"id":"sample.project-summary/dialog","title":"Dialog","action":{"kind":"showDialog","dialog":params}},"capability":"ui.contribute","contexts":["project"],"inputSchema":{"type":"null"},"outputSchema":{"type":"null"}}));
+                assert_eq!(checked["ok"], true); return json!({"ok":true,"value":null});
+            }
+            let reply = broker.runtime_call(&snapshot, &store, handle, params.clone());
+            if params["op"] == "subscribe" { assert_eq!(reply["ok"], true); println!("TRUSTED_READY {}", json!({"case":case,"subscriptions":broker.test_counts().1})); }
+            reply
+        }).await;
+        println!("TRUSTED_TIMING {}", json!({"case":case,"elapsedMs":start.elapsed().as_millis()}));
+        server.abort(); let _ = server.await;
+        if let Some(timer) = cancel_timer { timer.abort(); let _ = timer.await; }
+        if let Some(input) = cancel_input { input.join().unwrap(); }
+        broker.runtime_release(handle); assert_eq!(broker.test_counts(), (0, 0));
+        if case == "native-os" { assert_eq!(std::fs::read_to_string(storage.0.join("trusted-canary.txt")).unwrap(), "ordinary-account-only"); }
+        if case == "summary" { assert_eq!(result.as_ref().unwrap()[0]["fields"][0]["value"], "orbit (project-1)"); }
+        result
+    }
     #[test]
     fn settings_namespace_values_restart_dormancy_and_uninstall_are_native_validated() {
         let manifest = include_str!("../../../tests/fixtures/extensions/settings-laboratory/extension.json");

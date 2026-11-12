@@ -32,6 +32,11 @@ export function desktopBrandFlight(h: number, rest: Point, target: (Point & { sc
   return { ...p, scale: WORD_SCALE * p.scale * (target.scale ?? SCALE) ** glide(h), opacity: 1 };
 }
 
+/** Decorative motion must yield when sustained frame pressure makes the whole UI sluggish. */
+export function desktopBrandFramePressure(elapsed: number, previous: number): number {
+  return elapsed > 100 ? Math.min(3, previous + 1) : 0;
+}
+
 let markId = 0;
 function makeMark() {
   const stage = document.createElement('span');
@@ -148,6 +153,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
   const forced = matchMedia('(forced-colors: active)');
   const root = document.documentElement;
   let frame = 0, timer = 0, last = 0, time = 0, trickAt = 0, ready = false, shown = false, scale = SCALE;
+  let slowFrames = 0, constrained = false;
   let launch: { el: HTMLElement; mark: Mark; layout: Layout; rest: Point; from: Point; starts: number[]; pushed: number; at: number; target: (Point & { scale: number }) | null; flying: boolean; input: AbortController } | null = null;
   const staticMotion = () => motion.matches || forced.matches;
   const visible = () => host.isConnected && host.getClientRects().length > 0 && getComputedStyle(host).visibility !== 'hidden';
@@ -174,7 +180,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
     launch = null;
     delete host.dataset.brandLaunch;
   };
-  const canRun = () => ready && shown && host.isConnected && !document.hidden && !staticMotion();
+  const canRun = () => ready && shown && host.isConnected && !document.hidden && !staticMotion() && !constrained;
   const wake = () => {
     stop();
     if (!launch && !canRun()) return;
@@ -189,6 +195,16 @@ export function mountDesktopBrand(host: HTMLElement): void {
   const tick = (now: number) => {
     frame = 0;
     if (document.hidden || staticMotion()) { endLaunch(); return; }
+    slowFrames = desktopBrandFramePressure(now - last, slowFrames);
+    if (slowFrames === 3) {
+      // SVG changes can invalidate expensive surrounding software-rendered surfaces. Do not
+      // keep stretching decorative motion with the dt clamp while input waits for each paint.
+      constrained = true;
+      stop(); endLaunch(); time = trickAt = 0;
+      host.dataset.brandMotion = 'static';
+      syncLayout();
+      return;
+    }
     const dt = Math.min((now - last) / 1000, .05);
     last = now;
     if (launch) {
@@ -272,6 +288,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
     if (!document.hidden) { syncLayout(); wake(); }
   });
   host.addEventListener('click', () => {
+    if (constrained) { constrained = false; slowFrames = 0; delete host.dataset.brandMotion; }
     if (!canRun() || trickAt > 0) return;
     endLaunch();
     if (canTrick(time)) trickAt = .001;

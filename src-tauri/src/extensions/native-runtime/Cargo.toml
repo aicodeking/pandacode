@@ -1,0 +1,30 @@
+[package]
+name = "pandacode-native-runtime"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[features]
+default = []
+engine = ["dep:rquickjs", "dep:serde_json"]
+native-probes = ["engine"]
+
+[dependencies]
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Memory"] }
+
+[[bin]]
+name = "pandacode-extension-host"
+path = "src/host.rs"
+required-features = ["engine"]
+
+[[bin]]
+name = "pandacode-runtime-probe"
+path = "src/probe.rs"
+required-features = ["native-probes"]
+
+[workspace]

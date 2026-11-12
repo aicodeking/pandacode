@@ -6,6 +6,7 @@ import { layout, orderedControls } from './layout-host';
 import { extensionChoices, extensionIcon } from './menu-choices';
 import { openExtensionDialog } from './dialogs';
 import { openProjectContext } from './context-inspector';
+import { openExecutableCommand } from './executable';
 import { boundedContextActions, type ActionLocation } from './surfaces';
 
 /** One clicked object, one bounded lifetime. No callback resolves a later active task. */
@@ -49,6 +50,12 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
     if (legacy) { closeMenu?.(); return options.onSelect(id.slice(location.length + 1)); }
     const action = owned.actionFor(id, captured);
     if (action?.kind === 'showMessage') options.notify(action.message);
+    if (action?.kind === 'runCommand') {
+      openingDialog = true; closeMenu?.();
+      const command = owned.commands.find(entry => entry.owner.extensionId === id.split('/')[0]);
+      if (command) closeDialog = openExecutableCommand(id, command.owner.version, captured, anchor, options.notify, dispose);
+      openingDialog = false;
+    }
     if (action?.kind === 'showProjectContext') {
       openingDialog = true; closeMenu?.();
       const command = owned.commands.find(entry => entry.command.id === id || entry.owner.extensionId === id.split('/')[0]);

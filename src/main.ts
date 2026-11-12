@@ -5039,6 +5039,10 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
 /** Keeps the selected tab clear of the sticky + and of the 16px edge fades (inspector-bar.css), which end at the strip's scroll ends. */
 function revealSelectedTab(): void {
   const nav = $('.inspector-tabs'), add = nav.querySelector<HTMLElement>('.inspector-tab-add')!;
+  // An inactive scroll timeline can still repaint WebKit's software-rendered surfaces every
+  // frame. There is nothing to fade when the tabs fit; attach the timelines only on overflow.
+  const overflow = nav.clientWidth > 0 && nav.scrollWidth > nav.clientWidth + 1;
+  if (nav.hasAttribute('data-tabs-overflow') !== overflow) nav.toggleAttribute('data-tabs-overflow', overflow);
   const current = nav.querySelector<HTMLElement>(':scope>.inspector-tab:has(>.selected):not([hidden])');
   if (!current || !nav.clientWidth) return;
   const strip = nav.getBoundingClientRect(), box = current.getBoundingClientRect(), fade = 16;

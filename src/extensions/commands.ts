@@ -2,6 +2,7 @@ import { extensionsSnapshot, extensionGeneration, onExtensionsChanged } from './
 import { createDeclarativeActivation } from './activation';
 import { openExtensionDialog } from './dialogs';
 import { openProjectContext } from './context-inspector';
+import { openExecutableCommand } from './executable';
 import { BINDING_CHOICES_KEY, readBindingChoices, shortcutCommand } from './shortcuts';
 import type { Json } from './contracts';
 
@@ -20,6 +21,7 @@ export function invokeExtensionCommand(id: string, context: Record<string, Json>
   activation.dispose();
   if (!command || !action) return false;
   if (action.kind === 'showMessage') { notify(action.message); return true; }
+  if (action.kind === 'runCommand') { openExecutableCommand(id, command.owner.version, context, document.activeElement instanceof HTMLElement ? document.activeElement : document.body, notify); return true; }
   if (action.kind === 'showProjectContext') {
     openProjectContext(id, command.owner.version, structuredClone(context), document.activeElement instanceof HTMLElement ? document.activeElement : document.body); return true;
   }

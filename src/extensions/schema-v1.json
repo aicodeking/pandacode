@@ -21,6 +21,7 @@
     },
     "action": {
       "anyOf": [
+        { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "runCommand" } } },
         { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "showProjectContext" } } },
         { "type": "object", "required": ["kind", "message"], "additionalProperties": false, "properties": { "kind": { "const": "showMessage" }, "message": { "type": "string", "minLength": 1, "maxLength": 4096 } } },
         { "type": "object", "required": ["kind", "view"], "additionalProperties": false, "properties": { "kind": { "const": "openView" }, "view": { "$ref": "#/$defs/id" } } },
@@ -55,6 +56,7 @@
       "type": "object", "required": ["manifestVersion", "id", "version", "engines", "extensionKind", "permissions", "contributes"],
       "properties": {
         "manifestVersion": { "const": 1 }, "id": { "$ref": "#/$defs/id" }, "version": { "$ref": "#/$defs/version" },
+        "runtime": { "type": "object", "required": ["kind", "entrypoint", "activationEvents"], "additionalProperties": false, "properties": { "kind": { "const": "node" }, "entrypoint": { "const": "main.cjs" }, "activationEvents": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/id" } } } },
         "engines": { "type": "object", "required": ["pandacodeApi"], "properties": { "pandacodeApi": { "$ref": "#/$defs/text" } } },
         "extensionKind": { "const": "ui" }, "permissions": { "$ref": "#/$defs/strings" }, "requiredCapabilities": { "$ref": "#/$defs/strings" }, "optionalCapabilities": { "$ref": "#/$defs/strings" }, "requiredContributions": { "$ref": "#/$defs/strings" },
         "dependencies": { "type": "object", "maxProperties": 64, "additionalProperties": { "$ref": "#/$defs/text" } },

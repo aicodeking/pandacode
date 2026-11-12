@@ -19,6 +19,23 @@ async function addView(page: Page, label: string): Promise<void> {
   await page.getByRole('menu', { name: 'Open view' }).getByRole('menuitem', { name: label, exact: true }).click();
 }
 
+test('inspector strip attaches scroll-driven edge fades only while tabs actually overflow', async ({ page }) => {
+  await open(page);
+  await expect(strip(page)).not.toHaveAttribute('data-tabs-overflow');
+  expect(await strip(page).evaluate(node => node.getAnimations().length)).toBe(0);
+  await strip(page).evaluate((node: HTMLElement) => { node.style.maxWidth = '80px'; });
+  await expect(strip(page)).toHaveAttribute('data-tabs-overflow', '');
+  if (await page.evaluate(() => CSS.supports('animation-timeline', 'scroll()'))) {
+    await expect.poll(() => strip(page).evaluate(node => node.getAnimations().length)).toBe(2);
+  }
+  await strip(page).evaluate((node: HTMLElement) => { node.style.removeProperty('max-width'); });
+  await expect(strip(page)).not.toHaveAttribute('data-tabs-overflow');
+  expect(await strip(page).evaluate(node => node.getAnimations().length)).toBe(0);
+  await expect(tabButton(page, 'changes')).toHaveAttribute('aria-selected', 'true');
+  await page.locator('#prompt').fill('No idle decorative repaint');
+  await expect(page.locator('#prompt')).toHaveValue('No idle decorative repaint');
+});
+
 test('the inspector opens on a single Changes tab in a slim strip', async ({ page }) => {
   await open(page);
   expect(await shownViews(page)).toEqual(['changes']);

@@ -6,8 +6,8 @@ import type { DialogDefinition } from './dialog-state';
 import type { SettingsPageDefinition, Keybinding } from './settings-state';
 
 export type ExtensionMenuItem = { id: string; kind: 'command' | 'submenu' | 'separator' | 'checkbox' | 'radio'; title?: string; command?: string; icon?: string; checked?: boolean; group?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] };
-export type ExtensionAction = { kind: 'showMessage'; message: string } | { kind: 'showDialog'; dialog: DialogDefinition } | { kind: 'openView'; view: string } | { kind: 'showProjectContext' };
-export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { settings?: SettingsPageDefinition[]; keybindings?: Keybinding[]; dialogExtras?: { id: string; dialog: 'colors' | 'wallpapers'; text: string }[]; layouts?: LayoutProposal[]; icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: ExtensionAction; enabled?: Json }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[]; presentation?: 'icon' | 'button' | 'status' | 'badge'; text?: string; badge?: string }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
+export type ExtensionAction = { kind: 'showMessage'; message: string } | { kind: 'showDialog'; dialog: DialogDefinition } | { kind: 'openView'; view: string } | { kind: 'showProjectContext' } | { kind: 'runCommand' };
+export type ExtensionPackage = { executable?: { digest: string; trusted: boolean } | null; manifest: { id: string; version: string; runtime?: { kind: 'node'; entrypoint: 'main.cjs'; activationEvents: string[] }; contributes: { settings?: SettingsPageDefinition[]; keybindings?: Keybinding[]; dialogExtras?: { id: string; dialog: 'colors' | 'wallpapers'; text: string }[]; layouts?: LayoutProposal[]; icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: ExtensionAction; enabled?: Json }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[]; presentation?: 'icon' | 'button' | 'status' | 'badge'; text?: string; badge?: string }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
 export type ExtensionSnapshot = { safeMode: boolean; packages: ExtensionPackage[]; diagnostics: string[] };
 let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: [] };
 const listeners = new Set<() => void>();
@@ -54,11 +54,16 @@ export async function loadWindowExtensions(): Promise<string> {
   accept(value.snapshot); return value.windowId;
 }
 export async function installExtension(): Promise<void> {
-  const path = preview ? 'sample.project-helper.zip' : await (await import('@tauri-apps/plugin-dialog')).open({ multiple: false, title: 'Install a local declarative extension', filters: [{ name: 'PandaCode extension', extensions: ['zip'] }] });
+  const path = preview ? 'sample.project-helper.zip' : await (await import('@tauri-apps/plugin-dialog')).open({ multiple: false, title: 'Install a local extension (execution requires separate trust)', filters: [{ name: 'PandaCode extension', extensions: ['zip'] }] });
   if (typeof path !== 'string') return;
   accept(await call<ExtensionSnapshot>('extensions_install', { path }));
 }
 export async function enableExtension(id: string, enabled: boolean): Promise<void> { accept(await call<ExtensionSnapshot>('extensions_enable', { id, enabled })); }
+export async function trustExecutable(id: string, digest: string, allow: boolean): Promise<void> {
+  const reply = await call<{ ok: true; value: ExtensionSnapshot } | { ok: false; error: { code: string } }>('extensions_runtime', { request: { op: 'trust', id, digest, allow } });
+  if (!reply.ok) throw new Error(reply.error.code);
+  accept(reply.value);
+}
 export async function uninstallExtension(id: string): Promise<void> { accept(await call<ExtensionSnapshot>('extensions_uninstall', { id })); }
 export async function enterExtensionsSafeMode(): Promise<void> {
   // Immediate, protected recovery; package data remains untouched.

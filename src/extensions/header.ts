@@ -9,6 +9,7 @@ import { createDeclarativeActivation } from './activation';
 import { layout, layoutProject, applyControlOrder } from './layout-host';
 import { openExtensionDialog } from './dialogs';
 import { openProjectContext } from './context-inspector';
+import { openExecutableCommand } from './executable';
 import type { ExtensionAction } from './manager';
 type WindowBinding = { windowId: string; invoke(id: string, version: string): Promise<ExtensionAction | undefined> };
 
@@ -70,7 +71,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
     for (const entry of owned.entries) {
         const { menu, command, svg } = entry;
         if (menu.location !== location) continue;
-        if (!command || !['showMessage', 'showDialog', 'showProjectContext'].includes(command.action.kind)) continue;
+        if (!command || !['showMessage', 'showDialog', 'showProjectContext', 'runCommand'].includes(command.action.kind)) continue;
         const passive = menu.presentation === 'status' || menu.presentation === 'badge';
         const button = passive ? document.createElement('span') : document.createElement('button');
         if (button instanceof HTMLButtonElement) button.type = 'button';
@@ -110,6 +111,9 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
             catch (error) { if (activation === extensionGeneration() && button.isConnected) showMessage(String(error)); return; }
             if (activation !== extensionGeneration() || !button.isConnected) return;
             if (action?.kind === 'showMessage') showMessage(action.message);
+            if (action?.kind === 'runCommand') {
+              closeMenu?.(); closeContext?.(); closeContext = openExecutableCommand(id, entry.owner.version, captured, button, showMessage);
+            }
             if (action?.kind === 'showProjectContext') {
               closeMenu?.(); closeContext?.();
               closeContext = openProjectContext(id, entry.owner.version, captured, button, () => { closeContext = undefined; });

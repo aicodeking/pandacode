@@ -243,6 +243,9 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
             if !CONTRIBUTIONS.contains(&kind.as_str()) { return Err(fail("UnsupportedContribution", &format!("{path}/requiredContributions"), vec![kind])); }
         }
         let contributions = &manifest["contributes"];
+        let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").map(|command| text(command, "id").to_owned()).collect();
+        let events = strings(&manifest["runtime"]["activationEvents"]);
+        if manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id)) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
         let mut owned = BTreeSet::new();
         for kind in CONTRIBUTIONS {
             for item in items(contributions, kind) {

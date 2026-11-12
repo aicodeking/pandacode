@@ -1,4 +1,4 @@
-name: Extension runtime qualification (execution stays disabled)
+name: Extension runtime experiments and explicitly trusted Windows host
 on:
   pull_request:
   push:
@@ -7,6 +7,47 @@ on:
 permissions:
   contents: read
 jobs:
+  trusted-windows:
+    name: Trusted Node host, native broker and preview continuity (Windows x64 experimental)
+    runs-on: windows-2022
+    env:
+      TRANSCRIBE_CMAKE_ARGS: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '26.1.0', cache: npm }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with: { components: clippy }
+      - run: npm ci
+      - run: npm run build
+      - name: Stage existing exact runtime with complete upstream notices (no activation download)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force _work/00-tmp | Out-Null
+          Invoke-WebRequest https://raw.githubusercontent.com/nodejs/node/v26.1.0/LICENSE -OutFile _work/00-tmp/extensibility-node-LICENSE
+          node scripts/extensions-runtime.mjs --trusted-stage _work/00-tmp/extensibility-node-LICENSE
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib extensions:: -- --nocapture
+      - name: Native fault, cancellation, ordinary-account library and recovery cases
+        shell: pwsh
+        run: |
+          foreach ($case in @('loop','timeout','allocation','exception','cancel','native-os')) {
+            $env:PANDACODE_EXTENSION_CASE=$case
+            cargo test --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib -- --exact extensions::packages::tests::trusted_native_driver --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Remove-Item Env:PANDACODE_EXTENSION_CASE
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --all-targets -- -D warnings
+      - run: npx playwright install chromium webkit
+      - shell: pwsh
+        run: |
+          $env:PW_PORT='15561'; $env:PW_PROD='1'; $env:PW_WORKERS='1'
+          $env:PANDACODE_TEST_CHROME=node -e "console.log(require('playwright').chromium.executablePath())"
+          $specs=@('tests/extensions-context.spec.ts','tests/extensions-dialogs.spec.ts','tests/extensions-install.spec.ts','tests/extensions-trust.spec.ts','tests/extensions-runtime.spec.ts','tests/desktop-pandas.spec.ts','tests/inspector-tabs.spec.ts','tests/sky.spec.ts')
+          $cohort='extensions|desktop pandas|inspector strip|the inspector opens|the . menu lists|tabs select|the open tabs|opening a view|the strip is|the sky settles sustained'
+          npx playwright test @specs -g $cohort
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright test -c playwright.webkit.config.ts @specs -g $cohort
   engine:
     name: Restricted JS experiment (${{ matrix.os }})
     strategy:

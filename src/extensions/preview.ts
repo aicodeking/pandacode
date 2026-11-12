@@ -7,6 +7,7 @@ import threadSvg from '../../tests/fixtures/extensions/thread-laboratory/assets/
 import settingsManifest from '../../tests/fixtures/extensions/settings-laboratory/extension.json';
 import windowManifest from '../../tests/fixtures/extensions/window-laboratory/extension.json';
 import contextManifest from '../../tests/fixtures/extensions/project-context/extension.json';
+import executableManifest from '../../tests/fixtures/extensions/project-summary/extension.json';
 import windowSvg from '../../tests/fixtures/extensions/window-laboratory/assets/info.svg?raw';
 import { validSettingsValues } from './settings-state';
 import { validateContract } from './contracts';
@@ -58,6 +59,16 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   }
   if (command === 'extensions_snapshot') return snapshot;
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
+  if (command === 'extensions_runtime') {
+    const request = args.request as { op: string; id: string; digest: string; allow: boolean };
+    if (request.op !== 'trust') return { ok: false, error: { schemaVersion: 1, code: 'UnsupportedRuntime', path: '$', ids: [] } };
+    const item = snapshot.packages.find(item => item.manifest.id === request.id);
+    if (!item?.executable || item.executable.digest !== request.digest) throw new Error('StaleContext');
+    item.executable.trusted = request.allow;
+    if (!request.allow) item.enabled = false;
+    localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null);
+    return { ok: true, value: read() };
+  }
   if (command === 'extensions_settings_get' || command === 'extensions_settings_set') {
     const owner = snapshot.packages.find(item => item.enabled && item.manifest.id === args.id);
     const page = owner?.manifest.contributes.settings?.find(page => page.id === args.page);
@@ -68,14 +79,15 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
-    const selected = new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
+    const selected = new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
-    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {} });
+    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...(selected === executableManifest ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
   } else if (command === 'extensions_uninstall') {
     snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
   } else if (command === 'extensions_enable') {
     const item = snapshot.packages.find(item => item.manifest.id === args.id);
     if (!item) throw new Error('Extension not found.');
+    if (args.enabled === true && item.executable && !item.executable.trusted) throw new Error('ExecutableTrustRequired');
     item.enabled = args.enabled === true;
     item.reason = null;
   } else throw new Error('Unsupported extension preview command.');

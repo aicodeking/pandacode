@@ -6,7 +6,16 @@ import { stripTypeScriptTypes } from 'node:module';
 // The production module owns its stylesheet; exercise its pure geometry without a browser loader.
 const url = new URL('../src/brand-mark.ts', import.meta.url);
 const source = (await readFile(url, 'utf8')).replace("import './brand-mark.css';", '').replace(/from '(\.\.?\/[^']+)'/g, (_, path) => `from '${new URL(path, url)}'`);
-const { desktopBrandLayout, desktopBrandFlight, desktopBrandFit } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source)).toString('base64')}`);
+const { desktopBrandLayout, desktopBrandFlight, desktopBrandFit, desktopBrandFramePressure } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source)).toString('base64')}`);
+
+test('decorative motion yields only after three sustained slow frames, not a startup outlier', () => {
+  let count = 0;
+  for (const elapsed of [350, 16, 100, 101, 140]) count = desktopBrandFramePressure(elapsed, count);
+  assert.equal(count, 2);
+  assert.equal(desktopBrandFramePressure(160, count), 3);
+  assert.equal(desktopBrandFramePressure(200, 3), 3);
+  assert.equal(desktopBrandFramePressure(16, 3), 0);
+});
 
 test('desktop perches and crossings follow unequal measured letter widths', () => {
   const widths = [12, 9, 10, 11, 8, 14, 10, 11, 9];

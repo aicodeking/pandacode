@@ -146,6 +146,27 @@ test('the governor drops the render scale under long paints and restores it afte
   await expect.poll(scale, { timeout: 5000 }).toBe(.6);
 });
 
+test('the sky settles sustained severe paint pressure without stopping the core draft or navigation', async ({ page }) => {
+  await open(page);
+  // An idle timer must be governed too; no running agent or pointer animation is necessary.
+  await page.evaluate(() => { (window as any).__sky.forcePaintMs = 150; });
+  await expect(sky(page)).toHaveAttribute('data-sky-pressure', 'true');
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
+  const before = await frames(page);
+  await page.locator('#prompt').fill('Core input under renderer pressure');
+  await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
+  await page.mouse.move(700, 600); await page.mouse.move(760, 640, { steps: 3 });
+  expect(await frames(page)).toBe(before);
+  await expect(page.locator('#prompt')).toHaveValue('Core input under renderer pressure');
+  await expect(sky(page)).toHaveAttribute('data-wind', '0');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+  await expect(page.locator('#prompt')).toHaveValue('Core input under renderer pressure');
+});
+
 test('the pointer over the sky stirs the clouds without taking clicks, focus or selection', async ({ page }) => {
   await open(page);
   await page.locator('#prompt').focus();

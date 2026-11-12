@@ -110,6 +110,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   let ctx: Context | null | undefined, bound: Program | null = null, fades = 0;
   let scene: Scene = sceneById(options.pinnedScene) ?? sceneFor(null), hadThread = false, fading: Animation | null = null;
   let frame = 0, timer = 0, last = 0, frames = 0, disposed = false, shown = false, visible = true, focused = true;
+  let expectedDelay = 0, slowPaints = 0, constrained = false, paintMs = 0, probeFrame = 0;
   // Size from the ResizeObserver, so a paint never reads layout.
   let paneWidth = 0, paneHeight = 0;
   // The governor: recent paint times (GPU timer query where the driver has one, else the rAF interval past a 60 Hz frame).
@@ -175,11 +176,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
    * while the pointer stirs the scene, so a first visit to a scene draws without a compile stall. With
    * KHR_parallel_shader_compile the driver compiles in the background and a later slot only collects the result. */
   function precompile(): void {
-    if (options.tileRoot || idle || idleTimer || disposed || !ctx || typeof requestIdleCallback !== 'function') return;
+    if (options.tileRoot || idle || idleTimer || disposed || constrained || !ctx || typeof requestIdleCallback !== 'function') return;
     idle = requestIdleCallback(deadline => {
       idle = 0;
       const c = ctx;
-      if (!c || disposed) return;
+      if (!c || disposed || constrained) return;
       const later = (ms: number): void => { idleTimer = window.setTimeout(() => { idleTimer = 0; precompile(); }, ms); };
       if (performance.now() - inputAt < INPUT_QUIET_MS || stirring || deadline.timeRemaining() < 8) { later(INPUT_QUIET_MS / 2); return; }
       for (const id of [...c.pending.keys()]) programFor(c, sceneById(id)!, false);
@@ -197,13 +198,24 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     const disjoint = ctx.gl.getParameter(ext.GPU_DISJOINT_EXT) as boolean;
     if (!disjoint && forcePaintMs === null) {
       const ms = Number(ext.getQueryObjectEXT(query, ext.QUERY_RESULT_EXT)) / 1e6;
-      timing = 'gpu'; sample(ms);
+      timing = 'gpu'; sample(ms); pressure(ms);
       gpuCosts.push(ms);
       if (gpuCosts.length >= GPU_SAMPLE) { gpuMs = gpuCosts.reduce((sum, value) => sum + value, 0) / gpuCosts.length; gpuCosts = []; }
     }
     ext.deleteQueryEXT(query); query = null;
   }
   /** One paint-time sample: over budget on average drops the scale; a long quiet stretch restores it. */
+  function pressure(ms: number): void {
+    slowPaints = ms > 100 ? slowPaints + 1 : 0;
+    if (slowPaints >= 3) {
+      // A software/overloaded renderer can spend longer painting than the entire frame
+      // interval. Keep its last scene still instead of continuously delaying core input.
+      constrained = true;
+      setData('skyPressure', 'true');
+      if (idle) { cancelIdleCallback(idle); idle = 0; }
+      window.clearTimeout(idleTimer); idleTimer = 0;
+    }
+  }
   function sample(ms: number): void {
     costs.push(ms);
     if (costs.length < SAMPLE) return;
@@ -256,25 +268,44 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     const dt = Math.min(.1, interval / 1000);
     last = now;
     // Without a GPU timer, a 60 Hz frame that took longer than its slot is the paint cost showing.
-    if (forcePaintMs !== null) sample(forcePaintMs);
-    else if (onFrame && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
+    const overrun = interval > 0 ? Math.max(0, interval - (onFrame ? 1000 / 60 : expectedDelay)) : 0;
     const busy = step(dt);
+    const paintAt = performance.now();
     paint();
+    paintMs = performance.now() - paintAt;
+    if (forcePaintMs !== null) { sample(forcePaintMs); pressure(forcePaintMs); }
+    else if (timing === 'frame') {
+      sample(Math.max(overrun, paintMs));
+      // Submission can return immediately while software compositing blocks the next
+      // paint. Two bounded callbacks measure that frame; never a continuous vsync loop.
+      if (!probeFrame) probeFrame = requestAnimationFrame(() => {
+        probeFrame = requestAnimationFrame(() => {
+          probeFrame = 0;
+          pressure(Math.max(0, performance.now() - paintAt - 1000 / 60));
+          if (constrained) schedule();
+        });
+      });
+    }
+    if (constrained) { schedule(); return; }
     setData('skyState', busy ? 'moving' : 'idle');
     // Full frame rate only while the pointer stirs the clouds; the wind alone moves slowly enough for 30.
     if (busy && stirring) frame = requestAnimationFrame(tick);
-    else timer = window.setTimeout(() => tick(performance.now()), 1000 / (busy ? WIND_FPS : IDLE_FPS));
+    else {
+      expectedDelay = 1000 / (busy ? WIND_FPS : IDLE_FPS);
+      timer = window.setTimeout(() => tick(performance.now()), expectedDelay);
+    }
   }
   function stop(): void {
     window.clearTimeout(timer); window.clearInterval(timer); timer = 0;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
+    if (probeFrame) { cancelAnimationFrame(probeFrame); probeFrame = 0; }
   }
   function schedule(): void {
     stop();
     last = 0;
     if (!shown) { setData('skyState', 'off'); return; }
     if (!active()) { setData('skyState', 'paused'); return; }
-    if (reducedMotion.matches) {
+    if (reducedMotion.matches || constrained || !ctx) {
       // One still frame for the current time, refreshed every few minutes.
       wind = 0; windVelocity = 0; pointer.amt = 0; setData('wind', '0');
       paint(); setData('skyState', 'static');
@@ -285,13 +316,13 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   }
   /** Wakes the loop at once (pointer, wind); a frame already queued on rAF is left alone. */
   function wake(): void {
-    if (frame || !active() || reducedMotion.matches) return;
+    if (frame || !active() || reducedMotion.matches || constrained || !ctx) return;
     setData('skyState', 'moving');
     schedule();
   }
   /** The run flipped: the wind starts moving on this frame (a small push, still eased by its spring), not a beat later. */
   function windChanged(): void {
-    if (reducedMotion.matches) return;
+    if (reducedMotion.matches || constrained || !ctx) return;
     windVelocity += ((running() ? 1 : 0) - wind) * 1.2;
     wake();
   }
@@ -321,7 +352,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     const next = sceneById(options.pinnedScene) ?? sceneFor(id), first = !hadThread;
     if (id) hadThread = true;
     if (next === scene) return;
-    const animate = !first && shown && active() && !reducedMotion.matches && layer.hasAttribute('data-gl') && document.documentElement.hasAttribute('data-ready');
+    const animate = !first && shown && active() && !reducedMotion.matches && !constrained && layer.hasAttribute('data-gl') && document.documentElement.hasAttribute('data-ready');
     fading?.cancel(); fading = null; fade.hidden = true;
     if (animate && ctx) {
       // The drawing buffer is still the last frame within this task: paint it once more and copy it before it is gone.
@@ -343,7 +374,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     if (shown && (active() || !ctx)) paint();
   }
   function move(event: PointerEvent): void {
-    if (!shown || reducedMotion.matches || event.pointerType === 'touch') return;
+    if (!shown || reducedMotion.matches || constrained || !ctx || event.pointerType === 'touch') return;
     if ((event.target as Element | null)?.closest?.(READABLE)) { leave(); return; }
     const rect = layer.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -384,7 +415,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   window.addEventListener('blur', onFocus);
   reducedMotion.addEventListener('change', schedule);
   lessTransparency.addEventListener('change', refresh);
-  if (options.expose) Object.assign(window, { __sky: { get frames() { return frames; }, get scene() { return scene.id; }, get fades() { return fades; }, get scale() { return scale; }, get timing() { return timing; }, get gpuMs() { return gpuMs; },
+  if (options.expose) Object.assign(window, { __sky: { get frames() { return frames; }, get scene() { return scene.id; }, get fades() { return fades; }, get scale() { return scale; }, get timing() { return timing; }, get gpuMs() { return gpuMs; }, get paintMs() { return paintMs; },
     get scenes() { return SCENES.map(each => each.id); }, get compiled() { return ctx ? [...ctx.programs.keys()] : []; },
     set forcePaintMs(ms: number | null) { forcePaintMs = ms; costs = []; }, set quietMs(ms: number) { quietMs = ms; } } });
   refresh();

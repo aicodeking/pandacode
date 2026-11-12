@@ -617,6 +617,16 @@ if (new URLSearchParams(location.search).has('window-laboratory')) {
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
+// Test-owned platform reply, exercising the same bundled initializer in dev and production.
+// Native builds never load this preview module; this is not native material/device evidence.
+if (new URLSearchParams(location.search).has('desktop-appearance-fixture')) {
+  let dispose: (() => void) | undefined;
+  (window as any).__previewNativeAppearance = async (platform: 'macos' | 'other') => {
+    if (!['macos', 'other'].includes(platform)) throw new Error('Invalid preview platform');
+    dispose?.();
+    dispose = (await import('./appearance')).initializeNativeAppearance(async () => ({ platform, material: 'solid' }));
+  };
+}
 /** Browser-only lifecycle injection while a transient extension surface owns focus. */
 (window as any).__previewDisableExtension = async (id: string) => {
   await (await import('./extensions/manager')).enableExtension(id, false);
@@ -1480,6 +1490,11 @@ let extensionContextBroker: ReturnType<typeof import('./extensions/context-previ
 // Apply after normal fixture initialization (which decorates the canonical sample tasks).
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('project-context') && new URLSearchParams(location.search).has('no-project')) { projects = []; sessions = []; }
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  // Opt-in native test-process transport. Never evaluates source in the browser and is not
+  // installed-WebView evidence; ordinary preview explicitly reports UnsupportedRuntime.
+  if (command === 'extensions_runtime' && new URLSearchParams(location.search).has('native-extension-fixture') && typeof (window as any).__extensionsNativeFixture === 'function' && ['activate', 'cancel'].includes(args.request?.op)) {
+    return await (window as any).__extensionsNativeFixture(args.request) as T;
+  }
   if (command === 'extensions_context') {
     const { previewExtensionSnapshot } = await import('./extensions/preview');
     const { createPreviewContextBroker } = await import('./extensions/context-preview');

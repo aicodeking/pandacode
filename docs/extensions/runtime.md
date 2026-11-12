@@ -1,13 +1,165 @@
-# Executable runtime qualification (experimental)
+# Executable runtime (experimental trusted-host continuation)
+
+## Current trusted-host decision — Windows x64 only
+
+T24's **experimental Windows x64 local trusted-host slice is verified**: native trust,
+broker, faults, cancellation, OS/library access and preview continuity pass. The broader
+WebKit regression gate is now green after measured decorative-rendering fixes. This is
+**not installed Tauri/WebView2, signing, release or cross-platform acceptance**.
+
+The user-approved executable model is **explicitly trusted code under the normal OS
+account**, not a per-extension OS sandbox. Installation, discovery, enable and context
+consent do not evaluate package code. Executable trust is separate, with an unavoidable
+full-authority warning: user-accessible file read/write, account-available credentials,
+network and starting programs. There is no automatic elevation. API grants constrain
+supported PandaCode operations, **not independent OS calls**. Revocation stops future
+managed activation and signals owned execution; it cannot undo effects or contain
+deliberately hostile trusted native code.
+
+Selected runtime: **Node.js v26.1.0 Windows x64**, in its own native child, not linked into
+the UI or core process. No new Rust/npm dependency was added. Node's built-in modules,
+bundled native SQLite and structured `child_process.execFile` support actual OS/library
+integration. Node-API addons are supported by Node itself, but arbitrary addon ABI,
+bundled native binaries and arbitrary platform/library compatibility are **not qualified
+by this slice**: authors currently supply a single bundled `main.cjs` plus declared static
+icons. No install scripts, npm install, automatic module fetch or activation-time runtime
+download. Existing package archive/entry/expansion/path/SVG limits remain in force.
+
+The executable descriptor is:
+
+```json
+"runtime": {
+  "kind": "node", "entrypoint": "main.cjs",
+  "activationEvents": ["sample.project-summary/summary"]
+}
+```
+
+Each event must name an owned command whose action is `{ "kind": "runCommand" }`.
+Startup activation is unsupported. Legacy top-level `entrypoint`, `activationEvents`
+and `scripts` are deliberately still rejected, never silently converted to trusted code.
+Trust binds the complete validated archive SHA-256 (including manifest/version), not a
+publisher name or path. Every activation rereads/validates the archive; a changed digest
+disables executable eligibility even if an old record said enabled. Review submission
+carries the expected digest, preventing a stale review from trusting changed contents.
+Trust alone neither enables nor starts the package. Safe mode returns before package I/O.
+
+### Native/public API channel and lifecycle
+
+The app-owned bootstrap runs first; package source is supplied over stdin only after
+trust, declared command capture and owned Windows job assignment. The runtime is an
+explicit app-resource path, never PATH, a project path or an extension-supplied command.
+The environment is cleared except OS bootstrap/temp variables; this is secret hygiene,
+not an OS restriction. The normal account can still independently access its resources.
+
+One activation, one process, one unpredictable native-generated channel token and captured
+M4 handle. No socket RPC listener or generic Tauri bridge is offered to extension code.
+Frames are LE-u32 length + JSON. Incoming frames <=64 KiB, outgoing bootstrap <=300,000
+bytes, other replies <=64 KiB, 128 strictly sequential requests per activation, 16 SDK
+pending calls, one pending dialog, <=8 active hosts with only one active invocation per
+owner. Unknown envelope fields, sequence/token/version errors and unsupported operations
+fail closed. No caller/window/project/handle fields from a package select API authority.
+The supported `context` requests map only to M4 query/subscribe/events/unsubscribe with
+native-injected captured handle and current grant rechecks. Packages cannot consent or
+recapture. M4 retains its 50-item page, 5 owned-subscription and revision/gap rules.
+
+The bundled CommonJS entry exports `activate(panda, context)`. `panda.context` offers
+`query`, `subscribe`, `events`, `unsubscribe`; `panda.ui.showDialog` accepts the current
+M3 dialog definition. It queues a validated host dialog, not HTML/DOM or a callback. The
+dialog is committed after successful completion plus native revalidation, then rendered
+by the existing host renderer. Its acknowledgement is a queue acknowledgement, not form
+input; interactive executable callbacks/SDK development tools belong to later slices.
+Captured `commandId` is added to the invocation DTO; navigation cannot retarget it.
+
+Five-second supervision deadline; V8 old-space request 64 MiB; Windows job committed
+memory request 384 MiB and kill-on-close. These are **resilience controls, not containment**
+or a 384 MiB RSS promise. Job assignment precedes package delivery (the app bootstrap has
+already started); no LPAC, ACL/profile provisioning, privilege elevation or weakened
+sandbox fallback exists. Helpers normally inherit the job. On success/failure/cancel the
+owned job is terminated and direct child reaped; M4 handle/subscriptions are released.
+Cancellation before admission is remembered in a bounded 128-ID tombstone buffer. Local
+UI cancellation also invalidates its lifetime, suppressing any late dialog. A failure
+quarantines that owner/digest; explicit disable/enable retries. Cancellation does not
+quarantine unrelated or subsequent independent activations. Core runs are never stopped.
+
+### Packaging, licenses, alternatives and reproducibility
+
+Node's primary license is MIT, with separate bundled dependency terms (including V8,
+OpenSSL, ICU and SQLite). Carry the **complete** pinned upstream LICENSE, not merely
+the MIT header. Exact verified inputs:
+
+- [Node v26.1.0 LICENSE](https://raw.githubusercontent.com/nodejs/node/v26.1.0/LICENSE):
+  SHA-256 `d94dd7496d4de9cd130f1eb6e661e43422483663fd48cf3a450d244b9cda6fdc`.
+- `win-x64/node.exe`, 98,778,600 bytes: SHA-256
+  `35ebb74da6acb56fdf570de64f1ae510d6d18ca09da494a3e1ac87edd32d263b`, matching
+  [the official versioned checksum list](https://nodejs.org/dist/v26.1.0/SHASUMS256.txt).
+
+Local staging copies the already available exact executable plus a supplied local LICENSE,
+verifies both pinned hashes, and produces a manifest plus explicit Tauri resource-map
+override under `_work/00-tmp/extensibility-trusted-runtime/`. It never downloads a runtime
+or modifies a global install. Runtime startup verifies the same hashes. Debug checkout
+builds can use that fixed stage. Release builds require explicitly packaged resources;
+default release configuration remains unstaged/unsupported. The override maps **only**
+node.exe, LICENSE and manifest.json, excluding probes, tests and local configuration paths.
+No release, signing, installed-app update or external publication was performed.
+
+```powershell
+node scripts/extensions-runtime.mjs --trusted-stage <local-Node-v26.1.0-LICENSE>
+cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib extensions:: -- --nocapture
+# Native test cases use the actual app archive/trust/M4 adapters, not the old engine experiment.
+$env:PANDACODE_EXTENSION_CASE='native-os' # also loop, timeout, exception, allocation, cancel
+cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib -- --exact extensions::packages::tests::trusted_native_driver --nocapture
+Remove-Item Env:PANDACODE_EXTENSION_CASE
+# Verified free port, actual local Chrome; headless, isolated profiles.
+$env:PW_PORT='15561'; $env:PW_PROD='1'; $env:PW_WORKERS='1'
+$env:PANDACODE_TEST_CHROME='<local chrome.exe>'
+npx playwright test tests/extensions-trust.spec.ts tests/extensions-runtime.spec.ts
+npx playwright test -c playwright.webkit.config.ts tests/extensions-trust.spec.ts tests/extensions-runtime.spec.ts
+```
+
+Native tests read/write a synthetic canary, contact only ephemeral loopback and run an
+owned helper via structured executable/args, then use actual native SQLite. No real user
+secret or external service is involved. Browser tests join the **real application native
+test process** to headless preview typing/ordered synthetic streaming and M3 rendering.
+That is native runtime + preview UI evidence, **not installed Tauri/WebView2 evidence**.
+The CI workflow explicitly stages/runs the Windows trusted cohort; old restricted-engine
+jobs remain clearly named independent experiments. Remote CI was not triggered locally.
+
+`extension-runtime-native-tests` compiles only these integration fixtures, so ordinary
+unit CI does not require a staged runtime. The explicit trusted Windows CI job enables
+it and fails if packaging/launch is missing; this is not a product activation feature,
+ignored test, mock fallback or trust override. Build this feature before the browser
+cohort; `PANDACODE_EXTENSION_TEST_BINARY` can bind the exact emitted test executable.
+
+Alternatives considered before implementation: Node reuses an existing maintained runtime
+and mature native APIs/Node-API; [Bun FFI](https://bun.sh/docs/runtime/ffi) calls itself
+experimental and recommends Node-API; [Deno Node compatibility](https://docs.deno.com/runtime/fundamentals/node/)
+adds compatibility/permission/module-resolution policies not needed here. Embedding V8
+would add binding/maintenance cost. QuickJS lacks the intended ordinary native/library
+integration; LPAC implements the superseded threat model. None is called an OS sandbox.
+
+| Target | Current status |
+|---|---|
+| Windows x64 | **Experimental**, explicit exact local runtime packaging; actual native fixture/broker/library evidence; installed WebView2/signing/release acceptance remains outstanding |
+| Windows arm64 | **Unsupported**: no qualified trusted runtime packaging/launch/library evidence |
+| macOS arm64/x64 | **Unsupported**: no qualified trusted runtime packaging/launch/WKWebView evidence |
+| Linux x64/arm64 | **Unsupported**: no qualified trusted runtime packaging/launch/WebKitGTK evidence |
+| Mobile / remote host | **Unsupported for executable activation in this slice**, no implied placement/compatibility |
+
+## Historical restricted experiments — preserved, not trusted-host acceptance
+
+All statements/results below describe the earlier confined-runtime decision and its
+then-current disabled policy. That policy is superseded **only** by the experimental
+trusted Windows path above; these experiments were not repaired, rerun or relabeled.
 
 ## Decision and rejected alternatives
 
 **Executable packages remain disabled on every target.** This qualification slice does not
 install an extension host or enable an SDK. The selected *experimental engine* is
 `rquickjs =0.14.0` (MIT), using its bundled QuickJS-NG 0.16.2 C engine (MIT), statically compiled by
-`cc`. Only the isolated qualification crate depends on it; the application does not link it.
+`cc`. The isolated qualification and experimental native-foundation crates depend on it;
+the application does not link it.
 No runtime download, install hook, shell, module loader, native module loading, or ambient
-I/O is supplied to JavaScript. Cargo.lock pins the experiment's complete dependency graph.
+I/O is supplied to JavaScript. Each standalone Cargo.lock pins its experiment's dependency graph.
 
 Design recorded before implementation:
 
@@ -86,11 +238,81 @@ correctly exposes that ECMAScript intrinsic. Corrected the experiment's classifi
 access requirement: no worker/native handle import exists, every listed OS-access attempt still
 must throw, and actual module-load rejection is now checked. Do not infer an OS sandbox from this.
 
+## Independent Windows native foundation (blocked, 2026-11-12)
+
+`src-tauri/src/extensions/native-runtime/` is an independently buildable, **unaccepted**
+foundation. It is not linked into the application or eligible for executable activation.
+It retains the selected engine and uses the existing `windows =0.62.2` bindings rather than
+adding an isolation framework. The original T23 measurements above remain historical evidence
+for that different qualification binary, not evidence for this supervisor.
+
+The proposed launch path derives an AppContainer SID without provisioning a profile, requests
+capability-free LPAC (opting out of ALL APPLICATION PACKAGES), restricts child creation, allows
+only two inherited pipe handles, and atomically assigns a suspended child to a non-breakaway
+Job Object before resume. Job limits request one active process, kill-on-close and 128 MiB
+**whole-job committed memory**. This is neither an RSS nor a physical-memory cap; the engine
+heap budget is separately 96 MiB. A single request is at most 2,048 bytes; a response frame at
+most 1 MiB. The blocking supervisor polls cancellation/deadlines (at most five seconds), then
+terminates and checks job/process teardown. These are implemented requests, not measured
+enforcement guarantees.
+
+The companion evaluates supplied source with no package loader/broker/native imports; it is
+not a renamed fixture dispatcher. A separate test-only native probe uses the exact same launch
+API for filesystem canaries, loopback, environment, process creation, native allocation and
+failure cases. None of those probes has executed successfully inside the sandbox here.
+
+Both native attempts failed before child creation with `0x80070002`. The corrective attempt
+canonicalized the executable and used its explicitly granted staging directory as the working
+directory; it isolated the failure to `CreateProcessW (LPAC, explicit handles, atomic job)`.
+The staged binary and directory exist and have the derived SID's read/execute grant. The
+underlying missing Windows resource is **undetermined**; the error does not prove a profile
+is necessary. The goal's repeated-failure stop rule therefore blocks more native retries
+until a new diagnostic step is authorized. No weaker launch, profile creation, external ACL
+change, installed-app launch or security-policy change was used to obtain a pass.
+
+Local commands (PowerShell, checkout root):
+
+```powershell
+node scripts/extensions-runtime.mjs --stage-only
+# Requires resolving the recorded blocker before retrying this real native cohort:
+node scripts/extensions-runtime.mjs
+$env:CARGO_TARGET_DIR=Join-Path $PWD '_work/00-tmp/extensibility-runtime-target'
+cargo test --offline --locked --manifest-path src-tauri/src/extensions/native-runtime/Cargo.toml --features native-probes --lib -- --nocapture
+cargo clippy --offline --locked --manifest-path src-tauri/src/extensions/native-runtime/Cargo.toml --features native-probes --all-targets -- -D warnings
+```
+
+The local-only staging runner builds debug binaries offline/locked, copies to the test-owned
+`_work/00-tmp/extensibility-runtime-package/`, grants read/execute only there, and writes hashed
+contents, explicit `activationEnabled: false` and complete resolved-graph source notices.
+The native probe is test-only and must never be included in a future release bundle. No
+production Tauri packaging/signing/installed-native acceptance is claimed. No runtime download
+or automatic application network request was added.
+
+Outstanding review/acceptance includes native startup root cause, parent-process authority and
+breakaway probes, injected limit-application failure, verified error-path reaping, per-host SID
+separation (the prototype currently shares one derived SID), read-only installed companion
+provisioning, actual native-fault typing/streaming continuity, and installed Tauri/WebView2
+evidence. The old preview cohort has not been relabeled or rerun as proof of these new failures.
+All executable targets remain disabled. The canonical independent handoff records the exact
+commands/results and authorization needed; the original task run remains paused.
+
+Mechanisms and alternatives reviewed: Microsoft's
+[AppContainer implementation](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer),
+[startup attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute),
+[job limits](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information),
+[LaunchAppContainer](https://github.com/microsoft/SandboxSecurityTools/tree/main/LaunchAppContainer),
+[rappct](https://github.com/cpjet64/rappct),
+[sandboxrs-windows](https://github.com/TarunKurella/sandboxrs-windows), and
+[isobox's derive-only plan](https://github.com/can1357/isobox/blob/main/appcontainer.go).
+The crate wrappers do not remove the need to prove LPAC authority/resource behavior locally;
+derive-only launch avoids assuming permission to create per-user profile storage. Direct
+existing bindings keep policy explicit and permit fail-closed errors without fallback.
+
 ## Target decision table
 
 | Target | Evidence available here | Executable support and specific remaining reason |
 |---|---|---|
-| Windows x64 | Real debug/optimized engine, child ownership and both preview-engine continuity tests | **Disabled**: OS containment, total-process memory enforcement, packaged native host/UI unqualified |
+| Windows x64 | T23 engine/preview evidence; new native foundation builds/stages but LPAC launch fails before execution | **Disabled**: native authority/resource enforcement and packaged native host/UI unqualified |
 | Windows arm64 | Shipped crate contains `aarch64-pc-windows-msvc` bindings; CI row supplied, not run here | **Disabled**: no executed target isolation/resource/packaging evidence |
 | macOS arm64 / x64 | Shipped bindings; native CI rows supplied, not run here | **Disabled**: no executed target isolation/resource/packaging/WKWebView evidence |
 | Linux x64 / arm64 | Shipped bindings; native CI rows supplied, not run here | **Disabled**: no executed target isolation/resource/packaging/WebKitGTK evidence |

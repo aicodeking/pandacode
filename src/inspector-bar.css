@@ -39,7 +39,7 @@ html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-labe
 @keyframes strip-fade-l{from{--strip-fade-l:0px}to{--strip-fade-l:16px}}
 @keyframes strip-fade-r{from{--strip-fade-r:16px}to{--strip-fade-r:0px}}
 @supports (animation-timeline:scroll()){
-  html[data-theme] .workspace>.inspector .inspector-strip>.inspector-tabs{
+  html[data-theme] .workspace>.inspector .inspector-strip>.inspector-tabs[data-tabs-overflow]{
     animation:strip-fade-l linear both,strip-fade-r linear both;
     animation-timeline:scroll(self x);
     animation-range:0 24px,calc(100% - 24px) 100%;

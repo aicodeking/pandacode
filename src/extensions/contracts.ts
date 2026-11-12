@@ -201,6 +201,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     if (manifest.optionalCapabilities) manifest.optionalCapabilities = optional.filter(c => capabilities.includes(c));
     for (const key of (manifest.requiredContributions ?? []) as string[]) if (!knownContributions.includes(key)) error('UnsupportedContribution', `${path}/requiredContributions`, [key]);
     const contributions = manifest.contributes as ObjectValue;
+    const executable = ((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id);
+    const events = (manifest.runtime as ObjectValue | undefined)?.activationEvents as Json[] | undefined;
+    if (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id))) error('UnsupportedRuntime', path, [id]);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;

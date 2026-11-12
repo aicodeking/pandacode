@@ -2,7 +2,7 @@ import { escape, isImeKey } from '../dom';
 import { openChoiceMenu, type ChoiceItem } from '../choice-menu';
 import { createDialogState, type DialogCallbacks, type DialogContext, type DialogDefinition, type DialogResult } from './dialog-state';
 
-/** Host-only transport seam. Executable extensions remain disabled; no function is read from JSON. */
+/** Host-only transport seam. No package function is ever read from dialog JSON. */
 let callbacks: DialogCallbacks | undefined;
 export function setDialogCallbacks(value: DialogCallbacks): void { callbacks = value; }
 

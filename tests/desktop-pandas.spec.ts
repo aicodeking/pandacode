@@ -6,8 +6,8 @@ const brand = (page: Page) => page.getByRole('button', { name: 'Replay PandaCode
 const star = (page: Page) => page.getByRole('button', { name: 'Star PandaCode on GitHub', exact: true });
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 
-async function open(page: Page): Promise<void> {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+async function open(page: Page, query = ''): Promise<void> {
+  await page.goto(`/${query}`, { waitUntil: 'domcontentloaded' });
   await expect(prompt(page)).toBeEnabled({ timeout: 20_000 });
 }
 
@@ -106,6 +106,27 @@ test.describe('desktop pandas', () => {
     await expect(page.locator('.desktop-brand-launch')).toHaveCount(0);
   });
 
+  test('sustained slow frames settle decorative motion without blocking input or explicit replay', async ({ page }) => {
+    await page.addInitScript(() => {
+      const frame = window.requestAnimationFrame.bind(window);
+      // Simulate slow frame timestamps without sleeps or changed assertion deadlines.
+      window.requestAnimationFrame = callback => frame(now => callback(now * 100));
+    });
+    await open(page);
+    await expect(brand(page)).toHaveAttribute('data-brand-motion', 'static');
+    await expect(intro(page)).toHaveCount(0);
+    await expect.poll(() => stageOpacity(page)).toBe('1');
+    const stage = brand(page).locator('.desktop-brand-stage');
+    const still = await stage.innerHTML();
+    await prompt(page).fill('Core input survives decorative frame pressure.');
+    await expect(prompt(page)).toHaveValue('Core input survives decorative frame pressure.');
+    expect(await stage.innerHTML()).toBe(still);
+    await brand(page).click();
+    // The explicit replay is attempted, then independently yields under the same pressure.
+    await expect(brand(page)).toHaveAttribute('data-brand-motion', 'static');
+    await expect(prompt(page)).toHaveValue('Core input survives decorative frame pressure.');
+  });
+
   const titleBarCases = [
     { platform: 'other', width: 440, word: true },
     { platform: 'macos', width: 440, word: true },
@@ -117,11 +138,8 @@ test.describe('desktop pandas', () => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.setViewportSize({ width: 1440, height: 940 });
       await page.addInitScript(width => localStorage.setItem('pandacode.sidebarWidth', String(width)), width);
-      await open(page);
-      await page.evaluate(async platform => {
-        const { initializeNativeAppearance } = await import('/src/appearance.ts');
-        initializeNativeAppearance(async () => ({ platform, material: 'solid' }));
-      }, platform);
+      await open(page, '?desktop-appearance-fixture');
+      await page.evaluate(async platform => { await (window as any).__previewNativeAppearance(platform); }, platform);
       await expect(page.locator('html')).toHaveAttribute('data-native-platform', platform);
       await expect.poll(() => page.locator('.sidebar').evaluate(node => node.getBoundingClientRect().width), { timeout: 15_000 }).toBe(width);
       await expect(brand(page)).toBeVisible();

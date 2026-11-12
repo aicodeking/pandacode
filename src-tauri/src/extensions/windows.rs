@@ -103,10 +103,12 @@ pub fn changed(app: &tauri::AppHandle) {
 }
 /// A destroyed compact window owns no workspace services or global package registrations.
 pub fn window_closed(app: &tauri::AppHandle, label: &str) {
+    if label == "main" { super::runtime::stop(app, None); super::context::invalidate(app, None); }
     if AUXILIARY.contains(&label) { let _ = app.emit_to("main", "extensions-origin-closed", json!({"windowId":label})); }
 }
 pub fn recover(app: &tauri::AppHandle) -> Result<(), String> {
     app.state::<ExtensionPackages>().0.lock().map_err(|_| "Extension manager unavailable.")?.safe = true;
+    super::runtime::stop(app, None);
     super::context::invalidate(app, None);
     changed(app); crate::tray::show(app); Ok(())
 }

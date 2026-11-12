@@ -47,6 +47,42 @@ pub fn record_job(app: &tauri::AppHandle, id: &str, kind: &str, status: &str) {
     app.state::<ContextBroker>().record_job(id, kind, status);
 }
 impl ContextBroker {
+    #[cfg(all(test, feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    pub(super) fn test_call(&self, snapshot: &Snapshot, store: &Store, request: Value) -> Value {
+        envelope(self.broker.lock().unwrap().execute_guarded("main", snapshot, store, request, Instant::now() + DEADLINE, None))
+    }
+    #[cfg(all(test, feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    pub(super) fn test_counts(&self) -> (usize, usize) { let broker = self.broker.lock().unwrap(); (broker.handles.len(), broker.subscriptions.len()) }
+    pub(super) fn runtime_binding(&self, snapshot: &Snapshot, handle: &str) -> Result<(String, String, Value), &'static str> {
+        let broker = self.broker.try_lock().map_err(|_| "Timeout")?;
+        let invocation = broker.handles.get(handle).filter(|invocation| invocation.expires > Instant::now()).ok_or("StaleContext")?;
+        let manifest = owner(snapshot, &invocation.id, &invocation.version, &invocation.context)?;
+        let contributes = &manifest["contributes"];
+        let command_id = if matches!(invocation.context["surfaceId"].as_str(), Some("panda.commands" | "panda.shortcuts")) { json!(invocation.id) } else {
+            contributes["menus"].as_array().into_iter().flatten().find_map(|menu| {
+                if menu["location"] != invocation.context["surfaceId"] { return None; }
+                if let Some(items) = menu["items"].as_array() { leaf(items, &invocation.id, &invocation.context).map(|item| item["command"].clone()) }
+                else { (menu["id"] == invocation.id).then(|| menu["command"].clone()) }
+            }).ok_or("PermissionDenied")?
+        };
+        if !contributes["commands"].as_array().into_iter().flatten().any(|command| command["id"] == command_id && command["action"]["kind"] == "runCommand") || !manifest["runtime"]["activationEvents"].as_array().is_some_and(|events| events.contains(&command_id)) { return Err("PermissionDenied"); }
+        let mut context = invocation.context.clone(); context["commandId"] = command_id;
+        Ok((invocation.owner.clone(), invocation.version.clone(), context))
+    }
+    pub(super) fn runtime_call(&self, snapshot: &Snapshot, store: &Store, handle: &str, mut request: Value) -> Value {
+        // Only the supervisor supplies this handle. Packages cannot consent, recapture or select identity.
+        if !matches!(request["op"].as_str(), Some("query" | "subscribe" | "events" | "unsubscribe")) || request.get("handle").is_some() { return failure("PermissionDenied"); }
+        request["handle"] = json!(handle);
+        let Ok(mut broker) = self.broker.try_lock() else { return failure("Timeout"); };
+        self.reconcile_job_gap(&mut broker);
+        envelope(broker.execute_guarded("main", snapshot, store, request, Instant::now() + DEADLINE, None))
+    }
+    pub(super) fn runtime_release(&self, handle: &str) {
+        if let Ok(mut broker) = self.broker.lock() {
+            broker.handles.remove(handle); broker.subscriptions.retain(|_, stream| stream.handle != handle);
+            if let Ok(mut tokens) = broker.cancellations.lock() { tokens.remove(handle); }
+        }
+    }
     fn record_job(&self, id: &str, kind: &str, status: &str) {
         // This is on the core agent emission path. A slow extension read must never stall it.
         if let Ok(mut broker) = self.broker.try_lock() {
@@ -98,7 +134,7 @@ fn owner(snapshot: &Snapshot, id: &str, version: &str, context: &Value) -> Reply
                 else { (menu["id"] == id).then(|| menu["command"].clone()) }
             })
         };
-        if contributes["commands"].as_array().into_iter().flatten().any(|command| Some(&command["id"]) == command_id.as_ref() && command["action"]["kind"] == "showProjectContext" && allowed(command, context)) {
+        if contributes["commands"].as_array().into_iter().flatten().any(|command| Some(&command["id"]) == command_id.as_ref() && matches!(command["action"]["kind"].as_str(), Some("showProjectContext" | "runCommand")) && allowed(command, context)) {
             return Ok(manifest.clone());
         }
     }

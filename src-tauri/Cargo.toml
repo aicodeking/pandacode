@@ -10,6 +10,11 @@ name = "pandacode_lib"
 # Desktop only links the rlib; add "staticlib", "cdylib" back for mobile targets.
 crate-type = ["rlib"]
 
+[features]
+# Opt-in integration fixtures require the exact locally staged runtime. This does NOT
+# enable product execution, bypass trust, or add a runtime dependency to default CI.
+extension-runtime-native-tests = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
