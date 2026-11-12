@@ -16,7 +16,7 @@ const SETTLE: Duration = Duration::from_millis(500);
 /// Scheduling jitter allowed past `RECORD_FOR`; well under `SETTLE`.
 const SLACK: Duration = Duration::from_millis(150);
 /// Real-time audio runs past the meter's span: it includes what the device buffered before
-/// `record` started (864–896 ms seen on darwin-aarch64 for the 800 ms cap), so its bound is looser.
+/// `record` started (864–928 ms seen on darwin-aarch64 for the 800 ms cap), so its bound is looser.
 const AUDIO_BOUND: Duration = Duration::from_millis(1100);
 const REQUIRE_MIC_ENV: &str = "PANDACODE_REQUIRE_REAL_MIC";
 

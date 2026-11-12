@@ -198,7 +198,7 @@ pub(super) fn friendly_name(description: &cpal::DeviceDescription) -> String {
 /// The string preferences store for a device; the Settings select uses it as both label and value.
 /// macOS keeps the deprecated `name()` (the CoreAudio name, as in cpal 0.16). Windows uses the
 /// FriendlyName. On Linux `name()` is the raw ALSA PCM id since cpal 0.17 ("plughw:CARD=0,DEV=0"),
-/// where 0.16 named a card by its card name: `devices` and `input_device` add that name back
+/// where 0.16 named a card by its card name: `devices` and `saved_device` add that name back
 /// through `alsa_picker_names` and `alsa_resolve`, so choices saved by either version still match.
 #[allow(deprecated)]
 pub(super) fn saved_name(device: &cpal::Device) -> Option<String> {
@@ -398,7 +398,14 @@ fn open(device_name: Option<&str>, probe: bool) -> Result<Opened> {
     };
     #[cfg(target_os = "linux")]
     if alsa_falls_back(saved_name(&chosen).as_deref(), probe) {
-        return open_on(chosen).or_else(|_| open_on(default_device()?));
+        return open_on(chosen).or_else(|saved_error| {
+            default_device().and_then(open_on).map_err(|default_error| {
+                format!(
+                    "The saved microphone did not open: {saved_error} \
+                     The default input did not open either: {default_error}"
+                )
+            })
+        });
     }
     #[cfg(not(target_os = "linux"))]
     let _ = probe;
