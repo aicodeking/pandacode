@@ -2,12 +2,19 @@
 //! but only under the release profile. Run with `--release --ignored`. A machine with no usable
 //! input passes, so only a crash fails, unless `REQUIRE_MIC_ENV` is `1` or `true` (any case),
 //! which asks for real samples.
+//!
+//! The probe's cap is wall time; audio is only bounded by `Pcm`'s `MAX_SECONDS` buffer, which an
+//! unpaced input (Linux CI's null ALSA default) fills within the cap. So the limit is checked by
+//! when the probe's meter stops, which holds on any device, and by audio length only when the
+//! input runs in real time.
 
 use super::*;
 
 const RECORD_FOR: Duration = Duration::from_millis(800);
-/// Allows the probe thread to reach its own cap before `finish` asks it to stop.
-const SETTLE: Duration = Duration::from_millis(200);
+/// Lets the probe pass its own cap well before `finish` asks it to stop, so an ignored cap shows.
+const SETTLE: Duration = Duration::from_millis(500);
+/// Scheduling jitter allowed past `RECORD_FOR`; well under `SETTLE`.
+const SLACK: Duration = Duration::from_millis(150);
 const REQUIRE_MIC_ENV: &str = "PANDACODE_REQUIRE_REAL_MIC";
 
 #[test]
@@ -31,7 +38,13 @@ fn real_audio_lists_opens_and_records() {
         .expect("a stale saved id falls back to the default");
     assert_eq!(capture::saved_name(&fallback).as_deref(), Some(default.id.as_str()));
 
-    let probe = match capture::Probe::start(Some(default.id.clone()), RECORD_FOR, Box::new(|_| ())) {
+    // The meter runs only while the probe records: its first and last calls bound the recording.
+    let meters: Arc<Mutex<Vec<Instant>>> = Arc::default();
+    let meter = {
+        let meters = Arc::clone(&meters);
+        Box::new(move |_: f32| meters.lock().unwrap().push(Instant::now()))
+    };
+    let probe = match capture::Probe::start(Some(default.id.clone()), RECORD_FOR, meter) {
         Ok(probe) => probe,
         Err(error) => {
             eprintln!("real_audio: could not open the input: {error}");
@@ -39,9 +52,22 @@ fn real_audio_lists_opens_and_records() {
             return;
         }
     };
+    let started = Instant::now();
     std::thread::sleep(RECORD_FOR + SETTLE);
     let pcm = probe.finish().expect("the recording finishes");
-    eprintln!("real_audio: captured {} samples ({} ms)", pcm.samples.len(), pcm.duration_ms());
+    let wall = started.elapsed();
+    let audio = Duration::from_millis(pcm.duration_ms());
+    let meters = meters.lock().unwrap().clone();
+    let metered = meters.last().zip(meters.first()).map_or(Duration::ZERO, |(last, first)| *last - *first);
+    // A real-time input delivers about one second of audio per second; an unpaced one far more.
+    let paced = audio <= wall * 2;
+    eprintln!(
+        "real_audio: captured {} samples ({} ms of audio in {} ms wall; probe metered for {} ms; paced: {paced})",
+        pcm.samples.len(), audio.as_millis(), wall.as_millis(), metered.as_millis(),
+    );
+    assert!(metered <= RECORD_FOR + SLACK, "the probe recorded for {metered:?}, past its {RECORD_FOR:?} cap");
+    assert!(audio <= Duration::from_secs(MAX_SECONDS), "{audio:?} of audio exceeds the {MAX_SECONDS} s buffer");
+    assert!(!paced || audio <= RECORD_FOR + SLACK, "{audio:?} of real-time audio is past the {RECORD_FOR:?} cap");
     assert!(!required || !pcm.samples.is_empty(), "{REQUIRE_MIC_ENV} is set but nothing was captured");
     if !pcm.samples.is_empty() {
         assert!(pcm.wav().expect("captured audio encodes").starts_with(b"RIFF"));
