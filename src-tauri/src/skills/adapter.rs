@@ -369,9 +369,21 @@ fn write_file_as(path: &Path, bytes: &[u8], project: Option<&Path>, links: Links
     let failed = |e: std::io::Error| format!("Could not write {}: {e}", path.display());
     let target = match project {
         // User scope rewrites in place, through links (dotfiles setups), as `fs::write` does.
+        // Opened without blocking (a FIFO there never stalls the library lock) and without
+        // truncating, so anything but a regular file is refused before a byte changes.
         None if !new => {
-            let mut file = fs::File::create(path).map_err(failed)?;
-            return fail_point::before_write(path, &mut file, bytes).and_then(|()| file.write_all(bytes)).map_err(failed);
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
+            }
+            let mut file = options.open(path).map_err(failed)?;
+            if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+                return Err(not_regular(path));
+            }
+            return file.set_len(0).and_then(|()| fail_point::before_write(path, &mut file, bytes)).and_then(|()| file.write_all(bytes)).map_err(failed);
         }
         None => path.to_path_buf(),
         Some(root) => {
@@ -714,12 +726,18 @@ impl Checkout {
         Some(Self { root: root.to_path_buf(), real_top: fs::canonicalize(top).ok() })
     }
 
-    /// Whether `root` is the repository's top level itself, not a subfolder of it.
-    fn at_top(&self) -> bool {
+    /// Where `root` sits below the repository's top level (empty at the top level itself).
+    fn prefix(&self) -> Option<PathBuf> {
         match &self.real_top {
-            Some(real_top) => fs::canonicalize(&self.root).is_ok_and(|real| &real == real_top),
-            None => git_output(&self.root, "--show-prefix").is_some_and(|prefix| prefix.is_empty()),
+            Some(real_top) => fs::canonicalize(&self.root).ok()?.strip_prefix(real_top).ok().map(Path::to_path_buf),
+            None => git_output(&self.root, "--show-prefix").map(PathBuf::from),
         }
+    }
+
+    /// The exclude line for `path` (below `root`) as named, links along it not followed:
+    /// what [`Checkout::entry`] gave at activation for a link since replaced by a real folder.
+    fn plain_entry(&self, path: &Path, folder: bool) -> Option<String> {
+        line_of(&self.prefix()?.join(path.strip_prefix(&self.root).ok()?), folder)
     }
 
     /// The exclude line for `path` (`/CLAUDE.md`, `/.claude/skills/x/`). Built from where the
@@ -742,13 +760,19 @@ impl Checkout {
             _ => git_output(&self.root, "--show-prefix").zip(path.strip_prefix(&self.root).ok()).map(|(prefix, rest)| Path::new(&prefix).join(rest)),
         };
         let Some(relative) = relative else { return Ok(None) };
-        let parts: Vec<String> = relative.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
-        if parts.iter().any(|part| part.chars().any(char::is_control)) {
-            return Err(format!("{:?} has a control character in its path; PandaCode will not add it to the Git exclude list.", path.display().to_string()));
-        }
-        let relative: Vec<String> = parts.iter().map(|part| escape_part(part)).collect();
-        Ok(Some(format!("/{}{}", relative.join("/"), if folder { "/" } else { "" })))
+        line_of(&relative, folder).map(Some).ok_or_else(|| format!("{:?} has a control character in its path; PandaCode will not add it to the Git exclude list.", path.display().to_string()))
     }
+}
+
+/// The exclude line `/a/b` (`/a/b/` for a folder) for `relative` (below the top level), each
+/// part escaped ([`escape_part`]); None when a part holds a control character.
+fn line_of(relative: &Path, folder: bool) -> Option<String> {
+    let parts: Vec<String> = relative.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
+    if parts.iter().any(|part| part.chars().any(char::is_control)) {
+        return None;
+    }
+    let relative: Vec<String> = parts.iter().map(|part| escape_part(part)).collect();
+    Some(format!("/{}{}", relative.join("/"), if folder { "/" } else { "" }))
 }
 
 /// `part` with gitignore's special characters backslash-escaped: `*`, `?`, `[` and `\`
@@ -774,23 +798,67 @@ pub fn exclude_entry(root: &Path, path: &Path, folder: bool) -> Result<Option<St
     }
 }
 
-/// Whether `line`, recorded in an activation's exclude list, is one PandaCode builds for
-/// `path` (its skill folder or rule file) in the checkout at `base`: exactly
-/// [`Checkout::entry`] when `checkout` is open; once the checkout is gone (its place below the
-/// repository's top level unknown), a line ending in `path` relative to `base`. Builds up to
+/// Whether `line`, recorded in an activation's exclude list `list`, is one PandaCode builds for
+/// `path` (its skill folder or rule file) in the checkout at `base`. A skill folder's line may
+/// have been built through a link since replaced (`.agents/skills -> ../.claude/skills`, now a
+/// real folder), so for a folder `<skills folder>/<id>` the same id under each project skills
+/// folder ([`SKILL_FOLDERS`]) counts as well; a link into a deeper folder is not followed back.
+/// With `checkout` open: [`Checkout::entry`] for `path`, or the line for any of those folders
+/// built without following links ([`Checkout::plain_entry`]). Once the checkout is gone, the
+/// same lines built from where `base` sat below the top level, derived from `list`
+/// ([`gone_prefix`]); when that cannot be derived (no list recorded, or `base` inside a
+/// removed worktree's subfolder), any line ending in `path` relative to `base`. Builds up to
 /// 0.3.114 wrote `/<path relative to base>` unresolved and unescaped; that line counts too
-/// while `base` is the top level (from a subfolder it names a path at the repository's root,
-/// maybe the user's own line). A tampered record's other lines (`/src/`) are never dropped
-/// from the user's exclude list.
-pub fn own_line(checkout: Option<&Checkout>, base: &Path, path: &Path, folder: bool, line: &str) -> bool {
-    if let Some(checkout) = checkout {
-        let legacy = path.strip_prefix(base).ok().filter(|r| !r.as_os_str().is_empty()).map(|r| format!("/{}{}", r.to_string_lossy().replace('\\', "/"), if folder { "/" } else { "" }));
-        return checkout.entry(path, folder).as_deref() == Some(line) || (legacy.as_deref() == Some(line) && checkout.at_top());
-    }
+/// while `base` is (or was) the top level (from a subfolder it names a path at the repository's
+/// root, maybe the user's own line). A tampered record's other lines (`/src/`) are never
+/// dropped from the user's exclude list.
+pub fn own_line(checkout: Option<&Checkout>, list: Option<&Path>, base: &Path, path: &Path, folder: bool, line: &str) -> bool {
     let Ok(relative) = path.strip_prefix(base) else { return false };
+    if relative.as_os_str().is_empty() || line.chars().any(char::is_control) {
+        return false;
+    }
+    let legacy = format!("/{}{}", relative.to_string_lossy().replace('\\', "/"), if folder { "/" } else { "" });
+    let named = |path: &Path| -> Vec<PathBuf> {
+        let mut named = vec![path.to_path_buf()];
+        if let (true, Some(id)) = (folder, path.file_name()) {
+            named.extend(SKILL_FOLDERS.iter().map(|dir| base.join(dir).join(id)));
+        }
+        named
+    };
+    if let Some(checkout) = checkout {
+        let prefix = checkout.prefix();
+        return checkout.entry(path, folder).as_deref() == Some(line)
+            || named(path).iter().any(|p| checkout.plain_entry(p, folder).as_deref() == Some(line))
+            || (legacy == line && prefix.is_some_and(|prefix| prefix.as_os_str().is_empty()));
+    }
+    if let Some(prefix) = list.and_then(|list| gone_prefix(list, base)) {
+        return (legacy == line && prefix.as_os_str().is_empty())
+            || named(path).iter().any(|p| p.strip_prefix(base).ok().and_then(|rest| line_of(&prefix.join(rest), folder)).as_deref() == Some(line));
+    }
     let parts: Vec<String> = relative.components().map(|part| escape_part(&part.as_os_str().to_string_lossy())).collect();
     let suffix = format!("/{}{}", parts.join("/"), if folder { "/" } else { "" });
-    !parts.is_empty() && !line.chars().any(char::is_control) && line.starts_with('/') && line.ends_with(&suffix)
+    legacy == line || (line.starts_with('/') && line.ends_with(&suffix))
+}
+
+/// Where the gone checkout `base` sat below its top level, from the exclude list `list` it
+/// used (`<git dir>/info/exclude`): below a linked worktree `list`'s Git folder still registers
+/// (`worktrees/*/gitdir` naming `<top>/.git`), else below the folder holding a Git folder named
+/// `.git`, the main checkout. None when `base` is in neither (a removed worktree's subfolder
+/// whose registration was pruned).
+fn gone_prefix(list: &Path, base: &Path) -> Option<PathBuf> {
+    let git_dir = list.parent()?.parent()?;
+    let bases = [Some(base.to_path_buf()), real_location(base)];
+    let below = |top: &Path| -> Option<PathBuf> {
+        let tops = [Some(top.to_path_buf()), real_location(top)];
+        bases.iter().flatten().find_map(|base| tops.iter().flatten().find_map(|top| base.strip_prefix(top).ok().map(Path::to_path_buf)))
+    };
+    let registered = fs::read_dir(git_dir.join("worktrees")).into_iter().flatten().flatten().filter_map(|entry| {
+        let named = PathBuf::from(read_text(&entry.path().join("gitdir")).ok()?.trim());
+        below(named.parent()?)
+    });
+    // The deepest top level holding `base`: a worktree nested inside the main checkout's folder.
+    let main = (git_dir.file_name()? == ".git").then(|| git_dir.parent().and_then(below)).flatten();
+    registered.chain(main).min_by_key(|prefix| prefix.components().count())
 }
 
 /// Whether the exclude-list `line` is `entry`, ignoring surrounding whitespace except an

@@ -1805,3 +1805,69 @@ fn a_top_level_moved_above_the_found_git_folder_is_not_trusted() {
     assert!(adapter::found_at_top(&root.join("app"), &root));
     assert!(!adapter::found_at_top(&proj, &root));
 }
+
+/// A line recorded through `.agents/skills -> ../.claude/skills` (`/.claude/skills/x/`) is
+/// still released after the link was replaced by a real folder.
+#[cfg(unix)]
+#[test]
+fn a_line_built_through_a_since_replaced_link_is_removed_on_deactivate() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    fs::create_dir_all(root.join(".claude/skills")).unwrap();
+    fs::create_dir_all(root.join(".agents")).unwrap();
+    std::os::unix::fs::symlink("../.claude/skills", root.join(".agents/skills")).unwrap();
+    fx.import(Kind::Skill, &fx.folder("release-notes", &[("SKILL.md", SKILL)]));
+    fx.library.activate("release-notes", "codex", Scope::Project, Some(&root), false).unwrap();
+    let exclude = root.join(".git/info/exclude");
+    assert!(fs::read_to_string(&exclude).unwrap().lines().any(|l| l == "/.claude/skills/release-notes/"));
+    fs::remove_file(root.join(".agents/skills")).unwrap();
+    fs::create_dir_all(root.join(".agents/skills")).unwrap();
+    fs::rename(root.join(".claude/skills/release-notes"), root.join(".agents/skills/release-notes")).unwrap();
+    fx.library.deactivate("release-notes", "codex", Scope::Project, Some(&root)).unwrap();
+    let text = fs::read_to_string(&exclude).unwrap();
+    assert!(!text.contains("release-notes"), "{text}");
+}
+
+/// Once a worktree is gone, a tampered recorded line that only ends like the skill's own
+/// (`/other/.claude/skills/x/`) stays in the shared exclude list; the worktree's own line goes.
+#[cfg(unix)]
+#[test]
+fn a_tampered_suffix_line_from_a_deleted_worktree_survives() {
+    let fx = Fixture::new();
+    let (root, worktree) = repo_with_worktree(&fx);
+    fx.library.activate("release-notes", "claude", Scope::Project, Some(&worktree), false).unwrap();
+    let exclude = root.join(".git/info/exclude");
+    let tampered = "/other/.claude/skills/release-notes/";
+    fs::write(&exclude, format!("{}{tampered}\n", fs::read_to_string(&exclude).unwrap())).unwrap();
+    let mut meta = fx.library.load("release-notes").unwrap();
+    meta.activations[0].excluded.push(tampered.into());
+    fx.library.save(&meta).unwrap();
+    fs::remove_dir_all(&worktree).unwrap();
+    fx.library.deactivate("release-notes", "claude", Scope::Project, Some(&worktree)).unwrap();
+    let text = fs::read_to_string(&exclude).unwrap();
+    assert!(text.lines().any(|l| l == tampered) && !text.lines().any(|l| l == "/.claude/skills/release-notes/"), "{text}");
+}
+
+/// A user-scope update failing on a file that someone replaced with their own text meanwhile
+/// leaves that file alone and names it; a half-written start of the new version would not.
+#[test]
+fn a_failed_file_replaced_meanwhile_is_left_and_named() {
+    let fx = Fixture::new();
+    let source = fx.folder("release-notes", &[("SKILL.md", SKILL)]);
+    fx.import(Kind::Skill, &source);
+    fx.library.activate("release-notes", "claude", Scope::User, None, false).unwrap();
+    fs::write(source.join("SKILL.md"), format!("{SKILL}Updated.\n")).unwrap();
+    fx.import(Kind::Skill, &source);
+    let theirs = "The user's own notes.\n".repeat(200);
+    let mine = theirs.clone();
+    adapter::fail_point::set(move |path| {
+        fs::write(path, &mine).unwrap();
+        Err(std::io::Error::other("disk full"))
+    });
+    let refused = fx.library.activate("release-notes", "claude", Scope::User, None, false);
+    adapter::fail_point::clear();
+    let refused = refused.unwrap_err();
+    assert!(refused.contains("disk full") && refused.contains("Left in place") && refused.contains("SKILL.md"), "{refused}");
+    let held = fs::read_to_string(fx.home.join(".claude/skills/release-notes/SKILL.md")).unwrap();
+    assert!(held.ends_with(&theirs[theirs.len() / 2..]) && held != SKILL, "{held}");
+}

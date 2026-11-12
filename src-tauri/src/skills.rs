@@ -923,7 +923,8 @@ struct Heir {
 fn own_lines(id: &str, kind: Kind, activation: &Activation, base: &Path, entries: Vec<String>, checkouts: &mut Checkouts) -> Vec<String> {
     let targets = adapter::targets(&activation.harness, kind, activation.scope, base, id);
     let checkout = checkouts.get(base).map(|(_, checkout)| checkout);
-    let (own, other): (Vec<String>, Vec<String>) = entries.into_iter().partition(|line| targets.iter().any(|(path, folder)| adapter::own_line(checkout, base, path, *folder, line)));
+    let list = activation.exclude_list.as_deref().map(Path::new);
+    let (own, other): (Vec<String>, Vec<String>) = entries.into_iter().partition(|line| targets.iter().any(|(path, folder)| adapter::own_line(checkout, list, base, path, *folder, line)));
     for line in &other {
         eprintln!("[skills] the recorded exclude line {line} is not one PandaCode adds for {id} in {}; it was left in place", base.display());
     }
@@ -1067,20 +1068,24 @@ fn snapshot(target: &Path, written: &[Written]) -> Files {
 }
 
 /// The snapshot's paths under `target` as a failed write of `new` left them, so
-/// [`Restore::apply`] rewrites each one: the hash on disk where it is the old version, the new
-/// one this call wrote there, or `failed` (the file the write failed on, possibly half written
-/// in place in user scope); else the old hash, which a missing file passes and a file someone
-/// changed meanwhile fails ([`adapter::check_folder`]'s edited-on-disk check), so that one is kept.
+/// [`Restore::apply`] rewrites each one: the hash on disk where it is the old version or the
+/// new one this call wrote there; for `failed` (the file the write failed on, possibly half
+/// written in place in user scope) also an empty file or a start of the bytes this call was
+/// writing to it. Else the old hash, which a missing file passes and a file someone changed
+/// meanwhile fails ([`adapter::check_folder`]'s edited-on-disk check), so that one is kept.
 fn on_disk(target: &Path, snapshot: &Files, new: &Files, failed: Option<&Path>) -> Vec<Written> {
     snapshot
         .iter()
         .map(|(relative, bytes)| {
             let path = target.join(relative);
             let old = sha256_hex(bytes);
-            let ours = |hash: &String| {
-                *hash == old || failed == Some(path.as_path()) || new.iter().any(|(r, b)| (r == relative || adapter::same_file(&target.join(r), &path)) && sha256_hex(b) == *hash)
+            let writing = |r: &String| r == relative || adapter::same_file(&target.join(r), &path);
+            let ours = |hash: &String| *hash == old || new.iter().any(|(r, b)| writing(r) && sha256_hex(b) == *hash);
+            let partial = || {
+                failed == Some(path.as_path())
+                    && crate::workspace::read_regular_target(&path, adapter::READ_LIMIT).is_ok_and(|held| new.iter().any(|(r, b)| writing(r) && b.starts_with(&held)))
             };
-            let sha256 = adapter::file_hash(&path).filter(ours).unwrap_or(old);
+            let sha256 = adapter::file_hash(&path).filter(|hash| ours(hash) || partial()).unwrap_or(old);
             Written { path: path.to_string_lossy().into_owned(), sha256 }
         })
         .collect()
