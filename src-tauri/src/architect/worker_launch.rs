@@ -16,6 +16,16 @@ pub(crate) fn fork_mode(store: &Store, source: &storage::Session) -> String {
     }
 }
 
+/// The permission mode a /btw side thread starts in. Given the main thread it asked from, the
+/// side thread takes the mode a fork of it would (`fork_mode`): a worker's full access never
+/// carries into the user's side chat. Without one, the requested mode.
+pub(crate) fn side_thread_mode(store: &Store, main: Option<&str>, requested: Option<String>) -> Result<Option<String>> {
+    match main {
+        Some(main) => Ok(Some(fork_mode(store, &store.session(main)?))),
+        None => Ok(requested),
+    }
+}
+
 /// The last check before a worker starts, from cached catalogs only (no I/O on the scheduler):
 /// its effort must be one its model accepts (a failover, a roster default or a catalog learned
 /// since dispatch may disagree), else the nearest one or none. The lead sees the note.

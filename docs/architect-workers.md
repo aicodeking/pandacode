@@ -65,10 +65,11 @@ authority, so the backend (`src-tauri/src/worker_approvals.rs`) answers a worker
 
 - **Approvals** are granted. A worker's request never flips the task to "waiting" and never
   appears in the request list remote clients read.
-  On ACP harnesses the grant takes the request's one-time choice (`allow_once`); only when the
-  harness offers none does it take a lasting one (`allow_always`), which is acceptable for a worker
-  because workers run with full access anyway. PandaCode's automatic paths for a user's own
-  session never do: a bot's allow rule asks instead ([bots.md](bots.md#safety-model)).
+  On ACP harnesses the grant takes the request's one-time choice (`allow_once`). A request that
+  offers only a lasting one (`allow_always`, flagged `lastingOnly` on the approval event) is never
+  granted automatically, since the grant would outlive the worker's task: a worker's is declined
+  (`reject_once`/`reject_always`), or, with no reject choice offered, its turn is stopped with a
+  reason the lead sees. A bot's allow rule asks instead ([bots.md](bots.md#safety-model)).
 - **Always-ask tools** (`ALWAYS_ASK` in `src-tauri/src/cloud/deploy.rs`: cloud CLI, scheduled
   messages) are declined; the worker is told to ask its lead. They are recognised by tool name,
   from an `Allow <tool>?` label, a bare (MCP-prefixed) tool-name label as Claude's permission

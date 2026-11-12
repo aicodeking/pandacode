@@ -613,25 +613,33 @@ pub(crate) fn forget_decline_reasons(session_id: &str) {
 
 /// Sessions whose current run is a team worker's, so PandaCode's own tool hosts refuse the
 /// always-ask tools before any approval prompt (the request-text matcher in `worker_approvals`
-/// stays as a second line for hosts PandaCode does not run). Set and cleared by the run (`RunLeftovers`).
-static WORKER_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// stays as a second line for hosts PandaCode does not run). Each entry is `(session, run)`: a
+/// run sets its session's mark as it starts and clears only its own (`RunLeftovers`), so an older
+/// run of the same task ending late never clears a newer run's mark.
+static WORKER_RUNS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-pub(crate) fn mark_worker_run(session_id: &str, worker: bool) {
-    let mut runs = WORKER_RUNS.lock().unwrap_or_else(|poison| poison.into_inner());
-    runs.retain(|session| session != session_id);
+fn worker_runs() -> std::sync::MutexGuard<'static, Vec<(String, String)>> {
+    WORKER_RUNS.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// A run starts: its session's mark becomes this run's (or none, for a run that is not a worker's).
+pub(crate) fn mark_worker_run(session_id: &str, run_id: &str, worker: bool) {
+    let mut runs = worker_runs();
+    runs.retain(|(session, _)| session != session_id);
     if worker {
-        runs.push(session_id.to_owned());
+        runs.push((session_id.to_owned(), run_id.to_owned()));
     }
+}
+
+/// A run ends: clears its session's mark only while the mark is still this run's.
+pub(crate) fn clear_worker_run(session_id: &str, run_id: &str) {
+    worker_runs().retain(|(session, run)| !(session == session_id && run == run_id));
 }
 
 /// The refusal a tool host returns when a team worker calls an always-ask tool.
 pub(crate) fn worker_tool_refusal(session_id: &str, tool: &str) -> Option<String> {
     let tool = crate::cloud::deploy::ALWAYS_ASK.iter().find(|name| **name == tool)?;
-    WORKER_RUNS
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .iter()
-        .any(|session| session == session_id)
+    worker_runs().iter().any(|(session, _)| session == session_id)
         .then(|| crate::worker_approvals::ask_lead_reason(tool))
 }
 
@@ -1551,6 +1559,13 @@ fn event_metadata(value: &Value) -> Option<Value> {
 /// Set on an approval event's data when approving can only grant a lasting permission (an ACP
 /// request offering `allow_always` but no `allow_once`).
 pub(crate) const LASTING_ONLY: &str = "lastingOnly";
+/// Beside `LASTING_ONLY`: whether the request also offers a reject choice, so a team worker's
+/// automatic answer can decline it instead of stopping the turn.
+pub(crate) const LASTING_DECLINABLE: &str = "lastingDeclinable";
+
+fn declinable(request: &Value) -> bool {
+    request["params"]["options"].as_array().into_iter().flatten().any(|option| matches!(option["kind"].as_str(), Some("reject_once" | "reject_always")))
+}
 
 fn lasting_only(request: &Value) -> bool {
     let kinds = || request["params"]["options"].as_array().into_iter().flatten().filter_map(|option| option["kind"].as_str());
@@ -2100,9 +2115,11 @@ impl Protocol {
         let mut event = self.event("approval", short(&text), Some(&value));
         event.request_id = Some(request_id.clone());
         // Approving it grants more than this action (`approve`), so PandaCode never approves
-        // it automatically for a user's own session (a bot's allow rule asks instead).
+        // it automatically (a bot's allow rule asks instead; a team worker's is declined).
         if lasting_only(&value) {
-            event.data.get_or_insert_with(|| json!({}))[LASTING_ONLY] = json!(true);
+            let data = event.data.get_or_insert_with(|| json!({}));
+            data[LASTING_ONLY] = json!(true);
+            data[LASTING_DECLINABLE] = json!(declinable(&value));
         }
         self.pending.insert(request_id, value);
         step.events.push(event);
@@ -2131,9 +2148,8 @@ impl Protocol {
             }
             "devin" => devin::decision(&request, approved),
             // ACP: a one-time choice first. With only a lasting one (`allow_always`), approving
-            // takes it: the user's own approval of such a request, and a team worker's automatic
-            // one (workers run with full access anyway). PandaCode's automatic paths for a user's
-            // own session never get here with one (`LASTING_ONLY`).
+            // takes it: only the user's own approval of such a request. PandaCode's automatic
+            // paths never approve one (`LASTING_ONLY`): a team worker's declines or stops the turn.
             "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
@@ -5760,6 +5776,23 @@ mod tests {
     }
 
     #[test]
+    fn only_the_run_that_owns_a_worker_mark_clears_it() {
+        let session = format!("worker-mark-{}", uuid::Uuid::new_v4());
+        let tool = crate::cloud::deploy::ALWAYS_ASK[0];
+        mark_worker_run(&session, "old", true);
+        // A newer run of the same task starts before the older one's leftovers drop.
+        mark_worker_run(&session, "new", true);
+        clear_worker_run(&session, "old");
+        assert!(worker_tool_refusal(&session, tool).is_some(), "the older run left the newer run's mark");
+        clear_worker_run(&session, "new");
+        assert!(worker_tool_refusal(&session, tool).is_none());
+        // A newer run that is not a worker's drops the older worker run's mark at once.
+        mark_worker_run(&session, "old", true);
+        mark_worker_run(&session, "new", false);
+        assert!(worker_tool_refusal(&session, tool).is_none());
+    }
+
+    #[test]
     fn acp_approvals_take_a_one_time_choice_and_flag_lasting_only_requests() {
         // Recorded option sets: Kimi, Grok and Cline (a one-time choice beside lasting ones; Grok's
         // full handshake is in acp.rs), and a request offering only a lasting choice.
@@ -5767,12 +5800,14 @@ mod tests {
         let grok = json!([{"optionId":"allow-edits-session","name":"Yes, allow all edits during this session","kind":"allow_always"},{"optionId":"allow-once","name":"Yes","kind":"allow_once"},{"optionId":"reject-once","name":"No, and tell Grok what to do differently","kind":"reject_once"}]);
         let cline = json!([{"optionId":"allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"allow_always","name":"Allow always","kind":"allow_always"},{"optionId":"reject_once","name":"Reject","kind":"reject_once"}]);
         let lasting = json!([{"optionId":"always","kind":"allow_always"},{"optionId":"reject","kind":"reject_once"}]);
+        let lasting_no_reject = json!([{"optionId":"always","kind":"allow_always"}]);
         // One ACP choice path serves every harness; Kimi's protocol hands each set to it.
-        for (provider, options, chosen, lasting_only) in [("kimi", kimi, "custom-yes", false), ("grok", grok, "allow-once", false), ("cline", cline, "allow_once", false), ("only allow_always", lasting, "always", true)] {
+        for (provider, options, chosen, lasting_only, declinable) in [("kimi", kimi, "custom-yes", false, false), ("grok", grok, "allow-once", false, false), ("cline", cline, "allow_once", false, false), ("only allow_always", lasting, "always", true, true), ("allow_always, no reject", lasting_no_reject, "always", true, false)] {
             let mut p = Protocol::new(config("kimi"));
             let step = p.receive(json!({"jsonrpc":"2.0","id":"req-1","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"title":"Edit file","kind":"edit"},"options":options}})).unwrap();
             let event = step.events.iter().find(|event| event.kind == "approval").unwrap_or_else(|| panic!("{provider}: no approval"));
             assert_eq!(event.data.as_ref().is_some_and(|data| data[LASTING_ONLY] == true), lasting_only, "{provider}");
+            assert_eq!(event.data.as_ref().is_some_and(|data| data[LASTING_DECLINABLE] == true), declinable, "{provider}");
             let id = event.request_id.clone().unwrap();
             assert_eq!(p.approve(&id, true).unwrap()["result"]["outcome"]["optionId"], chosen, "{provider}");
         }

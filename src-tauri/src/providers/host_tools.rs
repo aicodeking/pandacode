@@ -872,9 +872,9 @@ mod protocol_tests {
         // Not a worker: the always-ask tool still prompts in full access.
         let step = protocol(&session).receive(call.clone()).unwrap();
         assert_eq!(step.events[0].kind, "approval");
-        super::super::mark_worker_run(&session, true);
+        super::super::mark_worker_run(&session, "run", true);
         let step = protocol(&session).receive(call).unwrap();
-        super::super::mark_worker_run(&session, false);
+        super::super::clear_worker_run(&session, "run");
         assert!(step.events.is_empty() && step.calls.is_empty(), "{:?}", step.events);
         let text = serde_json::to_string(&step.write[0]).unwrap();
         assert!(text.contains("team workers cannot run pandacode_cloud_cli") && text.contains("ask your lead"), "{text}");

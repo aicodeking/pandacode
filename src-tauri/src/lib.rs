@@ -276,7 +276,7 @@ impl RunLeftovers {
         self.settled = true;
         let settled = worker_approvals::settle_run(&self.run_id, stopped);
         providers::forget_decline_reasons(&self.session_id);
-        providers::mark_worker_run(&self.session_id, false);
+        providers::clear_worker_run(&self.session_id, &self.run_id);
         settled
     }
 }
@@ -287,7 +287,7 @@ impl Drop for RunLeftovers {
             worker_approvals::forget_run(&self.run_id);
             architect::forget_launch(&self.session_id);
             providers::forget_decline_reasons(&self.session_id);
-            providers::mark_worker_run(&self.session_id, false);
+            providers::clear_worker_run(&self.session_id, &self.run_id);
         }
     }
 }
@@ -855,6 +855,8 @@ async fn configure_window_appearance(
     )
     .await
 }
+// Each argument is a field of the `create_session` IPC call.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_session(
     state: State<'_, AppState>,
@@ -864,8 +866,11 @@ async fn create_session(
     mode: Option<String>,
     draft: Option<bool>,
     team: Option<bool>,
+    main_session_id: Option<String>,
 ) -> Result<Session> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
+    // A /btw side thread names its main thread, so a team worker's full access stays out of it.
+    let mode = architect::side_thread_mode(&store, main_session_id.as_deref(), mode)?;
     // `team: false` (a /btw side thread) skips the saved default team.
     let create = if team.unwrap_or(true) {
         architect::profiles::create_user_task
@@ -2270,7 +2275,7 @@ async fn launch_operation_admitted(
         // Whatever ends this task before the run settles forgets what was kept for the run.
         let mut leftovers = RunLeftovers { run_id: run_id.clone(), session_id: session_id.clone(), settled: false };
         // PandaCode's tool hosts refuse a worker's always-ask tools by this mark.
-        providers::mark_worker_run(&session_id, team_worker);
+        providers::mark_worker_run(&session_id, &run_id, team_worker);
         let own_run = worker_approvals::Run {
             id: run_id.clone(),
             input: own_input.clone(),

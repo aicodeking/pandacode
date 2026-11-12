@@ -247,6 +247,41 @@ mod tests {
         assert!(!store_held());
     }
 
+    /// Non-test code locks the agents registry only through `lock_agents`, so the debug guard
+    /// always knows its holder. Test files and each file's trailing test module may lock it bare.
+    #[test]
+    fn non_test_code_locks_the_agents_registry_only_through_lock_agents() {
+        fn scan(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if name != "tests" {
+                        scan(&path, found);
+                    }
+                    continue;
+                }
+                if !name.ends_with(".rs") || name.contains("tests") || name == "run_requests.rs" {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let code = source.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+                for (at, _) in code.match_indices("agents.lock()") {
+                    let before = &code[..at];
+                    let start = before.rfind(|c: char| !(c.is_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+                    // `subagents` is another lock; any other `*agents` binding is the registry.
+                    if &before[start..] != "sub" {
+                        let line = code[..at].lines().count();
+                        found.push(format!("{}:{line}", path.display()));
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
+        assert!(found.is_empty(), "lock the agents registry with run_requests::lock_agents: {found:?}");
+    }
+
     #[test]
     #[should_panic(expected = "agents registry locked")]
     fn the_sink_under_the_registry_lock_fails_in_debug_builds() {

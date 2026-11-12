@@ -5718,6 +5718,10 @@ fn a_fork_of_a_worker_transcript_takes_the_leads_mode() {
     let at = store.db.last_insert_rowid();
     let fork = crate::conversation_fork::at_message(&store, &worker_sid, at).unwrap();
     assert_eq!(fork.mode, "ask", "the worker's full access does not carry into the user's chat");
+    // A /btw side thread of the worker takes the lead's mode too; without a main, the requested one.
+    assert_eq!(side_thread_mode(&store, Some(&worker_sid), Some("full".into())).unwrap().as_deref(), Some("ask"));
+    assert_eq!(side_thread_mode(&store, None, Some("full".into())).unwrap().as_deref(), Some("full"));
+    assert!(side_thread_mode(&store, Some("missing"), None).is_err());
     // An ordinary task's fork keeps its own mode.
     let own = store.create_session(&store.session(&sid).unwrap().project_id, "claude", "default", "plan").unwrap();
     store.message(&own.id, "user", "Plan the refactor.").unwrap();

@@ -446,6 +446,16 @@ fn decide(agent: &RunningAgent, context: &Context, event: &AgentEvent) -> Resolu
         }
         return Ok(("approval_cancelled", "Declined automatically for a team worker (ask the lead)"));
     }
+    // Approving would grant a lasting permission (an ACP request offering only `allow_always`),
+    // which outlives the worker's task: declined, or the turn ends when no reject is offered.
+    if let Some(data) = event.data.as_ref().filter(|data| data[crate::providers::LASTING_ONLY] == true) {
+        if data[crate::providers::LASTING_DECLINABLE] == true {
+            respond(agent, store, event, false)?;
+            return Ok(("approval_cancelled", "Declined automatically for a team worker (only a lasting permission was offered)"));
+        }
+        stop_run(&Run::of(agent), event, &format!("an approval offered only a lasting permission ({})", subject(event)))?;
+        return Ok(("approval_cancelled", "Stopped the team worker: only a lasting permission was offered"));
+    }
     if always_asks(event) || (!can_approve && !can_deny) {
         stop_run(&Run::of(agent), event, &format!("an approval could not be resolved automatically ({})", subject(event)))?;
         return Ok(("approval_cancelled", "Stopped the team worker: no automatic choice"));

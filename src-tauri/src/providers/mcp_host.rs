@@ -1013,17 +1013,17 @@ mod tests {
         }), "full")
         .await
         .unwrap();
-        crate::providers::mark_worker_run(&session, true);
+        crate::providers::mark_worker_run(&session, "run", true);
         let refused = server.current().authorize("pandacode_schedule_message", &json!({})).await;
-        crate::providers::mark_worker_run(&session, false);
+        crate::providers::clear_worker_run(&session, "run");
         let reason = refused.unwrap_err();
         assert!(reason.contains("team workers cannot run pandacode_schedule_message") && reason.contains("ask your lead"), "{reason}");
         assert!(events.try_recv().is_err(), "no approval was asked");
         // Other tools and non-workers are unaffected by the host check.
         assert!(crate::providers::worker_tool_refusal(&session, "pandacode_schedule_message").is_none());
-        crate::providers::mark_worker_run(&session, true);
+        crate::providers::mark_worker_run(&session, "run", true);
         assert!(crate::providers::worker_tool_refusal(&session, "pandacode_delegate").is_none());
-        crate::providers::mark_worker_run(&session, false);
+        crate::providers::clear_worker_run(&session, "run");
     }
     #[tokio::test]
     async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {

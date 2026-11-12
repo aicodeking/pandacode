@@ -2,7 +2,7 @@
 mod briefing;
 mod model_efforts;
 mod worker_launch;
-pub(crate) use worker_launch::{counts_against_model, forget_launch, fork_mode};
+pub(crate) use worker_launch::{counts_against_model, forget_launch, fork_mode, side_thread_mode};
 use worker_launch::{fit_before_launch, record_launch, relaunch_without_effort, relaunches_for_effort, ForgetLaunch};
 #[cfg(test)]
 use worker_launch::launch_prompt;
