@@ -40,6 +40,10 @@ export interface DialogDefinition {
 }
 export interface PandaCode {
   readonly apiVersion: '1.0.0';
+  /** Supported API isolation only. Trusted native code can independently access user files.
+   * Requires declared storage.private and explicit persisted user consent for this version.
+   * All subscriptions end with activation, disable, trust/grant revocation or uninstall. */
+  readonly storage: PrivateStorage;
   readonly commands: {
     /** Registers only this captured, manifest-declared activation command. Disposed on completion. */
     register(id: string, handler: (context: InvocationContext) => void | Promise<void>): Disposable;
@@ -58,3 +62,22 @@ export interface PandaCode {
   };
 }
 export type Activate = (panda: PandaCode, context: InvocationContext) => void | Promise<void>;
+export type StorageScope = 'global' | 'project';
+export interface StorageSnapshot { readonly schemaVersion: 1; readonly dataVersion: number; readonly revision: number; readonly values: Readonly<Record<string, Json>> }
+export interface StorageStream {
+  readonly schemaVersion: 1; readonly subscription?: string; readonly cursor: number;
+  readonly snapshot: StorageSnapshot | null; readonly resync: boolean;
+  readonly events: readonly { readonly sequence: number; readonly keys: readonly string[] }[];
+}
+export interface PrivateStorage {
+  get(options: { scope: StorageScope; key: string }): Promise<{ readonly schemaVersion: 1; readonly revision: number; readonly value: Json }>;
+  set(options: { scope: StorageScope; key: string; value: Json }): Promise<{ readonly schemaVersion: 1; readonly revision: number }>;
+  remove(options: { scope: StorageScope; key: string }): Promise<{ readonly schemaVersion: 1; readonly revision: number }>;
+  snapshot(options: { scope: StorageScope }): Promise<StorageSnapshot>;
+  subscribe(options: { scope: StorageScope }): Promise<StorageStream>;
+  events(options: { scope: StorageScope; subscription: string; cursor: number }): Promise<StorageStream>;
+  unsubscribe(options: { scope: StorageScope; subscription: string }): Promise<null>;
+  /** Compute output in the trusted host. CAS rejects stale/failed migrations atomically.
+   * Only next-version, explicitly rollback-compatible transformations are supported. */
+  migrate(options: { scope: StorageScope; revision: number; fromVersion: number; toVersion: number; rollbackCompatible: true; values: Readonly<Record<string, Json>> }): Promise<{ readonly schemaVersion: 1; readonly revision: number }>;
+}

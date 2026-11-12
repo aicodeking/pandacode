@@ -63,6 +63,12 @@ jobs:
           PW_PORT: '1436'
           PW_PROD: '1'
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-development.spec.ts --workers=1
+      - name: Private extension storage (Chromium)
+        env: { PW_PORT: '1437', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-storage.spec.ts --workers=1
+      - name: Private extension storage (WebKit)
+        env: { PW_PORT: '1438', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-storage.spec.ts --workers=1
 
   rust:
     name: Rust check and tests (Linux)

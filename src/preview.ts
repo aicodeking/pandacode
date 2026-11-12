@@ -631,6 +631,20 @@ if (new URLSearchParams(location.search).has('extension-development')) {
   // Deterministic synthetic native notification while another owner's transient is open.
   (window as any).__previewDevelopmentReload = async (id: string) => (await import('./extensions/manager')).reloadDevelopmentExtension(id);
 }
+if (new URLSearchParams(location.search).has('extension-storage')) {
+  // Synthetic host transport only; package identity still comes from a captured declaration.
+  const adapters = new Map<string, Awaited<ReturnType<typeof import('./extensions/storage').captureExtensionStorage>>>();
+  (window as any).__extensionStorage = {
+    context: (request: Record<string, unknown>) => invoke('extensions_context', { request }),
+    call: (handle: string, request: Record<string, unknown>) => invoke('extensions_runtime', { request: { op: 'storage', handle, request } }),
+    capture: async (owner: string, projectId: string) => {
+      const adapter = await (await import('./extensions/storage')).captureExtensionStorage(`${owner}/inspect`, '1.0.0', { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.commands', projectId, revision: 1 });
+      const key = crypto.randomUUID(); adapters.set(key, adapter); return key;
+    },
+    adapterGet: (key: string) => adapters.get(key)!.storage.get({ scope: 'project', key: 'same' }),
+    dispose: (key: string) => { adapters.get(key)?.dispose(); adapters.delete(key); },
+  };
+}
 /** Browser-only lifecycle injection while a transient extension surface owns focus. */
 (window as any).__previewDisableExtension = async (id: string) => {
   await (await import('./extensions/manager')).enableExtension(id, false);
@@ -1500,7 +1514,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return await (window as any).__extensionsNativeFixture(args.request) as T;
   }
   if (command === 'extensions_context') {
-    const { previewExtensionSnapshot } = await import('./extensions/preview');
+    const { previewExtensionSnapshot, previewPrivateStorage } = await import('./extensions/preview');
     const { createPreviewContextBroker } = await import('./extensions/context-preview');
     const broker = extensionContextBroker ??= createPreviewContextBroker();
     const inventoryData = {
@@ -1522,7 +1536,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       fixture.readData = inventoryData;
       fixture.addTasks = () => { const source = sessions[0]; for (let i = 0; i < 12; i++) sessions.push({ ...source, id: `context-page-${String(i).padStart(2, '0')}`, title: 'TRANSCRIPT_SENTINEL', status: 'pending' }); };
     }
-    return broker(args.request, previewExtensionSnapshot(), { ...inventoryData, projects, tasks: sessions }) as T;
+    const reply = broker(args.request, previewExtensionSnapshot(), { ...inventoryData, projects, tasks: sessions });
+    if (reply.ok && args.request?.op === 'release') previewPrivateStorage.dispose(undefined, args.request.handle);
+    return reply as T;
+  }
+  if (command === 'extensions_runtime' && args.request?.op === 'storage') {
+    const { previewExtensionSnapshot, previewPrivateStorage } = await import('./extensions/preview');
+    const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
+    try { return { ok: true, value: previewPrivateStorage.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
+    catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'StorageUnavailable', path: '$', ids: [] } } as T; }
   }
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);

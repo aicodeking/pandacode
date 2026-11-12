@@ -34,9 +34,15 @@ enum Request {
     Trust { id: String, digest: String, allow: bool },
     DevelopmentSelect { path: String },
     DevelopmentReload { id: String },
+    StorageGrant { id: String, allow: bool },
+    Storage { handle: String, request: Value },
+    RemoveOwnData { id: String, confirmation: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
-pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) { app.state::<ExtensionRuntime>().stop(owner); }
+pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
+    app.state::<ExtensionRuntime>().stop(owner);
+    if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(owner, None); }
+}
 pub fn retry(app: &tauri::AppHandle, owner: &str) {
     if let Ok(mut quarantine) = app.state::<ExtensionRuntime>().quarantine.lock() { quarantine.retain(|(id, _)| id != owner); }
 }
@@ -44,9 +50,33 @@ pub fn retry(app: &tauri::AppHandle, owner: &str) {
 #[tauri::command]
 pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHandle, request: Value) -> Value {
     if window.label() != "main" { return context::failure("PermissionDenied"); }
-    if request.to_string().len() > 8192 { return context::failure("LimitExceeded"); }
+    let limit = if request["op"] == "storage" { 36 * 1024 } else { 8192 };
+    if request.to_string().len() > limit { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
     match request {
+        Request::StorageGrant { id, allow } => {
+            let result = (|| {
+                let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
+                packages.storage_grant(&id, allow)?;
+                serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".to_owned())
+            })();
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
+        }
+        Request::RemoveOwnData { id, confirmation } => {
+            if confirmation != id { return context::failure("PermissionDenied"); }
+            let result = app.state::<ExtensionPackages>().0.try_lock().map_err(|_| "Timeout".to_owned()).and_then(|packages| packages.storage_remove_own_data(&id));
+            match result { Ok(()) => ok(Value::Null), Err(code) => context::failure(&code) }
+        }
+        Request::Storage { handle, request } => {
+            let result = (|| {
+                if handle.len() > 64 { return Err("InvalidShape".to_owned()); }
+                let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
+                let (owner, version, context) = app.state::<ContextBroker>().storage_binding(&packages.snapshot(), &handle).map_err(str::to_owned)?;
+                packages.storage_call(&owner, &version, context["projectId"].as_str(), &handle, request)
+            })();
+            match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
+        }
         Request::DevelopmentSelect { path } => {
             let result = (|| {
                 let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
@@ -103,6 +133,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 Ok((owner, version, digest, source, captured, cancel))
             })();
             let (owner, version, digest, source, captured, cancel) = match admitted { Ok(value) => value, Err(code) => return context::failure(code) };
+            let captured_project = captured["projectId"].as_str().map(str::to_owned);
             let directory = app.path().resource_dir().ok().map(|path| path.join("extension-runtime"));
             let mut runtime = directory.as_deref().and_then(|path| supervisor::Runtime::packaged(path).ok());
             // Explicit checkout-local developer packaging, never PATH or a package-controlled path.
@@ -116,6 +147,9 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                         let broker = app.state::<ContextBroker>();
                         broker.runtime_binding(&snapshot, &handle)?;
                         if packages.executable_source(&owner).map_err(|_| "PermissionDenied")?.0 != digest { return Err("StaleContext"); }
+                        if method == "storage" {
+                            return Ok(match packages.storage_call(&owner, &version, captured_project.as_deref(), &handle, params) { Ok(value) => ok(value), Err(code) => context::failure(&code) });
+                        }
                         if method == "dialog" {
                             let checked = super::contracts::validate_contract("command", &json!({"schemaVersion":1,"owner":{"extensionId":owner,"version":version,"activationId":request_id},"definition":{"id":format!("{owner}/dialog"),"title":"Dialog","action":{"kind":"showDialog","dialog":params}},"capability":"ui.contribute","contexts":["project"],"inputSchema":{"type":"null"},"outputSchema":{"type":"null"}}));
                             return if checked["ok"] == true { Ok(ok(Value::Null)) } else { Err("InvalidShape") };
@@ -135,6 +169,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 Ok(dialogs)
             });
             app.state::<ContextBroker>().runtime_release(&handle);
+            if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(Some(&owner), Some(&handle)); }
             let state = app.state::<ExtensionRuntime>();
             if let Ok(packages) = app.state::<ExtensionPackages>().0.try_lock() {
                 packages.development_log(&owner, if result.is_ok() { "Activation completed; owned process and subscriptions disposed." } else { "Activation failed/cancelled; package output redacted. Inspect broker grants and host diagnostics." });

@@ -143,7 +143,10 @@ export function createPreviewContextBroker() {
       return new TextEncoder().encode(JSON.stringify({ ok: true, value })).length > 65536 ? fail('LimitExceeded') : { ok: true, value };
     } catch { return fail('PermissionDenied'); }
   };
-  return Object.assign(dispatch, { record: journal.record, subscriptionCount: () => subscriptions.size, invalidate(owner?: string) {
+  return Object.assign(dispatch, { binding(snapshot: ExtensionSnapshot, handle: string) {
+    const invocation = handles.get(handle);
+    return invocation && invocation.expires > Date.now() && resolve(snapshot, invocation.id, invocation.version, invocation.context) === invocation.owner ? structuredClone(invocation) : undefined;
+  }, record: journal.record, subscriptionCount: () => subscriptions.size, invalidate(owner?: string) {
     for (const [key, invocation] of handles) if (owner === undefined || invocation.owner === owner) handles.delete(key);
     for (const key of grants) if (owner === undefined || JSON.parse(key)[0] === owner) grants.delete(key);
     for (const key of readGrants.keys()) if (owner === undefined || JSON.parse(key)[0] === owner) readGrants.delete(key);

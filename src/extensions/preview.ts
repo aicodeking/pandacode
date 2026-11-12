@@ -15,6 +15,8 @@ import { validateContract } from './contracts';
 import type { ExtensionPackage, ExtensionSnapshot, ExtensionMenuItem } from './manager';
 import { createDeclarativeActivation } from './activation';
 import { surfaceWindow } from './window-surfaces';
+import { createStoragePreview } from './storage-preview';
+export const previewPrivateStorage = createStoragePreview(localStorage);
 const key = 'pandacode.preview.extensions.v1';
 const windowLabel = location.pathname.endsWith('/agents-dock.html') ? 'agents-dock' : new URLSearchParams(location.search).get('view') === 'tray' ? 'tray' : new URLSearchParams(location.search).get('view') === 'launcher' ? 'launcher' : 'main';
 // A main-page reload is the preview's existing simulated application restart. Safe recovery is
@@ -29,6 +31,7 @@ function read(): ExtensionSnapshot {
     const text = localStorage.getItem(key) ?? '[]';
     if (text.length > 3 * 1024 * 1024) throw new Error('Limit');
     const packages: ExtensionPackage[] = JSON.parse(text);
+    for (const item of packages) item.storageGranted = previewPrivateStorage.granted(item.manifest.id, item.manifest.version);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
     return { safeMode, development: structuredClone(development), packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
@@ -39,7 +42,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   const label = windowLabel;
   if (label === 'main' && command.startsWith('extensions_window_')) throw new Error('PermissionDenied');
   if (label !== 'main' && !['extensions_window_snapshot', 'extensions_window_action', 'extensions_window_recover'].includes(command)) throw new Error('PermissionDenied');
-  if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') { safeMode = true; localStorage.setItem('pandacode.preview.extensions.safe', 'true'); notify('extensions-changed', null); return command === 'extensions_safe_mode' ? read() : null; }
+  if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') { safeMode = true; previewPrivateStorage.dispose(); localStorage.setItem('pandacode.preview.extensions.safe', 'true'); notify('extensions-changed', null); return command === 'extensions_safe_mode' ? read() : null; }
   const snapshot = read();
   if (command === 'extensions_window_snapshot') return { windowId: label, snapshot };
   if (command === 'extensions_window_action' || command === 'extensions_present_action') {
@@ -63,6 +66,18 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
   if (command === 'extensions_runtime') {
     const request = args.request as { op: string; id: string; digest: string; allow: boolean; path?: string };
+    if (request.op === 'storageGrant') {
+      previewPrivateStorage.grant(snapshot, request.id, request.allow);
+      notify('extensions-changed', null); return { ok: true, value: read() };
+    }
+    if (request.op === 'removeOwnData') {
+      const confirmation = (args.request as { confirmation: string }).confirmation;
+      previewPrivateStorage.remove(snapshot, request.id, confirmation);
+      const pages = JSON.parse(localStorage.getItem(`pandacode.preview.extension-private-pages.v1.${request.id}`) ?? '[]') as unknown;
+      if (Array.isArray(pages)) for (const page of pages) if (typeof page === 'string' && page.startsWith(`${request.id}/`)) localStorage.removeItem(`pandacode.preview.extension-settings.v1.${request.id}.${page}`);
+      localStorage.removeItem(`pandacode.preview.extension-private-pages.v1.${request.id}`);
+      return { ok: true, value: null };
+    }
     if (request.op === 'developmentSelect') {
       if (request.path !== 'preview-selected-folder' || snapshot.packages.some(item => item.manifest.id === developmentManifest.id)) throw new Error('InvalidPackage');
       development.push({ id: developmentManifest.id, revision: 0, logs: ['Validation passed; immutable folder snapshot selected. No code executed.', 'Executable trust and explicit enable required. Package output redacted.'] });
@@ -75,6 +90,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
       dev.revision++;
       // Synthetic changed content for deterministic UI coverage; native folder tests own validation.
       item.enabled = false; item.executable = { digest: `preview-development-${dev.revision}`, trusted: false };
+      previewPrivateStorage.dispose(request.id);
       dev.logs.push('Reload validated; changed content disabled. Review executable trust again.');
       dev.logs = dev.logs.slice(-32);
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null);
@@ -84,7 +100,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     const item = snapshot.packages.find(item => item.manifest.id === request.id);
     if (!item?.executable || item.executable.digest !== request.digest) throw new Error('StaleContext');
     item.executable.trusted = request.allow;
-    if (!request.allow) item.enabled = false;
+    if (!request.allow) { item.enabled = false; previewPrivateStorage.dispose(request.id); }
     localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null);
     return { ok: true, value: read() };
   }
@@ -102,6 +118,9 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
     snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...(selected === executableManifest ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
   } else if (command === 'extensions_uninstall') {
+    const item = snapshot.packages.find(item => item.manifest.id === args.id);
+    if (item) localStorage.setItem(`pandacode.preview.extension-private-pages.v1.${item.manifest.id}`, JSON.stringify((item.manifest.contributes.settings ?? []).map(page => page.id)));
+    previewPrivateStorage.dispose(String(args.id));
     development = development.filter(dev => dev.id !== args.id);
     snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
   } else if (command === 'extensions_enable') {
@@ -109,6 +128,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (!item) throw new Error('Extension not found.');
     if (args.enabled === true && item.executable && !item.executable.trusted) throw new Error('ExecutableTrustRequired');
     item.enabled = args.enabled === true;
+    if (!item.enabled) previewPrivateStorage.dispose(item.manifest.id);
     item.reason = null;
   } else throw new Error('Unsupported extension preview command.');
   localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();

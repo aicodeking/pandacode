@@ -14,6 +14,8 @@ const MAX_RECORD: u64 = 3 * 1024 * 1024;
 type Result<T> = std::result::Result<T, String>;
 #[path = "development.rs"]
 mod development;
+#[path = "storage.rs"]
+mod storage;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,21 +24,21 @@ struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[
 pub struct Executable { digest: String, trusted: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable> }
+pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String>, development: Vec<DevelopmentStatus> }
 #[derive(Clone, Serialize)]
 pub(super) struct DevelopmentStatus { id: String, revision: u64, logs: Vec<String> }
 struct Development { path: PathBuf, record: Record, revision: u64, logs: Vec<String> }
-pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<BTreeMap<String, Development>> }
+pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<BTreeMap<String, Development>>, streams: Mutex<BTreeMap<String, storage::Stream>> }
 pub struct ExtensionPackages(pub Mutex<Packages>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
-    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None }], diagnostics: vec![], development: vec![] }
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false }], diagnostics: vec![], development: vec![] }
 }
 impl ExtensionPackages {
-    pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default() })) }
+    pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() })) }
 }
 
 fn regular(path: &Path) -> Result<()> {
@@ -144,7 +146,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         icons.insert(icon["id"].as_str().unwrap().to_owned(), static_svg(content)?); allowed.insert(asset.to_owned());
     }
     if files.values().any(|(name, _)| !allowed.contains(name)) { return Err("Undeclared package file; executable files and install hooks are unsupported.".into()); }
-    Ok(Package { manifest, icons, enabled: false, reason: None, executable })
+    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false })
 }
 
 impl Packages {
@@ -184,6 +186,9 @@ impl Packages {
         let definition = self.settings_page(id, page)?;
         if !valid_settings_values(&definition, values) { return Err("Invalid extension settings values.".into()); }
         let mut record = self.settings_record(id)?; record[page] = values.clone();
+        self.settings_write(id, &record)
+    }
+    fn settings_write(&self, id: &str, record: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(&record).map_err(|_| "Cannot serialize settings.")?;
         if bytes.len() > 128 * 1024 { return Err("Extension settings limit exceeded.".into()); }
         let path = self.settings_path(id)?;
@@ -209,6 +214,7 @@ impl Packages {
         let mut package = validate(&bytes)?;
         if path.file_stem().and_then(|p| p.to_str()) != package.manifest["id"].as_str() { return Err("Extension record ownership mismatch.".into()); }
         package.enabled = record.enabled;
+        package.storage_granted = self.storage_is_granted(&package.manifest);
         if let Some(executable) = &mut package.executable {
             executable.trusted = record.executable_trust.as_ref() == Some(&record.checksum);
             package.enabled &= executable.trusted;
@@ -244,7 +250,7 @@ impl Packages {
                         // A failed record remains manageable without trusting its contents.
                         if path.extension().and_then(|s| s.to_str()) == Some("json") {
                             if let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|id| safe_name(id)) {
-                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None });
+                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false });
                             }
                         }
                     }
@@ -385,7 +391,7 @@ mod tests {
             let path = std::env::temp_dir().join(format!("pandacode-extension-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap(); Self(path)
         }
-        pub(super) fn packages(&self, safe: bool) -> Packages { Packages { root: self.0.join("extensions-v1"), safe, development: Mutex::default() } }
+        pub(super) fn packages(&self, safe: bool) -> Packages { Packages { root: self.0.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() } }
     }
     impl Drop for Storage { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
     pub(super) fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {

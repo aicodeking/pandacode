@@ -83,6 +83,68 @@ UI cancellation also invalidates its lifetime, suppressing any late dialog. A fa
 quarantines that owner/digest; explicit disable/enable retries. Cancellation does not
 quarantine unrelated or subsequent independent activations. Core runs are never stopped.
 
+### Private settings and storage (experimental API v1)
+
+Declare `storage.private`, then explicitly allow private storage in Settings → Extensions.
+Consent is persisted for that extension version and is independent of executable trust.
+Revoking it immediately denies every further supported storage operation and disposes
+owned subscriptions. It does **not** deny trusted native code independent access to
+user-readable backing files. Do not store host credentials through this API.
+
+The SDK exposes `panda.storage.get/set/remove/snapshot/subscribe/events/unsubscribe/migrate`.
+Every operation supplies `scope: 'global' | 'project'`. Project scope always means the
+invocation's captured project, never the currently selected project. Owner, project path,
+another extension ID and a storage handle are not request fields. A local key can be
+identical in different extensions/projects without sharing supported API state. Internal
+declarative adapters use the same native operation and captured command identity; M3
+settings forms retain their existing validated page namespace and persistence path.
+
+```ts
+await panda.storage.set({ scope: 'project', key: 'last-view', value: 'summary' });
+const saved = await panda.storage.get({ scope: 'project', key: 'last-view' });
+// Missing keys return null. Snapshots/events are copied, versioned JSON, never SQLite/DOM.
+const stream = await panda.storage.subscribe({ scope: 'project' });
+const changes = await panda.storage.events({
+  scope: 'project', subscription: stream.subscription!, cursor: stream.cursor,
+});
+// A gap or stale cursor sets resync and includes a fresh snapshot. Use the returned cursor.
+```
+
+Limits: UTF-8 encoded JSON value ≤16 KiB; namespace values ≤24 KiB/128 keys; key ≤128
+bytes; one global and ≤32 project namespaces per extension; **128 KiB total shared with
+M3 settings, metadata and the journal**, not 128 KiB per project. A bounded 32-change
+journal persists scoped revisions; event output exceeding 24 KiB requests snapshot
+resync. At most 64 live storage subscriptions, eight per captured binding, bounded by
+the five-minute invocation lifetime. Process activation still has its existing five-second,
+128-request/channel budgets. Stream tokens do not survive restart: resubscribe for a fresh
+snapshot. Disable, uninstall, safe mode, context release and activation completion end
+owned streams without deleting committed data or stopping core agents.
+
+Private state extends the existing `extension-settings-v1/<extension-id>.json` M3 record
+with reserved versioned metadata, not a parallel database. Project names are hashed in
+namespace keys; neither extension nor project values become file paths. Existing page data
+stays readable when adding storage, and storage writes preserve page values. Native writes
+stage with exclusive creation, flush, close and atomically rename. A stale `.stage` left
+by interruption is **not** promoted or silently overwritten; reads return the committed
+record and writes report `StorageUnavailable` pending explicit recovery. Malformed/future
+schema data fails closed and is retained, never silently reset. Quotas and failed writes
+leave committed bytes unchanged. Core task-history SQLite has no role in this store.
+
+Migration reads a snapshot, computes new values **inside the qualified trusted host**,
+and calls `migrate` with its `revision`, `fromVersion`, next `toVersion`, values and explicit
+`rollbackCompatible: true`. Native code accepts only bounded JSON output and a matching
+revision/version; it never evaluates a migration callback. Failed transforms, stale versions,
+false compatibility declarations, oversized output and failed promotion do not commit.
+Irreversible migration is unsupported; the author must keep output compatible with rollback.
+This declaration is not a proof of arbitrary trusted extension semantics.
+
+Ordinary Uninstall keeps private settings/storage. The separate **Uninstall and remove
+private data** action opens a keyboard/Escape-accessible host confirmation with own-data
+removal off by default. Only explicit opt-in removes that owner's committed/interrupted
+private record after uninstall; other extensions, projects, drafts and history are untouched.
+No package-controlled path or wildcard removal is accepted. The supported API has no data
+removal or consent method. Reinstall normally restores retained data, not executable trust.
+
 ### Packaging, licenses, alternatives and reproducibility
 
 Node's primary license is MIT, with separate bundled dependency terms (including V8,

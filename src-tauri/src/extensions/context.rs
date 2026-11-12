@@ -47,6 +47,13 @@ pub fn record_job(app: &tauri::AppHandle, id: &str, kind: &str, status: &str) {
     app.state::<ContextBroker>().record_job(id, kind, status);
 }
 impl ContextBroker {
+    pub(super) fn storage_binding(&self, snapshot: &Snapshot, handle: &str) -> Result<(String, String, Value), &'static str> {
+        let broker = self.broker.try_lock().map_err(|_| "Timeout")?;
+        let invocation = broker.handles.get(handle).filter(|invocation| invocation.expires > Instant::now()).ok_or("StaleContext")?;
+        let manifest = owner(snapshot, &invocation.id, &invocation.version, &invocation.context)?;
+        if manifest["id"] != invocation.owner { return Err("PermissionDenied"); }
+        Ok((invocation.owner.clone(), invocation.version.clone(), invocation.context.clone()))
+    }
     #[cfg(all(test, feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
     pub(super) fn test_call(&self, snapshot: &Snapshot, store: &Store, request: Value) -> Value {
         envelope(self.broker.lock().unwrap().execute_guarded("main", snapshot, store, request, Instant::now() + DEADLINE, None))
@@ -366,7 +373,10 @@ pub async fn extensions_context(window: tauri::WebviewWindow, app: tauri::AppHan
             let state = app.state::<ContextBroker>();
             let mut broker = state.broker.try_lock().map_err(|_| "Timeout")?;
             state.reconcile_job_gap(&mut broker);
-            broker.execute_guarded("main", &snapshot, &store, request, deadline, cancellation)
+            let release = (request["op"] == "release").then(|| request["handle"].as_str().map(str::to_owned)).flatten();
+            let result = broker.execute_guarded("main", &snapshot, &store, request, deadline, cancellation);
+            if result.is_ok() { if let Some(handle) = release { packages.storage_dispose(None, Some(&handle)); } }
+            result
         })();
         if delivery.is_some_and(|(token, generation)| token.load(Ordering::Acquire) != generation) { failure("Cancelled") }
         else if Instant::now() >= deadline { failure("Timeout") } else { envelope(result) }

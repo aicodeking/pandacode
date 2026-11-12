@@ -48,6 +48,8 @@ process.stdin.on('data', chunk => {
           unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe' }),
         }),
         ui: Object.freeze({ showDialog: dialog => rpc('dialog', dialog) }),
+        // Scope can only be global or this invocation's captured project. No owner/path input.
+        storage: Object.freeze(Object.fromEntries(['get', 'set', 'remove', 'snapshot', 'subscribe', 'events', 'unsubscribe', 'migrate'].map(op => [op, options => rpc('storage', { ...options, op })]))),
       });
       void Promise.resolve().then(async () => {
         const module = new Module(join(process.cwd(), 'extension.cjs'));

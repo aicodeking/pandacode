@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.storage-laboratory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "storage.private"],
+  "contributes": {
+    "commands": [{ "id": "sample.storage-laboratory/inspect", "title": "Private storage laboratory", "action": { "kind": "showProjectContext" } }],
+    "settings": [{ "id": "sample.storage-laboratory/preferences", "title": "Private preferences", "fields": [{ "id": "label", "kind": "text", "label": "Private label", "value": "Retained" }] }]
+  }
+}
