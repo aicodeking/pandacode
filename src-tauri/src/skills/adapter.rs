@@ -157,7 +157,10 @@ pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
             continue;
         }
         if real_root.as_ref().is_none_or(|(root, real)| outside_link(root, real.as_deref(), path, Links::Skills).is_none()) {
-            let _ = fs::remove_file(path);
+            // Folders it leaves empty go too, so deactivate can remove the skill's folder.
+            if fs::remove_file(path).is_ok() {
+                remove_empty(path, &target);
+            }
         }
     }
     let mut out: Vec<Written> = Vec::new();
@@ -629,14 +632,16 @@ fn canonical_or_same(path: PathBuf) -> PathBuf {
 }
 
 /// The checkout's shared Git folder, only when it is really this checkout's: the repository's
-/// own `<top level>/.git`, or the main repository of a genuine linked worktree, where the top
+/// own `<top level>/.git` (a real folder, not a link to another repository's), or the main repository of a genuine linked worktree, where the top
 /// level holds `root` and is where Git found the repository ([`found_at_top`]). A planted `.git`
 /// file (`gitdir: /elsewhere/.git`, or a `core.worktree` of `/`) in a folder that is not a clone
 /// would otherwise point the exclude update at another repository.
 fn trusted_git_dir(root: &Path) -> Option<PathBuf> {
     let top = canonical_or_same(git_path(root, "--show-toplevel")?);
     let common = canonical_or_same(git_path(root, "--git-common-dir")?);
-    let own = canonical_or_same(top.join(".git")) == common || linked_worktree(&top, &common);
+    let dot_git = top.join(".git");
+    let real_dir = fs::symlink_metadata(&dot_git).is_ok_and(|meta| meta.is_dir());
+    let own = (real_dir && canonical_or_same(dot_git) == common) || linked_worktree(&top, &common);
     (own && found_at_top(&canonical_or_same(root.to_path_buf()), &top)).then_some(common)
 }
 
@@ -646,10 +651,13 @@ pub(super) fn found_at_top(root: &Path, top: &Path) -> bool {
     root.starts_with(top) && root.ancestors().find(|dir| fs::symlink_metadata(dir.join(".git")).is_ok()) == Some(top)
 }
 
-/// Whether `top/.git` is a file naming `<common>/worktrees/<name>`, whose own `gitdir` file
+/// Whether `top/.git` is a file (not a link) naming `<common>/worktrees/<name>`, whose own `gitdir` file
 /// names `top/.git` back: what `git worktree add` sets up, and a planted file cannot fake.
 fn linked_worktree(top: &Path, common: &Path) -> bool {
     let dot_git = top.join(".git");
+    if !fs::symlink_metadata(&dot_git).is_ok_and(|meta| meta.is_file()) {
+        return false;
+    }
     let named = |file: &Path, from: &Path| -> Option<PathBuf> {
         let text = read_text(file).ok()?;
         let named = text.trim().strip_prefix("gitdir:").unwrap_or(text.trim()).trim().to_string();
@@ -704,6 +712,14 @@ impl Checkout {
     pub fn open(root: &Path) -> Option<Self> {
         let top = git_path(root, "--show-toplevel")?;
         Some(Self { root: root.to_path_buf(), real_top: fs::canonicalize(top).ok() })
+    }
+
+    /// Whether `root` is the repository's top level itself, not a subfolder of it.
+    fn at_top(&self) -> bool {
+        match &self.real_top {
+            Some(real_top) => fs::canonicalize(&self.root).is_ok_and(|real| &real == real_top),
+            None => git_output(&self.root, "--show-prefix").is_some_and(|prefix| prefix.is_empty()),
+        }
     }
 
     /// The exclude line for `path` (`/CLAUDE.md`, `/.claude/skills/x/`). Built from where the
@@ -762,15 +778,14 @@ pub fn exclude_entry(root: &Path, path: &Path, folder: bool) -> Result<Option<St
 /// `path` (its skill folder or rule file) in the checkout at `base`: exactly
 /// [`Checkout::entry`] when `checkout` is open; once the checkout is gone (its place below the
 /// repository's top level unknown), a line ending in `path` relative to `base`. Builds up to
-/// 0.3.114 wrote `/<path relative to base>` unresolved and unescaped; that line counts too. A
-/// tampered record's other lines (`/src/`) are never dropped from the user's exclude list.
+/// 0.3.114 wrote `/<path relative to base>` unresolved and unescaped; that line counts too
+/// while `base` is the top level (from a subfolder it names a path at the repository's root,
+/// maybe the user's own line). A tampered record's other lines (`/src/`) are never dropped
+/// from the user's exclude list.
 pub fn own_line(checkout: Option<&Checkout>, base: &Path, path: &Path, folder: bool, line: &str) -> bool {
-    let legacy = path.strip_prefix(base).ok().filter(|r| !r.as_os_str().is_empty()).map(|r| format!("/{}{}", r.to_string_lossy().replace('\\', "/"), if folder { "/" } else { "" }));
-    if legacy.as_deref() == Some(line) {
-        return true;
-    }
     if let Some(checkout) = checkout {
-        return checkout.entry(path, folder).as_deref() == Some(line);
+        let legacy = path.strip_prefix(base).ok().filter(|r| !r.as_os_str().is_empty()).map(|r| format!("/{}{}", r.to_string_lossy().replace('\\', "/"), if folder { "/" } else { "" }));
+        return checkout.entry(path, folder).as_deref() == Some(line) || (legacy.as_deref() == Some(line) && checkout.at_top());
     }
     let Ok(relative) = path.strip_prefix(base) else { return false };
     let parts: Vec<String> = relative.components().map(|part| escape_part(&part.as_os_str().to_string_lossy())).collect();
@@ -915,11 +930,9 @@ pub(super) mod fail_point {
     thread_local!(static HOOK: RefCell<Option<Hook>> = RefCell::new(None));
     /// Runs `hook` before each in-place write on this thread; an error fails that write after
     /// half its bytes landed.
-    #[cfg_attr(not(unix), allow(dead_code))] // only the Unix-only tests arm it
     pub fn set(hook: impl FnMut(&Path) -> std::io::Result<()> + 'static) {
         HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
     }
-    #[cfg_attr(not(unix), allow(dead_code))] // only the Unix-only tests arm it
     pub fn clear() {
         HOOK.with(|h| *h.borrow_mut() = None);
     }
