@@ -22,16 +22,23 @@ function hide(): void {
   anchor = undefined; pinned = false;
 }
 
-/** Hides a pinned tip (its mark keeps focus); true when there was one, so an Escape handler can stop there. */
-export function dismissPinnedTip(): boolean {
-  if (!pinned) return false;
+/** Hides a pinned tip (its mark keeps focus); true when there was one, so an Escape handler can stop there.
+ * With `within`, only a tip whose mark is inside it (a closing panel's own tip). */
+export function dismissPinnedTip(within?: Node): boolean {
+  if (!pinned || (within && !(anchor && within.contains(anchor)))) return false;
   hide(); return true;
+}
+
+/** False once the mark is detached or hidden (a closed panel), so its bubble does not float alone. */
+function shown(mark: Element): boolean {
+  if (!mark.isConnected) return false;
+  return typeof mark.checkVisibility === 'function' ? mark.checkVisibility() : mark.getClientRects().length > 0;
 }
 
 function place(): void {
   frame = 0;
   if (!bubble || !anchor) return;
-  if (!anchor.isConnected) { hide(); return; }
+  if (!shown(anchor)) { hide(); return; }
   const rect = anchor.getBoundingClientRect();
   const width = bubble.offsetWidth, height = bubble.offsetHeight;
   const gap = 8, margin = 10;
@@ -86,8 +93,9 @@ export function installTooltips(): void {
   document.addEventListener('keydown', () => { keyboard = true; }, true);
   document.addEventListener('pointerdown', () => { keyboard = false; }, true);
   document.addEventListener('pointerover', event => {
-    if (pinned) return;
     const mark = markFor(event.target);
+    // A pinned tip stays while the pointer wanders, but another mark's hover replaces it.
+    if (pinned && (!mark || mark === anchor)) return;
     if (mark) show(mark);
     else if (anchor && !(event.target instanceof Node && (anchor.contains(event.target) || bubble?.contains(event.target)))) hide();
   });

@@ -2095,6 +2095,31 @@ test.describe('workers full access note', () => {
     await page.keyboard.press('Escape');
     await expect(panel(page)).toBeHidden();
   });
+  test('a tip pinned in a hover-opened flyout goes when the flyout closes', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [worker('build', { status: 'completed' })] }) });
+    await openWorkers(page).click();
+    await pickMode(page, 'Standard');
+    await openWorkers(page).click();
+    await expect(panel(page)).toBeHidden();
+    await page.mouse.move(0, 0);
+    await openWorkers(page).hover();
+    await expect(panel(page)).toBeVisible();
+    const mark = panel(page).locator('.architect-panel-access').getByRole('button', { name: 'Deploy and scheduling exception', exact: true });
+    // Clicked (WebKit leaves focus where it was, so no focusout follows the flyout closing).
+    await mark.click();
+    await expect(mark).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.tip-bubble')).toBeVisible();
+    // While pinned, hovering another tip target replaces it rather than being blocked.
+    await panel(page).locator('.architect-panel-access-text').evaluate(text => text.insertAdjacentHTML('beforeend', ' <span class="other-tip" data-tip="Another tip">?</span>'));
+    await panel(page).locator('.other-tip').hover();
+    await expect(page.locator('.tip-bubble')).toHaveText('Another tip');
+    await expect(mark).toHaveAttribute('aria-expanded', 'false');
+    await mark.click();
+    await expect(mark).toHaveAttribute('aria-expanded', 'true');
+    await page.mouse.move(0, 0);
+    await expect(panel(page)).toBeHidden();
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+  });
 });
 
 test.describe('workers key hint', () => {

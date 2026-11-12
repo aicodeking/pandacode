@@ -402,6 +402,7 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
     clearTimeout(openTimer); clearTimeout(closeTimer);
     const inside = flyout.contains(document.activeElement) || (document.activeElement === document.body && focusedInside);
     pinned = false;
+    dismissPinnedTip(flyout);
     for (const source of sources()) if (source.isOpen) source.close(false);
     flyout.hidden = true; item.setAttribute('aria-expanded', 'false');
     if (inside && !item.hidden) item.focus({ preventScroll: true });
