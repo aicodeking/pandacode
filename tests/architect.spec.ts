@@ -134,7 +134,8 @@ async function nextPaint(page: Page): Promise<void> {
 async function saveDefaultTeam(page: Page): Promise<void> {
   await pickTeam(page, 'Balanced team');
   await expect(trigger(page)).toHaveAttribute('data-on', '');
-  await expect(openWorkers(page)).toBeVisible();
+  // A cold Vite dev server can take longer than the default 5 s to show the Agents toggle.
+  await expect(openWorkers(page)).toBeVisible({ timeout: 15_000 });
 }
 
 async function chooseModel(page: Page, button: string, provider: string, model: string): Promise<void> {
@@ -1419,7 +1420,8 @@ test.describe('architect teams', () => {
   });
   test('tells the user when a worker needs input while the panel is closed', async ({ page }) => {
     await installArchitect(page, { 'session-2': team('session-2', { status: 'running', workers: [worker('build', { status: 'running' })] }) });
-    await expect(openWorkers(page)).toBeVisible();
+    // A cold Vite dev server can take longer than the default 5 s to show the Agents toggle.
+    await expect(openWorkers(page)).toBeVisible({ timeout: 15_000 });
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'ask-build', text: 'Run the worker verification command?' }));
     await expect(page.locator('#toast')).toContainText('A worker needs your approval');
     await expect(openWorkers(page)).toHaveAttribute('aria-label', 'Agents: 1 running');
@@ -2101,7 +2103,8 @@ test.describe('compact workers round 9', () => {
   });
   test('a worker approval notifies only while that worker\'s run is active', async ({ page }) => {
     await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'completed' }), worker('review', { status: 'running' })] }) });
-    await expect(openWorkers(page)).toBeVisible();
+    // A cold Vite dev server can take longer than the default 5 s to show the Agents toggle.
+    await expect(openWorkers(page)).toBeVisible({ timeout: 15_000 });
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'approval', requestId: 'late-build', text: 'Run the worker verification command?' }));
     await page.waitForTimeout(300);
     await expect(page.locator('#toast')).not.toContainText('A worker needs your approval');
@@ -2110,7 +2113,8 @@ test.describe('compact workers round 9', () => {
   });
   test('notifications share the panel\'s definition of an active worker (queued counts; unknown counts)', async ({ page }) => {
     await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued' })] }) });
-    await expect(openWorkers(page)).toBeVisible();
+    // A cold Vite dev server can take longer than the default 5 s to show the Agents toggle.
+    await expect(openWorkers(page)).toBeVisible({ timeout: 15_000 });
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-review', kind: 'approval', requestId: 'queued-review', text: 'Run the worker verification command?' }));
     await expect(page.locator('#toast')).toContainText('A worker needs your approval');
   });
