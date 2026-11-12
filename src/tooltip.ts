@@ -8,6 +8,8 @@ let bubble: HTMLElement | undefined, anchor: Element | undefined, frame = 0, pin
 const BUBBLE_ID = 'tip-bubble';
 /** Watches the page only while a tip is pinned: a repaint that detaches or hides its mark takes the tip with it. */
 let watcher: MutationObserver | undefined;
+/** Containers a pinned mark's watcher may narrow to. */
+const TIP_ROOTS = 'dialog, [role=dialog], .agents-flyout, .action-flyout, .architect-panel';
 
 /** A Tab stop of its own (the tip shows on keyboard focus and is its accessible description); pass `inline`
  * inside a control (a menu row, a summary) that already shows the tip on its own focus. With `toggle` the mark is a
@@ -47,7 +49,9 @@ function place(): void {
   const rect = anchor.getBoundingClientRect();
   const width = bubble.offsetWidth, height = bubble.offsetHeight;
   const gap = 8, margin = 10;
-  const above = rect.top - height - gap >= margin;
+  // A pinned mark sits in a panel's header area: prefer below it, so the bubble leaves the title and controls clear.
+  const fitsBelow = rect.bottom + gap + height <= innerHeight - margin;
+  const above = !(pinned && fitsBelow) && rect.top - height - gap >= margin;
   const top = above ? rect.top - height - gap : rect.bottom + gap;
   const left = Math.max(margin, Math.min(rect.left + rect.width / 2 - width / 2, innerWidth - width - margin));
   bubble.style.top = `${Math.round(top)}px`;
@@ -75,9 +79,13 @@ function show(mark: Element): void {
 function pin(mark: Element): void {
   if (anchor !== mark || !bubble) return;
   pinned = true; mark.setAttribute('aria-expanded', 'true'); mark.setAttribute('aria-controls', BUBBLE_ID);
-  // Only checks (never places, whose style writes would re-trigger it).
+  place();
+  // Only checks (never places, whose style writes would re-trigger it). Watches the mark's outermost stable
+  // container from its parent, so the container itself being removed or hidden is still seen.
+  let root: Element | null = null;
+  for (let at = mark.parentElement?.closest(TIP_ROOTS); at; at = at.parentElement?.closest(TIP_ROOTS)) root = at;
   watcher = new MutationObserver(() => { if (anchor && !shown(anchor)) hide(); });
-  watcher.observe(document.body, { childList: true, subtree: true, attributes: true });
+  watcher.observe(root?.parentNode ?? document.body, { childList: true, subtree: true, attributes: true });
 }
 
 function markFor(target: EventTarget | null): Element | null {
