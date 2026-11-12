@@ -249,7 +249,11 @@ impl Protocol {
             }
         };
         let protected = host.host.approval_tools.contains(&call.tool);
-        if protected && self.config.mode == "plan" {
+        if let Some(reason) = super::worker_tool_refusal(&self.config.session_id, &call.tool) {
+            // A team worker never gets an always-ask tool, however the harness words the prompt.
+            host.finish(&call.id);
+            step.write.push(reply(call.id, Err(reason)));
+        } else if protected && self.config.mode == "plan" {
             host.finish(&call.id);
             step.write.push(reply(
                 call.id,
@@ -851,6 +855,29 @@ mod protocol_tests {
         let late = p.approval_step(&id, true);
         assert!(late.events.iter().all(|e| e.kind != super::super::UNANSWERED_APPROVAL), "{:?}", late.events);
         assert!(late.calls.is_empty());
+    }
+    #[test]
+    fn a_team_workers_always_ask_tool_is_refused_at_the_host_before_any_prompt() {
+        let session = format!("host-worker-{}", uuid::Uuid::new_v4());
+        let call = json!({"id":"rpc","method":"item/tool/call","params":{"threadId":"thread","turnId":"turn","namespace":null,"tool":"pandacode_cloud_cli","arguments":{},"callId":"call"}});
+        let protocol = |session: &str| {
+            let mut p = protocol("full", true);
+            p.config.session_id = session.into();
+            let mut tools = host(true);
+            tools.tools.push(json!({"type":"function","name":"pandacode_cloud_cli","description":"cloud","inputSchema":{"type":"object"}}));
+            tools.approval_tools.insert("pandacode_cloud_cli".into());
+            p.host = Some(HostTools::new(tools).unwrap());
+            p
+        };
+        // Not a worker: the always-ask tool still prompts in full access.
+        let step = protocol(&session).receive(call.clone()).unwrap();
+        assert_eq!(step.events[0].kind, "approval");
+        super::super::mark_worker_run(&session, true);
+        let step = protocol(&session).receive(call).unwrap();
+        super::super::mark_worker_run(&session, false);
+        assert!(step.events.is_empty() && step.calls.is_empty(), "{:?}", step.events);
+        let text = serde_json::to_string(&step.write[0]).unwrap();
+        assert!(text.contains("team workers cannot run pandacode_cloud_cli") && text.contains("ask your lead"), "{text}");
     }
     #[test]
     fn a_team_worker_decline_carries_its_reason_and_a_user_decline_is_unchanged() {

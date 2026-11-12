@@ -540,7 +540,11 @@ pub(crate) fn always_ask_tool(event: &AgentEvent) -> Option<&'static str> {
 
 /// What the model reads when a team worker's always-ask tool is declined for it.
 fn decline_reason(event: &AgentEvent) -> String {
-    let tool = always_ask_tool(event).unwrap_or("this tool");
+    ask_lead_reason(always_ask_tool(event).unwrap_or("this tool"))
+}
+
+/// The decline a team worker reads for an always-ask tool, from the approval path or the host.
+pub(crate) fn ask_lead_reason(tool: &str) -> String {
     format!("Declined: team workers cannot run {tool}; ask your lead to run it or decide, then continue with the rest of your work.")
 }
 

@@ -502,6 +502,10 @@ impl Context {
         HttpResponse::json(json!({"jsonrpc":"2.0","id":id,"result":result}))
     }
     async fn authorize(&self, name: &str, args: &Value) -> Result<(), String> {
+        // A team worker never gets an always-ask tool, however the harness words the prompt.
+        if let Some(reason) = crate::providers::worker_tool_refusal(&self.session_id, name) {
+            return Err(reason);
+        }
         if !self.host.approval_tools.contains(name) {
             return Ok(());
         }
@@ -999,6 +1003,27 @@ mod tests {
         let ((_, result), ()) = tokio::join!(request, answer);
         assert_eq!(result["result"]["isError"], true);
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn a_team_workers_always_ask_tool_is_refused_at_the_host_before_any_prompt() {
+        let session = format!("mcp-worker-{}", uuid::Uuid::new_v4());
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let server = Server::start_with_approvals(host(), session.clone(), Arc::new(move |event| {
+            let _ = sender.send(event);
+        }), "full")
+        .await
+        .unwrap();
+        crate::providers::mark_worker_run(&session, true);
+        let refused = server.current().authorize("pandacode_schedule_message", &json!({})).await;
+        crate::providers::mark_worker_run(&session, false);
+        let reason = refused.unwrap_err();
+        assert!(reason.contains("team workers cannot run pandacode_schedule_message") && reason.contains("ask your lead"), "{reason}");
+        assert!(events.try_recv().is_err(), "no approval was asked");
+        // Other tools and non-workers are unaffected by the host check.
+        assert!(crate::providers::worker_tool_refusal(&session, "pandacode_schedule_message").is_none());
+        crate::providers::mark_worker_run(&session, true);
+        assert!(crate::providers::worker_tool_refusal(&session, "pandacode_delegate").is_none());
+        crate::providers::mark_worker_run(&session, false);
     }
     #[tokio::test]
     async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {

@@ -114,6 +114,53 @@ pub(crate) fn lock_agents(agents: &Mutex<HashMap<String, RunningAgent>>) -> std:
     agents.lock()
 }
 
+/// The store's guard from `lock_store`. Debug builds count it per thread so the remote state's
+/// lock can assert it is never taken while the store is (remote code locks remote, then store).
+#[cfg(not(debug_assertions))]
+pub(crate) type StoreGuard<'a> = std::sync::MutexGuard<'a, Store>;
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static STORE_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(debug_assertions)]
+pub(crate) struct StoreGuard<'a>(std::sync::MutexGuard<'a, Store>);
+
+#[cfg(debug_assertions)]
+impl Drop for StoreGuard<'_> {
+    fn drop(&mut self) {
+        STORE_HELD.with(|held| held.set(held.get().saturating_sub(1)));
+    }
+}
+
+#[cfg(debug_assertions)]
+impl std::ops::Deref for StoreGuard<'_> {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        &self.0
+    }
+}
+
+/// Whether this thread holds the store through `lock_store` (debug builds).
+#[cfg(debug_assertions)]
+pub(crate) fn store_held() -> bool {
+    STORE_HELD.with(|held| held.get() > 0)
+}
+
+/// Locks the store; in debug builds the guard marks this thread as its holder. Used where the
+/// remote state is read nearby (ponytail: only those paths are tracked, not every store lock).
+pub(crate) fn lock_store(store: &Mutex<Store>) -> Result<StoreGuard<'_>> {
+    let guard = store.lock().map_err(|e| e.to_string())?;
+    #[cfg(debug_assertions)]
+    {
+        STORE_HELD.with(|held| held.set(held.get() + 1));
+        Ok(StoreGuard(guard))
+    }
+    #[cfg(not(debug_assertions))]
+    Ok(guard)
+}
+
 /// Records and shows a confirmed automatic stop: its transcript notes and its error event.
 pub(crate) fn show_settled_stop(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, settled: worker_approvals::Settled) {
     if !settled.notes.is_empty() {
@@ -188,6 +235,16 @@ mod tests {
         assert!(std::thread::spawn(|| !registry_held()).join().unwrap(), "another thread is not marked");
         drop(guard);
         assert!(!registry_held());
+    }
+
+    #[test]
+    fn the_store_guard_marks_only_its_own_thread() {
+        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
+        let guard = lock_store(&store).unwrap();
+        assert!(store_held());
+        assert!(std::thread::spawn(|| !store_held()).join().unwrap(), "another thread is not marked");
+        drop(guard);
+        assert!(!store_held());
     }
 
     #[test]

@@ -276,6 +276,7 @@ impl RunLeftovers {
         self.settled = true;
         let settled = worker_approvals::settle_run(&self.run_id, stopped);
         providers::forget_decline_reasons(&self.session_id);
+        providers::mark_worker_run(&self.session_id, false);
         settled
     }
 }
@@ -286,6 +287,7 @@ impl Drop for RunLeftovers {
             worker_approvals::forget_run(&self.run_id);
             architect::forget_launch(&self.session_id);
             providers::forget_decline_reasons(&self.session_id);
+            providers::mark_worker_run(&self.session_id, false);
         }
     }
 }
@@ -2267,6 +2269,8 @@ async fn launch_operation_admitted(
         let settle_id = run_id.clone();
         // Whatever ends this task before the run settles forgets what was kept for the run.
         let mut leftovers = RunLeftovers { run_id: run_id.clone(), session_id: session_id.clone(), settled: false };
+        // PandaCode's tool hosts refuse a worker's always-ask tools by this mark.
+        providers::mark_worker_run(&session_id, team_worker);
         let own_run = worker_approvals::Run {
             id: run_id.clone(),
             input: own_input.clone(),

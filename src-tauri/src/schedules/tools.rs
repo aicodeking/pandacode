@@ -94,7 +94,7 @@ pub(crate) fn with_schedules(base: Option<ToolHost>, app: tauri::AppHandle, sess
                 // Read before the store lock: the remote state is never locked while the store is.
                 let hosting = crate::remote::hosting(&app);
                 let (result, changed) = {
-                    let store = state.store.lock().map_err(|e| e.to_string())?;
+                    let store = crate::run_requests::lock_store(&state.store)?;
                     dispatch(&store, &session_id, &name, &args, &running, hosting, crate::storage::now())?
                 };
                 if let Some(changed) = changed {

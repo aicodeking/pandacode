@@ -611,6 +611,30 @@ pub(crate) fn forget_decline_reasons(session_id: &str) {
     DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner()).retain(|(session, _, _)| session != session_id);
 }
 
+/// Sessions whose current run is a team worker's, so PandaCode's own tool hosts refuse the
+/// always-ask tools before any approval prompt (the request-text matcher in `worker_approvals`
+/// stays as a second line for hosts PandaCode does not run). Set and cleared by the run (`RunLeftovers`).
+static WORKER_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub(crate) fn mark_worker_run(session_id: &str, worker: bool) {
+    let mut runs = WORKER_RUNS.lock().unwrap_or_else(|poison| poison.into_inner());
+    runs.retain(|session| session != session_id);
+    if worker {
+        runs.push(session_id.to_owned());
+    }
+}
+
+/// The refusal a tool host returns when a team worker calls an always-ask tool.
+pub(crate) fn worker_tool_refusal(session_id: &str, tool: &str) -> Option<String> {
+    let tool = crate::cloud::deploy::ALWAYS_ASK.iter().find(|name| **name == tool)?;
+    WORKER_RUNS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .iter()
+        .any(|session| session == session_id)
+        .then(|| crate::worker_approvals::ask_lead_reason(tool))
+}
+
 /// The text a declined approval returns: PandaCode's own reason, else the user's decline.
 pub(crate) fn decline_text(session_id: &str, id: &str) -> String {
     take_decline_reason(session_id, id).unwrap_or_else(|| USER_DECLINE.into())

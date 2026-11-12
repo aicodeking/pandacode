@@ -32,7 +32,7 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, man
     // (A manual run was checked by whoever ran it.)
     let remote_full_access = manual || crate::remote::full_access_for_remote_tasks(app);
     let team = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let store = crate::run_requests::lock_store(&state.store)?;
         let session = store.session(&schedule.session_id).map_err(|_| String::from("The thread was deleted."))?;
         if session.archived {
             let run = record_run(&store, schedule, now, "skipped", "Thread is archived", manual)?;

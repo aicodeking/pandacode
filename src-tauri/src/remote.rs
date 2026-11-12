@@ -176,6 +176,9 @@ pub(crate) struct Remote {
 
 impl Remote {
     fn lock(&self) -> MutexGuard<'_, Inner> {
+        // Remote code locks this, then the store: the reverse order deadlocks.
+        #[cfg(debug_assertions)]
+        debug_assert!(!crate::run_requests::store_held(), "the remote state was locked while the store is held");
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
@@ -727,6 +730,16 @@ mod tests {
             json!({"deviceId": "studio", "name": "Studio Mac", "platform": "", "online": true}),
             json!({"deviceId": "other", "name": "Other", "platform": "", "online": true}),
         ]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "remote state was locked while the store is held")]
+    fn locking_the_remote_state_under_the_store_fails_in_debug_builds() {
+        let remote = Remote { dir: std::env::temp_dir(), inner: Mutex::new(Inner::default()), key: Mutex::new(None), saving: Mutex::new(()) };
+        let store = Mutex::new(crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap());
+        let _held = crate::run_requests::lock_store(&store).unwrap();
+        let _ = remote.lock().settings.host_enabled;
     }
 
     #[test]
