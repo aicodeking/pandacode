@@ -1975,13 +1975,47 @@ test.describe('workers full access note', () => {
     const text = note.locator('.architect-panel-access-text');
     expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access; only the lead needs approval.');
     const exception = "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.";
-    const mark = note.getByRole('button', { name: `Deploy and scheduling exception: ${exception}`, exact: true });
+    // The standard info mark: a short name, the exception as its description (read once), and the tip.
+    const mark = note.getByRole('button', { name: 'Deploy and scheduling exception', exact: true });
+    await expect(mark).toHaveAccessibleDescription(exception);
     await expect(mark).toHaveAttribute('data-tip', exception);
+    await expect(mark).toHaveClass(/info-mark/);
+    await expect(mark.locator('.icon')).toHaveCount(1);
+    expect(await mark.locator('.icon').evaluate(icon => { const box = icon.getBoundingClientRect(); return [box.width, box.height]; })).toEqual([12, 12]);
+    // A 24px hit area around the 12px glyph.
+    expect(await mark.evaluate(element => { const box = element.getBoundingClientRect(); return box.width >= 24 && box.height >= 24; })).toBe(true);
     await mark.hover();
     await expect(page.locator('.tip-bubble')).toHaveText(exception);
     await expect(note).not.toHaveAttribute('title', /.+/);
-    await expect(mark).toHaveClass(/architect-panel-access-icon/);
-    await expect(mark).toHaveAttribute('data-state-tone', 'worker-idle');
+    // A click (or tap) pins the tip, a second one hides it; Enter or Space toggles it from the keyboard.
+    await mark.click();
+    await expect(page.locator('.tip-bubble')).toHaveText(exception);
+    await expect(mark).toHaveAttribute('aria-expanded', 'true');
+    await page.mouse.move(0, 0);
+    await expect(page.locator('.tip-bubble')).toHaveText(exception);
+    await mark.click();
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+    await expect(mark).toHaveAttribute('aria-expanded', 'false');
+    await mark.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.tip-bubble')).toHaveText(exception);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+    await page.keyboard.press('Space');
+    await expect(page.locator('.tip-bubble')).toHaveText(exception);
+    // Tab moves on and takes the tip with it.
+    await page.keyboard.press('Tab');
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+    await expect(mark).toHaveAttribute('aria-expanded', 'false');
+    // Pinned, a press elsewhere dismisses it.
+    await mark.click();
+    await expect(page.locator('.tip-bubble')).toHaveText(exception);
+    await text.click();
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+    // Its press does not flash a fill over the padded box.
+    await mark.hover(); await page.mouse.down();
+    expect(await mark.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+    await page.mouse.up();
     // One line at the default width (two would be ~38px with the note's bottom padding).
     expect(await text.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(20);
     // In a narrow panel it wraps rather than being cut.
@@ -2024,6 +2058,22 @@ test.describe('workers full access note', () => {
     await panel(page).getByRole('button', { name: 'Close workers' }).click();
     await openWorkers(page).click();
     await expect(panel(page).locator('.architect-panel-access')).toBeHidden();
+  });
+  test('dismissed with a council present, focus goes to the worker list\'s row, not a council row above it', async ({ page }) => {
+    const seat = (id: string, lens: string) => ({ ...worker('review', { status: 'completed', council: { round: 1, lens, score: 9 } }), id, sessionId: `worker-${id}`, createdAt: 1_800_000_000_020 });
+    await installArchitect(page, { 'session-2': team('session-2', {
+      status: 'completed', config: { ...config(), council: { target: 9.5, maxRounds: 3, reviewers: 2 } },
+      councilSince: 1_800_000_000_010, councilStatus: { state: 'waiting', round: 1, lowest: 9, target: 9.5, stale: false },
+      workers: [worker('build', { status: 'completed' }), seat('correct', 'Correctness'), seat('secure', 'Security')],
+    }) });
+    await openWorkers(page).click();
+    await pickMode(page, 'Standard');
+    const note = panel(page).locator('.architect-panel-access');
+    await expect(note).toBeVisible();
+    await expect(panel(page).locator('.council-row').first()).toBeVisible();
+    await note.getByRole('button', { name: 'Dismiss the full-access note' }).click();
+    await expect(note).toBeHidden();
+    await expect(panel(page).locator('.architect-worker-list .architect-worker-row[tabindex="0"]')).toBeFocused();
   });
 });
 

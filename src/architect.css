@@ -261,14 +261,18 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* One quiet line under the tally while the lead is not in Full access: workers still run with it. */
 .architect-panel-access { display: flex; align-items: flex-start; gap: 6px; margin: -4px 0 0; padding: 0 14px 8px; color: var(--muted); font-size: var(--ds-text-chip); line-height: 1.3; flex-shrink: 0; }
 .architect-panel-access[hidden] { display: none; }
-.architect-panel-access-icon { display: flex; flex: none; padding: 1px 0 0; border: 0; background: none; color: var(--state-tone); cursor: help; }
-.architect-panel-access-icon .icon { width: 12px; height: 12px; }
-/* One quiet line that wraps (never cut); the deploy and scheduling exception is the tip and accessible name of its
-   leading info button (shown on hover and keyboard focus) and on the setup screen. */
+/* Its info mark keeps a 12px glyph but a 24px hit area: padding taken back by negative margins, so the line does not
+   move; no press scale (it anchors a pinned tip) and no press fill on the padded box. */
+.architect-panel-access .info-mark { width: 24px; height: 24px; padding: 6px; margin: -5px -6px -6px; --press: 1; }
+.architect-panel-access .info-mark .icon { width: 12px; height: 12px; }
+.architect-panel-access .info-mark:active { background: none; }
+.architect-panel-access .info-mark:focus-visible { outline-offset: -4px; }
+.architect-panel-access .info-mark[aria-expanded="true"] { color: var(--text); }
+/* One quiet line that wraps (never cut); the deploy and scheduling exception is the tip and accessible description
+   of its leading info mark (hover, keyboard focus, or pinned by a click or tap) and on the setup screen. */
 .architect-panel-access-text { min-width: 0; overflow-wrap: anywhere; }
-.architect-panel-access-icon:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
 @media (prefers-contrast: more) { .architect-panel-access { color: var(--text); } }
-@media (forced-colors: active) { .architect-panel-access-icon { color: CanvasText; } }
+@media (forced-colors: active) { .architect-panel-access .info-mark { color: CanvasText; } }
 .architect-panel-tally[hidden] + .architect-panel-access { margin-top: 0; }
 /* A request longer than twelve lines scrolls; it is then a Tab stop with a visible hint, and Approve stays below it. */
 .architect-worker-request:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
