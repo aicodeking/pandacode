@@ -455,6 +455,10 @@ impl BtwAsk {
             }
             return Err(error);
         }
+        // A reused side thread may since lead a team, whose workers run with full access.
+        if !created {
+            allow_remote_team_for(&state, &side.id, ctx.full_access).await?;
+        }
         if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&side.id) {
             return Err("The side thread is still answering. Send this when it finishes.".into());
         }

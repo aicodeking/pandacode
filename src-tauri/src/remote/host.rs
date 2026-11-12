@@ -679,6 +679,28 @@ pub(crate) async fn allow_remote_team_for(state: &AppState, session_id: &str, fu
     crate::blocking(move || allow_remote_team(&*store.lock().map_err(|e| e.to_string())?, &id, full_access)).await
 }
 
+/// Told to a remote device that would approve a request offering only a lasting permission.
+pub(crate) const LASTING_NEEDS_FULL_ACCESS: &str = "This approval would grant a lasting permission; allow full access for remote tasks to approve it remotely, or decline it.";
+
+/// Without "Full access for remote tasks", a request whose only allow choice is lasting
+/// (`providers::LASTING_ONLY`, e.g. ACP `allow_always`) is not approved remotely: the grant
+/// outlives this request. Declining stays allowed.
+fn allow_lasting(requests: &HashMap<String, AgentEvent>, request_id: &str, full_access: bool) -> Result<()> {
+    let lasting = requests.get(request_id).and_then(|event| event.data.as_ref()).is_some_and(|data| data[crate::providers::LASTING_ONLY] == true);
+    if lasting && !full_access { Err(LASTING_NEEDS_FULL_ACCESS.into()) } else { Ok(()) }
+}
+
+/// [`allow_lasting`] against the task's live pending requests (none when it is not running).
+fn allow_remote_lasting(state: &AppState, session_id: &str, request_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    let Some(agent) = agents.get(session_id) else { return Ok(()) };
+    let requests = agent.pending_requests.lock().map_err(|e| e.to_string())?;
+    allow_lasting(&requests, request_id, full_access)
+}
+
 /// Whether an `input.respond` response only cancels or declines the question
 /// (`{action: "cancel" | "decline"}`, or a questions form sent back with no answers).
 fn declines_input(response: &Value) -> bool {
@@ -1671,6 +1693,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             // without the switch: the lead's turn goes on, but the phone adds no text and approves nothing.
             if approve {
                 allow_remote_team_for(&state, &session_id, full_access).await?;
+                allow_remote_lasting(&state, &session_id, &request_id, full_access)?;
             }
             crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
             answered(app, session_id, "approval_cancelled", request_id);
@@ -5105,6 +5128,22 @@ mod tests {
     }
 
     #[test]
+    fn remote_approval_of_a_lasting_only_request_needs_full_access() {
+        let event = |data: Option<Value>| AgentEvent { session_id: "task".into(), kind: "approval".into(), text: String::new(), request_id: Some("r".into()), data, tool: None };
+        let lasting = HashMap::from([("r".to_owned(), event(Some(json!({(crate::providers::LASTING_ONLY): true}))))]);
+        let once = HashMap::from([("r".to_owned(), event(None))]);
+        assert_eq!(allow_lasting(&lasting, "r", false), Err(LASTING_NEEDS_FULL_ACCESS.to_string()));
+        assert_eq!(allow_lasting(&lasting, "r", true), Ok(()));
+        assert_eq!(allow_lasting(&once, "r", false), Ok(()));
+        assert_eq!(allow_lasting(&lasting, "other", false), Ok(()));
+        // Declining skips the gate: only the approve branch checks it.
+        let source = include_str!("host.rs");
+        let call = &source[source.find("Call::Approve { session_id, request_id, approve } => {").unwrap()..];
+        let call = &call[..call.find("Call::Answer").unwrap()];
+        assert!(call.contains("if approve {") && call[call.find("if approve {").unwrap()..].contains("allow_remote_lasting("));
+    }
+
+    #[test]
     fn host_gate_only_checks_remote_control() {
         assert_eq!(gate(false), Err(OFF.to_string()));
         assert_eq!(gate(true), Ok(()));
@@ -5297,6 +5336,7 @@ mod tests {
         assert!(after(github, "async fn solve_issue(", "\n}\n").contains("start.team = full_access;"), "github.startTask");
         let composer = include_str!("methods/composer.rs");
         assert!(after(composer, "fn new_side(", "\n}\n").contains("create_task_without_team("), "btw.ask");
+        assert!(after(composer, "async fn ask(self: Box<Self>", "\n    }\n").contains("allow_remote_team_for(&state, &side.id, ctx.full_access)"), "btw.ask reusing a side thread");
         assert!(after(composer, "fn queue_edit_allowed(", "\n}\n").contains("allow_remote_team(store, &task.id, full_access)"), "queue.update");
         assert!(after(composer, "fn may_drain(", "\n}\n").contains("queue_edit_allowed(store, &task, full_access)"), "queue drain");
         assert!(after(composer, "impl Run for QueueUpdate", "\n}\n").contains("queue_edit_allowed(store, "), "queue.update");

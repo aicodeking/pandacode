@@ -444,3 +444,20 @@ fn an_agents_message_to_another_thread_is_gated_like_a_remote_save_while_hosting
     let (made, _) = tools::dispatch(&store, "a", "pandacode_schedule_wakeup", &json!({"note": "x", "inMinutes": 5}), &running, true, NOW).unwrap();
     assert!(!saved_remotely(&store, made["scheduled"]["id"].as_str().unwrap()).unwrap());
 }
+
+#[test]
+fn a_remote_save_and_its_mark_land_together_or_not_at_all() {
+    let store = store();
+    let at = ScheduleInput { run_at: Some(NOW + MINUTE), ..input("once") };
+    let made = create_marked(&store, &at, true, NOW).unwrap();
+    assert!(saved_remotely(&store, &made.id).unwrap());
+    // A failing mark rolls the row write back: no enabled schedule without its mark.
+    store.db.execute_batch("CREATE TRIGGER reject_mark BEFORE UPDATE OF saved_remotely ON task_schedules BEGIN SELECT RAISE(ABORT,'injected mark failure'); END;").unwrap();
+    assert!(create_marked(&store, &at, true, NOW).unwrap_err().contains("injected mark failure"));
+    let count: i64 = store.db.query_row("SELECT COUNT(*) FROM task_schedules", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1);
+    let edit = ScheduleInput { prompt: "Changed".into(), ..at };
+    assert!(update_marked(&store, &made.id, &edit, false, NOW).unwrap_err().contains("injected mark failure"));
+    assert_eq!(get(&store, &made.id).unwrap().prompt, "Check the deploy");
+    assert!(saved_remotely(&store, &made.id).unwrap());
+}

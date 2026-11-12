@@ -278,7 +278,12 @@ reason, `schedules::remote_team_gate`, which says to save it again on the deskto
 `github.startTask` make their task without the saved default team, and so does `worktree.create`
 when it makes a new task for a started one (`start::parse` leaves `team`
 off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved
-default team, with or without the switch, as on the desktop. Reports from threads a lead
+default team, with or without the switch, as on the desktop; a `btw.ask` that reuses a side thread
+which has since come to lead a team is refused with the team sentence. Also while off, an
+`approval.respond` with `approve: true` on a request whose only allow choice is a lasting
+permission (`lastingOnly`, e.g. ACP `allow_always`) is refused with `This approval would grant a
+lasting permission; allow full access for remote tasks to approve it remotely, or decline it.`
+(`host::allow_remote_lasting`); declining it stays allowed. Reports from threads a lead
 launched on linked computers ([machine-orchestration.md](machine-orchestration.md)) still wake
 the lead (`orchestrate::wake`) whatever the switch: the lead started those threads itself, so their
 reports are its own work coming back, not a remote prompt. This prevents
