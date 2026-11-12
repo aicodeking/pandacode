@@ -25,6 +25,8 @@ const still = (): boolean => document.hidden || !document.documentElement.hasAtt
 /** Replies the reader opened (or watched stream in), by turn key (stable when saved ids replace live ones); they stay open across redraws. */
 const openReplies = new Set<string>();
 export const openReply = (key: string): void => { openReplies.add(key); };
+/** Whether a saved reply is drawn open: part of what its markup depends on. */
+export const replyOpen = (key: string): boolean => openReplies.has(key);
 
 /** The header's elapsed time. Live times carry `data-live` and tick from main.ts's work timer. */
 export function timeHtml(ms: number | null, live = false): string {
@@ -36,42 +38,76 @@ export function timeHtml(ms: number | null, live = false): string {
 /** Three breathing lines hold the reply's place until the first token. */
 export const SKELETON_HTML = '<div class="turn-card-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>';
 
-let replyIds = 0;
-/** The inner card. Its turn key anchors a reader inside a long live reply while more text arrives below. */
-export function replyHtml(content: string, key: string, actions = '', live = false): string {
-  const id = `turn-reply-${++replyIds}`, open = live || openReplies.has(key);
+/** The inner card. Its turn key anchors a reader inside a long live reply while more text arrives below.
+ *  `unique` (the reply's message id) keeps the element id unique where turn keys repeat. */
+export function replyHtml(content: string, key: string, actions = '', live = false, unique = ''): string {
+  // From the key and message, so a redraw produces the same markup and the row can be kept.
+  const id = escape(`turn-reply-${key.replace(/\s/g, '_')}${unique ? `-${unique}` : ''}${live ? '-live' : ''}`), open = live || openReplies.has(key);
   return `<div class="turn-card-reply ds-card-inner${live ? ' is-live' : ''}"${open ? ' data-open' : ''} data-reply-key="${escape(key)}" data-turn-key="reply:${escape(key)}"><div class="turn-card-reply-body" id="${id}"><div class="turn-card-reply-content">${content}</div></div>${live ? '' : `<div class="turn-card-reply-row"><button type="button" class="turn-card-more" aria-controls="${id}" aria-expanded="${open}" hidden>${open ? 'Show less' : 'Read more'}</button>${actions}</div>`}</div>`;
 }
 
 const clampHeight = (body: HTMLElement): number => parseFloat(getComputedStyle(body).fontSize) * LINE_HEIGHT * REPLY_LINES;
 const sizes = new WeakMap<Element, number>();
 const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(entries => {
-  for (const entry of entries) {
+  // All reads, then all writes: one write between two reads would recalculate the whole thread's style for each reply.
+  const measured = entries.flatMap(entry => {
     const content = entry.target as HTMLElement, reply = content.closest<HTMLElement>('.turn-card-reply');
     const body = content.parentElement;
-    if (!reply || !body || !content.isConnected) continue;
-    const height = content.offsetHeight, before = sizes.get(content);
+    if (!reply || !body || !content.isConnected) return [];
+    const live = reply.classList.contains('is-live');
+    // The observer's own size: reading offsetHeight here would force a layout per batch of replies.
+    const box = entry.borderBoxSize?.[0], height = box ? Math.round(box.blockSize) : content.offsetHeight;
+    return [{ content, reply, body, live, height, limit: live ? 0 : clampHeight(body) }];
+  });
+  for (const { content, reply, body, live, height, limit } of measured) {
+    const before = sizes.get(content);
     sizes.set(content, height);
-    if (reply.classList.contains('is-live')) { if (before !== undefined && before !== height) grow(body, before, height); }
-    else syncOverflow(reply, body, height);
+    if (live) { if (before !== undefined && before !== height) grow(body, before, height); }
+    else syncOverflow(reply, height, limit);
   }
 });
 
-/** Starts watching every reply under `root` (new ones only). */
-export function watchReplies(root: ParentNode): void {
-  const fresh = [...root.querySelectorAll<HTMLElement>('.turn-card-reply-content')].filter(content => !sizes.has(content));
+const REPLY_CONTENT = '.turn-card-reply-content';
+/** What a visible Read more adds above the reply's row: turn-card.css `--reply-more-gap` (the row's margin-top, 0 without
+ *  one), read from the styles rather than mirrored here. */
+const moreGap = (reply: HTMLElement): number => parseFloat(getComputedStyle(reply).getPropertyValue('--reply-more-gap')) || 0;
+/** Starts watching every reply under `root`, or under just the rows a redraw `added` (new ones only). Replies `defer`
+ *  names (in rows far from the reader, out of layout) are left to the observer, which measures them as they lay out. */
+export function watchReplies(root: ParentNode | readonly Node[], defer?: (content: Node) => boolean): void {
+  measureReplies(root, defer).apply();
+}
+/** watchReplies in two halves, so a step lays out once: every read now, and `apply` for the writes, to run after the
+ *  caller's own reads (the scroll it holds). `shift` is how much the writes change the replies' total height (px):
+ *  a clamped reply gives up what runs past its clamp, and a shown Read more adds its row's gap. */
+export function measureReplies(root: ParentNode | readonly Node[], defer?: (content: Node) => boolean): { apply(): void; shift: number } {
+  const found = 'querySelectorAll' in root ? [...root.querySelectorAll<HTMLElement>(REPLY_CONTENT)] : root.flatMap(node => node instanceof Element ? [...node.querySelectorAll<HTMLElement>(REPLY_CONTENT)] : []);
+  const fresh = found.filter(content => !sizes.has(content));
   // A saved reply is clamped in the task it is drawn, never one frame late from the observer: read every height, then write.
-  const saved = fresh.flatMap(content => {
+  const saved = (defer ? fresh.filter(content => !defer(content)) : fresh).flatMap(content => {
     const reply = content.closest<HTMLElement>('.turn-card-reply'), body = content.parentElement;
-    return reply && body && !reply.classList.contains('is-live') ? [{ reply, body, height: content.offsetHeight }] : [];
+    return reply && body && !reply.classList.contains('is-live') ? [{ reply, height: content.offsetHeight, limit: clampHeight(body) }] : [];
   });
-  saved.forEach(({ reply, body, height }) => syncOverflow(reply, body, height));
-  fresh.forEach(content => { sizes.set(content, -1); observer?.observe(content); });
+  // One style read for the batch, already resolved by the heights read above.
+  let gap: number | undefined;
+  const shift = saved.reduce((total, { reply, height, limit }) => {
+    const overflow = overflows(height, limit), was = reply.hasAttribute('data-overflow');
+    if (overflow === was) return total;
+    const clamp = reply.hasAttribute('data-open') ? 0 : limit - height, more = gap ??= moreGap(reply);
+    return total + (overflow ? clamp + more : -clamp - more);
+  }, 0);
+  return {
+    shift,
+    apply() {
+      saved.forEach(({ reply, height, limit }) => syncOverflow(reply, height, limit));
+      fresh.forEach(content => { sizes.set(content, -1); observer?.observe(content); });
+    },
+  };
 }
 
 /** Read more shows only when the reply runs past the clamp by more than half a line. */
-function syncOverflow(reply: HTMLElement, body: HTMLElement, height: number): void {
-  const limit = clampHeight(body), overflow = height > limit + limit / REPLY_LINES / 2;
+const overflows = (height: number, limit: number): boolean => height > limit + limit / REPLY_LINES / 2;
+function syncOverflow(reply: HTMLElement, height: number, limit: number): void {
+  const overflow = overflows(height, limit);
   if (reply.hasAttribute('data-overflow') !== overflow) reply.toggleAttribute('data-overflow', overflow);
   const button = reply.querySelector<HTMLButtonElement>(':scope > .turn-card-reply-row > .turn-card-more');
   if (button && button.hidden === overflow) button.hidden = !overflow;

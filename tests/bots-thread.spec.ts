@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { exposePreviewMessages, pairs, setThread } from './transcript-fixtures';
 
 /* A bot's conversation (src/bot-thread.ts): chat bubbles, hover actions (copy, reply, react),
  * the working indicator, a steps row per finished turn and the empty state. */
@@ -195,6 +196,26 @@ test.describe('bot conversation', () => {
     await expect(pill).toHaveCount(0);
   });
 
+  test('a long conversation draws whole: a return to the bottom trims nothing and no turn cards appear', async ({ page }) => {
+    await exposePreviewMessages(page);
+    await openSample(page, 'Ledger');
+    const id = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+    await setThread(page, id, pairs(50, id));
+    await sidebar(page).getByRole('button', { name: /^Chat with Scout/ }).click();
+    await expect(page.locator('#breadcrumb .bot-crumb')).toContainText('Scout');
+    await sidebar(page).getByRole('button', { name: /^Chat with Ledger/ }).click();
+    const first = transcript(page).getByText('Message 000', { exact: true });
+    await expect(first).toHaveCount(1);
+    await transcript(page).evaluate(node => { node.scrollTop = node.scrollHeight; });
+    // Past the trim's settle.
+    await page.waitForTimeout(900);
+    await expect(first).toHaveCount(1);
+    await transcript(page).evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
+    await page.waitForTimeout(300);
+    await expect(first).toHaveCount(1);
+    await expect(transcript(page).locator('.turn-card')).toHaveCount(0);
+  });
+
   test('a finished turn folds its work into one steps row above the answer', async ({ page }) => {
     await chattedBot(page);
     const steps = transcript(page).locator('.turn-activity.bot-steps').last();
@@ -243,7 +264,8 @@ test.describe('bot conversation', () => {
     await page.locator('#prompt').press('ControlOrMeta+Enter');
     const bubble = transcript(page).locator('.user-message .message-content').filter({ hasText: /^one$/ });
     await expect(bubble).toBeVisible();
-    expect((await bubble.boundingBox())!.height).toBeLessThan(56);
+    // Polled: the turn can redraw between finding the bubble and measuring it.
+    await expect.poll(async () => (await bubble.boundingBox())?.height ?? Infinity).toBeLessThan(56);
     await expect(page.locator('#stream-region')).toContainText('Got it, I will fold that in.');
     await expect(page.locator('#toast')).not.toContainText('not running');
   });

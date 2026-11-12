@@ -140,23 +140,40 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     scheduleFit();
   }
 
-  /** Directories lose leading segments (`…/components`), never a mid-word fragment. */
-  function fitDir(el: HTMLElement): void {
-    const dir = el.dataset.dir ?? '';
-    el.textContent = dir;
-    if (!el.clientWidth || el.scrollWidth <= el.clientWidth) return;
-    const parts = dir.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      el.textContent = `…/${parts.slice(i).join('/')}`;
-      if (el.scrollWidth <= el.clientWidth) return;
+  /** Directories lose leading segments (`…/components`), never a mid-word fragment. Every path is written, then every
+   *  width read in one layout; the shortened candidates are measured off-layout on a canvas in the paths' font. */
+  function fitDirs(els: readonly HTMLElement[]): void {
+    for (const el of els) el.textContent = el.dataset.dir ?? '';
+    // While a path overflows, flex shrinks its box to the room there is: its width is that room.
+    const over = els.flatMap(el => el.clientWidth && el.scrollWidth > el.clientWidth ? [{ el, room: el.clientWidth }] : []);
+    if (!over.length) return;
+    // The canvas measures only what its font shorthand says: spacing or font features it cannot see, or a shorthand the
+    // engine leaves empty, fall back to measuring each candidate in place.
+    const style = getComputedStyle(over[0].el);
+    const plain = Boolean(style.font) && (style.letterSpacing === 'normal' || parseFloat(style.letterSpacing) === 0) && (style.wordSpacing === 'normal' || parseFloat(style.wordSpacing) === 0) && style.fontFeatureSettings === 'normal' && (style.fontKerning === 'auto' || style.fontKerning === 'normal' || !style.fontKerning);
+    const context = plain ? document.createElement('canvas').getContext('2d') : null;
+    if (context) context.font = style.font;
+    for (const { el, room } of over) {
+      const parts = (el.dataset.dir ?? '').split('/');
+      const fits = (text: string): boolean => context ? Math.ceil(context.measureText(text).width) <= room : (el.textContent = text, el.scrollWidth <= el.clientWidth);
+      let shown = '';
+      for (let i = 1; i < parts.length && !shown; i++) if (fits(`…/${parts.slice(i).join('/')}`)) shown = `…/${parts.slice(i).join('/')}`;
+      // No room for even the last folder: the full path stays in the title.
+      el.textContent = shown;
     }
-    // No room for even the last folder: the full path stays in the title.
-    el.textContent = '';
   }
+  /** The paths last fitted, with their rows' text (a row's counts take room from its path) and the list's width: the
+   *  same nodes with the same text in the same width fit the same, so they are not measured again. */
+  let fitted: { els: HTMLElement[]; texts: string[]; width: number } | undefined;
+  const rowText = (el: HTMLElement): string => `${el.dataset.dir ?? ''}\n${el.closest('.cv-file-header')?.textContent ?? el.textContent}`;
   function scheduleFit(): void {
     fitFrame ||= requestAnimationFrame(() => {
       fitFrame = 0;
-      if (!disposed) for (const el of body.querySelectorAll<HTMLElement>('.cv-dir')) fitDir(el);
+      if (disposed) return;
+      const els = [...body.querySelectorAll<HTMLElement>('.cv-dir')], width = body.clientWidth, texts = els.map(rowText);
+      if (fitted && fitted.width === width && fitted.els.length === els.length && els.every((el, i) => el === fitted!.els[i] && texts[i] === fitted!.texts[i])) return;
+      fitDirs(els);
+      fitted = { els, texts: els.map(rowText), width };
     });
   }
 
