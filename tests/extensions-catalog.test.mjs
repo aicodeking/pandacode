@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createUiCatalog, createCoreCommands, HEADER, FOOTER, INSPECTOR } from '../src/extensions/catalog.ts';
 import { validateContract } from '../src/extensions/contracts.ts';
+import { VIEW_ACTION_SURFACES, CONTEXT_COMMANDS } from '../src/extensions/surfaces.ts';
 const sample = JSON.parse(readFileSync(new URL('./fixtures/extensions/sample-project-helper/extension.json', import.meta.url), 'utf8'));
 const empty = () => ({ safeMode: false, packages: [], diagnostics: [] });
 const installed = () => ({ safeMode: false, packages: [{ manifest: structuredClone(sample), enabled: true, icons: {} }], diagnostics: [] });
@@ -17,9 +18,10 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, FOOTER, HEADER]);
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, FOOTER, HEADER, ...VIEW_ACTION_SURFACES].sort());
   const items = ui.listItems().items;
-  assert.equal(items.length, 9); assert.equal(new Set(items.map(item => item.id)).size, 9);
+  const expected = 9 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6;
+  assert.equal(items.length, expected); assert.equal(new Set(items.map(item => item.id)).size, expected);
   assert.deepEqual(items.filter(item => item.owner === sample.id).map(item => item.id), ['sample.project-helper/header', 'sample.project-helper/sidebar']);
   for (const item of [...items, ...surfaces]) {
     assert.equal(typeof item.owner, 'string'); assert.ok(item.type); assert.ok(item.location); assert.ok(item.supportedOperations.includes('inspect'));
@@ -69,8 +71,9 @@ test('extensions catalog: more than one hundred contributions remain fully pagea
   const ui = createUiCatalog(() => state), first = ui.listItems({ limit: 100 });
   assert.equal(first.items.length, 100); assert.ok(first.nextCursor.length < 4096);
   const second = ui.listItems({ limit: 100, cursor: first.nextCursor });
-  assert.equal(second.items.length, 35); assert.equal(second.nextCursor, null);
-  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 135);
+  const total = 128 + createUiCatalog(empty).listItems().items.length;
+  assert.equal(second.items.length, total - 100); assert.equal(second.nextCursor, null);
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, total);
 });
 test('extensions catalog: every public built-in invokes the exact original handler once with zero arguments', async () => {
   const ids = createUiCatalog(empty).listItems().items.flatMap(item => item.command ? [item.command.id] : []);

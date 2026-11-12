@@ -41,6 +41,8 @@ type ChoiceMenuOptions = {
   items: ChoiceItem[];
   onSelect: (id: string) => void | Promise<void>;
   onClose: () => void;
+  /** Host-owned row context action. Closing this chooser does not select its row. */
+  onContextMenu?: (id: string, point?: { x: number; y: number }) => void;
   actions?: boolean;
   searchPlaceholder?: string;
   width?: number;
@@ -292,6 +294,13 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
     const index = buttons.indexOf(event.target as HTMLButtonElement);
     if (index >= 0) { if (childIndex >= 0 && childIndex !== index) closeChild?.(); markActive(index); }
   });
+  list.addEventListener('contextmenu', event => {
+    if (!options.onContextMenu || tree.pending) return;
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('.choice-menu-option') : null;
+    const item = button && items[Number(button.dataset.choiceIndex)];
+    if (!item || button.disabled) return;
+    event.preventDefault(); tree.close(false); options.onContextMenu(item.id, { x: event.clientX, y: event.clientY });
+  });
   list.addEventListener('pointermove', event => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('.choice-menu-option') : null;
     const index = buttons.indexOf(button!);
@@ -310,6 +319,9 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
     // does not jump to the end of the body or trap focus in a parent dialog.
     if (event.key === 'Tab') { tree.close(); return; }
     if (tree.pending) return;
+    if (options.onContextMenu && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && items[active] && event.target !== search) {
+      event.preventDefault(); const id = items[active].id; tree.close(false); options.onContextMenu(id); return;
+    }
     const enabled = buttons.flatMap((button, index) => button.disabled ? [] : [index]);
     if (!enabled.length) return;
     if (event.target === search && (event.key === 'Home' || event.key === 'End')) return;

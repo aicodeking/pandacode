@@ -275,6 +275,20 @@ mod tests {
         assert!(!storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]
+    fn view_laboratory_archive_icons_and_all_eight_locations_survive_reload_and_disable() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/view-laboratory/extension.json");
+        let svg = include_str!("../../../tests/fixtures/extensions/view-laboratory/assets/info.svg");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("assets/info.svg", svg.as_bytes())])).unwrap();
+        packages.enable("sample.view-laboratory", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert!(snapshot.packages[0].enabled);
+        assert_eq!(snapshot.packages[0].manifest["contributes"]["menus"].as_array().unwrap().len(), 8);
+        assert_eq!(snapshot.packages[0].icons["sample.view-laboratory/info"], svg.trim());
+        packages.enable("sample.view-laboratory", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn ordinary_zip_directory_entries_work_without_extraction() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.add_directory("assets/", zip::write::SimpleFileOptions::default()).unwrap();

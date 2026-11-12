@@ -373,6 +373,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn view_action_locations_and_captured_object_contexts_validate_natively() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/view-laboratory/extension.json")).unwrap();
+        assert_eq!(validate_contract("packages", &json!([manifest]))["ok"], true);
+        assert_eq!(manifest["contributes"]["menus"].as_array().unwrap().len(), 8);
+        for menu in manifest["contributes"]["menus"].as_array().unwrap() {
+            let registration = json!({"schemaVersion":1, "owner":{"extensionId":"sample.view-laboratory", "version":"1.0.0", "activationId":"test-1"}, "definition":menu});
+            assert_eq!(validate_contract("contribution", &registration)["ok"], true);
+            let mut proposal = manifest.clone();
+            proposal["permissions"] = json!(["ui.contribute", "ui.customize"]);
+            let location = menu["location"].as_str().unwrap();
+            let core = if location.ends_with(".toolbar") { "refresh" } else if location.contains(".project.") { "new" } else if location.contains(".task.") { "pin" } else { "open" };
+            proposal["contributes"]["layouts"] = json!([{"id":"sample.view-laboratory/layout", "title":"Object actions first", "location":location, "rules":[{"id":menu["id"], "target":format!("{location}/{core}"), "side":"before"}]}]);
+            assert_eq!(validate_contract("packages", &json!([proposal]))["ok"], true);
+            for kind in ["file", "task", "project"] {
+                let context = json!({"schemaVersion":1, "windowId":"main", "surfaceId":menu["location"], "revision":1, "projectId":"clicked-project", "sessionId":"clicked-task", "selection":{"kind":kind, "ids":["clicked-object"]}});
+                assert_eq!(validate_contract("context", &context)["value"], context);
+            }
+        }
+    }
+
+    #[test]
     fn dialog_contracts_share_bounded_fields_options_and_three_trigger_locations() {
         let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/menu-laboratory/extension.json")).unwrap();
         for location in ["panda.workspace.header.actions", "panda.sidebar.footer", "panda.inspector.actions"] {

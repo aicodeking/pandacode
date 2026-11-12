@@ -12,6 +12,7 @@ type Deps = {
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
   context(): Context | null;
   open(path: string): void;
+  contextMenu?(anchor: HTMLElement, path: string, point?: { x: number; y: number }): void;
 };
 type Toggle = 'matchCase' | 'wholeWord' | 'regex';
 
@@ -64,6 +65,19 @@ export function createSearchPanel(deps: Deps) {
       const path = element.dataset.searchGroup!;
       if (!state.collapsed.delete(path)) state.collapsed.add(path);
       paint();
+    });
+    target.querySelector('.search-results')!.addEventListener('contextmenu', event => {
+      const row = (event.target as HTMLElement).closest<HTMLElement>('[data-search-open],[data-search-group]');
+      if (!row || !deps.contextMenu) return;
+      event.preventDefault();
+      deps.contextMenu(row, row.dataset.searchOpen ?? row.dataset.searchGroup!, { x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY });
+    });
+    target.querySelector('.search-results')!.addEventListener('keydown', event => {
+      const key = event as KeyboardEvent;
+      if (key.key !== 'ContextMenu' && !(key.key === 'F10' && key.shiftKey)) return;
+      const row = (event.target as HTMLElement).closest<HTMLElement>('[data-search-open],[data-search-group]');
+      if (!row || !deps.contextMenu) return;
+      event.preventDefault(); deps.contextMenu(row, row.dataset.searchOpen ?? row.dataset.searchGroup!);
     });
     paint();
   }

@@ -1,6 +1,7 @@
 /** Public JSON-only discovery. Definitions are logical locations, not selectors or DOM handles. */
 import { createDeclarativeActivation } from './activation.ts';
 import type { ExtensionSnapshot } from './manager';
+import { VIEW_ACTION_SURFACES, CONTEXT_COMMANDS } from './surfaces.ts';
 
 export const HEADER = 'panda.workspace.header.actions';
 export const FOOTER = 'panda.sidebar.footer';
@@ -24,6 +25,8 @@ const coreItems: ItemMetadata[] = [
     ['support', 'Help & support', 'button'], ['usage', 'Agent usage', 'button'],
     ['settings', 'Settings', 'button'], ['star', 'Star PandaCode on GitHub', 'button'], ['theme', 'Toggle theme', 'button'],
   ] as const).map(([id, label, type]): ItemMetadata => ({ id: `${FOOTER}/${id}`, owner: 'panda.core', type, location: FOOTER, label, supportedOperations: id === 'settings' || id === 'theme' ? ['inspect', 'invoke'] : ['inspect'], ...(id === 'settings' ? { command: command('panda.ui/open-settings') } : id === 'theme' ? { command: command('panda.ui/toggle-theme') } : {}), available: true })),
+  ...Object.entries(CONTEXT_COMMANDS).flatMap(([location, commands]) => commands.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
+  ...VIEW_ACTION_SURFACES.filter(location => location.endsWith('.toolbar')).flatMap(location => ([['refresh', 'Refresh project'], ['hide', 'Hide inspector']] as const).map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
 ];
 function command(id: PublicCommandId): NonNullable<ItemMetadata['command']> { return { id, inputSchema: { type: 'null' }, capability: 'host.ui', supportedContexts: ['main'] }; }
 function availability(windowId: string): Availability { return windowId === 'main' ? { available: true } : { available: false, reason: 'HostUnavailable' }; }
@@ -45,6 +48,7 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       { id: HEADER, owner: 'panda.core', type: 'action-slot', location: HEADER, label: 'Workspace header actions', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
       { id: FOOTER, owner: 'panda.core', type: 'action-slot', location: FOOTER, label: 'Sidebar footer', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
       { id: INSPECTOR, owner: 'panda.core', type: 'action-slot', location: INSPECTOR, label: 'Inspector actions (when open)', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
+      ...VIEW_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
     ];
     const activation = createDeclarativeActivation(state, 0);
     const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true }))];
@@ -63,7 +67,11 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       if (decoded[0] !== revision || decoded[1] !== signature) throw new CatalogError('StaleContext');
       offset = decoded[2];
     }
-    const filtered = all[kind].filter(item => (!q.owner || item.owner === q.owner) && (!q.type || item.type === q.type) && (!q.location || item.location === q.location)).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const filtered = all[kind].filter(item => (!q.owner || item.owner === q.owner) && (!q.type || item.type === q.type) && (!q.location || item.location === q.location)).sort((a, b) => {
+      // Keep the original recovery/control pages ahead of newly adopted families.
+      const legacy = (item: SurfaceMetadata | ItemMetadata) => kind === 'items' && (item.location === HEADER || item.location === FOOTER) ? 0 : 1;
+      return legacy(a) - legacy(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
     if (offset > filtered.length) throw new CatalogError('InvalidQuery');
     const result = filtered.slice(offset, offset + q.limit).map(item => ({ ...item, ...availability(q.windowId) }));
     return structuredClone({ schemaVersion: 1, revision, items: result as T[], nextCursor: offset + q.limit < filtered.length ? JSON.stringify([revision, signature, offset + q.limit]) : null });

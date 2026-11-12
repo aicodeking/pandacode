@@ -10,7 +10,7 @@ export interface ChangesViewDeps {
   openFile(path: string): void;
   refresh(): void;
   notify(message: string): void;
-  choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
+  choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void, filePath?: string): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
   worktree?(): void;
 }
@@ -401,7 +401,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       if (id === 'stage' || id === 'unstage') void run(deps.stage([path], id === 'stage'), id === 'stage' ? 'Unable to stage file' : 'Unable to unstage file');
       else if (id === 'open') deps.openFile(path);
       else if (id === 'copy') copy(path);
-    });
+    }, path);
   }
 
   function onClick(event: MouseEvent): void {

@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.view-laboratory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.view-laboratory/info", "asset": "assets/info.svg" }],
+    "commands": [{ "id": "sample.view-laboratory/report", "title": "View laboratory", "action": {
+      "kind": "showDialog", "dialog": {
+        "title": "Clicked object", "successMessage": "Object confirmed", "cancelMessage": "Object cancelled",
+        "fields": [{ "id": "tags", "kind": "select", "label": "Object options", "multiple": true, "async": true, "options": [{ "value": "alpha", "label": "Alpha" }, { "value": "beta", "label": "Beta" }] }]
+      }
+    } }],
+    "menus": [
+      { "id": "sample.view-laboratory/files-toolbar", "location": "panda.inspector.files.toolbar", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/files-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/files-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/files-context", "location": "panda.inspector.files.context", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/file-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/file-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/changes-toolbar", "location": "panda.inspector.changes.toolbar", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/changes-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/changes-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/changes-context", "location": "panda.inspector.changes.context", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/change-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/change-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/search-toolbar", "location": "panda.inspector.search.toolbar", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/search-toolbar-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/search-toolbar-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/search-context", "location": "panda.inspector.search.context", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/search-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/search-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/project-context", "location": "panda.sidebar.project.context", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/project-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/project-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] },
+      { "id": "sample.view-laboratory/task-context", "location": "panda.sidebar.task.context", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/task-tools", "kind": "submenu", "title": "Object tools", "icon": "sample.view-laboratory/info", "items": [{ "id": "sample.view-laboratory/task-select", "kind": "command", "title": "Choose object options", "command": "sample.view-laboratory/report", "icon": "sample.view-laboratory/info" }] }] }
+    ]
+  }
+}

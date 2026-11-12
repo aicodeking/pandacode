@@ -532,6 +532,7 @@ mountDesktopBrand($('.brand-name'));
 const extensionContextListeners = new Set<() => void>();
 let extensionSidebarHidden = () => false;
 let applyExtensionVisibility = () => {};
+let refreshExtensionInspectorActions = () => {};
 // Extension failure must never gate built-in startup; native safe mode precedes package loading.
 void import('./extensions/header').then(async ({ mountExtensionHeader, mountExtensionActions }) => {
   const context = () => ({ revision: 0, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) });
@@ -539,6 +540,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
   mountExtensionActions($('.inspector-strip-actions'), 'panda.inspector.actions', context, notify, onContextChanged);
+  const inspectorListeners = new Set<() => void>();
+  refreshExtensionInspectorActions = () => inspectorListeners.forEach(listener => listener());
+  for (const view of ['files', 'changes', 'search'] as const) {
+    mountExtensionActions($('.inspector-strip-actions'), `panda.inspector.${view}.toolbar`, context, notify,
+      listener => { inspectorListeners.add(listener); return () => { inspectorListeners.delete(listener); }; }, () => state.inspectorTab === view,
+      [[`panda.inspector.${view}.toolbar/refresh`, $('#inspector-refresh')], [`panda.inspector.${view}.toolbar/hide`, document.querySelector<HTMLElement>('.inspector-hide')!]]);
+  }
   const { layout, registerLayoutContext, applyControlVisibility, applyControlOrder } = await import('./extensions/layout-host');
   registerLayoutContext(() => state.projectId ?? undefined);
   // Do not apply saved overlays until native launch recovery policy has been read.
@@ -553,6 +561,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       ['panda.sidebar.footer/settings', document.querySelector('.sidebar-bottom [data-action="settings"]')],
       ['panda.sidebar.footer/star', document.querySelector('.sidebar-bottom .star-panda')], ['panda.sidebar.footer/theme', $('#theme-toggle')],
     ], extensionsLayoutSafeMode);
+    if (['files', 'changes', 'search'].includes(state.inspectorTab)) {
+      const location = `panda.inspector.${state.inspectorTab}.toolbar`;
+      const bindings = [[`${location}/refresh`, $('#inspector-refresh')], [`${location}/hide`, document.querySelector<HTMLElement>('.inspector-hide')]] as const;
+      applyControlOrder(location, bindings, extensionsLayoutSafeMode);
+      if (!extensionsLayoutSafeMode) applyControlVisibility(bindings, () => $('#inspector-toggle'));
+    } else for (const node of [$('#inspector-refresh'), document.querySelector<HTMLElement>('.inspector-hide')!]) { node.removeAttribute('data-layout-hidden'); node.inert = false; }
     if (extensionsLayoutSafeMode) return;
     applyControlVisibility([
       ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')],
@@ -687,6 +701,20 @@ const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
   open: path => run(openFile(path, 'file')),
+  contextMenu: (anchor, path, point) => run(showInspectorFileActions(anchor, path, 'search', point)),
+});
+$('#inspector-content').addEventListener('contextmenu', event => {
+  if (state.inspectorTab !== 'files') return;
+  const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');
+  const anchor = row?.querySelector<HTMLElement>('button[data-path]');
+  if (!anchor || anchor.dataset.action === 'toggle-file-folder') return;
+  event.preventDefault(); run(showInspectorFileActions(anchor, anchor.dataset.path!, 'files', { x: event.clientX, y: event.clientY }));
+});
+$('#inspector-content').addEventListener('keydown', event => {
+  if (state.inspectorTab !== 'files' || isImeKey(event) || event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+  const anchor = (event.target as HTMLElement).closest<HTMLElement>('.file-row')?.querySelector<HTMLElement>('button[data-path]');
+  if (!anchor || anchor.dataset.action === 'toggle-file-folder') return;
+  event.preventDefault(); run(showInspectorFileActions(anchor, anchor.dataset.path!, 'files'));
 });
 const fileTabs = createFileTabs({
   call,
@@ -5094,12 +5122,25 @@ function showChangesView(target: HTMLElement, key: string): void {
       openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
       refresh: () => run(refreshInspector()),
       notify,
-      choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
+      choose: (anchor, title, items, onSelect, filePath) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, ...(filePath ? { extensionSurface: { location: 'panda.inspector.changes.context' as const, context: { ...context, revision: state.generation, selection: { kind: 'file', ids: [filePath] } } } } : {}), onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
       worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
     });
     changesViewKey = key;
   }
   changesView.update(state.git, undefined);
+}
+/** Object identity is supplied by each owning renderer, not inferred from a later selection. */
+async function showInspectorFileActions(anchor: HTMLElement, path: string, view: 'files' | 'search', point?: { x: number; y: number }): Promise<void> {
+  const context = workspaceContext(), generation = state.generation;
+  await showChoices(anchor, { title: path, point, actions: true, extensionSurface: { location: `panda.inspector.${view}.context`, context: { ...context, revision: generation, selection: { kind: 'file', ids: [path] } } }, items: [
+    { id: 'open', label: 'Open file', icon: 'file' },
+    ...(view === 'files' ? [{ id: 'attach', label: 'Attach file', icon: 'plus' }] : []),
+  ], onSelect: id => {
+    closeChoiceMenu();
+    if (generation !== state.generation) return;
+    if (id === 'open') run(openFile(path, 'file', false, context));
+    else if (id === 'attach') attachFile(path);
+  } });
 }
 /** Files tab rows, VS Code style: open folders list their children inline, indented by depth. */
 function fileTree(files: FileEntry[], depth: number): string {
@@ -5135,6 +5176,9 @@ let inspectorArmed = false;
 const armInspector = () => { inspectorArmed = true; removeEventListener('pointerdown', armInspector, true); removeEventListener('keydown', armInspector, true); };
 addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
 function renderInspector(): void {
+  if (!['files', 'changes', 'search'].includes(state.inspectorTab)) for (const node of [$('#inspector-refresh'), document.querySelector<HTMLElement>('.inspector-hide')!]) if (node.parentElement !== $('.inspector-strip-actions')) $('.inspector-strip-actions').append(node);
+  refreshExtensionInspectorActions();
+  applyExtensionVisibility();
   const diffEpoch = ++inspectorDiffEpoch;
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
@@ -5624,7 +5668,7 @@ async function createChat(from?: Session): Promise<void> {
 async function forgetChat(projectId: string): Promise<void> {
   if (await call<boolean>('chat_cleanup', { projectId }).catch(() => false)) state.projects = state.projects.filter(p => p.id !== projectId);
 }
-type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'> & { afterClose?: () => void };
+type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'> & { afterClose?: () => void; extensionSurface?: { location: import('./extensions/surfaces').ActionLocation; context: Record<string, import('./extensions/contracts').Json>; isAlive?: () => boolean } };
 async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise<void> {
   // A second click on the trigger closes its menu; a right-click (a point) moves it there instead.
   if (!options.point && pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
@@ -5635,6 +5679,12 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   const { openChoiceMenu } = await import('./choice-menu').finally(release);
   if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
   choiceMenuAnchor = anchor;
+  if (options.extensionSurface) {
+    const { openContextActions } = await import('./extensions/context-actions');
+    if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
+    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, notify, onClose: () => { choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; options.afterClose?.(); } });
+    return;
+  }
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
     choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
     if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
@@ -5744,7 +5794,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
   const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
   const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
   const branch = task.worktreeBranch ?? '';
-  await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
+  await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, extensionSurface: { location: 'panda.sidebar.task.context', context: { revision: state.generation, projectId: task.projectId, sessionId: id, selection: { kind: 'task', ids: [id] } } }, items: [
     { id: 'pin', label: task.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
     ...movable ? [
       { id: 'up', label: 'Move up', icon: 'arrow', disabled: fixed || orderingBusy || index < 1 },
@@ -5791,10 +5841,13 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
 }
 /** A folder's menu (… or right-click): new task, collapse the others, reveal, remove. */
 async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: number }): Promise<void> {
-  const id = heading.dataset.project!, project = state.projects.find(p => p.id === id);
-  if (!project) return;
   const anchor = heading.parentElement?.querySelector<HTMLElement>('.folder-actions') ?? heading;
-  await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
+  await showProjectRowActions(anchor, heading.dataset.project!, point);
+}
+async function showProjectRowActions(anchor: HTMLElement, id: string, point?: { x: number; y: number }): Promise<void> {
+  const project = state.projects.find(p => p.id === id);
+  if (!project) return;
+  await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, extensionSurface: { location: 'panda.sidebar.project.context', context: { revision: state.generation, projectId: id, selection: { kind: 'project', ids: [id] } }, isAlive: () => state.projects.some(project => project.id === id) }, items: [
     { id: 'new', label: 'New task', icon: 'plus' },
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
     { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
@@ -5881,7 +5934,7 @@ async function showProjectFilter(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: [
     { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
     ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
-  ], onSelect: async id => {
+  ], onContextMenu: (id, point) => { if (id) run(showProjectRowActions(anchor, id, point)); }, onSelect: async id => {
     setProjectFilter(id);
     if (id) await selectProject(id); else renderNavigation();
   } });

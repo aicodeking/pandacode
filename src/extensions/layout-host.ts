@@ -13,12 +13,12 @@ export function layoutProposals(): (LayoutProposal & { owner: string; version: s
   const state = extensionsSnapshot();
   return state.safeMode ? [] : state.packages.filter(item => item.enabled).flatMap(item => (item.manifest.contributes.layouts ?? []).map(proposal => ({ ...proposal, owner: item.manifest.id, version: item.manifest.version }))).sort((a, b) => a.id.localeCompare(b.id));
 }
-export function orderedControls(location: string, ids: readonly string[]): string[] {
+export function orderedControls(location: string, ids: readonly string[], projectId = layoutProject()): string[] {
   if (extensionsSnapshot().safeMode) return [...ids];
   const selected = layout.extensionLayoutsEnabled() && layoutProposals().find(proposal => proposal.id === layout.selected(location) && proposal.location === location);
   let suggested = [...ids];
   if (selected) { try { suggested = proposalOrder(ids, selected.rules); } catch { /* Invalid proposals never displace the last valid user overlay. */ } }
-  return layout.order(location, suggested, layoutProject());
+  return layout.order(location, suggested, projectId);
 }
 
 /** Reorder only compatible sibling controls, retaining node, listener and service identity. */

@@ -25,7 +25,7 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
   const confirmation = dialog.querySelector<HTMLElement>('.extension-dialog-confirm')!, submit = dialog.querySelector<HTMLButtonElement>('[type="submit"]')!;
   const owned = () => dialog.dataset.extensionDialog === token && dialog.contains(form);
   const focusTrigger = () => {
-    const replacement = trigger.isConnected ? trigger : [...document.querySelectorAll<HTMLElement>('[data-extension-contribution]')].find(node => node.dataset.extensionContribution === triggerId);
+    const replacement = trigger.isConnected ? trigger : triggerId ? [...document.querySelectorAll<HTMLElement>('[data-extension-contribution]')].find(node => node.dataset.extensionContribution === triggerId) : undefined;
     const eligible = (node: HTMLElement) => !node.closest('[inert]') && node.checkVisibility() && !(node as HTMLButtonElement).disabled;
     (replacement && eligible(replacement) ? replacement : [...document.querySelectorAll<HTMLElement>('#prompt, button:not([disabled])')].find(eligible))?.focus({ preventScroll: true });
   };

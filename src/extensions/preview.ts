@@ -1,6 +1,7 @@
 /** Synthetic browser lifecycle. Native archive/security tests remain authoritative. */
 import manifest from '../../tests/fixtures/extensions/sample-project-helper/extension.json';
 import svg from '../../tests/fixtures/extensions/sample-project-helper/assets/info.svg?raw';
+import viewSvg from '../../tests/fixtures/extensions/view-laboratory/assets/info.svg?raw';
 import { validateContract } from './contracts';
 import type { ExtensionPackage, ExtensionSnapshot } from './manager';
 const key = 'pandacode.preview.extensions.v1';
@@ -13,7 +14,7 @@ function read(): ExtensionSnapshot {
     const packages: ExtensionPackage[] = JSON.parse(text);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
-    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
+    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export function previewExtensions(command: string, args: Record<string, unknown>): ExtensionSnapshot {

@@ -3,8 +3,33 @@
 A `showDialog` command action carries a `dialog` object, not HTML or serialized callbacks.
 See the installable [menu laboratory](../../tests/fixtures/extensions/menu-laboratory/extension.json).
 It works from `panda.workspace.header.actions`, `panda.sidebar.footer` and the existing
-`panda.inspector.actions` strip when the inspector is open. Other inspector/view/secondary-window
-adapters are not delivered by this slice.
+`panda.inspector.actions` strip when the inspector is open. The installable
+[view laboratory](../../tests/fixtures/extensions/view-laboratory/extension.json) also demonstrates:
+
+- `panda.inspector.files.toolbar` / `panda.inspector.files.context`
+- `panda.inspector.changes.toolbar` / `panda.inspector.changes.context`
+- `panda.inspector.search.toolbar` / `panda.inspector.search.context`
+- `panda.sidebar.project.context` / `panda.sidebar.task.context`
+
+View toolbar controls appear in the inspector strip only for that selected built-in view. File,
+changed-file and search-result context actions capture `selection: { kind: "file", ids: [path] }`
+plus project/task IDs. Task rows capture their own task/project, including when not selected.
+Project actions are reached by right-click or Shift+F10 on a project in the sidebar filter;
+ordinary selection still filters/opens that project. Their context contains that project, not the
+currently selected task. Closing the filter chooser hands focus ownership to its surviving trigger;
+removing the logical project cancels the action. Other source rows cancel when detached/replaced.
+Navigation never retargets pending dialogs/options/validation. Disable/unload aborts them and
+suppresses late messages, with focus on a surviving host control.
+
+Each location exposes owner/type/location-filtered catalog metadata and supports global/project
+hide/show/order overlays and explicitly selected `ui.customize` layout proposals. Context menu core
+IDs are `<location>/<legacy-id>` (for example `panda.sidebar.task.context/pin`); view strip core IDs
+end in `/refresh` and `/hide`. Hidden actions do not revoke the underlying host command. Disabling
+the package removes its contributions, retaining built-in nodes/handlers and dormant preferences.
+Context menus reserve space for core actions within their shared 128-item bound; an oversized
+contributed tree is omitted as a whole with a visible diagnostic, never by dropping legacy actions.
+Inspector persistence remains the existing closed built-in view type; dynamic views, other content
+adapters and secondary-window adapters are not delivered here.
 
 Required dialog fields: `title`, `fields`, `successMessage`. Optional: `confirmLabel`, `confirmation`,
 `cancelMessage`. The host identifies the extension visibly and in the modal's accessible name;

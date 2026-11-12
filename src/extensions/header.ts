@@ -1,7 +1,8 @@
 import './extensions.css';
 import { icon as hostIcon } from '../dom';
-import { openChoiceMenu, type ChoiceItem } from '../choice-menu';
-import type { ExtensionMenuItem } from './manager';
+import { openChoiceMenu } from '../choice-menu';
+import { extensionChoices } from './menu-choices';
+import type { ActionLocation } from './surfaces';
 import { evaluateCondition, type Json } from './contracts';
 import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './manager';
 import { createDeclarativeActivation } from './activation';
@@ -15,10 +16,10 @@ export function mountExtensionHeader(host: HTMLElement, context: () => Record<st
 }
 
 /** Public action surfaces share validation, invocation and owner-scoped disposal. */
-export function mountExtensionActions(host: HTMLElement, location: 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions', context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void): () => void {
+export function mountExtensionActions(host: HTMLElement, location: ActionLocation, context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void, active: () => boolean = () => true, coreControls: ReadonlyArray<readonly [string, HTMLElement]> = []): () => void {
   const slot = document.createElement('div');
   slot.className = 'extension-header-actions'; slot.dataset.tauriDragRegion = 'false';
-  slot.setAttribute('role', 'group'); slot.setAttribute('aria-label', 'Extension actions');
+  slot.setAttribute('role', 'group'); slot.setAttribute('aria-label', coreControls.length ? `${location.split('.')[2]} actions` : 'Extension actions');
   if (location === 'panda.sidebar.footer') { slot.classList.add('extension-sidebar-actions'); host.before(slot); }
   else host.append(slot);
   let registration: ReturnType<typeof createDeclarativeActivation> | undefined;
@@ -38,15 +39,17 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
       if ((button.hidden || button.disabled) && button.getAttribute('aria-expanded') === 'true') closeMenu?.();
       if (document.activeElement === button && (button.hidden || button.disabled)) fallbackFocus();
     }
-    slot.hidden = !conditions.some(({ button }) => !button.hidden);
-    applyControlOrder(location, conditions.map(({ button }) => [button.dataset.extensionContribution!, button] as const));
+    if (active()) for (const [, node] of coreControls) if (node.parentElement !== slot) slot.append(node);
+    slot.hidden = !active() || !coreControls.length && !conditions.some(({ button }) => !button.hidden);
+    applyControlOrder(location, [...coreControls.filter(([, node]) => node.parentElement === slot), ...conditions.map(({ button }) => [button.dataset.extensionContribution!, button] as const)]);
   };
   const draw = () => {
     closeDialog?.(); closeDialog = undefined;
     closeMenu?.();
-    const focused = slot.contains(document.activeElement);
+    const focused = conditions.some(({ button }) => button === document.activeElement);
     registration?.dispose();
-    slot.replaceChildren();
+    // Built-ins keep their exact nodes/listeners through extension enable/disable.
+    for (const { button } of conditions) button.remove();
     conditions = [];
     const current = extensionsSnapshot(), activation = extensionGeneration();
     registration = createDeclarativeActivation(current, activation);
@@ -91,21 +94,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
           };
           if (menu.items) {
             if (closeMenu) { const wasOpen = button.getAttribute('aria-expanded') === 'true'; closeMenu(); if (wasOpen) return; }
-            const choices = (items: ExtensionMenuItem[]): ChoiceItem[] => {
-              let separator = false;
-              return items.flatMap(item => {
-                if (item.kind === 'separator') { separator = true; return []; }
-                const enabled = item.enabled === undefined ? undefined : evaluateCondition(item.enabled, captured);
-                const parsed = item.icon && entry.icons[item.icon] ? new DOMParser().parseFromString(entry.icons[item.icon], 'image/svg+xml') : undefined;
-                const svg = parsed?.documentElement;
-                const validIcon = svg?.localName === 'svg' && !parsed?.querySelector('parsererror');
-                if (validIcon) { svg.setAttribute('class', 'icon'); svg.setAttribute('aria-hidden', 'true'); }
-                const choice: ChoiceItem = { id: item.id, label: item.title!, separator, disabled: enabled !== undefined && (!enabled.ok || enabled.value !== true), selected: item.checked, kind: item.kind === 'checkbox' || item.kind === 'radio' ? item.kind : undefined, leading: validIcon ? svg.outerHTML : hostIcon('help').replace('<svg ', '<svg data-extension-icon-fallback="true" '), children: item.items ? choices(item.items) : undefined };
-                separator = false;
-                return [choice];
-              });
-            };
-            const items = choices(owned.itemsFor(menu.id, captured));
+            const items = extensionChoices(owned.itemsFor(menu.id, captured), entry.icons, captured);
             closeMenu = openChoiceMenu({ anchor: button, title: command.title, items, itemLimit: 128, actions: true, onSelect: id => {
               invoke(id);
             }, onClose: () => { closeMenu = undefined; } });
@@ -120,5 +109,5 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
     if (focused) fallbackFocus();
   };
   const cleanup = onExtensionsChanged(draw), cleanupContext = onContextChanged?.(refreshConditions), cleanupLayout = layout.subscribe(() => { closeMenu?.(); refreshConditions(); }); draw();
-  return () => { closeDialog?.(); closeMenu?.(); const focused = slot.contains(document.activeElement); cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; slot.remove(); if (focused) fallbackFocus(); };
+  return () => { closeDialog?.(); closeMenu?.(); const focused = slot.contains(document.activeElement); cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; for (const [, node] of coreControls) if (node.parentElement === slot) host.insertBefore(node, slot); slot.remove(); if (focused) fallbackFocus(); };
 }
