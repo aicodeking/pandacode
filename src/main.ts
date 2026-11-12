@@ -1,5 +1,6 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
 import { ACCOUNT_SWITCH_PREFIX, accountSwitchDetail } from './account-switch-note';
+import { revealSetting } from './settings-reveal';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
@@ -7726,7 +7727,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'dismiss-errors': dismissErrors(element.closest<HTMLElement>('.thread-errors')); break;
     case 'retry-response': { const id = actionTask(element)?.id ?? state.sessionId, finishing = finishingStreams.get(id); if (finishing) await finishResponse(id, finishing); break; }
     case 'settings': case 'refresh-settings': await showSettings(); break;
-    case 'settings-page': await showSettings(element.dataset.id as import('./settings').SettingsSection); break;
+    case 'settings-page': await showSettings(element.dataset.id as import('./settings').SettingsSection); if (element.dataset.reveal) revealSetting(element.dataset.reveal); break;
     case 'wallpaper-settings': await showWallpaperSettings(); break;
     case 'provider-connections': await showProviderConnections(); break;
     case 'opencode-models': await showOpenCodeModels(); break;

@@ -8,6 +8,7 @@ import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { Provider, ProviderId } from './types';
 import { usageHeatmap } from './usage-heatmap';
+import { clockLabel, fixButton, printedReset, statusLabel, type UsageAction } from './usage-labels';
 import { averageLimit, calendarFor, summarize, type Ledger, type PromptActivity, type Range, type Summary } from './usage-ledger';
 import { agentCostStrip, renderAgents, renderCostDetails, renderCostHero, renderLimitHero, type AgentLimit, type CostState } from './usage-overview';
 
@@ -28,10 +29,25 @@ export interface AgentUsage {
   stale: boolean;
   source?: string | null;
   dashboardUrl?: string | null;
+  /** When Refresh may ask a rate-limited service again (ms since the epoch). */
+  retryAt?: number | null;
+  /** When an automatic check (opening this panel) will ask it again. */
+  autoRetryAt?: number | null;
+  /** What fixes an error, when the backend knows: press Refresh, open Claude Code, unlock the Keychain, wait out a rate limit, update Claude Code, or note a non-subscription connection. */
+  action?: UsageAction | null;
 }
-
-const help = 'Reads account limits from your locally configured agent accounts. Requests go directly to the provider or its CLI, never through PandaCode servers. No prompts are sent. Results are cached for one minute; Refresh is limited to once every ten seconds per provider. Some providers do not expose their limits. Usage is shared with other apps using the same account.';
-const STATUS: Record<AgentUsage['status'], string> = { ready: '', unavailable: 'Unavailable', signedOut: 'Sign-in needed', error: 'Unavailable', unsupported: 'Not exposed' };
+const help = 'Reads account limits from your locally configured agent accounts. Requests go directly to the provider or its CLI, never through PandaCode servers. No prompts are sent. Results are cached for one minute; Refresh asks each provider again at most every ten seconds. It asks right away when the last answer was a locked or blocked Keychain, or a check that took too long. Some providers do not expose their limits. Usage is shared with other apps using the same account.';
+/** When a rate-limited provider is asked again: Refresh after `retryAt`, opening the panel after `autoRetryAt`. */
+export function retryText(result: Pick<AgentUsage, 'retryAt' | 'autoRetryAt'> & { action?: UsageAction | null }, now = Date.now()): string {
+  const manual = result.retryAt ?? 0;
+  const automatic = result.autoRetryAt ?? 0;
+  // A login only the user can fix (sign in, or a switch that is off): no times.
+  if ((manual <= now && automatic <= now) || result.action === 'claude' || result.action === 'settings') return '';
+  // An expired login Claude Code couldn't refresh: nothing retries in the background.
+  if (result.action === 'expired' && automatic > now) return `Opening this panel after ${clockLabel(automatic, now)} will ask Claude Code again${manual > now ? '' : ', or press Refresh'}.`;
+  const refresh = manual > now ? `Press Refresh after ${clockLabel(manual, now)} to check again` : 'Press Refresh to check again';
+  return automatic > Math.max(manual, now) ? `${refresh}; opening this panel checks on its own after ${clockLabel(automatic, now)}.` : `${refresh}.`;
+}
 const RANGES: [Range, string][] = [['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
 const shortNames: Partial<Record<ProviderId, string>> = { claude: 'Claude', glm: 'GLM', mimo: 'MiMo', kimi: 'Kimi', grok: 'Grok', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'Copilot', muse: 'Muse', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
 type Tab = 'overview' | ProviderId;
@@ -56,11 +72,13 @@ function signedOutResult(provider: ProviderId): AgentUsage {
 }
 function renderSignedOut(scope: HTMLElement): void {
   const body = scope.querySelector<HTMLElement>('.usage-card-body')!;
+  delete body.dataset.loading;
   body.removeAttribute('role');
   body.innerHTML = `<div class="usage-notice usage-signed-out"><p>${escape(SIGNED_OUT)}</p><button type="button" class="secondary-button" data-action="settings-page" data-id="providers">Open Settings</button></div>`;
 }
 function renderSameLogin(scope: HTMLElement, name: string): void {
   const body = scope.querySelector<HTMLElement>('.usage-card-body')!;
+  delete body.dataset.loading;
   body.removeAttribute('role');
   body.innerHTML = `<p class="usage-same-login">Same login as ${escape(name)}. Its usage is shown there.</p>`;
 }
@@ -114,7 +132,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   for (const provider of installed) {
     const card = document.createElement('section'); card.className = 'usage-panel usage-card'; card.hidden = true;
     card.id = `usage-panel-${provider.id}`; card.setAttribute('role', 'tabpanel'); card.setAttribute('aria-label', provider.name);
-    card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3>${POOLED.includes(provider.id) ? '' : '<span class="usage-plan"></span>'}<span class="usage-card-checked"></span></header>${POOLED.includes(provider.id) ? accountHeading('', 'Default setup') : ''}<div class="usage-card-body" role="status">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
+    card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3>${POOLED.includes(provider.id) ? '' : '<span class="usage-plan"></span>'}<span class="usage-card-checked"></span></header>${POOLED.includes(provider.id) ? accountHeading('', 'Default setup') : ''}<div class="usage-card-body" role="status" data-loading="true">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
     host.insertBefore(card, footer); cards.set(provider.id, card);
   }
   // Named connections (issue #137): each is read through its own config folder and environment.
@@ -127,7 +145,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       if (!card.querySelector('.usage-account-heading[data-account=""]')) card.querySelector('.usage-card-body')!.insertAdjacentHTML('beforebegin', accountHeading('', 'Default setup'));
       card.querySelector<HTMLElement>('.usage-connection-default')!.hidden = false;
       const section = document.createElement('section'); section.className = 'usage-connection'; section.dataset.connection = connection.id; section.setAttribute('aria-label', connection.name);
-      section.innerHTML = `${accountHeading(connection.id, connection.name)}<div class="usage-card-body" role="status">Checking limits…</div>`;
+      section.innerHTML = `${accountHeading(connection.id, connection.name)}<div class="usage-card-body" role="status" data-loading="true">Checking limits…</div>`;
       card.querySelector('.usage-card-cost')!.before(section);
       renderAccount(connection.provider, '');
     }
@@ -199,7 +217,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   function agentLimits(): AgentLimit[] {
     return installed.map(provider => {
       const result = limits.get(provider.id);
-      return { provider: provider.id, name: provider.name, peak: peak(result), state: result ? (result.stale ? 'Saved snapshot' : STATUS[result.status] || 'No limits reported') : 'Checking…' };
+      return { provider: provider.id, name: provider.name, peak: peak(result), state: result ? (statusLabel(result) || 'No limits reported') : 'Checking…' };
     });
   }
   function renderLimits(): void {
@@ -238,57 +256,97 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     if (focus) current.focus();
   }
 
+  /** Claude cards still checking, by setup (`''` or a connection id): one poll serves them all (`agent_usage_asking_claude`), at once and then each second. */
+  const waiting = new Map<string, (answer: ClaudeWaiting) => void>();
+  let waitTimer = 0;
+  async function pollWaiting(): Promise<void> {
+    const answers = await call<Record<string, ClaudeWaiting>>('agent_usage_asking_claude', { connections: [...waiting.keys()] }).catch(() => null);
+    if (!answers || disposed) return;
+    for (const [id, show] of waiting) if (answers[id]) show(answers[id]);
+  }
+  /** While a Claude card waits it shows its saved reading, and says "Asking Claude Code…" once PandaCode runs Claude Code for the check. */
+  function watchAsking(provider: Provider, scope: HTMLElement, connection = '', dir?: string): () => void {
+    if (provider.id !== 'claude') return () => {};
+    const body = scope.querySelector<HTMLElement>('.usage-card-body')!;
+    waiting.set(connection, answer => showWaiting(scope, body, provider, answer, dir));
+    if (!waitTimer) { waitTimer = window.setInterval(() => void pollWaiting(), 1000); void pollWaiting(); }
+    return () => { waiting.delete(connection); if (!waiting.size) { window.clearInterval(waitTimer); waitTimer = 0; } };
+  }
+  /** One provider's default setup: read, then shown. */
+  async function loadDefault(provider: Provider, force: boolean): Promise<void> {
+    if (await signedOut(provider.id, '')) {
+      if (disposed) return;
+      limits.set(provider.id, signedOutResult(provider.id));
+      renderSignedOut(cards.get(provider.id)!); setUsage(provider.id, '', signedOutResult(provider.id)); renderLimits();
+      preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
+      return;
+    }
+    const stop = watchAsking(provider, cards.get(provider.id)!);
+    let result: AgentUsage;
+    try {
+      result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force });
+      if (!result || result.provider !== provider.id || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
+    } catch {
+      result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: 'Could not read limits. Try Refresh.' };
+    } finally { stop(); }
+    if (disposed) return;
+    limits.set(provider.id, result);
+    renderCard(cards.get(provider.id)!, provider, result, await memberOf(provider.id, ''));
+    if (disposed) return;
+    setUsage(provider.id, '', result);
+    renderLimits();
+    preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
+  }
+  /** One named connection: read through its own setup, then shown in its section. */
+  async function loadConnection(provider: Provider, connection: { id: string; name: string }, named: { id: string; name: string }[], force: boolean): Promise<void> {
+    const section = cards.get(provider.id)?.querySelector<HTMLElement>(`.usage-connection[data-connection="${CSS.escape(connection.id)}"]`);
+    if (!section) return;
+    if (await signedOut(provider.id, connection.id)) { if (!disposed) { renderSignedOut(section); setUsage(provider.id, connection.id, signedOutResult(provider.id)); } return; }
+    // A same-login connection is the other account under another name: its usage is shown there, so it is not read twice.
+    const twin = (await memberOf(provider.id, connection.id))?.sameAs;
+    if (twin != null) { if (!disposed) renderSameLogin(section, twin ? named.find(other => other.id === twin)?.name ?? twin : 'Default setup'); return; }
+    const dir = (connection as { configDir?: string | null }).configDir ?? undefined;
+    const stop = watchAsking({ ...provider, name: connection.name }, section, connection.id, dir);
+    let result: AgentUsage;
+    try {
+      result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force, connection: connection.id });
+      if (!result || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
+    } catch (cause) {
+      result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: cause instanceof Error && cause.message ? cause.message : 'Could not read limits. Try Refresh.' };
+    } finally { stop(); }
+    const member = await memberOf(provider.id, connection.id);
+    if (!disposed) { renderCard(section, { ...provider, name: connection.name }, result, member, dir); setUsage(provider.id, connection.id, result); }
+  }
   async function loadLimits(force: boolean): Promise<void> {
     let next = 0;
     // A slow account cannot hold up the others. Bound parallel work in the UI as well
     // as the native cache, and stop starting requests as soon as this view is closed.
     async function worker(): Promise<void> {
-      while (!disposed && next < installed.length) {
-        const provider = installed[next++];
-        let result: AgentUsage;
-        if (await signedOut(provider.id, '')) {
-          if (disposed) return;
-          limits.set(provider.id, signedOutResult(provider.id));
-          renderSignedOut(cards.get(provider.id)!); setUsage(provider.id, '', signedOutResult(provider.id)); renderLimits();
-          preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
-          continue;
-        }
-        try {
-          result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force });
-          if (!result || result.provider !== provider.id || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
-        } catch {
-          result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: 'Could not read limits. Try Refresh.' };
-        }
-        if (disposed) return;
-        limits.set(provider.id, result);
-        renderCard(cards.get(provider.id)!, provider, result, await memberOf(provider.id, ''));
-        if (disposed) return;
-        setUsage(provider.id, '', result);
-        renderLimits();
-        preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
-      }
+      while (!disposed && next < installed.length) await loadDefault(installed[next++], force);
     }
     await Promise.all(Array.from({ length: Math.min(3, installed.length) }, worker));
     const named = await connectionsReady;
     for (const connection of named) {
       if (disposed) return;
-      const provider = installed.find(item => item.id === connection.provider)!;
-      const section = cards.get(provider.id)?.querySelector<HTMLElement>(`.usage-connection[data-connection="${CSS.escape(connection.id)}"]`);
-      if (!section) continue;
-      if (await signedOut(provider.id, connection.id)) { if (!disposed) { renderSignedOut(section); setUsage(provider.id, connection.id, signedOutResult(provider.id)); } continue; }
-      // A same-login connection is the other account under another name: its usage is shown there, so it is not read twice.
-      const twin = (await memberOf(provider.id, connection.id))?.sameAs;
-      if (twin != null) { if (!disposed) renderSameLogin(section, twin ? named.find(other => other.id === twin)?.name ?? twin : 'Default setup'); continue; }
-      let result: AgentUsage;
-      try {
-        result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force, connection: connection.id });
-        if (!result || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
-      } catch (cause) {
-        result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: cause instanceof Error && cause.message ? cause.message : 'Could not read limits. Try Refresh.' };
-      }
-      const member = await memberOf(provider.id, connection.id);
-      if (!disposed) { renderCard(section, { ...provider, name: connection.name }, result, member); setUsage(provider.id, connection.id, result); }
+      await loadConnection(installed.find(item => item.id === connection.provider)!, connection, named, force);
     }
+  }
+  /** A card's own Refresh: just that setup, whatever else is still loading. */
+  async function refreshCard(button: HTMLButtonElement): Promise<void> {
+    const card = button.closest<HTMLElement>('.usage-card');
+    const provider = installed.find(item => cards.get(item.id) === card);
+    if (!provider || button.disabled) return;
+    button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = 'Refreshing…';
+    const scope = button.closest<HTMLElement>('.usage-connection');
+    const body = (scope ?? card!).querySelector<HTMLElement>('.usage-card-body')!;
+    body.dataset.loading = 'true';
+    if (!scope) { await loadDefault(provider, true); return; }
+    const named = await connectionsReady;
+    const connection = named.find(item => item.id === scope.dataset.connection);
+    if (connection) { await loadConnection(provider, connection, named, true); return; }
+    // The connection is gone: nothing to read, so the card is as it was.
+    button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Refresh';
+    delete body.dataset.loading;
   }
   async function loadLedger(force: boolean): Promise<void> {
     if (ledgerPending) return;
@@ -326,6 +384,10 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     const target = event.target instanceof Element ? event.target : null;
     const tabButton = target?.closest<HTMLButtonElement>('[role="tab"]');
     if (tabButton && toolbarTabs.includes(tabButton)) { select(tabButton.dataset.tab as Tab); return; }
+    const cardRefresh = target?.closest<HTMLButtonElement>('[data-usage-refresh]');
+    if (cardRefresh) { void refreshCard(cardRefresh); return; }
+    const copy = target?.closest<HTMLButtonElement>('[data-usage-copy]');
+    if (copy) { copyCommand(copy); return; }
     const row = target?.closest<HTMLButtonElement>('.usage-agent-row');
     if (row) { select(row.dataset.provider as ProviderId, true); return; }
     const rangeButton = target?.closest<HTMLButtonElement>('[data-range]');
@@ -353,23 +415,80 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   select(tab);
   trackSegment(rangeGroup, rangeGroup.querySelector<HTMLElement>('[aria-pressed="true"]'));
   void load(false);
-  return () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); refresh.removeEventListener('click', reload); cards.clear(); };
+  return () => {
+    disposed = true; host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); refresh.removeEventListener('click', reload); cards.clear();
+    waiting.clear(); window.clearInterval(waitTimer);
+    for (const timer of dueTimers) window.clearTimeout(timer);
+    dueTimers.clear();
+  };
 }
 
-function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage, member?: PoolMember): void {
+/** What a Claude card still checking learns from one poll (`agent_usage_asking_claude`). */
+interface ClaudeWaiting { asking: boolean; saved: AgentUsage | null }
+
+/** A Claude card still checking: its saved reading (stale) at once, with "Checking limits…" (or "Asking Claude Code…") under it; a card already showing limits (its own Refresh) keeps them and gets the line. */
+function showWaiting(scope: HTMLElement, body: HTMLElement, provider: Provider, answer: ClaudeWaiting, dir?: string): void {
+  if (body.dataset.loading !== 'true') return;
+  const line = answer.asking ? 'Asking Claude Code…' : 'Checking limits…';
+  const saved = answer.saved && Array.isArray(answer.saved.windows) && answer.saved.windows.length ? answer.saved : null;
+  if (saved && !body.querySelector('.usage-windows')) {
+    renderCard(scope, provider, { ...saved, stale: true }, undefined, dir);
+    body.dataset.loading = 'true'; body.setAttribute('role', 'status');
+  }
+  const windows = body.querySelector('.usage-windows');
+  if (!windows) { if (answer.asking) body.textContent = line; return; }
+  let note = body.querySelector<HTMLElement>('.usage-checking');
+  if (!note) { note = document.createElement('p'); note.className = 'usage-checking'; windows.after(note); }
+  note.textContent = line;
+}
+
+/** Copies a fix's command (`data-usage-copy`) and says so on the button for a moment. */
+function copyCommand(button: HTMLButtonElement): void {
+  const label = button.textContent;
+  const say = (text: string) => {
+    button.textContent = text;
+    dueTimers.add(window.setTimeout(() => { if (button.isConnected) button.textContent = label; }, 1500));
+  };
+  void navigator.clipboard.writeText(button.dataset.usageCopy ?? '').then(() => say('Copied'), () => say('Copy failed'));
+}
+
+/** Timers of the open panel's cards (`updateWhenDue`, `copyCommand`), cleared when it closes. */
+const dueTimers = new Set<number>();
+
+function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage, member?: PoolMember, dir?: string): void {
   const plan = card.querySelector<HTMLElement>(':scope > .usage-card-heading > .usage-plan');
   if (plan) { plan.textContent = result.plan ?? ''; plan.title = result.plan ?? ''; }
   const windows = shownWindows(provider.id, result);
   const body = card.querySelector<HTMLElement>('.usage-card-body')!;
+  delete body.dataset.loading;
   // One "Checked" time and source per harness, in the card header; account sections leave theirs out.
   const checked = card.querySelector<HTMLElement>(':scope > .usage-card-heading > .usage-card-checked');
-  if (checked) checked.innerHTML = `${result.checkedAt > 0 ? `${result.stale ? 'Last success' : 'Checked'} ${escape(new Date(result.checkedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}` : ''}${result.source ? infoMark(result.source, `${provider.name} usage source`) : ''}`;
+  if (checked) checked.innerHTML = `${result.checkedAt > 0 ? `${result.stale ? 'Last success' : 'Checked'} ${escape(clockLabel(result.checkedAt))}` : ''}${result.source ? infoMark(result.source, `${provider.name} usage source`) : ''}`;
   body.removeAttribute('role');
-  const status = result.stale ? 'Saved snapshot' : STATUS[result.status] ?? 'Unavailable';
+  const status = statusLabel(result);
+  const retry = retryText(result);
   card.classList.toggle('usage-stale', result.stale);
   body.innerHTML = `${windows.length ? `<div class="usage-windows">${windows.map(window => renderWindow(provider, window, member)).join('')}</div>` : ''}
-    ${status || result.message || !windows.length ? `<div class="usage-notice">${status ? `<span class="usage-state">${escape(status)}</span>` : ''}${result.message ? `<p>${escape(result.message)}</p>` : !windows.length ? '<p>This account did not report any usage windows.</p>' : ''}</div>` : ''}
+    ${status || result.message || !windows.length ? `<div class="usage-notice">${status ? `<span class="usage-state">${escape(status)}</span>` : ''}${result.message ? `<p>${escape(result.message)}</p>` : !windows.length ? '<p>This account did not report any usage windows.</p>' : ''}${retry ? `<p class="usage-retry">${escape(retry)}</p>` : ''}${status ? fixButton(result.action, result.retryAt, Date.now(), dir) : ''}</div>` : ''}
     <div class="usage-card-footer">${dashboardLink(result.dashboardUrl)}</div>`;
+  updateWhenDue(body, result);
+}
+
+/** As each time a card names passes (`retryAt`, `autoRetryAt`), its label, retry line and Refresh are brought up to then: "Next try after" goes back to its plain state, "Opening this panel after HH:MM…" changes or goes, and a rate limit's Refresh is enabled. A card rendered again since is left alone; closing the panel clears the timers. */
+function updateWhenDue(body: HTMLElement, result: AgentUsage): void {
+  const [state, line, button] = ['.usage-state', '.usage-retry', '[data-usage-refresh][data-until]'].map(selector => body.querySelector<HTMLElement>(selector));
+  for (const at of [result.retryAt, result.autoRetryAt]) {
+    if (!at || at <= Date.now()) continue;
+    dueTimers.add(window.setTimeout(() => {
+      if (button?.isConnected && Number(button.dataset.until) <= at) {
+        delete button.dataset.until;
+        if ('wait' in button.dataset) { delete button.dataset.wait; (button as HTMLButtonElement).disabled = false; }
+      }
+      if (state?.isConnected) state.textContent = statusLabel(result, at);
+      const text = retryText(result, at);
+      if (line?.isConnected) { if (text) line.textContent = text; else line.remove(); }
+    }, at - Date.now()));
+  }
 }
 
 /** One window: label, percent, meter and reset. Its detail rides on the reset text's title, so a card keeps one ⓘ. */
@@ -378,8 +497,10 @@ function renderWindow(provider: Provider, window: UsageWindow, member?: PoolMemb
   const tone = meterTone(value, member, window.label);
   const reset = window.resetsAt ? new Date(window.resetsAt) : null;
   const validReset = reset && Number.isFinite(reset.getTime()) ? reset : null;
-  const detail = [window.detail, validReset ? `Resets ${validReset.toLocaleString()}` : ''].filter(Boolean).join('. ');
-  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div><div class="usage-reset"><span${detail ? ` title="${escape(detail)}"` : ''}>${validReset ? resetLabel(validReset) : 'Reset time not reported'}</span>${detail ? `<span class="sr-only">. ${escape(detail)}</span>` : ''}</div></div>`;
+  // Without a timestamp, reset text Claude Code printed is shown itself (not repeated in the tooltip).
+  const printed = printedReset(window);
+  const detail = printed ? '' : [window.detail, validReset ? `Resets ${validReset.toLocaleString()}` : ''].filter(Boolean).join('. ');
+  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div><div class="usage-reset"><span${detail ? ` title="${escape(detail)}"` : ''}>${validReset ? resetLabel(validReset) : escape(printed || 'Reset time not reported')}</span>${detail ? `<span class="sr-only">. ${escape(detail)}</span>` : ''}</div></div>`;
 }
 
 /** 'Resets 1:31 PM' or 'Resets Sat 11:24 AM', as Settings and the pool chip say it. */

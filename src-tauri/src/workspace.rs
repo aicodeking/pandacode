@@ -772,7 +772,37 @@ pub(crate) fn run_process(
     limit: usize,
     timeout: Duration,
 ) -> Result<GitOutput, String> {
-    run_bounded(command, tool, limit, 16 * 1024, timeout, None)
+    run_bounded(command, tool, limit, 16 * 1024, timeout, None, None)
+}
+
+/// `run_process_graceful_until` that is only stopped by its timeout (tests).
+#[cfg(all(test, unix))]
+pub(crate) fn run_process_graceful(
+    command: Command,
+    tool: &str,
+    limit: usize,
+    timeout: Duration,
+    grace: Duration,
+) -> Result<GitOutput, String> {
+    run_process_graceful_until(command, tool, limit, timeout, Graceful { grace, stop: &|| false })
+}
+
+/// How a graceful run ends early: `stop` is asked every `STOP_POLL` while it
+/// runs, and once it says so the run is stopped as at its timeout.
+pub(crate) struct Graceful<'a> {
+    pub grace: Duration,
+    pub stop: &'a dyn Fn() -> bool,
+}
+
+const STOP_POLL: Duration = Duration::from_secs(2);
+
+/// Like `run_process`, but at `timeout` (or once `graceful.stop` says so) the
+/// process group is first asked to stop (SIGTERM; on Windows a plain
+/// `taskkill /T`) and given `graceful.grace` to exit before it is killed, so a
+/// tool can save what it was writing (see `ask_to_stop`); a clean exit when
+/// asked still gives its own output.
+pub(crate) fn run_process_graceful_until(command: Command, tool: &str, limit: usize, timeout: Duration, graceful: Graceful) -> Result<GitOutput, String> {
+    run_bounded(command, tool, limit, 16 * 1024, timeout, None, Some(graceful))
 }
 
 /// Like `run_process`, but feeds `input` to stdin (from a thread, then closes it) and keeps
@@ -784,7 +814,7 @@ pub(crate) fn run_process_with_input(
     timeout: Duration,
     input: Option<&[u8]>,
 ) -> Result<GitOutput, String> {
-    run_bounded(command, tool, limit, limit, timeout, input)
+    run_bounded(command, tool, limit, limit, timeout, input, None)
 }
 
 fn run_bounded(
@@ -794,6 +824,7 @@ fn run_bounded(
     stderr_limit: usize,
     timeout: Duration,
     input: Option<&[u8]>,
+    graceful: Option<Graceful>,
 ) -> Result<GitOutput, String> {
     crate::child_env::sanitize(&mut command);
     #[cfg(unix)]
@@ -831,18 +862,29 @@ fn run_bounded(
             .ok_or(format!("Missing {tool} stderr"))?,
         stderr_limit,
     );
-    let deadline = Instant::now() + timeout;
+    let mut deadline = Instant::now() + timeout;
     // Most git calls finish in a few ms; back off from 1 ms so they aren't rounded up to 10.
     let mut pause = Duration::from_millis(1);
+    let mut next_poll = Instant::now() + STOP_POLL;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {
+            Ok(None) if Instant::now() < deadline && !asked_to_stop(graceful.as_ref(), &mut next_poll) => {
                 thread::sleep(pause);
                 pause = (pause * 2).min(Duration::from_millis(10));
             }
             Ok(None) => {
+                let left = graceful.as_ref().is_some_and(|graceful| ask_to_stop(process_id, graceful.grace, || child_exited(&mut child, process_id)));
+                // The leader is not reaped yet: its group id is still ours.
                 stop_process_group(process_id);
+                // It exited cleanly when asked to stop: its own status and
+                // output (the streams get a moment to close), not a timeout.
+                if left {
+                    if let Ok(status) = child.wait().map_err(drop).and_then(|status| status.success().then_some(status).ok_or(())) {
+                        deadline = Instant::now() + Duration::from_secs(1);
+                        break status;
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
@@ -953,6 +995,74 @@ pub(crate) fn turn_snapshot_paths(
     let excluded = parse(&ignored.bytes);
     truncated |= ignored.truncated;
     Ok(Some((paths, excluded, truncated)))
+}
+
+/// Asks a timed-out process group to stop (SIGTERM) and waits up to `grace`
+/// for its leader to exit, without reaping it: the group id stays held until
+/// `stop_process_group` has killed whatever is left, so it can't be reused.
+/// Whether the leader exited within the grace.
+/// Windows asks with a plain `taskkill /T` and waits at most `WINDOWS_GRACE`:
+/// that request reaches only processes with a window, so tools run with
+/// CREATE_NO_WINDOW (and their children) may ignore it and need the forced
+/// stop (`taskkill /T /F`) that follows.
+fn ask_to_stop(process_id: u32, grace: Duration, mut exited: impl FnMut() -> bool) -> bool {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(process_id as i32), libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    let grace = {
+        let mut command = Command::new("taskkill.exe");
+        command.creation_flags(0x08000000);
+        let _ = command.args(["/PID", &process_id.to_string(), "/T"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        grace.min(WINDOWS_GRACE)
+    };
+    #[cfg(not(any(unix, windows)))]
+    let _ = process_id;
+    let until = Instant::now() + grace;
+    while Instant::now() < until {
+        if exited() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// The most a Windows process gets after a plain `taskkill /T`.
+#[cfg(windows)]
+const WINDOWS_GRACE: Duration = Duration::from_secs(5);
+
+/// Whether `graceful.stop` says to stop now, asked at most every `STOP_POLL`.
+fn asked_to_stop(graceful: Option<&Graceful>, next_poll: &mut Instant) -> bool {
+    let Some(graceful) = graceful.filter(|_| Instant::now() >= *next_poll) else { return false };
+    *next_poll = Instant::now() + STOP_POLL;
+    (graceful.stop)()
+}
+
+/// Whether the child has exited. Unix: unreaped, so its group id stays held
+/// for `stop_process_group`; elsewhere `Child` keeps its handle open, so the
+/// id can't be reused either.
+fn child_exited(child: &mut std::process::Child, process_id: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let _ = child;
+        exited_unreaped(process_id)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process_id;
+        matches!(child.try_wait(), Ok(Some(_)))
+    }
+}
+
+/// Whether the child `process_id` has exited, leaving it unreaped (WNOWAIT).
+#[cfg(unix)]
+fn exited_unreaped(process_id: u32) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    let status = unsafe { libc::waitid(libc::P_PID, process_id as libc::id_t, &mut info, flags) };
+    status == 0 && unsafe { info.si_pid() } != 0
 }
 
 fn stop_process_group(process_id: u32) {

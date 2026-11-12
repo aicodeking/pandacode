@@ -79,3 +79,4 @@ details.connection-card:not([open])::before{display:none}
 .connection-state[data-tone=danger]{color:var(--ds-danger)}
 .connection-card>summary+:is(label,div,p,form,.connection-auth-label){margin-top:0}
 @media(prefers-reduced-motion:reduce){.connection-card>summary,.connection-card>summary>.icon{transition:none}}
+.connection-renew-row{margin:.75rem 0 .45rem;padding:0}.connection-renew-row .ds-row-trail{display:flex;align-items:center;gap:.5rem}

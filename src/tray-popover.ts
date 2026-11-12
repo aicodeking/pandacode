@@ -7,12 +7,13 @@ import { call, preview } from './bridge';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import type { AgentUsage } from './agent-usage';
+import { clockLabel, printedReset, statusLabel } from './usage-labels';
 import type { ProviderId } from './types';
 import { errorText } from './error-text';
 
 /* The menu bar popover: a slim list of running, waiting and finished tasks plus plan usage. */
 interface TrayTask { id: string; title: string; project: string; provider: ProviderId; at: number; failed?: boolean }
-interface TraySnapshot { running: TrayTask[]; waiting: TrayTask[]; finished: TrayTask[]; usage: AgentUsage[]; checking: boolean }
+interface TraySnapshot { running: TrayTask[]; waiting: TrayTask[]; finished: TrayTask[]; usage: AgentUsage[]; checking: boolean; askingClaude?: boolean }
 
 const NAMES: Partial<Record<ProviderId, string>> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', glm: 'GLM', opencode: 'OpenCode', kilo: 'Kilo', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', deepseek: 'DeepSeek', pi: 'Pi', cline: 'Cline', muse: 'Muse', commandcode: 'Command Code', omp: 'Oh My Pi', 'github-copilot': 'Copilot', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
 const root = document.documentElement;
@@ -61,15 +62,27 @@ function row(task: TrayTask, kind: 'running' | 'waiting' | 'finished'): string {
   return `<button type="button" class="tray-row" data-id="${escape(task.id)}"><span class="tray-logo">${providerLogo(task.provider)}</span><span class="tray-text"><span class="tray-title">${escape(task.title || 'Untitled task')}</span><span class="tray-sub">${escape(sub)}</span></span>${status}</button>`;
 }
 
-function usageBlock(usage: AgentUsage): string {
+/** While PandaCode runs Claude Code for the Claude check, its row says so (and appears for it if it had none). */
+function withAsking(usage: AgentUsage[], asking: boolean): AgentUsage[] {
+  if (!asking || usage.some(item => item.provider === 'claude')) return usage;
+  return [{ provider: 'claude', status: 'ready', windows: [], checkedAt: 0, stale: false } as unknown as AgentUsage, ...usage];
+}
+
+function usageBlock(usage: AgentUsage, asking = false): string {
   const windows = usage.windows.map(window => {
     const value = Math.min(100, Math.max(0, window.usedPercent));
-    const reset = resetLabel(window.resetsAt);
+    // Without a timestamp, the reset as Claude Code printed it, without its time zone and in this menu's case ("resets Nov 15 at 8pm").
+    const reset = resetLabel(window.resetsAt) || printedReset(window).replace(/\s*\([^)]*\)\s*$/, '').replace(/^R/, 'r');
     return `<div class="tray-window" data-tone="${tone(value)}"><span class="tray-window-label">${escape(window.label)}</span><span class="tray-bar" role="progressbar" aria-label="${escape(`${name(usage.provider)} ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(value)}"><span style="width:${value}%"></span></span><span class="tray-percent">${Math.round(value)}%</span>${reset ? `<span class="tray-reset">${escape(reset)}</span>` : ''}</div>`;
   }).join('');
   const plan = usage.plan ? `<span class="tray-chip">${escape(usage.plan)}</span>` : '';
-  const stale = usage.stale ? '<span class="tray-stale">stale</span>' : '';
-  return `<div class="tray-usage"><div class="tray-usage-head"><span class="tray-logo">${providerLogo(usage.provider)}</span><span>${escape(name(usage.provider))}</span>${plan}${stale}</div>${windows}</div>`;
+  // A saved snapshot keeps its windows and says when it was taken; a result
+  // with nothing to show keeps its row with the panel's short state label.
+  const saved = usage.stale && usage.checkedAt > 0 ? `saved ${clockLabel(usage.checkedAt)}` : '';
+  const stale = usage.stale ? `<span class="tray-stale" title="${escape(statusLabel(usage))}">${escape(saved || 'stale')}</span>` : '';
+  const state = asking && usage.provider === 'claude' ? '<p class="tray-state tray-asking">Asking Claude Code…</p>'
+    : !usage.windows.length ? `<p class="tray-state">${escape(statusLabel(usage) || 'No limits reported')}</p>` : '';
+  return `<div class="tray-usage"><div class="tray-usage-head"><span class="tray-logo">${providerLogo(usage.provider)}</span><span>${escape(name(usage.provider))}</span>${plan}${stale}</div>${windows}${state}</div>`;
 }
 
 /** Why the last click or load failed (open, refresh, show, quit); shown above the list until dismissed or the next action. */
@@ -95,13 +108,14 @@ function resize(): void {
 
 function render(): void {
   if (!snapshot) return;
-  const { running, waiting, finished, usage, checking } = snapshot;
+  const { running, waiting, finished, checking } = snapshot;
+  const usage = withAsking(snapshot.usage, Boolean(snapshot.askingClaude));
   const parts = [running.length && `${running.length} running`, (waiting.length + finished.length) && `${waiting.length + finished.length} to review`].filter(Boolean);
   summary.textContent = parts.length ? parts.join(' · ') : 'All quiet';
   const sections = ([['Running', running, 'running'], ['Needs you', waiting, 'waiting'], ['Finished', finished, 'finished']] as const)
     .filter(([, tasks]) => tasks.length)
     .map(([label, tasks, kind]) => `<section class="tray-section"><h2>${label}</h2>${tasks.map(task => row(task, kind)).join('')}</section>`).join('');
-  const usageBody = usage.length ? usage.map(usageBlock).join('') : `<p class="tray-quiet">${checking ? 'Checking plan limits…' : 'No plan limits reported.'}</p>`;
+  const usageBody = usage.length ? usage.map(item => usageBlock(item, Boolean(snapshot!.askingClaude))).join('') : `<p class="tray-quiet">${checking ? 'Checking plan limits…' : 'No plan limits reported.'}</p>`;
   const focused = (document.activeElement as HTMLElement | null)?.dataset.id;
   body.innerHTML = `${sections || '<p class="tray-quiet tray-empty">No agents running.</p>'}<section class="tray-section tray-plan"><h2>Plan usage<button type="button" class="tray-icon-button tray-refresh${checking ? ' checking' : ''}" aria-label="Refresh usage" title="Refresh usage"${checking ? ' aria-busy="true"' : ''}>${icon('refresh')}</button></h2>${usageBody}</section>`;
   if (focused) body.querySelector<HTMLElement>(`.tray-row[data-id="${CSS.escape(focused)}"]`)?.focus();

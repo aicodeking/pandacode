@@ -350,7 +350,7 @@ pub(crate) fn command(path: &Path) -> Result<tokio::process::Command, String> {
     Ok(command)
 }
 
-pub(super) fn std_command(path: &Path) -> Result<std::process::Command, String> {
+pub(crate) fn std_command(path: &Path) -> Result<std::process::Command, String> {
     let launch = resolve(path, cfg!(windows))?;
     let mut command = std::process::Command::new(launch.program);
     command.args(launch.args);
