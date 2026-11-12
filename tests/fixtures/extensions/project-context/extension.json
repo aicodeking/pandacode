@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "engines": { "pandacodeApi": "^1.0.0" },
   "extensionKind": "ui",
-  "permissions": ["ui.contribute", "projects.summary", "tasks.summary"],
+  "permissions": ["ui.contribute", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary"],
   "contributes": {
     "commands": [{ "id": "sample.project-context/inspect", "title": "Project context", "action": { "kind": "showProjectContext" } }],
     "menus": [{ "id": "sample.project-context/header", "location": "panda.workspace.header.actions", "command": "sample.project-context/inspect", "presentation": "button", "text": "Project context" }]

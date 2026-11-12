@@ -1484,16 +1484,23 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     const { previewExtensionSnapshot } = await import('./extensions/preview');
     const { createPreviewContextBroker } = await import('./extensions/context-preview');
     const broker = extensionContextBroker ??= createPreviewContextBroker();
+    const inventoryData = {
+      projects, tasks: sessions,
+      harnesses: [{ id: 'claude', name: 'Claude Code', installed: 'Installed' as const, version: '2.1.0' }, { id: 'codex', name: 'Codex', installed: 'Absent' as const }, { id: 'kimi', name: 'Kimi', installed: 'Unknown' as const }],
+      connections: [{ id: 'context-connection', projectId: 'project-1', provider: 'claude' }, { id: 'other-connection', projectId: 'project-2', provider: 'codex' }],
+    };
     if (new URLSearchParams(location.search).has('project-context')) {
       const fixture = (window as any).__extensionContext ??= {};
-      fixture.call = (request: Record<string, unknown>) => broker(request, previewExtensionSnapshot(), { projects, tasks: sessions });
+      fixture.call = (request: Record<string, unknown>) => broker(request, previewExtensionSnapshot(), { ...inventoryData, projects, tasks: sessions });
+      fixture.subscriptionCount = broker.subscriptionCount;
+      fixture.record = (id: string, kind: 'progress' | 'terminal', status: string) => { const task = sessions.find(task => task.id === id); if (task && ['running', 'completed', 'failed', 'stopped', 'pending', 'idle'].includes(status)) task.status = status as typeof task.status; broker.record(id, kind, status); };
       if (args.request?.op === 'query' && fixture.hold) { fixture.hold = false; await new Promise<void>(resolve => { fixture.release = resolve; fixture.waiting = true; }); fixture.waiting = false; }
       if (args.request?.op === 'query' && fixture.timeout) { fixture.timeout = false; return { ok: false, error: { schemaVersion: 1, code: 'Timeout', path: '$', ids: [] } } as T; }
       fixture.removeProject = (id: string) => { projects = projects.filter(project => project.id !== id); };
       fixture.change = () => { const task = sessions.find(task => task.projectId === 'project-1'); if (task) task.status = task.status === 'pending' ? 'completed' : 'pending'; };
       fixture.addTasks = () => { const source = sessions[0]; for (let i = 0; i < 12; i++) sessions.push({ ...source, id: `context-page-${String(i).padStart(2, '0')}`, title: 'TRANSCRIPT_SENTINEL', status: 'pending' }); };
     }
-    return broker(args.request, previewExtensionSnapshot(), { projects, tasks: sessions }) as T;
+    return broker(args.request, previewExtensionSnapshot(), { ...inventoryData, projects, tasks: sessions }) as T;
   }
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);

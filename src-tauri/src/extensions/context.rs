@@ -1,5 +1,6 @@
 //! Host-owned, read-only captured context. No extension identity or core storage DTO crosses IPC.
 use super::{contracts, packages::{ExtensionPackages, Snapshot}};
+use super::inventory;
 use crate::storage::Store;
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
@@ -19,14 +20,24 @@ enum Request {
     Capture { id: String, version: String, context: Value },
     Consent { handle: String, capability: String, allow: bool },
     Query { handle: String, resource: String, limit: u32, cursor: Option<u32>, revision: Option<String> },
+    Subscribe { handle: String, resource: String, limit: u32 },
+    Events { handle: String, subscription: String, cursor: String },
+    Unsubscribe { handle: String, subscription: String },
     Release { handle: String },
 }
 #[derive(Clone)]
 struct Invocation { id: String, version: String, owner: String, context: Value, expires: Instant }
 #[derive(Default)]
-struct Broker { handles: BTreeMap<String, Invocation>, grants: BTreeSet<(String, String, String, String)> }
+struct Broker { handles: BTreeMap<String, Invocation>, grants: BTreeSet<(String, String, String, String)>, subscriptions: BTreeMap<String, Subscription>, journal: inventory::Journal }
+struct Subscription { handle: String, resource: String, limit: u32, offset: u64, cursor: String, sequence: u64, snapshot: Value }
 #[derive(Default)]
 pub struct ContextBroker { broker: Mutex<Broker>, busy: Arc<AtomicBool> }
+/// Called only by the existing owned-agent lifecycle. Text/data/tool payloads never enter the stream.
+pub fn record_job(app: &tauri::AppHandle, id: &str, kind: &str, status: &str) {
+    if let Ok(mut broker) = app.state::<ContextBroker>().broker.lock() {
+        if broker.subscriptions.values().any(|stream| stream.resource == "jobs") { broker.journal.record(id, kind, status); }
+    }
+}
 pub fn invalidate(app: &tauri::AppHandle, owner: Option<&str>) {
     if let Ok(mut broker) = app.state::<ContextBroker>().broker.lock() {
         broker.invalidate(owner);
@@ -78,12 +89,12 @@ fn revision(store: &Store) -> Result<String, &'static str> {
 }
 fn summaries(store: &Store, invocation: &Invocation, resource: &str, limit: u32, cursor: u32, expected: Option<&str>) -> Reply {
     let project = project_id(&invocation.context);
-    let current = revision(store)?;
+    let mut current = revision(store)?;
     if project.is_empty() { return Ok(json!({"schemaVersion":1,"state":"NoProject","revision":current,"items":[],"nextCursor":null})); }
     // The caller holds the Store lock. Select ONLY allowed columns and detect external writes below.
     let name: Option<String> = store.db.query_row("SELECT CASE WHEN length(name)<=256 THEN name ELSE NULL END FROM projects WHERE id=?1", [project], |row| row.get(0)).optional().map_err(|_| "HostUnavailable")?.ok_or("NotFound")?;
     let name = name.ok_or("LimitExceeded")?;
-    if expected.is_some_and(|expected| expected != current) { return Err("StaleContext"); }
+    let database_revision = current.clone();
     let mut items = Vec::new();
     let mut next = None;
     match resource {
@@ -98,22 +109,33 @@ fn summaries(store: &Store, invocation: &Invocation, resource: &str, limit: u32,
                 items.push(json!({"id":id,"projectId":project,"status":status}));
             }
         }
+        "harnesses" | "connections" | "jobs" => {
+            let all = inventory::items(store, project, resource)?;
+            use std::hash::{Hash, Hasher};
+            let mut hash = std::hash::DefaultHasher::new(); serde_json::to_vec(&all).map_err(|_| "HostUnavailable")?.hash(&mut hash);
+            current = format!("{current}:{:x}", hash.finish());
+            items = all.iter().skip(cursor as usize).take(limit as usize).cloned().collect();
+            if (cursor as usize) + items.len() < all.len() { next = Some(cursor + limit); }
+        }
         _ => return Err("UnsupportedCapability"),
     }
+    if expected.is_some_and(|expected| expected != current) { return Err("StaleContext"); }
     // External writers may change the DB despite this process's Store lock. Never mix revisions.
-    if revision(store)? != current { return Err("StaleContext"); }
+    if revision(store)? != database_revision { return Err("StaleContext"); }
     Ok(json!({"schemaVersion":1,"state":"Ready","revision":current,"items":items,"nextCursor":next}))
 }
 impl Broker {
     fn invalidate(&mut self, owner: Option<&str>) {
         self.handles.retain(|_, invocation| owner.is_some_and(|owner| invocation.owner != owner));
         self.grants.retain(|(extension, _, _, _)| owner.is_some_and(|owner| extension != owner));
+        self.subscriptions.retain(|_, subscription| self.handles.contains_key(&subscription.handle));
     }
     fn execute(&mut self, label: &str, snapshot: &Snapshot, store: &Store, raw: Value, deadline: Instant) -> Reply {
         if label != "main" { return Err("PermissionDenied"); }
         if raw.to_string().len() > 8192 { return Err("LimitExceeded"); }
         let request: Request = serde_json::from_value(raw).map_err(|_| "InvalidShape")?;
         self.handles.retain(|_, invocation| invocation.expires > Instant::now());
+        self.subscriptions.retain(|_, subscription| self.handles.contains_key(&subscription.handle));
         if Instant::now() >= deadline { return Err("Timeout"); }
         if let Request::Capture { id, version, context } = request {
             let manifest = owner(snapshot, &id, &version, &context)?;
@@ -128,27 +150,69 @@ impl Broker {
             self.handles.insert(handle.clone(), Invocation { id, version, owner: owner.clone(), context, expires: Instant::now() + LIFETIME });
             return Ok(json!({"schemaVersion":1,"handle":handle,"owner":owner}));
         }
-        let handle = match &request { Request::Consent { handle, .. } | Request::Query { handle, .. } | Request::Release { handle } => handle, _ => unreachable!() };
+        let handle = match &request { Request::Consent { handle, .. } | Request::Query { handle, .. } | Request::Subscribe { handle, .. } | Request::Events { handle, .. } | Request::Unsubscribe { handle, .. } | Request::Release { handle } => handle, _ => unreachable!() };
         if handle.len() > 64 { return Err("LimitExceeded"); }
-        if matches!(request, Request::Release { .. }) { self.handles.remove(handle); return Ok(Value::Null); }
+        if matches!(request, Request::Release { .. }) { self.handles.remove(handle); self.subscriptions.retain(|_, subscription| &subscription.handle != handle); return Ok(Value::Null); }
         let invocation = self.handles.get(handle).ok_or("StaleContext")?.clone();
         let manifest = owner(snapshot, &invocation.id, &invocation.version, &invocation.context)?;
         if manifest["id"] != invocation.owner { return Err("PermissionDenied"); }
         let key = |capability: &str| (invocation.owner.clone(), invocation.version.clone(), project_id(&invocation.context).to_owned(), capability.to_owned());
         match request {
             Request::Consent { capability, allow, .. } => {
-                if !["projects.summary", "tasks.summary"].contains(&capability.as_str()) || !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == &capability)) { return Err("PermissionDenied"); }
+                if !["projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary"].contains(&capability.as_str()) || !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == &capability)) { return Err("PermissionDenied"); }
                 if allow {
                     if self.grants.len() >= MAX_GRANTS && !self.grants.contains(&key(&capability)) { return Err("LimitExceeded"); }
                     self.grants.insert(key(&capability));
-                } else { self.grants.remove(&key(&capability)); }
+                } else {
+                    self.grants.remove(&key(&capability));
+                    self.subscriptions.retain(|_, subscription| !(inventory::capability(&subscription.resource) == Some(capability.as_str()) && self.handles.get(&subscription.handle).is_some_and(|other| key(&capability) == (other.owner.clone(), other.version.clone(), project_id(&other.context).to_owned(), capability.clone()))));
+                }
                 Ok(Value::Null)
             }
             Request::Query { resource, limit, cursor, revision, .. } => {
                 if limit == 0 || limit > 50 || cursor.unwrap_or(0) > 10000 || revision.as_ref().is_some_and(|value| value.len() > 64) { return Err("LimitExceeded"); }
-                let capability = match resource.as_str() { "projects" => "projects.summary", "tasks" => "tasks.summary", _ => return Err("UnsupportedCapability") };
+                let capability = inventory::capability(&resource).ok_or("UnsupportedCapability")?;
                 if !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == capability)) || !self.grants.contains(&key(capability)) { return Err("PermissionDenied"); }
                 summaries(store, &invocation, &resource, limit, cursor.unwrap_or(0), revision.as_deref())
+            }
+            Request::Subscribe { handle, resource, limit } => {
+                let capability = inventory::capability(&resource).ok_or("UnsupportedCapability")?;
+                if !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == capability)) || !self.grants.contains(&key(capability)) { return Err("PermissionDenied"); }
+                if limit == 0 || limit > 50 || self.subscriptions.len() >= 64 || self.subscriptions.values().filter(|subscription| subscription.handle == handle).count() >= 5 { return Err("LimitExceeded"); }
+                let page = summaries(store, &invocation, &resource, limit, 0, None)?;
+                let subscription = uuid::Uuid::new_v4().to_string(); let cursor = uuid::Uuid::new_v4().to_string();
+                self.subscriptions.insert(subscription.clone(), Subscription { handle, resource, limit, offset: self.journal.cursor, cursor: cursor.clone(), sequence: 0, snapshot: page.clone() });
+                Ok(json!({"schemaVersion":1,"subscription":subscription,"cursor":cursor,"snapshot":page,"events":[],"resync":false}))
+            }
+            Request::Unsubscribe { handle, subscription } => {
+                if subscription.len() > 64 { return Err("LimitExceeded"); }
+                if self.subscriptions.get(&subscription).is_some_and(|stream| stream.handle != handle) { return Err("PermissionDenied"); }
+                self.subscriptions.remove(&subscription); Ok(Value::Null)
+            }
+            Request::Events { handle, subscription, cursor } => {
+                if subscription.len() > 64 || cursor.len() > 64 { return Err("LimitExceeded"); }
+                let stream = self.subscriptions.get(&subscription).ok_or("StaleContext")?;
+                if stream.handle != handle { return Err("PermissionDenied"); }
+                let capability = inventory::capability(&stream.resource).ok_or("UnsupportedCapability")?;
+                if !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == capability)) || !self.grants.contains(&key(capability)) { self.subscriptions.remove(&subscription); return Err("PermissionDenied"); }
+                let page = match summaries(store, &invocation, &stream.resource, stream.limit, 0, None) {
+                    Ok(page) => page,
+                    Err(error) => {
+                        if error == "NotFound" {
+                            self.subscriptions.retain(|_, stream| self.handles.get(&stream.handle).is_some_and(|other| project_id(&other.context) != project_id(&invocation.context)));
+                        } else { self.subscriptions.remove(&subscription); }
+                        return Err(error);
+                    }
+                };
+                let (gap, mut events) = if stream.resource == "jobs" { self.journal.read(store, project_id(&invocation.context), stream.offset)? } else { (false, Vec::new()) };
+                let resync = gap || cursor != stream.cursor || serde_json::to_vec(&events).map_err(|_| "HostUnavailable")?.len() > 24 * 1024;
+                let stream = self.subscriptions.get_mut(&subscription).ok_or("StaleContext")?;
+                if resync { events.clear(); }
+                for event in &mut events { stream.sequence += 1; event["sequence"] = json!(stream.sequence); event["revision"] = json!(format!("event:{}", stream.sequence)); }
+                // SQLite revisions are conservative. Compare public items/state to avoid unrelated refreshes.
+                let changed = page["items"] != stream.snapshot["items"] || page["state"] != stream.snapshot["state"] || page["nextCursor"] != stream.snapshot["nextCursor"];
+                stream.snapshot = page.clone(); stream.offset = self.journal.cursor; stream.cursor = uuid::Uuid::new_v4().to_string();
+                Ok(json!({"schemaVersion":1,"cursor":stream.cursor,"snapshot":if changed || resync {page} else {Value::Null},"events":events,"resync":resync}))
             }
             _ => unreachable!(),
         }
@@ -210,6 +274,71 @@ mod tests {
         assert_eq!(call(broker, snapshot, store, json!({"op":"consent","handle":handle,"capability":capability,"allow":allow}))["ok"], true);
     }
     fn query(handle: &str, resource: &str) -> Value { json!({"op":"query","handle":handle,"resource":resource,"limit":1}) }
+    #[test]
+    fn inventory_stream_snapshot_cursor_scope_terminal_gap_reconnect_and_disposal() {
+        let (mut broker, snapshot, store) = fixture();
+        let a = capture(&mut broker, &snapshot, &store, Some("A")); let b = capture(&mut broker, &snapshot, &store, Some("B"));
+        for handle in [&a, &b] { consent(&mut broker, &snapshot, &store, handle, "jobs.summary", true); }
+        let subscribe = |handle: &str| json!({"op":"subscribe","handle":handle,"resource":"jobs","limit":10});
+        let stream = call(&mut broker, &snapshot, &store, subscribe(&a))["value"].clone();
+        let other = call(&mut broker, &snapshot, &store, subscribe(&b))["value"].clone();
+        assert_eq!(stream["snapshot"]["items"].as_array().unwrap().len(), 2);
+        assert_eq!(stream["snapshot"]["items"][0]["kind"], "agentTask");
+        let mut poll = json!({"op":"events","handle":a,"subscription":stream["subscription"],"cursor":stream["cursor"]});
+        let mut stolen = poll.clone(); stolen["handle"] = json!(b);
+        assert_eq!(call(&mut broker, &snapshot, &store, stolen)["error"]["code"], "PermissionDenied");
+        broker.journal.record("b1", "terminal", "completed");
+        broker.journal.record("a1", "progress", "running"); broker.journal.record("a1", "terminal", "failed");
+        let first = call(&mut broker, &snapshot, &store, poll.clone())["value"].clone();
+        assert_eq!(first["events"], json!([{"sequence":1,"revision":"event:1","id":"a1","kind":"progress","status":"running"},{"sequence":2,"revision":"event:2","id":"a1","kind":"terminal","status":"failed"}]));
+        assert_eq!(first["resync"], false);
+        let b_events = call(&mut broker, &snapshot, &store, json!({"op":"events","handle":b,"subscription":other["subscription"],"cursor":other["cursor"]}));
+        assert_eq!(b_events["value"]["events"], json!([{"sequence":1,"revision":"event:1","id":"b1","kind":"terminal","status":"completed"}]));
+        // A lost reply/reconnect cannot silently skip lifecycle events: explicit full resync.
+        let reconnect = call(&mut broker, &snapshot, &store, poll.clone())["value"].clone();
+        assert_eq!(reconnect["resync"], true); assert!(reconnect["snapshot"].is_object()); poll["cursor"] = reconnect["cursor"].clone();
+        for _ in 0..140 { broker.journal.record("a2", "terminal", "completed"); }
+        let gap = call(&mut broker, &snapshot, &store, poll.clone())["value"].clone(); assert_eq!(gap["resync"], true); assert_eq!(gap["events"], json!([]));
+        poll["cursor"] = gap["cursor"].clone();
+        broker.journal.record("a1", "progress", "running"); broker.journal.record("a1", "progress", "running");
+        assert_eq!(call(&mut broker, &snapshot, &store, poll.clone())["value"]["resync"], true);
+        consent(&mut broker, &snapshot, &store, &a, "jobs.summary", false); assert_eq!(broker.subscriptions.len(), 1);
+        assert_eq!(call(&mut broker, &snapshot, &store, poll)["error"]["code"], "StaleContext");
+        consent(&mut broker, &snapshot, &store, &a, "jobs.summary", true); let _ = call(&mut broker, &snapshot, &store, subscribe(&a));
+        broker.invalidate(Some("sample.project-context")); assert!(broker.subscriptions.is_empty());
+    }
+    #[test]
+    fn oversized_event_batch_resyncs_instead_of_dropping_terminal_events_at_the_reply_limit() {
+        let (mut broker, snapshot, store) = fixture();
+        let a = capture(&mut broker, &snapshot, &store, Some("A")); consent(&mut broker, &snapshot, &store, &a, "jobs.summary", true);
+        let id = "a".repeat(256);
+        store.db.execute("INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at) VALUES (?1,'A','SECRET','claude','test','ask','running',1,1)", [&id]).unwrap();
+        let stream = call(&mut broker, &snapshot, &store, json!({"op":"subscribe","handle":a,"resource":"jobs","limit":50}))["value"].clone();
+        for _ in 0..100 { broker.journal.record(&id, "terminal", "completed"); }
+        let reply = call(&mut broker, &snapshot, &store, json!({"op":"events","handle":a,"subscription":stream["subscription"],"cursor":stream["cursor"]}));
+        assert_eq!(reply["ok"], true); assert_eq!(reply["value"]["resync"], true); assert!(reply["value"]["snapshot"].is_object()); assert_eq!(reply["value"]["events"], json!([])); assert!(reply.to_string().len() < MAX_RESULT);
+    }
+    #[test]
+    fn inventory_read_only_dtos_window_denial_project_removal_and_subscription_bounds() {
+        let (mut broker, snapshot, store) = fixture();
+        let a = capture(&mut broker, &snapshot, &store, Some("A"));
+        for (resource, capability) in [("harnesses", "harnesses.inventory"), ("connections", "connections.summary"), ("jobs", "jobs.summary")] {
+            assert_eq!(call(&mut broker, &snapshot, &store, query(&a, resource))["error"]["code"], "PermissionDenied");
+            consent(&mut broker, &snapshot, &store, &a, capability, true);
+            let result = call(&mut broker, &snapshot, &store, query(&a, resource)); assert_eq!(result["ok"], true);
+            for secret in ["private", "TRANSCRIPT", "path", "secret_env", "pid", "token"] { assert!(!result.to_string().contains(secret)); }
+        }
+        let subscribe = json!({"op":"subscribe","handle":a,"resource":"jobs","limit":10});
+        for _ in 0..5 { assert_eq!(call(&mut broker, &snapshot, &store, subscribe.clone())["ok"], true); }
+        assert_eq!(call(&mut broker, &snapshot, &store, subscribe.clone())["error"]["code"], "LimitExceeded");
+        let id = broker.subscriptions.keys().next().unwrap().clone(); let cursor = broker.subscriptions[&id].cursor.clone();
+        let poll = json!({"op":"events","handle":a,"subscription":id,"cursor":cursor});
+        assert_eq!(broker.execute("second-window", &snapshot, &store, poll.clone(), Instant::now() + DEADLINE).unwrap_err(), "PermissionDenied");
+        store.db.execute("DELETE FROM projects WHERE id='A'", []).unwrap();
+        assert_eq!(call(&mut broker, &snapshot, &store, poll)["error"]["code"], "NotFound");
+        assert!(broker.subscriptions.is_empty());
+        call(&mut broker, &snapshot, &store, json!({"op":"release","handle":a})); assert!(broker.subscriptions.is_empty());
+    }
     #[tokio::test]
     async fn stalled_native_worker_finishes_with_the_same_non_echoing_timeout_envelope() {
         let reply = bounded_reply(Duration::from_millis(10), std::future::pending::<Result<Value, ()>>()).await;

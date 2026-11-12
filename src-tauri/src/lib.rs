@@ -1164,6 +1164,7 @@ fn flush_assistant(db: &Store, sid: &str, assistant: &Mutex<String>) -> Result<(
 /// Streams an agent event to the window and remote viewers, merging text deltas
 /// (`providers::Coalescer`). The lock is held while emitting so order is kept.
 fn emit_coalesced(app: &tauri::AppHandle, coalescer: &Arc<Mutex<providers::Coalescer>>, event: AgentEvent) {
+    if matches!(event.kind.as_str(), "text" | "status" | "tool") { extensions::context::record_job(app, &event.session_id, "progress", "running"); }
     let mut buffer = coalescer.lock().unwrap_or_else(|poison| poison.into_inner());
     let now = std::time::Instant::now();
     for event in buffer.push(event, now) {
@@ -2140,6 +2141,7 @@ async fn launch_operation_admitted(
     // A cloud task's agent runs on its machine (cloud_agents::transport). Quitting must
     // leave that run alone, so this run neither stops it nor records an end while closing.
     let cloud = cloud_agents::transport::is_cloud(&session_id);
+    extensions::context::record_job(&app, &session_id, "progress", "running");
     let _ = app.emit("agent-event", event(&session_id, "status", "running"));
     tray::refresh(&app);
     let store = state.store.clone();
@@ -2604,6 +2606,7 @@ async fn launch_operation_admitted(
         };
         // Before `done`, so the window's tray_seen for the open task lands after it.
         tray::finished(&app, &session_id, was_stopped, successful);
+        extensions::context::record_job(&app, &session_id, "terminal", if was_stopped { "stopped" } else if successful { "completed" } else { "failed" });
         let _ = app.emit("agent-event", event(&session_id, "done", done));
         remote::run_finished(&app, &session_id, successful, was_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).

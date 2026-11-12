@@ -1,7 +1,7 @@
 import { call } from '../bridge';
 import { isImeKey } from '../dom';
 import { onExtensionsChanged } from './manager';
-import { createContextClient, type ContextReply, type SummaryPage } from './context-state';
+import { createContextClient, type ContextReply, type SummaryPage, type ContextResource } from './context-state';
 import type { Json } from './contracts';
 
 /** Nonmodal host surface: navigation remains available, but queries never read active context. */
@@ -16,7 +16,10 @@ export function openProjectContext(id: string, version: string, context: Record<
   scope.textContent = `Captured project: ${typeof context.projectId === 'string' ? context.projectId : 'none'}`;
   const owner = document.createElement('p'); owner.textContent = `Extension: ${id.split('/')[0]}`; scope.after(owner);
   const consent = panel.querySelector<HTMLElement>('.extension-context-consent')!, navigation = panel.querySelector<HTMLElement>('.extension-context-navigation')!;
-  let ended = false, page: SummaryPage | undefined, resource: 'projects' | 'tasks' = 'projects', pending = 0;
+  let ended = false, page: SummaryPage | undefined, resource: ContextResource = 'projects', pending = 0;
+  let stopWatching: (() => void) | undefined;
+  const streamState = document.createElement('p'); streamState.className = 'extension-context-stream'; streamState.setAttribute('role', 'status'); output.after(streamState);
+  const stopStream = () => { stopWatching?.(); stopWatching = undefined; streamState.textContent = ''; };
   const button = (parent: HTMLElement, label: string, action: () => void) => {
     const node = document.createElement('button'); node.type = 'button'; node.className = 'ds-btn'; node.textContent = label;
     node.addEventListener('click', action); parent.append(node); return node;
@@ -27,31 +30,46 @@ export function openProjectContext(id: string, version: string, context: Record<
     if (!result.ok) { output.textContent = result.error.code; page = undefined; return; }
     page = result.value;
     const meta = document.createElement('p'); meta.textContent = `Schema ${page.schemaVersion} · revision ${page.revision} · ${page.state}`; output.append(meta);
-    if (!page.items.length) { const empty = document.createElement('p'); empty.textContent = page.state === 'NoProject' ? 'No project selected at invocation.' : 'No authorized tasks in this project.'; output.append(empty); }
+    if (!page.items.length) { const empty = document.createElement('p'); empty.textContent = page.state === 'NoProject' ? 'No project selected at invocation.' : resource === 'tasks' ? 'No authorized tasks in this project.' : 'No authorized inventory items in this project.'; output.append(empty); }
+    if (resource === 'harnesses') { const note = document.createElement('p'); note.textContent = 'Last host discovery observation; inventory never probes, prompts, installs or updates tools. Capabilities describe host adapters, not access grants.'; output.append(note); }
     for (const item of page.items) {
-      const row = document.createElement('p'); row.textContent = 'name' in item ? `${item.name} (${item.id})` : `${item.id} · ${item.status}`; output.append(row);
+      const row = document.createElement('p');
+      row.textContent = item.installed ? `${item.name} · ${item.installed} · version ${item.version ?? 'Unknown'} · host capabilities: ${item.capabilities?.join(', ')}` : item.authentication ? `${item.name} (${item.id}) · ${item.status} · authentication ${item.authentication} · ${item.capabilities?.join(', ')}` : item.name !== undefined ? `${item.name} (${item.id})` : `${item.id} · ${item.status}`;
+      output.append(row);
     }
   }
   async function query(next = false): Promise<void> {
+    stopStream();
     const current = ++pending; output.textContent = 'Loading captured context…';
     const result = await client.query(resource, next && page ? { cursor: page.nextCursor ?? 0, revision: page.revision } : {});
     if (!ended && current === pending) { show(result); nextButton.disabled = !result.ok || result.value.nextCursor === null; }
   }
-  for (const [capability, label] of [['projects.summary', 'project summaries'], ['tasks.summary', 'task summaries']] as const) {
+  function watch(): void {
+    stopStream(); const current = ++pending; output.textContent = 'Loading captured context…';
+    stopWatching = client.watch(resource, result => {
+      if (ended || pending !== current) return;
+      if (!result.ok) { show(result); streamState.textContent = ['Timeout', 'HostUnavailable'].includes(result.error.code) ? 'Reconnecting granted stream…' : 'Subscription closed'; return; }
+      if (result.value.snapshot) { show({ ok: true, value: result.value.snapshot }); nextButton.disabled = result.value.snapshot.nextCursor === null; }
+      streamState.textContent = `${result.value.resync ? 'Resynced snapshot' : 'Watching granted stream'}${result.value.events.length ? ` · ${result.value.events.map(event => `${event.kind}: ${event.id} ${event.status}`).join(' · ')}` : ''}`;
+    });
+  }
+  for (const [capability, label, target] of [['projects.summary', 'project summaries', 'projects'], ['tasks.summary', 'task summaries', 'tasks'], ['harnesses.inventory', 'harness inventory', 'harnesses'], ['connections.summary', 'connection summaries', 'connections'], ['jobs.summary', 'owned-job summaries', 'jobs']] as const) {
     for (const allow of [true, false]) button(consent, `${allow ? 'Allow' : 'Revoke'} ${label}`, () => {
+      stopStream();
       const current = ++pending; output.textContent = allow ? 'Updating access…' : 'PermissionDenied'; page = undefined; nextButton.disabled = true;
       void client.consent(capability, allow).then(result => {
         if (ended || pending !== current) return;
         if (!result.ok) { show(result); return; }
-        resource = capability === 'projects.summary' ? 'projects' : 'tasks'; void query();
+        resource = target; if (allow && !['projects', 'tasks'].includes(resource)) watch(); else void query();
       });
     });
   }
   button(navigation, 'Refresh project summaries', () => { resource = 'projects'; void query(); });
   button(navigation, 'Refresh task summaries', () => { resource = 'tasks'; void query(); });
+  for (const target of ['harnesses', 'connections', 'jobs'] as const) button(navigation, `Watch ${target}`, () => { resource = target; watch(); });
   const nextButton = button(navigation, 'Next page', () => { if (page?.nextCursor !== null) void query(true); }); nextButton.disabled = true;
   const close = () => {
-    if (ended) return; ended = true; pending++; client.dispose(); unsubscribe(); panel.remove();
+    if (ended) return; ended = true; pending++; stopStream(); client.dispose(); unsubscribe(); panel.remove();
     if (panel.contains(document.activeElement) || document.activeElement === document.body) {
       const target = trigger.isConnected && trigger.checkVisibility() ? trigger : document.querySelector<HTMLElement>('#prompt:not([disabled])'); target?.focus({ preventScroll: true });
     }

@@ -796,8 +796,35 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
 }
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
+static INVENTORY: std::sync::LazyLock<Mutex<Vec<serde_json::Value>>> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Read the last ordinary host discovery only. Never spawn, inspect auth, or enumerate OS processes.
+pub(crate) fn inventory() -> Result<Vec<serde_json::Value>, &'static str> {
+    let cached = INVENTORY.try_lock().map_err(|_| "Timeout")?;
+    Ok(PROVIDERS.iter().map(|(id, name)| cached.iter().find(|item| item["id"] == *id).cloned().unwrap_or_else(||
+        serde_json::json!({"id":id,"name":name,"installed":"Unknown","version":null,"capabilities":["start","cancel"],"capabilitySource":"hostAdapter"})
+    )).collect())
+}
+fn inventory_observation(info: &ProviderInfo) -> serde_json::Value {
+    // CLI stdout is untrusted and may contain diagnostics/auth. Publish only a numeric version.
+    let version = info.version.split_whitespace().find(|part| {
+        part.len() <= 32 && part.contains('.') && part.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+    });
+    serde_json::json!({"id":info.id,"name":info.name,"installed":if info.installed {"Installed"} else {"Absent"},"version":version,"capabilities":["start","cancel"],"capabilitySource":"hostAdapter"})
+}
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+    #[test]
+    fn observation_is_an_explicit_redacted_projection_not_cli_stdout() {
+        let mut info = ProviderInfo { id: "claude".into(), name: "Claude Code".into(), installed: true, path: Some("SECRET_PATH".into()), version: "SECRET_AUTH 2.1.3 (Claude Code)".into(), models: Vec::new() };
+        let value = inventory_observation(&info); assert_eq!(value["version"], "2.1.3"); assert_eq!(value["installed"], "Installed"); assert!(!value.to_string().contains("SECRET"));
+        info.version = "SECRET_TOKEN".into(); info.installed = false;
+        let value = inventory_observation(&info); assert!(value["version"].is_null()); assert_eq!(value["installed"], "Absent");
+    }
+}
 pub fn discover() -> Vec<ProviderInfo> {
-    PROVIDERS.into_iter()
+    let found: Vec<_> = PROVIDERS.into_iter()
     .map(|(id, name)| {
         let path = executable(id);
         ProviderInfo {
@@ -824,7 +851,9 @@ pub fn discover() -> Vec<ProviderInfo> {
             },
         }
     })
-    .collect()
+    .collect();
+    if let Ok(mut inventory) = INVENTORY.lock() { *inventory = found.iter().map(inventory_observation).collect(); }
+    found
 }
 
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
