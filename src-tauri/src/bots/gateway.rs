@@ -207,13 +207,18 @@ fn allow_team_turn(store: &Store, bot: &Bot, session_id: &str) -> Result<()> {
 /// as a plain task; a team saved after this point is refused by that launch's own admission check
 /// (`architect::validate_admission`: "Start this task using its architect team controls.").
 pub(super) fn claim_turn(store: &Store, bot: &Bot, session_id: &str, text: &str) -> Result<(bool, Option<super::shared_channels::Running>)> {
-    if let Err(error) = allow_team_turn(store, bot, session_id) {
-        super::failover::clear_images(session_id);
-        return Err(error);
-    }
+    // Both checks run before the promotion, so a refusal or an unreadable team leaves the bot
+    // message or channel assignment queued and only the remembered images need clearing.
+    let is_team = allow_team_turn(store, bot, session_id).and_then(|()| crate::architect::load(store, session_id));
+    let is_team = match is_team {
+        Ok(team) => team.is_some(),
+        Err(error) => {
+            super::failover::clear_images(session_id);
+            return Err(error);
+        }
+    };
     // The bot message or channel assignment this turn carries is now the one running.
-    let request = super::shared_channels::promote_taken(store, session_id, text);
-    Ok((crate::architect::load(store, session_id)?.is_some(), request))
+    Ok((is_team, super::shared_channels::promote_taken(store, session_id, text)))
 }
 
 async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String, image_ids: Option<Vec<String>>, sender_id: &str, force_queue: bool) -> Result<()> {
