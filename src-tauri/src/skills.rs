@@ -460,6 +460,7 @@ impl Library {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
         let item = self.item(self.load(id)?)?;
         let meta = item.meta;
+        let kind = meta.kind;
         let acknowledged = if item.findings.is_empty() || meta.acknowledged.as_deref() == Some(meta.sha256.as_str()) {
             meta.acknowledged.clone()
         } else if acknowledge {
@@ -525,7 +526,7 @@ impl Library {
                         // A re-activation puts the previous version back, as for a failed save;
                         // nothing stays hidden: files that had to stay are named and show in Git.
                         if let Restore::Folder(_, old) = &restore {
-                            let present = on_disk(&dir.join(id), old);
+                            let present = on_disk(&dir.join(id), old, &files);
                             left.extend(restore.apply(id, "folder", &present, checkout));
                         }
                         return Err(format!("{e}{}{}", undo_exclude(&added), left_in_place(&left)));
@@ -593,6 +594,7 @@ impl Library {
         }
         // Lines another activation still has files under stay and are handed to it.
         if let (false, Some(previous)) = (release.is_empty(), &previous) {
+            let release = own_lines(id, kind, previous, base, release, &mut checkouts);
             let others = other_activations(&items, id, previous);
             let heirs = release_excludes(base, previous.exclude_list.as_deref(), release, &others, &mut checkouts);
             self.hand_over(heirs);
@@ -718,7 +720,10 @@ impl Library {
         let (files, mut kept) = self.vetted(id, kind, activation, base);
         kept.extend(remove_written(id, &activation.surface, &files, checkout));
         let heirs = match checkout {
-            Some(base) => release_excludes(base, activation.exclude_list.as_deref(), activation.excluded.iter().cloned(), others, checkouts),
+            Some(base) => {
+                let own = own_lines(id, kind, activation, base, activation.excluded.clone(), checkouts);
+                release_excludes(base, activation.exclude_list.as_deref(), own, others, checkouts)
+            }
             None => Vec::new(),
         };
         (kept, heirs)
@@ -910,6 +915,25 @@ struct Heir {
     list: PathBuf,
 }
 
+/// The recorded exclude lines in `entries` that `activation` of item `id` could have added in
+/// `base`: the line for its skill folder (or the old Codex one) or its rule file
+/// ([`adapter::own_line`]). Any other line, from a damaged or edited record, is logged and left
+/// in the exclude list.
+fn own_lines(id: &str, kind: Kind, activation: &Activation, base: &Path, entries: Vec<String>, checkouts: &mut Checkouts) -> Vec<String> {
+    let targets = match adapter::surface(&activation.harness, kind, activation.scope, base) {
+        Surface::Folder(dir) if activation.harness == "codex" && activation.scope == Scope::Project => vec![(dir.join(id), true), (base.join(".codex/skills").join(id), true)],
+        Surface::Folder(dir) => vec![(dir.join(id), true)],
+        Surface::Block(file) => vec![(file, false)],
+        Surface::Prompt => Vec::new(),
+    };
+    let checkout = checkouts.get(base).map(|(_, checkout)| checkout);
+    let (own, other): (Vec<String>, Vec<String>) = entries.into_iter().partition(|line| targets.iter().any(|(path, folder)| adapter::own_line(checkout, base, path, *folder, line)));
+    for line in &other {
+        eprintln!("[skills] the recorded exclude line {line} is not one PandaCode adds for {id} in {}; it was left in place", base.display());
+    }
+    own
+}
+
 /// Drops each of `entries` from `base`'s exclude list unless another activation in `others`
 /// still relies on it; those lines are returned as handed to every such activation. When the
 /// checkout can't be resolved (deleted, or its `.git` pruned), `stored` (the list recorded with
@@ -1003,8 +1027,14 @@ impl Restore {
     fn apply(self, id: &str, surface: &str, written: &[Written], checkout: Option<&Path>) -> Vec<String> {
         match self {
             Restore::Remove => remove_written(id, surface, written, checkout),
-            Restore::Folder(dir, files) => adapter::write_folder(&dir, id, &files, written, checkout).map_or_else(|(e, left)| {
+            Restore::Folder(dir, files) => adapter::write_folder(&dir, id, &files, written, checkout).map_or_else(|(e, mut left)| {
                 eprintln!("[skills] could not put back the previous {id}: {e}");
+                // Every file not back to its previous version stays as it is now and is named.
+                let target = dir.join(id);
+                let old = |path: &Path| files.iter().find(|(relative, _)| target.join(relative) == path).map(|(_, bytes)| sha256_hex(bytes));
+                left.extend(written.iter().filter(|w| adapter::file_hash(Path::new(&w.path)).is_some_and(|hash| Some(hash) != old(Path::new(&w.path)))).map(|w| w.path.clone()));
+                left.sort();
+                left.dedup();
                 left
             }, |_| Vec::new()),
             Restore::Block(file, body) => match adapter::write_block(&file, id, &body, written.first(), checkout) {
@@ -1032,15 +1062,20 @@ fn snapshot(target: &Path, written: &[Written]) -> Files {
         .collect()
 }
 
-/// The snapshot's paths under `target` as a failed write left them: the hash on disk where a
-/// file is there (the old version, or the new one that replaced it), the old one where it is
-/// gone, so [`Restore::apply`] rewrites each one.
-fn on_disk(target: &Path, snapshot: &Files) -> Vec<Written> {
+/// The snapshot's paths under `target` as a failed write of `new` left them, so
+/// [`Restore::apply`] rewrites each one: the hash on disk where it is the old version or the new
+/// one this call wrote there, else the old one. So a file someone changed meanwhile (or one that
+/// is gone) still fails [`adapter::check_folder`]'s edited-on-disk check and is kept.
+fn on_disk(target: &Path, snapshot: &Files, new: &Files) -> Vec<Written> {
     snapshot
         .iter()
         .map(|(relative, bytes)| {
             let path = target.join(relative);
-            let sha256 = adapter::file_hash(&path).unwrap_or_else(|| sha256_hex(bytes));
+            let old = sha256_hex(bytes);
+            let ours = |hash: &String| {
+                *hash == old || new.iter().any(|(r, b)| (r == relative || adapter::same_file(&target.join(r), &path)) && sha256_hex(b) == *hash)
+            };
+            let sha256 = adapter::file_hash(&path).filter(ours).unwrap_or(old);
             Written { path: path.to_string_lossy().into_owned(), sha256 }
         })
         .collect()

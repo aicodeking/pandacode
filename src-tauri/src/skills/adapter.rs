@@ -128,10 +128,10 @@ pub fn blocks_in(text: &str) -> (Vec<String>, bool) {
 /// Every file is checked ([`check_folder`]) before anything is removed or written. A file
 /// this call creates is created exclusively (a failed one is removed again); one replacing
 /// the previous version is, in project scope, replaced whole, so a failed write leaves the
-/// old file. A write that still fails partway removes the files this call created (previous
-/// ones no longer part of the item stay gone; ones it replaced keep the new version, for the
-/// caller to put back) and returns, with the error, those it had to leave (edited, or behind
-/// a link).
+/// old file. A write that still fails partway removes every file this call created, recorded
+/// path or not (previous ones no longer part of the item stay gone; ones it replaced keep the
+/// new version, for the caller to put back) and returns, with the error, those it had to leave
+/// (edited, or behind a link).
 pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous: &[Written], project: Option<&Path>) -> Result<Vec<Written>, (String, Vec<String>)> {
     check_folder(dir, id, files, previous, project).map_err(|e| (e, Vec::new()))?;
     let target = dir.join(id);
@@ -148,8 +148,11 @@ pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
         }
     }
     let mut out: Vec<Written> = Vec::new();
+    // What this call created (nothing was at the path before its write), for a failed write to take back.
+    let mut created: Vec<Written> = Vec::new();
     for (relative, bytes) in files {
         let path = target.join(relative);
+        let replaced = previous.iter().any(|w| Path::new(&w.path) == path) && fs::symlink_metadata(&path).is_ok();
         let wrote = path
             .parent()
             .map_or(Ok(()), |parent| {
@@ -160,14 +163,11 @@ pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
                 }
                 fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))
             })
-            .and_then(|()| {
-                let replaced = previous.iter().any(|w| Path::new(&w.path) == path) && fs::symlink_metadata(&path).is_ok();
-                write_file_as(&path, bytes, project, Links::Skills, !replaced)
-            });
+            .and_then(|()| write_file_as(&path, bytes, project, Links::Skills, !replaced));
         if let Err(e) = wrote {
             // Only files this call created that still hold what it wrote go, with folders left
-            // empty; a previous file it replaced is left for the caller to put back.
-            let created: Vec<Written> = out.into_iter().filter(|w| !previous.iter().any(|p| p.path == w.path)).collect();
+            // empty (a recorded file the user had deleted too); one it replaced is left for the
+            // caller to put back.
             let left = remove_folder(&created, project);
             let mut dir = path.parent();
             while let Some(empty) = dir.filter(|d| d.starts_with(&target) && fs::remove_dir(d).is_ok()) {
@@ -175,7 +175,11 @@ pub fn write_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
             }
             return Err((e, left));
         }
-        out.push(Written { path: path.to_string_lossy().into_owned(), sha256: sha256_hex(bytes) });
+        let written = Written { path: path.to_string_lossy().into_owned(), sha256: sha256_hex(bytes) };
+        if !replaced {
+            created.push(written.clone());
+        }
+        out.push(written);
     }
     Ok(out)
 }
@@ -214,8 +218,9 @@ pub fn check_folder(dir: &Path, id: &str, files: &[(String, Vec<u8>)], previous:
         return Err(format!("{} already exists and PandaCode did not create it.", target.display()));
     }
     // A file the new version adds where the user put their own would fail its exclusive create
-    // halfway through the write; refused here, before anything changes.
-    let recorded = |path: &Path| previous.iter().any(|w| Path::new(&w.path) == path);
+    // halfway through the write; refused here, before anything changes. A recorded file under
+    // another name counts as recorded (`README.md` for `Readme.md` on a case-insensitive disk).
+    let recorded = |path: &Path| previous.iter().any(|w| Path::new(&w.path) == path || same_file(Path::new(&w.path), path));
     if let Some(path) = files.iter().map(|(relative, _)| target.join(relative)).find(|path| fs::symlink_metadata(path).is_ok() && !recorded(path)) {
         return Err(format!("{} already exists and PandaCode did not write it; move it away and try again.", path.display()));
     }
@@ -235,6 +240,21 @@ fn parent_inside(root: &Path, dir: &Path) -> Result<(), String> {
     match fs::canonicalize(root) {
         Ok(real_root) if !real_location(dir).is_some_and(|real| inside_project(&real_root, &real, Links::Skills)) => Err(link_refused(dir)),
         _ => Ok(()),
+    }
+}
+
+/// Whether `a` and `b` name the same file, as two spellings of one name do on a
+/// case-insensitive disk: the same device and inode on unix, elsewhere the same canonical path
+/// ignoring case.
+pub(super) fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        matches!((fs::symlink_metadata(a), fs::symlink_metadata(b)), (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(x), Ok(y)) if x.to_string_lossy().to_lowercase() == y.to_string_lossy().to_lowercase())
     }
 }
 
@@ -709,6 +729,21 @@ pub fn exclude_entry(root: &Path, path: &Path, folder: bool) -> Result<Option<St
         Some(checkout) => checkout.line(path, folder),
         None => Ok(None),
     }
+}
+
+/// Whether `line`, recorded in an activation's exclude list, is one PandaCode builds for
+/// `path` (its skill folder or rule file) in the checkout at `base`: exactly
+/// [`Checkout::entry`] when `checkout` is open; once the checkout is gone (its place below the
+/// repository's top level unknown), a line ending in `path` relative to `base`. A tampered
+/// record's other lines (`/src/`) are never dropped from the user's exclude list.
+pub fn own_line(checkout: Option<&Checkout>, base: &Path, path: &Path, folder: bool, line: &str) -> bool {
+    if let Some(checkout) = checkout {
+        return checkout.entry(path, folder).as_deref() == Some(line);
+    }
+    let Ok(relative) = path.strip_prefix(base) else { return false };
+    let parts: Vec<String> = relative.components().map(|part| escape_part(&part.as_os_str().to_string_lossy())).collect();
+    let suffix = format!("/{}{}", parts.join("/"), if folder { "/" } else { "" });
+    !parts.is_empty() && !line.chars().any(char::is_control) && line.starts_with('/') && line.ends_with(&suffix)
 }
 
 /// Whether the exclude-list `line` is `entry`, ignoring surrounding whitespace except an
