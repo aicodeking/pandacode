@@ -3,7 +3,7 @@ import './windows.css';
 import { call, preview } from '../bridge';
 import { icon } from '../dom';
 import { mountExtensionActions } from './header';
-import { loadWindowExtensions, loadExtensions, onExtensionsChanged, extensionGeneration } from './manager';
+import { loadWindowExtensions, loadExtensions, onExtensionsChanged, extensionIdentity } from './manager';
 import { openExtensionDialog } from './dialogs';
 import { surfaceWindow, type WindowActionLocation } from './window-surfaces';
 import type { ExtensionAction } from './manager';
@@ -61,14 +61,16 @@ export function mountAuxiliaryExtensions(host: HTMLElement, location: Exclude<Wi
 /** Native/compact surfaces present forms in the existing full-size host, not clipped tiny windows. */
 export function mountNativeExtensionPresentation(show: (message: string) => void): () => void {
   let disposed = false, close: (() => void) | undefined, requestId = 0, originWindow: string | undefined;
+  let currentOwner: string | undefined, currentIdentity: string | undefined;
   const cancel = () => { requestId++; close?.(); close = undefined; originWindow = undefined; };
   const originClosed = (event: { windowId: string }) => { if (event.windowId === originWindow) cancel(); };
-  const changed = onExtensionsChanged(cancel);
+  const changed = onExtensionsChanged(() => { if (currentOwner && extensionIdentity(currentOwner) !== currentIdentity) cancel(); });
   const present = (request: ActionRequest) => {
-    const current = ++requestId, generation = extensionGeneration();
+    const current = ++requestId, owner = request.id.split('/')[0], identity = extensionIdentity(owner);
+    currentOwner = owner; currentIdentity = identity;
     originWindow = surfaceWindow(request.surfaceId);
     void call<{ owner: string; context: Record<string, Json>; action: ExtensionAction }>('extensions_present_action', { request }).then(value => {
-      if (disposed || current !== requestId || generation !== extensionGeneration()) return;
+      if (disposed || current !== requestId || identity !== extensionIdentity(owner)) return;
       close?.(); close = undefined;
       if (value.action.kind === 'showMessage') { show(value.action.message); return; }
       if (value.action.kind !== 'showDialog') return;
@@ -79,7 +81,7 @@ export function mountNativeExtensionPresentation(show: (message: string) => void
       close = transient.close;
       void transient.result.then(result => {
         if (close === transient.close) close = undefined;
-        if (disposed || current !== requestId || generation !== extensionGeneration()) return;
+        if (disposed || current !== requestId || identity !== extensionIdentity(owner)) return;
         originWindow = undefined;
         if (result.kind === 'confirmed') show(action.dialog.successMessage);
         else if (result.reason === 'cancel' && action.dialog.cancelMessage) show(action.dialog.cancelMessage);

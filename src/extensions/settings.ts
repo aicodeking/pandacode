@@ -1,5 +1,5 @@
 import { escape } from '../dom';
-import { extensionsSnapshot, onExtensionsChanged, installExtension, enableExtension, uninstallExtension, enterExtensionsSafeMode, trustExecutable } from './manager';
+import { extensionsSnapshot, onExtensionsChanged, installExtension, enableExtension, uninstallExtension, enterExtensionsSafeMode, trustExecutable, selectDevelopmentExtension, reloadDevelopmentExtension } from './manager';
 import { EXECUTABLE_WARNING } from './executable';
 import { openExtensionDialog } from './dialogs';
 import { mountSurfaceExplorer } from './explorer';
@@ -18,6 +18,8 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
     host.innerHTML = `<p>Local unsigned packages. Installation and discovery execute no package code or install hooks. Executable packages require separate content/version-bound trust.</p>
       <div class="settings-group"><div class="setting-row"><strong>Local extension</strong><button type="button" class="secondary-button" data-extension-install ${pending || snapshot.safeMode ? 'disabled' : ''}>Install local package</button></div>
       <div class="setting-row"><strong>Recovery</strong><button type="button" class="secondary-button" data-extension-safe ${snapshot.safeMode ? 'disabled' : ''}>Disable extensions for this launch</button></div></div>
+      <section aria-label="Extension development"><h3>Trusted extension development</h3><p>Select a built package folder explicitly for this launch. Selection never runs code. Reload affects only the selected extension; changed content requires new executable trust. Raw package output, file paths and credentials are omitted from these bounded host logs.</p><button type="button" class="secondary-button" data-extension-development ${pending || snapshot.safeMode ? 'disabled' : ''}>Select development folder</button>
+      ${(snapshot.development ?? []).map(dev => `<div class="setting-row"><strong>${escape(dev.id)}</strong><button type="button" class="secondary-button" data-extension-id="${escape(dev.id)}" data-extension-reload ${pending ? 'disabled' : ''}>Reload ${escape(dev.id)}</button></div><pre role="log" aria-label="Development logs ${escape(dev.id)}">${escape(dev.logs.join('\n'))}</pre>`).join('')}</section>
       ${snapshot.safeMode ? '<p role="status" tabindex="-1">Safe mode: packages are not loaded. Restart without --safe-mode to restore explicit enable preferences.</p>' : ''}
       <p>Uninstall removes only the package registrations and installation. Extension data, projects, drafts and history are retained.</p>
       ${snapshot.packages.map(item => `<div class="setting-row"><div><strong>${escape(item.manifest.id)}</strong><small>${escape(item.manifest.version)} · Local unsigned · ${item.reason ? 'Failed' : item.enabled ? 'Enabled' : 'Installed — disabled'}</small><small>Owner: ${escape(item.manifest.id)} · ${escape(item.reason ?? (item.enabled ? 'Explicitly enabled' : 'Not enabled by the user'))}</small></div><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-enabled="${!item.enabled}" ${pending ? 'disabled' : ''}>${item.reason ? 'Retry' : item.enabled ? 'Disable' : 'Enable'} ${escape(item.manifest.id)}</button><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-uninstall ${pending ? 'disabled' : ''}>Uninstall ${escape(item.manifest.id)}</button></div>`).join('')}
@@ -31,14 +33,16 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
     cleanupShortcuts = mountShortcutSettings(host.querySelector<HTMLElement>('[data-extension-shortcuts]')!);
   };
   const click = async (event: MouseEvent) => {
-    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-extension-install], [data-extension-safe], [data-extension-id]') : null;
+    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-extension-install], [data-extension-development], [data-extension-safe], [data-extension-id]') : null;
     if (!target || pending || !host.contains(target)) return;
     pending = true; error = ''; draw();
     try {
       if (target.hasAttribute('data-extension-install')) await installExtension();
+      else if (target.hasAttribute('data-extension-development')) await selectDevelopmentExtension();
       else if (target.hasAttribute('data-extension-safe')) await enterExtensionsSafeMode();
       else if (target.dataset.extensionId) {
-        if (target.hasAttribute('data-extension-trust')) {
+        if (target.hasAttribute('data-extension-reload')) await reloadDevelopmentExtension(target.dataset.extensionId);
+        else if (target.hasAttribute('data-extension-trust')) {
           const item = extensionsSnapshot().packages.find(item => item.manifest.id === target.dataset.extensionId);
           if (!item?.executable) throw new Error('StaleContext');
           if (item.executable.trusted) await trustExecutable(item.manifest.id, item.executable.digest, false);
@@ -63,7 +67,7 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       if (!disposed) {
         const replacement = target.dataset.extensionId
           ? [...host.querySelectorAll<HTMLButtonElement>('[data-extension-id]')].find(button => button.dataset.extensionId === target.dataset.extensionId)
-          : host.querySelector<HTMLButtonElement>(target.hasAttribute('data-extension-install') ? '[data-extension-install]' : '[data-extension-safe]');
+          : host.querySelector<HTMLButtonElement>(target.hasAttribute('data-extension-install') ? '[data-extension-install]' : target.hasAttribute('data-extension-development') ? '[data-extension-development]' : '[data-extension-safe]');
         (replacement && !replacement.disabled ? replacement : host.querySelector<HTMLElement>('[role="status"]') ?? host.querySelector<HTMLElement>('[data-extension-install]'))?.focus({ preventScroll: true });
       }
     }

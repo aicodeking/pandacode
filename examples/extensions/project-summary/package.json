@@ -1,0 +1,7 @@
+{
+  "name": "pandacode-project-summary-example",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "devDependencies": { "@pandacode/extensions": "file:../../../src/extensions/sdk", "typescript": "^5.9.3" }
+}

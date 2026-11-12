@@ -12,6 +12,8 @@ const MAX_FILES: usize = 64;
 const MAX_PACKAGES: usize = 64;
 const MAX_RECORD: u64 = 3 * 1024 * 1024;
 type Result<T> = std::result::Result<T, String>;
+#[path = "development.rs"]
+mod development;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,15 +25,18 @@ pub struct Executable { digest: String, trusted: bool }
 pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable> }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String> }
-pub struct Packages { root: PathBuf, pub(super) safe: bool }
+pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String>, development: Vec<DevelopmentStatus> }
+#[derive(Clone, Serialize)]
+pub(super) struct DevelopmentStatus { id: String, revision: u64, logs: Vec<String> }
+struct Development { path: PathBuf, record: Record, revision: u64, logs: Vec<String> }
+pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<BTreeMap<String, Development>> }
 pub struct ExtensionPackages(pub Mutex<Packages>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
-    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None }], diagnostics: vec![] }
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None }], diagnostics: vec![], development: vec![] }
 }
 impl ExtensionPackages {
-    pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe })) }
+    pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default() })) }
 }
 
 fn regular(path: &Path) -> Result<()> {
@@ -197,7 +202,8 @@ impl Packages {
         Ok(())
     }
     fn record(&self, path: &Path) -> Result<(Record, Package)> {
-        let record: Record = serde_json::from_slice(&read_bounded(path, MAX_RECORD)?).map_err(|_| "Corrupt extension record.")?;
+        let selected = self.development.lock().map_err(|_| "HostUnavailable")?.get(path.file_stem().and_then(|s| s.to_str()).unwrap_or("")).map(|dev| dev.record.clone());
+        let record: Record = match selected { Some(record) => record, None => serde_json::from_slice(&read_bounded(path, MAX_RECORD)?).map_err(|_| "Corrupt extension record.")? };
         let bytes = STANDARD.decode(&record.archive).map_err(|_| "Corrupt extension archive.")?;
         if record.schema != 1 || format!("{:x}", Sha256::digest(&bytes)) != record.checksum { return Err("Extension checksum mismatch.".into()); }
         let mut package = validate(&bytes)?;
@@ -210,9 +216,15 @@ impl Packages {
         Ok((record, package))
     }
     pub(super) fn snapshot(&self) -> Snapshot {
-        let mut result = Snapshot { safe_mode: self.safe, packages: vec![], diagnostics: vec![] };
+        let mut result = Snapshot { safe_mode: self.safe, packages: vec![], diagnostics: vec![], development: vec![] };
         // This return is BEFORE ANY storage operation, including enumeration and deserialization.
-        if self.safe || !self.root.exists() { return result; }
+        if self.safe { return result; }
+        let selected: Vec<_> = self.development.lock().map(|dev| dev.iter().map(|(id, dev)| DevelopmentStatus { id: id.clone(), revision: dev.revision, logs: dev.logs.clone() }).collect()).unwrap_or_default();
+        for dev in selected {
+            if let Ok((_, package)) = self.record(&self.root.join(format!("{}.json", dev.id))) { result.packages.push(package); }
+            result.development.push(dev);
+        }
+        if !self.root.exists() { return result; }
         if let Err(error) = self.directory() { result.diagnostics.push(error); return result; }
         match std::fs::read_dir(&self.root) {
             Ok(entries) => {
@@ -244,6 +256,9 @@ impl Packages {
         result
     }
     fn write(&self, path: &Path, record: &Record) -> Result<()> {
+        if let Some(dev) = self.development.lock().map_err(|_| "HostUnavailable")?.get_mut(path.file_stem().and_then(|s| s.to_str()).unwrap_or("")) {
+            dev.record = record.clone(); return Ok(());
+        }
         let stage = self.root.join(format!("{}.stage", uuid::Uuid::new_v4()));
         let result = (|| {
             let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&stage).map_err(|_| "Cannot stage extension.")?;
@@ -259,6 +274,7 @@ impl Packages {
         let package = validate(bytes)?;
         self.directory()?;
         let path = self.root.join(format!("{}.json", package.manifest["id"].as_str().unwrap()));
+        if self.development.lock().map_err(|_| "HostUnavailable")?.contains_key(package.manifest["id"].as_str().unwrap()) { return Err("Duplicate package ownership; selected for development.".into()); }
         if path.symlink_metadata().is_ok() { return Err("Duplicate package ownership; already installed.".into()); }
         if std::fs::read_dir(&self.root).map_err(|_| "Cannot inspect extension storage.")?.count() >= MAX_PACKAGES { return Err("Installed package limit exceeded.".into()); }
         self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false, executable_trust: None })
@@ -303,6 +319,7 @@ impl Packages {
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
         self.directory()?;
         let path = self.root.join(format!("{id}.json"));
+        if self.development.lock().map_err(|_| "HostUnavailable")?.remove(id).is_some() { return Ok(()); }
         regular(&path)?;
         // Only this installation record. Core storage and extension data are separate.
         std::fs::remove_file(path).map_err(|_| "Cannot uninstall extension.".into())
@@ -362,24 +379,24 @@ mod tests {
     use super::*;
     const MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/sample-project-helper/extension.json");
     const SVG: &str = include_str!("../../../tests/fixtures/extensions/sample-project-helper/assets/info.svg");
-    struct Storage(PathBuf);
+    pub(super) struct Storage(pub(super) PathBuf);
     impl Storage {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let path = std::env::temp_dir().join(format!("pandacode-extension-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap(); Self(path)
         }
-        fn packages(&self, safe: bool) -> Packages { Packages { root: self.0.join("extensions-v1"), safe } }
+        pub(super) fn packages(&self, safe: bool) -> Packages { Packages { root: self.0.join("extensions-v1"), safe, development: Mutex::default() } }
     }
     impl Drop for Storage { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+    pub(super) fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (name, bytes) in files { writer.start_file(*name, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).unwrap(); writer.write_all(bytes).unwrap(); }
         writer.finish().unwrap().into_inner()
     }
-    fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
-    const EXECUTABLE_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/project-summary/extension.json");
-    const EXECUTABLE_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/project-summary/main.cjs");
-    fn executable(source: &str) -> Vec<u8> { archive(&[("extension.json", EXECUTABLE_MANIFEST.as_bytes()), ("main.cjs", source.as_bytes())]) }
+    pub(super) fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    pub(super) const EXECUTABLE_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/project-summary/extension.json");
+    pub(super) const EXECUTABLE_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/project-summary/main.cjs");
+    pub(super) fn executable(source: &str) -> Vec<u8> { archive(&[("extension.json", EXECUTABLE_MANIFEST.as_bytes()), ("main.cjs", source.as_bytes())]) }
     #[test]
     fn executable_install_discovery_refused_trust_restart_and_content_changes_never_execute() {
         let storage = Storage::new(); let packages = storage.packages(false);

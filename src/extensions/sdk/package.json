@@ -1,0 +1,9 @@
+{
+  "name": "@pandacode/extensions",
+  "version": "1.0.0-experimental.1",
+  "description": "Typed public contracts for PandaCode trusted executable extensions (experimental)",
+  "license": "SEE LICENSE IN LICENSE",
+  "types": "index.d.ts",
+  "files": ["index.d.ts", "LICENSE"],
+  "exports": { ".": { "types": "./index.d.ts" } }
+}

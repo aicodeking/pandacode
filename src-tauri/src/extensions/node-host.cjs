@@ -30,13 +30,22 @@ process.stdin.on('data', chunk => {
     const value = JSON.parse(buffer.subarray(4, length + 4)); buffer = buffer.subarray(length + 4);
     if (!init) {
       init = value;
+      const commands = new Map();
+      const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+      const invocation = freeze(init.context);
       // Rust writes this only after trust, declared command capture and supervision admission.
       const panda = Object.freeze({
+        apiVersion: '1.0.0',
+        commands: Object.freeze({ register(id, handler) {
+          if (id !== invocation.commandId || typeof handler !== 'function' || commands.has(id)) throw new Error('PermissionDenied');
+          commands.set(id, handler);
+          return Object.freeze({ dispose: () => commands.delete(id) });
+        } }),
         context: Object.freeze({
-          query: params => rpc('context', { op: 'query', ...params }),
-          subscribe: params => rpc('context', { op: 'subscribe', ...params }),
-          events: params => rpc('context', { op: 'events', ...params }),
-          unsubscribe: params => rpc('context', { op: 'unsubscribe', ...params }),
+          query: params => rpc('context', { ...params, op: 'query' }),
+          subscribe: params => rpc('context', { ...params, op: 'subscribe' }),
+          events: params => rpc('context', { ...params, op: 'events' }),
+          unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe' }),
         }),
         ui: Object.freeze({ showDialog: dialog => rpc('dialog', dialog) }),
       });
@@ -45,7 +54,10 @@ process.stdin.on('data', chunk => {
         module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
         module._compile(init.source, module.filename);
         if (typeof module.exports.activate !== 'function') throw new Error('Missing activate');
-        await module.exports.activate(panda, Object.freeze(init.context));
+        await module.exports.activate(panda, invocation);
+        const handler = commands.get(invocation?.commandId);
+        if (handler) await handler(invocation);
+        commands.clear();
         await rpc('complete', null);
       }).catch(() => { void rpc('failed', null).catch(() => process.exit(2)); });
     } else {

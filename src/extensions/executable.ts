@@ -1,7 +1,7 @@
 /** Host-owned executable command UI. No source, runtime path or raw bridge reaches package code. */
 import { call } from '../bridge';
 import { isImeKey } from '../dom';
-import { onExtensionsChanged } from './manager';
+import { onExtensionChanged } from './manager';
 import { openExtensionDialog } from './dialogs';
 import type { DialogDefinition } from './dialog-state';
 import type { ContextReply } from './context-state';
@@ -60,6 +60,6 @@ export function openExecutableCommand(id: string, version: string, context: Reco
   const cancel = button('Cancel executable command', close);
   panel.append(heading, scope, explanation, status, allow, deny, cancel);
   panel.addEventListener('keydown', event => { if (event.key === 'Escape' && !isImeKey(event)) { event.stopPropagation(); close(); } });
-  const unsubscribe = onExtensionsChanged(close);
+  const unsubscribe = onExtensionChanged(id.split('/')[0], close);
   document.body.append(panel); cancel.focus(); return close;
 }

@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.sdk-summary",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "projects.summary"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.sdk-summary/summary"] },
+  "contributes": {
+    "commands": [{ "id": "sample.sdk-summary/summary", "title": "SDK project summary", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.sdk-summary/header", "location": "panda.workspace.header.actions", "command": "sample.sdk-summary/summary", "presentation": "button", "text": "SDK summary" }]
+  }
+}

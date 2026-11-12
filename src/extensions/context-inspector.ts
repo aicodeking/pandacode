@@ -1,6 +1,6 @@
 import { call } from '../bridge';
 import { isImeKey } from '../dom';
-import { onExtensionsChanged } from './manager';
+import { onExtensionChanged } from './manager';
 import { createContextClient, type ContextReply, type SummaryPage, type ContextResource } from './context-state';
 import type { Json } from './contracts';
 import { projectReadControls } from './project-reads';
@@ -77,7 +77,7 @@ export function openProjectContext(id: string, version: string, context: Record<
     }
     onClose?.();
   };
-  const unsubscribe = onExtensionsChanged(close);
+  const unsubscribe = onExtensionChanged(id.split('/')[0], close);
   panel.querySelector('button')!.addEventListener('click', close);
   panel.addEventListener('keydown', event => { if (event.key === 'Escape' && !isImeKey(event)) { event.stopPropagation(); close(); } });
   document.body.append(panel); panel.querySelector('button')!.focus(); void query();

@@ -8,6 +8,7 @@ import settingsManifest from '../../tests/fixtures/extensions/settings-laborator
 import windowManifest from '../../tests/fixtures/extensions/window-laboratory/extension.json';
 import contextManifest from '../../tests/fixtures/extensions/project-context/extension.json';
 import executableManifest from '../../tests/fixtures/extensions/project-summary/extension.json';
+import developmentManifest from '../../examples/extensions/project-summary/package/extension.json';
 import windowSvg from '../../tests/fixtures/extensions/window-laboratory/assets/info.svg?raw';
 import { validSettingsValues } from './settings-state';
 import { validateContract } from './contracts';
@@ -20,6 +21,7 @@ const windowLabel = location.pathname.endsWith('/agents-dock.html') ? 'agents-do
 // shared with currently open compact windows, not persisted as an enabled-preference mutation.
 if (windowLabel === 'main') localStorage.removeItem('pandacode.preview.extensions.safe');
 let safeMode = new URLSearchParams(location.search).has('safe-mode');
+let development: NonNullable<ExtensionSnapshot['development']> = [];
 function read(): ExtensionSnapshot {
   safeMode ||= localStorage.getItem('pandacode.preview.extensions.safe') === 'true';
   if (safeMode) return { safeMode, packages: [], diagnostics: [] };
@@ -29,7 +31,7 @@ function read(): ExtensionSnapshot {
     const packages: ExtensionPackage[] = JSON.parse(text);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
-    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
+    return { safeMode, development: structuredClone(development), packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export const previewExtensionSnapshot = read;
@@ -60,7 +62,24 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_snapshot') return snapshot;
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
   if (command === 'extensions_runtime') {
-    const request = args.request as { op: string; id: string; digest: string; allow: boolean };
+    const request = args.request as { op: string; id: string; digest: string; allow: boolean; path?: string };
+    if (request.op === 'developmentSelect') {
+      if (request.path !== 'preview-selected-folder' || snapshot.packages.some(item => item.manifest.id === developmentManifest.id)) throw new Error('InvalidPackage');
+      development.push({ id: developmentManifest.id, revision: 0, logs: ['Validation passed; immutable folder snapshot selected. No code executed.', 'Executable trust and explicit enable required. Package output redacted.'] });
+      snapshot.packages.push({ manifest: developmentManifest as ExtensionPackage['manifest'], enabled: false, icons: {}, executable: { digest: 'preview-development-0', trusted: false } });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return { ok: true, value: read() };
+    }
+    if (request.op === 'developmentReload') {
+      const dev = development.find(dev => dev.id === request.id), item = snapshot.packages.find(item => item.manifest.id === request.id);
+      if (!dev || !item?.executable) throw new Error('PermissionDenied');
+      dev.revision++;
+      // Synthetic changed content for deterministic UI coverage; native folder tests own validation.
+      item.enabled = false; item.executable = { digest: `preview-development-${dev.revision}`, trusted: false };
+      dev.logs.push('Reload validated; changed content disabled. Review executable trust again.');
+      dev.logs = dev.logs.slice(-32);
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null);
+      return { ok: true, value: { snapshot: read(), validated: true } };
+    }
     if (request.op !== 'trust') return { ok: false, error: { schemaVersion: 1, code: 'UnsupportedRuntime', path: '$', ids: [] } };
     const item = snapshot.packages.find(item => item.manifest.id === request.id);
     if (!item?.executable || item.executable.digest !== request.digest) throw new Error('StaleContext');
@@ -83,6 +102,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
     snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...(selected === executableManifest ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
   } else if (command === 'extensions_uninstall') {
+    development = development.filter(dev => dev.id !== args.id);
     snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
   } else if (command === 'extensions_enable') {
     const item = snapshot.packages.find(item => item.manifest.id === args.id);

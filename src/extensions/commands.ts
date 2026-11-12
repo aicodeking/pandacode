@@ -1,4 +1,4 @@
-import { extensionsSnapshot, extensionGeneration, onExtensionsChanged } from './manager';
+import { extensionsSnapshot, extensionGeneration, onExtensionChanged, extensionIdentity } from './manager';
 import { createDeclarativeActivation } from './activation';
 import { openExtensionDialog } from './dialogs';
 import { openProjectContext } from './context-inspector';
@@ -28,8 +28,9 @@ export function invokeExtensionCommand(id: string, context: Record<string, Json>
   if (action.kind !== 'showDialog') return false;
   const anchor = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
   const transient = openExtensionDialog(action.dialog, structuredClone(context), command.owner.extensionId, anchor);
-  const unsubscribe = onExtensionsChanged(() => transient.close());
-  void transient.result.then(result => { unsubscribe(); if (generation === extensionGeneration() && result.kind === 'confirmed') notify(action.dialog.successMessage); });
+  const identity = extensionIdentity(command.owner.extensionId);
+  const unsubscribe = onExtensionChanged(command.owner.extensionId, () => transient.close());
+  void transient.result.then(result => { unsubscribe(); if (identity === extensionIdentity(command.owner.extensionId) && result.kind === 'confirmed') notify(action.dialog.successMessage); });
   return true;
 }
 export function dispatchExtensionShortcut(event: KeyboardEvent, context: Record<string, Json>, notify: (message: string) => void): boolean {

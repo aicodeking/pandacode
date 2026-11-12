@@ -23,6 +23,24 @@ fn opener(opened: Arc<AtomicBool>, closed: Arc<AtomicBool>, delay: Duration) -> 
     }
 }
 
+/// Hold the opener between entry and device creation. Sleeping the test thread does not
+/// establish this ordering when the blocking pool is busy (it may cancel before entry).
+fn gated_opener(opened: Arc<AtomicBool>, closed: Arc<AtomicBool>) -> (
+    impl FnOnce() -> crate::Result<capture::Probe> + Send + 'static,
+    tokio::sync::oneshot::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered, entering) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let open = move || {
+        entered.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(5)).expect("test must release its owned opener");
+        opened.store(true, Ordering::Release);
+        Ok(capture::Probe::fake(closed))
+    };
+    (open, entering, release)
+}
+
 fn voice() -> (Temp, super::super::Voice) {
     let (body, _) = fake_model();
     let temp = Temp::new();
@@ -55,13 +73,14 @@ async fn cancel_during_the_permission_wait_aborts_the_start_without_opening() {
 async fn cancel_while_the_device_opens_closes_it_again() {
     let (_temp, voice) = voice();
     let (opened, closed) = flags();
+    let (open, entering, release) = gated_opener(opened.clone(), closed.clone());
     let start = {
         let voice = voice.clone();
-        let open = opener(opened.clone(), closed.clone(), Duration::from_millis(300));
         tokio::spawn(async move { voice.start_probe_with(|l| &l.model_test, slow_permission(0), None, open).await })
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(5), entering).await.unwrap().unwrap();
     voice.cancel_probe(|l| &l.model_test).await.unwrap();
+    release.send(()).unwrap();
     assert_eq!(start.await.unwrap().unwrap_err(), CANCELLED);
     assert!(opened.load(Ordering::Acquire));
     assert!(closed.load(Ordering::Acquire), "the device opened after the cancel is closed");
@@ -89,13 +108,14 @@ async fn mic_stop_during_a_pending_start_cancels_it_and_says_so() {
 async fn model_stop_during_a_pending_start_cancels_it_and_says_so() {
     let (_temp, voice) = voice();
     let (opened, closed) = flags();
+    let (open, entering, release) = gated_opener(opened, closed.clone());
     let start = {
         let voice = voice.clone();
-        let open = opener(opened.clone(), closed.clone(), Duration::from_millis(300));
         tokio::spawn(async move { voice.start_probe_with(|l| &l.model_test, slow_permission(0), None, open).await })
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(5), entering).await.unwrap().unwrap();
     let stopped = serde_json::to_value(voice.model_test_stop().await.unwrap()).unwrap();
+    release.send(()).unwrap();
     assert_eq!(stopped, serde_json::json!({ "text": "", "cancelled": true }));
     assert_eq!(start.await.unwrap().unwrap_err(), CANCELLED);
     assert!(closed.load(Ordering::Acquire));

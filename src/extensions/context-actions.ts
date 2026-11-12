@@ -1,6 +1,6 @@
 import { openChoiceMenu, type ChoiceItem } from '../choice-menu';
 import { createDeclarativeActivation } from './activation';
-import { extensionGeneration, extensionsSnapshot, onExtensionsChanged } from './manager';
+import { extensionGeneration, extensionsSnapshot, onExtensionsChanged, extensionIdentity } from './manager';
 import { evaluateCondition, type Json } from './contracts';
 import { layout, orderedControls } from './layout-host';
 import { extensionChoices, extensionIcon } from './menu-choices';
@@ -14,6 +14,7 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
   const captured: Record<string, Json> = structuredClone({ ...context, schemaVersion: 1, windowId: 'main', surfaceId: location });
   const activation = extensionGeneration(), owned = createDeclarativeActivation(extensionsSnapshot(), activation);
   let ended = false, openingDialog = false, closeDialog: (() => void) | undefined, closeMenu: (() => void) | undefined;
+  let dialogOwner: string | undefined, dialogIdentity: string | undefined;
   const sourceKey = () => JSON.stringify([anchor.dataset.id, anchor.dataset.path, anchor.dataset.searchOpen, anchor.dataset.searchGroup, anchor.closest<HTMLElement>('.cv-file')?.dataset.path]);
   const originalSource = sourceKey();
   const sourceAlive = () => anchor.isConnected && sourceKey() === originalSource && options.isAlive?.() !== false;
@@ -25,10 +26,10 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
     if (ended) return;
     ended = true; unsubscribe(); unsubscribeLayout(); observer.disconnect(); closeMenu?.(); closeDialog?.(); owned.dispose(); fallback();
   };
-  const unsubscribe = onExtensionsChanged(dispose), unsubscribeLayout = layout.subscribe(dispose);
+  const unsubscribe = onExtensionsChanged(() => { if (!dialogOwner || extensionIdentity(dialogOwner) !== dialogIdentity) dispose(); }), unsubscribeLayout = layout.subscribe(dispose);
   const observer = new MutationObserver(() => { if (!sourceAlive()) dispose(); });
   observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-id', 'data-path', 'data-search-open', 'data-search-group'] });
-  const valid = () => !ended && sourceAlive() && activation === extensionGeneration();
+  const valid = () => !ended && sourceAlive() && (dialogOwner ? extensionIdentity(dialogOwner) === dialogIdentity : activation === extensionGeneration());
   const permits = (condition: Json | undefined) => { const result = condition === undefined ? undefined : evaluateCondition(condition, captured); return !result || result.ok && result.value === true; };
   const core = options.items.map(item => ({ ...item, id: `${location}/${item.id}` }));
   const entries = owned.entries.filter(entry => entry.menu.location === location && permits(entry.menu.visible));
@@ -49,6 +50,7 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
     const legacy = core.find(item => item.id === id);
     if (legacy) { closeMenu?.(); return options.onSelect(id.slice(location.length + 1)); }
     const action = owned.actionFor(id, captured);
+    dialogOwner = id.split('/')[0]; dialogIdentity = extensionIdentity(dialogOwner);
     if (action?.kind === 'showMessage') options.notify(action.message);
     if (action?.kind === 'runCommand') {
       openingDialog = true; closeMenu?.();

@@ -1,5 +1,7 @@
 # Executable runtime (experimental trusted-host continuation)
 
+Authoring and selected-folder reload: [Trusted extension development and typed SDK](development.md).
+
 ## Current trusted-host decision — Windows x64 only
 
 T24's **experimental Windows x64 local trusted-host slice is verified**: native trust,

@@ -2,7 +2,7 @@
 import { validateContract, evaluateCondition, type Json } from './contracts.ts';
 import type { ExtensionSnapshot, ExtensionMenuItem, ExtensionAction } from './manager';
 import { surfaceWindow } from './window-surfaces.ts';
-export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activationId: number) {
+export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activationId: number, states = new Map<string, boolean>()) {
   const packages = snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled);
   const checked = validateContract('packages', packages.map(item => item.manifest));
   if (!checked.ok) throw new Error(`Activation rejected: ${checked.error.code}`);
@@ -13,7 +13,6 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
     return { owner: { extensionId: manifest.id, version: manifest.version, activationId }, menu, command, icons, svg: icons[menu.icon ?? ''] };
   })).sort((a, b) => normalized.menuOrder.indexOf(a.menu.id) - normalized.menuOrder.indexOf(b.menu.id));
   let disposed = false;
-  const states = new Map<string, boolean>();
   const conditionAllows = (condition: Json | undefined, context: Record<string, Json>) => {
     if (condition === undefined) return true;
     const result = evaluateCondition(condition, context);

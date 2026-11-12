@@ -627,6 +627,10 @@ if (new URLSearchParams(location.search).has('desktop-appearance-fixture')) {
     dispose = (await import('./appearance')).initializeNativeAppearance(async () => ({ platform, material: 'solid' }));
   };
 }
+if (new URLSearchParams(location.search).has('extension-development')) {
+  // Deterministic synthetic native notification while another owner's transient is open.
+  (window as any).__previewDevelopmentReload = async (id: string) => (await import('./extensions/manager')).reloadDevelopmentExtension(id);
+}
 /** Browser-only lifecycle injection while a transient extension surface owns focus. */
 (window as any).__previewDisableExtension = async (id: string) => {
   await (await import('./extensions/manager')).enableExtension(id, false);

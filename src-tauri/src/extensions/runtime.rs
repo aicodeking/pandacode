@@ -32,6 +32,8 @@ enum Request {
     Activate { handle: String, #[serde(rename = "requestId")] request_id: String },
     Cancel { #[serde(rename = "requestId")] request_id: String },
     Trust { id: String, digest: String, allow: bool },
+    DevelopmentSelect { path: String },
+    DevelopmentReload { id: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) { app.state::<ExtensionRuntime>().stop(owner); }
@@ -45,6 +47,28 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
     if request.to_string().len() > 8192 { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
     match request {
+        Request::DevelopmentSelect { path } => {
+            let result = (|| {
+                let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
+                packages.development_select(std::path::Path::new(&path))?;
+                serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".to_owned())
+            })();
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(_) => context::failure("InvalidPackage") }
+        }
+        Request::DevelopmentReload { id } => {
+            let selected = app.state::<ExtensionPackages>().0.try_lock().is_ok_and(|packages| packages.development_selected(&id));
+            if !selected { return context::failure("PermissionDenied"); }
+            // Only this owner's managed invocation/handles are invalidated, even on failed validation.
+            stop(&app, Some(&id)); context::invalidate(&app, Some(&id)); retry(&app, &id);
+            let result = (|| {
+                let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
+                let result = packages.development_reload(&id);
+                Ok::<_, String>(json!({"snapshot":packages.snapshot(),"validated":result.is_ok()}))
+            })();
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(_) => context::failure("HostUnavailable") }
+        }
         Request::Cancel { request_id } => {
             if uuid::Uuid::parse_str(&request_id).is_err() { return context::failure("InvalidShape"); }
             let state = app.state::<ExtensionRuntime>();
@@ -75,6 +99,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 if active.len() >= 8 || active.contains_key(&request_id) || active.values().any(|entry| entry.owner == owner) { return Err("Conflict"); }
                 let cancel = Arc::new(AtomicBool::new(false));
                 active.insert(request_id.clone(), Active { owner: owner.clone(), cancel: cancel.clone() });
+                packages.development_log(&owner, "Activation admitted: trusted content, captured context and supervised budget.");
                 Ok((owner, version, digest, source, captured, cancel))
             })();
             let (owner, version, digest, source, captured, cancel) = match admitted { Ok(value) => value, Err(code) => return context::failure(code) };
@@ -111,7 +136,11 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
             });
             app.state::<ContextBroker>().runtime_release(&handle);
             let state = app.state::<ExtensionRuntime>();
+            if let Ok(packages) = app.state::<ExtensionPackages>().0.try_lock() {
+                packages.development_log(&owner, if result.is_ok() { "Activation completed; owned process and subscriptions disposed." } else { "Activation failed/cancelled; package output redacted. Inspect broker grants and host diagnostics." });
+            }
             state.finish(&request_id, owner, digest, &result);
+            super::windows::changed(&app);
             match result { Ok(dialogs) => ok(json!({"schemaVersion":1,"dialogs":dialogs})), Err(code) => context::failure(code) }
         }
     }

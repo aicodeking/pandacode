@@ -4,7 +4,7 @@ import { openChoiceMenu } from '../choice-menu';
 import { extensionChoices } from './menu-choices';
 import type { ActionLocation } from './surfaces';
 import { evaluateCondition, type Json } from './contracts';
-import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './manager';
+import { extensionsSnapshot, onExtensionsChanged, extensionGeneration, extensionIdentity } from './manager';
 import { createDeclarativeActivation } from './activation';
 import { layout, layoutProject, applyControlOrder } from './layout-host';
 import { openExtensionDialog } from './dialogs';
@@ -30,6 +30,9 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
   let closeMenu: (() => void) | undefined;
   let closeDialog: (() => void) | undefined;
   let closeContext: (() => void) | undefined;
+  let contextIdentity: (() => boolean) | undefined, dialogIdentity: (() => boolean) | undefined;
+  let lifecycle = '';
+  const menuStates = new Map<string, boolean>(), ownerIdentities = new Map<string, string>();
   let conditions: { button: HTMLElement; visible?: Json; enabled?: Json; hasItems: boolean }[] = [];
   const fallbackFocus = () => {
     const eligible = (element: HTMLElement) => !element.closest('[inert]') && element.checkVisibility();
@@ -57,19 +60,28 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
     applyControlOrder(location, [...coreControls.filter(([, node]) => node.parentElement === slot), ...conditions.map(({ button }) => [button.dataset.extensionContribution!, button] as const)]);
   };
   const draw = () => {
-    closeContext?.(); closeContext = undefined;
-    closeDialog?.(); closeDialog = undefined;
+    const current = extensionsSnapshot(), activation = extensionGeneration();
+    const next = JSON.stringify([current.safeMode, current.packages, current.development?.map(dev => [dev.id, dev.revision])]);
+    if (lifecycle === next) return; lifecycle = next;
+    if (contextIdentity && !contextIdentity()) { closeContext?.(); closeContext = undefined; }
+    if (dialogIdentity && !dialogIdentity()) { closeDialog?.(); closeDialog = undefined; }
+    for (const id of new Set([...ownerIdentities.keys(), ...current.packages.map(item => item.manifest.id)])) {
+      const identity = extensionIdentity(id);
+      if (ownerIdentities.get(id) !== identity) for (const key of menuStates.keys()) if (key.startsWith(`${id}/`)) menuStates.delete(key);
+      ownerIdentities.set(id, identity);
+    }
     closeMenu?.();
     const focused = conditions.some(({ button }) => button === document.activeElement);
     registration?.dispose();
     // Built-ins keep their exact nodes/listeners through extension enable/disable.
     for (const { button } of conditions) button.remove();
     conditions = [];
-    const current = extensionsSnapshot(), activation = extensionGeneration();
-    registration = createDeclarativeActivation(current, activation);
+    registration = createDeclarativeActivation(current, activation, menuStates);
     const owned = registration;
     for (const entry of owned.entries) {
         const { menu, command, svg } = entry;
+        const identity = extensionIdentity(entry.owner.extensionId);
+        const stillOwned = () => extensionIdentity(entry.owner.extensionId) === identity;
         if (menu.location !== location) continue;
         if (!command || !['showMessage', 'showDialog', 'showProjectContext', 'runCommand'].includes(command.action.kind)) continue;
         const passive = menu.presentation === 'status' || menu.presentation === 'badge';
@@ -113,19 +125,22 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
             if (action?.kind === 'showMessage') showMessage(action.message);
             if (action?.kind === 'runCommand') {
               closeMenu?.(); closeContext?.(); closeContext = openExecutableCommand(id, entry.owner.version, captured, button, showMessage);
+              contextIdentity = stillOwned;
             }
             if (action?.kind === 'showProjectContext') {
               closeMenu?.(); closeContext?.();
               closeContext = openProjectContext(id, entry.owner.version, captured, button, () => { closeContext = undefined; });
+              contextIdentity = stillOwned;
             }
             if (action?.kind === 'showDialog') {
               if (closeDialog) return;
               closeMenu?.();
               const transient = openExtensionDialog(action.dialog, captured, entry.owner.extensionId, button);
               closeDialog = transient.close;
+              dialogIdentity = stillOwned;
               void transient.result.then(result => {
                 if (closeDialog === transient.close) closeDialog = undefined;
-                if (activation !== extensionGeneration() || !button.isConnected) return;
+                if (!stillOwned()) return;
                 if (result.kind === 'confirmed') showMessage(action.dialog.successMessage);
                 else if (result.reason === 'cancel' && action.dialog.cancelMessage) showMessage(action.dialog.cancelMessage);
               });
