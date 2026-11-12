@@ -114,7 +114,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
     if checked["ok"] != true { return Err(format!("Invalid manifest: {}", checked["error"]["code"])); }
     let manifest = checked["value"]["packages"][0].clone();
     let contributions = &manifest["contributes"];
-    if contributions["views"].as_array().is_some_and(|a| !a.is_empty()) || contributions["commands"].as_array().into_iter().flatten().any(|c| c["action"]["kind"] != "showMessage") { return Err("This delivery supports declarative showMessage only.".into()); }
+    if contributions["views"].as_array().is_some_and(|a| !a.is_empty()) || contributions["commands"].as_array().into_iter().flatten().any(|c| c["action"]["kind"] != "showMessage" && c["action"]["kind"] != "showDialog") { return Err("This delivery supports declarative showMessage and showDialog only.".into()); }
     let mut allowed = BTreeSet::from(["extension.json".to_string()]); let mut icons = BTreeMap::new();
     for icon in contributions["icons"].as_array().into_iter().flatten() {
         let asset = icon["asset"].as_str().unwrap();
@@ -264,6 +264,16 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    #[test]
+    fn menu_laboratory_installs_enables_and_reloads_without_executable_runtime() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/menu-laboratory/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes())])).unwrap();
+        packages.enable("sample.menu-laboratory", true).unwrap();
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.menu-laboratory", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+    }
     #[test]
     fn ordinary_zip_directory_entries_work_without_extraction() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));

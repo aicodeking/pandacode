@@ -8,7 +8,7 @@ test('extensions catalog: core discovery, pagination, public handlers and keyboa
   await page.goto('/'); await expect(page.locator('#prompt')).toBeVisible();
   await page.locator('#prompt').fill('catalog draft');
   const region = await explorer(page);
-  await expect(region.getByRole('list', { name: 'Public surfaces' }).getByRole('listitem')).toHaveCount(2);
+  await expect(region.getByRole('list', { name: 'Public surfaces' }).getByRole('listitem')).toHaveCount(3);
   await expect(region.locator('[data-catalog-item]')).toHaveCount(5);
   await region.getByRole('button', { name: 'Next items', exact: true }).click();
   await expect(region.locator('[data-catalog-item]')).toHaveCount(2);

@@ -49,10 +49,10 @@ jobs:
       # These are real frontend lifecycle tests, not native desktop/IPC qualification.
       - name: Chromium extension conformance
         env: { PW_PORT: '15435', PW_PROD: '1' }
-        run: npx playwright test tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts --workers=1
+        run: npx playwright test tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts tests/extensions-dialogs.spec.ts --workers=1
       - name: WebKit extension conformance
         env: { PW_PORT: '15436', PW_PROD: '1' }
-        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts --workers=1
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts tests/extensions-dialogs.spec.ts --workers=1
 
   rust:
     name: Rust check and tests (Linux)

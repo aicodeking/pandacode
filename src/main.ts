@@ -538,6 +538,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   const onContextChanged = (listener: () => void) => { extensionContextListeners.add(listener); return () => { extensionContextListeners.delete(listener); }; };
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
+  mountExtensionActions($('.inspector-strip-actions'), 'panda.inspector.actions', context, notify, onContextChanged);
   const { layout, registerLayoutContext, applyControlVisibility, applyControlOrder } = await import('./extensions/layout-host');
   registerLayoutContext(() => state.projectId ?? undefined);
   // Do not apply saved overlays until native launch recovery policy has been read.

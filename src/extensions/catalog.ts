@@ -4,6 +4,7 @@ import type { ExtensionSnapshot } from './manager';
 
 export const HEADER = 'panda.workspace.header.actions';
 export const FOOTER = 'panda.sidebar.footer';
+export const INSPECTOR = 'panda.inspector.actions';
 export type PublicCommandId = 'panda.ui/toggle-sidebar' | 'panda.ui/open-settings' | 'panda.ui/toggle-theme';
 export type CatalogQuery = { windowId?: string; owner?: string; type?: string; location?: string; cursor?: string; limit?: number };
 type Availability = { available: boolean; reason?: 'HostUnavailable' };
@@ -43,6 +44,7 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
     const surfaces: SurfaceMetadata[] = [
       { id: HEADER, owner: 'panda.core', type: 'action-slot', location: HEADER, label: 'Workspace header actions', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
       { id: FOOTER, owner: 'panda.core', type: 'action-slot', location: FOOTER, label: 'Sidebar footer', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
+      { id: INSPECTOR, owner: 'panda.core', type: 'action-slot', location: INSPECTOR, label: 'Inspector actions (when open)', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
     ];
     const activation = createDeclarativeActivation(state, 0);
     const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true }))];

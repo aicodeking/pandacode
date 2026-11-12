@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.menu-laboratory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "commands": [{ "id": "sample.menu-laboratory/report", "title": "Menu laboratory", "action": {
+      "kind": "showDialog",
+      "dialog": {
+        "title": "Report options",
+        "confirmLabel": "Create report",
+        "confirmation": "Create this report?",
+        "successMessage": "Report confirmed",
+        "cancelMessage": "Report cancelled",
+        "fields": [
+          { "id": "name", "kind": "text", "label": "Report name", "required": true, "minLength": 3 },
+          { "id": "details", "kind": "switch", "label": "Include details", "value": true },
+          { "id": "format", "kind": "select", "label": "Report format", "required": true, "options": [{ "value": "brief", "label": "Brief" }, { "value": "full", "label": "Full report" }, { "value": "unavailable", "label": "Unavailable", "disabled": true }] },
+          { "id": "tags", "kind": "select", "label": "Report tags", "multiple": true, "async": true, "options": [{ "value": "alpha", "label": "Alpha" }, { "value": "beta", "label": "Beta" }] }
+        ]
+      }
+    } }],
+    "menus": [{ "id": "sample.menu-laboratory/header", "location": "panda.workspace.header.actions", "command": "sample.menu-laboratory/report", "items": [{ "id": "sample.menu-laboratory/reports", "kind": "submenu", "title": "Reports", "items": [{ "id": "sample.menu-laboratory/open", "kind": "command", "title": "Configure report", "command": "sample.menu-laboratory/report" }] }] }]
+  }
+}

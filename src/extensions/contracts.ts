@@ -13,7 +13,7 @@ export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits']
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
 const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts'];
 const capabilities = ['ui.contribute', 'ui.customize'];
-const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression'];
+const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
   detail: ContractError;
@@ -130,6 +130,20 @@ function packageId(id: string, path: string) {
   if (id.startsWith('panda.')) error('ReservedId', path, [id]);
 }
 
+function distinct(items: ObjectValue[], key: string, path: string): void {
+  const seen = new Set<string>();
+  for (const item of items) {
+    const id = item[key] as string;
+    if (seen.has(id)) error('DuplicateId', path, [id]);
+    seen.add(id);
+  }
+}
+function dialogFields(dialog: ObjectValue, path: string): void {
+  const fields = dialog.fields as ObjectValue[];
+  distinct(fields, 'id', path);
+  for (const field of fields) if (field.kind === 'select') distinct(field.options as ObjectValue[], 'value', `${path}/${field.id}/options`);
+}
+
 function menuItems(items: ObjectValue[], owner: string, owned: Set<string>, path: string, reference?: (kind: string, value: Json, field: string) => void, depth = 1, budget = { count: 0 }): void {
   if (depth > MENU_LIMITS.depth || (budget.count += items.length) > MENU_LIMITS.items) error('LimitExceeded', path);
   const checkedGroups = new Set<string>();
@@ -205,6 +219,7 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (command.icon) reference('icons', command.icon, 'commands');
       const action = command.action as ObjectValue;
       if (action.kind === 'openView') reference('views', action.view, 'commands');
+      if (action.kind === 'showDialog') dialogFields(action.dialog as ObjectValue, `${path}/contributes/commands`);
     }
     for (const menu of (contributions.menus ?? []) as ObjectValue[]) {
       reference('commands', menu.command, 'menus');
@@ -253,6 +268,12 @@ export function validateContract(kind: string, value: unknown): Validation {
     if (budget.bytes > CONTRACT_LIMITS.bytes) error('LimitExceeded', '$');
     const diagnostics: Diagnostic[] = [];
     const result = kind === 'packages' ? manifests(value, diagnostics) : publicShapes.includes(kind) ? shape(value, definitions[kind], '$', diagnostics) : error('InvalidShape', '$');
+    if (kind === 'dialog') dialogFields(result as ObjectValue, '$');
+    if (kind === 'selectOptions') distinct(result as ObjectValue[], 'value', '$');
+    if (kind === 'command' && ((result as ObjectValue).definition as ObjectValue).action) {
+      const action = ((result as ObjectValue).definition as ObjectValue).action as ObjectValue;
+      if (action.kind === 'showDialog') dialogFields(action.dialog as ObjectValue, '$/definition/action/dialog');
+    }
     if (kind === 'command' || kind === 'contribution') {
       const entry = result as ObjectValue, owner = entry.owner as ObjectValue, definition = entry.definition as ObjectValue;
       packageId(owner.extensionId as string, '$/owner/extensionId');

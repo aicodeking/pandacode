@@ -23,7 +23,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
   if (command === 'extensions_install') {
     if (snapshot.packages.some(item => item.manifest.id === manifest.id)) throw new Error('Duplicate package ownership; already installed.');
-    snapshot.packages.push({ manifest, enabled: false, icons: { 'sample.project-helper/info': svg } });
+    snapshot.packages.push({ manifest: manifest as ExtensionPackage['manifest'], enabled: false, icons: { 'sample.project-helper/info': svg } });
   } else if (command === 'extensions_uninstall') {
     snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
   } else if (command === 'extensions_enable') {

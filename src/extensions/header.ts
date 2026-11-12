@@ -6,6 +6,7 @@ import { evaluateCondition, type Json } from './contracts';
 import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './manager';
 import { createDeclarativeActivation } from './activation';
 import { layout, layoutProject, applyControlOrder } from './layout-host';
+import { openExtensionDialog } from './dialogs';
 
 /** Append only owned nodes; never remount or delegate legacy controls. Native buttons supply
  * pointer/Enter/Space activation, avoiding duplicate synthetic keyboard click dispatch. */
@@ -13,8 +14,8 @@ export function mountExtensionHeader(host: HTMLElement, context: () => Record<st
   return mountExtensionActions(host, 'panda.workspace.header.actions', context, showMessage, onContextChanged);
 }
 
-/** Both public surfaces share validation, invocation and owner-scoped disposal. */
-export function mountExtensionActions(host: HTMLElement, location: 'panda.workspace.header.actions' | 'panda.sidebar.footer', context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void): () => void {
+/** Public action surfaces share validation, invocation and owner-scoped disposal. */
+export function mountExtensionActions(host: HTMLElement, location: 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions', context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void): () => void {
   const slot = document.createElement('div');
   slot.className = 'extension-header-actions'; slot.dataset.tauriDragRegion = 'false';
   slot.setAttribute('role', 'group'); slot.setAttribute('aria-label', 'Extension actions');
@@ -22,6 +23,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
   else host.append(slot);
   let registration: ReturnType<typeof createDeclarativeActivation> | undefined;
   let closeMenu: (() => void) | undefined;
+  let closeDialog: (() => void) | undefined;
   let conditions: { button: HTMLButtonElement; visible?: Json; enabled?: Json; hasItems: boolean }[] = [];
   const fallbackFocus = () => [...document.querySelectorAll<HTMLElement>('button:not([disabled]), #prompt:not([disabled])')].find(element => !element.inert && element.checkVisibility())?.focus({ preventScroll: true });
   const refreshConditions = () => {
@@ -40,6 +42,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
     applyControlOrder(location, conditions.map(({ button }) => [button.dataset.extensionContribution!, button] as const));
   };
   const draw = () => {
+    closeDialog?.(); closeDialog = undefined;
     closeMenu?.();
     const focused = slot.contains(document.activeElement);
     registration?.dispose();
@@ -51,7 +54,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
     for (const entry of owned.entries) {
         const { menu, command, svg } = entry;
         if (menu.location !== location) continue;
-        if (!command || command.action.kind !== 'showMessage') continue;
+        if (!command || !['showMessage', 'showDialog'].includes(command.action.kind)) continue;
         const button = document.createElement('button'); button.type = 'button'; button.className = 'icon-button';
         button.dataset.extensionContribution = menu.id; button.dataset.tauriDragRegion = 'false';
         button.setAttribute('aria-label', command.title); button.title = command.title;
@@ -69,6 +72,23 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
         button.addEventListener('click', () => {
           if (activation !== extensionGeneration() || !button.isConnected) return;
           const captured = structuredClone({ ...context(), schemaVersion: 1, windowId: 'main', surfaceId: menu.location });
+          const invoke = (id: string) => {
+            if (activation !== extensionGeneration() || !button.isConnected) return;
+            const action = owned.actionFor(id, captured);
+            if (action?.kind === 'showMessage') showMessage(action.message);
+            if (action?.kind === 'showDialog') {
+              if (closeDialog) return;
+              closeMenu?.();
+              const transient = openExtensionDialog(action.dialog, captured, entry.owner.extensionId, button);
+              closeDialog = transient.close;
+              void transient.result.then(result => {
+                if (closeDialog === transient.close) closeDialog = undefined;
+                if (activation !== extensionGeneration() || !button.isConnected) return;
+                if (result.kind === 'confirmed') showMessage(action.dialog.successMessage);
+                else if (result.reason === 'cancel' && action.dialog.cancelMessage) showMessage(action.dialog.cancelMessage);
+              });
+            }
+          };
           if (menu.items) {
             if (closeMenu) { const wasOpen = button.getAttribute('aria-expanded') === 'true'; closeMenu(); if (wasOpen) return; }
             const choices = (items: ExtensionMenuItem[]): ChoiceItem[] => {
@@ -87,14 +107,11 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
             };
             const items = choices(owned.itemsFor(menu.id, captured));
             closeMenu = openChoiceMenu({ anchor: button, title: command.title, items, itemLimit: 128, actions: true, onSelect: id => {
-              if (activation !== extensionGeneration() || !button.isConnected) return;
-              const message = owned.invoke(id, captured);
-              if (message !== undefined) showMessage(message);
+              invoke(id);
             }, onClose: () => { closeMenu = undefined; } });
             return;
           }
-          const message = owned.invoke(menu.id, captured);
-          if (message !== undefined) showMessage(message);
+          invoke(menu.id);
         });
         slot.append(button);
         conditions.push({ button, visible: menu.visible, enabled: menu.enabled, hasItems: Boolean(menu.items) });
@@ -103,5 +120,5 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
     if (focused) fallbackFocus();
   };
   const cleanup = onExtensionsChanged(draw), cleanupContext = onContextChanged?.(refreshConditions), cleanupLayout = layout.subscribe(() => { closeMenu?.(); refreshConditions(); }); draw();
-  return () => { closeMenu?.(); const focused = slot.contains(document.activeElement); cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; slot.remove(); if (focused) fallbackFocus(); };
+  return () => { closeDialog?.(); closeMenu?.(); const focused = slot.contains(document.activeElement); cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; slot.remove(); if (focused) fallbackFocus(); };
 }

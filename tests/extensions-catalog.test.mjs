@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createUiCatalog, createCoreCommands, HEADER, FOOTER } from '../src/extensions/catalog.ts';
+import { createUiCatalog, createCoreCommands, HEADER, FOOTER, INSPECTOR } from '../src/extensions/catalog.ts';
 import { validateContract } from '../src/extensions/contracts.ts';
 const sample = JSON.parse(readFileSync(new URL('./fixtures/extensions/sample-project-helper/extension.json', import.meta.url), 'utf8'));
 const empty = () => ({ safeMode: false, packages: [], diagnostics: [] });
@@ -17,7 +17,7 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [FOOTER, HEADER]);
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, FOOTER, HEADER]);
   const items = ui.listItems().items;
   assert.equal(items.length, 9); assert.equal(new Set(items.map(item => item.id)).size, 9);
   assert.deepEqual(items.filter(item => item.owner === sample.id).map(item => item.id), ['sample.project-helper/header', 'sample.project-helper/sidebar']);

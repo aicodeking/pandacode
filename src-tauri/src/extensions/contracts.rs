@@ -27,6 +27,18 @@ fn items<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value[key].as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 fn text<'a>(value: &'a Value, key: &str) -> &'a str { value[key].as_str().unwrap_or("") }
+fn distinct(values: &[Value], key: &str, path: &str) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for value in values { let id = text(value, key); if !seen.insert(id) { return Err(fail("DuplicateId", path, vec![id.to_owned()])); } }
+    Ok(())
+}
+fn dialog_fields(dialog: &Value, path: &str) -> Result<()> {
+    distinct(items(dialog, "fields"), "id", path)?;
+    for field in items(dialog, "fields") {
+        if field["kind"] == "select" { distinct(items(field, "options"), "value", &format!("{path}/{}/options", text(field, "id")))?; }
+    }
+    Ok(())
+}
 fn bounded(value: &Value, path: &str, depth: u64, nodes: &mut u64, bytes: &mut u64) -> Result<()> {
     *nodes += 1;
     let limits = &SCHEMA["x-dataLimits"];
@@ -250,6 +262,7 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         for command in items(contributions, "commands") {
             if command.get("icon").is_some() { reference(contributions, "icons", &command["icon"], &format!("{path}/contributes/commands"))?; }
             if command["action"]["kind"] == "openView" { reference(contributions, "views", &command["action"]["view"], &format!("{path}/contributes/commands"))?; }
+            if command["action"]["kind"] == "showDialog" { dialog_fields(&command["action"]["dialog"], &format!("{path}/contributes/commands"))?; }
         }
         for menu in items(contributions, "menus") {
             reference(contributions, "commands", &menu["command"], &format!("{path}/contributes/menus"))?;
@@ -313,8 +326,11 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" { manifests(value, &mut diagnostics)? }
-            else if ["command", "surface", "contribution", "context", "error", "expression"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
+        if kind == "dialog" { dialog_fields(&value, "$")?; }
+        if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
+        if kind == "command" && value["definition"]["action"]["kind"] == "showDialog" { dialog_fields(&value["definition"]["action"]["dialog"], "$/definition/action/dialog")?; }
         if kind == "command" || kind == "contribution" {
             package_id(text(&value["owner"], "extensionId"), "$/owner/extensionId")?;
             if !text(&value["definition"], "id").starts_with(&format!("{}/", text(&value["owner"], "extensionId"))) {
@@ -355,6 +371,24 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialog_contracts_share_bounded_fields_options_and_three_trigger_locations() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/menu-laboratory/extension.json")).unwrap();
+        for location in ["panda.workspace.header.actions", "panda.sidebar.footer", "panda.inspector.actions"] {
+            let mut value = manifest.clone(); value["contributes"]["menus"][0]["location"] = json!(location);
+            assert_eq!(validate_contract("packages", &json!([value]))["ok"], true);
+        }
+        let dialog = &manifest["contributes"]["commands"][0]["action"]["dialog"];
+        assert_eq!(validate_contract("dialog", dialog)["ok"], true);
+        let mut duplicate = dialog.clone(); duplicate["fields"][1]["id"] = json!("name");
+        assert_eq!(validate_contract("dialog", &duplicate)["error"]["code"], "DuplicateId");
+        let mut many = dialog.clone(); many["fields"] = json!((0..25).map(|n| json!({"id":format!("field-{n}"), "kind":"text", "label":"Name"})).collect::<Vec<_>>());
+        assert_eq!(validate_contract("dialog", &many)["error"]["code"], "LimitExceeded");
+        assert_eq!(validate_contract("selectOptions", &json!([{"value":"a", "label":"A"}, {"value":"a", "label":"Duplicate"}]))["error"]["code"], "DuplicateId");
+        let mut executable = dialog.clone(); executable["onSubmit"] = json!("eval()");
+        assert_eq!(validate_contract("dialog", &executable)["error"]["code"], "InvalidShape");
+    }
 
     #[test]
     fn recursive_menus_validate_shared_fixture_and_reject_malformed_trees() {

@@ -1,6 +1,6 @@
 /** Owner/version/activation-scoped declarative registrations, with no DOM or private service API. */
 import { validateContract, evaluateCondition, type Json } from './contracts.ts';
-import type { ExtensionSnapshot, ExtensionMenuItem } from './manager';
+import type { ExtensionSnapshot, ExtensionMenuItem, ExtensionAction } from './manager';
 export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activationId: number) {
   const packages = snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled);
   const checked = validateContract('packages', packages.map(item => item.manifest));
@@ -38,7 +38,7 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
       const entry = entries.find(entry => entry.menu.id === id);
       return entry && allows(entry.menu, context) ? structuredClone(filtered(entry.menu.items ?? [], context)) : [];
     },
-    invoke(id: string, context: Record<string, Json>): string | undefined {
+    actionFor(id: string, context: Record<string, Json>): ExtensionAction | undefined {
       if (disposed) return;
       let path: ExtensionMenuItem[] = [];
       function find(items: ExtensionMenuItem[], parents: ExtensionMenuItem[] = []): boolean {
@@ -52,7 +52,7 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
       if (!entry || !path.length && entry.menu.items) return;
       const leaf = path.at(-1);
       const command = leaf ? normalized.packages.find(manifest => manifest.id === entry.owner.extensionId)?.contributes.commands?.find(command => command.id === leaf.command) : entry.command;
-      if (!command || command.action.kind !== 'showMessage') return;
+      if (!command || !['showMessage', 'showDialog'].includes(command.action.kind)) return;
       const captured = structuredClone(context);
       const valid = validateContract('context', captured);
       if (!valid.ok || captured.surfaceId !== entry.menu.location || captured.windowId !== 'main') return;
@@ -62,7 +62,11 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
         const siblings = path.length > 1 ? path.at(-2)!.items : entry.menu.items;
         for (const item of siblings ?? []) if (item.kind === 'radio' && item.group === leaf.group) states.set(item.id, item.id === id);
       }
-      return command.action.message;
+      return structuredClone(command.action);
+    },
+    invoke(id: string, context: Record<string, Json>): string | undefined {
+      const action = this.actionFor(id, context);
+      return action?.kind === 'showMessage' ? action.message : undefined;
     },
     dispose() { disposed = true; },
   };

@@ -11,6 +11,6 @@ const config = defineConfig(base, {
 });
 
 export default defineConfig(config, {
-  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/generative-ui.spec.ts'],
-  grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions baseline|extensions install|extensions catalog|extensions layout|extensions menus|streamed markdown|a table sorts|buttons and forms|custom views|invalid specs|stats, tree|details collapse`),
+  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/generative-ui.spec.ts'],
+  grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions baseline|extensions install|extensions catalog|extensions layout|extensions menus|extensions dialogs|streamed markdown|a table sorts|buttons and forms|custom views|invalid specs|stats, tree|details collapse`),
 });

@@ -3,3 +3,10 @@
 .extension-header-actions button { -webkit-app-region: no-drag; }
 .extension-sidebar-actions { flex-wrap: wrap; padding: 4px 7px; }
 [data-layout-hidden] { display: none !important; }
+.extension-dialog-field { display: grid; gap: var(--space-2); margin-block: 12px; }
+.extension-dialog-field > label { color: var(--text); font-size: var(--text-sm); }
+.extension-dialog-field > input[type="text"] { width: 100%; padding: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); }
+.extension-dialog-field > button { text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extension-field-error, .extension-dialog-error { color: var(--ds-danger); font-size: var(--text-xs); }
+.extension-dialog-confirm { color: var(--text); font-size: var(--text-sm); }
+.extension-dialog-status { color: var(--muted); font-size: var(--text-xs); }

@@ -616,6 +616,10 @@ previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 (window as any).__previewDisableExtension = async (id: string) => {
   await (await import('./extensions/manager')).enableExtension(id, false);
 };
+(window as any).__previewExtensionDialogTransport = async () => {
+  const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
+  (window as any).__extensionDialogTransport = transport;
+};
 // Tests: how many listeners an event has now, e.g. to check a view stops listening when it should.
 (window as any).__previewListenerCount = (name: string) => listeners.get(name)?.size ?? 0;
 export function listen(name: string, callback: (event: any) => void): () => void { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(callback); return () => listeners.get(name)?.delete(callback); }

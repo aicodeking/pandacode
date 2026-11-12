@@ -66,10 +66,10 @@ Manifest `contributes` holds the following bounded definitions:
 
 | Definition | Fields / meaning |
 |---|---|
-| Command | Owned `id`, `title`, optional declared `icon`, `action`. Only `{kind: "showMessage", message}` or `{kind: "openView", view}`. No JavaScript handler/string, shell command or private built-in command dispatch. |
+| Command | Owned `id`, `title`, optional declared `icon`, `action`. Only `{kind: "showMessage", message}`, `{kind: "showDialog", dialog}` or schema-only `{kind: "openView", view}` (not installable yet). No JavaScript handler/string, shell command or private built-in command dispatch. |
 | Icon | Owned `id`, `asset`: relative `assets/…` path ending in `.svg`, `.png` or `.webp`; ASCII letters/digits/underscore/dot/slash/hyphen only. No empty, `.` or `..` segments, backslashes, percent encoding, absolute/URL paths. This checks the reference, **not the file contents**. |
 | View | Owned `id`, `title`, static `text`. No HTML, script, DOM handle or renderer promise. |
-| Menu contribution | Owned `id`, one of `panda.workspace.header.actions` / `panda.sidebar.footer`, declared `command`, optional declared `icon`, `group`, `order`, `before`/`after` IDs, `visible`/`enabled` AST and recursive `items`. |
+| Menu contribution | Owned `id`, one of `panda.workspace.header.actions` / `panda.sidebar.footer` / `panda.inspector.actions` (when open), declared `command`, optional declared `icon`, `group`, `order`, `before`/`after` IDs, `visible`/`enabled` AST and recursive `items`. |
 | Layout proposal | Owned `id`, `title`, action-slot `location`, bounded `rules: [{id, target, side: "before" or "after"}]`. Requires both `ui.contribute` and `ui.customize` declarations. Cycles are rejected by both validators. |
 
 Command/icon/view references must exist in the same package. Ordering references may name another package's menu
@@ -103,6 +103,17 @@ hands focus to a surviving visible host control. OS-native menus and secondary w
 
 `tests/fixtures/extensions/menus-v1.json` is the shared three-level laboratory item tree, to be combined with the
 sample package's header or sidebar contribution (not duplicated within one package, since IDs are unique).
+
+### Dialogs and quick picks (M3, experimental)
+
+`showDialog` supplies bounded `title`, `fields`, `successMessage`, optional `confirmLabel`, `confirmation`
+and `cancelMessage`. Up to 24 unique local-ID fields may be text (4096 characters), boolean switch or
+single/multi-select (100 unique label/value options, optional disabled/async/search behavior). The shared
+`dialog` and `selectOptions` contracts validate direct host DTOs and the identical embedded manifest data.
+Package code/callbacks/HTML are never accepted. Both native/frontend validators reject malformed variants,
+duplicate identities and executable fields. See [dialogs.md](dialogs.md) for the exact field vocabulary,
+host-only asynchronous transport, cancellation/validation/focus semantics and current runtime/platform limits.
+The installable `tests/fixtures/extensions/menu-laboratory/extension.json` demonstrates the complete flow.
 
 ### Selecting and reordering layouts (M2, experimental)
 

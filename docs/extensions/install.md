@@ -1,8 +1,10 @@
 # Local declarative extensions (experimental)
 
-The first adapter adds host-rendered `showMessage` icon buttons beside the existing workspace header
-controls and sidebar footer in the main window. Existing buttons, their commands and native drag regions
-are not replaced. Custom views, executable JavaScript and install hooks are not supported by this slice.
+The action adapters add host-rendered `showMessage` and `showDialog` buttons/menus beside the existing
+workspace header, sidebar footer and open inspector strip in the main window. [Declarative dialogs](dialogs.md)
+support text/switch/select fields and asynchronous searchable single/multi-select quick picks. Existing buttons,
+their commands and native drag regions are not replaced. Custom views, executable JavaScript and install hooks
+are not supported by this slice.
 The data vocabulary is described in [contracts.md](contracts.md); a schema-valid later capability is not
 necessarily implemented by this adapter.
 
@@ -21,6 +23,11 @@ package, not a trusted publisher signature. In PandaCode, open **Settings → Ex
 package**, select the ZIP, inspect its identity and choose **Enable sample.project-helper**. Installation
 alone leaves it disabled. Return to the workspace and activate **Project helper** with a pointer, Enter
 or Space. The host displays `Extension installed successfully` once per activation.
+
+For the submenu → dialog → select → confirmation flow, ZIP only `extension.json` from
+`tests/fixtures/extensions/menu-laboratory/` at the archive root. Enable `sample.menu-laboratory` and
+open **Menu laboratory → Reports → Configure report**. The same menu can target any of the three
+action locations above by changing its `location`; this does not enable other view/window adapters.
 
 **Disable** removes that package's controls and preserves its stored package. Enable preferences survive
 restart. **Uninstall** removes only the selected installation; extension data, projects, drafts and history

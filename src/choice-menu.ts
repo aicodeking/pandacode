@@ -46,6 +46,10 @@ type ChoiceMenuOptions = {
   width?: number;
   /** Host-validated small action catalogs can opt into all 128 rows. Legacy menus stay at 100. */
   itemLimit?: number;
+  /** Host async catalogs: every query aborts/replaces the previous request. */
+  loadItems?: (query: string, signal: AbortSignal) => Promise<ChoiceItem[]>;
+  /** Multi-select changes stay local until the owning form is confirmed. */
+  multiple?: boolean;
 };
 
 /** A bounded, transient menu. Callbacks own all application changes. */
@@ -81,6 +85,10 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
   const list = panel.querySelector<HTMLElement>('.choice-menu-list')!;
   const error = panel.querySelector<HTMLElement>('.choice-menu-error')!;
   const status = panel.querySelector<HTMLElement>('.choice-menu-status')!;
+  const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'secondary-button'; retry.textContent = 'Retry options'; retry.hidden = true; panel.append(retry);
+  if (options.multiple) {
+    const done = document.createElement('button'); done.type = 'button'; done.className = 'secondary-button'; done.textContent = 'Done'; done.addEventListener('click', () => tree.close()); panel.append(done);
+  }
   const originalExpanded = anchor.getAttribute('aria-expanded');
   const originalControls = anchor.getAttribute('aria-controls');
   const anchorId = anchor.id;
@@ -88,6 +96,7 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
   let active = -1;
   let typed = '', typedAt = 0;
   let closeChild: (() => void) | undefined, childIndex = -1;
+  let loading = false, request: AbortController | undefined;
   const contains = (target: Node | null) => [...tree.panels].some(panel => panel.contains(target));
 
   function close(returnFocus = true): void {
@@ -95,6 +104,7 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
     const focused = document.activeElement;
     const restoreFocus = returnFocus && (contains(focused) || focused === document.body);
     closed = true;
+    request?.abort();
     closeChild?.();
     tree.panels.delete(panel);
     tree.levels = tree.levels.filter(level => level.panel !== panel);
@@ -215,11 +225,25 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
   function renderPending(): void {
     buttons.forEach((button, index) => { button.disabled = tree.pending || Boolean(items[index].disabled); });
     if (search) search.disabled = tree.pending;
-    list.setAttribute('aria-busy', String(tree.pending));
-    status.textContent = pending ? 'Applying…' : !items.length ? search?.value.trim() ? 'No matching options.' : 'No options available.' : matches > items.length ? `Showing ${items.length} of ${matches} options.${search ? ' Search to narrow the list.' : ''}` : '';
+    list.setAttribute('aria-busy', String(tree.pending || loading));
+    status.textContent = loading ? 'Loading options…' : pending ? 'Applying…' : !items.length ? search?.value.trim() ? 'No matching options.' : 'No options available.' : matches > items.length ? `Showing ${items.length} of ${matches} options.${search ? ' Search to narrow the list.' : ''}` : '';
     status.hidden = !status.textContent;
     position();
   }
+  async function loadChoices(): Promise<void> {
+    if (!options.loadItems || closed) return;
+    request?.abort(); const current = new AbortController(); request = current;
+    loading = true; error.hidden = true; retry.hidden = true; options.items = []; renderChoices();
+    try {
+      const response = await options.loadItems(search?.value ?? '', current.signal);
+      if (closed || current.signal.aborted || request !== current) return;
+      options.items = response; loading = false; renderChoices();
+    } catch {
+      if (closed || current.signal.aborted || request !== current) return;
+      loading = false; renderChoices(); error.textContent = 'Options could not be loaded.'; error.hidden = false; retry.hidden = false;
+    }
+  }
+  retry.addEventListener('click', () => { void loadChoices(); search?.focus(); });
   async function select(index: number): Promise<void> {
     if (closed || tree.pending || !items[index] || items[index].disabled) return;
     if (items[index].children) { openChild(index); return; }
@@ -227,7 +251,14 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
     pending = true; tree.pending = true; error.hidden = true;
     panel.focus({ preventScroll: true });
     tree.levels.forEach(level => level.renderPending());
-    try { await onSelect(items[index].id); if (!closed) tree.close(); }
+    try {
+      await onSelect(items[index].id);
+      if (!closed && options.multiple) {
+        const id = items[index].id;
+        options.items = options.items.map(item => item.id === id ? { ...item, selected: !item.selected } : item);
+        pending = false; tree.pending = false; renderChoices(); focusItem(index);
+      } else if (!closed) tree.close();
+    }
     catch (reason) {
       if (closed) return;
       pending = false; tree.pending = false;
@@ -271,10 +302,10 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
   });
   search?.addEventListener('input', () => {
     if (closed || pending) return;
-    error.hidden = true; typed = ''; renderChoices();
+    error.hidden = true; typed = ''; if (options.loadItems) void loadChoices(); else renderChoices();
   });
   panel.addEventListener('keydown', event => {
-    if (isImeKey(event)) return;
+    if (isImeKey(event)) { if (event.key === 'Enter' || event.key === 'Escape') event.preventDefault(); return; }
     // Restore the trigger before the browser's default Tab step, so the menu
     // does not jump to the end of the body or trap focus in a parent dialog.
     if (event.key === 'Tab') { tree.close(); return; }
@@ -338,5 +369,6 @@ function openLevel(options: ChoiceMenuOptions, tree: MenuTree, parent?: HTMLElem
   window.addEventListener('scroll', schedulePosition, true);
   window.visualViewport?.addEventListener('resize', schedulePosition);
   window.visualViewport?.addEventListener('scroll', schedulePosition);
+  if (options.loadItems) void loadChoices();
   return () => close();
 }
