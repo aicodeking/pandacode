@@ -21,6 +21,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? 'Grok asks before edits and commands, whatever its own config says.'
     : provider === 'devin'
     ? 'Devin’s Code mode: edits inside this project apply; commands it does not judge safe ask you.'
+    : provider === 'cursor'
+    ? 'Cursor’s Agent mode: edits apply; commands outside your Cursor allowlist ask you.'
     : pi
     ? `${pi} runs without its own approvals; PandaCode asks before edits, commands and other non-read tools.`
     : provider === 'deepseek'
@@ -54,6 +56,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? 'Devin’s Bypass Permissions mode: every tool runs without asking, unless your organization requires approval.'
     : provider === 'hermes'
     ? 'Skip approval prompts: Hermes runs every tool without asking (equivalent to its --yolo).'
+    : provider === 'cursor'
+    ? 'Cursor’s Agent mode with every permission request approved: commands outside your allowlist run without asking.'
     : provider === 'github-copilot'
     ? 'Use Copilot Agent mode with Allow All on. Copilot automatically approves tool, path, and URL requests.'
     : provider === 'zcode'
@@ -71,6 +75,10 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
   // Devin's Code mode already accepts edits, so it has no separate Accept edits choice.
   if (provider === 'devin') return [standard,
     { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Devin’s Plan mode: it investigates and writes a plan; commands ask you, and edits wait until you approve the plan.' },
+    ...review, full];
+  // Cursor's Agent mode applies edits without asking, so Accept edits would change nothing.
+  if (provider === 'cursor') return [standard,
+    { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Cursor’s Plan mode: it reads, searches and writes a plan; edits and commands that change state are declined.' },
     ...review, full];
   return [standard, provider === 'muse'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Work freely inside the sandbox. Muse asks only to leave it.' }

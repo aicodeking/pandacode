@@ -18,5 +18,6 @@
   "muse": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"universal"},
   "devin": {"consoleEnforcement":"none","enforcement":"asked","installAs":"devin"},
   "zcode": {"consoleEnforcement":"none","enforcement":"asked","installAs":"zcode"},
-  "hermes": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"hermes-agent"}
+  "hermes": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"hermes-agent"},
+  "cursor": {"consoleEnforcement":"none","enforcement":"asked","installAs":"cursor"}
 }

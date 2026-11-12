@@ -15,7 +15,7 @@ import { errorText } from './error-text';
 interface TrayTask { id: string; title: string; project: string; provider: ProviderId; at: number; failed?: boolean }
 interface TraySnapshot { running: TrayTask[]; waiting: TrayTask[]; finished: TrayTask[]; usage: AgentUsage[]; checking: boolean; askingClaude?: boolean }
 
-const NAMES: Partial<Record<ProviderId, string>> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', glm: 'GLM', opencode: 'OpenCode', kilo: 'Kilo', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', alibaba: 'Alibaba', deepseek: 'DeepSeek', pi: 'Pi', cline: 'Cline', muse: 'Muse', commandcode: 'Command Code', omp: 'Oh My Pi', 'github-copilot': 'Copilot', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
+const NAMES: Partial<Record<ProviderId, string>> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', glm: 'GLM', opencode: 'OpenCode', kilo: 'Kilo', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', alibaba: 'Alibaba', deepseek: 'DeepSeek', pi: 'Pi', cline: 'Cline', muse: 'Muse', commandcode: 'Command Code', omp: 'Oh My Pi', 'github-copilot': 'Copilot', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes', cursor: 'Cursor' };
 const root = document.documentElement;
 
 function refreshTheme(): void {

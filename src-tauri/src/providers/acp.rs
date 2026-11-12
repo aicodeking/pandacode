@@ -1,5 +1,5 @@
 //! ACP v1 transport for OpenCode, Kilo, Antigravity, Grok Build, Command Code, Cline,
-//! GitHub Copilot CLI and Devin. Kimi retains its provider-specific mode mapping.
+//! GitHub Copilot CLI, Devin, Hermes and Cursor. Kimi retains its provider-specific mode mapping.
 use super::*;
 use crate::slash_commands::claude::Pipe;
 
@@ -72,6 +72,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "cline" => super::cline::configure(command, config),
         "kilo" => super::kilo::configure(command),
         "devin" => super::devin::configure(command),
+        "cursor" => super::cursor::configure(command),
         "hermes" => super::hermes::configure(command, config),
         "antigravity" => antigravity_args(command),
         _ => {
@@ -242,6 +243,9 @@ impl Protocol {
             if self.config.provider == "devin" && value["error"]["code"] == -32000 {
                 return Err(super::devin::SIGN_IN.into());
             }
+            if self.config.provider == "cursor" && value["error"]["code"] == -32000 {
+                return Err(super::cursor::SIGN_IN.into());
+            }
             if self.config.provider == "hermes" {
                 let err_str = value["error"]["data"].as_str()
                     .or_else(|| value["error"]["data"]["details"].as_str())
@@ -408,6 +412,9 @@ impl Protocol {
         if self.config.provider == "devin" && super::devin::subagent_usage(&value) {
             return Ok(step);
         }
+        if self.config.provider == "cursor" && self.cursor_request(&value, &mut step) {
+            return Ok(step);
+        }
         if value["method"] == "session/request_permission" {
             if value["params"]["sessionId"]
                 .as_str()
@@ -431,9 +438,14 @@ impl Protocol {
             }
             let deepseek = self.config.provider == "deepseek";
             let copilot = self.config.provider == "github-copilot";
-            if self.config.provider == "kilo" {
+            let policy: Option<fn(&str, &str) -> Option<&'static str>> = match self.config.provider.as_str() {
+                "kilo" => Some(super::kilo::permission),
+                "cursor" => Some(super::cursor::permission),
+                _ => None,
+            };
+            if let Some(policy) = policy {
                 let tool = &value["params"]["toolCall"];
-                if let Some(wanted) = super::kilo::permission(&self.config.mode, field(tool, "kind")) {
+                if let Some(wanted) = policy(&self.config.mode, field(tool, "kind")) {
                     let selected = options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
                     let outcome = match selected {
                         Some(selected) => json!({"outcome":"selected","optionId":selected["optionId"]}),
@@ -688,6 +700,8 @@ impl Protocol {
             &[super::kilo::mode_id(&self.config.mode)]
         } else if self.config.provider == "devin" {
             &[super::devin::mode_id(&self.config.mode)]
+        } else if self.config.provider == "cursor" {
+            &[super::cursor::mode_id(&self.config.mode)]
         } else if self.config.provider == "hermes" {
             match self.config.mode.as_str() {
                 "auto" => &["accept_edits", "default"],
@@ -744,7 +758,7 @@ impl Protocol {
         };
         // On these harnesses the ACP mode is the approval policy, so a missing
         // one must fail the run rather than silently widen access.
-        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin");
+        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin" | "cursor");
         if let Some(option) = options(&self.acp_config, "mode") {
             let found = candidates
                 .iter()
@@ -773,10 +787,10 @@ impl Protocol {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
             self.mode_fallback()?;
-        } else if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "kilo" | "devin") {
+        } else if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "kilo" | "devin" | "cursor") {
             // With no mode information at all (a bare resumed session, for
             // instance) the run still fails rather than guess.
-            return Err(if matches!(self.config.provider.as_str(), "kilo" | "devin") {
+            return Err(if matches!(self.config.provider.as_str(), "kilo" | "devin" | "cursor") {
                 "This harness does not advertise the selected task mode."
             } else {
                 "This harness does not advertise a read-only planning mode."
@@ -815,10 +829,10 @@ impl Protocol {
         };
         Ok(())
     }
-    /// Devin keeps each setting on its saved session, so a resumed task skips
-    /// the round trip for any value it already has.
+    /// Devin and Cursor keep each setting on the session, so a run skips the
+    /// round trip (about a second on Cursor) for any value it already has.
     fn unchanged(&self, option: &Value, value: &str) -> bool {
-        self.config.provider == "devin" && option["currentValue"] == value
+        matches!(self.config.provider.as_str(), "devin" | "cursor") && option["currentValue"] == value
     }
     /// Devin's permission requests carry only the tool call ID and options, and
     /// several allow options grant standing access, so the generic path (which
@@ -890,7 +904,11 @@ impl Protocol {
     }
     fn acp_effort(&mut self, step: &mut Step) -> Result<(), String> {
         if let Some(effort) = &self.config.reasoning_effort {
-            let option = options(&self.acp_config, "thought_level").or_else(|| options(&self.acp_config, "effort"));
+            let option = if self.config.provider == "cursor" {
+                super::cursor::effort_option(&self.acp_config, Some(effort))
+            } else {
+                options(&self.acp_config, "thought_level").or_else(|| options(&self.acp_config, "effort"))
+            };
             match option {
                 Some(option) if self.unchanged(option, effort) => self.kimi_prompt(step),
                 Some(option) => step

@@ -1087,6 +1087,76 @@ drives it with the shared ACP adapter (`providers/hermes.rs`). Official docs: [h
 
 **Interactive console.** Click Open terminal to start `hermes` in an interactive terminal session. PandaCode passes `--resume <session>` when continuing a task, and `--yolo` when the task is in Full access mode.
 
+## Cursor CLI
+
+Cursor CLI (`cursor-agent`; install with `curl https://cursor.com/install -fsS | bash`)
+serves ACP v1 with `cursor-agent acp`, so PandaCode drives it with the shared ACP
+adapter (`providers/cursor.rs` holds its quirks). The installer also links the CLI as
+`agent`; PandaCode uses that name only when it resolves into Cursor's own install.
+Official docs: [CLI overview](https://cursor.com/docs/cli/overview) and
+[ACP](https://cursor.com/docs/cli/acp).
+
+**Sign-in.** Cursor keeps its own sign-in (`cursor-agent login`, or `CURSOR_API_KEY`
+in the harness's environment variables). A signed-in CLI opens sessions without ACP
+`authenticate`, and PandaCode never calls it. Without a sign-in, Cursor answers with
+ACP `-32000` and the turn stops with “Cursor is not signed in. Run `cursor-agent
+login` in a terminal, then send again.” Prompts and model calls go to Cursor under
+your Cursor plan.
+
+**Models and effort.** PandaCode sets `_meta.parameterizedModelPicker` in
+`initialize`, so the `model` option lists base models (`claude-opus-5`, `gpt-5.5`,
+`composer-2.5`…), and each model's effort, context size and speed arrive as separate
+options. Discovery sends Cursor's own `cursor/list_available_models` request once
+(about 4 s, in an empty scratch folder): it returns every model with its options, opens
+no session, leaves nothing in Cursor's chat history and does not change Cursor's
+saved model. The result is cached like other ACP catalogs. Each model's efforts are
+its own `thought_level` values, named as Cursor names them. Some models offer both a
+Thinking switch and an Effort level; the picker shows the Effort level. **Default**
+keeps the model last chosen in Cursor. Choosing a model in a task sets it with
+`session/set_config_option`, and Cursor saves that choice as its own default too.
+
+**Approvals.** Cursor's Agent mode applies file edits without asking, and asks before
+shell commands outside your Cursor allowlist. Standard runs in Agent mode and shows
+those requests as approvals; Accept edits is not offered (a task already in it also
+runs in Agent mode). Plan mode → Cursor's `plan`, which is read-only on Cursor's side;
+any read, search, fetch or think request is allowed and anything else is declined.
+Full access runs in Agent mode and approves every request. Approving always chooses
+`allow-once`.
+
+**Plans and questions.** In Plan mode, Cursor ends with a `cursor/create_plan`
+request. PandaCode shows the plan as its own message and accepts it, and Cursor keeps
+it in its data folder. Cursor's `cursor/ask_question` tool is answered “skipped” with
+a note, so the agent asks the question in its reply instead. Other `cursor/*`
+requests (todos, subagent tasks, image generation) get the shared unsupported-request
+answer.
+
+**Fewer round trips.** `session/new` and `session/load` report the mode, model and
+effort, so a setting that is already in place is not sent again. `session/load`
+replays the conversation before it answers; that replay is ignored.
+
+**Turn data.** Text, thoughts, tool calls, cancel, images
+(`promptCapabilities.image`), HTTP MCP for PandaCode tools and steering (held for the
+next turn) use the common ACP paths. Cursor does not report plan usage over ACP, so
+the Usage dialog points to the Cursor dashboard.
+
+**Commands.** Cursor has no ACP session delete, so PandaCode does not open a session
+just to read the slash commands; they appear once a task has run.
+
+**Terminal console.** The console opens Cursor's interactive CLI with the task's
+`--model`, `--resume <chat-id>` for an existing task (ACP sessions and CLI chats are
+the same), `--plan` for Plan mode and `--force` for Full access.
+
+**Updates.** Cursor updates itself (`cursor-agent update`), so Settings shows a manual
+update link.
+
+Verified against `cursor-agent` 2026.10.22 on 2026-11-10 by driving `cursor-agent acp`
+directly (initialize, `session/new`, `session/load`, `cursor/list_available_models`,
+model and effort switches, an Agent turn, a Plan turn with `cursor/create_plan`, and a
+signed-out start). The recorded frames back the unit tests in `providers/cursor.rs`.
+Live tests: `cargo test --lib installed_cursor -- --ignored`
+(`installed_cursor_lists_models` reads the catalog without a prompt;
+`installed_cursor_runs_and_resumes_a_task` sends two short prompts to `composer-2.5`).
+
 ## Kilo Code
 
 Kilo Code (`npm i -g @kilocode/cli`) exposes ACP v1 with `kilo acp`, so PandaCode
