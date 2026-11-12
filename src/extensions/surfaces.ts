@@ -11,7 +11,9 @@ export const THREAD_ACTION_SURFACES = [
   'panda.actionDock.actions', 'panda.team.actions', 'panda.agents.actions',
 ] as const;
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
-export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | typeof VIEW_ACTION_SURFACES[number] | ThreadActionLocation;
+export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
+export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
+export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof VIEW_ACTION_SURFACES[number] | ThreadActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

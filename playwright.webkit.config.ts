@@ -11,6 +11,6 @@ const config = defineConfig(base, {
 });
 
 export default defineConfig(config, {
-  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/generative-ui.spec.ts'],
-  grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions baseline|extensions install|extensions catalog|extensions layout|extensions menus|extensions dialogs|extensions view actions|extensions thread actions|streamed markdown|a table sorts|buttons and forms|custom views|invalid specs|stats, tree|details collapse`),
+  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/generative-ui.spec.ts'],
+  grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions baseline|extensions install|extensions catalog|extensions layout|extensions menus|extensions dialogs|extensions view actions|extensions thread actions|extensions settings actions|streamed markdown|a table sorts|buttons and forms|custom views|invalid specs|stats, tree|details collapse|Antigravity installation|resource usage lives|the command palette|Model routing is its|settings open on Recommended|settings deep links`),
 });

@@ -8,6 +8,11 @@ are not supported by this slice.
 The data vocabulary is described in [contracts.md](contracts.md); a schema-valid later capability is not
 necessarily implemented by this adapter.
 
+[Settings and actions](settings-actions.md) additionally documents namespaced persistent Settings pages,
+status actions, searchable commands, conflict-resolved shortcuts and the explicitly opted-in Colors/Wallpapers
+body/secondary-action contracts. Its canonical `settings-laboratory` example is packaged with only
+`extension.json` at the ZIP root. Core privacy, permission and recovery controls never accept third-party content.
+
 ## Install the sample
 
 Create a ZIP whose root contains `extension.json` and `assets/info.svg` from
@@ -27,7 +32,8 @@ or Space. The host displays `Extension installed successfully` once per activati
 For the submenu → dialog → select → confirmation flow, ZIP only `extension.json` from
 `tests/fixtures/extensions/menu-laboratory/` at the archive root. Enable `sample.menu-laboratory` and
 open **Menu laboratory → Reports → Configure report**. The same menu can target any of the three
-action locations above by changing its `location`; this does not enable other view/window adapters.
+action locations above by changing its `location`. The target must be an adopted host surface; an arbitrary
+new view/window location is not enabled by a manifest declaration.
 
 **Disable** removes that package's controls and preserves its stored package. Enable preferences survive
 restart. **Uninstall** removes only the selected installation; extension data, projects, drafts and history

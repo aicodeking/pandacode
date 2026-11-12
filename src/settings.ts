@@ -23,7 +23,9 @@ import { mountSchedulesSettings } from './schedules-settings';
 import { appUpdates } from './app-updates';
 import type { RemoteHost } from './remote-types';
 import type { AgentsDockPreferences } from './agents-dock';
-import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-sections';
+import { type SettingsPage, type SettingsSection } from './settings-sections';
+import { extensionSettingsSections, extensionSettingsPages, mountExtensionSettingsPage } from './extensions/settings-pages';
+import { onExtensionsChanged } from './extensions/manager';
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
 import { mountExtensionSettings } from './extensions/settings';
@@ -65,8 +67,6 @@ interface SettingsOptions {
   close(): void;
 }
 export interface SettingsView { show(section: SettingsSection): void; dispose(): void }
-
-const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page))!;
 
 /** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
 const PLANS = new Set<ProviderId>(['glm', 'mimo']);
@@ -179,26 +179,31 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'about': return `${aboutSettingsHtml()}${resourceUsageHtml()}
       <div class="settings-group settings-support"><div class="setting-row"><div><strong>Help & support</strong></div><button type="button" class="secondary-button" data-action="support">Open issues${icon('forward')}</button></div><details class="support-details"><summary>App details for support${icon('chevron')}</summary><p>Only the app version, platform, and architecture. Nothing is sent automatically.</p><textarea aria-label="App details for support" rows="3" readonly spellcheck="false"></textarea><div class="support-details-actions"><button type="button" class="secondary-button support-copy" disabled>${icon('copy')}Copy app details</button><button type="button" class="secondary-button support-retry" hidden>Try again</button></div><p role="status" aria-live="polite"></p></details></div>`;
   }
+  return '';
 }
 
 /** Settings as a full page: groups on the left, the chosen group's settings on the right. */
 export function mountSettings(host: HTMLElement, options: SettingsOptions): SettingsView {
+  let SECTIONS = extensionSettingsSections();
+  let extensionPageSignatures = new Map(extensionSettingsPages().map(entry => [entry.page.id, JSON.stringify(entry)]));
+  const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page));
   host.classList.add('settings-page-root');
   host.innerHTML = `<nav class="settings-nav" aria-label="Settings sections">
       <div class="settings-nav-head" data-tauri-drag-region><button type="button" class="settings-back" data-settings-close aria-label="Back to the workspace" title="Back (Esc)">${icon('back')}<span>Back</span></button></div>
       <h1 class="settings-nav-title" data-tauri-drag-region>Settings</h1>
-      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${section.label}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
+      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${escape(section.label)}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${escape(section.label)}</span></button>`).join('')}</div>
     </nav>
     <div class="settings-content">${SECTIONS.filter(section => section.pages.length > 1).map(section => `<div class="settings-subnav" data-section-pages="${section.id}" data-tauri-drag-region hidden><div class="ds-seg" role="tablist" aria-label="${section.label}">${section.pages.map(page => `<button type="button" role="tab" id="settings-subtab-${page.id}" data-section="${page.id}" aria-controls="settings-panel-${page.id}" aria-selected="false" tabindex="-1">${page.label}</button>`).join('')}</div></div>`).join('')}${SECTIONS.flatMap(section => section.pages.map(page => {
       const paged = section.pages.length > 1;
-      return `<section class="settings-panel${paged ? ' settings-panel-paged' : ''}" id="settings-panel-${page.id}" role="tabpanel" aria-labelledby="${paged ? `settings-subtab-${page.id}` : `settings-tab-${section.id}`}" hidden><header class="settings-panel-head" data-tauri-drag-region><h2${paged ? ' class="sr-only"' : ''}>${page.label}</h2></header><div class="settings-panel-body">${sectionHtml(page.id, options)}</div></section>`;
+      return `<section class="settings-panel${paged ? ' settings-panel-paged' : ''}" id="settings-panel-${page.id}" role="tabpanel" aria-labelledby="${paged ? `settings-subtab-${page.id}` : `settings-tab-${section.id}`}" hidden><header class="settings-panel-head" data-tauri-drag-region><h2${paged ? ' class="sr-only"' : ''}>${escape(page.label)}</h2></header><div class="settings-panel-body">${sectionHtml(page.id, options)}</div></section>`;
     })).join('')}</div>`;
-  const tabs = [...host.querySelectorAll<HTMLButtonElement>('.settings-nav-list>[role="tab"]')];
+  let tabs = [...host.querySelectorAll<HTMLButtonElement>('.settings-nav-list>[role="tab"]')];
   const subnavs = [...host.querySelectorAll<HTMLElement>('.settings-subnav')];
   const pageTabs = subnavs.flatMap(subnav => [...subnav.querySelectorAll<HTMLButtonElement>('[role="tab"]')]);
-  const panels = new Map(SECTIONS.flatMap(section => section.pages).map(page => [page.id, host.querySelector<HTMLElement>(`#settings-panel-${page.id}`)!]));
+  const panels = new Map(SECTIONS.flatMap(section => section.pages).map(page => [page.id, host.querySelector<HTMLElement>(`#${CSS.escape(`settings-panel-${page.id}`)}`)!]));
   const cleanups: (() => void)[] = [];
   const mounted = new Set<SettingsPage>();
+  const extensionPageCleanups = new Map<SettingsPage, () => void>();
   let disposed = false;
 
   const list = host.querySelector<HTMLElement>('.provider-diagnostics')!;
@@ -304,6 +309,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (mounted.has(id)) return;
     mounted.add(id);
     const panel = panels.get(id)!;
+    const extensionPage = extensionSettingsPages().find(entry => entry.page.id === id);
+    if (extensionPage) extensionPageCleanups.set(id, mountExtensionSettingsPage(panel.querySelector<HTMLElement>('.settings-panel-body')!, extensionPage.owner, extensionPage.page));
     if (id === 'recommended') {
       recommended = mountRecommended(panel.querySelector<HTMLElement>('#recommended-settings')!, knownRecommended, askRecommended);
       cleanups.push(() => recommended?.dispose());
@@ -354,7 +361,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   let shown: SettingsPage | undefined;
   function show(id: SettingsSection, focus = false): void {
     if (disposed) return;
-    const page = id === 'connections' ? 'cloud' : id, section = sectionOf(page);
+    const requested = id === 'connections' ? 'cloud' : id;
+    const page = sectionOf(requested) ? requested : 'extensions', section = sectionOf(page)!;
     tabs.forEach(tab => {
       const on = tab.dataset.section === section.id;
       tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1;
@@ -411,6 +419,34 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     cleanups.push(updates.subscribe(paint)); paint();
   }
   updateProviders(options.providers);
+  cleanups.push(onExtensionsChanged(() => {
+    if (disposed) return;
+    const entries = extensionSettingsPages(), nextSignatures = new Map(entries.map(entry => [entry.page.id, JSON.stringify(entry)]));
+    const changed = new Set([...extensionPageSignatures.keys(), ...nextSignatures.keys()].filter(id => extensionPageSignatures.get(id) !== nextSignatures.get(id)));
+    if (!changed.size) return;
+    const focusedPage = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-extension-settings-page]')?.dataset.extensionSettingsPage;
+    const focusRemoved = !!focusedPage && changed.has(focusedPage);
+    for (const id of changed) {
+      const pageId = id as SettingsPage;
+      extensionPageCleanups.get(pageId)?.(); extensionPageCleanups.delete(pageId); mounted.delete(pageId);
+      panels.get(pageId)?.remove(); panels.delete(pageId);
+      tabs.find(tab => tab.dataset.extensionSettingsPage === id)?.remove();
+    }
+    SECTIONS = extensionSettingsSections();
+    const nav = host.querySelector<HTMLElement>('.settings-nav-list')!, content = host.querySelector<HTMLElement>('.settings-content')!;
+    for (const { page } of entries.filter(entry => changed.has(entry.page.id))) {
+      const tab = document.createElement('button'); tab.type = 'button'; tab.dataset.extensionSettingsPage = page.id; tab.dataset.section = page.id; tab.id = `settings-tab-${page.id}`; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', `settings-panel-${page.id}`); tab.textContent = page.title; nav.append(tab);
+      const panel = document.createElement('section'); panel.dataset.extensionSettingsPage = page.id; panel.className = 'settings-panel'; panel.id = `settings-panel-${page.id}`; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', tab.id); panel.innerHTML = `<header class="settings-panel-head"><h2>${escape(page.title)}</h2></header><div class="settings-panel-body"></div>`; content.append(panel); panels.set(page.id as SettingsPage, panel);
+    }
+    extensionPageSignatures = nextSignatures;
+    tabs = [...nav.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    show(shown ?? 'extensions', focusRemoved);
+  }));
+  // Mark only extension-owned navigation/panels for live reconciliation; core nodes stay mounted.
+  for (const { page } of extensionSettingsPages()) {
+    tabs.find(tab => tab.dataset.section === page.id)!.dataset.extensionSettingsPage = page.id;
+    panels.get(page.id as SettingsPage)!.dataset.extensionSettingsPage = page.id;
+  }
   host.addEventListener('click', click);
   host.addEventListener('keydown', keydown);
   refreshButton.addEventListener('click', refresh);
@@ -421,6 +457,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       if (disposed) return;
       disposed = true; readinessCleanup.forEach(cleanup => cleanup());
       cleanups.forEach(cleanup => cleanup());
+      extensionPageCleanups.forEach(cleanup => cleanup());
       host.removeEventListener('click', click); host.removeEventListener('keydown', keydown);
       refreshButton.removeEventListener('click', refresh);
       host.replaceChildren(); host.classList.remove('settings-page-root'); delete host.dataset.updateTone;

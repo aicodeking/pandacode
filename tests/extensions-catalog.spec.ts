@@ -1,4 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+const surfaceIds: string[] = JSON.parse(readFileSync(new URL('./fixtures/extensions/surfaces.json', import.meta.url), 'utf8')).catalog.surfaces;
 async function explorer(page: Page) {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Extensions', exact: true }).click();
@@ -8,7 +10,8 @@ test('extensions catalog: core discovery, pagination, public handlers and keyboa
   await page.goto('/'); await expect(page.locator('#prompt')).toBeVisible();
   await page.locator('#prompt').fill('catalog draft');
   const region = await explorer(page);
-  await expect(region.getByRole('list', { name: 'Public surfaces' }).getByRole('listitem')).toHaveCount(11);
+  await expect(region.getByRole('list', { name: 'Public surfaces' }).getByRole('listitem')).toHaveCount(surfaceIds.length);
+  await expect(region.getByRole('list', { name: 'Public surfaces' }).locator('code')).toHaveText([...surfaceIds].sort());
   await expect(region.locator('[data-catalog-item]')).toHaveCount(5);
   await region.getByRole('button', { name: 'Next items', exact: true }).click();
   await expect(region.locator('[data-catalog-item]')).toHaveCount(5);

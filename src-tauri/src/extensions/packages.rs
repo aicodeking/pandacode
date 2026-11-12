@@ -128,6 +128,52 @@ fn validate(bytes: &[u8]) -> Result<Package> {
 }
 
 impl Packages {
+    fn settings_page(&self, id: &str, page: &str) -> Result<Value> {
+        if self.safe { return Err("Safe mode: extension settings are dormant.".into()); }
+        if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
+        self.directory()?;
+        let (_, package) = self.record(&self.root.join(format!("{id}.json")))?;
+        if !package.enabled { return Err("Disabled extension settings are dormant.".into()); }
+        package.manifest["contributes"]["settings"].as_array().into_iter().flatten().find(|entry| entry["id"] == page).cloned().ok_or_else(|| "Unknown settings page or namespace.".into())
+    }
+    fn settings_path(&self, id: &str) -> Result<PathBuf> {
+        let directory = self.root.with_file_name("extension-settings-v1");
+        if directory.exists() {
+            let meta = std::fs::symlink_metadata(&directory).map_err(|_| "Cannot inspect extension settings.")?;
+            if meta.file_type().is_symlink() || !meta.is_dir() { return Err("Unsafe extension settings directory.".into()); }
+        } else { std::fs::create_dir(&directory).map_err(|_| "Cannot create extension settings.")?; }
+        Ok(directory.join(format!("{id}.json")))
+    }
+    fn settings_record(&self, id: &str) -> Result<Value> {
+        let path = self.settings_path(id)?;
+        if !path.exists() { return Ok(json!({})); }
+        let value: Value = serde_json::from_slice(&read_bounded(&path, 128 * 1024)?).map_err(|_| "Corrupt extension settings.")?;
+        if !value.is_object() { return Err("Corrupt extension settings.".into()); }
+        Ok(value)
+    }
+    fn settings_get(&self, id: &str, page: &str) -> Result<Value> {
+        let definition = self.settings_page(id, page)?;
+        let stored = self.settings_record(id)?;
+        match stored.get(page) {
+            Some(value) if valid_settings_values(&definition, value) => Ok(value.clone()),
+            // Retain incompatible dormant data without forwarding it to a changed schema.
+            _ => Ok(Value::Null),
+        }
+    }
+    fn settings_set(&self, id: &str, page: &str, values: &Value) -> Result<()> {
+        let definition = self.settings_page(id, page)?;
+        if !valid_settings_values(&definition, values) { return Err("Invalid extension settings values.".into()); }
+        let mut record = self.settings_record(id)?; record[page] = values.clone();
+        let bytes = serde_json::to_vec(&record).map_err(|_| "Cannot serialize settings.")?;
+        if bytes.len() > 128 * 1024 { return Err("Extension settings limit exceeded.".into()); }
+        let path = self.settings_path(id)?;
+        let stage = path.with_extension("stage");
+        // The manager mutex serializes writes; a stale stage is never silently overwritten.
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&stage).map_err(|_| "Cannot stage extension settings.")?;
+        let result = (|| { file.write_all(&bytes).map_err(|_| "Cannot write settings.")?; file.sync_all().map_err(|_| "Cannot flush settings.")?; drop(file); std::fs::rename(&stage, &path).map_err(|_| "Cannot promote settings.") })();
+        if result.is_err() { let _ = std::fs::remove_file(stage); }
+        result.map_err(str::to_owned)
+    }
     fn directory(&self) -> Result<()> {
         if self.root.exists() {
             let meta = std::fs::symlink_metadata(&self.root).map_err(|_| "Cannot inspect extension storage.")?;
@@ -223,6 +269,33 @@ impl Packages {
     }
 }
 
+fn valid_settings_values(page: &Value, values: &Value) -> bool {
+    let Some(values) = values.as_object() else { return false; };
+    let Some(fields) = page["fields"].as_array() else { return false; };
+    values.len() == fields.len() && fields.iter().all(|field| {
+        let Some(value) = values.get(field["id"].as_str().unwrap_or("")) else { return false; };
+        match field["kind"].as_str() {
+            Some("text") => value.as_str().is_some_and(|text| text.encode_utf16().count() <= 4096 && text.encode_utf16().count() >= field["minLength"].as_u64().unwrap_or(0) as usize && (field["required"] != true || !text.trim().is_empty())),
+            Some("switch") => value.is_boolean(),
+            Some("select") => {
+                let allowed = |value: &Value| value.is_string() && field["options"].as_array().into_iter().flatten().any(|option| option["value"] == *value && option["disabled"] != true);
+                if field["multiple"] == true { value.as_array().is_some_and(|values| values.len() <= 100 && (field["required"] != true || !values.is_empty()) && values.iter().all(allowed) && values.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>().len() == values.len()) }
+                else { value.is_string() && (value == "" && field["required"] != true || allowed(value)) }
+            },
+            _ => false,
+        }
+    })
+}
+
+#[tauri::command]
+pub fn extensions_settings_get(state: tauri::State<'_, ExtensionPackages>, id: String, page: String) -> Result<Value> {
+    state.0.lock().map_err(|_| "Extension manager unavailable.")?.settings_get(&id, &page)
+}
+#[tauri::command]
+pub fn extensions_settings_set(state: tauri::State<'_, ExtensionPackages>, id: String, page: String, values: Value) -> Result<()> {
+    state.0.lock().map_err(|_| "Extension manager unavailable.")?.settings_set(&id, &page, &values)
+}
+
 #[tauri::command]
 pub fn extensions_snapshot(state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> { Ok(state.0.lock().map_err(|_| "Extension manager unavailable.")?.snapshot()) }
 #[tauri::command]
@@ -264,6 +337,28 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    #[test]
+    fn settings_namespace_values_restart_dormancy_and_uninstall_are_native_validated() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/settings-laboratory/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        let id = "sample.settings-laboratory"; let page = "sample.settings-laboratory/preferences";
+        packages.install(&archive(&[("extension.json", manifest.as_bytes())])).unwrap();
+        assert!(packages.settings_get(id, page).is_err());
+        packages.enable(id, true).unwrap();
+        assert_eq!(packages.settings_get(id, page).unwrap(), Value::Null);
+        let values = json!({"label":"Saved report", "enabled":false, "format":"long"});
+        packages.settings_set(id, page, &values).unwrap();
+        assert_eq!(storage.packages(false).settings_get(id, page).unwrap(), values);
+        for invalid in [json!({"label":"", "enabled":true, "format":"short"}), json!({"label":"ok", "enabled":"yes", "format":"short"}), json!({"label":"ok", "enabled":true, "format":"unsupported"}), json!({"label":"ok", "enabled":true, "format":"unknown"}), json!({"label":"ok", "enabled":true, "format":"short", "theme":"dark"}), json!({"label":"x".repeat(4097), "enabled":true, "format":"short"})] { assert!(packages.settings_set(id, page, &invalid).is_err()); }
+        assert!(packages.settings_set(id, "other.owner/preferences", &values).is_err());
+        assert!(packages.settings_get("../escape", page).is_err());
+        assert!(storage.packages(true).settings_get(id, page).is_err());
+        packages.enable(id, false).unwrap(); assert!(packages.settings_set(id, page, &values).is_err());
+        packages.enable(id, true).unwrap(); assert_eq!(packages.settings_get(id, page).unwrap(), values);
+        packages.uninstall(id).unwrap(); assert!(packages.settings_get(id, page).is_err());
+        packages.install(&archive(&[("extension.json", manifest.as_bytes())])).unwrap(); packages.enable(id, true).unwrap();
+        assert_eq!(packages.settings_get(id, page).unwrap(), values);
+    }
     #[test]
     fn menu_laboratory_installs_enables_and_reloads_without_executable_runtime() {
         let manifest = include_str!("../../../tests/fixtures/extensions/menu-laboratory/extension.json");

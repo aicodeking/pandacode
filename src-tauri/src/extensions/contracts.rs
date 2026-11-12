@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 5] = ["commands", "icons", "menus", "views", "layouts"];
+const CONTRIBUTIONS: [&str; 8] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -264,6 +264,11 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
             if command["action"]["kind"] == "openView" { reference(contributions, "views", &command["action"]["view"], &format!("{path}/contributes/commands"))?; }
             if command["action"]["kind"] == "showDialog" { dialog_fields(&command["action"]["dialog"], &format!("{path}/contributes/commands"))?; }
         }
+        for page in items(contributions, "settings") {
+            dialog_fields(page, &format!("{path}/contributes/settings"))?;
+            if items(page, "fields").iter().any(|field| field["async"] == true) { return Err(fail("UnsupportedContribution", &format!("{path}/contributes/settings"), vec![text(page, "id").to_owned()])); }
+        }
+        for binding in items(contributions, "keybindings") { reference(contributions, "commands", &binding["command"], &format!("{path}/contributes/keybindings"))?; }
         for menu in items(contributions, "menus") {
             reference(contributions, "commands", &menu["command"], &format!("{path}/contributes/menus"))?;
             if menu.get("icon").is_some() { reference(contributions, "icons", &menu["icon"], &format!("{path}/contributes/menus"))?; }
@@ -370,6 +375,23 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_and_shortcuts_share_namespaces_and_protected_dialog_policy() {
+        let sample: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/settings-laboratory/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([sample]))["ok"], true);
+        for kind in ["settings", "keybindings", "dialogExtras"] {
+            let mut invalid = sample.clone(); invalid["contributes"][kind][0]["id"] = serde_json::json!("other.owner/foreign");
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["error"]["code"], "InvalidId");
+        }
+        for name in ["permission", "privacy", "recovery", "unknown"] {
+            let mut invalid = sample.clone(); invalid["contributes"]["dialogExtras"][0]["dialog"] = serde_json::json!(name);
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false);
+            let mut invalid = sample.clone(); invalid["contributes"]["menus"][0]["location"] = serde_json::json!(format!("panda.dialog.{name}.actions"));
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false);
+        }
+        let mut invalid = sample.clone(); invalid["contributes"]["settings"][0]["fields"][2]["async"] = serde_json::json!(true);
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["error"]["code"], "UnsupportedContribution");
+    }
     use super::*;
 
     #[test]

@@ -27,7 +27,10 @@ test('extensions menus: shared three-level fixture is validated without mutation
 test('extensions menus: discovery labels nested contributions as menu triggers, not direct command buttons', () => {
   const catalog = createUiCatalog(() => ({ safeMode: false, diagnostics: [], packages: [{ manifest: manifest(), icons: {}, enabled: true }] }));
   assert.equal(catalog.listItems({ owner: sample.id }).items[0].type, 'menu-trigger');
-  for (const surface of catalog.listSurfaces().items) assert.deepEqual(surface.supportedItemTypes, THREAD_ACTION_SURFACES.includes(surface.id) ? ['button', 'menu-trigger', 'status', 'badge'] : ['button', 'menu-trigger']);
+  for (const surface of catalog.listSurfaces().items) {
+    const dataTypes = { 'panda.commands': ['command'], 'panda.shortcuts': ['keybinding'], 'panda.settings.pages': ['settings-page'], 'panda.dialog.colors.bodyExtras': ['text'], 'panda.dialog.wallpapers.bodyExtras': ['text'] };
+    assert.deepEqual(surface.supportedItemTypes, dataTypes[surface.id] ?? (THREAD_ACTION_SURFACES.includes(surface.id) || surface.id === 'panda.status.items' || surface.id.endsWith('.actions') && surface.id.startsWith('panda.dialog.') ? ['button', 'menu-trigger', 'status', 'badge'] : ['button', 'menu-trigger']));
+  }
 });
 
 test('extensions menus: reject cycles, depth, total items, duplicate IDs, foreign IDs and malformed variants', () => {

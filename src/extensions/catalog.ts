@@ -1,7 +1,7 @@
 /** Public JSON-only discovery. Definitions are logical locations, not selectors or DOM handles. */
 import { createDeclarativeActivation } from './activation.ts';
 import type { ExtensionSnapshot } from './manager';
-import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, CONTEXT_COMMANDS } from './surfaces.ts';
+import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS } from './surfaces.ts';
 
 export const HEADER = 'panda.workspace.header.actions';
 export const FOOTER = 'panda.sidebar.footer';
@@ -9,7 +9,7 @@ export const INSPECTOR = 'panda.inspector.actions';
 export type PublicCommandId = 'panda.ui/toggle-sidebar' | 'panda.ui/open-settings' | 'panda.ui/toggle-theme';
 export type CatalogQuery = { windowId?: string; owner?: string; type?: string; location?: string; cursor?: string; limit?: number };
 type Availability = { available: boolean; reason?: 'HostUnavailable' };
-export type SurfaceMetadata = Availability & { id: string; owner: string; type: 'action-slot'; location: string; label: string; supportedOperations: string[]; supportedItemTypes: string[]; windows: string[] };
+export type SurfaceMetadata = Availability & { id: string; owner: string; type: 'action-slot' | 'declarative-data-slot'; location: string; label: string; supportedOperations: string[]; supportedItemTypes: string[]; windows: string[] };
 export type ItemMetadata = Availability & { id: string; owner: string; version?: string; defaultPosition?: number; type: 'button' | 'menu-trigger' | 'link' | 'status' | 'badge'; location: string; label: string; supportedOperations: string[]; command?: { id: string; inputSchema: { type: 'null' }; capability: 'host.ui'; supportedContexts: string[] } };
 export type CatalogPage<T> = { schemaVersion: 1; revision: string; items: T[]; nextCursor: string | null };
 export class CatalogError extends Error {
@@ -50,6 +50,8 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       { id: INSPECTOR, owner: 'panda.core', type: 'action-slot', location: INSPECTOR, label: 'Inspector actions (when open)', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true },
       ...VIEW_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
       ...THREAD_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger', 'status', 'badge'], windows: ['main'], available: true })),
+      ...SETTINGS_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger', 'status', 'badge'], windows: ['main'], available: true })),
+      ...SETTINGS_DATA_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute'], supportedItemTypes: location === 'panda.settings.pages' ? ['settings-page'] : location === 'panda.commands' ? ['command'] : location === 'panda.shortcuts' ? ['keybinding'] : ['text'], windows: ['main'], available: true })),
     ];
     const activation = createDeclarativeActivation(state, 0);
     const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.presentation === 'status' || menu.presentation === 'badge' ? menu.presentation : menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true }))];

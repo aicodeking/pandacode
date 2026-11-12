@@ -1,6 +1,7 @@
 /** Settings' map, kept apart from settings.ts so the command palette can list pages without loading the page. */
 
-export type SettingsPage = 'recommended' | 'general' | 'appearance' | 'voice' | 'agents' | 'providers' | 'teams' | 'routing' | 'schedules' | 'tools' | 'skills' | 'rules' | 'extensions' | 'cloud' | 'remote' | 'github' | 'about';
+export type ExtensionSettingsPage = `${string}.${string}/${string}`;
+export type SettingsPage = 'recommended' | 'general' | 'appearance' | 'voice' | 'agents' | 'providers' | 'teams' | 'routing' | 'schedules' | 'tools' | 'skills' | 'rules' | 'extensions' | 'cloud' | 'remote' | 'github' | 'about' | ExtensionSettingsPage;
 /** A page id, or a section id that lands on the section's first page. */
 export type SettingsSection = SettingsPage | 'connections';
 

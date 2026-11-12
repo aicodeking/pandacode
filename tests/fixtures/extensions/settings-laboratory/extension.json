@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.settings-laboratory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "requiredContributions": ["settings", "keybindings", "dialogExtras"],
+  "contributes": {
+    "commands": [
+      { "id": "sample.settings-laboratory/note", "title": "Laboratory status", "action": { "kind": "showMessage", "message": "Settings laboratory command invoked" } },
+      { "id": "sample.settings-laboratory/other", "title": "Laboratory alternative", "action": { "kind": "showMessage", "message": "Alternative laboratory command invoked" } },
+      { "id": "sample.settings-laboratory/denied", "title": "Laboratory unavailable", "enabled": false, "action": { "kind": "showMessage", "message": "Must never appear" } },
+      { "id": "sample.settings-laboratory/form", "title": "Laboratory form", "action": { "kind": "showDialog", "dialog": { "title": "Laboratory form", "fields": [{ "id": "note", "kind": "text", "label": "Local note" }], "successMessage": "Laboratory form confirmed" } } }
+    ],
+    "menus": [
+      { "id": "sample.settings-laboratory/status", "location": "panda.status.items", "command": "sample.settings-laboratory/note", "items": [{ "id": "sample.settings-laboratory/status-note", "kind": "command", "title": "Show laboratory note", "command": "sample.settings-laboratory/note" }] },
+      { "id": "sample.settings-laboratory/colors", "location": "panda.dialog.colors.actions", "presentation": "button", "command": "sample.settings-laboratory/note", "text": "Laboratory color note" },
+      { "id": "sample.settings-laboratory/wallpapers", "location": "panda.dialog.wallpapers.actions", "presentation": "button", "command": "sample.settings-laboratory/note", "text": "Laboratory wallpaper note" },
+      { "id": "sample.settings-laboratory/hidden", "location": "panda.workspace.header.actions", "visible": false, "command": "sample.settings-laboratory/note" }
+    ],
+    "settings": [{ "id": "sample.settings-laboratory/preferences", "title": "Laboratory preferences", "fields": [
+      { "id": "label", "kind": "text", "label": "Report label", "value": "Local report", "required": true },
+      { "id": "enabled", "kind": "switch", "label": "Include summary", "value": true },
+      { "id": "format", "kind": "select", "label": "Report format", "options": [{ "value": "short", "label": "Short" }, { "value": "long", "label": "Long" }, { "value": "unsupported", "label": "Unavailable", "disabled": true }] }
+    ] }],
+    "keybindings": [
+      { "id": "sample.settings-laboratory/shortcut", "command": "sample.settings-laboratory/note", "key": "Mod+Shift+KeyU" },
+      { "id": "sample.settings-laboratory/conflict", "command": "sample.settings-laboratory/other", "key": "Mod+Shift+KeyU" },
+      { "id": "sample.settings-laboratory/core-conflict", "command": "sample.settings-laboratory/note", "key": "Mod+KeyK" }
+    ],
+    "dialogExtras": [
+      { "id": "sample.settings-laboratory/colors-body", "dialog": "colors", "text": "Additional color guidance, not a core preference." },
+      { "id": "sample.settings-laboratory/wallpapers-body", "dialog": "wallpapers", "text": "Additional wallpaper guidance, not a privacy control." }
+    ]
+  }
+}

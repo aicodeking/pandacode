@@ -1,6 +1,8 @@
 .extension-header-actions { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
 .extension-header-actions[hidden] { display: none; }
 .extension-header-actions button { -webkit-app-region: no-drag; }
+.action-dock .action-dock-group[data-group="status"]:has(> .extension-header-actions:not([hidden]) > :not([hidden])) { display: flex; }
+.action-dock .action-dock-group[data-group="status"] > .extension-header-actions { flex-direction: inherit; }
 .extension-action-slot:empty, .extension-action-slot:has(> [hidden]) { display: none; }
 .extension-action-slot { display: inline-flex; align-items: center; max-width: 100%; }
 .extension-action-slot .extension-header-actions { flex-wrap: wrap; }

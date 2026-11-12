@@ -77,7 +77,8 @@ import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
-import { SECTIONS } from './settings-sections';
+import { extensionSettingsSections } from './extensions/settings-pages';
+import { extensionCommands, invokeExtensionCommand, dispatchExtensionShortcut } from './extensions/commands';
 import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
 import { syncTrayState } from './tray-motion';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
@@ -542,6 +543,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
   mountExtensionActions($('.inspector-strip-actions'), 'panda.inspector.actions', context, notify, onContextChanged);
+  mountExtensionActions($('#action-dock [data-group="status"]'), 'panda.status.items', context, notify, onContextChanged);
   mountExtensionActions($('.header-actions'), 'panda.thread.header', context, notify, onContextChanged, () => Boolean(state.sessionId) && state.view === 'conversation');
   const dockSlot = document.createElement('div'); dockSlot.className = 'extension-action-slot'; $('#action-dock').append(dockSlot);
   mountExtensionActions(dockSlot, 'panda.actionDock.actions', context, notify, onContextChanged);
@@ -606,8 +608,9 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     'panda.ui/open-settings': () => showSettings(),
     'panda.ui/toggle-theme': () => toggleTheme(),
   });
-  await (await import('./extensions/manager')).loadExtensions();
-  const { extensionsSnapshot, onExtensionsChanged } = await import('./extensions/manager');
+  const { loadExtensions, extensionsSnapshot, onExtensionsChanged } = await import('./extensions/manager');
+  onExtensionsChanged(() => { if (document.querySelector('#dialog.command-dialog[open]')) renderCommands(document.querySelector<HTMLInputElement>('#command-query')?.value ?? ''); });
+  await loadExtensions();
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
     if (extensionsLayoutSafeMode) document.querySelectorAll<HTMLElement>('[data-layout-hidden]').forEach(element => { element.removeAttribute('data-layout-hidden'); element.inert = false; });
@@ -5344,6 +5347,7 @@ let openCodeModelsCleanup: (() => void) | undefined;
 let moodboardsCleanup: (() => void) | undefined;
 let botsView: import('./bots').BotsView | undefined;
 function disposeSettingsViews(): void {
+  namedDialogExtrasCleanup?.(); namedDialogExtrasCleanup = undefined;
   botsView?.dispose(); botsView = undefined;
   boardMentionPicker?.dispose(); boardMentionPicker = undefined;
   agentUsageCleanup?.(); agentUsageCleanup = undefined;
@@ -6124,21 +6128,28 @@ function toggleTheme(): void {
   if (settingsView) { closeSettings(); void showSettings('appearance'); }
 }
 let colorsSettingsCleanup: (() => void) | undefined;
+let namedDialogExtrasCleanup: (() => void) | undefined;
 async function showColorsSettings(): Promise<void> {
+  const context = { revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) };
   const dialog = modal('Colors', '<div id="colors-settings-content"><div class="dialog-loading">Loading themes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'colors-dialog');
   const host = dialog.querySelector<HTMLElement>('#colors-settings-content')!;
   const { mountThemeSettings } = await import('./theme-settings');
   if (!dialog.open || !host.isConnected) return;
   colorsSettingsCleanup?.();
   colorsSettingsCleanup = mountThemeSettings(host, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) });
+  const { mountNamedDialogExtras } = await import('./extensions/dialog-extras');
+  if (dialog.open && host.isConnected) namedDialogExtrasCleanup = mountNamedDialogExtras(dialog, 'colors', context, notify);
   dialog.addEventListener('close', () => { colorsSettingsCleanup?.(); colorsSettingsCleanup = undefined; }, { once: true });
 }
 async function showWallpaperSettings(): Promise<void> {
+  const context = { revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) };
   const dialog = modal('Wallpapers', '<div id="wallpaper-settings-content"><div class="dialog-loading">Loading scenes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'wallpaper-settings-dialog');
   const host = dialog.querySelector<HTMLElement>('#wallpaper-settings-content')!;
   const { mountWallpaperSettings } = await import('./wallpaper-settings');
   if (!dialog.open || !host.isConnected) return;
   wallpaperSettingsCleanup = mountWallpaperSettings(host, wallpapers);
+  const { mountNamedDialogExtras } = await import('./extensions/dialog-extras');
+  if (dialog.open && host.isConnected) namedDialogExtrasCleanup = mountNamedDialogExtras(dialog, 'wallpapers', context, notify);
 }
 async function showProviderConnections(): Promise<void> {
   const dialog = modal('Provider connections', '<div id="provider-connections-content"><p class="dialog-loading">Loading connections…</p></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'provider-connections-dialog');
@@ -7041,13 +7052,15 @@ function showCommands(): void {
   modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
 }
 /** Every Settings page, findable by page or section name or a page's keywords; only listed once there is a query. */
-const settingsPageCommands = () => SECTIONS.flatMap(section => section.pages.map(item => ({ action: 'settings-page', page: item.id, label: `Settings › ${section.pages.length > 1 ? `${section.label} › ` : ''}${item.label}`, keywords: item.keywords ?? '', icon: section.icon, shortcut: '' })));
+const settingsPageCommands = () => extensionSettingsSections().flatMap(section => section.pages.map(item => ({ action: 'settings-page', page: item.id, label: `Settings › ${section.pages.length > 1 ? `${section.label} › ` : ''}${item.label}`, keywords: item.keywords ?? '', icon: section.icon, shortcut: '' })));
 /** Every whitespace-separated word of the query appears somewhere in the text (case-insensitive). */
 const matchesWords = (text: string, query: string): boolean => { const hay = text.toLowerCase(); return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => hay.includes(word)); };
 function renderCommands(query: string): void {
   const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : []), ...(query ? settingsPageCommands() : [])].filter(c => matchesWords(`${c.label} ${'keywords' in c ? c.keywords : ''}`, query));
   const tasks = listedSessions().filter(s => matchesWords(s.title, query)).slice(0, 12);
-  $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}"${'page' in c ? ` data-id="${c.page}"` : ''} data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
+  commands.push(...[{ action: 'colors-settings', label: 'Colors dialog', icon: 'sun', shortcut: '' }, { action: 'wallpaper-settings', label: 'Wallpapers dialog', icon: 'images', shortcut: '' }].filter(command => matchesWords(command.label, query)));
+  commands.push(...extensionCommands().filter(({ command, owner }) => matchesWords(`${command.title} ${owner.extensionId}`, query)).map(({ command, owner }) => ({ action: 'extension-command', page: command.id as import('./settings-sections').ExtensionSettingsPage, label: `${command.title} · ${owner.extensionId}`, keywords: '', icon: 'info', shortcut: '' })));
+  $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}"${'page' in c ? ` data-id="${escape(c.page)}"` : ''} data-command="true">${icon(c.icon)}<span>${escape(c.label)}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
 }
 async function toggleTerminal(): Promise<void> {
@@ -7120,6 +7133,9 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'ui-size-reset': setUiScale(1); break;
     case 'delete-task': showDeleteTask(); break;
     case 'search': showCommands(); break;
+    case 'extension-command':
+      if (!invokeExtensionCommand(element.dataset.id ?? '', { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.commands', revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) }, notify)) notify('Extension command is unavailable in this context.');
+      break;
     case 'retry-response': { const id = actionTask(element)?.id ?? state.sessionId, finishing = finishingStreams.get(id); if (finishing) await finishResponse(id, finishing); break; }
     case 'settings': case 'refresh-settings': await showSettings(); break;
     case 'settings-page': await showSettings(element.dataset.id as import('./settings').SettingsSection); break;
@@ -7400,6 +7416,7 @@ document.addEventListener('keydown', event => {
   else if (event.key === 'Escape' && state.view !== 'conversation' && state.boardPanel && !event.defaultPrevented) { event.preventDefault(); closeMenus(); state.boardPanel = false; renderBoardView(); }
   else if (event.key === 'Escape' && (event.target as Element).closest?.('.composer-steer-bar') && !event.defaultPrevented) { event.preventDefault(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true }); }
   else if (event.key === 'Escape' && isRunning() && !terminalPanel.open && !event.defaultPrevented) { event.preventDefault(); if (session()) run(stopTask(session()!)); }
+  if (!event.defaultPrevented) dispatchExtensionShortcut(event, { revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) }, notify);
 });
 let dialogBackdropPressed = false;
 function outsideDialog(event: MouseEvent): boolean {

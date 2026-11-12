@@ -4188,6 +4188,8 @@ pub fn run() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 extensions::packages::extensions_snapshot,
+                extensions::packages::extensions_settings_get,
+                extensions::packages::extensions_settings_set,
                 extensions::packages::extensions_install,
                 extensions::packages::extensions_enable,
                 extensions::packages::extensions_uninstall,

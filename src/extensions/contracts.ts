@@ -11,7 +11,7 @@ export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | 
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras'];
 const capabilities = ['ui.contribute', 'ui.customize'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -221,6 +221,11 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (action.kind === 'openView') reference('views', action.view, 'commands');
       if (action.kind === 'showDialog') dialogFields(action.dialog as ObjectValue, `${path}/contributes/commands`);
     }
+    for (const page of (contributions.settings ?? []) as ObjectValue[]) {
+      dialogFields(page, `${path}/contributes/settings`);
+      if ((page.fields as ObjectValue[]).some(field => field.async === true)) error('UnsupportedContribution', `${path}/contributes/settings`, [page.id as string]);
+    }
+    for (const binding of (contributions.keybindings ?? []) as ObjectValue[]) reference('commands', binding.command, 'keybindings');
     for (const menu of (contributions.menus ?? []) as ObjectValue[]) {
       reference('commands', menu.command, 'menus');
       if (menu.icon) reference('icons', menu.icon, 'menus');

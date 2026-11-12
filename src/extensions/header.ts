@@ -28,6 +28,8 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
   let conditions: { button: HTMLElement; visible?: Json; enabled?: Json; hasItems: boolean }[] = [];
   const fallbackFocus = () => {
     const eligible = (element: HTMLElement) => !element.closest('[inert]') && element.checkVisibility();
+    const dialog = document.querySelector<HTMLDialogElement>('dialog[open]');
+    if (dialog) { [...dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])')].find(eligible)?.focus({ preventScroll: true }); return; }
     const prompt = document.querySelector<HTMLElement>('#prompt:not([disabled])');
     (prompt && eligible(prompt) ? prompt : [...document.querySelectorAll<HTMLElement>('button:not([disabled])')].find(eligible))?.focus({ preventScroll: true });
   };
@@ -123,7 +125,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
           invoke(menu.id);
         });
         slot.append(button);
-        conditions.push({ button, visible: menu.visible, enabled: menu.enabled, hasItems: Boolean(menu.items) });
+        conditions.push({ button, visible: menu.visible, enabled: { op: 'all', args: [menu.enabled ?? true, command.enabled ?? true] }, hasItems: Boolean(menu.items) });
     }
     refreshConditions();
     if (focused) fallbackFocus();
