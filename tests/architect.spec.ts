@@ -1457,7 +1457,8 @@ async function openShowcase(page: Page): Promise<void> {
   await page.goto('/?workers');
   await page.locator('#navigation .task-item').first().waitFor();
   const toggle = page.locator('#agents-toggle');
-  await expect(toggle).toBeVisible();
+  // The toggle shows once the team loads; under parallel load that can take longer than the default 5 s.
+  await expect(toggle).toBeVisible({ timeout: 15_000 });
   await toggle.click();
   await expect(panel(page)).toBeVisible();
   // The showcase's failed auto-approval arrives just after the team.
@@ -1761,8 +1762,8 @@ test.describe('worker approval card reveal', () => {
     expect((await card.getAttribute('aria-label'))!.startsWith(`${name} needs you: approval: `)).toBe(true);
     const meta = panel(page).locator('.architect-worker-meta');
     await expect(meta).toHaveCSS('position', 'sticky');
-    // The pinned band runs edge to edge of the scroller (inside any scrollbar gutter).
-    expect(await meta.evaluate(element => {
+    // The pinned band runs edge to edge of the scroller (inside any scrollbar gutter), once the panel has settled.
+    await expect.poll(() => meta.evaluate(element => {
       const scroller = element.closest('.architect-panel-scroll')!, box = element.getBoundingClientRect(), outer = scroller.getBoundingClientRect();
       return Math.abs(box.left - outer.left - scroller.clientLeft) <= 0.5 && Math.abs(box.right - (outer.left + scroller.clientLeft + scroller.clientWidth)) <= 0.5;
     })).toBe(true);
@@ -1986,9 +1987,11 @@ test.describe('workers full access note', () => {
     await expect(mark).toHaveAttribute('data-tip', exception);
     await expect(mark).toHaveClass(/info-mark/);
     await expect(mark.locator('.icon')).toHaveCount(1);
-    expect(await mark.locator('.icon').evaluate(icon => { const box = icon.getBoundingClientRect(); return [box.width, box.height]; })).toEqual([12, 12]);
+    // Measured once the panel's open spring has settled (a scale in flight shrinks every box).
+    await panelSettled(page);
+    await expect.poll(() => mark.locator('.icon').evaluate(icon => { const box = icon.getBoundingClientRect(); return [box.width, box.height]; })).toEqual([12, 12]);
     // A 24px hit area around the 12px glyph.
-    expect(await mark.evaluate(element => { const box = element.getBoundingClientRect(); return box.width >= 24 && box.height >= 24; })).toBe(true);
+    await expect.poll(() => mark.evaluate(element => { const box = element.getBoundingClientRect(); return box.width >= 24 && box.height >= 24; })).toBe(true);
     await mark.hover();
     await expect(page.locator('.tip-bubble')).toHaveText(exception);
     await expect(note).not.toHaveAttribute('title', /.+/);
@@ -2022,7 +2025,7 @@ test.describe('workers full access note', () => {
     expect(await mark.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
     await page.mouse.up();
     // One line at the default width (two would be ~38px with the note's bottom padding).
-    expect(await text.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(20);
+    await expect.poll(() => text.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(20);
     // In a narrow panel it wraps rather than being cut.
     await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '220px'; });
     expect(await text.evaluate(span => getComputedStyle(span).textOverflow !== 'ellipsis' && span.scrollWidth <= span.clientWidth + 1)).toBe(true);
