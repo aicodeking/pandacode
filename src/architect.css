@@ -73,10 +73,11 @@
 .architect-worker-detail { padding: 6px 8px 10px; }
 /* The transcript header (name and model) is sticky at the top of the scroller, on an opaque copy of the flyout's tone
    (its own fill is translucent), so it stays in view over a long transcript or a revealed approval card. */
-.architect-worker-meta { display: flex; align-items: center; gap: 10px; position: sticky; top: 0; z-index: 1; margin: -6px 0 12px; padding: 6px 0; background: var(--frame, var(--bg)); }
-@media (prefers-reduced-transparency: reduce) { .architect-worker-meta { background: var(--panel); } }
-@media (prefers-contrast: more) { .architect-worker-meta { background: var(--bg); } }
-@media (forced-colors: active) { .architect-worker-meta { background: Canvas; } }
+/* The pinned header is a band of the flyout's own glass, edge to edge of the scroller (its 6px + the detail's 8px). */
+.architect-worker-meta { display: flex; align-items: center; gap: 10px; position: sticky; top: 0; z-index: 1; margin: -6px -14px 12px; padding: 6px 14px; background: var(--dock-fill, var(--glass-warm)); -webkit-backdrop-filter: var(--dock-blur, blur(16px)); backdrop-filter: var(--dock-blur, blur(16px)); }
+@media (prefers-reduced-transparency: reduce) { .architect-worker-meta { background: var(--panel); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+@media (prefers-contrast: more) { .architect-worker-meta { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+@media (forced-colors: active) { .architect-worker-meta { background: Canvas; -webkit-backdrop-filter: none; backdrop-filter: none; } }
 .architect-worker-meta > svg, .architect-worker-meta > img { width: 25px; height: 25px; flex-shrink: 0; }
 .architect-worker-meta > div { display: flex; flex-direction: column; gap: 5px; }
 .architect-worker-meta strong { font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -286,5 +287,6 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-more-text[data-overflowing]:not([data-at-end]) { -webkit-mask-image: linear-gradient(to bottom, currentColor calc(100% - 1.5em), transparent); mask-image: linear-gradient(to bottom, currentColor calc(100% - 1.5em), transparent); }
 /* The measuring copy matches the drawn line, so "+N more" is never cut. */
 .architect-panel-tally-measure > :first-child { margin-inline-start: 0; }
-.architect-panel-access-dismiss { flex: none; width: 18px; height: 18px; margin-inline-start: auto; color: var(--muted); }
+/* A 24px hit target around the small glyph; the negative block margin keeps the note's line height. */
+.architect-panel-access-dismiss { flex: none; width: 24px; height: 24px; margin-block: -3px; margin-inline-start: auto; color: var(--muted); }
 .architect-panel-access-dismiss .icon { width: 11px; height: 11px; }

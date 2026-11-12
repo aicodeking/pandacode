@@ -402,7 +402,7 @@ test.describe('architect teams', () => {
     await openWorkers(page).click();
     await page.clock.runFor(250);
     await expect(panel(page).locator('.architect-worker-row')).toHaveCount(2);
-    await expect(panel(page).locator('.architect-panel-count')).toHaveText('2 tasks');
+    await expect(panel(page).locator('.architect-panel-count')).toHaveText('2 workers');
     await expect(page.locator('.task-item')).toHaveCount(visibleTasks);
     await expect(panel(page).getByRole('button', { name: 'Pause team', exact: true })).toBeVisible();
     await panel(page).getByRole('button', { name: 'Pause team', exact: true }).click();
@@ -1559,8 +1559,9 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   expect(await tally.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   // The tally counts the workers, so the header's task count steps aside.
   await expect(panel(page).locator('.architect-panel-count')).toBeHidden();
-  const bar = panel(page).getByRole('progressbar', { name: 'Workers finished' });
-  await expect(bar).toHaveAttribute('aria-valuenow', '3');
+  const bar = panel(page).getByRole('progressbar', { name: 'Workers done' });
+  // Only done counts as progress: the failed and stopped workers do not.
+  await expect(bar).toHaveAttribute('aria-valuenow', '1');
   await expect(bar).toHaveAttribute('aria-valuemax', '6');
   // Every row stays folded, the one that needs the user too: its row says so, and its transcript holds the request.
   await expect(panel(page).locator('.architect-worker-more:visible')).toHaveCount(0);
@@ -1747,6 +1748,11 @@ test.describe('worker approval card reveal', () => {
     expect((await card.getAttribute('aria-label'))!.startsWith(`${name} needs you: approval: `)).toBe(true);
     const meta = panel(page).locator('.architect-worker-meta');
     await expect(meta).toHaveCSS('position', 'sticky');
+    // The pinned band runs edge to edge of the scroller (inside any scrollbar gutter).
+    expect(await meta.evaluate(element => {
+      const scroller = element.closest('.architect-panel-scroll')!, box = element.getBoundingClientRect(), outer = scroller.getBoundingClientRect();
+      return Math.abs(box.left - outer.left - scroller.clientLeft) <= 0.5 && Math.abs(box.right - (outer.left + scroller.clientLeft + scroller.clientWidth)) <= 0.5;
+    })).toBe(true);
     // Whole and inside the scroller, and the card's top is not under it.
     await expect.poll(() => meta.evaluate(element => {
       const box = element.getBoundingClientRect(), scroller = element.closest('.architect-panel-scroll')!.getBoundingClientRect();
@@ -1985,7 +1991,7 @@ test.describe('workers full access note', () => {
     expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(28);
     await pickMode(page, 'Standard');
     await expect(note).toBeVisible();
-    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers run with full access; only this lead asks you for approval.');
+    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers have full access; you approve only this lead.');
     // Like the tally, it belongs to the list: hidden while a worker's transcript is open.
     await row(page, 'build').click();
     await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
@@ -1993,7 +1999,9 @@ test.describe('workers full access note', () => {
     await panel(page).getByRole('button', { name: 'Back to workers' }).click();
     await expect(note).toBeVisible();
     // Dismissed, it stays away for this team for the session (reopening the panel too).
-    await note.getByRole('button', { name: 'Dismiss the full-access note' }).click();
+    const dismiss = note.getByRole('button', { name: 'Dismiss the full-access note' });
+    expect(await dismiss.evaluate(element => { const box = element.getBoundingClientRect(); return box.width >= 24 && box.height >= 24; })).toBe(true);
+    await dismiss.click();
     await expect(note).toBeHidden();
     await panel(page).getByRole('button', { name: 'Close workers' }).click();
     await openWorkers(page).click();

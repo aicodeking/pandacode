@@ -121,13 +121,13 @@ const tallyCount = (key: string, count: number, text: string, spoken: boolean, w
     : `<span class="architect-tally-count"${worded ? ' data-worded' : ''} title="${escape(text)}" aria-hidden="true">${worded ? escape(text) : `${mark}${count}`}</span>`;
 };
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
- *  full line, ever shorter fallbacks for a narrow panel, and the share of settled workers. Empty buckets are left out. */
-export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) => string): { text: string; readable: string; html: string; variants: { text: string; html: string; hidden: string }[]; settled: number; total: number; needsYou: number; failed: number } {
+ *  full line, ever shorter fallbacks for a narrow panel, and the share of workers done (failed and stopped are not progress). Empty buckets are left out. */
+export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) => string): { text: string; readable: string; html: string; variants: { text: string; html: string; hidden: string }[]; done: number; total: number; needsYou: number; failed: number } {
   const counts = new Map<string, number>();
   for (const worker of workers) { const key = bucket(worker); counts.set(key, (counts.get(key) ?? 0) + 1); }
   const label = (key: string, count: number) => key === 'needs you' ? `${count} ${count === 1 ? 'needs' : 'need'} you` : `${count} ${key}`;
   const parts = [...TALLY_ORDER, ...[...counts.keys()].filter(key => !TALLY_ORDER.includes(key))].filter(key => counts.get(key)).map(key => [key, label(key, counts.get(key)!)] as const);
-  const settled = workers.filter(worker => worker.abandoned || ['completed', 'failed', 'stopped'].includes(worker.status)).length;
+  const done = workers.filter(worker => !worker.abandoned && worker.status === 'completed').length;
   // The visible line is hidden from screen readers (a readable copy says it in words), except the "needs you" button,
   // which keeps its words after a warn-toned icon since it acts. Every count reads "2 working" (at 11px some glyphs
   // look alike). Too wide, the minor buckets fold into a "+N more" button that unfolds them
@@ -153,7 +153,7 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
   }
   // The readable copy leaves out "needs you": its button, just before, already says it.
   const readable = parts.filter(([key]) => key !== 'needs you').map(([, text]) => text).join(' · ');
-  return { text: variants[0].text, readable, html: variants[0].html, variants, settled, total: workers.length,
+  return { text: variants[0].text, readable, html: variants[0].html, variants, done, total: workers.length,
     needsYou: counts.get('needs you') ?? 0, failed: counts.get('failed') ?? 0 };
 }
 /** The effort label. An effort note means the effort was changed from what the lead asked: a muted "(adjusted)" follows
@@ -292,9 +292,9 @@ export class WorkerList {
     // so an unchanged tally is never announced again.
     this.fitTally(tallyText);
     const bar = tallyHost.querySelector<HTMLElement>('.architect-progress')!;
-    setAttr(bar, 'aria-valuemax', String(tally.total)); setAttr(bar, 'aria-valuenow', String(tally.settled));
-    setAttr(bar, 'aria-valuetext', `${tally.settled} of ${tally.total} finished`);
-    const share = String(tally.total ? tally.settled / tally.total : 0);
+    setAttr(bar, 'aria-valuemax', String(tally.total)); setAttr(bar, 'aria-valuenow', String(tally.done));
+    setAttr(bar, 'aria-valuetext', `${tally.done} of ${tally.total} done`);
+    const share = String(tally.total ? tally.done / tally.total : 0);
     if (bar.style.getPropertyValue('--progress') !== share) bar.style.setProperty('--progress', share);
     if (!this.rows.size) list.replaceChildren();
     for (const [id, item] of this.rows) if (!team.workers.some(worker => worker.id === id)) { item.remove(); this.rows.delete(id); }
