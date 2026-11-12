@@ -1,9 +1,9 @@
 // One task: transcript (stored messages + live run + unsent messages), the native header
 // (TaskHeader), pending requests and the composer.
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useHeaderHeight } from 'expo-router/react-navigation';
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
-import { AccessibilityInfo, Alert, FlatList, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { AccessibilityInfo, Alert, FlatList, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View, type NativeSyntheticEvent, type TextInputChangeEvent } from 'react-native';
 import { GlassView } from 'expo-glass-effect';
 import { useKeyboardHandler, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import Animated, { FadeInDown, ReduceMotion, useAnimatedStyle } from 'react-native-reanimated';
@@ -15,20 +15,27 @@ import type { PendingRequest } from '../../../connect/types.ts';
 import { botOf, elapsedLabel, glanceOf, rowTeam, runClockStart, stalledFor } from '../../../store/inbox.ts';
 import { teamBusy, type Team } from '../../../store/team.ts';
 import { taskKey, useConnect } from '../../../store/index.ts';
-import { sendOrQueue } from '../../../store/local.ts';
+import { sendOrQueue, useLocal } from '../../../store/local.ts';
+import { confirmedGone } from '../../../store/gone.ts';
 import type { TurnRow } from '../../../store/turns.ts';
 import { Composer, SpringIn } from '../../../ui/Composer.tsx';
+import { ConnectionNotice } from '../../../ui/ConnectionQuality.tsx';
+import { UsageResumeToggle } from '../../../ui/UsageResumeToggle.tsx';
+import { useHostSupports } from '../../../connect/api/capabilities.ts';
 import { Banner, CrossFadeText, crossFadeIn, crossFadeOut, geometry, haptic, PressScale, springs, StatusDot, type as textStyle, type Tone, useMotion } from '../../../ui/ds/index.ts';
 import { Glass, hasGlass } from '../../../ui/Glass.tsx';
 import { ApprovalCard, InputCard } from '../../../ui/requests.tsx';
 import { isActive } from '../../../ui/status.tsx';
 import { Icon } from '../../../ui/Icon.tsx';
 import { DockFade, HeaderBlur, TaskHeader } from '../../../ui/TaskHeader.tsx';
+import { FindBar, useMessageJump, useThreadFind } from '../../../ui/ThreadFind.tsx';
+import { messageParam } from '../../../store/find.ts';
 import { useColors } from '../../../ui/theme.ts';
 import { NO_EDGE_EFFECTS, scrollToNewest, Transcript } from '../../../ui/transcript.tsx';
 import { useNow } from '../../../ui/Trace.tsx';
 import { WorkerNamesContext } from '../../../ui/ToolCards.tsx';
 import { useNames, useTeam } from '../../../ui/useTeam.ts';
+import { usePaneInsets } from '../../../ui/split.tsx';
 
 const NONE: PendingRequest[] = [];
 /** The composer's usual height until it has laid out. */
@@ -99,7 +106,18 @@ function RunNotice({ deviceId, sessionId, status, bot }: { deviceId: string; ses
     : status === 'failed' && !active ? { title: 'This run failed', body: reason || 'The agent stopped with an error.', tone: 'danger', action }
     : status === 'stopped' && !active ? { title: 'Stopped', body: 'This run was stopped before it finished.', tone: 'warning', action }
     : null;
-  return <Banner visible={!!notice} title={notice?.title ?? ''} body={notice?.body} tone={(notice?.tone ?? 'warning') as Tone} action={notice?.action} style={[styles.notice, { backgroundColor: colors.raised }]} />;
+  const resumable = useHostSupports(deviceId, 'usage.resumeAtReset');
+  const limitShown = !!limited && notice?.title === limited.text;
+  return (
+    <>
+      <Banner visible={!!notice} title={notice?.title ?? ''} body={notice?.body} tone={(notice?.tone ?? 'warning') as Tone} action={notice?.action} style={[styles.notice, { backgroundColor: colors.raised }]} />
+      {limitShown && !bot && resumable && (
+        <View style={[styles.notice, styles.resume, { backgroundColor: colors.raised, borderColor: colors.border }]}>
+          <UsageResumeToggle deviceId={deviceId} sessionId={sessionId} resetsAt={limited.resetsAt} />
+        </View>
+      )}
+    </>
+  );
 }
 
 /** The run's one status, from the same state as the inbox's badge and clock; only this text ticks. */
@@ -167,14 +185,46 @@ function useRunEnded(running: boolean, status: string) {
   }, [running, status]);
 }
 
+/** Closes the task once it's confirmed gone: deleted or archived from this phone (store/gone.ts), so no
+ * dead pane stays beside the Duo's sidebar. Merely dropping out of the list proves nothing: it holds only
+ * the most recent tasks. A task gone while another screen covers this one is remembered and left on the
+ * next focus; a screen its own header already closed is never focused again, so it never goes back twice. */
+function useLeaveWhenGone(key: string, listed: boolean) {
+  const navigation = useNavigation();
+  const seen = useRef(false);
+  /** Gone while covered: leave when this screen is shown again. */
+  const leaveOnFocus = useRef(false);
+  const gone = useLocal(s => confirmedGone(key, listed, s));
+  const leave = useCallback(() => {
+    if (navigation.canGoBack()) navigation.goBack();
+    else router.replace('/inbox');
+  }, [navigation]);
+  useEffect(() => {
+    if (listed) { seen.current = true; leaveOnFocus.current = false; return; }
+    if (!seen.current || !gone) return;
+    seen.current = false;
+    if (navigation.isFocused()) leave();
+    else leaveOnFocus.current = true;
+  }, [listed, gone, navigation, leave]);
+  useEffect(() => navigation.addListener('focus', () => {
+    if (!leaveOnFocus.current) return;
+    leaveOnFocus.current = false;
+    leave();
+  }), [navigation, leave]);
+}
+
 export default function TaskScreen() {
-  const { device = '', session = '' } = useLocalSearchParams<{ device: string; session: string }>();
+  // `message`: a search hit's message id, scrolled to and briefly marked once the thread has it.
+  const { device = '', session = '', message } = useLocalSearchParams<{ device: string; session: string; message?: string }>();
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  // Side insets less the left one beside the Duo's sidebar, which takes it itself.
+  const side = usePaneInsets();
   // With Liquid Glass the header is transparent (TaskHeader): the transcript runs under it, inset
   // by its height, with HeaderBlur behind the bar.
   const header = useHeaderHeight();
   const task = useConnect(s => s.tasks[device]?.tasks.find(t => t.sessionId === session));
+  useLeaveWhenGone(taskKey(device, session), !!task);
   // Narrow selectors: a streamed text delta changes none of these, so this screen, the
   // composer and the list stay put while only the live row re-renders.
   const key = taskKey(device, session);
@@ -199,6 +249,23 @@ export default function TaskScreen() {
   const list = useRef<FlatList<TurnRow>>(null);
   const [away, setAway] = useState(false);
   const [latest] = useState(() => () => scrollToNewest(list.current));
+  // Find in thread: the header's native search field (a native item, so the Duo's rail keeps it).
+  const [query, setQuery] = useState('');
+  const find = useThreadFind(device, session, query);
+  const findOptions = {
+    headerSearchBarOptions: {
+      placeholder: 'Find in thread',
+      placement: 'integratedButton' as const,
+      allowToolbarIntegration: false,
+      autoCapitalize: 'none' as const,
+      hideWhenScrolling: false,
+      onChangeText: (event: NativeSyntheticEvent<TextInputChangeEvent['nativeEvent']>) => setQuery(event.nativeEvent.text),
+      // Return steps to the next older match, as Find's Enter does on the desktop.
+      onSearchButtonPress: () => find.step(-1),
+      onCancelButtonPress: () => setQuery(''),
+      onClose: () => setQuery(''),
+    },
+  };
 
   useEffect(() => {
     markOpen(taskKey(device, session));
@@ -207,6 +274,8 @@ export default function TaskScreen() {
     connect.loadPull(device, session).catch(() => undefined); // shows the header's pull request item
     return () => connect.unwatch(device, [session]);
   }, [device, session]);
+  // After the load above has started (effects run in order), so the jump waits for its copy.
+  const jump = useMessageJump(device, session, messageParam(message));
 
   const requests = approvals.length + inputs.length > 0;
   // A team still working keeps Stop (which pauses it on the host) and queued sends.
@@ -229,20 +298,26 @@ export default function TaskScreen() {
     <WorkerNamesContext.Provider value={names}>
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       {/* Both this and the marker in Transcript: which one reaches the list depends on the screen's first child, and the other side's default would turn the effect back on. */}
-      <Stack.Screen options={{ scrollEdgeEffects: NO_EDGE_EFFECTS }} />
+      <Stack.Screen options={{ scrollEdgeEffects: NO_EDGE_EFFECTS, ...findOptions }} />
       <TaskHeader deviceId={device} sessionId={session} title={task?.title || 'Task'} pull={pull} agents={agents} bot={bot} quiet={running || requests} />
       {/* Side insets: the iPhone Duo's rail, or a landscape notch. */}
-      <View style={[styles.screen, { paddingLeft: insets.left, paddingRight: insets.right }]}>
+      <View style={[styles.screen, { paddingLeft: side.left, paddingRight: side.right }]}>
         {/* The list moves with the keyboard as one; only its far end needs the extra room, so that can wait for React. */}
         <Animated.View style={[styles.screen, lift]}>
-          <Transcript key={key} deviceId={device} sessionId={session} top={(hasGlass ? header : 0) + 12 + keyboard} bottom={bottom + 12} listRef={list} onAway={setAway} />
+          <Transcript key={key} deviceId={device} sessionId={session} top={(hasGlass ? header : 0) + 12 + keyboard} bottom={bottom + 12} listRef={list} onAway={setAway} find={find.active ? find.marks : jump} />
         </Animated.View>
         <HeaderBlur height={header} />
         <DockFade height={dockInset + DOCK_FADE} />
         {/* Bottom-anchored in a full-height frame, so anything growing below moves what's above with a layout transition. */}
-        <Animated.View style={[styles.dock, { left: insets.left, right: insets.right }, lift]} onLayout={e => setDockHeight(e.nativeEvent.layout.height)} pointerEvents="box-none">
+        <Animated.View style={[styles.dock, { left: side.left, right: side.right }, lift]} onLayout={e => setDockHeight(e.nativeEvent.layout.height)} pointerEvents="box-none">
           <Animated.View layout={layout} onLayout={e => setContentTop(e.nativeEvent.layout.y)} pointerEvents="box-none">
             <Floaters deviceId={device} sessionId={session} running={running && !requests} waiting={waiting} team={team} away={away} onLatest={latest} />
+          </Animated.View>
+          <Animated.View layout={layout}>
+            <FindBar find={find} />
+          </Animated.View>
+          <Animated.View layout={layout}>
+            <ConnectionNotice deviceId={device} style={[styles.notice, { backgroundColor: colors.raised }]} />
           </Animated.View>
           <Animated.View layout={layout}>
             <RunNotice deviceId={device} sessionId={session} status={running ? 'running' : settledStatus} bot={!!bot} />
@@ -270,6 +345,7 @@ const styles = StyleSheet.create({
   dock: { position: 'absolute', top: 0, bottom: 0, justifyContent: 'flex-end' },
   requests: { flexGrow: 0 },
   notice: { marginHorizontal: geometry.screenMargin, marginBottom: 8 },
+  resume: { borderRadius: geometry.cardRadius, borderWidth: geometry.hairline, borderCurve: 'continuous', overflow: 'hidden' },
   requestList: { gap: 8, paddingBottom: 8 },
   floaters: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, paddingBottom: 8, paddingHorizontal: geometry.screenMargin },
   pillFrame: { flexShrink: 1 },

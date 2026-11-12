@@ -5,7 +5,7 @@ import { Button as SwiftButton, HStack, Host, RNHostView, Image as SwiftImage, M
 import { accessibilityLabel, buttonStyle, font, foregroundStyle, type ModifierConfig } from '@expo/ui/swift-ui/modifiers';
 import type { SFSymbol } from 'expo-symbols';
 import { type ComponentProps, type ReactElement, type ReactNode } from 'react';
-import { ActionSheetIOS, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, type ColorValue, type GestureResponderEvent, type ViewStyle } from 'react-native';
+import { ActionSheetIOS, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View, type ColorValue, type GestureResponderEvent, type ViewStyle } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { Easing, Keyframe, ReduceMotion } from 'react-native-reanimated';
 import { create } from 'zustand';
@@ -15,7 +15,7 @@ import { useColors } from './theme.ts';
 
 type Android = ComponentProps<typeof Icon>['android'];
 
-export interface MenuItem { label: string; /** Items with the same section are grouped under its title (iOS). */ section?: string; ios?: SFSymbol; android?: Android; destructive?: boolean; checked?: boolean; onPress: () => void }
+export interface MenuItem { label: string; /** A secondary line under the label (Android's card; iOS menus pass their own). */ subtitle?: string; /** Items with the same section are grouped under its title (iOS). */ section?: string; ios?: SFSymbol; android?: Android; destructive?: boolean; checked?: boolean; onPress: () => void }
 
 type Anchor = { x: number; y: number };
 
@@ -70,13 +70,16 @@ export function MenuHost() {
       {/* A Modal is its own native root: PressScale's gesture needs one here too. */}
       <GestureHandlerRootView style={StyleSheet.absoluteFill}>
       <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: SCRIM }]} onPress={close} accessibilityLabel="Close menu" />
-      <Animated.View entering={entering} style={[styles.sheet, anchor ? [styles.popover, popoverFrame(anchor, width, height, items.length * geometry.rowHeight + (title ? geometry.rowHeight : 0))] : styles.bottom, { backgroundColor: colors.raised, borderColor: colors.border, boxShadow: colors.shadowCard }]}>
+      <Animated.View entering={entering} style={[styles.sheet, anchor ? [styles.popover, popoverFrame(anchor, width, height, items.reduce((sum, i) => sum + geometry.rowHeight * (i.subtitle ? 1.5 : 1), 0) + (title ? geometry.rowHeight : 0))] : styles.bottom, { backgroundColor: colors.raised, borderColor: colors.border, boxShadow: colors.shadowCard }]}>
         <ScrollView bounces={false}>
           {!!title && <Text style={[dsText.subhead, styles.title, { color: colors.muted }]} numberOfLines={2}>{title}</Text>}
           {items.map((item, i) => (
             <PressScale key={`${i}/${item.label}`} onPress={() => { close(); item.onPress(); }} accessibilityRole="menuitem" accessibilityState={{ checked: !!item.checked }} style={styles.item}>
               {(!!item.ios || !!item.android) && <Icon ios={item.ios ?? 'circle'} android={item.android} size={20} color={item.destructive ? colors.danger : colors.muted} />}
-              <Text numberOfLines={fontScale > LARGE_TEXT_SCALE ? 3 : 1} style={[dsText.body, styles.label, { color: item.destructive ? colors.danger : colors.text }]}>{item.label}</Text>
+              <View style={styles.label}>
+                <Text numberOfLines={fontScale > LARGE_TEXT_SCALE ? 3 : 1} style={[dsText.body, { color: item.destructive ? colors.danger : colors.text }]}>{item.label}</Text>
+                {!!item.subtitle && <Text numberOfLines={fontScale > LARGE_TEXT_SCALE ? 4 : 2} style={[dsText.footnote, { color: colors.secondary }]}>{item.subtitle}</Text>}
+              </View>
               {item.checked && <Icon ios="checkmark" android="check" size={18} color={colors.text} />}
             </PressScale>
           ))}
@@ -170,6 +173,6 @@ const styles = StyleSheet.create({
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '80%', paddingBottom: 28, paddingTop: 8, borderTopLeftRadius: geometry.cardRadius, borderTopRightRadius: geometry.cardRadius },
   popover: { borderRadius: geometry.innerRadius, paddingVertical: 4 },
   title: { paddingHorizontal: 16, paddingVertical: 8 },
-  item: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, minHeight: geometry.rowHeight },
-  label: { flex: 1 },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 6, minHeight: geometry.rowHeight },
+  label: { flex: 1, gap: 2 },
 });

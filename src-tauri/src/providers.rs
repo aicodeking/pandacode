@@ -1717,6 +1717,8 @@ impl Protocol {
             });
         }
         if self.config.provider == "codex" {
+            // `prepare_turn` already dropped a switched-off skill (off the runtime) before the
+            // protocol was built, so attaching reads no switches here.
             if let Some((name, path)) = self.config.skill.take() {
                 content.push(json!({"type":"skill","name":name,"path":path}));
             }
@@ -3294,6 +3296,16 @@ pub async fn run_with_tools(
     host: Option<ToolHost>,
     harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
+    // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
+    let (session_id, cwd) = (config.session_id.clone(), config.cwd.clone());
+    if let Err(error) = crate::blocking(move || {
+        crate::skill_manager::begin_launch_at(&session_id, &cwd);
+        Ok(())
+    })
+    .await
+    {
+        eprintln!("Warning: could not refresh the skill settings project: {error}");
+    }
     let identity = Protocol::new(config.clone());
     sink(identity.event("status", "Starting agent", None));
     // A goal operation is acknowledged by its own turn, so it is never continued elsewhere.
@@ -3334,13 +3346,35 @@ fn codex_user_limits_threads(command: &Command, config: &RunConfig) -> bool {
     })
 }
 
+#[cfg(test)]
 fn configure_command(command: &mut Command, config: &RunConfig) {
+    configure_command_with_skills(command, config, &Default::default());
+}
+
+/// Lists OpenCode's agents for this launch itself; `run_inner` passes its one scan instead.
+fn configure_command_with_skills(
+    command: &mut Command,
+    config: &RunConfig,
+    disabled: &std::collections::BTreeSet<String>,
+) {
+    let agents = (config.provider == "opencode")
+        .then(|| crate::skill_manager::opencode_agents_at(disabled, &config.cwd));
+    configure_command_with_agents(command, config, disabled, &agents.unwrap_or_default());
+}
+
+fn configure_command_with_agents(
+    command: &mut Command,
+    config: &RunConfig,
+    disabled: &std::collections::BTreeSet<String>,
+    opencode_agents: &crate::skill_manager::OpenCodeAgents,
+) {
     claude_auth::configure(command, &config.provider);
     let use_model = !config.model.is_empty() && config.model != "default";
     match config.provider.as_str() {
         "codex" => {
             // Process-local override: never alter the user's Codex config.
             command.args(["app-server", "--enable", "goals"]);
+            command.args(crate::skill_manager::codex_arguments(disabled));
             if !codex_user_limits_threads(command, config) {
                 command.args(["-c", CODEX_NO_THREAD_LIMIT]);
             }
@@ -3389,7 +3423,10 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
                 command.arg("--allow-dangerously-skip-permissions");
             }
             // These wait on a live session; PandaCode's process ends with the turn.
-            command.arg(format!("--disallowedTools={}", CLAUDE_SESSION_BOUND_TOOLS));
+            command.arg(format!(
+                "--disallowedTools={}",
+                crate::skill_manager::claude_disallowed(CLAUDE_SESSION_BOUND_TOOLS, disabled)
+            ));
             if use_model {
                 command.args(["--model", &config.model]);
             } else if config.provider == "glm" {
@@ -3408,6 +3445,50 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             }
             command.env_remove("CLAUDECODE");
         }
+    }
+    if config.provider == "opencode" {
+        command.env(
+            "OPENCODE_CONFIG_CONTENT",
+            crate::skill_manager::opencode_enforcement_with(
+                &opencode_configuration(&config.mode),
+                disabled,
+                opencode_agents,
+            ),
+        );
+    }
+}
+
+/// The connection may have replaced the inline configuration: deny again for the same agents.
+/// The denies also always go through `OPENCODE_PERMISSION` (kept rules, merged last by OpenCode).
+/// Text that can't be read stays untouched and the launch also asks, as for names OpenCode can't deny.
+fn enforce_opencode_after_connection(
+    command: &mut Command,
+    config: &mut RunConfig,
+    disabled: &std::collections::BTreeSet<String>,
+    agents: &crate::skill_manager::OpenCodeAgents,
+) {
+    let variable = |name: &str| {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.and_then(|value| value.to_str()).map(str::to_owned))
+            .unwrap_or_else(|| std::env::var(name).ok())
+    };
+    let inline = variable("OPENCODE_CONFIG_CONTENT").unwrap_or_else(|| "{}".into());
+    let permission = variable("OPENCODE_PERMISSION");
+    let launch = crate::skill_manager::opencode_launch_with(
+        &inline,
+        permission.as_deref(),
+        disabled,
+        agents,
+    );
+    command.env("OPENCODE_CONFIG_CONTENT", launch.content);
+    if let Some(permission) = launch.permission {
+        command.env("OPENCODE_PERMISSION", permission);
+    }
+    if !launch.enforced {
+        crate::skill_manager::remind_unenforced(config, disabled);
     }
 }
 
@@ -3447,9 +3528,39 @@ async fn run_inner(
     }
     review_supported(&config.provider, &config.mode)?;
     validate_reasoning_effort(&config.provider, config.reasoning_effort.as_deref())?;
+    // Switches, the installed-skill scan and OpenCode's agent files are read off the runtime.
+    // Unrecoverable switches never refuse a launch: they deny or ask (`launch_disabled`).
+    let (prepared, disabled, opencode_agents) = crate::blocking(move || {
+        let disabled = crate::skill_manager::launch_disabled(
+            &config.provider,
+            &config.cwd,
+            crate::skill_manager::disabled_for(&config.session_id),
+        );
+        // Refuses a typed switched-off skill before anything is sent, then adds reminders.
+        crate::skill_manager::prepare_turn(&mut config, &disabled)?;
+        // OpenCode's agents are listed once and reused by every configuration below.
+        let agents = if config.provider == "opencode" {
+            crate::skill_manager::opencode_agents_at(&disabled, &config.cwd)
+        } else {
+            Default::default()
+        };
+        // Some agent could not be given the denies: ask instead, as for names OpenCode can't deny.
+        if config.provider == "opencode" && !agents.complete && !disabled.is_empty() {
+            crate::skill_manager::remind_unenforced(&mut config, &disabled);
+        }
+        Ok((config, disabled, agents))
+    })
+    .await?;
+    config = prepared;
     // A cloud task runs the same pipeline through a bridge to its machine; local MCP host
     // tools stay on this computer (docs/cloud-agents.md, step 5).
-    if let Some(command) = crate::cloud_agents::transport::command(&config, |command| configure_command(command, &config)).await? {
+    if let Some(command) = crate::cloud_agents::transport::command(&config, |command| {
+        crate::blocking_snapshot(|| {
+            configure_command_with_agents(command, &config, &disabled, &opencode_agents)
+        })
+    })
+    .await?
+    {
         return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
     }
     let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
@@ -3466,10 +3577,28 @@ async fn run_inner(
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
     let mut command = provider_command(&config.provider, &path)?;
-    configure_command(&mut command, &config);
+    let mut command = {
+        let (config, disabled, agents) =
+            (config.clone(), disabled.clone(), opencode_agents.clone());
+        crate::blocking(move || {
+            configure_command_with_agents(&mut command, &config, &disabled, &agents);
+            Ok(command)
+        })
+        .await?
+    };
     // A named connection's arguments and environment win over the global setup.
     if let Some(connection) = &connection {
         connection.apply(&mut command);
+        // A connection's own `-c skills.config=…` can't override the switches: merged, manager last.
+        if config.provider == "codex" {
+            command.args(crate::skill_manager::codex_connection_arguments(
+                &connection.args,
+                &disabled,
+            ));
+        }
+    }
+    if config.provider == "opencode" && !disabled.is_empty() {
+        enforce_opencode_after_connection(&mut command, &mut config, &disabled, &opencode_agents);
     }
     if config.provider == "kilo" {
         let inline = kilo::configure_environment(&mut command, &config);
@@ -3592,7 +3721,12 @@ async fn run_process_with_tools(
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
-        Some(tools) if warm::supported(&config) => warm::take(&config.session_id, &warm::key(&config, &tools.tools)),
+        Some(tools) if warm::supported(&config) => {
+            // The key reads the task's switches and saved settings: off the runtime.
+            let (keyed, catalog) = (config.clone(), tools.tools.clone());
+            let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;
+            warm::take(&config.session_id, &key)
+        }
         _ => {
             warm::launched(&config.session_id);
             None
@@ -4539,6 +4673,169 @@ mod tests {
             .receive(json!({"id":2,"result":{"thread":{"id":"remote"}}}))
             .unwrap();
         assert!(turn.write[0]["params"].get("effort").is_none());
+    }
+
+    #[test]
+    fn skill_manager_claude_arbitrary_names_use_advisory_and_unrecoverable_prefs_block_skill_tools()
+    {
+        for provider in ["claude", "glm", "mimo"] {
+            let mut cfg = config(provider);
+            let disabled = std::collections::BTreeSet::from(["Friendly 技能".into()]);
+            crate::skill_manager::apply_instructions(&mut cfg, &disabled);
+            let mut command = Command::new("claude");
+            configure_command_with_skills(&mut command, &cfg, &disabled);
+            let args: Vec<_> = command
+                .as_std()
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            assert!(args
+                .windows(2)
+                .any(|a| a[0] == "--append-system-prompt" && a[1].contains("[\"Friendly 技能\"]")));
+            assert!(!args.iter().any(|a| a.contains("Skill(Friendly")));
+        }
+        let mut cfg = config("codex");
+        cfg.skill = Some(("any-skill".into(), "/skill".into()));
+        let disabled = std::collections::BTreeSet::from(["*".into()]);
+        crate::skill_manager::apply_instructions(&mut cfg, &disabled);
+        assert!(cfg.skill.is_none());
+        assert_eq!(
+            crate::skill_manager::claude_disallowed("Monitor", &disabled),
+            "Monitor,Skill"
+        );
+    }
+
+    #[test]
+    fn skill_manager_codex_and_opencode_receive_native_launch_overrides() {
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        let mut command = Command::new("codex");
+        configure_command_with_skills(&mut command, &config("codex"), &disabled);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c"
+                && pair[1] == "skills.config=[{name=\"review\",enabled=false}]"));
+        let mut command = Command::new("opencode");
+        configure_command_with_skills(&mut command, &config("opencode"), &disabled);
+        let inline = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "OPENCODE_CONFIG_CONTENT")
+            .unwrap()
+            .1
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let value: Value = serde_json::from_str(inline).unwrap();
+        assert_eq!(value["permission"]["skill"]["review"], "deny");
+    }
+
+    #[test]
+    fn skill_manager_opencode_connection_config_that_cannot_be_read_is_kept_and_the_launch_asks() {
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        let mut cfg = config("opencode");
+        let mut command = Command::new("opencode");
+        let text = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+        command.env("OPENCODE_CONFIG_CONTENT", text);
+        enforce_opencode_after_connection(&mut command, &mut cfg, &disabled, &Default::default());
+        let env = |name: &str| {
+            command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == name)
+                .unwrap()
+                .1
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(env("OPENCODE_CONFIG_CONTENT"), text);
+        let permission: Value = serde_json::from_str(&env("OPENCODE_PERMISSION")).unwrap();
+        assert_eq!(permission["skill"]["review"], "deny");
+        assert!(format!("{}{}", cfg.prompt, cfg.instructions)
+            .contains("Do not use these skills in this session: review."));
+        // A readable connection configuration gets the denies merged in and no reminder.
+        let mut cfg = config("opencode");
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG_CONTENT", r#"{"mcp":{"x":{}}}"#);
+        enforce_opencode_after_connection(&mut command, &mut cfg, &disabled, &Default::default());
+        let value: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        assert!(value["mcp"]["x"].is_object());
+        assert_eq!(value["permission"]["skill"]["review"], "deny");
+        assert!(!format!("{}{}", cfg.prompt, cfg.instructions).contains("review"));
+    }
+
+    fn env_of(command: &Command, name: &str) -> String {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .unwrap()
+            .1
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn skill_manager_codex_connection_skills_config_cannot_override_the_switches() {
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        let mut command = Command::new("codex");
+        configure_command_with_skills(&mut command, &config("codex"), &disabled);
+        let connection = vec![
+            "-c".to_string(),
+            "skills.config=[{name=\"review\",enabled=true},{path=\"/x/SKILL.md\",enabled=false}]"
+                .into(),
+        ];
+        command.args(&connection);
+        command.args(crate::skill_manager::codex_connection_arguments(
+            &connection,
+            &disabled,
+        ));
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        let last = args
+            .iter()
+            .rev()
+            .find(|a| a.starts_with("skills.config="))
+            .unwrap();
+        let table = last.parse::<toml::Table>().unwrap();
+        let rules = table["skills"]["config"].as_array().unwrap();
+        assert_eq!(rules.len(), 3, "{last}");
+        assert_eq!(rules[1]["path"].as_str(), Some("/x/SKILL.md"));
+        assert_eq!(rules[2]["name"].as_str(), Some("review"));
+        assert_eq!(rules[2]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn skill_manager_claude_launch_has_one_merged_disallowed_tools_flag() {
+        let disabled = std::collections::BTreeSet::from(["alpha".into(), "beta".into()]);
+        for provider in ["claude", "glm", "mimo"] {
+            let mut command = Command::new("claude");
+            configure_command_with_skills(&mut command, &config(provider), &disabled);
+            let flags: Vec<_> = command
+                .as_std()
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .filter(|s| s.starts_with("--disallowedTools="))
+                .collect();
+            assert_eq!(
+                flags,
+                [format!(
+                    "--disallowedTools={CLAUDE_SESSION_BOUND_TOOLS},Skill(alpha),Skill(beta)"
+                )]
+            );
+        }
     }
 
     #[test]

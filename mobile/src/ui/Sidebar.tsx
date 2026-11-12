@@ -1,8 +1,10 @@
 // The iPhone Duo's sidebar (split.tsx), on the Inbox tab and in tasks: the PandaCode header, every
-// computer's tasks in the inbox's section cards (the open task highlighted, nothing folded), and a floating
-// glass search field that filters them. Tasks open as the current task route in the pane beside it.
+// computer's tasks in the inbox's section cards (the open task highlighted, only Archived folded), an Undo
+// toast after an archive, and a floating
+// glass search field that filters them, with the inbox's "In conversations" matches under them
+// (SearchResults.tsx). Tasks open as the current task route in the pane beside it.
 import { Image } from 'expo-image';
-import { router, useGlobalSearchParams, usePathname } from 'expo-router';
+import { router, useGlobalSearchParams, useRootNavigationState } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
@@ -11,19 +13,20 @@ import { emptyCopy, filterInbox, inboxItems, type InboxItem } from '../store/inb
 import { useConnect } from '../store/index.ts';
 import { BotRow } from './BotRow.tsx';
 import { useColors } from './theme.ts';
-import { EmptyState, type, useStagger } from './ds/index.ts';
+import { EmptyState, geometry, type, useStagger } from './ds/index.ts';
 import { Glass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
-import { CardSlice, ComputerFilter, InboxNotices, InboxSkeleton, SectionHead, TravelCell } from './InboxCard.tsx';
+import { CardSlice, ComputerFilter, InboxNotices, InboxSkeleton, SectionHead, TravelCell, useFolds } from './InboxCard.tsx';
 import { InboxRow } from './InboxRow.tsx';
+import { SearchResults, useThreadSearch } from './SearchResults.tsx';
+import { rootStack, sidebarOpen, sidebarSelection, type StackState } from './sidebar-nav.ts';
+import { sidebarWidth } from './sidebar-width.ts';
 import { useInbox } from './useInbox.ts';
 
-const SHARE = 0.32;
-const MIN_WIDTH = 300;
 const SEARCH = 48;
-const MARGIN = 10;
+const MARGIN = geometry.screenMargin;
 
-export const useSidebarWidth = () => Math.max(MIN_WIDTH, Math.round(useWindowDimensions().width * SHARE));
+export const useSidebarWidth = () => sidebarWidth(useWindowDimensions().width);
 
 export function Sidebar() {
   const colors = useColors();
@@ -31,31 +34,45 @@ export function Sidebar() {
   const width = useSidebarWidth();
   const { hosts, inbox, bots, minute, problems, load, updating, connected, loading } = useInbox();
   const [query, setQuery] = useState('');
-  const pathname = usePathname();
-  const { device, session, computer } = useGlobalSearchParams<{ device?: string; session?: string; computer?: string }>();
-  const inTask = pathname.startsWith('/task/');
-  const selected = inTask ? `${device}/${session}` : '';
-  const selectedBot = useConnect(s => (inTask ? s.bots[device ?? '']?.find(b => b.desktopSession === session)?.id : undefined));
+  const { computer } = useGlobalSearchParams<{ computer?: string }>();
+  // From the navigation state, not the path: the open task stays lit under Changes, Files... over it.
+  const stack = rootStack(useRootNavigationState() as StackState | undefined);
+  const selected = sidebarSelection(stack);
+  // How a pick opens (sidebar-open.ts): pushed over the root, replacing the open task, or over a
+  // feature screen back to the root first.
+  const how = sidebarOpen(stack);
+  const [device, session] = selected ? selected.split('/') : ['', ''];
+  const selectedBot = useConnect(s => (selected ? s.bots[device]?.find(b => b.desktopSession === session)?.id : undefined));
 
   // The client keeps lists fresh (presence, foreground, run ends, a timer); this covers a new host.
   useEffect(() => { void load(); }, [load]);
 
+  // Everything open but Archived, which can hold every settled task the computers list.
+  const folds = useFolds();
+  const archivedOpen = !!folds.shown.archived;
   const items = useMemo(() => {
     const shown = filterInbox(inbox, bots, { query, computer });
-    return inboxItems(shown.inbox, shown.bots, 'all');
-  }, [inbox, bots, query, computer]);
+    return inboxItems(shown.inbox, shown.bots, query.trim() ? 'all' : { snoozed: true, settled: true, archived: archivedOpen });
+  }, [inbox, bots, query, computer, archivedOpen]);
+  // Conversation text from computers that search it, under the title matches (not repeating them), as the inbox.
+  const titled = useMemo(() => new Set(items.flatMap(item => (item.type === 'row' ? [item.row.key] : []))), [items]);
+  const conversations = useThreadSearch(query, computer, titled);
+  const searched = !!query.trim();
   const stagger = useStagger(items.length > 0);
   const empty = emptyCopy(hosts, { query, computer });
   const filterName = computer ? hosts.find(h => h.id === computer)?.name ?? 'This computer' : undefined;
 
   const render = ({ item, index }: { item: InboxItem; index: number }) => {
     const entering = stagger(index);
-    if (item.type === 'head') return <SectionHead section={item.section} count={item.count} computer={item.computer} entering={entering} />;
+    if (item.type === 'head') {
+      const folding = item.section === 'archived' && item.open !== undefined;
+      return <SectionHead section={item.section} count={item.count} open={folding ? item.open && !folds.closing(item.section) : undefined} computer={item.computer} entering={entering} onToggle={folding ? () => folds.toggle(item.section) : undefined} />;
+    }
     return (
-      <CardSlice first={item.first} last={item.last} attention={item.type === 'row' && item.section === 'needs'} entering={entering}>
+      <CardSlice first={item.first} last={item.last} attention={item.type === 'row' && item.section === 'needs'} leaving={item.type === 'row' && folds.closing(item.section)} entering={entering}>
         {item.type === 'bot'
-          ? <BotRow row={item.row} showComputer={item.showComputer} minute={minute} sidebar selected={item.row.deviceId === device && item.row.bot.id === selectedBot} replace={inTask} />
-          : <InboxRow row={item.row} snoozed={item.section === 'snoozed'} showComputer={item.showComputer} minute={minute} sidebar selected={item.row.key === selected} replace={inTask} />}
+          ? <BotRow row={item.row} showComputer={item.showComputer} minute={minute} sidebar selected={item.row.deviceId === device && item.row.bot.id === selectedBot} how={how} />
+          : <InboxRow row={item.row} snoozed={item.section === 'snoozed'} showComputer={item.showComputer} minute={minute} sidebar selected={item.row.key === selected} how={how} />}
       </CardSlice>
     );
   };
@@ -80,12 +97,15 @@ export function Sidebar() {
             <InboxNotices connected={connected} updating={updating} hasRows={items.length > 0} hosts={hosts} problems={problems} retry={() => void load()} style={styles.notices} />
           </>
         }
-        ListEmptyComponent={loading && !query.trim() ? <InboxSkeleton /> : <EmptyState icon={{ ios: query.trim() ? 'magnifyingglass' : 'tray', android: query.trim() ? 'search' : 'inbox' }} title={empty.title} body={empty.body} />}
+        ListFooterComponent={searched ? <SearchResults hits={conversations.hits} query={query} searching={conversations.searching} how={how} /> : undefined}
+        ListEmptyComponent={loading && !searched ? <InboxSkeleton /> : conversations.hits.length || conversations.searching ? undefined : (
+          <EmptyState icon={{ ios: searched ? 'magnifyingglass' : 'tray', android: searched ? 'search' : 'inbox' }} title={empty.title} body={empty.body} />
+        )}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         initialNumToRender={14}
       />
-      <Glass style={[styles.search, { left: insets.left + 12, bottom: Math.max(insets.bottom, 12) }]} interactive>
+      <Glass style={[styles.search, { left: insets.left + geometry.rowInset, bottom: Math.max(insets.bottom, 12) }]} interactive>
         <Icon ios="magnifyingglass" android="search" size={16} color={colors.muted} />
         <TextInput value={query} onChangeText={setQuery} placeholder="Search tasks" placeholderTextColor={colors.muted}
           style={[type.callout, styles.searchInput, { color: colors.text }]} returnKeyType="search" autoCorrect={false} autoCapitalize="none" clearButtonMode="while-editing" accessibilityLabel="Search tasks" />
@@ -96,11 +116,11 @@ export function Sidebar() {
 
 const styles = StyleSheet.create({
   sidebar: { height: '100%' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 20, paddingRight: 12, paddingBottom: 10 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: MARGIN + geometry.rowInset, paddingRight: geometry.rowInset, paddingBottom: geometry.sectionGap },
   brand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   mark: { width: 26, height: 26, borderRadius: 7, borderCurve: 'continuous' },
   list: { paddingTop: 4, paddingHorizontal: MARGIN },
-  notices: { marginBottom: 10 },
-  search: { position: 'absolute', right: 12, height: SEARCH, borderRadius: SEARCH / 2, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16 },
+  notices: { marginBottom: geometry.sectionGap },
+  search: { position: 'absolute', right: geometry.rowInset, height: SEARCH, borderRadius: SEARCH / 2, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: geometry.rowInset },
   searchInput: { flex: 1, height: '100%' },
 });

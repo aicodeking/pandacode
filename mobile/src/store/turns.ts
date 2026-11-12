@@ -1,13 +1,16 @@
 // Groups stored messages into transcript rows: a user prompt, then the turn's work (tools and
 // interim notes, folded behind "Worked for 2m"), then the reply. Pure (tested in node).
 import type { Message } from '../connect/types.ts';
+import { decodeHandoff, isHandoff, type Handoff } from './handoff.ts';
 
 export type TurnRow =
   | { kind: 'user'; id: string; message: Message }
   | { kind: 'work'; id: string; steps: Message[]; durationMs: number | null; at?: number }
   | { kind: 'reply'; id: string; message: Message }
-  | { kind: 'changes'; id: string; files: number; additions: number; deletions: number }
-  | { kind: 'note'; id: string; message: Message };
+  | { kind: 'changes'; id: string; messageId: number; files: number; additions: number; deletions: number }
+  | { kind: 'note'; id: string; message: Message }
+  /** The task switched agents between turns (a 'handoff' message): a card, never a work step. */
+  | { kind: 'handoff'; id: string; message: Message; handoff: Handoff };
 
 /** Errors and PandaCode's own lines (`system`) stay visible outside the fold. */
 const isNote = (m: Message) => m.role === 'error' || m.role === 'system';
@@ -34,12 +37,17 @@ export function turnRows(messages: readonly Message[]): TurnRow[] {
     if (reply) rows.push({ kind: 'reply', id: `r${reply.id}`, message: reply });
     const changed = turn.findLast(m => changesOf(m));
     const changes = changed && changesOf(changed);
-    if (changed && changes) rows.push({ kind: 'changes', id: `c${changed.id}`, ...changes });
+    if (changed && changes) rows.push({ kind: 'changes', id: `c${changed.id}`, messageId: changed.id, ...changes });
     for (const m of turn) if (isNote(m) && reply && m.id > reply.id) rows.push({ kind: 'note', id: `n${m.id}`, message: m });
     turn = [];
   };
   for (const m of messages) {
-    if (m.role === 'user') {
+    if (isHandoff(m)) {
+      // The switch happens between runs: it ends the turn before it. One that doesn't decode shows nothing.
+      const handoff = decodeHandoff(m);
+      close();
+      if (handoff) rows.push({ kind: 'handoff', id: `h${m.id}`, message: m, handoff });
+    } else if (m.role === 'user') {
       close();
       rows.push({ kind: 'user', id: `u${m.id}`, message: m });
     } else turn.push(m);

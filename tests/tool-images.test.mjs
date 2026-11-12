@@ -413,7 +413,7 @@ test('a refusal for another machine titles the placeholder and is never asked ag
 test('the workers panel and the launcher thread load and open tool-row images', () => {
   const architect = readFileSync(new URL('../src/architect.ts', import.meta.url), 'utf8');
   assert.match(architect, /this\.releaseImages = attachToolImages\(panel\.querySelector<HTMLElement>\('\.architect-worker-detail'\)!, \(\) => this\.worker\(\)\?\.sessionId \?\? ''\);/);
-  assert.match(architect, /close\(\): void \{ this\.releaseImages\?\.\(\); this\.releaseImages = undefined;/);
+  assert.match(architect, /close\(\): void \{[^]*?this\.releaseImages\?\.\(\); this\.releaseImages = undefined; this\.teamMessages\?\.destroy\(\);/);
   const overlay = readFileSync(new URL('../src/overlay-thread.ts', import.meta.url), 'utf8');
   assert.match(overlay, /attachToolImages\(this\.history, \(\) => this\.task\?\.sessionId \?\? '', overlayImageLoader, \{ launcher: true \}\);/);
   assert.match(overlay, /overlayCall<string>\('tool_image'/);

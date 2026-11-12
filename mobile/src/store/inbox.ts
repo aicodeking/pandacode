@@ -9,7 +9,7 @@ export const SETTLED_MS = 24 * 3600_000;
 /** A running task with no event for this long shows as stalled. */
 export const STALL_MS = 120_000;
 
-export type Section = 'running' | 'needs' | 'recent' | 'unsent' | 'snoozed' | 'settled';
+export type Section = 'running' | 'needs' | 'recent' | 'unsent' | 'snoozed' | 'settled' | 'archived';
 export type Badge = 'approval' | 'question' | 'working' | 'failed' | 'stopped' | 'limited' | 'unsent' | null;
 
 /** What a running row shows: its current activity, active subagents, and the times its clock reads. */
@@ -142,8 +142,61 @@ const waitingOnYou = (row: InboxRow) => row.badge === 'approval' || row.badge ==
 /** Needs you: approvals and questions first, then failures and limits. */
 const byNeed = (a: InboxRow, b: InboxRow) => Number(waitingOnYou(b)) - Number(waitingOnYou(a)) || byTime(a, b);
 
+/** Settled (archived from a phone, or completed on the desktop): under Archived while nothing on it needs a look. */
+export const isSettledTask = (task: Pick<TaskSummary, 'stage' | 'archived'>): boolean => task.archived === true || task.stage === 'completed';
+
+/** Run states and inbox badges during which a thread is busy: running, or waiting on an approval or a question. */
+const BUSY_STATUSES: ReadonlySet<string> = new Set(['running', 'waiting']);
+const BUSY_BADGES: ReadonlySet<Badge> = new Set<Badge>(['working', 'approval', 'question']);
+
+/** The one rule for offering Archive and Delete (inbox row and task header alike): never while the run
+ * works or waits on an approval or question (the host refuses a busy delete). `status` is the live or
+ * listed run status, `badge` the inbox row's badge; either may be missing. */
+export function offersSettle({ status, badge }: { status?: string | null; badge?: Badge }): boolean {
+  if (status && BUSY_STATUSES.has(status)) return false;
+  return !(badge && BUSY_BADGES.has(badge));
+}
+
+/** The one rule for Unarchive in Archive's place (inbox row and task header alike): a settled task
+ * (archived, or completed on the desktop) while Archive itself would be offered (offersSettle). */
+export const offersUnarchive = ({ task, status, badge }: { task: Pick<TaskSummary, 'stage' | 'archived'> | undefined; status?: string | null; badge?: Badge }): boolean =>
+  !!task && offersSettle({ status, badge }) && isSettledTask(task);
+
+type TaskLists = Readonly<Record<string, TasksList | undefined>>;
+
+/** The lists with one task changed or, when `task` is given and it isn't listed, added; the same object otherwise. */
+function withTask(tasks: TaskLists, deviceId: string, sessionId: string, change: Partial<TaskSummary>, task?: TaskSummary): TaskLists {
+  const list = tasks[deviceId];
+  if (!list) return tasks;
+  if (list.tasks.some(t => t.sessionId === sessionId)) {
+    return { ...tasks, [deviceId]: { ...list, tasks: list.tasks.map(t => (t.sessionId === sessionId ? { ...t, ...change } : t)) } };
+  }
+  return task ? { ...tasks, [deviceId]: { ...list, tasks: [...list.tasks, { ...task, ...change }] } } : tasks;
+}
+
+/** As the computer lists a thread once `thread.archive` settles it (stage `completed`), so it moves to Archived before the next list. */
+export const settleTask = (tasks: TaskLists, deviceId: string, task: TaskSummary): TaskLists =>
+  withTask(tasks, deviceId, task.sessionId, { stage: 'completed', archived: false }, task);
+
+/** As the computer lists a thread `thread.archive` reopened: back for review (or `stage`, the one it
+ * had before Archive, once thread.setStage put it back), out of Archived. */
+export const reopenTask = (tasks: TaskLists, deviceId: string, sessionId: string, stage: TaskSummary['stage'] = 'review'): TaskLists =>
+  withTask(tasks, deviceId, sessionId, { stage, archived: false });
+
+/** A refused archive puts back only that task: its `stage` and `archived` as `before` had them, or the
+ * task itself at its old place when the archive dropped it from the list. Other tasks keep any news. */
+export function restoreTask(tasks: TaskLists, deviceId: string, before: TaskSummary, index: number): TaskLists {
+  const list = tasks[deviceId];
+  if (!list) return tasks;
+  if (list.tasks.some(t => t.sessionId === before.sessionId)) {
+    return withTask(tasks, deviceId, before.sessionId, { stage: before.stage, archived: before.archived });
+  }
+  const at = Math.max(0, Math.min(index, list.tasks.length));
+  return { ...tasks, [deviceId]: { ...list, tasks: [...list.tasks.slice(0, at), before, ...list.tasks.slice(at)] } };
+}
+
 export function inboxSections({ hosts, tasks, live, snoozed, pins, outbox, now, glances, teams }: InboxInput): Inbox {
-  const out: Inbox = { running: [], needs: [], recent: [], unsent: [], snoozed: [], settled: [] };
+  const out: Inbox = { running: [], needs: [], recent: [], unsent: [], snoozed: [], settled: [], archived: [] };
   const index = new Map<string, InboxRow>();
   for (const host of hosts) {
     for (const task of tasks[host.id]?.tasks ?? []) {
@@ -156,7 +209,8 @@ export function inboxSections({ hosts, tasks, live, snoozed, pins, outbox, now, 
       const row: InboxRow = { key, deviceId: host.id, computer: host.name, task, badge, run, at, pinned: !!pins[key] || task.pinned };
       index.set(key, row);
       const old = !row.pinned && now - at > SETTLED_MS;
-      if ((snoozed[key] ?? 0) > now) out.snoozed.push(row);
+      if (badge === null && !row.pinned && isSettledTask(task)) out.archived.push(row);
+      else if ((snoozed[key] ?? 0) > now) out.snoozed.push(row);
       else if (badge === 'working') out.running.push(row);
       else if (waitingOnYou(row) || (!old && (badge === 'failed' || badge === 'limited'))) out.needs.push(row);
       else if (old) out.settled.push(row);
@@ -234,8 +288,8 @@ export function filterInbox(inbox: Inbox, bots: readonly BotRow[], { query = '',
 }
 
 export type SectionId = Section | 'bots';
-const ORDER: readonly SectionId[] = ['running', 'needs', 'recent', 'unsent', 'bots', 'snoozed', 'settled'];
-const FOLDED: ReadonlySet<SectionId> = new Set(['snoozed', 'settled']);
+const ORDER: readonly SectionId[] = ['running', 'needs', 'recent', 'unsent', 'bots', 'snoozed', 'settled', 'archived'];
+const FOLDED: ReadonlySet<SectionId> = new Set(['snoozed', 'settled', 'archived']);
 
 /** A list item is one slice of a section's card (`first`/`last` in its inner card), so the list stays
  * virtualised. Keys don't name the section, so a row changing sections travels as the same cell.

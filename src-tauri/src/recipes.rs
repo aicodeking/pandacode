@@ -132,10 +132,12 @@ pub fn list_dir(dir: &Path, scope: &str) -> Vec<Recipe> {
         .filter_map(|entry| {
             let path = entry.path();
             let stem = path.file_stem()?.to_str()?.to_string();
-            if path.extension()? != "json" || !valid_name(&stem) || entry.metadata().ok()?.len() > MAX_FILE {
+            if path.extension()? != "json" || !valid_name(&stem) {
                 return None;
             }
-            let mut recipe: Recipe = serde_json::from_str(&fs::read_to_string(&path).ok()?).ok()?;
+            // Round 24: bounded and never through a symlink or FIFO (a View phone lists these).
+            let bytes = crate::workspace::read_regular(&path, MAX_FILE).ok()?;
+            let mut recipe: Recipe = serde_json::from_slice(&bytes).ok()?;
             (recipe.name == stem && validate(&recipe).is_ok()).then(|| {
                 recipe.scope = scope.into();
                 recipe
@@ -335,6 +337,24 @@ mod tests {
         assert!(delete(&global, "../review").is_err());
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(global);
+    }
+
+    /// Round 24: a symlink to `/dev/zero` or a FIFO named like a recipe is skipped, not read.
+    #[cfg(unix)]
+    #[test]
+    fn listing_skips_links_and_fifos() {
+        let dir = temp("special");
+        save(&dir, &recipe(vec![step("prompt", Some("Review the diff"), None, &[])])).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", dir.join("zero.json")).unwrap();
+        std::os::unix::fs::symlink(dir.join("review.json"), dir.join("linked.json")).unwrap();
+        let fifo = std::ffi::CString::new(dir.join("fifo.json").to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        fs::write(dir.join("huge.json"), vec![b' '; MAX_FILE as usize + 1]).unwrap();
+        let started = std::time::Instant::now();
+        let names: Vec<String> = list_dir(&dir, "project").into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["review"]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "a FIFO never blocks");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -202,7 +202,97 @@ fn settle_unfinished_subagents(db: &Connection, sid: Option<&str>, status: &str)
     Ok(())
 }
 
+/// Stored paths canonicalized per launch lookup at most (`launch_project_at`).
+const LAUNCH_CANDIDATES: usize = 64;
+
+/// `[as given, resolved, then each one's last component after a / and after a \]`: a stored
+/// path that names this folder another way (`..`, a trailing `.`) still ends in one of those.
+fn launch_path_patterns(cwd: &Path, resolved: &Path) -> [String; 6] {
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    let suffix = |p: &Path, separator: char| {
+        p.file_name().map_or_else(
+            || text(p),
+            |name| format!("{separator}{}", name.to_string_lossy()),
+        )
+    };
+    [
+        text(cwd),
+        text(resolved),
+        suffix(cwd, '/'),
+        suffix(cwd, '\\'),
+        suffix(resolved, '/'),
+        suffix(resolved, '\\'),
+    ]
+}
+
 impl Store {
+    /// Launch lookups must never migrate or repair the database behind the live Store.
+    pub(crate) fn open_read_only(path: &Path) -> Result<Self> {
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| e.to_string())?;
+        db.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
+        let version: i64 = db
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if version != SCHEMA_VERSION {
+            return Err(format!("Database schema {version} differs from expected {SCHEMA_VERSION}; open PandaCode to migrate it."));
+        }
+        Ok(Self {
+            db,
+            path: path.into(),
+        })
+    }
+
+    pub(crate) fn launch_session_project(&self, sid: &str) -> Result<Option<(String, String)>> {
+        self.db.query_row(
+            "SELECT p.id,p.path FROM sessions s JOIN projects p ON p.id=s.project_id WHERE s.id=?1",
+            [sid], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    /// The project a launch folder belongs to: a task worktree first, then a main checkout.
+    /// SQL keeps only rows whose stored path is the folder or ends in its name (as given or
+    /// with links resolved), so only those few candidates are canonicalized.
+    pub(crate) fn launch_project_at(&self, cwd: &Path) -> Result<Option<(String, String)>> {
+        let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+        let wanted = canonical(cwd);
+        let [exact, resolved, a, b, c, d] = launch_path_patterns(cwd, &wanted);
+        let matches = |column: &str| {
+            format!("({column} IN (?1,?2) OR substr({column},-length(?3))=?3 OR substr({column},-length(?4))=?4 OR substr({column},-length(?5))=?5 OR substr({column},-length(?6))=?6)")
+        };
+        let params = rusqlite::params![exact, resolved, a, b, c, d];
+        let mut stmt = self.db.prepare(&format!("SELECT DISTINCT p.id,p.path,s.worktree_path FROM sessions s JOIN projects p ON p.id=s.project_id WHERE s.worktree_path IS NOT NULL AND {} ORDER BY s.worktree_path IN (?1,?2) DESC,p.id LIMIT {LAUNCH_CANDIDATES}", matches("s.worktree_path"))).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params, |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, path, worktree) = row.map_err(|e| e.to_string())?;
+            if canonical(Path::new(&worktree)) == wanted {
+                return Ok(Some((id, path)));
+            }
+        }
+        let mut stmt = self.db.prepare(&format!("SELECT id,path FROM projects WHERE {} ORDER BY path IN (?1,?2) DESC,id LIMIT {LAUNCH_CANDIDATES}", matches("path"))).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params, |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, path) = row.map_err(|e| e.to_string())?;
+            if canonical(Path::new(&path)) == wanted {
+                return Ok(Some((id, path)));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let mut db = Connection::open(path).map_err(|e| e.to_string())?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-1024; PRAGMA mmap_size=0;
@@ -2071,6 +2161,58 @@ mod tests {
         assert!(store.tool_records_containing(&session.id, "shot9", None, 10).unwrap().is_empty());
         assert!(store.tool_records_containing(&session.id, "shot7", None, 10).unwrap().is_empty());
         assert_eq!(store.tool_records_containing(&other.id, "shot7", None, 10).unwrap().len(), 1);
+    }
+
+    /// Launch lookups consider only rows whose stored path could name the folder.
+    #[test]
+    fn launch_project_lookup_filters_rows_by_path_before_resolving_links() {
+        let root = std::env::temp_dir().join(format!("pandacode-launch-{}", uuid::Uuid::new_v4()));
+        let (main, worktree, other) = (root.join("main"), root.join("tree"), root.join("other"));
+        for dir in [&main, &worktree, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&main).unwrap();
+        let unrelated = store.add_project(&other).unwrap();
+        let task = store
+            .create_session(&project.id, "claude", "default", "ask")
+            .unwrap();
+        store
+            .create_worktree_session_on(&task, &worktree, None)
+            .unwrap();
+        // Rows that can't name the folder are left out by SQL before anything is resolved.
+        for i in 0..20 {
+            let folder = root.join(format!("unrelated-{i}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            let task = store
+                .create_session(&unrelated.id, "claude", "default", "ask")
+                .unwrap();
+            store
+                .create_worktree_session_on(&task, &folder, None)
+                .unwrap();
+        }
+        let id = |cwd: &Path| store.launch_project_at(cwd).unwrap().map(|(id, _)| id);
+        assert_eq!(id(&worktree), Some(project.id.clone()));
+        assert_eq!(
+            id(&root.join("other").join("..").join("tree")),
+            Some(project.id.clone())
+        );
+        assert_eq!(id(&main.join(".")), Some(project.id.clone()));
+        assert_eq!(id(&other), Some(unrelated.id.clone()));
+        assert_eq!(id(&root), None);
+        #[cfg(unix)]
+        {
+            // A link with another name still resolves through the folder it points at.
+            let link = root.join("linked");
+            std::os::unix::fs::symlink(&worktree, &link).unwrap();
+            assert_eq!(id(&link), Some(project.id.clone()));
+        }
+        let [given, resolved, ..] = launch_path_patterns(&worktree, &worktree);
+        assert_eq!(
+            (given.as_str(), resolved.as_str()),
+            (worktree.to_str().unwrap(), worktree.to_str().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Usage-limit resumes list only flagged tasks whose reset has passed (serve mode).

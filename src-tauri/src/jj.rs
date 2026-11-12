@@ -67,10 +67,32 @@ pub fn repo_root(root: &Path) -> Option<PathBuf> {
 }
 
 pub fn status(root: &Path) -> Result<JjStatus, String> {
-    let Some(repo) = repo_root(root) else { return Ok(JjStatus::default()) };
-    let mut changes = parse_log(&run(root, &["log", "--no-graph", "-r", "@", "-T", TEMPLATE])?)?;
-    let files = parse_summary(&run(root, &["diff", "--summary", "-r", "@"])?);
+    status_with(root, repo_root(root), &[])
+}
+
+/// Global options for a phone's read-only jj call with the host's Full access switch off:
+/// no working-copy snapshot (it would write a commit, through the repository's signing
+/// program and fsmonitor), signing dropped, no watchman, no pager.
+pub const UNTRUSTED_ARGS: [&str; 7] =
+    ["--ignore-working-copy", "--config", "signing.behavior=drop", "--config", "fsmonitor.backend=none", "--config", "ui.paginate=never"];
+
+/// [`status`] for a phone with the switch off: [`UNTRUSTED_ARGS`], and only a `.jj` in
+/// `root` itself counts (never one in a parent folder outside the project).
+pub fn status_untrusted(root: &Path) -> Result<JjStatus, String> {
+    let repo = root.join(".jj").is_dir().then(|| root.to_path_buf());
+    status_with(root, repo, &UNTRUSTED_ARGS)
+}
+
+fn status_with(root: &Path, repo: Option<PathBuf>, extra: &[&str]) -> Result<JjStatus, String> {
+    let Some(repo) = repo else { return Ok(JjStatus::default()) };
+    let mut changes = parse_log(&run(root, &status_args(extra, &["log", "--no-graph", "-r", "@", "-T", TEMPLATE]))?)?;
+    let files = parse_summary(&run(root, &status_args(extra, &["diff", "--summary", "-r", "@"]))?);
     Ok(JjStatus { is_repo: true, colocated: repo.join(".git").exists(), change: changes.pop(), files })
+}
+
+/// `extra` global options before a subcommand.
+fn status_args<'a>(extra: &[&'a str], subcommand: &[&'a str]) -> Vec<&'a str> {
+    extra.iter().chain(subcommand).copied().collect()
 }
 
 pub fn diff(root: &Path, path: Option<&str>) -> Result<String, String> {
@@ -250,6 +272,28 @@ mod tests {
         assert!(message_flag("a\0b").is_err());
         assert_eq!(fileset("a \"b\"|c").unwrap(), r#"root-file:"a \"b\"|c""#);
         assert!(fileset("../x").is_err() && fileset("/etc/passwd").is_err() && fileset("").is_err());
+    }
+
+    /// Round 8: a phone's jj status with the switch off never snapshots the working copy,
+    /// signs, or looks for `.jj` above the folder it was given.
+    #[test]
+    fn untrusted_status_skips_the_working_copy_signing_and_parent_repos() {
+        let args = status_args(&UNTRUSTED_ARGS, &["log", "-r", "@"]);
+        assert_eq!(args[0], "--ignore-working-copy");
+        let pairs: Vec<_> = args.windows(2).filter(|w| w[0] == "--config").map(|w| w[1]).collect();
+        assert!(pairs.contains(&"signing.behavior=drop") && pairs.contains(&"fsmonitor.backend=none"), "{args:?}");
+        assert_eq!(&args[UNTRUSTED_ARGS.len()..], ["log", "-r", "@"]);
+        let command = command(Path::new("/tmp"), &args);
+        let all: Vec<_> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(all.starts_with(&["--no-pager".into(), "--color=never".into(), "--ignore-working-copy".into()]), "{all:?}");
+        let base = std::env::temp_dir().join(format!("pandacode-jj-parent-{}", uuid::Uuid::new_v4()));
+        let nested = base.join("project");
+        std::fs::create_dir_all(base.join(".jj")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        // The parent's `.jj` is outside the project: no jj runs at all.
+        assert_eq!(status_untrusted(&nested).unwrap(), JjStatus::default());
+        assert!(repo_root(&nested).is_some(), "the desktop still finds it");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

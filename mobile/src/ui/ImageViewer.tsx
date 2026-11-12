@@ -11,7 +11,7 @@ import Animated, { interpolate, useAnimatedReaction, useAnimatedStyle, useReduce
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { scheduleOnRN } from 'react-native-worklets';
 import { create } from 'zustand';
-import { Button, EXIT_MS, FADE_MS, PressScale, springs, type as text } from './ds/index.ts';
+import { Button, EXIT_MS, FADE_MS, PressScale, springs, type as text, VIEWER } from './ds/index.ts';
 import { useAttachment, type ViewerImage } from './useAttachment.ts';
 import { Icon } from './Icon.tsx';
 import { draggedRect, fitRect, isOnScreen, panBounds, type Rect } from './viewer-geometry.ts';
@@ -39,9 +39,9 @@ const finish = () => useViewer.setState({ images: [], index: 0, source: undefine
 export const useViewerHides = (image: ViewerImage) => useViewer(s => s.hidden === imageKey(image));
 
 /** The viewer is always on black, whatever the appearance. */
-const ON_BLACK = '#fff';
+const ON_BLACK = VIEWER.text;
 /** Dark enough for the white marks to read over a bright image when zoomed. */
-const CHROME = 'rgba(30, 30, 30, 0.72)';
+const CHROME = VIEWER.chrome;
 const TAP_SLOP = 10;
 const MAX_SCALE = 5;
 const DOUBLE_SCALE = 2.5;
@@ -378,11 +378,11 @@ function Page({ image, width, height, active, drag, onZoom, onRetry, onDismiss }
 const styles = StyleSheet.create({
   root: { flex: 1 },
   hero: { position: 'absolute', overflow: 'hidden', borderCurve: 'continuous' },
-  black: { backgroundColor: '#000' },
+  black: { backgroundColor: VIEWER.page },
   bar: { position: 'absolute', flexDirection: 'row', alignItems: 'center', gap: 12 },
   button: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: CHROME },
   dim: { opacity: 0.4 },
   title: { flex: 1, color: ON_BLACK, textAlign: 'center', textShadowColor: CHROME, textShadowRadius: 6, textShadowOffset: { width: 0, height: 0 } },
-  error: { position: 'absolute', left: 24, right: 24, bottom: '12%', alignItems: 'center', gap: 10, padding: 14, borderRadius: 14, borderCurve: 'continuous', backgroundColor: 'rgba(0,0,0,0.6)' },
+  error: { position: 'absolute', left: 24, right: 24, bottom: '12%', alignItems: 'center', gap: 10, padding: 14, borderRadius: 14, borderCurve: 'continuous', backgroundColor: VIEWER.chrome },
   errorText: { color: ON_BLACK, textAlign: 'center' },
 });

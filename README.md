@@ -102,8 +102,12 @@ embedded editor engine.
 - **Agent usage.** Account limits and cost estimates for each installed harness
   ([agent usage](docs/agent-usage.md)), and one-click CLI updates
   ([agent updates](docs/agent-updates.md)).
-- **Skills, recipes and capabilities.** Import a skill or rule once and turn it on per
-  agent ([skills library](docs/skills-library.md)), save multi-step
+- **Skills, rules, recipes and capabilities.** Settings → Tools → **Skills** lists every
+  skill installed for any agent in one place: switch one off for a project or everywhere
+  in PandaCode (agents PandaCode runs; some can only be asked not to use it), add skills
+  from skills.sh, GitHub, GitLab or a local folder, and uninstall with Undo
+  ([skill manager](docs/skill-manager.md)). Rules are imported once in **Rules & library**
+  and turned on per agent ([rules and library](docs/skills-library.md)). Save multi-step
   [recipes](docs/recipes.md) with a dry run per harness, and compare each agent's
   commands, MCP servers, hooks and skills ([capabilities](docs/capabilities.md)).
 - **Codex goals.** `/goal` sets an objective with an optional token budget. See
@@ -223,13 +227,15 @@ Discord, WhatsApp or a browser too.
   </tr>
 </table>
 
-**Settings in seven sections.** General, Appearance, Agents, Schedules, Tools,
-Connections and About, with colors and imported VS Code themes.
+**Settings in nine sections.** Recommended, General, Appearance, Voice, Agents,
+Schedules, Tools, Connections and About, with colors and imported VS Code themes.
 
-<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the seven sections listed on the left and theme, color and VS Code theme controls" width="100%">
+<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the nine sections listed on the left and theme, color and VS Code theme controls" width="100%">
 
 <sub>Screenshots come from the browser preview with sample data. Regenerate them with
 `npm run screenshots` (see [`scripts/screenshots`](scripts/screenshots/capture.spec.ts)).</sub>
+
+Voice dictation inserts a draft without sending it. Transcribe on your computer with a speech model you download in Settings → Voice, or send audio to a speech service you configure; see [voice input](docs/voice-input.md).
 
 ## Privacy
 
@@ -269,7 +275,10 @@ information:
 | Model routing profiler (optional): `model.int8.onnx` and `tokenizer.json`, from a pinned commit, verified by SHA-256 | `raw.githubusercontent.com` | Once, the first time you turn on a team (with routing on) or click Download or Route in Settings → Agents → Model routing; never at launch, and never on macOS older than 13.4 or on Intel Mac, x86_64 Linux and x86_64 Windows builds |
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Connections → Remote access; nothing before |
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
+| Voice input with a speech service (optional): recorded audio, selected model and optional language, authenticated with your speech key | The transcription endpoint you configure (OpenAI, Groq, Mistral or your local/custom server) | Only with that service chosen, when you stop or transcribe a recording (Stop, Enter, Transcribe recording, Retry) or when switching threads or anything else closes the prompt box mid-recording while PandaCode keeps running; automatic stops (the two-minute or 16 MiB limit, or a failing microphone) keep the audio until you press Transcribe recording; with **This device**, audio never leaves your computer |
+| Local speech models (optional): the model file you pick and, with the first one, the Silero voice-activity model (about 1 MB), from a pinned revision, verified by SHA-256 | `huggingface.co`, `*.huggingface.co` and the download CDN `*.hf.co` | Only when you click Download in Settings → Voice; nothing at launch, while browsing models or while dictating |
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Connections → Cloud sandboxes |
+| Adding skills (optional): `npx` fetches the `skills` CLI from the npm registry set in your `~/.npmrc`, which reads the source you choose: a GitHub or GitLab repository, or a local folder (telemetry off) | `registry.npmjs.org` (or your configured registry), `github.com` or `gitlab.com` | Only when you click Find skills, choose a folder or click Install in Settings → Tools → Skills; listing and switching skills are local |
 
 ## Install
 
@@ -286,20 +295,20 @@ Download the latest build from
 | Linux arm64 | [`PandaCode-Linux-aarch64.AppImage`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage) | Ubuntu 24.04+ aarch64 or compatible, X11 or XWayland |
 
 Or from a terminal: `npx pandacode` downloads the latest build, verifies its
-signature and installs it (on macOS it is signed locally for you, so no
-Gatekeeper prompt). `npx pandacode --dry-run` only downloads and verifies.
+update signature and installs it (on macOS it also signs the installed app locally).
+`npx pandacode --dry-run` only downloads and verifies.
 
 With [Homebrew](https://brew.sh): `brew install --cask aicodeking/pandacode/pandacode`
 on macOS, or `brew install aicodeking/pandacode/pandacode` on Linux
 ([details](docs/homebrew.md)).
 
-Release builds are not code-signed, so your OS will warn the first time:
+The official macOS builds are Developer ID signed and notarized by Apple
+([verified for v0.3.103](https://github.com/aicodeking/pandacode/actions/runs/42462913784)).
+macOS may still ask you to confirm opening a downloaded app. Signing remains
+optional for [local and fork builds](docs/releasing.md#optional-signing), whose
+ad-hoc builds need the instructions there. Windows and Linux builds are not
+code-signed:
 
-- **macOS:** the build carries an ad-hoc signature and is not notarized, so macOS
-  refuses to open it, and **Open Anyway** in **System Settings → Privacy &
-  Security** does not always clear it. Run `xattr -dr com.apple.quarantine
-  /Applications/PandaCode.app` once instead; `npx pandacode` signs the app locally
-  and needs no such step.
 - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
 - **Linux:** `chmod +x PandaCode-Linux-x86_64.AppImage` (or `-aarch64`), then run it. Some
   distributions need FUSE 2 (`libfuse2`), or set `APPIMAGE_EXTRACT_AND_RUN=1`.
@@ -478,3 +487,6 @@ open, and removing a project from the app never deletes its files.
 [PandaCode License](LICENSE) (MIT with an attribution requirement for forks) ©
 2026 PandaCode contributors. Provider names and logos belong to
 their owners and do not imply endorsement ([brand assets](docs/brand-assets.md)).
+Bundled third-party components and their licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). A copy ships inside the app, and
+Settings → About → Third-party notices opens it.

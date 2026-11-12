@@ -323,7 +323,7 @@ export function showSketch(options: SketchOptions): void {
       if (value !== shape.text) { shape.text = value; if (shape.type === 'text') { context.font = `500 ${shape.fontSize}px ${FONT}`; const lines = wrapText(context, value || 'Text', Math.max(20, bounds(shape).w)); shape.h = Math.max(shape.fontSize * 1.3, lines.length * shape.fontSize * 1.3); } commit(); } else render();
     };
     area.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !isImeKey(event)) {
         // Chrome reports Escape as a dialog close request after this event; WebKit does not
         // once the key is handled. Either way the edit ends and the sketch stays open.
         event.preventDefault(); event.stopPropagation();
@@ -455,10 +455,11 @@ export function showSketch(options: SketchOptions): void {
     commit(); fit();
   });
   editor.addEventListener('keydown', event => {
-    if ((event.target as HTMLElement).matches('textarea, select, input')) return;
+    if (isImeKey(event) || event.altKey || (event.target as HTMLElement).matches('textarea, select, input')) return;
     const command = event.metaKey || event.ctrlKey;
-    if (command && event.key.toLowerCase() === 'z') { event.preventDefault(); event.stopPropagation(); if (event.shiftKey) redo(); else undo(); return; }
-    if (command && event.key.toLowerCase() === 'd') { event.preventDefault(); event.stopPropagation(); duplicate(); return; }
+    const key = event.code.replace(/^Key/, '').toLowerCase();
+    if (command && key === 'z') { event.preventDefault(); event.stopPropagation(); if (event.shiftKey) redo(); else undo(); return; }
+    if (command && key === 'd') { event.preventDefault(); event.stopPropagation(); duplicate(); return; }
     if (command) return;
     if (event.key === 'Backspace' || event.key === 'Delete') { if (current()) { event.preventDefault(); event.stopPropagation(); remove(); } return; }
     if (event.key === 'Enter' && current()) { event.preventDefault(); event.stopPropagation(); edit(current()!); return; }
@@ -467,8 +468,8 @@ export function showSketch(options: SketchOptions): void {
       const step = event.shiftKey ? 10 : 1, shape = current()!, dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
       shape.x += dx; shape.y += dy; if (shape.points) shape.points = shape.points.map((v, i) => v + (i % 2 === 0 ? dx : dy)); commit(); return;
     }
-    const shortcut = TOOLS.find(t => t.key.toLowerCase() === event.key.toLowerCase());
-    if (shortcut && !event.altKey) { event.preventDefault(); event.stopPropagation(); setTool(shortcut.id); }
+    const shortcut = TOOLS.find(t => t.key.toLowerCase() === key);
+    if (shortcut) { event.preventDefault(); event.stopPropagation(); setTool(shortcut.id); }
   });
   canvas.tabIndex = 0;
 

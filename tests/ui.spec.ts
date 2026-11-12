@@ -192,6 +192,72 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
 });
 
+test('Arabic composer lines and streaming replies keep their direction after restoring a thread', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => { if (!error.message.startsWith('ResizeObserver loop')) errors.push(error.message); });
+  const answer = 'مرحبا بالعالم!\n\nHello, world!\n\n```js\nconst label = "مرحبا!";\n```';
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    let body = await response.text();
+    const output = 'const output = shortReply ? "All tests pass in the preview." :';
+    expect(body).toContain(output);
+    expect(body).toContain('else finish(s.id, output);');
+    body = body.replace(output, `const output = ${JSON.stringify(answer)} ??`)
+      .replace('else finish(s.id, output);', 'else window.__finishArabic = () => finish(s.id, output);');
+    await route.fulfill({ response, body: previewBody(body) });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
+  const draft = 'مرحبا بالعالم!\nHello, world!\nمرحبا (PandaCode)؟\n<img src=x onerror="window.__owned=1">';
+  await prompt(page).fill(draft);
+  await expect(prompt(page)).toHaveAttribute('dir', 'auto');
+  await expect(prompt(page)).toHaveCSS('direction', 'rtl');
+  await expect(prompt(page)).toHaveCSS('unicode-bidi', 'plaintext');
+  await expect(page.locator('.composer-toolbar')).toHaveCSS('direction', 'ltr');
+  await page.screenshot({ path: test.info().outputPath('arabic-composer.png') });
+  await prompt(page).press('Enter');
+  const user = page.locator('#transcript .user-message .user-prose').last();
+  await expect(user).toHaveText(draft);
+  expect(await user.textContent()).toBe(draft);
+  const positions = await user.evaluate(node => {
+    const text = node.firstChild!, lines = text.textContent!.split('\n'), bounds = node.getBoundingClientRect();
+    let at = 0;
+    return lines.slice(0, 3).map(line => {
+      const range = document.createRange(); range.setStart(text, at); range.setEnd(text, at + line.length); at += line.length + 1;
+      const rect = range.getBoundingClientRect();
+      return { left: Math.abs(rect.left - bounds.left), right: Math.abs(rect.right - bounds.right) };
+    });
+  });
+  expect(positions[0].right).toBeLessThan(2);
+  expect(positions[1].left).toBeLessThan(2);
+  expect(positions[2].right).toBeLessThan(2);
+  const live = page.locator('#stream-region .live-text');
+  await expect(live.locator('p').nth(0)).toHaveCSS('direction', 'rtl');
+  await expect(live.locator('p').nth(1)).toHaveCSS('direction', 'ltr');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__finishArabic)).toBe('function');
+  expect(await live.locator('pre code').textContent()).toBe('const label = "مرحبا!";\n');
+  const liveHtml = await live.innerHTML();
+  await page.evaluate(() => (window as any).__finishArabic());
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeHidden();
+  const reply = page.locator('#transcript .agent-message .message-content').last();
+  await expect.poll(() => reply.innerHTML()).toBe(liveHtml);
+  const task = await page.locator('.task-item.selected').getAttribute('data-id');
+  await prompt(page).fill('English draft!\nمسودة عربية!');
+  await expect(prompt(page)).toHaveCSS('direction', 'ltr');
+  await page.locator('.task-item:not(.selected)').first().click();
+  await page.locator(`.task-item[data-id="${task}"]`).click();
+  await expect(prompt(page)).toHaveValue('English draft!\nمسودة عربية!');
+  await expect(prompt(page)).toHaveCSS('unicode-bidi', 'plaintext');
+  await expect.poll(() => reply.innerHTML()).toBe(liveHtml);
+  expect(await user.textContent()).toBe(draft);
+  await expect(user.locator('img, [onerror]')).toHaveCount(0);
+  await expect(page.locator('.message-meta').last()).toHaveCSS('direction', 'ltr');
+  await expect(page.locator('body')).toHaveCSS('direction', 'ltr');
+  expect(await page.evaluate(() => (window as any).__owned)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
 test('identifies sample data and renders the desktop workspace without runtime errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));

@@ -6,10 +6,85 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['Recommended', 'General', 'Appearance', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
+const GROUPS = ['Recommended', 'General', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
 const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
+
+for (const theme of ['dark', 'light']) for (const { width, scale } of [{ width: 460, scale: 1.4 }, { width: 540, scale: 1.6 }, { width: 1100, scale: 1 }]) {
+  test(`settings organization keeps full Agents tabs readable at ${width}px ${scale * 100}% ${theme}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 740 });
+    await page.addInitScript(({ theme, scale }) => {
+      localStorage.setItem('pandacode.theme', theme);
+      localStorage.setItem('pandacode.uiScale', String(scale));
+    }, { theme, scale });
+    await open(page);
+    await settings(page);
+    await tab(page, 'Agents').click();
+    await tab(page, 'Providers').click();
+    const track = dialog(page).getByRole('tablist', { name: 'Agents', exact: true });
+    await expect(page.getByRole('region', { name: 'Claude Code accounts', exact: true })).toBeVisible();
+    const rows: number[] = [];
+    for (const name of ['Harnesses', 'Providers', 'Agent teams', 'Model routing']) {
+      const button = track.getByRole('tab', { name, exact: true });
+      const text = await button.evaluate(button => {
+        const range = document.createRange(); range.selectNodeContents(button);
+        const glyphs = range.getBoundingClientRect(), bounds = button.getBoundingClientRect();
+        return { left: glyphs.left - bounds.left, right: bounds.right - glyphs.right, width: glyphs.width, top: bounds.top };
+      });
+      expect(text.width, name).toBeGreaterThan(40);
+      expect(text.left, `${name} left inset`).toBeGreaterThanOrEqual(8);
+      expect(text.right, `${name} right inset`).toBeGreaterThanOrEqual(8);
+      rows.push(text.top);
+    }
+    if (width === 1100) expect(Math.max(...rows) - Math.min(...rows)).toBeLessThan(1);
+    for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+      await page.emulateMedia({ reducedMotion });
+      await tab(page, 'Providers').focus();
+      for (const [key, name] of [['ArrowRight', 'Agent teams'], ['End', 'Model routing'], ['Home', 'Harnesses'], ['ArrowRight', 'Providers']]) {
+        await page.keyboard.press(key);
+        const selected = track.getByRole('tab', { name, exact: true });
+        await expect(selected).toBeFocused();
+        await expect(selected).toHaveAttribute('aria-selected', 'true');
+        const bounds = await selected.boundingBox();
+        expect(bounds!.x).toBeGreaterThanOrEqual(0);
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+        await expect.poll(() => track.evaluate(track => {
+          const selected = track.querySelector('[aria-selected="true"]')!.getBoundingClientRect();
+          const thumb = track.querySelector('.segment-thumb')!.getBoundingClientRect();
+          return Math.max(Math.abs(selected.x - thumb.x), Math.abs(selected.y - thumb.y), Math.abs(selected.width - thumb.width));
+        })).toBeLessThan(1.1);
+      }
+    }
+    await page.screenshot({ path: testInfo.outputPath('agents-providers.png') });
+    expect(await page.locator('.settings-content').evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollLeft)).toBe(0);
+  });
+}
+
+for (const theme of ['dark', 'light']) test(`settings organization separates the account hint from its inner card at 140% ${theme}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1100, height: 740 });
+  await page.addInitScript(theme => {
+    localStorage.setItem('pandacode.theme', theme);
+    localStorage.setItem('pandacode.uiScale', '1.4');
+  }, theme);
+  await open(page);
+  await settings(page);
+  await tab(page, 'Agents').click();
+  await tab(page, 'Providers').click();
+  const pool = page.getByRole('region', { name: 'Claude Code accounts', exact: true });
+  await expect(pool.locator('.account-pool-hint')).toBeVisible();
+  const gap = await pool.evaluate(pool => {
+    const hint = pool.querySelector('.account-pool-hint')!.getBoundingClientRect();
+    const inner = getComputedStyle(pool, '::before'), style = getComputedStyle(pool);
+    // Absolute grid children use their grid area as the containing block.
+    const gridOffset = inner.gridRowStart === 'auto' ? 0 : parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop)
+      + style.gridTemplateRows.split(' ').slice(0, Number(inner.gridRowStart) - 1).reduce((sum, size) => sum + parseFloat(size), 0);
+    return pool.getBoundingClientRect().top + gridOffset + parseFloat(inner.top) - hint.bottom;
+  });
+  await page.screenshot({ path: testInfo.outputPath('account-heading.png') });
+  expect(gap).toBeGreaterThanOrEqual(8);
+});
 
 test('settings organization keeps long default model names clear of labels', async ({ page }) => {
   await page.addInitScript(() => {
@@ -253,11 +328,15 @@ test('settings organization shows General at once and supports keyboard groups d
   await expect(tab(page, 'Appearance')).toBeFocused();
   expect(await providerCalls(page)).toBe(startupCalls);
   await page.keyboard.press('ArrowDown');
+  await expect(tab(page, 'Voice')).toBeFocused();
+  expect(await providerCalls(page)).toBe(startupCalls);
+  await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Agents')).toBeFocused();
   await expect(tab(page, 'Agents')).toHaveAttribute('aria-selected', 'true');
   await expect(panel(page, 'Harnesses')).toBeVisible();
   await expect.poll(() => providerCalls(page)).toBe(startupCalls + 1);
   await expect(page.getByRole('button', { name: 'Refresh agents', exact: true })).toBeDisabled();
+  await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await expect(tab(page, 'General')).toBeFocused();

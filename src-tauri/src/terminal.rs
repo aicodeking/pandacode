@@ -3,13 +3,13 @@ use serde::Serialize;
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, LazyLock, Mutex,
     },
 };
 use tauri::{AppHandle, Emitter};
@@ -139,6 +139,216 @@ struct TerminalEvent {
     terminal_id: String,
     data: String,
     exit: bool,
+    /// The output log's end offset after `data`, so a webview attaching to a running
+    /// terminal can replay [`read_output`] and skip events it already replayed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<u64>,
+}
+
+
+/// Output a remote viewer polls (PandaConnect `terminal.read`), recorded next to the
+/// webview's `terminal-event`. Each terminal keeps its last [`OUTPUT_LOG_BYTES`] at
+/// monotonically increasing byte offsets; a log outlives its terminal so a viewer can read
+/// the end of the output and the exit code, and only the newest [`KEPT_EXITED`] are kept.
+pub const OUTPUT_LOG_BYTES: usize = 256 * 1024;
+const KEPT_EXITED: usize = 8;
+
+static OUTPUT_LOGS: LazyLock<Mutex<HashMap<String, OutputLog>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static OUTPUT_ORDER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct OutputLog {
+    /// Always valid UTF-8: whole decoded chunks go in, eviction stops at a char boundary.
+    bytes: VecDeque<u8>,
+    /// The offset of `bytes[0]`.
+    start: u64,
+    capacity: usize,
+    info: TerminalInfo,
+}
+
+/// What `terminal.list` shows for one terminal.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalInfo {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// `shell`, `script` (the project's run script) or `harness` (a harness console).
+    pub kind: &'static str,
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip)]
+    order: u64,
+}
+
+/// One page of output after a viewer's offset.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputChunk {
+    pub data: String,
+    /// The offset to ask for next.
+    pub next: u64,
+    /// Bytes the viewer missed because they left the buffer before it asked.
+    pub dropped: u64,
+    /// True once the terminal ended and `data` reaches the end of its output.
+    pub exited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+/// The bytes a char costs inside a JSON string.
+fn json_cost(character: char) -> usize {
+    match character {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        c if (c as u32) < 0x20 => 6,
+        c => c.len_utf8(),
+    }
+}
+
+impl OutputLog {
+    fn new(info: TerminalInfo, capacity: usize) -> Self {
+        Self { bytes: VecDeque::new(), start: 0, capacity, info }
+    }
+
+    fn end(&self) -> u64 {
+        self.start + self.bytes.len() as u64
+    }
+
+    fn push(&mut self, data: &str) {
+        self.bytes.extend(data.as_bytes());
+        if self.bytes.len() > self.capacity {
+            let mut excess = self.bytes.len() - self.capacity;
+            // Never leave a partial codepoint at the front.
+            while self.bytes.get(excess).is_some_and(|byte| byte & 0xC0 == 0x80) {
+                excess += 1;
+            }
+            self.bytes.drain(..excess);
+            self.start += excess as u64;
+        }
+    }
+
+    /// Output after `after`, at most `budget` bytes once JSON-escaped, cut at a char boundary.
+    fn read(&self, after: u64, budget: usize) -> OutputChunk {
+        let dropped = self.start.saturating_sub(after);
+        // An offset past the end (a viewer from before a restart) resumes at the end.
+        let mut index = (after.clamp(self.start, self.end()) - self.start) as usize;
+        while self.bytes.get(index).is_some_and(|byte| byte & 0xC0 == 0x80) {
+            index += 1;
+        }
+        let raw: Vec<u8> = self.bytes.range(index..).take(budget).copied().collect();
+        let valid = match std::str::from_utf8(&raw) {
+            Ok(text) => text.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        let text = std::str::from_utf8(&raw[..valid]).unwrap_or_default();
+        let (mut cost, mut taken) = (0, 0);
+        for character in text.chars() {
+            cost += json_cost(character);
+            if cost > budget {
+                break;
+            }
+            taken += character.len_utf8();
+        }
+        let next = self.start + (index + taken) as u64;
+        let exited = !self.info.running && next == self.end();
+        OutputChunk {
+            data: text[..taken].to_owned(),
+            next,
+            dropped,
+            exited,
+            exit_code: if exited { self.info.exit_code } else { None },
+        }
+    }
+}
+
+fn output_logs() -> std::sync::MutexGuard<'static, HashMap<String, OutputLog>> {
+    OUTPUT_LOGS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn log_start(id: &str, cwd: &Path, title: String, kind: &'static str, session_id: Option<String>) {
+    let info = TerminalInfo {
+        id: id.to_owned(),
+        title,
+        cwd: cwd.to_string_lossy().into_owned(),
+        session_id,
+        kind,
+        running: true,
+        exit_code: None,
+        order: OUTPUT_ORDER.fetch_add(1, Ordering::SeqCst),
+    };
+    output_logs().insert(id.to_owned(), OutputLog::new(info, OUTPUT_LOG_BYTES));
+}
+
+/// Appends output and returns the log's new end offset.
+fn log_output(id: &str, data: &str) -> Option<u64> {
+    output_logs().get_mut(id).map(|log| {
+        log.push(data);
+        log.end()
+    })
+}
+
+fn log_exit(id: &str, exit_code: Option<i32>) {
+    let mut logs = output_logs();
+    if let Some(log) = logs.get_mut(id) {
+        log.info.running = false;
+        log.info.exit_code = exit_code;
+    }
+    prune_exited(&mut logs, KEPT_EXITED);
+}
+
+/// Drops all but the newest `keep` logs of ended terminals.
+fn prune_exited(logs: &mut HashMap<String, OutputLog>, keep: usize) {
+    let mut exited: Vec<(u64, String)> = logs
+        .values()
+        .filter(|log| !log.info.running)
+        .map(|log| (log.info.order, log.info.id.clone()))
+        .collect();
+    if exited.len() <= keep {
+        return;
+    }
+    exited.sort_unstable();
+    for (_, id) in &exited[..exited.len() - keep] {
+        logs.remove(id);
+    }
+}
+
+/// Every terminal with output a viewer can read, newest first.
+pub fn output_list() -> Vec<TerminalInfo> {
+    let mut list: Vec<TerminalInfo> = output_logs().values().map(|log| log.info.clone()).collect();
+    list.sort_unstable_by_key(|info| std::cmp::Reverse(info.order));
+    list
+}
+
+/// Output of terminal `id` after offset `after`, at most `budget` bytes of JSON string.
+pub fn read_output(id: &str, after: u64, budget: usize) -> Result<OutputChunk, String> {
+    output_logs()
+        .get(id)
+        .map(|log| log.read(after, budget))
+        .ok_or_else(|| "Terminal is closed.".into())
+}
+
+/// Records which task a terminal belongs to (set by whoever opened it for that task).
+pub fn tag_output(id: &str, session_id: &str) {
+    if let Some(log) = output_logs().get_mut(id) {
+        log.info.session_id = Some(session_id.to_owned());
+    }
+}
+
+fn emit_output(app: &AppHandle, id: &str, data: String) {
+    let offset = log_output(id, &data);
+    let _ = app.emit(
+        "terminal-event",
+        TerminalEvent {
+            terminal_id: id.to_owned(),
+            data,
+            exit: false,
+            offset,
+        },
+    );
 }
 
 pub fn start(
@@ -222,7 +432,7 @@ pub fn start_harness(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
-    let cmd = harness_command(&context)?;
+    let cmd = harness_command(&context, root)?;
     start_command(
         app,
         terms,
@@ -234,8 +444,17 @@ pub fn start_harness(
     )
 }
 
-fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, String> {
-    let args = harness_arguments(context)?;
+/// Reads SQLite, skill settings and skill folders: `start_harness` runs only inside
+/// `crate::blocking` (`task_controls::start_harness_terminal`), never on the async runtime.
+fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandBuilder, String> {
+    crate::skill_manager::begin_launch(context.session_id);
+    // Unrecoverable switches never refuse a console: they deny or ask (`launch_disabled`).
+    let disabled = crate::skill_manager::launch_disabled(
+        context.provider,
+        root,
+        crate::skill_manager::disabled_for(context.session_id),
+    );
+    let args = harness_arguments_with_skills(context, &disabled)?;
     let executable = crate::providers::executable(context.provider)
         .ok_or("Install this harness before opening its console.")?;
     if context.provider == "hermes" && executable.file_stem().is_some_and(|s| s == "hermes-acp") {
@@ -243,16 +462,39 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
     }
     let mut cmd = crate::providers::pty_command(&executable)?;
     crate::provider_settings::apply_environment(context.provider, &mut cmd);
-    for name in crate::providers::claude_auth::removed_environment(context.provider) { cmd.env_remove(name); }
+    for name in crate::providers::claude_auth::removed_environment(context.provider) {
+        cmd.env_remove(name);
+    }
     cmd.args(args);
+    let existing = |key: &str| {
+        crate::provider_settings::environment(context.provider)
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .or_else(|| std::env::var(key).ok())
+            .unwrap_or_default()
+    };
+    if let Some((key, value)) =
+        crate::skill_manager::console_environment(context.provider, &disabled, || {
+            existing("HERMES_EPHEMERAL_SYSTEM_PROMPT")
+        })
+    {
+        cmd.env(key, value);
+    }
     if matches!(context.provider, "claude" | "glm" | "mimo") {
         cmd.env_remove("CLAUDECODE");
     }
     if matches!(context.provider, "glm" | "mimo") {
         let (arguments, environment) = if context.provider == "glm" {
-            (crate::providers::glm_arguments(), crate::providers::glm_environment()?)
+            (
+                crate::providers::glm_arguments(),
+                crate::providers::glm_environment()?,
+            )
         } else {
-            (crate::providers::mimo_arguments()?, crate::providers::mimo_environment()?)
+            (
+                crate::providers::mimo_arguments()?,
+                crate::providers::mimo_environment()?,
+            )
         };
         cmd.args(arguments);
         for name in [
@@ -276,12 +518,49 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
         cmd.env_remove("ACP_BACKEND");
     }
     if context.provider == "opencode" {
-        cmd.env(
-            "OPENCODE_CONFIG_CONTENT",
-            crate::providers::opencode_configuration(context.mode),
-        );
+        let permission = Some(existing("OPENCODE_PERMISSION")).filter(|text| !text.is_empty());
+        for (key, value) in
+            opencode_console_environment(context.mode, &disabled, root, permission.as_deref())
+        {
+            cmd.env(key, value);
+        }
     }
     Ok(cmd)
+}
+
+/// An OpenCode console's skill denies: merged into the inline configuration, and also through
+/// `OPENCODE_PERMISSION` (merged by OpenCode after every config layer), keeping any rules the
+/// provider environment already set there. An agent the denies can't reach is only logged:
+/// consoles have no reminder channel, and the Skills page reports that folder's OpenCode modes
+/// as asked/none.
+fn opencode_console_environment(
+    mode: &str,
+    disabled: &BTreeSet<String>,
+    root: &Path,
+    permission: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let inline = crate::skill_manager::opencode_configuration_at(
+        &crate::providers::opencode_configuration(mode),
+        disabled,
+        root,
+    );
+    let mut environment = vec![("OPENCODE_CONFIG_CONTENT", inline)];
+    if let Some(permission) = crate::skill_manager::opencode_permission(permission, disabled) {
+        environment.push(("OPENCODE_PERMISSION", permission));
+    }
+    environment
+}
+
+fn harness_arguments_with_skills(
+    context: &HarnessContext<'_>,
+    disabled: &BTreeSet<String>,
+) -> Result<Vec<String>, String> {
+    let mut args = harness_arguments(context)?;
+    args.extend(crate::skill_manager::console_arguments(
+        context.provider,
+        disabled,
+    ));
+    Ok(args)
 }
 
 fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String> {
@@ -773,6 +1052,7 @@ fn start_command(
     let writer = pty.master.take_writer().map_err(|e| e.to_string())?;
     let writer = Arc::new(Mutex::new(writer));
     let shell_name = cmd.get_argv().first().map(|name| process_name(&name.to_string_lossy())).unwrap_or_default();
+    let title = if run_script { "Run script".to_owned() } else { shell_name.clone() };
     let mut child = pty
         .slave
         .spawn_command(cmd)
@@ -787,6 +1067,7 @@ fn start_command(
     let reader_closed = closed.clone();
     drop(pty.slave);
     let id = crate::storage::id();
+    let log_session = harness_session.clone();
     registry.insert(
         id.clone(),
         Terminal {
@@ -804,6 +1085,14 @@ fn start_command(
         },
     );
     drop(registry);
+    let kind = if log_session.is_some() {
+        "harness"
+    } else if run_script {
+        "script"
+    } else {
+        "shell"
+    };
+    log_start(&id, root, title, kind, log_session);
     let tid = id.clone();
     let registry = terms.clone();
     std::thread::spawn(move || {
@@ -861,32 +1150,19 @@ fn start_command(
                     if valid > 0 {
                         let data = String::from_utf8_lossy(&pending[..valid]).to_string();
                         pending.drain(..valid);
-                        let _ = app.emit(
-                            "terminal-event",
-                            TerminalEvent {
-                                terminal_id: tid.clone(),
-                                data,
-                                exit: false,
-                            },
-                        );
+                        emit_output(&app, &tid, data);
                     }
                     if pending.len() > 4 {
                         let data = String::from_utf8_lossy(&pending).to_string();
                         pending.clear();
-                        let _ = app.emit(
-                            "terminal-event",
-                            TerminalEvent {
-                                terminal_id: tid.clone(),
-                                data,
-                                exit: false,
-                            },
-                        );
+                        emit_output(&app, &tid, data);
                     }
                 }
             }
         }
         drop(reader);
-        let _ = child.wait();
+        let status = child.wait();
+        log_exit(&tid, status.ok().map(|status| status.exit_code() as i32));
         // The shell is reaped; do not signal a potentially reused process ID.
         reader_closed.store(true, Ordering::SeqCst);
         let terminal = registry.lock().ok().and_then(|mut m| m.remove(&tid));
@@ -897,6 +1173,7 @@ fn start_command(
                 terminal_id: tid,
                 data: String::new(),
                 exit: true,
+                offset: None,
             },
         );
     });
@@ -934,6 +1211,7 @@ pub fn resize(terms: &Terminals, id: &str, cols: u16, rows: u16) -> Result<(), S
         .map_err(|e| e.to_string())
 }
 pub fn close(terms: &Terminals, id: &str) -> Result<(), String> {
+    output_logs().remove(id);
     let terminal = terms.lock().map_err(|e| e.to_string())?.remove(id);
     drop(terminal);
     Ok(())
@@ -943,6 +1221,144 @@ pub fn close(terms: &Terminals, id: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::{sync::mpsc, time::Duration};
+
+    #[test]
+    fn skill_manager_console_enforces_claude_family_and_uses_advisory_channels() {
+        let disabled = BTreeSet::from(["writer:edit".into()]);
+        for provider in ["claude", "glm", "mimo"] {
+            let context = HarnessContext {
+                session_id: "fixture",
+                provider,
+                resume_id: Some("existing"),
+                model: None,
+                reasoning_effort: None,
+                mode: "ask",
+            };
+            let args = harness_arguments_with_skills(&context, &disabled).unwrap();
+            assert_eq!(
+                args.iter()
+                    .filter(|a| a.starts_with("--disallowedTools"))
+                    .collect::<Vec<_>>(),
+                ["--disallowedTools=Skill(writer:edit)"]
+            );
+            assert!(args.windows(2).any(|a| a == ["--resume", "existing"]));
+        }
+        for (provider, flag) in [
+            ("pi", "--append-system-prompt"),
+            ("omp", "--append-system-prompt"),
+            ("grok", "--rules"),
+        ] {
+            let args = crate::skill_manager::console_arguments(provider, &disabled);
+            assert_eq!(args[0], flag);
+            assert!(args[1].contains("Do not use these skills in this session: writer:edit."));
+        }
+        assert!(crate::skill_manager::console_arguments("kimi", &disabled).is_empty());
+        assert!(crate::skill_manager::console_arguments("claude", &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn skill_manager_console_overrides_and_missing_channels_are_explicit() {
+        let disabled = BTreeSet::from(["review".into()]);
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "codex",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        let args = harness_arguments_with_skills(&context, &disabled).unwrap();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1].starts_with("skills.config=")));
+        for id in [
+            "kimi",
+            "antigravity",
+            "deepseek",
+            "commandcode",
+            "kilo",
+            "zcode",
+        ] {
+            assert!(crate::skill_manager::console_arguments(id, &disabled).is_empty());
+        }
+    }
+
+    #[test]
+    fn skill_manager_unrecoverable_settings_open_every_console_with_denies_or_the_off_reminder() {
+        let all = BTreeSet::from(["*".to_string()]);
+        // Codex: a deny for every skill installed for it, never a refusal.
+        let codex = crate::skill_manager::launch_disabled_with("codex", all.clone(), || {
+            BTreeSet::from(["review".into()])
+        });
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "codex",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        let args = harness_arguments_with_skills(&context, &codex).unwrap();
+        assert!(
+            args.windows(2).any(|pair| pair[0] == "-c"
+                && pair[1].contains("review")
+                && pair[1].contains("enabled=false")),
+            "{args:?}"
+        );
+        // Claude family: the all-skills tool deny.
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "claude",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        assert!(harness_arguments_with_skills(&context, &all)
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "--disallowedTools=Skill"));
+        // Ask-only consoles carry the reminder that skills are temporarily off.
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "pi",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "full",
+        };
+        let args = harness_arguments_with_skills(&context, &all).unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg.starts_with("Skills are temporarily off")),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn skill_manager_consoles_never_start_a_turn_the_user_did_not_type() {
+        let disabled = BTreeSet::from(["review".into(), "Friendly skill".into()]);
+        for provider in ["devin", "github-copilot", "opencode"] {
+            let context = HarnessContext {
+                session_id: "fixture",
+                provider,
+                resume_id: None,
+                model: None,
+                reasoning_effort: None,
+                mode: "ask",
+            };
+            let plain = harness_arguments(&context).unwrap();
+            assert_eq!(
+                harness_arguments_with_skills(&context, &disabled).unwrap(),
+                plain,
+                "{provider}"
+            );
+            assert!(
+                crate::skill_manager::console_arguments(provider, &disabled).is_empty(),
+                "{provider}"
+            );
+        }
+    }
 
     #[test]
     fn harness_console_uses_literal_resume_arguments_and_never_a_prompt() {
@@ -1495,19 +1911,56 @@ mod platform_tests {
         assert!(activity.running && !activity.uncertain);
         assert_eq!(activity.process_names, ["node.exe", "worker app.exe"]);
         assert!(parse_windows_processes("not json").is_err());
-        assert_eq!(process_name("C:\\Program Files\\PowerShell\\pwsh.exe"), "pwsh.exe");
+        assert_eq!(
+            process_name("C:\\Program Files\\PowerShell\\pwsh.exe"),
+            "pwsh.exe"
+        );
         assert_eq!(process_name("-zsh"), "zsh");
-        assert_eq!(serde_json::to_value(activity).unwrap()["processNames"][0], "node.exe");
+        assert_eq!(
+            serde_json::to_value(activity).unwrap()["processNames"][0],
+            "node.exe"
+        );
+    }
+
+    #[test]
+    fn opencode_console_denies_switched_off_skills_through_inline_config_and_permission() {
+        let root = std::env::temp_dir();
+        let disabled = BTreeSet::from(["review".to_string()]);
+        let environment: std::collections::BTreeMap<_, _> =
+            opencode_console_environment("default", &disabled, &root, Some(r#"{"bash":"ask"}"#))
+                .into_iter()
+                .collect();
+        let inline: serde_json::Value =
+            serde_json::from_str(&environment["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(inline["permission"]["skill"]["review"], "deny");
+        assert_eq!(inline["permission"]["skill"]["review *"], "deny");
+        // The provider's own OPENCODE_PERMISSION rules are kept; the denies end the skill map.
+        assert_eq!(
+            environment["OPENCODE_PERMISSION"],
+            r#"{"bash":"ask","skill":{"review":"deny","review *":"deny"},"skill *":{"review":"deny","review *":"deny"}}"#
+        );
+        // Nothing switched off: no OPENCODE_PERMISSION is added.
+        let environment = opencode_console_environment("default", &BTreeSet::new(), &root, None);
+        assert_eq!(environment.len(), 1);
+        assert_eq!(environment[0].0, "OPENCODE_CONFIG_CONTENT");
     }
 
     #[test]
     fn terminals_have_no_global_cap_but_reject_duplicate_harness_sessions() {
-        let sessions = (0..12).map(|index| format!("task-{index}")).collect::<Vec<_>>();
-        let consoles = sessions.iter().map(|session| (Some(session.as_str()), false)).collect::<Vec<_>>();
+        let sessions = (0..12)
+            .map(|index| format!("task-{index}"))
+            .collect::<Vec<_>>();
+        let consoles = sessions
+            .iter()
+            .map(|session| (Some(session.as_str()), false))
+            .collect::<Vec<_>>();
         assert!(super::check_start(consoles.iter().copied(), Some("next-task")).is_ok());
         assert!(super::check_start(consoles.iter().copied(), None).is_ok());
         assert!(super::check_start(consoles.iter().copied(), Some("task-0")).is_err());
-        let full = consoles.iter().copied().chain(std::iter::repeat_n((None, false), 32));
+        let full = consoles
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n((None, false), 32));
         assert!(super::check_start(full.clone(), Some("next-task")).is_ok());
         assert!(super::check_start(full, None).is_ok());
         assert!(super::check_start([(Some("task-0"), true)].into_iter(), Some("task-0")).is_ok());
@@ -1567,5 +2020,124 @@ mod platform_tests {
             shell_command(false, &|_| Some(OsString::new()), &|_| None).get_argv()[0],
             "/bin/sh"
         );
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    fn info(id: &str, order: u64) -> TerminalInfo {
+        TerminalInfo {
+            id: id.into(),
+            title: "zsh".into(),
+            cwd: "/tmp".into(),
+            session_id: None,
+            kind: "shell",
+            running: true,
+            exit_code: None,
+            order,
+        }
+    }
+
+    #[test]
+    fn terminal_output_reads_pages_at_increasing_offsets() {
+        let mut log = OutputLog::new(info("a", 0), 64);
+        log.push("hello ");
+        log.push("world");
+        let first = log.read(0, 1024);
+        assert_eq!((first.data.as_str(), first.next, first.dropped, first.exited), ("hello world", 11, 0, false));
+        assert_eq!(log.read(first.next, 1024).data, "");
+        let page = log.read(0, 5);
+        assert_eq!((page.data.as_str(), page.next), ("hello", 5));
+        assert_eq!(log.read(page.next, 1024).data, " world");
+        // An offset from before a restart resumes at the end.
+        assert_eq!(log.read(999, 1024).next, 11);
+    }
+
+    #[test]
+    fn terminal_output_evicts_the_oldest_bytes_and_reports_what_was_missed() {
+        let mut log = OutputLog::new(info("a", 0), 8);
+        log.push("0123456789");
+        assert_eq!(log.start, 2);
+        let chunk = log.read(0, 1024);
+        assert_eq!((chunk.data.as_str(), chunk.dropped, chunk.next), ("23456789", 2, 10));
+        log.push("ab");
+        assert_eq!(log.read(10, 1024).data, "ab");
+        assert_eq!(log.read(10, 1024).dropped, 0);
+    }
+
+    #[test]
+    fn terminal_output_never_splits_a_codepoint() {
+        // Eviction drops the rest of a codepoint it cut into.
+        let mut log = OutputLog::new(info("a", 0), 5);
+        log.push("aé€b"); // 1 + 2 + 3 + 1 bytes
+        let chunk = log.read(0, 1024);
+        assert!(chunk.data == "€b" && chunk.next == 7, "{chunk:?}");
+        // Pages end before a codepoint that does not fit, and a mid-codepoint offset skips ahead.
+        let mut log = OutputLog::new(info("a", 0), 64);
+        log.push("é€");
+        let page = log.read(0, 4);
+        assert_eq!((page.data.as_str(), page.next), ("é", 2));
+        assert_eq!(log.read(1, 1024).data, "€");
+        assert_eq!(log.read(3, 1024), OutputChunk { data: String::new(), next: 5, dropped: 0, exited: false, exit_code: None });
+    }
+
+    #[test]
+    fn terminal_output_budget_counts_json_escapes() {
+        let mut log = OutputLog::new(info("a", 0), 64);
+        log.push("\u{1b}[1mA");
+        // ESC costs six bytes once escaped, so a seven-byte budget takes it and "[" only.
+        let page = log.read(0, 7);
+        assert_eq!((page.data.as_str(), page.next), ("\u{1b}[", 2));
+        let json = serde_json::to_string(&log.read(0, 1024).data).unwrap();
+        assert!(json.len() - 2 <= 1024);
+    }
+
+    #[test]
+    fn terminal_output_reports_the_exit_only_after_the_last_byte() {
+        let mut log = OutputLog::new(info("a", 0), 64);
+        log.push("bye");
+        log.info.running = false;
+        log.info.exit_code = Some(3);
+        let partial = log.read(0, 2);
+        assert!(!partial.exited && partial.exit_code.is_none());
+        let last = log.read(partial.next, 1024);
+        assert!(last.exited && last.exit_code == Some(3) && last.data == "e");
+        let json = serde_json::to_value(&last).unwrap();
+        assert_eq!(json["exitCode"], 3);
+        assert_eq!(json["next"], 3);
+    }
+
+    #[test]
+    fn terminal_output_keeps_only_the_newest_exited_logs() {
+        let mut logs = HashMap::new();
+        for order in 0..5u64 {
+            let mut log = OutputLog::new(info(&format!("t{order}"), order), 8);
+            log.info.running = order == 0;
+            logs.insert(log.info.id.clone(), log);
+        }
+        prune_exited(&mut logs, 2);
+        let mut kept: Vec<_> = logs.keys().cloned().collect();
+        kept.sort();
+        assert_eq!(kept, ["t0", "t3", "t4"]);
+    }
+
+    #[test]
+    fn terminal_output_list_and_read_use_the_shared_registry() {
+        let id = "output-registry-test";
+        log_start(id, Path::new("/work"), "zsh".into(), "shell", None);
+        assert_eq!(log_output(id, "ls\r\n"), Some(4));
+        assert_eq!(log_output("output-registry-missing", "x"), None);
+        tag_output(id, "session-1");
+        let listed = output_list().into_iter().find(|info| info.id == id).unwrap();
+        assert_eq!(listed.session_id.as_deref(), Some("session-1"));
+        assert!(listed.running);
+        let value = serde_json::to_value(&listed).unwrap();
+        assert_eq!(value["cwd"], "/work");
+        assert!(value.get("order").is_none() && value.get("exitCode").is_none());
+        assert_eq!(read_output(id, 0, 1024).unwrap().data, "ls\r\n");
+        output_logs().remove(id);
+        assert!(read_output(id, 0, 1024).is_err());
     }
 }
