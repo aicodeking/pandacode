@@ -1,17 +1,131 @@
 //! Tart's command line: list, create, configure, start, stop, suspend, delete and exec.
 //! Every call goes through the bounded process runner except `run`, which stays alive.
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
-    path::PathBuf,
+    io::{BufRead, BufReader},
+    net::SocketAddr,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::Duration,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
+use super::{
+    backend::{Details, Exec, Started, Vm, VmBackend},
+    Image,
+};
 use crate::workspace::{checked, run_process};
 
 const QUICK: Duration = Duration::from_secs(60);
 /// Pulling an image can take a long time on a slow connection.
 const PULL: Duration = Duration::from_secs(3 * 60 * 60);
+const BOOT: Duration = Duration::from_secs(90);
+const EXEC_HINT: &str = "(local VM: admin, passwordless sudo). Files are separate from this Mac. Project shared at start is read-only: Linux /mnt/shared/project after `sudo mkdir -p /mnt/shared && sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared`; macOS /Volumes/My Shared Files/project; copy to change.";
+const LIST_TEXT: &str = "List local VMs (macOS/Linux guests) and cloud sandboxes (IDs like daytona:…): state, OS, screen, images and providers to create from. Other vm tools take name; default: the shown VM, else the only running one.";
+const MANAGE_TEXT: &str = "create (local image: first download ~5 GB Linux, ~30 GB macOS; Linux desktop installs in background, commands work now), start, stop, suspend (local macOS), delete, show in PandaCode, install_desktop (local Linux). Idle local VMs stop after 10 min. Cloud costs money: confirm with the user before create/start.";
+
+/// Cirrus Labs images ship the Tart Guest Agent, so commands work without SSH.
+pub const IMAGES: [Image; 5] = [
+    Image { id: "ubuntu", name: "Ubuntu 24.04", os: "linux", source: "ghcr.io/cirruslabs/ubuntu:latest", download_gb: 5, memory_mb: 2048, cpus: 2 },
+    Image { id: "debian", name: "Debian", os: "linux", source: "ghcr.io/cirruslabs/debian:latest", download_gb: 4, memory_mb: 2048, cpus: 2 },
+    Image { id: "fedora", name: "Fedora", os: "linux", source: "ghcr.io/cirruslabs/fedora:latest", download_gb: 5, memory_mb: 2048, cpus: 2 },
+    Image { id: "macos-tahoe", name: "macOS Tahoe", os: "darwin", source: "ghcr.io/cirruslabs/macos-tahoe-base:latest", download_gb: 30, memory_mb: 4096, cpus: 4 },
+    Image { id: "macos-sequoia", name: "macOS Sequoia", os: "darwin", source: "ghcr.io/cirruslabs/macos-sequoia-base:latest", download_gb: 28, memory_mb: 4096, cpus: 4 },
+];
+
+pub struct Tart;
+
+impl VmBackend for Tart {
+    fn id(&self) -> &'static str {
+        "tart"
+    }
+    fn supported(&self) -> bool {
+        cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    }
+    fn install(&self) -> Result<PathBuf, String> {
+        super::setup::install()
+    }
+    fn installed(&self) -> bool {
+        binary().is_some()
+    }
+    fn has_vms(&self) -> bool {
+        let home = std::env::var_os("TART_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".tart")));
+        home.is_some_and(|home| holds_vms(&home))
+    }
+    fn engine(&self, installed: bool) -> &'static str {
+        if !self.supported() { "Local VMs need an Apple silicon Mac" } else if installed { "Tart installed" } else { "Tart missing: ask the user to set up VMs in PandaCode's VM panel" }
+    }
+    fn exec_hint(&self) -> &'static str {
+        EXEC_HINT
+    }
+    fn list_text(&self) -> &'static str {
+        LIST_TEXT
+    }
+    fn manage_text(&self) -> &'static str {
+        MANAGE_TEXT
+    }
+    fn images(&self) -> &'static [Image] {
+        &IMAGES
+    }
+    fn list(&self) -> Result<Vec<Vm>, String> {
+        list()
+    }
+    fn details(&self, name: &str) -> Result<Details, String> {
+        details(name)
+    }
+    fn create(&self, image: &Image, name: &str) -> Result<(), String> {
+        clone(image.source, name)?;
+        configure(name, image.memory_mb, image.cpus)
+    }
+    fn start(&self, name: &str, share: Option<&Path>) -> Result<Started, String> {
+        let macos = details(name)?.os == "darwin";
+        let mut child = spawn_run(&run_arguments(name, macos, share))?;
+        let url = wait_for_vnc(&mut child, BOOT).inspect_err(|_| {
+            let _ = child.kill();
+        })?;
+        let (password, address) = parse_vnc_url(&url)?;
+        Ok(Started { child: Some(child), password, address, macos })
+    }
+    fn stop(&self, name: &str) -> Result<(), String> {
+        stop(name, QUICK)
+    }
+    fn stop_by(&self, name: &str, deadline: Instant) -> Result<(), String> {
+        stop(name, left(deadline))
+    }
+    fn can_suspend(&self, macos: bool) -> bool {
+        macos
+    }
+    fn suspend(&self, name: &str) -> Result<(), String> {
+        suspend(name, QUICK)
+    }
+    fn suspend_by(&self, name: &str, deadline: Instant) -> Result<(), String> {
+        suspend(name, left(deadline))
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        delete(name)
+    }
+    fn exec(&self, name: &str, macos: bool, script: &str, timeout: Duration) -> Result<Exec, String> {
+        exec(name, macos, script, timeout)
+    }
+}
+
+/// Whether a Tart home holds any local VM: one directory read, never a `tart` call.
+fn holds_vms(tart_home: &Path) -> bool {
+    std::fs::read_dir(tart_home.join("vms")).is_ok_and(|mut entries| entries.any(|e| e.is_ok_and(|e| e.path().is_dir())))
+}
+
+/// Parse Tart's `vnc://:password@127.0.0.1:port` into a password and a loopback address.
+pub fn parse_vnc_url(url: &str) -> Result<(Option<String>, SocketAddr), String> {
+    let rest = url.trim().strip_prefix("vnc://").ok_or("Not a VNC URL.")?;
+    let (credentials, host) = rest.rsplit_once('@').map_or((None, rest), |(c, h)| (Some(c), h));
+    let password = credentials.and_then(|c| c.split_once(':').map(|(_, p)| p.to_string())).filter(|p| !p.is_empty());
+    let address: SocketAddr = host.trim_end_matches('/').parse().map_err(|_| "The VNC address is not host:port.")?;
+    if !address.ip().is_loopback() {
+        return Err("PandaCode only connects to VM screens on this Mac.".into());
+    }
+    Ok((password, address))
+}
 
 /// Tart from PATH, or the app bundle PandaCode's setup installs in ~/Applications.
 pub fn binary() -> Option<PathBuf> {
@@ -34,14 +148,6 @@ fn output(mut command: Command, timeout: Duration) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.bytes).into_owned())
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Vm {
-    pub name: String,
-    pub running: bool,
-    pub size_gb: u64,
-    pub disk_gb: u64,
-}
 #[derive(Deserialize)]
 struct Listed {
     #[serde(rename = "Name")]
@@ -66,15 +172,6 @@ pub fn list() -> Result<Vec<Vm>, String> {
     parse_list(&output(command, QUICK)?)
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Details {
-    pub os: String,
-    pub memory_mb: u64,
-    pub cpus: u64,
-    pub width: u32,
-    pub height: u32,
-}
 pub fn parse_details(json: &str) -> Result<Details, String> {
     let value: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("Unexpected Tart output: {e}"))?;
     let (width, height) = value["Display"].as_str().and_then(|d| d.split_once('x')).map_or((1024, 768), |(w, h)| (w.parse().unwrap_or(1024), h.parse().unwrap_or(768)));
@@ -102,16 +199,20 @@ pub fn configure(name: &str, memory_mb: u64, cpus: u64) -> Result<(), String> {
     command.args(["set", name, "--memory", &memory_mb.to_string(), "--cpu", &cpus.to_string()]);
     output(command, QUICK).map(|_| ())
 }
-pub fn stop(name: &str) -> Result<(), String> {
+/// A quit-time call's share of what is left before `deadline`, never more than `QUICK`.
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now()).clamp(Duration::from_secs(1), QUICK)
+}
+pub fn stop(name: &str, timeout: Duration) -> Result<(), String> {
     let mut command = tart()?;
     command.args(["stop", name, "--timeout", "20"]);
-    output(command, QUICK).map(|_| ())
+    output(command, timeout).map(|_| ())
 }
 /// macOS guests only: frees the VM's memory and resumes in seconds.
-pub fn suspend(name: &str) -> Result<(), String> {
+pub fn suspend(name: &str, timeout: Duration) -> Result<(), String> {
     let mut command = tart()?;
     command.args(["suspend", name]);
-    output(command, QUICK).map(|_| ())
+    output(command, timeout).map(|_| ())
 }
 pub fn delete(name: &str) -> Result<(), String> {
     let mut command = tart()?;
@@ -120,7 +221,7 @@ pub fn delete(name: &str) -> Result<(), String> {
 }
 
 /// How a VM is started: headless, with the framework's own VNC server for its screen.
-pub fn run_arguments(name: &str, macos: bool, share: Option<&std::path::Path>) -> Vec<String> {
+pub fn run_arguments(name: &str, macos: bool, share: Option<&Path>) -> Vec<String> {
     let mut args = vec!["run".to_string(), name.to_string(), "--no-graphics".into(), "--vnc-experimental".into()];
     if macos {
         args.push("--suspendable".into());
@@ -137,13 +238,39 @@ pub fn spawn_run(args: &[String]) -> Result<Child, String> {
     command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("TART_NO_AUTO_PRUNE", "1");
     command.spawn().map_err(|error| format!("Could not start the VM: {error}"))
 }
-
-pub struct Exec {
-    pub code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub truncated: bool,
+/// Read `tart run` output until it prints the VNC URL; keep draining afterwards.
+fn wait_for_vnc(child: &mut Child, timeout: Duration) -> Result<String, String> {
+    let stdout = child.stdout.take().ok_or("The VM's output is unavailable.")?;
+    let stderr = child.stderr.take().ok_or("The VM's output is unavailable.")?;
+    let (tx, rx) = mpsc::channel::<String>();
+    for reader in [Box::new(stdout) as Box<dyn std::io::Read + Send>, Box::new(stderr)] {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+    }
+    drop(tx);
+    let deadline = Instant::now() + timeout;
+    let mut last = String::new();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => {
+                if let Some(start) = line.find("vnc://") {
+                    return Ok(line[start..].split_whitespace().next().unwrap_or_default().to_string());
+                }
+                if !line.trim().is_empty() {
+                    last = line;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err("The VM did not start within 90 seconds.".into()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(if last.is_empty() { "The VM stopped while starting.".into() } else { format!("The VM could not start: {last}") }),
+        }
+    }
 }
+
 /// Run a shell command in the guest through the Tart Guest Agent (no SSH needed).
 pub fn exec(name: &str, macos: bool, script: &str, timeout: Duration) -> Result<Exec, String> {
     let mut command = tart()?;
@@ -153,7 +280,8 @@ pub fn exec(name: &str, macos: bool, script: &str, timeout: Duration) -> Result<
     if stderr.contains("guest agent") && !out.status.success() {
         return Err("This VM has no Tart Guest Agent, so commands cannot run in it. Use a Cirrus Labs base image.".into());
     }
-    Ok(Exec { code: out.status.code(), stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(), stderr, truncated: out.stdout.truncated || out.stderr.truncated })
+    let code = out.status.code();
+    Ok(Exec { code, timed_out: code.is_none(), stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(), stderr, truncated: out.stdout.truncated || out.stderr.truncated })
 }
 
 #[cfg(test)]
@@ -179,5 +307,44 @@ mod tests {
         assert!(args.contains(&"--dir=project:/p/app:ro".into()));
         let linux = run_arguments("vm", false, None);
         assert!(!linux.iter().any(|a| a.contains("suspend") || a.contains("--dir")));
+    }
+    #[test]
+    fn parses_tarts_vnc_url_and_keeps_it_local() {
+        let (password, address) = parse_vnc_url("vnc://:august-symptom-bulb-panda@127.0.0.1:64282").unwrap();
+        assert_eq!(password.as_deref(), Some("august-symptom-bulb-panda"));
+        assert_eq!(address.port(), 64282);
+        assert_eq!(parse_vnc_url("vnc://127.0.0.1:5900").unwrap().0, None);
+        assert!(parse_vnc_url("vnc://:x@10.0.0.2:5900").is_err());
+        assert!(parse_vnc_url("http://127.0.0.1:1").is_err());
+    }
+    #[test]
+    fn images_are_memory_conscious() {
+        assert!(IMAGES.iter().filter(|i| i.os == "linux").all(|i| i.memory_mb <= 2048));
+        assert!(IMAGES.iter().all(|i| i.source.starts_with("ghcr.io/cirruslabs/")));
+        assert!(Tart.image("ubuntu").is_ok() && Tart.image("windows").is_err());
+    }
+    #[test]
+    fn tools_need_a_local_vm_on_disk() {
+        let home = std::env::temp_dir().join(format!("pandacode-tart-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(home.join("vms")).unwrap();
+        assert!(!holds_vms(&home));
+        std::fs::write(home.join("vms/stray"), "").unwrap();
+        assert!(!holds_vms(&home), "a file is not a VM");
+        std::fs::create_dir(home.join("vms/ubuntu")).unwrap();
+        assert!(holds_vms(&home));
+        assert!(!holds_vms(&home.join("missing")));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn reads_the_vnc_url_from_tart_output() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "echo booting; echo 'VNC server is running at vnc://:pw@127.0.0.1:5901'; sleep 5"])
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        assert_eq!(wait_for_vnc(&mut child, Duration::from_secs(5)).unwrap(), "vnc://:pw@127.0.0.1:5901");
+        let _ = child.kill();
+        let mut failed = std::process::Command::new("/bin/sh").args(["-c", "echo 'Error: no such VM' >&2"])
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        assert_eq!(wait_for_vnc(&mut failed, Duration::from_secs(5)).unwrap_err(), "The VM could not start: Error: no such VM");
     }
 }

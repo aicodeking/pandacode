@@ -1,4 +1,4 @@
-//! One-click Tart setup: download the latest release from GitHub, check that Apple
+//! One-click engine setup through `VmBackend::install`: Lima on Linux (`lima::install`), and Tart on a Mac: download the latest release from GitHub, check that Apple
 //! notarized it and that Cirrus Labs signed it, and install it in ~/Applications.
 //! Tart is under the Functional Source License; PandaCode fetches it, never bundles it.
 use std::{
@@ -40,7 +40,7 @@ fn verify(app: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn install() -> Result<PathBuf, String> {
+pub(super) fn install() -> Result<PathBuf, String> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err("Local VMs need a Mac with Apple silicon. Use a cloud sandbox instead.".into());
     }
@@ -70,9 +70,9 @@ fn install() -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn vm_setup() -> crate::Result<String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
-        return Err("Tart setup is already running.".into());
+        return Err("VM setup is already running.".into());
     }
-    let result = crate::blocking(install).await;
+    let result = crate::blocking(|| super::backend().install()).await;
     RUNNING.store(false, Ordering::SeqCst);
     result.map(|path| path.display().to_string())
 }

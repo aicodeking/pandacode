@@ -1,13 +1,15 @@
 import './vm-panel.css';
 import { escape, icon } from './dom';
+import { isLinux } from './platform';
 import { cloudName, createOptions, machines, type CloudConnection, type CloudMachine, type Machine } from './vm-machines';
 
 /* The inspector's VM panel: one local macOS or Linux VM's live screen, which you can
  * click, scroll and type into. Agents reach the same machines through pandacode_vm_*. */
 
 export type VmImage = { id: string; name: string; os: 'linux' | 'darwin'; source: string; downloadGb: number; memoryMb: number; cpus: number };
-export type Vm = { name: string; running: boolean; attached: boolean; os: string; memoryMb: number; cpus: number; sizeGb: number; desktop?: 'installing' | 'failed' | null; desktopError?: string | null };
-export type VmStatus = { supported: boolean; installed: boolean; vms: Vm[]; shown: string | null; images: VmImage[] };
+export type Vm = { name: string; running: boolean; attached: boolean; os: string; memoryMb: number; cpus: number; sizeGb: number; creating?: boolean; starting?: boolean; desktop?: 'installing' | 'failed' | null; desktopError?: string | null };
+export type VmHostIssue = { text: string; command: string | null };
+export type VmStatus = { supported: boolean; installed: boolean; engine?: 'tart' | 'lima'; hostIssue?: VmHostIssue | null; vms: Vm[]; shown: string | null; images: VmImage[] };
 type ChoiceItem = { id: string; label: string; description?: string; icon?: string; selected?: boolean };
 export type VmHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -17,7 +19,7 @@ export type VmHost = {
   project(): string | null;
 };
 
-const FRAME_GAP = 220, CLOUD_FRAME_GAP = 1200, TYPE_DELAY = 120, NOTCH = 40, SHARE_KEY = 'pandacode.vmShareProject';
+const FRAME_GAP = 220, CREATING_POLL = 2000, CLOUD_FRAME_GAP = 1200, TYPE_DELAY = 120, NOTCH = 40, SHARE_KEY = 'pandacode.vmShareProject';
 const KEYS: Record<string, string> = { Enter: 'Return', Backspace: 'backspace', Tab: 'tab', Escape: 'escape', ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Delete: 'delete', Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown', ' ': 'space' };
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
@@ -45,7 +47,7 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   const statusLine = root.querySelector<HTMLElement>('.vm-status')!;
   const dock = root.querySelector<HTMLElement>('.vm-dock')!;
   const button = (name: string) => dock.querySelector<HTMLButtonElement>(`[data-vm="${name}"]`)!;
-  let status: VmStatus | undefined, visible = false, disposed = false, pump = 0, busy = '', painted = false, desktopNotice = false;
+  let status: VmStatus | undefined, visible = false, disposed = false, pump = 0, poll = 0, busy = '', painted = false, desktopNotice = false;
   let cloud: CloudMachine[] = [], connections: CloudConnection[] = [];
   let queue: Promise<unknown> = Promise.resolve(), typed = '', typeTimer = 0, wheel = 0, wheelTimer = 0;
   let pressed: { x: number; y: number; moved: boolean } | null = null;
@@ -58,18 +60,26 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   function say(text: string): void { statusLine.textContent = text; statusLine.hidden = !text; }
   const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+  function hostIssue(issue: VmHostIssue): string {
+    return `<p>${escape(issue.text)}</p>${issue.command ? `<code class="vm-command">${escape(issue.command)}</code><button type="button" class="secondary-button" data-vm="copy-command">Copy command</button>` : ''}`;
+  }
   function emptyState(): string {
     if (!status) return '<p>Loading machines…</p>';
     const vm = current();
     if (!vm) {
       if (all().length) return '<p>Choose a machine below.</p>';
-      const setup = status.supported && !status.installed ? `<button type="button" class="primary-button" data-vm="setup">Set up VMs</button><small>Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use.</small>` : '';
+      const lima = status.engine === 'lima';
+      const setup = status.supported && !status.installed ? `<button type="button" class="primary-button" data-vm="setup">Set up VMs</button><small>${lima ? 'Downloads Lima from GitHub and checks its pinned SHA-256 hash. QEMU comes from your distribution.' : "Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use."}</small>` : '';
       const options = createOptions(status, connections);
-      const local = status.supported ? "PandaCode runs Linux and macOS VMs on Apple's Virtualization framework: headless, and only the memory you give it." : 'Local VMs need a Mac with Apple silicon.';
-      return `<strong>${options.length ? 'Create a machine' : 'Run Linux, macOS and Windows machines'}</strong><p>Agents can see, click, type and run commands in an isolated machine. ${local}${anyCloud() ? '' : ' Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.'}</p>${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
+      const local = lima ? 'PandaCode runs Linux VMs with Lima on QEMU and KVM: headless, and only the memory you give it.' : isLinux ? 'Local VMs need an x86_64 or arm64 Linux computer.' : status.supported ? "PandaCode runs Linux and macOS VMs on Apple's Virtualization framework: headless, and only the memory you give it." : 'Local VMs need a Mac with Apple silicon.';
+      if (status.hostIssue) return `<strong>This computer needs one more step</strong>${hostIssue(status.hostIssue)}${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
+      return `<strong>${options.length ? 'Create a machine' : lima || isLinux ? 'Run Linux and Windows machines' : 'Run Linux, macOS and Windows machines'}</strong><p>Agents can see, click, type and run commands in an isolated machine. ${local}${anyCloud() ? '' : ' Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.'}</p>${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
     }
+    if (vm.elsewhere && status.engine === 'lima') return `<strong>${escape(vm.name)} is still running</strong><p>PandaCode closed while it ran. Reconnect to see its screen, or stop it.</p><button type="button" class="primary-button" data-vm="reconnect">Reconnect</button><button type="button" class="secondary-button" data-vm="power">Stop</button>`;
     if (vm.elsewhere) return `<strong>${escape(vm.name)} is running outside PandaCode</strong><p>Stop it, then start it here to see its screen.</p><button type="button" class="secondary-button" data-vm="power">Stop</button>`;
-    if (!vm.running) return `<strong>${escape(vm.name)} is ${vm.os === 'darwin' && !vm.cloud ? 'stopped or suspended' : 'stopped'}</strong><p>${escape(vm.detail)}</p>${vm.canStart ? '<button type="button" class="primary-button" data-vm="power">Start</button>' : ''}`;
+    if (vm.creating) return `<strong>Setting up ${escape(vm.name)}…</strong><p>Downloading its image and setting it up. This can take a while; it starts when it is ready.</p>`;
+    if (vm.starting) return `<strong>Starting ${escape(vm.name)}…</strong><p>It is booting. Its screen shows here when it is up.</p>`;
+    if (!vm.running) return `<strong>${escape(vm.name)} is ${vm.os === 'darwin' && !vm.cloud ? 'stopped or suspended' : 'stopped'}</strong><p>${escape(vm.detail)}</p>${!vm.cloud && status.hostIssue ? hostIssue(status.hostIssue) : vm.canStart ? '<button type="button" class="primary-button" data-vm="power">Start</button>' : ''}`;
     if (!vm.desktop) return `<strong>${escape(vm.name)} has no screen</strong><p>Agents use it with commands (vm_exec). ${escape(vm.detail)}</p>`;
     return '<p>Connecting to the screen…</p>';
   }
@@ -81,6 +91,7 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
     root.querySelector('.vm-name')!.textContent = vm?.name ?? 'Machines';
     root.querySelector('.vm-detail')!.textContent = vm ? vm.detail : '';
     const power = button('power');
+    power.hidden = Boolean(vm?.creating || vm?.starting);
     power.disabled = !vm || Boolean(busy) || (!vm.running && !vm.canStart);
     power.innerHTML = icon(vm?.running ? 'stop' : 'play');
     power.setAttribute('aria-label', vm?.running ? 'Stop VM' : 'Start VM'); power.title = vm?.running ? 'Stop' : 'Start';
@@ -91,7 +102,7 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
     else if (!busy && vm?.local?.desktop === 'failed' && live()) say(vm.local.desktopError ?? 'The desktop could not be installed.');
     else if (!busy && desktopNotice) say('');
     desktopNotice = Boolean(vm?.local?.desktop && live());
-    button('share').hidden = Boolean(vm?.cloud);
+    button('share').hidden = Boolean(vm?.cloud || vm?.creating || vm?.starting);
     button('share').setAttribute('aria-pressed', String(share));
     button('share').disabled = !host.project();
     button('new').disabled = !createOptions(status, connections).length || Boolean(busy);
@@ -108,6 +119,9 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
     if (linked.status === 'fulfilled') connections = linked.value;
     render();
     void frames();
+    // The engine says nothing when a download or boot ends, so look again until every such VM is ready.
+    window.clearTimeout(poll);
+    if (visible && status?.vms.some(vm => vm.creating || vm.starting)) poll = window.setTimeout(() => { if (visible && !disposed) void refresh(); }, CREATING_POLL);
   }
   /** One action at a time; the status line says what is happening. */
   async function run(label: string, work: () => Promise<unknown>, done = ''): Promise<void> {
@@ -152,7 +166,7 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   function chooseVm(anchor: HTMLElement): void {
     const vm = current();
     const items: ChoiceItem[] = all().map(machine => ({ id: `vm:${machine.key}`, label: machine.name, description: machine.detail, icon: 'monitor', selected: machine.key === vm?.key }));
-    if (vm) items.push({ id: 'delete', label: `Delete ${vm.name}`, description: vm.cloud ? 'Removes it from your cloud account' : `Frees about ${vm.local?.sizeGb ?? 0} GB`, icon: 'trash' });
+    if (vm && !vm.creating && !vm.starting) items.push({ id: 'delete', label: `Delete ${vm.name}`, description: vm.cloud ? 'Removes it from your cloud account' : `Frees about ${vm.local?.sizeGb ?? 0} GB`, icon: 'trash' });
     host.choose(anchor, 'Machines', items, id => {
       if (id === 'delete' && vm) void run(`Deleting ${vm.name}…`, () => vm.cloud ? host.call('cloud_power', { id: vm.key, action: 'delete' }) : host.call<VmStatus>('vm_power', { name: vm.key, action: 'delete' }), `${vm.name} is deleted.`);
       else if (id.startsWith('vm:')) void run('', () => host.call<VmStatus>('vm_show', { name: id.slice(3) }));
@@ -240,7 +254,9 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
     if (target.dataset.vmCreate) { create(target.dataset.vmCreate); return; }
     const vm = current();
     switch (target.dataset.vm) {
-      case 'setup': void run('Downloading and checking Tart…', () => host.call<string>('vm_setup'), 'Tart is installed. Create a VM to begin.'); break;
+      case 'setup': { const engine = status?.engine === 'lima' ? 'Lima' : 'Tart'; void run(`Downloading and checking ${engine}…`, () => host.call<string>('vm_setup'), `${engine} is installed. Create a VM to begin.`); break; }
+      case 'copy-command': { const command = status?.hostIssue?.command; if (command) void navigator.clipboard.writeText(command).then(() => host.notify('Command copied.'), error => say(failure(error))); break; }
+      case 'reconnect': if (vm) void run(`Reconnecting to ${vm.name}…`, () => host.call<VmStatus>('vm_power', { name: vm.key, action: 'start', share: share ? host.project() : null })); break;
       case 'power': void power(); break;
       case 'suspend': if (vm) void run(`Suspending ${vm.name}…`, () => host.call<VmStatus>('vm_power', { name: vm.key, action: 'suspend' }), `${vm.name} is suspended and uses no memory.`); break;
       case 'desktop': if (vm) void run(`Adding a desktop to ${vm.name} (a few minutes)…`, () => host.call<string>('vm_desktop', { name: vm.key }), 'Desktop ready.'); break;
@@ -252,8 +268,8 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
 
   return {
     show(): void { if (visible) return; visible = true; void refresh(); },
-    hide(): void { visible = false; pump++; flushTyping(); },
+    hide(): void { visible = false; pump++; window.clearTimeout(poll); flushTyping(); },
     refresh,
-    dispose(): void { disposed = true; pump++; root.replaceChildren(); },
+    dispose(): void { disposed = true; pump++; window.clearTimeout(poll); root.replaceChildren(); },
   };
 }

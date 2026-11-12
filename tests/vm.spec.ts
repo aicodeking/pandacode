@@ -2,8 +2,9 @@ import { expect, test, type Page } from '@playwright/test';
 import { openInspectorTab } from './inspector-tab-helper';
 import { readFileSync } from 'node:fs';
 
-// The inspector's VM panel in the browser preview: Tart setup, creating and starting a
-// VM, its live screen, and mouse, wheel and keyboard input mapped to screen pixels.
+// The inspector's VM panel in the browser preview: engine setup (Tart, Lima on Linux),
+// creating and starting a VM, its live screen, and mouse, wheel and keyboard input mapped
+// to screen pixels.
 const errors = new WeakMap<Page, string[]>();
 const calls = (page: Page, command: string): Promise<any[]> => page.evaluate(command => (window as any).__vmCalls.filter((entry: any) => entry.command === command).map((entry: any) => entry.args), command);
 const panel = (page: Page) => page.getByRole('region', { name: 'Virtual machines', exact: true });
@@ -12,7 +13,9 @@ const control = (page: Page, name: string) => panel(page).getByRole('toolbar', {
 const cspViolations = new WeakMap<Page, string[]>();
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); expect(cspViolations.get(page) ?? []).toEqual([]); });
 
-async function open(page: Page): Promise<void> {
+// The preview follows navigator.platform, so each test picks the host it means, whatever runs it.
+async function open(page: Page, platform = 'MacIntel'): Promise<void> {
+  await page.addInitScript(platform => Object.defineProperty(navigator, 'platform', { get: () => platform }), platform);
   const runtimeErrors: string[] = []; errors.set(page, runtimeErrors);
   page.on('pageerror', error => runtimeErrors.push(error.message));
   await page.route('**/src/preview.ts*', async route => {
@@ -114,6 +117,90 @@ test('shares the project read-only when asked, and a VM can be deleted', async (
   await panel(page).getByRole('button', { name: 'Choose VM' }).click();
   await page.getByRole('menuitemradio', { name: 'Delete pandacode-debian' }).click();
   await expect(panel(page).getByText('Create a machine', { exact: true })).toBeVisible();
+});
+
+const LINUX = 'Linux x86_64';
+
+test('on Linux the panel sets up Lima and never mentions Apple', async ({ page }) => {
+  await open(page, LINUX);
+  await expect(panel(page).getByText('Run Linux and Windows machines')).toBeVisible();
+  await expect(panel(page).getByText('Downloads Lima from GitHub')).toBeVisible();
+  await expect(panel(page).getByText('QEMU comes from your distribution')).toBeVisible();
+  await expect(panel(page)).not.toContainText(/Apple|Tart|macOS|Mac\b/);
+  await panel(page).getByRole('button', { name: 'Set up VMs' }).click();
+  await expect(panel(page).getByRole('status')).toHaveText('Lima is installed. Create a VM to begin.');
+  await expect(panel(page).getByRole('button', { name: /^Ubuntu 26\.04/ })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: /^Debian 13/ })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: /^Fedora 44/ })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: /macOS/ })).toHaveCount(0);
+});
+
+test('a host issue shows its command and offers no local machines', async ({ page, context }) => {
+  await page.addInitScript(() => { (window as any).__vmHostIssue = { text: 'Local VMs need access to /dev/kvm. Add yourself to the kvm group, then log out and back in.', command: 'sudo usermod -aG kvm ' }; });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => undefined);
+  await open(page, LINUX);
+  await expect(panel(page).getByText('This computer needs one more step')).toBeVisible();
+  await expect(panel(page).getByText('Local VMs need access to /dev/kvm')).toBeVisible();
+  await expect(panel(page).locator('.vm-command')).toHaveText('sudo usermod -aG kvm ');
+  await panel(page).getByRole('button', { name: 'Set up VMs' }).click();
+  await expect(panel(page).getByRole('status')).toHaveText('Lima is installed. Create a VM to begin.');
+  await expect(panel(page).getByRole('button', { name: /^Ubuntu/ })).toHaveCount(0);
+  await expect(control(page, 'New VM')).toBeDisabled();
+  await panel(page).getByRole('button', { name: 'Copy command' }).click();
+  await expect(page.locator('.toast, #toast').first()).toContainText('Command copied');
+});
+
+test('a Linux VM runs without suspend, and one left running can be reconnected', async ({ page }) => {
+  await open(page, LINUX);
+  await panel(page).getByRole('button', { name: 'Set up VMs' }).click();
+  await panel(page).getByRole('button', { name: /^Fedora 44/ }).click();
+  const screen = panel(page).getByRole('img', { name: 'VM screen' });
+  await expect(screen).toBeVisible();
+  expect((await calls(page, 'vm_create'))[0]).toEqual({ image: 'fedora', name: 'pandacode-fedora' });
+  await expect(control(page, 'Stop VM')).toBeVisible();
+  await expect(control(page, 'Suspend VM')).toBeHidden();
+  // PandaCode lost the VM, as after a crash: the panel offers it back instead of a stop.
+  await page.evaluate(() => { (window as any).__vmOrphan = 'pandacode-fedora'; });
+  await panel(page).getByRole('button', { name: 'Choose VM' }).click();
+  await page.getByRole('menuitemradio', { name: /pandacode-fedora/ }).first().click();
+  await expect(panel(page).getByText('pandacode-fedora is still running')).toBeVisible();
+  await expect(panel(page).getByText(/outside PandaCode/)).toHaveCount(0);
+  await panel(page).getByRole('button', { name: 'Reconnect' }).click();
+  await expect(screen).toBeVisible();
+  expect((await calls(page, 'vm_power')).at(-1)).toMatchObject({ name: 'pandacode-fedora', action: 'start' });
+});
+
+test('a VM still downloading or booting offers nothing to start, share or delete until it runs', async ({ page }) => {
+  // An agent is creating the VM: the engine lists it as stopped while its image downloads.
+  await page.addInitScript(() => { (window as any).__vmCreating = 'pandacode-ubuntu'; });
+  await open(page, LINUX);
+  await expect(panel(page).getByText('Setting up pandacode-ubuntu…')).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: 'Choose VM' })).toContainText('Setting up');
+  await expect(panel(page).getByText(/is stopped/)).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: /^Start/ })).toHaveCount(0);
+  await expect(control(page, 'Stop VM')).toHaveCount(0);
+  await expect(control(page, 'Share project read-only at start')).toBeHidden();
+  await expect(control(page, 'Suspend VM')).toBeHidden();
+  await panel(page).getByRole('button', { name: 'Choose VM' }).click();
+  await expect(page.getByRole('menuitemradio', { name: /pandacode-ubuntu/ }).first()).toBeVisible();
+  await expect(page.locator('.choice-menu-option').filter({ hasText: 'Delete' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  // Then it boots under the same claim; Lima still lists it as stopped, but it is starting.
+  await expect(panel(page).getByText('Starting pandacode-ubuntu…')).toBeVisible({ timeout: 10_000 });
+  await expect(panel(page).getByRole('button', { name: 'Choose VM' })).toContainText('Starting');
+  await expect(panel(page).getByText(/is stopped/)).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: /^Start/ })).toHaveCount(0);
+  await expect(control(page, 'Start VM')).toHaveCount(0);
+  await expect(control(page, 'Share project read-only at start')).toBeHidden();
+  await panel(page).getByRole('button', { name: 'Choose VM' }).click();
+  await expect(page.getByRole('menuitemradio', { name: /pandacode-ubuntu/ }).first()).toBeVisible();
+  await expect(page.locator('.choice-menu-option').filter({ hasText: 'Delete' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  // The panel keeps asking, so the VM shows once it has started.
+  await expect(panel(page).getByRole('img', { name: 'VM screen' })).toBeVisible({ timeout: 10_000 });
+  await expect(control(page, 'Stop VM')).toBeVisible();
+  await expect(control(page, 'Share project read-only at start')).toBeVisible();
+  expect(await calls(page, 'vm_power')).toEqual([]);
 });
 
 async function connect(page: Page, provider: string, fields: Record<string, string>, sandboxes = false): Promise<void> {

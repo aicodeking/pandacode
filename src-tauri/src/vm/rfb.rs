@@ -5,27 +5,33 @@ use image::RgbaImage;
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const RAW: i32 = 0;
 const DESKTOP_SIZE: i32 = -223;
 /// Larger frames than this are refused rather than allocated.
 const MAX_SIDE: u16 = 8192;
-/// Virtualization.framework answers a frame request only when the screen changed, so
-/// after the first full frame a quiet period this long means "unchanged".
+/// Virtualization.framework and QEMU answer a frame request only when the screen changed, so
+/// after the first full frame a quiet period this long means "unchanged". The request stays
+/// open, and its late answer reaches a later capture, which reads it before asking again.
 const QUIET: Duration = Duration::from_millis(250);
-/// Once updates flow, wait this long for more before returning the frame.
+/// Once this capture's request has an answer, wait this long for more before returning the frame.
 const DRAIN: Duration = Duration::from_millis(25);
+/// How long a capture looks for answers that arrived before it asks: they are already buffered.
+const BUFFERED: Duration = Duration::from_millis(1);
 
 pub struct Rfb {
     stream: TcpStream,
+    /// Each read and write, and each capture as a whole.
     timeout: Duration,
     width: u16,
     height: u16,
     pixels: Vec<u8>,
-    /// A complete frame has arrived; later requests are incremental.
+    /// A complete frame has arrived at the current size; later requests are incremental.
     complete: bool,
+    /// A call failed, perhaps partway through a message, so the stream can no longer be trusted.
+    broken: bool,
 }
 
 fn io(error: std::io::Error) -> String {
@@ -38,13 +44,21 @@ impl Rfb {
         stream.set_read_timeout(Some(timeout)).map_err(io)?;
         stream.set_write_timeout(Some(timeout)).map_err(io)?;
         stream.set_nodelay(true).map_err(io)?;
-        let mut rfb = Rfb { stream, timeout, width: 0, height: 0, pixels: Vec::new(), complete: false };
+        let mut rfb = Rfb { stream, timeout, width: 0, height: 0, pixels: Vec::new(), complete: false, broken: false };
         rfb.handshake(password)?;
         Ok(rfb)
     }
 
     pub fn size(&self) -> (u16, u16) {
         (self.width, self.height)
+    }
+    /// Whether a call failed; the caller should connect again.
+    pub fn broken(&self) -> bool {
+        self.broken
+    }
+    fn mark<T>(&mut self, result: Result<T, String>) -> Result<T, String> {
+        self.broken |= result.is_err();
+        result
     }
 
     fn read<const N: usize>(&mut self) -> Result<[u8; N], String> {
@@ -107,14 +121,18 @@ impl Rfb {
         self.send(&format)
     }
 
-    fn resize(&mut self, width: u16, height: u16) -> Result<(), String> {
+    /// Size the frame; true if the size changed (some servers repeat it unchanged, which keeps the frame).
+    fn resize(&mut self, width: u16, height: u16) -> Result<bool, String> {
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(format!("The VM's screen reported an invalid size {width}×{height}."));
+        }
+        if (width, height) == (self.width, self.height) {
+            return Ok(false);
         }
         self.width = width;
         self.height = height;
         self.pixels = vec![0; width as usize * height as usize * 4];
-        Ok(())
+        Ok(true)
     }
 
     /// The next message type, or None if the server stays quiet for `wait`.
@@ -132,33 +150,36 @@ impl Rfb {
 
     /// The whole screen as it is now. The first call waits for a full frame; later calls
     /// ask for changes only and keep the frame they already have when nothing changed.
+    /// Updates already waiting answer older, unanswered requests (QEMU merges all of those
+    /// into one), so they are read before asking; only an update after the request ends the
+    /// wait early, and the late answers of still captures never cost a wait. A resize asks for
+    /// a full frame at the new size (its pixels start black). A capture never takes longer than
+    /// `timeout`: past it, a server that keeps streaming updates gets the frame read so far.
     pub fn capture(&mut self) -> Result<RgbaImage, String> {
-        let (width, height) = (self.width, self.height);
-        let mut request = vec![3, u8::from(self.complete), 0, 0, 0, 0];
-        request.extend_from_slice(&width.to_be_bytes());
-        request.extend_from_slice(&height.to_be_bytes());
-        self.send(&request)?;
-        let mut wait = if self.complete { QUIET } else { self.timeout };
-        while let Some(kind) = self.next_message(wait)? {
-            match kind {
-                0 => {
-                    self.update()?;
-                    self.complete = true;
-                    wait = DRAIN;
+        let result = self.capture_by(Instant::now() + self.timeout);
+        self.mark(result)
+    }
+    fn capture_by(&mut self, deadline: Instant) -> Result<RgbaImage, String> {
+        let left = || deadline.saturating_duration_since(Instant::now());
+        if self.complete {
+            loop {
+                let left = left();
+                if left.is_zero() {
+                    break;
                 }
-                // Colour map, bell and clipboard messages are read and ignored.
-                1 => {
-                    let header = self.read::<5>()?;
-                    let colours = u16::from_be_bytes([header[3], header[4]]) as usize;
-                    self.read_vec(colours * 6)?;
-                }
-                2 => {}
-                3 => {
-                    self.read::<3>()?;
-                    let length = self.u32()? as usize;
-                    self.read_vec(length.min(1 << 20))?;
-                }
-                other => return Err(format!("Unexpected VNC message {other}.")),
+                let Some(kind) = self.next_message(BUFFERED.min(left))? else { break };
+                self.message(kind)?;
+            }
+        }
+        let mut wait = self.request()?;
+        loop {
+            let left = left();
+            if left.is_zero() {
+                break;
+            }
+            let Some(kind) = self.next_message(wait.min(left))? else { break };
+            if self.message(kind)? {
+                wait = if self.complete { DRAIN } else { self.request()? };
             }
         }
         if !self.complete {
@@ -167,9 +188,44 @@ impl Rfb {
         let rgba = self.pixels.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], 255]).collect();
         RgbaImage::from_raw(self.width as u32, self.height as u32, rgba).ok_or_else(|| "The VM's screen frame was incomplete.".into())
     }
+    /// Ask for the screen, all of it until a complete frame arrived; returns how long to wait.
+    fn request(&mut self) -> Result<Duration, String> {
+        let mut request = vec![3, u8::from(self.complete), 0, 0, 0, 0];
+        request.extend_from_slice(&self.width.to_be_bytes());
+        request.extend_from_slice(&self.height.to_be_bytes());
+        self.send(&request)?;
+        Ok(if self.complete { QUIET } else { self.timeout })
+    }
 
-    fn update(&mut self) -> Result<(), String> {
+    /// Read one server message; true if it updated the frame.
+    fn message(&mut self, kind: u8) -> Result<bool, String> {
+        match kind {
+            0 => {
+                // A resize leaves the new frame black until a full one arrives.
+                self.complete = !self.update()?;
+                return Ok(true);
+            }
+            // Colour map, bell and clipboard messages are read and ignored.
+            1 => {
+                let header = self.read::<5>()?;
+                let colours = u16::from_be_bytes([header[3], header[4]]) as usize;
+                self.read_vec(colours * 6)?;
+            }
+            2 => {}
+            3 => {
+                self.read::<3>()?;
+                let length = self.u32()? as usize;
+                self.read_vec(length.min(1 << 20))?;
+            }
+            other => return Err(format!("Unexpected VNC message {other}.")),
+        }
+        Ok(false)
+    }
+
+    /// Read one frame update; true if it resized the screen.
+    fn update(&mut self) -> Result<bool, String> {
         let header = self.read::<3>()?;
+        let mut resized = false;
         let rectangles = u16::from_be_bytes([header[1], header[2]]);
         for _ in 0..rectangles {
             let rect = self.read::<12>()?;
@@ -186,11 +242,11 @@ impl Rfb {
                         self.pixels[start..start + w as usize * 4].copy_from_slice(&data[row * w as usize * 4..(row + 1) * w as usize * 4]);
                     }
                 }
-                DESKTOP_SIZE => self.resize(w, h)?,
+                DESKTOP_SIZE => resized |= self.resize(w, h)?,
                 other => return Err(format!("Unsupported VNC encoding {other}.")),
             }
         }
-        Ok(())
+        Ok(resized)
     }
 
     /// Move the pointer with `buttons` held (bit 0 left, 1 middle, 2 right, 3/4 wheel up/down).
@@ -199,13 +255,15 @@ impl Rfb {
         let mut event = vec![5, buttons];
         event.extend_from_slice(&x.to_be_bytes());
         event.extend_from_slice(&y.to_be_bytes());
-        self.send(&event)
+        let sent = self.send(&event);
+        self.mark(sent)
     }
 
     pub fn key(&mut self, keysym: u32, down: bool) -> Result<(), String> {
         let mut event = vec![4, u8::from(down), 0, 0];
         event.extend_from_slice(&keysym.to_be_bytes());
-        self.send(&event)
+        let sent = self.send(&event);
+        self.mark(sent)
     }
 }
 

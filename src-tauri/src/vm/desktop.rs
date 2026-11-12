@@ -1,11 +1,11 @@
-//! Linux VMs get a desktop on their own: the Cirrus Labs images are console-only, so
+//! Linux VMs get a desktop on their own: the base images are console-only, so
 //! whenever PandaCode starts a Linux VM without one, it installs a light Xfce desktop
 //! with automatic login in the background. The panel streams the console meanwhile and
 //! shows the progress; agents can use commands right away.
 use std::{thread, time::{Duration, Instant}};
 use tauri::{Emitter, Manager};
 
-use super::{tart, Vms};
+use super::{backend, Vms};
 
 pub const SCRIPT: &str = include_str!("scripts/linux-desktop.sh");
 /// PandaCode's desktop, or any display manager the user set up themselves.
@@ -23,7 +23,7 @@ pub enum State {
 pub fn has_desktop(name: &str) -> Result<bool, String> {
     let deadline = Instant::now() + AGENT_WAIT;
     loop {
-        match tart::exec(name, false, HAS_DESKTOP, Duration::from_secs(20)) {
+        match backend().exec(name, false, HAS_DESKTOP, Duration::from_secs(20)) {
             Ok(out) if out.code.is_some() => return Ok(out.code == Some(0)),
             Ok(_) | Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_secs(3)),
             Ok(_) => return Err("The VM did not answer in time.".into()),
@@ -36,9 +36,10 @@ pub fn install(vms: &Vms, name: &str) -> Result<String, String> {
     if vms.is_macos(name)? {
         return Err("macOS VMs already have a desktop.".into());
     }
-    vms.mark_used(name);
-    let out = tart::exec(name, false, SCRIPT, Duration::from_secs(30 * 60))?;
-    vms.mark_used(name);
+    let out = {
+        let _busy = vms.busy(name);
+        backend().exec(name, false, SCRIPT, Duration::from_secs(30 * 60))?
+    };
     if out.code != Some(0) {
         return Err(format!("Installing the desktop failed: {}", out.stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error")));
     }
@@ -88,14 +89,16 @@ mod tests {
 mod live {
     use super::*;
 
-    /// A fresh Ubuntu VM gets its desktop: `cargo test --lib -- --ignored vm::desktop::live --nocapture`
+    /// A fresh VM gets its desktop: `cargo test --lib -- --ignored vm::desktop::live --nocapture`.
+    /// `PANDACODE_IMAGE` picks the image; `PANDACODE_KEEP=1` leaves it running for the other live tests.
     #[test]
     #[ignore]
     fn a_new_linux_vm_ends_up_with_a_desktop() {
         let vms = Vms::default();
         let name = "pandacode-desktop-check";
         let _ = vms.delete(name);
-        vms.create("ubuntu", name).unwrap();
+        let image = std::env::var("PANDACODE_IMAGE").unwrap_or_else(|_| "ubuntu".into());
+        vms.create(&image, name).unwrap();
         vms.start(name, None).unwrap();
         assert!(!has_desktop(name).unwrap(), "console-only image");
         let started = Instant::now();
@@ -104,7 +107,10 @@ mod live {
         assert!(has_desktop(name).unwrap());
         thread::sleep(Duration::from_secs(8));
         let shot = vms.with_screen(name, true, |rfb| super::super::screen::screenshot(rfb, 80)).unwrap();
-        std::fs::write(std::env::temp_dir().join("pandacode-desktop-check.jpg"), &shot.jpeg).unwrap();
-        vms.delete(name).unwrap();
+        std::fs::write(std::env::temp_dir().join(format!("pandacode-desktop-{image}.jpg")), &shot.jpeg).unwrap();
+        eprintln!("screen {}×{} of {}×{}", shot.width, shot.height, shot.screen_width, shot.screen_height);
+        if std::env::var_os("PANDACODE_KEEP").is_none() {
+            vms.delete(name).unwrap();
+        }
     }
 }

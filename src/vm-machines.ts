@@ -1,4 +1,4 @@
-/* One list of machines for the VM panel: local VMs from Tart and cloud sandboxes from
+/* One list of machines for the VM panel: local VMs and cloud sandboxes from
  * connected providers, with what each can do. Pure, so the panel only renders. */
 import type { Vm, VmStatus } from './vm-panel';
 
@@ -16,9 +16,13 @@ export type Machine = {
   live: boolean;
   desktop: boolean;
   detail: string;
-  /** Local VMs running outside PandaCode must be restarted here to be seen. */
+  /** Local VMs running outside PandaCode: restarted here to be seen, or reconnected under Lima. */
   elsewhere: boolean;
   canStart: boolean;
+  /** A local VM whose image is still downloading: listed as stopped, but nothing can start, stop or delete it yet. */
+  creating: boolean;
+  /** A local VM booting under another call (an agent, or right after its create): also listed as stopped. */
+  starting: boolean;
   local?: Vm;
 };
 export type CreateOption = { id: string; label: string; description: string; cloud: boolean };
@@ -29,20 +33,20 @@ const memory = (mb: number) => mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${m
 export function machines(status: VmStatus | undefined, cloud: CloudMachine[]): Machine[] {
   const local = (status?.vms ?? []).map((vm): Machine => ({
     key: vm.name, name: vm.name, os: vm.os, cloud: false, running: vm.running, live: vm.running && vm.attached, desktop: true,
-    detail: `${osName(vm.os)} · ${memory(vm.memoryMb)} · ${vm.running ? (vm.attached ? 'Running' : 'Running elsewhere') : 'Stopped'}`,
-    elsewhere: vm.running && !vm.attached, canStart: true, local: vm,
+    detail: `${osName(vm.os)} · ${memory(vm.memoryMb)} · ${vm.creating ? 'Setting up' : vm.starting ? 'Starting' : vm.running ? (vm.attached ? 'Running' : 'Running elsewhere') : 'Stopped'}`,
+    elsewhere: vm.running && !vm.attached, canStart: !status?.hostIssue && !vm.creating && !vm.starting, creating: Boolean(vm.creating), starting: Boolean(vm.starting), local: vm,
   }));
   const remote = cloud.map((machine): Machine => ({
     key: machine.id, name: machine.name, os: machine.os, cloud: true, running: machine.state === 'running', live: machine.state === 'running' && machine.desktop,
     desktop: machine.desktop, detail: `${machine.detail} · ${machine.state[0].toUpperCase()}${machine.state.slice(1)}`, elsewhere: false,
-    canStart: machine.provider !== 'agentcore',
+    canStart: machine.provider !== 'agentcore', creating: false, starting: false,
   }));
   return [...local, ...remote];
 }
 
-/** Things the New menu can make: local images once Tart is set up, and cloud kinds per connected provider. */
+/** Things the New menu can make: local images once the engine is set up, and cloud kinds per connected provider. */
 export function createOptions(status: VmStatus | undefined, connections: CloudConnection[]): CreateOption[] {
-  const local = status?.installed ? status.images.map(image => ({ id: `image:${image.id}`, label: image.name, description: `Local · ${image.downloadGb} GB download · ${memory(image.memoryMb)}`, cloud: false })) : [];
+  const local = status?.installed && !status.hostIssue ? status.images.map(image => ({ id: `image:${image.id}`, label: image.name, description: `Local · ${image.downloadGb} GB download · ${memory(image.memoryMb)}`, cloud: false })) : [];
   const on = (provider: CloudConnection['provider']) => connections.some(c => c.provider === provider && c.connected);
   const cloud: CreateOption[] = [
     ...(on('daytona') ? [{ id: 'cloud:daytona', label: 'Daytona desktop', description: 'Linux with a screen · billed by Daytona', cloud: true }] : []),

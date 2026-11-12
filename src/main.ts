@@ -117,7 +117,7 @@ import { councilNotice } from './council';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
-import { isMac, isWindows, shortcut } from './platform';
+import { isLinux, isMac, isWindows, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
 import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
@@ -144,7 +144,7 @@ type Stream = { body: TailText; thought: TailText; readonly text: string; readon
 /** The exchange a lead's wake run continues, drawn inside its live card (renderTranscript). */
 type LiveEarlier = { turn: TranscriptTurn; tools: ToolActivity[] };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
-const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMac);
+const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMac || isLinux);
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
 /** Open files is the inspector's per-task editor view: shown only while the task has file tabs, never saved in the strip's order. */
 type PanelView = InspectorView | 'file';
@@ -4806,7 +4806,7 @@ function syncSimulatorPanel(): void {
 }
 /** The VM panel stays mounted once opened; hiding it stops its frames. */
 function syncVmPanel(): void {
-  const wanted = isMac && state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed;
+  const wanted = (isMac || isLinux) && state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed;
   $('#vm-panel').hidden = !wanted;
   if (wanted) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (!wanted) { vmPanel?.hide(); return; }

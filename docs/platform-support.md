@@ -68,6 +68,53 @@ APPIMAGE_EXTRACT_AND_RUN=1 ./PandaCode-Linux-x86_64.AppImage
 Linux GLM key storage requires an unlocked desktop Secret Service. If it is
 unavailable, configure `ZAI_API_KEY` in the app's environment.
 
+## Local VMs
+
+The inspector's VM tab runs local VMs for agents on Apple silicon Macs (Tart, on
+Apple's Virtualization framework; macOS and Linux guests) and on x86_64 or arm64
+Linux (Lima on QEMU with KVM; Ubuntu, Debian and Fedora guests). Intel Macs and
+Windows have no local VMs; cloud sandboxes work everywhere.
+
+On Linux, **Set up VMs** downloads a pinned Lima release from GitHub for your CPU,
+checks its SHA-256 before anything in it runs, and installs it under
+`~/.local/share/pandacode/` without root. QEMU comes from your distribution; the
+panel shows the install command when something is missing:
+
+| Distribution | Command |
+| --- | --- |
+| Fedora and RHEL-like | `sudo dnf install qemu-kvm-core qemu-img edk2-ovmf` (arm64: `edk2-aarch64`) |
+| Ubuntu and Debian | `sudo apt install qemu-system-x86 qemu-utils ovmf` (arm64: `qemu-system-arm qemu-utils qemu-efi-aarch64`) |
+| Arch | `sudo pacman -S qemu-base edk2-ovmf` |
+
+VMs need a read-writable `/dev/kvm` (`sudo usermod -aG kvm $USER`, then log out and
+back in); PandaCode will not run them under slow emulation. Each VM takes 2 GB of
+memory while it runs and is stopped after 10 idle minutes and when PandaCode quits;
+one left running after a crash is reconnected the next time it is started.
+
+The desktop app and `pandacode serve` on the same computer share one Lima home, so
+each sees the other's VMs, but each guards only its own starts, stops and deletes.
+Don't drive the same VM from both: one may stop or delete it while the other is
+using or still creating it.
+
+Creating a VM downloads its guest image (about 1 GB, cached in `~/.cache/lima` for
+later VMs), so the first one can take a while.
+
+A Lima VM sees none of your files unless you share a project: no home folder, SSH
+keys, proxy settings or port forwards, and it runs as user `agent` with the time
+zone set to UTC. A shared project is mounted read-only at `/mnt/project` over 9p
+(Ubuntu and Fedora; Debian's image has no 9p, and PandaCode never uses Lima's sshfs
+mounts, which would expose the whole host to root in the guest), with `cache=mmap`
+so edits on your computer show in the guest at once. A folder whose path holds a
+comma, a control character or `{{` cannot be shared.
+
+The guest's network is not isolated from yours. QEMU's user-mode network lets it
+reach anything your computer can: your LAN, a VPN you are connected to, and
+services listening on your computer's loopback address (as `192.168.5.2`). Lima's
+host resolver answers the guest's DNS with your computer's own, including names in
+`/etc/hosts`. The `agent` user also has your user ID on the host. Don't leave
+unauthenticated services running on your computer or network while untrusted code
+runs in a VM.
+
 ## Coding tools and shortcuts
 
 Install Git and at least one supported provider CLI on the machine, and sign in
