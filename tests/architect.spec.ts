@@ -2120,20 +2120,53 @@ test.describe('workers full access note', () => {
     await expect(panel(page)).toBeHidden();
     await expect(page.locator('.tip-bubble')).toHaveCount(0);
   });
+  test('a pinned tip goes when the team goes away or a repaint hides its note, and its mark controls the bubble', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [worker('build', { status: 'completed' })] }) });
+    await openWorkers(page).click();
+    await pickMode(page, 'Standard');
+    // By class: hidden, the mark leaves the accessibility tree.
+    const mark = panel(page).locator('.architect-panel-access .info-mark-toggle');
+    await mark.focus();
+    await page.keyboard.press('Enter');
+    // While pinned, the mark names the visible bubble it controls.
+    const id = await mark.getAttribute('aria-controls');
+    expect(id).toBeTruthy();
+    await expect(page.locator(`#${id}[role="tooltip"]`)).toBeVisible();
+    // A repaint hides the note with no user event: the tip goes with it.
+    await panel(page).locator('.architect-panel-access').evaluate(note => { (note as HTMLElement).hidden = true; });
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+    await expect(mark).not.toHaveAttribute('aria-controls', /.*/);
+    await expect(mark).toHaveAttribute('aria-expanded', 'false');
+    await panel(page).locator('.architect-panel-access').evaluate(note => { (note as HTMLElement).hidden = false; });
+    // Pinned again, then the team goes away from code: the panel closes and takes the tip.
+    await mark.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.tip-bubble')).toBeVisible();
+    await page.evaluate(() => (window as any).__architectTest.publish({ sessionId: 'session-2', removed: true }));
+    await expect(panel(page)).toBeHidden();
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+  });
 });
 
 test.describe('workers key hint', () => {
-  test('a narrow flyout ends the key hint with an ellipsis and keeps the full text in its title', async ({ page }) => {
+  for (const width of [320, 400]) test(`a ${width}px flyout wraps the key hint rather than cutting it`, async ({ page }) => {
     await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued', dependsOn: ['build'] })] }) });
-    // Narrowed after the task loads (the sidebar folds away at this width): the flyout is min(400px, 100vw - 96px).
-    await page.setViewportSize({ width: 420, height: 800 });
     await openWorkers(page).click();
+    await page.evaluate(width => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = `${width}px`; }, width);
     await row(page, 'build').focus();
     await page.keyboard.press('ArrowDown');
     const hint = panel(page).locator('.architect-worker-keyhint');
     await expect(hint).toBeVisible();
-    await expect(hint).toHaveAttribute('title', '↑↓ move · → shows details · ← hides · Enter opens');
-    expect(await hint.evaluate(element => ({ overflow: getComputedStyle(element).textOverflow, wrap: getComputedStyle(element).whiteSpace, cut: element.scrollWidth > element.clientWidth }))).toEqual({ overflow: 'ellipsis', wrap: 'nowrap', cut: true });
+    await expect(hint).not.toHaveAttribute('title', /.*/);
+    const box = await hint.evaluate(element => {
+      const style = getComputedStyle(element), line = parseFloat(style.lineHeight);
+      const rows = element.parentElement!.querySelector('.architect-worker-list')!.getBoundingClientRect(), own = element.getBoundingClientRect();
+      return { lines: Math.round((element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / line), cut: element.scrollWidth > element.clientWidth, ellipsis: style.textOverflow === 'ellipsis', below: own.top >= rows.bottom - 0.5 };
+    });
+    expect(box.cut).toBe(false);
+    expect(box.ellipsis).toBe(false);
+    expect(box.below).toBe(true);
+    if (width === 320) expect(box.lines).toBeGreaterThanOrEqual(2);
   });
 });
 

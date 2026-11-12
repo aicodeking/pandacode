@@ -4,6 +4,10 @@ import { escape, icon } from './dom';
  * mark instead of a second line. Shown on hover and on keyboard focus of the row
  * that contains the mark; hidden on any press, key, scroll, or when the mark leaves. */
 let bubble: HTMLElement | undefined, anchor: Element | undefined, frame = 0, pinned = false;
+/** The bubble's id, which a pinned toggle mark names in `aria-controls`. */
+const BUBBLE_ID = 'tip-bubble';
+/** Watches the page only while a tip is pinned: a repaint that detaches or hides its mark takes the tip with it. */
+let watcher: MutationObserver | undefined;
 
 /** A Tab stop of its own (the tip shows on keyboard focus and is its accessible description); pass `inline`
  * inside a control (a menu row, a summary) that already shows the tip on its own focus. With `toggle` the mark is a
@@ -18,7 +22,8 @@ export function infoMark(text: string, label = 'Details', inline = false, toggle
 function hide(): void {
   cancelAnimationFrame(frame); frame = 0;
   if (bubble) { bubble.remove(); bubble = undefined; }
-  if (pinned) anchor?.setAttribute('aria-expanded', 'false');
+  if (pinned) { anchor?.setAttribute('aria-expanded', 'false'); anchor?.removeAttribute('aria-controls'); }
+  watcher?.disconnect(); watcher = undefined;
   anchor = undefined; pinned = false;
 }
 
@@ -59,11 +64,20 @@ function show(mark: Element): void {
   bubble = document.createElement('div');
   bubble.className = 'tip-bubble';
   bubble.setAttribute('role', 'tooltip');
+  bubble.id = BUBBLE_ID;
   bubble.textContent = text;
   // Inside a modal the bubble must share the dialog's top layer.
   (mark.closest('dialog[open]') ?? document.body).append(bubble);
   place();
   bubble.classList.add('tip-visible');
+}
+
+function pin(mark: Element): void {
+  if (anchor !== mark || !bubble) return;
+  pinned = true; mark.setAttribute('aria-expanded', 'true'); mark.setAttribute('aria-controls', BUBBLE_ID);
+  // Only checks (never places, whose style writes would re-trigger it).
+  watcher = new MutationObserver(() => { if (anchor && !shown(anchor)) hide(); });
+  watcher.observe(document.body, { childList: true, subtree: true, attributes: true });
 }
 
 function markFor(target: EventTarget | null): Element | null {
@@ -112,7 +126,7 @@ export function installTooltips(): void {
     const mark = event.target instanceof Element ? event.target.closest('[data-tip-toggle]') : null;
     if (!mark) return;
     if (pinned && anchor === mark) { hide(); return; }
-    hide(); show(mark); pinned = true; mark.setAttribute('aria-expanded', 'true');
+    hide(); show(mark); pin(mark);
   });
   // A scroll (often programmatic: a list revealing its row) moves the bubble with its anchor; wheel and
   // keys already hide it, and a pointer left off the anchor hides it through the next pointerover.
