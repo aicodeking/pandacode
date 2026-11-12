@@ -2,7 +2,6 @@
 //! for the user's Claude Code (and, like it, saves a fresh login).
 
 use super::super::cli::{self, Cli, Exited, RunCli, RunFailure};
-use super::super::*;
 use super::*;
 use crate::providers::claude_auth::Mode;
 

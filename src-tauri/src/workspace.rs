@@ -776,7 +776,7 @@ pub(crate) fn run_process(
 }
 
 /// `run_process_graceful_until` that is only stopped by its timeout (tests).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn run_process_graceful(
     command: Command,
     tool: &str,

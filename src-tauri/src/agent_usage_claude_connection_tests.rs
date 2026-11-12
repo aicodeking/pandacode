@@ -2,7 +2,6 @@
 //! by source), `CLAUDE_CODE_OAUTH_TOKEN`, the check's own deadline, a
 //! rejected Keychain login, and a changed Keychain item.
 
-use super::super::*;
 use super::*;
 use crate::providers::claude_auth::Mode;
 

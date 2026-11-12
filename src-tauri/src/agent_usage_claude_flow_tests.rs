@@ -1,7 +1,6 @@
 //! Flows through `usage_with_login` and `fetch_claude`: saving past a read
 //! backoff, one rotation per check, saved readings, undated logins, env order.
 
-use super::super::*;
 use super::*;
 use crate::providers::claude_auth::Mode;
 use std::sync::atomic::AtomicUsize;
