@@ -106,3 +106,14 @@ test('extensions menus: nested command definitions cannot be retargeted by mutat
   m.contributes.menus[0].items[1].enabled = false;
   assert.equal(owned.invoke('sample.project-helper/summary', context), 'Extension installed successfully');
 });
+
+test('extensions menus: nested choices display the same command enable policy enforced at invocation', () => {
+  const m = manifest(); m.contributes.commands[0].enabled = false;
+  const owned = activation(m);
+  const leaves = owned.itemsFor('sample.project-helper/header', context)[0].items[0].items;
+  for (const id of ['summary', 'checked', 'radio-a', 'radio-b']) {
+    assert.equal(leaves.find(item => item.id === `sample.project-helper/${id}`).enabled, false);
+    assert.equal(owned.actionFor(`sample.project-helper/${id}`, context), undefined);
+  }
+  owned.dispose();
+});

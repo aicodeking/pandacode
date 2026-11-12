@@ -1484,7 +1484,6 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     const fixture = (window as any).__extensionsBaseline ??= { version: 1, calls: [] };
     fixture.calls.push({ command, args: structuredClone(args) });
     fixture.emitAgent ??= (event: AgentEvent) => agent(event);
-    if (command === 'send_message' && fixture.holdRun) { session(args.sessionId).status = 'running'; return undefined as T; }
     if (fixture.failOnce === command) { fixture.failOnce = null; throw new Error(`Baseline rejected ${command}`); }
     if (command === 'open_support') return undefined as T;
     if (command === 'get_run_script' && fixture.runScript) {
@@ -2173,6 +2172,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!text) throw new Error('Write a message first.');
       if (new TextEncoder().encode(text).length > MESSAGE_LIMIT) throw new Error('Message and attached context must be under 16 MiB.');
       s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
+      // Recorded runs still validate and persist the prompt; only automatic response events are held.
+      if (new URLSearchParams(location.search).has('extensions-baseline') && w.__extensionsBaseline?.holdRun) break;
       if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
       const tool: ToolActivity = { id: `preview-tool-${crypto.randomUUID()}`, name: 'Bash', status: 'running', input: 'npm test -- --runInBand', output: '' };

@@ -421,6 +421,30 @@ test.describe('extensions baseline', () => {
     expect(await calls(page, 'close_terminal')).toEqual([]);
   });
 
+  test('a newly created task holds its Active section through completion without detaching a pressed sidebar task', async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => { (window as any).__extensionsBaseline.holdRun = true; });
+    await page.locator('[data-action="new-task"]').click();
+    await expect(prompt(page)).not.toHaveAttribute('data-session-id', 'session-1');
+    const id = (await prompt(page).getAttribute('data-session-id'))!;
+    await prompt(page).fill('Controlled completion'); await prompt(page).press('Enter');
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+    await expect(page.locator(`.active-group .task-item[data-id="${id}"]`)).toBeVisible();
+    const original = page.locator('.task-item[data-id="session-1"]'), node = await original.elementHandle();
+    const box = (await original.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+    try {
+      await page.evaluate(id => {
+        (window as any).__machineChildStatus(id, 'idle');
+        (window as any).__extensionsBaseline.emitAgent({ sessionId: id, kind: 'done', text: '' });
+      }, id);
+      await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
+      await expect(page.locator(`.active-group .task-item[data-id="${id}"]`)).toBeVisible();
+      expect(await node!.evaluate(node => node.isConnected)).toBe(true);
+    } finally { await page.mouse.up(); }
+    await expect(prompt(page)).toHaveAttribute('data-session-id', 'session-1');
+  });
+
   test('Deploy reports a synthetic start failure and retries exactly once without leaking the connection secret', async ({ page }) => {
     test.setTimeout(60_000);
     await open(page);

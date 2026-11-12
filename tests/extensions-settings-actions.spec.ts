@@ -175,3 +175,25 @@ test('extensions settings actions: protected privacy and recovery remain host-on
   await expect(page.getByRole('dialog', { name: 'Colors', exact: true }).getByRole('button', { name: 'Done', exact: true })).toBeVisible();
   await expect(page.locator('#dialog [data-extension-contribution]')).toHaveCount(0);
 });
+
+test('extensions settings actions: valid field names cannot shadow the host form collection when saving', async ({ page }) => {
+  const value = structuredClone(manifest);
+  value.contributes.settings[0].fields = [
+    { id: 'elements', kind: 'text', label: 'Collection name' },
+    { id: 'named-item', kind: 'switch', label: 'Collection switch' },
+    { id: 'length', kind: 'select', label: 'Collection length', options: [{ value: 'one', label: 'One' }] },
+  ];
+  await page.addInitScript(value => {
+    if (localStorage.getItem('pandacode.preview.extensions.v1') === null) localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest: value, enabled: true, icons: {} }]));
+  }, value);
+  await open(page, true); await settings(page); await page.getByRole('tab', { name: 'Laboratory preferences', exact: true }).click();
+  await page.getByLabel('Collection name', { exact: true }).fill('Saved without shadowing');
+  await page.getByLabel('Collection switch', { exact: true }).check();
+  await page.getByLabel('Collection length', { exact: true }).selectOption('one');
+  await page.getByRole('button', { name: 'Save extension settings', exact: true }).click();
+  await expect(page.getByText('Extension settings saved.', { exact: true })).toBeVisible();
+  await back(page); await settings(page); await page.getByRole('tab', { name: 'Laboratory preferences', exact: true }).click();
+  await expect(page.getByLabel('Collection name', { exact: true })).toHaveValue('Saved without shadowing');
+  await expect(page.getByLabel('Collection switch', { exact: true })).toBeChecked();
+  await expect(page.getByLabel('Collection length', { exact: true })).toHaveValue('one');
+});

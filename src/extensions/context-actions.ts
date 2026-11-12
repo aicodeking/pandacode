@@ -33,7 +33,7 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
   const contributed: ChoiceItem[] = entries.flatMap(entry => {
     const children = entry.menu.items ? extensionChoices(owned.itemsFor(entry.menu.id, captured), entry.icons, captured) : undefined;
     if (children && !children.length) return [];
-    return [{ id: entry.menu.id, label: entry.command.title, leading: extensionIcon(entry.svg), disabled: !permits(entry.menu.enabled), children }];
+    return [{ id: entry.menu.id, label: entry.command.title, leading: extensionIcon(entry.svg), disabled: !permits(entry.menu.enabled) || !permits(entry.command.enabled), children }];
   });
   const bounded = boundedContextActions<ChoiceItem>(core, contributed);
   if (bounded.omitted) options.notify('Some extension actions exceed this menu’s 128-item limit. Built-in actions remain available.');

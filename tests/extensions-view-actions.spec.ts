@@ -197,3 +197,23 @@ test('extensions view actions: valid maximum-size contributions cannot overflow 
   await page.getByRole('menuitem', { name: 'Pin task', exact: true }).click();
   await expect(page.locator('[data-thread-group="pinned"] .task-item')).toHaveAttribute('data-id', 'session-2');
 });
+
+test('extensions view actions: command-disabled nested choices and direct context actions are visibly disabled', async ({ page }) => {
+  const value = structuredClone(manifest);
+  value.contributes.commands[0].enabled = false;
+  value.contributes.commands.push({ id: 'sample.view-laboratory/allowed', title: 'Available menu', action: { kind: 'showMessage', message: 'Allowed' } });
+  const toolbar = value.contributes.menus[0], context = value.contributes.menus.at(-1);
+  toolbar.command = 'sample.view-laboratory/allowed'; delete context.items;
+  value.contributes.menus = [toolbar, context];
+  await setup(page, true, value); await view(page, 'files');
+  await page.locator('[data-extension-contribution="sample.view-laboratory/files-toolbar"]').click();
+  await page.getByRole('menuitem', { name: 'Object tools', exact: true }).press('ArrowRight');
+  await expect(page.getByRole('menuitem', { name: 'Choose object options', exact: true })).toBeDisabled();
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await page.locator('.task-item[data-id="session-2"]').click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'View laboratory', exact: true })).toBeDisabled();
+  await expect(dialog(page)).not.toBeVisible();
+  expect(await calls(page)).toEqual([]);
+  await page.getByRole('menuitem', { name: 'Pin task', exact: true }).click();
+  await expect(page.locator('[data-thread-group="pinned"] .task-item')).toHaveAttribute('data-id', 'session-2');
+});

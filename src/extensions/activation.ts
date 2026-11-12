@@ -20,14 +20,15 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
     return result.ok && result.value === true;
   };
   const allows = (item: { visible?: Json; enabled?: Json }, context: Record<string, Json>) => [item.visible, item.enabled].every(condition => conditionAllows(condition, context));
-  function filtered(items: ExtensionMenuItem[], context: Record<string, Json>): ExtensionMenuItem[] {
+  function filtered(items: ExtensionMenuItem[], context: Record<string, Json>, commands: NonNullable<typeof packages[number]['manifest']['contributes']['commands']>): ExtensionMenuItem[] {
     const result: ExtensionMenuItem[] = [];
     for (const item of items) {
       if (!conditionAllows(item.visible, context)) continue;
-      const children = item.items ? filtered(item.items, context) : undefined;
+      const children = item.items ? filtered(item.items, context, commands) : undefined;
       if (children && !children.length) continue;
       if (item.kind === 'separator' && (!result.length || result.at(-1)?.kind === 'separator')) continue;
-      result.push({ ...item, checked: states.get(item.id) ?? item.checked, ...(children ? { items: children } : {}) });
+      const command = item.command ? commands.find(command => command.id === item.command) : undefined;
+      result.push({ ...item, ...(command ? { enabled: conditionAllows(item.enabled, context) && conditionAllows(command.enabled, context) } : {}), checked: states.get(item.id) ?? item.checked, ...(children ? { items: children } : {}) });
     }
     if (result.at(-1)?.kind === 'separator') result.pop();
     return result;
@@ -44,7 +45,8 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
     itemsFor(id: string, context: Record<string, Json>): ExtensionMenuItem[] {
       if (disposed) return [];
       const entry = entries.find(entry => entry.menu.id === id);
-      return entry && allows(entry.menu, context) ? structuredClone(filtered(entry.menu.items ?? [], context)) : [];
+      const commands = normalized.packages.find(manifest => manifest.id === entry?.owner.extensionId)?.contributes.commands ?? [];
+      return entry && allows(entry.menu, context) ? structuredClone(filtered(entry.menu.items ?? [], context, commands)) : [];
     },
     actionFor(id: string, context: Record<string, Json>): ExtensionAction | undefined {
       if (disposed) return;

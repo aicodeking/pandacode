@@ -1637,7 +1637,9 @@ function renderNavigation(): void {
   // A held thread that starts running is held in Active from then on: after its run it stays there
   // while it is open, and goes to its folder once you open another thread, never back to (say)
   // the Settled section it was opened from.
-  if (sectionHold && sectionHold.section !== 'active' && isRunning(sectionHold.id)) sectionHold = { ...sectionHold, section: 'active' };
+  // A new draft has no sidebar row when opened, so it has no initial hold to promote.
+  // Establish one when it starts too; completion must not remove/rebuild a pressed sibling row.
+  if (state.sessionId && isRunning(state.sessionId)) sectionHold = { id: state.sessionId, section: 'active' };
   const order = taskComparator(sidebarSort.tasks), manual = sidebarSort.tasks === 'manual';
   const sections = sidebarSections({
     tasks: [...matching].sort(order), stage: taskStage,
