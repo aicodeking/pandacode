@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
+const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
 const usageButton = (page: Page) => page.getByRole('button', { name: 'Agent usage', exact: true });
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Agent usage', exact: true });
 const card = (page: Page, name: string) => dialog(page).locator('.usage-card').filter({ hasText: name });
@@ -46,6 +46,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [],
         muse: result('muse', 'unsupported', 'Muse Code reports its usage windows only inside a running session.'),
         devin: result('devin', 'unsupported', 'Devin does not expose plan limits through its ACP server.'),
         zcode: result('zcode', 'unsupported', 'ZCode does not expose plan limits through its app-server.'),
+        cursor: result('cursor', 'unsupported', 'Cursor does not expose plan usage through its ACP server. Check usage in your Cursor dashboard.'),
       },
     };
   }, { hold, failures, ledgerFixture: ledger(), connections, pool });

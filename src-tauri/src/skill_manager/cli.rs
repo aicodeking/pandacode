@@ -160,6 +160,7 @@ pub(super) fn agent_id(harness: &str) -> Option<&'static str> {
         "grok" => "grok",
         "hermes" => "hermes-agent",
         "zcode" => "zcode",
+        "cursor" => "cursor",
         _ => return None,
     })
 }

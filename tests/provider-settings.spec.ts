@@ -66,7 +66,7 @@ test('every harness has environment settings, and all but GLM and MiMo an execut
     executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable!),
   }));
   // Mirrors providers::PROVIDERS, so a new harness has to show up here too.
-  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
+  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
   expect([...editors.toggles].sort()).toEqual([...roster].sort());
   expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
   expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo').sort());
@@ -374,7 +374,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {

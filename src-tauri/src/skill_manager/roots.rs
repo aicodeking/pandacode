@@ -254,6 +254,21 @@ pub(crate) fn skill_roots(
                 }
             }
         }
+        "cursor" => {
+            // Cursor's CLI also loads the Claude, Codex, Grok and shared agents locations
+            // (the shared ones are added below); `skills-cursor` holds its built-ins.
+            for (dir, label) in [
+                (".cursor/skills", "~/.cursor/skills"),
+                (".claude/skills", "~/.claude/skills"),
+                (".codex/skills", "~/.codex/skills"),
+                (".grok/skills", "~/.grok/skills"),
+            ] {
+                roots.push((home.join(dir), label));
+                if let Some(project) = project {
+                    roots.push((project.join(dir), dir));
+                }
+            }
+        }
         "zcode" | "github-copilot" | "commandcode" | "grok" | "hermes" => {
             let (user, display, local) = match harness {
                 "zcode" => (".zcode/skills", "~/.zcode/skills", ".zcode/skills"),
@@ -303,6 +318,7 @@ pub(crate) fn skill_roots(
             | "github-copilot"
             | "antigravity"
             | "muse"
+            | "cursor"
     ) {
         roots.push((home.join(".agents/skills"), "~/.agents/skills"));
     }
@@ -317,6 +333,7 @@ pub(crate) fn skill_roots(
             | "github-copilot"
             | "antigravity"
             | "muse"
+            | "cursor"
     ) {
         if let Some(project) = project {
             roots.push((project.join(".agents/skills"), ".agents/skills"));
