@@ -2662,3 +2662,78 @@ test.describe('compact workers round 23', () => {
     expect(hintBox.y).toBeGreaterThanOrEqual(lastRow.y + lastRow.height - 1);
   });
 });
+
+test.describe('access mark hit area, key hint pairs, pinned tip, error tones', () => {
+  const standardTeam = async (page: Page) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [worker('build', { status: 'completed' })] }) });
+    await openWorkers(page).click();
+    await page.locator('#mode-picker-trigger').click();
+    await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Standard', exact: true }).click();
+    if (!(await panel(page).isVisible())) await page.locator('#agents-toggle').click();
+    await expect(panel(page).locator('.architect-panel-access')).toBeVisible();
+    await panelSettled(page);
+    return panel(page).locator('.architect-panel-access .info-mark-toggle');
+  };
+  test('the access note\'s info mark takes the pointer across its whole 24px box', async ({ page }) => {
+    const mark = await standardTeam(page);
+    await expect.poll(() => mark.evaluate(element => { const box = element.getBoundingClientRect(); return [box.width, box.height]; })).toEqual([24, 24]);
+    const hits = await mark.evaluate(element => {
+      const box = element.getBoundingClientRect(), midX = box.left + box.width / 2, midY = box.top + box.height / 2;
+      const points: Record<string, [number, number]> = {
+        // Its top and bottom 2px and its left and right edges (the corners are rounded off).
+        top: [midX, box.top + 1], bottom: [midX, box.bottom - 1.5], left: [box.left + 0.5, midY], right: [box.right - 1, midY],
+      };
+      return Object.fromEntries(Object.entries(points).map(([name, [x, y]]) => { const hit = document.elementFromPoint(x, y); return [name, !!hit && (hit === element || element.contains(hit))]; }));
+    });
+    expect(hits).toEqual({ top: true, bottom: true, left: true, right: true });
+  });
+  test('at 320px the key hint wraps only between key/action pairs', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued', dependsOn: ['build'] })] }) });
+    await openWorkers(page).click();
+    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '320px'; });
+    await row(page, 'build').focus();
+    await page.keyboard.press('ArrowDown');
+    const hint = panel(page).locator('.architect-worker-keyhint');
+    await expect(hint).toBeVisible();
+    await panelSettled(page);
+    const layout = await hint.evaluate(element => {
+      const pairs = [...element.querySelectorAll(':scope > span')];
+      return { pairs: pairs.map(span => span.textContent), lines: pairs.map(span => span.getClientRects().length), tops: new Set(pairs.map(span => Math.round(span.getBoundingClientRect().top))).size };
+    });
+    expect(layout.pairs).toEqual(['↑↓ move', '→ shows details', '← hides', 'Enter opens']);
+    expect(layout.lines).toEqual([1, 1, 1, 1]);
+    // It does wrap at this width (so the check above is a real one).
+    expect(layout.tops).toBeGreaterThanOrEqual(2);
+  });
+  test('a pinned tip opens below its mark and leaves the heading\'s buttons clear', async ({ page }) => {
+    const mark = await standardTeam(page);
+    await mark.focus();
+    await page.keyboard.press('Enter');
+    await expect(mark).toHaveAttribute('aria-expanded', 'true');
+    const bubble = page.locator('.tip-bubble');
+    await expect(bubble).toBeVisible();
+    await expect.poll(async () => {
+      const markBox = (await mark.boundingBox())!, tip = (await bubble.boundingBox())!;
+      return tip.y >= markBox.y + markBox.height - 0.5;
+    }).toBe(true);
+    const tip = (await bubble.boundingBox())!;
+    const buttons = panel(page).locator('.architect-panel-heading button:visible');
+    expect(await buttons.count()).toBeGreaterThan(0);
+    for (const box of await buttons.evaluateAll(list => list.map(button => { const r = button.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; }))) {
+      const overlaps = tip.x < box.x + box.width && box.x < tip.x + tip.width && tip.y < box.y + box.height && box.y < tip.y + tip.height;
+      expect(overlaps).toBe(false);
+    }
+  });
+  test('team library and setup errors use the design-system danger tone', async ({ page }) => {
+    await standardTeam(page);
+    // Rendered into the panel (architect.css is loaded with it): the rule's colour, against a --ds-danger probe.
+    const tones = await panel(page).evaluate(host => {
+      const tone = (className: string) => { const element = document.createElement('p'); element.className = className; element.textContent = 'Error'; host.append(element); const color = getComputedStyle(element).color; element.remove(); return color; };
+      const probe = document.createElement('i'); probe.style.color = 'var(--ds-danger)'; host.append(probe); const danger = getComputedStyle(probe).color; probe.remove();
+      return { library: tone('team-library-error'), setup: tone('architect-setup-error'), danger };
+    });
+    expect(tones.danger).not.toBe('');
+    expect(tones.library).toBe(tones.danger);
+    expect(tones.setup).toBe(tones.danger);
+  });
+});
