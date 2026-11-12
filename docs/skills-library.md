@@ -42,7 +42,7 @@ Everything is files under the app data folder. There is no schema migration.
                                     content SHA-256, acknowledged hash, activations
 ```
 
-Each activation records the harness, scope, project checkout, surface, the library hash it wrote, the SHA-256 of every file or block it wrote, and any `.git/info/exclude` lines it added.
+Each activation records the harness, scope, project checkout, surface, the library hash it wrote, the SHA-256 of every file or block it wrote, any `.git/info/exclude` lines it added, and the exclude list those lines are in.
 
 ## Adapters (`src-tauri/src/skills/adapter.rs`)
 
@@ -52,10 +52,75 @@ Each activation records the harness, scope, project checkout, surface, the libra
 | Codex | `~/.codex/skills/<id>/` | `<checkout>/.agents/skills/<id>/` | block in `~/.codex/AGENTS.md` | block in `<checkout>/AGENTS.md` |
 | Others | `prompt` | `prompt` | `prompt` | `prompt` |
 
-- A rule block is wrapped in `<!-- pandacode:rule:<id> -->` … `<!-- /pandacode:rule:<id> -->`. Text outside the block is never changed.
+- A rule block is wrapped in `<!-- pandacode:rule:<id> -->` … `<!-- /pandacode:rule:<id> -->`. PandaCode changes only its own block. In project scope, an existing rule file is rewritten through a temporary file that is renamed over it, so a failed write leaves the file as it was, including your text outside the block. In user scope the file is rewritten in place, so a failed write there can lose text.
+- Temporary files are named `.<name>.pandacode-<uuid>.tmp` and sit beside the file they replace. One is removed when its write fails. If PandaCode crashes or is killed mid-write, it stays behind and shows in `git status`; delete it by hand.
 - PandaCode never writes into a skill folder it did not create, never overwrites a file or block whose hash differs from what it wrote, and on deactivation leaves edited files in place (`Change.kept`).
-- In a Git checkout, project scope adds the skill folder (and a rule file, but only when PandaCode created that file) to `info/exclude`. The path comes from `git rev-parse --git-path info/exclude`, so worktrees work too. Passing `sessionId` scopes the activation to that task's worktree.
 - Harnesses marked `prompt` only record the activation. Nothing injects these items into prompts yet (see Not yet).
+
+### Links
+
+- In project scope, PandaCode never follows a broken link, or a link whose resolved target is outside the project or inside its Git folder (`.git`).
+- A write through such a link is refused with `<path> is a link; PandaCode does not write through links.`
+- A removal through one leaves the file in place and reports it as kept (`Change.kept`).
+- A link inside the project is followed only from one rule file (`CLAUDE.md`, `AGENTS.md`) to another, or from a skills folder to a skills folder. So `AGENTS.md -> CLAUDE.md` and `.agents/skills -> ../.claude/skills` are written through. Any other link is refused with the same message.
+- An activation is refused when a link leads to a file or folder PandaCode already manages for another harness, with `<path> is a link to <real>, which PandaCode already manages for <harness>.` An example is one rule for Claude Code and Codex with `AGENTS.md -> CLAUDE.md`. When the path is not a link, the message is `PandaCode already manages <path> for <harness>.`
+- The target is checked again after it is resolved, just before the write. A small timing gap remains: a parent folder swapped for a link between that check and the open is still followed. Removals have the same gap: the links are checked, then the file is removed.
+- User scope (your home folder, such as a dotfiles-linked `~/.claude/CLAUDE.md`) writes through links as before.
+- In either scope, removing the last block through a link empties the link's target. The link itself is not deleted.
+
+### Hard links and non-regular files
+
+- On macOS and Linux, PandaCode refuses to write to a project file that has other hard links, with `<path> is hard-linked elsewhere; PandaCode does not write through hard links.`
+- A FIFO, device or other non-regular file at a target path is refused.
+- For a skill file the message is `<path> is not a regular file; PandaCode will not write to it.`
+- For a rule file the message is `<path> is not a text file PandaCode can add to.`
+
+### Exclude list
+
+- In a Git checkout, project scope adds the skill folder to the checkout's exclude list. A rule file is added only when PandaCode created that file.
+- The line uses the path where the files actually land. So with `.agents/skills -> ../.claude/skills` the line is `/.claude/skills/<id>/`.
+- Gitignore's special characters in the path are escaped with a backslash, so the line matches only that literal path. These are `*`, `?`, `[` and `\` anywhere, a leading `!` or `#`, and trailing spaces. For example, if a Codex project's `.agents/skills` is a link to `../.claude/skills/a*b`, the line is `/.claude/skills/a\*b/<id>/`. This is the only way a folder can sit between `skills` and `<id>`.
+- A path with a control character (such as a newline in a cloned folder's name) is refused with `"<path>" has a control character in its path; PandaCode will not add it to the Git exclude list.` The activation fails before any file is written.
+- The list is `info/exclude` under the folder from `git rev-parse --git-common-dir`, so linked worktrees share their main checkout's list.
+- A line is added only when that Git folder is inside the repository (the top level from `git rev-parse --show-toplevel`), or when the checkout is a linked worktree whose `.git` file and the worktree's `gitdir` file point at each other. Otherwise no line is added.
+- Submodules and repositories made with `--separate-git-dir` keep their Git folder outside the checkout. Their own checkout gets no exclude line, and its files show in `git status`.
+- A linked worktree (`git worktree add`) of such a repository passes the worktree check, so it does get a line, in that outside Git folder's `info/exclude`.
+- If `info` or `info/exclude` is a link, the update is refused with `<path> is a link; PandaCode does not update the Git exclude list through links.`
+- If `info/exclude` can't be read as text (unreadable, not UTF-8, or not a regular file), it is left unchanged. The message is `Could not read the Git exclude list <path>: <reason>. PandaCode left it unchanged.`; for a file that is not UTF-8, the reason is `it is not UTF-8 text`. An activation fails with this message and writes nothing. When a line should be removed, it stays and the failure is only logged.
+- An existing `info/exclude` is replaced whole: the new text goes to a temporary file beside it, which is then renamed over it. So a failed update leaves the list as it was. A missing list is created new.
+- Passing `sessionId` scopes the activation to that task's worktree.
+
+### Shared lines
+
+- One line can cover files of several activations. Examples: a second rule in a `CLAUDE.md` that the first one created, or the same skill in another worktree of the repository.
+- Turning an activation off (or moving it to a new folder) keeps a line while another activation still has files under it. That activation then owns the line, and the last one relying on it removes it.
+- When turning off keeps an edited file (`Change.kept`), the file is no longer managed. Its line is removed unless another activation still relies on it, so the kept file shows in `git status`.
+- Each activation records which exclude list its lines are in. If its checkout was deleted, turning it off still releases its lines in that list: a line is handed to another activation that still relies on it, or else removed. A recorded list path is edited only while it still looks like a Git `info/exclude`: a file named `exclude` in an `info` folder, whose parent holds `HEAD` and an `objects` folder or a `commondir` file, with no link along the path. It must also belong to the activation's own repository: either the checkout's Git folder still lists the checkout as a worktree, or another live activation of the same repository uses that list. Any other recorded path is left unchanged, and that is only logged.
+- Records from older builds have no exclude list. If such an activation's checkout is gone, each of its lines is handed to another activation in the same repository whose list still has it. Otherwise the line is left in place, and that is logged.
+- If handing a line over or removing it fails, the change still goes through. The failure is only logged, and the line stays in the list.
+
+### Failed writes
+
+- Every file is checked before anything is deleted or written.
+- Recorded paths are checked too. A path in an activation's record that is not where that skill or rule is written for its harness and scope (its own skill folder, or its rule file) is never removed or rewritten. It is logged and reported as kept. So a damaged or edited record can't make PandaCode delete or rewrite other files.
+- The exclude line is added after these read-only checks pass and before any skill file is written. So a refused check, or a refused or failed exclude update, writes nothing.
+- If a skill file write fails partway, the files that call finished writing are removed. Finished files that had to stay are named in the error (`Left in place: …`).
+- A new skill file that failed partway is removed too, with folders left empty, but only while it holds nothing but a start of the new text. On macOS and Linux it must also still be the same file with no other links. So a retry of a first activation finds a free folder and works.
+- In project scope, a skill file's previous version is replaced through a temporary file and a rename, so the file whose write failed keeps its old version.
+- A rule file the call created is removed again when its write fails, but only while it holds nothing but a start of the new text. On macOS and Linux it must also still be the same file with no other links.
+- If the write fails, the exclude line this call added is taken out again. Files left behind are not hidden and show in Git.
+- Moving an activation to a new folder removes the old copy, and releases its exclude lines, only after the new record is saved. If the save fails, the old copy stays installed and recorded.
+- If the activation can't be saved after the write, it is rolled back the same way: the files it wrote are removed, its exclude line is taken out, and files that had to stay are named (`Left in place: …`).
+- If taking the exclude line out fails, the error says so: `Could not remove the exclude line <line>: <reason>.` Otherwise a refused or failed activation leaves no exclude line behind.
+- Turning off a project activation whose checkout has been deleted drops its record and reports nothing as kept, since there is nothing left to keep.
+- Only a project activation with no recorded project path (Turn off everywhere) has its record dropped and its files left in place and reported as kept.
+
+### Windows
+
+- If the project root can't be resolved (some Windows drives), every link is refused. Plain paths still work.
+- The timing gap also covers the file itself: a link swapped in for it before the open is not caught.
+- There is no hard-link check.
+- When a created rule file's write fails, a file of the same length counts as the same file, since its identity can't be compared.
 
 ## Matrix and safety
 
