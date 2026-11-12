@@ -83,6 +83,23 @@ test('extensions inventory: host watcher reconnects after a lost committed respo
   lose = true; await clock.tick(); assert.deepEqual(seen.at(-1), contextFailure('HostUnavailable')); assert.equal(clock.active(), true);
   await clock.tick(); assert.equal(seen.at(-1).value.resync, true); stop(); stop(); await settle(); assert.equal(clock.active(), false); assert.equal(f.broker.subscriptionCount(), 0); client.dispose();
 });
+test('extensions inventory: lost initial subscribe acknowledgement retries without retaining an unknown stream', async () => {
+  const f = fixture(), clock = scheduler(), seen = []; let lose = true;
+  const client = createContextClient('sample.project-context/header', '1.0.0', context('A'), async request => {
+    const reply = f.call(request);
+    if (request.op === 'subscribe' && lose) { lose = false; throw new Error('lost acknowledgement'); }
+    return reply;
+  });
+  await client.consent('jobs.summary', true); const stop = client.watch('jobs', reply => seen.push(reply), clock);
+  await settle(); assert.deepEqual(seen.at(-1), contextFailure('HostUnavailable'));
+  await clock.tick();
+  try {
+    assert.equal(f.broker.subscriptionCount(), 1);
+    assert.equal(seen.at(-1).value.resync, true);
+    assert.ok(seen.at(-1).value.snapshot);
+    stop(); await settle(); assert.equal(f.broker.subscriptionCount(), 0); assert.equal(clock.active(), false);
+  } finally { client.dispose(); }
+});
 test('extensions inventory: close while subscribe resolves late suppresses updates and releases the native listener', async () => {
   const f = fixture(), clock = scheduler(), seen = []; let release;
   const gate = new Promise(resolve => { release = resolve; });

@@ -11,7 +11,7 @@ export function createPreviewContextBroker() {
   const handles = new Map<string, Invocation>(), grants = new Set<string>();
   const readGrants = new Map<string, string>();
   const journal = createInventoryJournal();
-  const subscriptions = new Map<string, { handle: string; resource: string; limit: number; cursor: string; offset: number; sequence: number; snapshot: SummaryPage }>();
+  const subscriptions = new Map<string, { handle: string; resource: string; limit: number; requestId?: string; cursor: string; offset: number; sequence: number; snapshot: SummaryPage }>();
   const grantKey = (invocation: Invocation, capability: string) => JSON.stringify([invocation.owner, invocation.version, invocation.context.projectId ?? '', capability]);
   function resolve(snapshot: ExtensionSnapshot, id: string, version: string, context: Record<string, Json>) {
     const activation = createDeclarativeActivation(snapshot, 1);
@@ -26,7 +26,7 @@ export function createPreviewContextBroker() {
     const fail = contextFailure;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('InvalidShape');
     if (new TextEncoder().encode(JSON.stringify(raw)).length > 8192) return fail('LimitExceeded');
-    const shapes: Record<string, string[]> = { capture: ['op', 'id', 'version', 'context'], consent: ['op', 'handle', 'capability', 'allow'], query: ['op', 'handle', 'resource', 'limit', 'cursor', 'revision'], subscribe: ['op', 'handle', 'resource', 'limit'], events: ['op', 'handle', 'subscription', 'cursor'], unsubscribe: ['op', 'handle', 'subscription'], release: ['op', 'handle'], read: ['op', 'handle', 'resource', 'path', 'cursor', 'revision'], readConsent: ['op', 'handle', 'capability', 'path', 'allow'], cancelRead: ['op', 'handle'] };
+    const shapes: Record<string, string[]> = { capture: ['op', 'id', 'version', 'context'], consent: ['op', 'handle', 'capability', 'allow'], query: ['op', 'handle', 'resource', 'limit', 'cursor', 'revision'], subscribe: ['op', 'handle', 'resource', 'limit', 'requestId'], events: ['op', 'handle', 'subscription', 'cursor'], unsubscribe: ['op', 'handle', 'subscription'], release: ['op', 'handle'], read: ['op', 'handle', 'resource', 'path', 'cursor', 'revision'], readConsent: ['op', 'handle', 'capability', 'path', 'allow'], cancelRead: ['op', 'handle'] };
     if (!shapes[String(raw.op)] || Object.keys(raw).some(key => !shapes[String(raw.op)].includes(key))) return fail('InvalidShape');
     for (const [key, invocation] of handles) if (invocation.expires <= Date.now()) handles.delete(key);
     for (const [key, subscription] of subscriptions) if (!handles.has(subscription.handle)) subscriptions.delete(key);
@@ -91,7 +91,7 @@ export function createPreviewContextBroker() {
       }
       if (!grants.has(key)) return fail('PermissionDenied');
       if (raw.op === 'subscribe' || raw.op === 'events') {
-        if (raw.op === 'subscribe' && (subscriptions.size >= 64 || [...subscriptions.values()].filter(item => item.handle === raw.handle).length >= 5)) return fail('LimitExceeded');
+        if (raw.op === 'subscribe' && raw.requestId != null && (typeof raw.requestId !== 'string' || !raw.requestId.length || raw.requestId.length > 64)) return fail('LimitExceeded');
         if (raw.op === 'events' && (typeof raw.cursor !== 'string' || raw.cursor.length > 64)) return fail('LimitExceeded');
         const reply = dispatch({ op: 'query', handle: raw.handle, resource, limit: stream?.limit ?? raw.limit }, snapshot, data);
         if (!reply.ok) {
@@ -102,7 +102,15 @@ export function createPreviewContextBroker() {
         const page = reply.value as SummaryPage;
         const cursor = crypto.randomUUID();
         if (!stream) {
-          const subscription = crypto.randomUUID(); subscriptions.set(subscription, { handle: raw.handle, resource, limit: Number(raw.limit), cursor, offset: journal.cursor(), sequence: 0, snapshot: page });
+          const existing = raw.requestId != null ? [...subscriptions].find(([, item]) => item.handle === raw.handle && item.requestId === raw.requestId) : undefined;
+          if (existing) {
+            const [subscription, item] = existing;
+            if (item.resource !== resource || item.limit !== raw.limit) return fail('InvalidShape');
+            item.snapshot = page; item.offset = journal.cursor(); item.cursor = cursor;
+            return { ok: true, value: { schemaVersion: 1, subscription, cursor, snapshot: page, events: [], resync: true } };
+          }
+          if (subscriptions.size >= 64 || [...subscriptions.values()].filter(item => item.handle === raw.handle).length >= 5) return fail('LimitExceeded');
+          const subscription = crypto.randomUUID(); subscriptions.set(subscription, { handle: raw.handle, resource, limit: Number(raw.limit), requestId: raw.requestId as string | undefined, cursor, offset: journal.cursor(), sequence: 0, snapshot: page });
           return { ok: true, value: { schemaVersion: 1, subscription, cursor, snapshot: page, events: [], resync: false } };
         }
         const batch = resource === 'jobs' ? journal.read(stream.offset, new Set(data.tasks.filter(task => task.projectId === invocation.context.projectId && !task.draft).map(task => task.id))) : { gap: false, events: [] };

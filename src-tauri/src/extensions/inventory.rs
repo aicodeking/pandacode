@@ -50,6 +50,12 @@ mod tests {
 #[derive(Default)]
 pub(super) struct Journal { pub cursor: u64, floor: u64, events: VecDeque<Value> }
 impl Journal {
+    /// Contention on the optional observer never blocks a producer or silently loses an event.
+    pub fn gap(&mut self) {
+        self.cursor += 1;
+        self.floor = self.cursor;
+        self.events.clear();
+    }
     pub fn record(&mut self, id: &str, kind: &str, state: &str) {
         if id.len() > 256 || !matches!(kind, "progress" | "terminal") { return; }
         self.cursor += 1;

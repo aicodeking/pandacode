@@ -57,6 +57,7 @@ export function createContextClient(id: string, version: string, context: Record
     cancelRead,
     /** Bounded pull subscription; no unfiltered native event listener is ever exposed. */
     watch(resource: ContextResource, changed: (result: ContextReply<ContextStream>) => void, scheduler: { schedule: (callback: () => void) => unknown; cancel: (token: unknown) => void } = { schedule: callback => setTimeout(callback, 750), cancel: token => clearTimeout(token as ReturnType<typeof setTimeout>) }) {
+      const requestId = crypto.randomUUID();
       let stopped = false, subscription: string | undefined, cursor: string | undefined, timer: unknown;
       let inFlight: Promise<ContextReply<ContextStream>> | undefined;
       const stop = () => {
@@ -74,7 +75,7 @@ export function createContextClient(id: string, version: string, context: Record
         const capture = await ready;
         await Promise.all(cleanups);
         if (stopped || disposed) return;
-        inFlight = capture.ok ? send(subscription ? { op: 'events', handle, subscription, cursor } : { op: 'subscribe', handle, resource, limit: 10 }) as Promise<ContextReply<ContextStream>> : Promise.resolve(capture as ContextReply<ContextStream>);
+        inFlight = capture.ok ? send(subscription ? { op: 'events', handle, subscription, cursor } : { op: 'subscribe', handle, resource, limit: 10, requestId }) as Promise<ContextReply<ContextStream>> : Promise.resolve(capture as ContextReply<ContextStream>);
         const result = await inFlight;
         if (result.ok && result.value.subscription) subscription = result.value.subscription;
         if (stopped || disposed) return;

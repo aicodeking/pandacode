@@ -21,7 +21,7 @@ enum Request {
     Capture { id: String, version: String, context: Value },
     Consent { handle: String, capability: String, allow: bool },
     Query { handle: String, resource: String, limit: u32, cursor: Option<u32>, revision: Option<String> },
-    Subscribe { handle: String, resource: String, limit: u32 },
+    Subscribe { handle: String, resource: String, limit: u32, #[serde(rename = "requestId")] request_id: Option<String> },
     Events { handle: String, subscription: String, cursor: String },
     Unsubscribe { handle: String, subscription: String },
     Release { handle: String },
@@ -33,19 +33,31 @@ enum Request {
 struct Invocation { id: String, version: String, owner: String, context: Value, expires: Instant }
 #[derive(Default)]
 struct Broker { handles: BTreeMap<String, Invocation>, grants: BTreeSet<(String, String, String, String)>, subscriptions: BTreeMap<String, Subscription>, journal: inventory::Journal, read_grants: BTreeMap<(String, String, String, String, String), project_reads::Authority>, cancellations: CancelTokens }
-struct Subscription { handle: String, resource: String, limit: u32, offset: u64, cursor: String, sequence: u64, snapshot: Value }
+struct Subscription { handle: String, resource: String, limit: u32, request_id: Option<String>, offset: u64, cursor: String, sequence: u64, snapshot: Value }
 type CancelTokens = Arc<Mutex<BTreeMap<String, Arc<AtomicU64>>>>;
-pub struct ContextBroker { broker: Mutex<Broker>, busy: Arc<AtomicBool>, cancellations: CancelTokens }
+pub struct ContextBroker { broker: Mutex<Broker>, busy: Arc<AtomicBool>, cancellations: CancelTokens, missed_jobs: AtomicBool }
 impl Default for ContextBroker {
     fn default() -> Self {
         let broker = Broker::default(); let cancellations = broker.cancellations.clone();
-        Self { broker: Mutex::new(broker), busy: Arc::new(AtomicBool::new(false)), cancellations }
+        Self { broker: Mutex::new(broker), busy: Arc::new(AtomicBool::new(false)), cancellations, missed_jobs: AtomicBool::new(false) }
     }
 }
 /// Called only by the existing owned-agent lifecycle. Text/data/tool payloads never enter the stream.
 pub fn record_job(app: &tauri::AppHandle, id: &str, kind: &str, status: &str) {
-    if let Ok(mut broker) = app.state::<ContextBroker>().broker.lock() {
-        if broker.subscriptions.values().any(|stream| stream.resource == "jobs") { broker.journal.record(id, kind, status); }
+    app.state::<ContextBroker>().record_job(id, kind, status);
+}
+impl ContextBroker {
+    fn record_job(&self, id: &str, kind: &str, status: &str) {
+        // This is on the core agent emission path. A slow extension read must never stall it.
+        if let Ok(mut broker) = self.broker.try_lock() {
+            self.reconcile_job_gap(&mut broker);
+            if broker.subscriptions.values().any(|stream| stream.resource == "jobs") { broker.journal.record(id, kind, status); }
+        } else {
+            self.missed_jobs.store(true, Ordering::Release);
+        }
+    }
+    fn reconcile_job_gap(&self, broker: &mut Broker) {
+        if self.missed_jobs.swap(false, Ordering::AcqRel) { broker.journal.gap(); }
     }
 }
 pub fn invalidate(app: &tauri::AppHandle, owner: Option<&str>) {
@@ -230,13 +242,21 @@ impl Broker {
                 if !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == capability)) || !self.grants.contains(&key(capability)) { return Err("PermissionDenied"); }
                 summaries(store, &invocation, &resource, limit, cursor.unwrap_or(0), revision.as_deref())
             }
-            Request::Subscribe { handle, resource, limit } => {
+            Request::Subscribe { handle, resource, limit, request_id } => {
                 let capability = inventory::capability(&resource).ok_or("UnsupportedCapability")?;
                 if !manifest["permissions"].as_array().is_some_and(|permissions| permissions.iter().any(|item| item == capability)) || !self.grants.contains(&key(capability)) { return Err("PermissionDenied"); }
-                if limit == 0 || limit > 50 || self.subscriptions.len() >= 64 || self.subscriptions.values().filter(|subscription| subscription.handle == handle).count() >= 5 { return Err("LimitExceeded"); }
+                if limit == 0 || limit > 50 || request_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 64) { return Err("LimitExceeded"); }
                 let page = summaries(store, &invocation, &resource, limit, 0, None)?;
+                // A committed subscribe reply can be lost. Retry the same owned request as an
+                // explicit snapshot resync, not another unreachable subscription consuming the cap.
+                if let Some((id, stream)) = self.subscriptions.iter_mut().find(|(_, stream)| stream.handle == handle && request_id.is_some() && stream.request_id == request_id) {
+                    if stream.resource != resource || stream.limit != limit { return Err("InvalidShape"); }
+                    stream.snapshot = page.clone(); stream.offset = self.journal.cursor; stream.cursor = uuid::Uuid::new_v4().to_string();
+                    return Ok(json!({"schemaVersion":1,"subscription":id,"cursor":stream.cursor,"snapshot":page,"events":[],"resync":true}));
+                }
+                if self.subscriptions.len() >= 64 || self.subscriptions.values().filter(|stream| stream.handle == handle).count() >= 5 { return Err("LimitExceeded"); }
                 let subscription = uuid::Uuid::new_v4().to_string(); let cursor = uuid::Uuid::new_v4().to_string();
-                self.subscriptions.insert(subscription.clone(), Subscription { handle, resource, limit, offset: self.journal.cursor, cursor: cursor.clone(), sequence: 0, snapshot: page.clone() });
+                self.subscriptions.insert(subscription.clone(), Subscription { handle, resource, limit, request_id, offset: self.journal.cursor, cursor: cursor.clone(), sequence: 0, snapshot: page.clone() });
                 Ok(json!({"schemaVersion":1,"subscription":subscription,"cursor":cursor,"snapshot":page,"events":[],"resync":false}))
             }
             Request::Unsubscribe { handle, subscription } => {
@@ -307,8 +327,9 @@ pub async fn extensions_context(window: tauri::WebviewWindow, app: tauri::AppHan
             let snapshot = packages.snapshot();
             let state = app.state::<crate::AppState>();
             let store = state.store.try_lock().map_err(|_| "Timeout")?;
-            let broker = app.state::<ContextBroker>();
-            let mut broker = broker.broker.try_lock().map_err(|_| "Timeout")?;
+            let state = app.state::<ContextBroker>();
+            let mut broker = state.broker.try_lock().map_err(|_| "Timeout")?;
+            state.reconcile_job_gap(&mut broker);
             broker.execute_guarded("main", &snapshot, &store, request, deadline, cancellation)
         })();
         if delivery.is_some_and(|(token, generation)| token.load(Ordering::Acquire) != generation) { failure("Cancelled") }
@@ -345,6 +366,68 @@ mod tests {
         assert_eq!(call(broker, snapshot, store, json!({"op":"consent","handle":handle,"capability":capability,"allow":allow}))["ok"], true);
     }
     fn query(handle: &str, resource: &str) -> Value { json!({"op":"query","handle":handle,"resource":resource,"limit":1}) }
+    #[test]
+    fn core_job_producer_never_waits_for_a_busy_extension_query() {
+        let state = Arc::new(ContextBroker::default());
+        let (sent, received) = std::sync::mpsc::channel();
+        let busy = state.broker.lock().unwrap();
+        let producer_state = state.clone();
+        let producer = std::thread::spawn(move || {
+            producer_state.record_job("a1", "terminal", "completed");
+            sent.send(()).unwrap();
+        });
+        let completed = received.recv_timeout(Duration::from_millis(100)).is_ok();
+        // Always release and join, including on regression, rather than strand a test thread.
+        drop(busy); producer.join().unwrap();
+        assert!(completed, "extension query lock must not stall core agent emission");
+    }
+    #[test]
+    fn contended_terminal_event_forces_authorized_snapshot_resync_for_both_projects() {
+        let (broker, snapshot, store) = fixture();
+        let state = ContextBroker { broker: Mutex::new(broker), ..ContextBroker::default() };
+        let mut broker = state.broker.lock().unwrap();
+        let a = capture(&mut broker, &snapshot, &store, Some("A"));
+        let b = capture(&mut broker, &snapshot, &store, Some("B"));
+        let mut polls = Vec::new();
+        for handle in [&a, &b] {
+            consent(&mut broker, &snapshot, &store, handle, "jobs.summary", true);
+            let stream = call(&mut broker, &snapshot, &store, json!({"op":"subscribe","handle":handle,"resource":"jobs","limit":10}))["value"].clone();
+            polls.push(json!({"op":"events","handle":handle,"subscription":stream["subscription"],"cursor":stream["cursor"]}));
+        }
+        state.record_job("a1", "terminal", "completed");
+        store.db.execute("UPDATE sessions SET status='completed' WHERE id='a1'", []).unwrap();
+        state.reconcile_job_gap(&mut broker);
+        for (poll, expected) in polls.into_iter().zip(["a1", "b1"]) {
+            let reply = call(&mut broker, &snapshot, &store, poll);
+            assert_eq!(reply["value"]["resync"], true);
+            assert_eq!(reply["value"]["events"], json!([]));
+            assert_eq!(reply["value"]["snapshot"]["items"][0]["id"], expected);
+        }
+        assert!(!state.missed_jobs.load(Ordering::Acquire));
+    }
+    #[test]
+    fn subscribe_retries_are_handle_scoped_bounded_authorized_and_resync_after_lost_reply() {
+        let (mut broker, snapshot, store) = fixture();
+        let a = capture(&mut broker, &snapshot, &store, Some("A"));
+        let b = capture(&mut broker, &snapshot, &store, Some("B"));
+        for handle in [&a, &b] { consent(&mut broker, &snapshot, &store, handle, "jobs.summary", true); }
+        let request = |handle: &str| json!({"op":"subscribe","handle":handle,"resource":"jobs","limit":10,"requestId":"retry-token"});
+        let first = call(&mut broker, &snapshot, &store, request(&a))["value"].clone();
+        for _ in 0..4 { assert_eq!(call(&mut broker, &snapshot, &store, json!({"op":"subscribe","handle":a,"resource":"jobs","limit":10}))["ok"], true); }
+        store.db.execute("UPDATE sessions SET status='completed' WHERE id='a1'", []).unwrap();
+        let retry = call(&mut broker, &snapshot, &store, request(&a))["value"].clone();
+        assert_eq!(retry["subscription"], first["subscription"]); assert_ne!(retry["cursor"], first["cursor"]);
+        assert_eq!(retry["resync"], true); assert_eq!(retry["snapshot"]["items"][0]["status"], "completed"); assert_eq!(broker.subscriptions.len(), 5);
+        let other = call(&mut broker, &snapshot, &store, request(&b))["value"].clone();
+        assert_ne!(other["subscription"], first["subscription"]); assert_eq!(other["snapshot"]["items"][0]["id"], "b1");
+        let mut changed = request(&a); changed["limit"] = json!(1);
+        assert_eq!(call(&mut broker, &snapshot, &store, changed)["error"]["code"], "InvalidShape");
+        let mut oversized = request(&a); oversized["requestId"] = json!("s".repeat(65));
+        assert_eq!(call(&mut broker, &snapshot, &store, oversized)["error"]["code"], "LimitExceeded");
+        consent(&mut broker, &snapshot, &store, &a, "jobs.summary", false);
+        assert_eq!(call(&mut broker, &snapshot, &store, request(&a))["error"]["code"], "PermissionDenied");
+        assert_eq!(broker.subscriptions.len(), 1);
+    }
     #[test]
     fn read_cancel_endpoint_does_not_wait_for_the_busy_broker_or_admit_another_worker() {
         let state = ContextBroker::default(); let token = Arc::new(AtomicU64::new(0));
