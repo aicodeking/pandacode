@@ -610,6 +610,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   });
   const { loadExtensions, extensionsSnapshot, onExtensionsChanged } = await import('./extensions/manager');
   onExtensionsChanged(() => { if (document.querySelector('#dialog.command-dialog[open]')) renderCommands(document.querySelector<HTMLInputElement>('#command-query')?.value ?? ''); });
+  (await import('./extensions/windows')).mountNativeExtensionPresentation(notify);
   await loadExtensions();
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;

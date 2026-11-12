@@ -13,7 +13,7 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
     const items = []; let cursor: string | undefined;
     do { const page = ui.listItems({ limit: 100, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor ?? undefined; } while (cursor);
     const groups = new Map<string, typeof items>();
-    for (const item of items) {
+    for (const item of items.filter(item => item.supportedOperations.includes('reorder'))) {
       const key = `${item.location}:${item.owner}`, group = groups.get(key) ?? []; group.push(item); groups.set(key, group);
     }
     return [...groups.values()].map(group => {
@@ -39,7 +39,7 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
     const state = extensionsSnapshot();
     const owners = ['panda.core', ...state.packages.filter(item => item.enabled && !state.safeMode).map(item => item.manifest.id)].sort();
     host.innerHTML = `<h3>Surface explorer</h3><p>Read-only metadata. Inspecting an item grants no command permission. Only explicitly public core UI commands can be run here.</p>
-      <ul aria-label="Public surfaces">${surfaces.map(surface => `<li><strong>${escape(surface.label)}</strong> <code>${escape(surface.id)}</code> · ${escape(surface.owner)} · ${escape(surface.type)} · ${escape(surface.supportedOperations.join(', '))} · Main window only</li>`).join('')}</ul>
+      <ul aria-label="Public surfaces">${surfaces.map(surface => `<li><strong>${escape(surface.label)}</strong> <code>${escape(surface.id)}</code> · ${escape(surface.owner)} · ${escape(surface.type)} · ${escape(surface.supportedOperations.join(', '))} · Windows: ${escape(surface.windows.join(', '))}${surface.capabilities ? `<p>${escape(surface.capabilities.qualification)} · Select: ${escape(surface.capabilities.selectFallback)} · Dialog host: ${escape(surface.capabilities.dialogPlacement)} · Icons: ${surface.capabilities.icons ? 'supported' : 'unsupported'} · ${escape(surface.capabilities.limitations.join(' '))}</p>` : ''}</li>`).join('')}</ul>
       <label>Item owner <select aria-label="Item owner" data-catalog-owner><option value="">All owners</option>${owners.map(value => `<option ${owner === value ? 'selected' : ''} value="${escape(value)}">${escape(value)}</option>`).join('')}</select></label>
       <label>Item location <select aria-label="Item location" data-catalog-location><option value="">All locations</option>${surfaces.map(surface => `<option ${location === surface.id ? 'selected' : ''} value="${escape(surface.id)}">${escape(surface.label)}</option>`).join('')}</select></label>
       <ul aria-label="Surface items">${page.items.map(item => `<li data-catalog-item="${escape(item.id)}"><strong>${escape(item.label)}</strong> <code>${escape(item.id)}</code><p>Owner: ${escape(item.owner)} · Type: ${escape(item.type)} · Location: ${escape(item.location)} · Operations: ${escape(item.supportedOperations.join(', '))}</p>${item.command ? `<button type="button" class="secondary-button" data-catalog-command="${escape(item.command.id)}">Run ${escape(item.label)}</button>` : ''}</li>`).join('') || '<li>No matching items</li>'}</ul>
@@ -47,7 +47,7 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
       <h3>Visibility and recovery</h3><p>Hide changes presentation only, not command access or running work. Settings remains reachable with the Settings keyboard shortcut.</p>
       <label>Layout scope <select aria-label="Layout scope" data-layout-scope><option value="global" ${scope === 'global' ? 'selected' : ''}>Global</option><option value="project" ${scope === 'project' ? 'selected' : ''} ${!layoutProject() ? 'disabled' : ''}>Current project</option></select></label>
       <button type="button" class="secondary-button" data-layout-item="panda.sidebar">${layout.isHidden('panda.sidebar', layoutProject()) ? 'Show' : 'Hide'} sidebar</button>
-      <ul aria-label="Item visibility">${page.items.map(item => `<li><button type="button" class="secondary-button" data-layout-item="${escape(item.id)}">${layout.isHidden(item.id, layoutProject()) ? 'Show' : 'Hide'} ${escape(item.label)}</button></li>`).join('')}</ul>
+      <ul aria-label="Item visibility">${page.items.filter(item => item.supportedOperations.includes('hide')).map(item => `<li><button type="button" class="secondary-button" data-layout-item="${escape(item.id)}">${layout.isHidden(item.id, layoutProject()) ? 'Show' : 'Hide'} ${escape(item.label)}</button></li>`).join('')}</ul>
       <button type="button" class="secondary-button" data-layout-reset-project ${!layoutProject() ? 'disabled' : ''}>Reset project layout</button>
       <button type="button" class="secondary-button" data-layout-reset-global>Reset global layout</button>
       <button type="button" class="secondary-button" data-layout-disable ${!layout.extensionLayoutsEnabled() ? 'disabled' : ''}>Disable extension layouts</button>

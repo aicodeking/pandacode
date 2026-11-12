@@ -2,6 +2,7 @@
 import { createDeclarativeActivation } from './activation.ts';
 import type { ExtensionSnapshot } from './manager';
 import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS } from './surfaces.ts';
+import { WINDOW_ACTION_SURFACES, surfaceWindow } from './window-surfaces.ts';
 
 export const HEADER = 'panda.workspace.header.actions';
 export const FOOTER = 'panda.sidebar.footer';
@@ -9,7 +10,7 @@ export const INSPECTOR = 'panda.inspector.actions';
 export type PublicCommandId = 'panda.ui/toggle-sidebar' | 'panda.ui/open-settings' | 'panda.ui/toggle-theme';
 export type CatalogQuery = { windowId?: string; owner?: string; type?: string; location?: string; cursor?: string; limit?: number };
 type Availability = { available: boolean; reason?: 'HostUnavailable' };
-export type SurfaceMetadata = Availability & { id: string; owner: string; type: 'action-slot' | 'declarative-data-slot'; location: string; label: string; supportedOperations: string[]; supportedItemTypes: string[]; windows: string[] };
+export type SurfaceMetadata = Availability & { id: string; owner: string; type: 'action-slot' | 'declarative-data-slot'; location: string; label: string; supportedOperations: string[]; supportedItemTypes: string[]; windows: string[]; capabilities?: { inlineSelect: boolean; selectFallback: string; dialogPlacement: string; icons: boolean; limitations: string[]; qualification: 'experimental' } };
 export type ItemMetadata = Availability & { id: string; owner: string; version?: string; defaultPosition?: number; type: 'button' | 'menu-trigger' | 'link' | 'status' | 'badge'; location: string; label: string; supportedOperations: string[]; command?: { id: string; inputSchema: { type: 'null' }; capability: 'host.ui'; supportedContexts: string[] } };
 export type CatalogPage<T> = { schemaVersion: 1; revision: string; items: T[]; nextCursor: string | null };
 export class CatalogError extends Error {
@@ -29,7 +30,7 @@ const coreItems: ItemMetadata[] = [
   ...VIEW_ACTION_SURFACES.filter(location => location.endsWith('.toolbar')).flatMap(location => ([['refresh', 'Refresh project'], ['hide', 'Hide inspector']] as const).map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
 ];
 function command(id: PublicCommandId): NonNullable<ItemMetadata['command']> { return { id, inputSchema: { type: 'null' }, capability: 'host.ui', supportedContexts: ['main'] }; }
-function availability(windowId: string): Availability { return windowId === 'main' ? { available: true } : { available: false, reason: 'HostUnavailable' }; }
+function availability(windowId: string, location: string): Availability { return windowId === surfaceWindow(location) ? { available: true } : { available: false, reason: 'HostUnavailable' }; }
 function queryChecked(query: CatalogQuery): Required<Pick<CatalogQuery, 'windowId' | 'limit'>> & CatalogQuery {
   if (!query || typeof query !== 'object' || Array.isArray(query) || Object.keys(query).some(key => !['windowId', 'owner', 'type', 'location', 'cursor', 'limit'].includes(key))) throw new CatalogError('InvalidQuery');
   for (const [key, value] of Object.entries(query)) if (key !== 'limit' && (typeof value !== 'string' || value.length > (key === 'cursor' ? 4096 : 512))) throw new CatalogError('InvalidQuery');
@@ -52,9 +53,12 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       ...THREAD_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger', 'status', 'badge'], windows: ['main'], available: true })),
       ...SETTINGS_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger', 'status', 'badge'], windows: ['main'], available: true })),
       ...SETTINGS_DATA_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: ['inspect', 'contribute'], supportedItemTypes: location === 'panda.settings.pages' ? ['settings-page'] : location === 'panda.commands' ? ['command'] : location === 'panda.shortcuts' ? ['keybinding'] : ['text'], windows: ['main'], available: true })),
+      ...Object.entries(WINDOW_ACTION_SURFACES).map(([location, window]): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location.replace('panda.', '').replaceAll('.', ' '), supportedOperations: location === 'panda.tray.menu' ? ['inspect', 'contribute'] : ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: location === 'panda.tray.menu' ? ['button', 'menu-trigger'] : ['button', 'menu-trigger', 'status', 'badge'], windows: [window], available: true,
+        capabilities: { inlineSelect: false, selectFallback: 'host-quick-pick', dialogPlacement: 'main', icons: location !== 'panda.tray.menu', qualification: 'experimental', limitations: location === 'panda.tray.menu' ? ['Native menus cannot embed selects or render package SVG icons; forms/selects open in the main host.', 'Native check/radio items are command actions without inline checked state.', 'Visibility/order overlays and passive status/badges are not supported in native menus.', 'Native menu budget is 128 items including reserved Open/Recovery/Quit and a visible overflow diagnostic; oversized groups are omitted atomically.'] : ['Compact windows forward forms/selects to the main host.', 'Registrations are window-local; no main-window native grants are inherited.'] },
+      })),
     ];
     const activation = createDeclarativeActivation(state, 0);
-    const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.presentation === 'status' || menu.presentation === 'badge' ? menu.presentation : menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true }))];
+    const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.presentation === 'status' || menu.presentation === 'badge' ? menu.presentation : menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: menu.location === 'panda.tray.menu' ? ['inspect'] : ['inspect', 'hide', 'show', 'reorder'], available: true }))];
     activation.dispose();
     const all = { surfaces, items };
     // Compare the full signature internally; only a bounded opaque revision leaves the host.
@@ -76,7 +80,7 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       return legacy(a) - legacy(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     });
     if (offset > filtered.length) throw new CatalogError('InvalidQuery');
-    const result = filtered.slice(offset, offset + q.limit).map(item => ({ ...item, ...availability(q.windowId) }));
+    const result = filtered.slice(offset, offset + q.limit).map(item => ({ ...item, ...availability(q.windowId, item.location) }));
     return structuredClone({ schemaVersion: 1, revision, items: result as T[], nextCursor: offset + q.limit < filtered.length ? JSON.stringify([revision, signature, offset + q.limit]) : null });
   };
   return Object.freeze({

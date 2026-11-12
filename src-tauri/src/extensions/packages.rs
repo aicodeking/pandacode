@@ -18,11 +18,11 @@ type Result<T> = std::result::Result<T, String>;
 struct Record { schema: u8, archive: String, checksum: String, enabled: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { manifest: Value, icons: BTreeMap<String, String>, enabled: bool, reason: Option<String> }
+pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String> }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Snapshot { safe_mode: bool, packages: Vec<Package>, diagnostics: Vec<String> }
-pub struct Packages { root: PathBuf, safe: bool }
+pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String> }
+pub struct Packages { root: PathBuf, pub(super) safe: bool }
 pub struct ExtensionPackages(pub Mutex<Packages>);
 impl ExtensionPackages {
     pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe })) }
@@ -190,7 +190,7 @@ impl Packages {
         package.enabled = record.enabled;
         Ok((record, package))
     }
-    fn snapshot(&self) -> Snapshot {
+    pub(super) fn snapshot(&self) -> Snapshot {
         let mut result = Snapshot { safe_mode: self.safe, packages: vec![], diagnostics: vec![] };
         // This return is BEFORE ANY storage operation, including enumeration and deserialization.
         if self.safe || !self.root.exists() { return result; }
@@ -299,22 +299,22 @@ pub fn extensions_settings_set(state: tauri::State<'_, ExtensionPackages>, id: S
 #[tauri::command]
 pub fn extensions_snapshot(state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> { Ok(state.0.lock().map_err(|_| "Extension manager unavailable.")?.snapshot()) }
 #[tauri::command]
-pub fn extensions_install(state: tauri::State<'_, ExtensionPackages>, path: String) -> Result<Snapshot> {
+pub fn extensions_install(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, path: String) -> Result<Snapshot> {
     let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?;
     if state.safe { return Err("Safe mode: package loading is bypassed.".into()); }
-    state.install(&read_bounded(Path::new(&path), MAX_ARCHIVE)?)?; Ok(state.snapshot())
+    state.install(&read_bounded(Path::new(&path), MAX_ARCHIVE)?)?; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
-pub fn extensions_enable(state: tauri::State<'_, ExtensionPackages>, id: String, enabled: bool) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; Ok(state.snapshot())
+pub fn extensions_enable(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String, enabled: bool) -> Result<Snapshot> {
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
-pub fn extensions_uninstall(state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; Ok(state.snapshot())
+pub fn extensions_uninstall(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
-pub fn extensions_safe_mode(state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {
-    let mut state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.safe = true; Ok(state.snapshot())
+pub fn extensions_safe_mode(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {
+    let mut state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.safe = true; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -368,6 +368,45 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
         packages.enable("sample.menu-laboratory", false).unwrap();
         assert!(!storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
+    fn window_adapter_resolves_real_installed_actions_with_native_identity_and_revocation() {
+        use super::super::windows::{resolve, native_items, ActionRequest};
+        let manifest = include_str!("../../../tests/fixtures/extensions/window-laboratory/extension.json");
+        let svg = include_str!("../../../tests/fixtures/extensions/window-laboratory/assets/info.svg");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("assets/info.svg", svg.as_bytes())])).unwrap();
+        let request = |surface: &str, id: &str| ActionRequest { surface_id: surface.into(), id: format!("sample.window-laboratory/{id}"), version: "1.0.0".into() };
+        let native = request("panda.tray.menu", "native-form");
+        assert!(resolve(&packages.snapshot(), "tray", &native).is_err());
+        packages.enable("sample.window-laboratory", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        for (window, surface, id) in [("tray", "panda.tray.actions", "tray-form"), ("launcher", "panda.launcher.actions", "launcher-form"), ("agents-dock", "panda.agentsDock.actions", "dock-form"), ("tray", "panda.tray.menu", "native-form")] {
+            let action = request(surface, id);
+            assert_eq!(resolve(&snapshot, window, &action).unwrap().action["kind"], "showDialog");
+            for forged in ["main", "overlay", "browser-1", "unknown"] { assert!(resolve(&snapshot, forged, &action).is_err()); }
+            for other in super::super::windows::AUXILIARY { if other != window { assert!(resolve(&snapshot, other, &action).is_err()); } }
+        }
+        assert!(resolve(&snapshot, "tray", &request("panda.tray.menu", "native-denied")).is_err());
+        assert!(resolve(&snapshot, "tray", &request("panda.tray.menu", "form")).is_err(), "raw command ID is not a registered action");
+        assert!(resolve(&snapshot, "tray", &request("panda.workspace.header.actions", "native-form")).is_err());
+        let mut stale = native.clone(); stale.version = "0.9.0".into(); assert!(resolve(&snapshot, "tray", &stale).is_err());
+        let model = native_items(&snapshot); assert_eq!(model.len(), 1); assert_eq!(model[0].children[0].children.len(), 2);
+        assert!(model[0].children[0].children[0].enabled); assert!(!model[0].children[0].children[1].enabled);
+        let mut denied = storage.packages(false).snapshot(); denied.packages[0].manifest["contributes"]["menus"][3]["enabled"] = json!(false);
+        assert!(resolve(&denied, "tray", &native).is_err(), "disabled parent cannot be bypassed");
+        let mut hidden = storage.packages(false).snapshot(); hidden.packages[0].manifest["contributes"]["menus"][3]["items"][0]["visible"] = json!(false);
+        assert!(resolve(&hidden, "tray", &native).is_err()); assert!(native_items(&hidden).is_empty());
+        let mut conflict = storage.packages(false).snapshot(); conflict.packages.push(conflict.packages[0].clone());
+        assert!(resolve(&conflict, "tray", &native).is_err()); assert!(native_items(&conflict).is_empty());
+        let mut oversized = storage.packages(false).snapshot();
+        oversized.packages[0].manifest["contributes"]["menus"] = json!([{"id":"sample.window-laboratory/large", "location":"panda.tray.menu", "command":"sample.window-laboratory/note", "items": (0..128).map(|index| json!({"id":format!("sample.window-laboratory/large-{index}"),"kind":"command","title":"Choice","command":"sample.window-laboratory/note"})).collect::<Vec<_>>()}]);
+        let limited = native_items(&oversized); assert_eq!(limited.len(), 1); assert_eq!(limited[0].id, "extension-menu-limit"); assert!(!limited[0].enabled); assert!(limited[0].title.contains("1 extension groups unavailable"));
+        packages.enable("sample.window-laboratory", false).unwrap();
+        assert!(resolve(&packages.snapshot(), "tray", &native).is_err()); assert!(native_items(&packages.snapshot()).is_empty());
+        packages.enable("sample.window-laboratory", true).unwrap();
+        assert!(resolve(&storage.packages(true).snapshot(), "tray", &native).is_err());
+        assert!(native_items(&storage.packages(true).snapshot()).is_empty());
     }
     #[test]
     fn view_laboratory_archive_icons_and_all_eight_locations_survive_reload_and_disable() {

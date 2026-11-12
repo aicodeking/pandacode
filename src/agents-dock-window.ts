@@ -6,6 +6,7 @@ import { icon } from './dom';
 import './theme';
 import { palette } from './palette';
 import { renderAgentRows, startElapsedTick, subscribeDockEvent, type AgentsDockSnapshot } from './agents-dock';
+import { mountAuxiliaryExtensions } from './extensions/windows';
 
 palette.refresh();
 document.body.classList.add('agents-dock-window');
@@ -23,6 +24,9 @@ const orbCount = root.querySelector<HTMLElement>('.agents-dock-window-count')!;
 const panel = root.querySelector<HTMLElement>('.agents-dock-window-panel')!;
 const heading = root.querySelector<HTMLElement>('.agents-dock-window-head strong')!;
 const list = root.querySelector<HTMLElement>('.agents-dock-window-list')!;
+document.body.dataset.extensionWindow = 'agents-dock';
+const extensionHost = document.createElement('section'); extensionHost.className = 'extension-window-actions';
+panel.append(extensionHost); mountAuxiliaryExtensions(extensionHost, 'panda.agentsDock.actions', panel.querySelector('.agents-dock-window-head')!);
 let snapshot: AgentsDockSnapshot = { agents: [] };
 let receivedAt = Date.now();
 let expanded = false;
@@ -86,6 +90,7 @@ const onClick = async (event: MouseEvent) => {
   }
 };
 const onKeyDown = (event: KeyboardEvent) => {
+  if (event.defaultPrevented || document.querySelector('.choice-menu')) return;
   if (event.key === 'Escape' && expanded) { event.preventDefault(); void setExpanded(false, { focus: true }); }
 };
 

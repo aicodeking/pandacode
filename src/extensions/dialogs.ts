@@ -7,7 +7,7 @@ let callbacks: DialogCallbacks | undefined;
 export function setDialogCallbacks(value: DialogCallbacks): void { callbacks = value; }
 
 /** Uses the existing transparent modal/plate/motion. Never replace another owner's open dialog. */
-export function openExtensionDialog(definition: DialogDefinition, context: DialogContext, owner: string, trigger: HTMLElement): { result: Promise<DialogResult>; close: () => void } {
+export function openExtensionDialog(definition: DialogDefinition, context: DialogContext, owner: string, trigger: HTMLElement, openSelect = false): { result: Promise<DialogResult>; close: () => void } {
   const element = document.querySelector<HTMLDialogElement>('#dialog');
   if (!element || element.open) return { result: Promise.resolve({ kind: 'cancelled', reason: 'busy' }), close() {} };
   const dialog = element;
@@ -111,5 +111,9 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
   dialog.addEventListener('cancel', event => { event.preventDefault(); finish({ kind: 'cancelled', reason: 'cancel' }); }, { signal: state.signal });
   dialog.addEventListener('close', () => { if (!dialog.open) finish({ kind: 'cancelled', reason: 'cancel' }); }, { signal: state.signal });
   dialog.showModal(); (controls.values().next().value ?? submit).focus();
+  if (openSelect) {
+    const field = spec.fields.find(field => field.kind === 'select');
+    if (field) controls.get(field.id)?.click();
+  }
   return { result, close: () => finish({ kind: 'cancelled', reason: 'unload' }) };
 }

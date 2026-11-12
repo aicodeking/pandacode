@@ -24,7 +24,7 @@ test('launcher preserves saved harness authors and renders handoffs beside the c
   expect(errors).toEqual([]);
 });
 
-test('overlay copies live Markdown and forks a saved message without opening the app', async ({page}) => {
+test('overlay copies live Markdown and forks a saved message without opening the app', async ({page}, testInfo) => {
   await page.setViewportSize({width:650,height:510});
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {configurable:true,value:{writeText:async (value:string) => { (window as any).__copiedMessage = value; }}});
@@ -46,7 +46,7 @@ test('overlay copies live Markdown and forks a saved message without opening the
   await expect(response).toBeHidden();
   expect(await page.evaluate(() => (window as any).__overlayCalls.filter((call:any) => call.command === 'fork_session_at_message').map((call:any) => call.args))).toEqual([{sessionId:'preview-active',messageId:1}]);
   expect(await page.evaluate(() => (window as any).__overlayCalls.some((call:any) => call.command === 'overlay_open_task'))).toBe(false);
-  await page.screenshot({path:'/private/tmp/pandacode-overlay-message-fork.png'});
+  await page.screenshot({path:testInfo.outputPath('overlay-message-fork.png')});
   await page.getByRole('button',{name:'Back to active agents'}).click();
   await expect(page.locator('.launcher-task')).toHaveCount(4);
   await page.locator('.launcher-task[data-task="preview-active"]').click();
@@ -81,7 +81,7 @@ test('launcher model trigger toggles the picker without reopening it', async ({p
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden','true');
 });
 
-test('launcher shows saved team models beside its architect and preserves the count when changing models', async ({page}) => {
+test('launcher shows saved team models beside its architect and preserves the count when changing models', async ({page}, testInfo) => {
   await page.setViewportSize({width:490,height:410});
   await page.clock.install();
   await instrumentLauncher(page, `if (command === 'overlay_snapshot') {
@@ -107,7 +107,7 @@ test('launcher shows saved team models beside its architect and preserves the co
   await expect(suffix).toHaveText('+2 models');
   await page.clock.runFor(1600);
   await expect(trigger).toHaveAttribute('title','Codex · GPT-5.6-Sol +2 models');
-  await page.screenshot({path:'/private/tmp/pandacode-overlay-team-models.png'});
+  await page.screenshot({path:testInfo.outputPath('overlay-team-models.png')});
   await page.evaluate(() => { (window as any).__teamWorkerCount = 1; });
   await page.clock.runFor(1600);
   await expect(suffix).toHaveText('+1 model');
@@ -351,7 +351,7 @@ test('launcher keeps a saved model when an older status snapshot arrives late', 
   await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'claude',model:'sonnet',mode:'full'});
 });
 
-test('launcher model picker fits the minimum window and Escape only closes the picker', async ({page}) => {
+test('launcher model picker fits the minimum window and Escape only closes the picker', async ({page}, testInfo) => {
   await page.setViewportSize({width:490,height:410});
   await page.goto('/?view=launcher');
   const trigger = page.getByRole('button',{name:'Choose harness and model'});
@@ -371,7 +371,7 @@ test('launcher model picker fits the minimum window and Escape only closes the p
   await expect(glm.locator('.provider-logo')).toHaveCount(1);
   await expect(picker).toHaveAttribute('data-popover-state','open');
   await expect(picker).toHaveCSS('opacity','1');
-  await page.screenshot({path:'/private/tmp/pandacode-overlay-check/model-picker.png'});
+  await page.screenshot({path:testInfo.outputPath('model-picker.png')});
   // The first Escape clears the search, the second closes the picker.
   await page.keyboard.press('Escape');
   await expect(page.getByRole('combobox', { name: 'Search harnesses and models'})).toHaveValue('');
@@ -492,7 +492,7 @@ test('launcher renders internal coordination as neutral Team status and preserve
   }
 });
 
-test('launcher keeps live narratives between compact tool groups and preserves late updates', async ({page}) => {
+test('launcher keeps live narratives between compact tool groups and preserves late updates', async ({page}, testInfo) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:650,height:610});
   await page.clock.install();
@@ -550,7 +550,7 @@ test('launcher keeps live narratives between compact tool groups and preserves l
   await expect(groups.nth(1)).toHaveJSProperty('open',false);
   await expect(firstTool.locator('[data-tool-section="output"]')).toContainText('The launcher inspection is complete.');
   expect(await sequence()).toEqual([originalSequence[0], 'Read 2 files', originalSequence[2], originalSequence[3]]);
-  await page.screenshot({path:'/private/tmp/pandacode-overlay-chronological-tools.png'});
+  await page.screenshot({path:testInfo.outputPath('overlay-chronological-tools.png')});
   await page.evaluate(() => {
     const fixture = (window as any).__chronologicalThread;
     fixture.status = 'completed'; fixture.version++;
@@ -957,7 +957,7 @@ test('shortcut recorder names the Windows key portably and keeps Control shortcu
   await expect(input).toHaveValue('Control+Alt+KeyK');
 });
 
-test('launcher fits small windows and keeps task controls accessible', async ({page}) => {
+test('launcher fits small windows and keeps task controls accessible', async ({page}, testInfo) => {
   await page.setViewportSize({width:490,height:410});
   await page.goto('/?view=launcher');
   await expect(page.locator('.launcher-task[data-task="preview-active"]')).toBeVisible();
@@ -968,10 +968,10 @@ test('launcher fits small windows and keeps task controls accessible', async ({p
   await expect(lastRow).toBeFocused(); await expect(lastRow).toBeInViewport();
   await page.keyboard.press('Home');
   await expect(page.locator('.launcher-task').first()).toBeFocused();
-  await page.screenshot({path:'/private/tmp/pandacode-overlay-check/launcher.png'});
+  await page.screenshot({path:testInfo.outputPath('launcher.png')});
 });
 
-test('launcher thread stays readable and scrollable at minimum window size', async ({page}) => {
+test('launcher thread stays readable and scrollable at minimum window size', async ({page}, testInfo) => {
   await page.setViewportSize({width:490,height:410});
   await page.goto('/?view=launcher');
   await expect(page.locator('.launcher-task[data-task="preview-active"]')).toBeVisible();
@@ -989,7 +989,7 @@ test('launcher thread stays readable and scrollable at minimum window size', asy
   expect(await scroll.evaluate(element => element.scrollHeight > element.clientHeight && element.clientHeight > 100)).toBe(true);
   await scroll.evaluate(element => { element.scrollTop=element.scrollHeight; });
   expect(await scroll.evaluate(element => element.scrollTop > 0)).toBe(true);
-  await page.screenshot({path:'/private/tmp/pandacode-overlay-check/thread.png'});
+  await page.screenshot({path:testInfo.outputPath('thread.png')});
 });
 
 test('launcher ignores the Enter that commits an IME composition', async ({page}) => {

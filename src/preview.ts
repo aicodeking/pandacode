@@ -609,6 +609,11 @@ let browserHistory: string[] = [], browserIndex = -1;
 let browserState: BrowserStatus = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, picking: false };
 function browserChanged(): void { browserState.canGoBack = browserIndex > 0; browserState.canGoForward = browserIndex < browserHistory.length - 1; emit('browser-state', { ...browserState }); }
 function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn => fn(event)); }
+// Explicit synthetic OS-menu delivery; native menu policy/build tests remain authoritative.
+if (new URLSearchParams(location.search).has('window-laboratory')) {
+  (window as any).__previewNativeExtensionAction = (id: string) => emit('extensions-present-action', { surfaceId: 'panda.tray.menu', id, version: '1.0.0' });
+  (window as any).__previewExtensionsChanged = async () => { emit('extensions-changed', null); await (await import('./extensions/manager')).loadExtensions(); };
+}
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
@@ -1472,7 +1477,7 @@ async function previewVoice(command: string, args: Record<string, any>): Promise
 }
 
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
-  if (command.startsWith('extensions_')) return (await import('./extensions/preview')).previewExtensions(command, args) as T;
+  if (command.startsWith('extensions_')) return (await import('./extensions/preview')).previewExtensions(command, args, emit) as T;
   // Opt-in synthetic baseline instrumentation also works in a production preview build.
   // No live/native session or executable is involved; normal preview behavior is unchanged.
   if (new URLSearchParams(location.search).has('extensions-baseline')) {

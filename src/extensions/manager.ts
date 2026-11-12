@@ -17,6 +17,7 @@ export function onExtensionsChanged(listener: () => void): () => void { listener
 function accept(value: ExtensionSnapshot): void {
   // A stale activation reply cannot revive contributions after protected recovery.
   if (snapshot.safeMode && !value.safeMode) return;
+  const previous = JSON.stringify(snapshot);
   const active = value.packages.filter(item => item.enabled);
   const checked = validateContract('packages', active.map(item => item.manifest));
   snapshot = structuredClone(value);
@@ -35,12 +36,22 @@ function accept(value: ExtensionSnapshot): void {
     }
   }
   if (snapshot.safeMode) snapshot.packages = [];
+  // A lifecycle notification can race its command response. Identical state must not remount UI,
+  // discard focus/fields or cancel a newly opened transient a second time.
+  if (JSON.stringify(snapshot) === previous) return;
   generation++;
   listeners.forEach(listener => listener());
 }
 export async function loadExtensions(): Promise<void> {
   try { accept(await call<ExtensionSnapshot>('extensions_snapshot')); }
   catch { accept({ safeMode: false, packages: [], diagnostics: ['Extensions unavailable; built-in controls remain available.'] }); }
+}
+/** Host-only auxiliary bootstrap; the native reply supplies the actual invoking label. */
+export async function loadWindowExtensions(): Promise<string> {
+  type WindowSnapshot = { windowId: string; snapshot: ExtensionSnapshot };
+  // The launcher has its own bounded preview transport and must not load the full workspace mock.
+  const value = preview ? (await import('./preview')).previewExtensions('extensions_window_snapshot', {}) as WindowSnapshot : await call<WindowSnapshot>('extensions_window_snapshot');
+  accept(value.snapshot); return value.windowId;
 }
 export async function installExtension(): Promise<void> {
   const path = preview ? 'sample.project-helper.zip' : await (await import('@tauri-apps/plugin-dialog')).open({ multiple: false, title: 'Install a local declarative extension', filters: [{ name: 'PandaCode extension', extensions: ['zip'] }] });

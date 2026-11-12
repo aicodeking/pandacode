@@ -5,6 +5,7 @@ import { validateContract } from '../src/extensions/contracts.ts';
 import { createDeclarativeActivation } from '../src/extensions/activation.ts';
 import { createUiCatalog } from '../src/extensions/catalog.ts';
 import { THREAD_ACTION_SURFACES } from '../src/extensions/surfaces.ts';
+import { WINDOW_ACTION_SURFACES } from '../src/extensions/window-surfaces.ts';
 
 const read = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
 const sample = read('./fixtures/extensions/sample-project-helper/extension.json');
@@ -29,7 +30,7 @@ test('extensions menus: discovery labels nested contributions as menu triggers, 
   assert.equal(catalog.listItems({ owner: sample.id }).items[0].type, 'menu-trigger');
   for (const surface of catalog.listSurfaces().items) {
     const dataTypes = { 'panda.commands': ['command'], 'panda.shortcuts': ['keybinding'], 'panda.settings.pages': ['settings-page'], 'panda.dialog.colors.bodyExtras': ['text'], 'panda.dialog.wallpapers.bodyExtras': ['text'] };
-    assert.deepEqual(surface.supportedItemTypes, dataTypes[surface.id] ?? (THREAD_ACTION_SURFACES.includes(surface.id) || surface.id === 'panda.status.items' || surface.id.endsWith('.actions') && surface.id.startsWith('panda.dialog.') ? ['button', 'menu-trigger', 'status', 'badge'] : ['button', 'menu-trigger']));
+    assert.deepEqual(surface.supportedItemTypes, dataTypes[surface.id] ?? (THREAD_ACTION_SURFACES.includes(surface.id) || surface.id === 'panda.status.items' || surface.id.endsWith('.actions') && surface.id.startsWith('panda.dialog.') || Object.hasOwn(WINDOW_ACTION_SURFACES, surface.id) && surface.id !== 'panda.tray.menu' ? ['button', 'menu-trigger', 'status', 'badge'] : ['button', 'menu-trigger']));
   }
 });
 

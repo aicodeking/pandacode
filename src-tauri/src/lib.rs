@@ -4141,9 +4141,19 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) { extensions::windows::window_closed(window.app_handle(), window.label()); }
+        })
         .invoke_handler(|invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            if !extensions::windows::command_allowed(invoke.message.webview_ref().label(), invoke.message.command()) {
+                invoke.resolver.reject("PermissionDenied: this webview has no command grant.");
+                return true;
+            }
             if invoke.message.webview_ref().label() == "launcher" {
                 let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                    extensions::windows::extensions_window_snapshot,
+                    extensions::windows::extensions_window_action,
+                    extensions::windows::extensions_window_recover,
                     overlay::overlay_snapshot,
                     overlay::overlay_thread,
                     overlay::overlay_launch,
@@ -4161,6 +4171,9 @@ pub fn run() {
             }
             if invoke.message.webview_ref().label() == "tray" {
                 let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                    extensions::windows::extensions_window_snapshot,
+                    extensions::windows::extensions_window_action,
+                    extensions::windows::extensions_window_recover,
                     tray::tray_snapshot,
                     tray::tray_open,
                     tray::tray_refresh_usage,
@@ -4173,6 +4186,9 @@ pub fn run() {
             }
             if invoke.message.webview_ref().label() == "agents-dock" {
                 let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                    extensions::windows::extensions_window_snapshot,
+                    extensions::windows::extensions_window_action,
+                    extensions::windows::extensions_window_recover,
                     agents_dock::agents_dock_snapshot,
                     agents_dock::agents_dock_unpin,
                     agents_dock::agents_dock_set_expanded,
@@ -4187,6 +4203,7 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                extensions::windows::extensions_present_action,
                 extensions::packages::extensions_snapshot,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,

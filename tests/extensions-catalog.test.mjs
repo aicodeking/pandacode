@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createUiCatalog, createCoreCommands, HEADER, FOOTER, INSPECTOR } from '../src/extensions/catalog.ts';
 import { validateContract } from '../src/extensions/contracts.ts';
 import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS } from '../src/extensions/surfaces.ts';
+import { WINDOW_ACTION_SURFACES, surfaceWindow } from '../src/extensions/window-surfaces.ts';
 const sample = JSON.parse(readFileSync(new URL('./fixtures/extensions/sample-project-helper/extension.json', import.meta.url), 'utf8'));
 const empty = () => ({ safeMode: false, packages: [], diagnostics: [] });
 const installed = () => ({ safeMode: false, packages: [{ manifest: structuredClone(sample), enabled: true, icons: {} }], diagnostics: [] });
@@ -18,7 +19,7 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, FOOTER, HEADER, ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES].sort());
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, FOOTER, HEADER, ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
   const items = ui.listItems().items;
   const expected = 9 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6;
   assert.equal(items.length, expected); assert.equal(new Set(items.map(item => item.id)).size, expected);
@@ -51,7 +52,8 @@ test('extensions catalog: pagination and exact filters are bounded, stable and d
 test('extensions catalog: unsupported windows remain discoverable and disable/safe mode recover core metadata', () => {
   for (const windowId of ['tray', 'launcher', 'headless', 'unknown']) {
     for (const item of [...createUiCatalog(installed).listSurfaces({ windowId }).items, ...createUiCatalog(installed).listItems({ windowId }).items]) {
-      assert.equal(item.available, false); assert.equal(item.reason, 'HostUnavailable');
+      const available = surfaceWindow(item.location) === windowId;
+      assert.equal(item.available, available); if (!available) assert.equal(item.reason, 'HostUnavailable');
     }
   }
   for (const state of [empty(), { ...installed(), safeMode: true }, { ...installed(), packages: installed().packages.map(item => ({ ...item, enabled: false })) }]) {

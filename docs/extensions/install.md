@@ -13,6 +13,10 @@ status actions, searchable commands, conflict-resolved shortcuts and the explici
 body/secondary-action contracts. Its canonical `settings-laboratory` example is packaged with only
 `extension.json` at the ZIP root. Core privacy, permission and recovery controls never accept third-party content.
 
+[Auxiliary windows and native menus](windows.md) covers the actual `tray`, `launcher` and `agents-dock`
+labels, native menu limitations and main-host form/quick-pick fallback. Its installable
+`window-laboratory` fixture uses `extension.json` plus its declared SVG asset.
+
 ## Install the sample
 
 Create a ZIP whose root contains `extension.json` and `assets/info.svg` from

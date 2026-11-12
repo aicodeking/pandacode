@@ -8,6 +8,7 @@ import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import type { AgentUsage } from './agent-usage';
 import type { ProviderId } from './types';
+import { mountAuxiliaryExtensions } from './extensions/windows';
 
 /* The menu bar popover: a slim list of running, waiting and finished tasks plus plan usage. */
 interface TrayTask { id: string; title: string; project: string; provider: ProviderId; at: number; failed?: boolean }
@@ -31,6 +32,14 @@ const host = document.querySelector<HTMLDivElement>('#app')!;
 host.innerHTML = `<main class="tray" aria-label="PandaCode"><header class="tray-header"><img class="tray-mark" src="/icon.svg" alt=""><strong>PandaCode</strong><span class="tray-summary"></span><button type="button" class="tray-icon-button tray-open-app" aria-label="Open PandaCode" title="Open PandaCode">${icon('external')}</button></header><div class="tray-body"></div><footer class="tray-footer"><button type="button" class="tray-open-app">Open PandaCode</button><button type="button" class="tray-quit">Quit</button></footer></main>`;
 const body = host.querySelector<HTMLDivElement>('.tray-body')!;
 const summary = host.querySelector<HTMLSpanElement>('.tray-summary')!;
+document.body.dataset.extensionWindow = 'tray';
+const extensionHost = document.createElement('section'); extensionHost.className = 'extension-window-actions';
+host.querySelector('.tray-footer')!.before(extensionHost);
+mountAuxiliaryExtensions(extensionHost, 'panda.tray.actions', host.querySelector('.tray-footer')!);
+// Contributions arrive independently of task snapshots; keep the actual native window fitted too.
+const resize = new ResizeObserver(() => { void call('tray_resize', { height: Math.ceil(host.querySelector('.tray')!.getBoundingClientRect().height) }).catch(() => undefined); });
+resize.observe(host.querySelector('.tray')!);
+window.addEventListener('pagehide', () => resize.disconnect(), { once: true });
 let snapshot: TraySnapshot | null = null;
 
 function duration(ms: number): string {
@@ -98,6 +107,7 @@ host.addEventListener('click', event => {
   else if (target.classList.contains('tray-quit')) void call('tray_quit');
 });
 document.addEventListener('keydown', event => {
+  if (event.defaultPrevented || document.querySelector('.choice-menu')) return;
   if (event.key === 'Escape') { void call('tray_hide'); return; }
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
   const rows = [...body.querySelectorAll<HTMLElement>('.tray-row')];

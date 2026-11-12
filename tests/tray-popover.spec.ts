@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('menu bar popover lists tasks and plan usage and opens a task', async ({page}) => {
+test('menu bar popover lists tasks and plan usage and opens a task', async ({page}, testInfo) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:340,height:560});
   await page.goto('/?view=tray');
@@ -15,7 +15,7 @@ test('menu bar popover lists tasks and plan usage and opens a task', async ({pag
   await expect(page.locator('.tray-window[data-tone="high"]')).toHaveCount(1);
   await expect(page.locator('.tray-window[data-tone="exhausted"]')).toHaveCount(1);
   await expect(page.locator('.tray-bar').first()).toHaveAttribute('aria-valuenow', '42');
-  await page.screenshot({path:'test-results/tray-popover.png'});
+  await page.screenshot({path:testInfo.outputPath('tray-popover.png')});
 
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');

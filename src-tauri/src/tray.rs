@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{
     image::Image,
-    menu::{Menu, MenuEvent, MenuItem},
+    menu::{Menu, MenuEvent, MenuItem, Submenu, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewWindow,
 };
@@ -35,13 +35,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub(crate) fn setup(app: &AppHandle) -> tauri::Result<()> {
-    let menu = Menu::with_items(
-        app,
-        &[
-            &MenuItem::with_id(app, "show", "Open PandaCode", true, None::<&str>)?,
-            &MenuItem::with_id(app, "quit", "Quit PandaCode", true, None::<&str>)?,
-        ],
-    )?;
+    let menu = extension_menu(app)?;
     TrayIconBuilder::with_id(ID)
         .icon(Image::from_bytes(include_bytes!("../icons/tray-template@2x.png"))?)
         .icon_as_template(true)
@@ -59,6 +53,40 @@ pub(crate) fn setup(app: &AppHandle) -> tauri::Result<()> {
         .build(app)?;
     refresh(app);
     Ok(())
+}
+
+fn extension_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::with_items(
+        app,
+        &[
+            &MenuItem::with_id(app, "show", "Open PandaCode", true, None::<&str>)?,
+            &MenuItem::with_id(app, "extension-recovery", "Disable extensions for this launch", true, None::<&str>)?,
+            &MenuItem::with_id(app, "quit", "Quit PandaCode", true, None::<&str>)?,
+        ],
+    )?;
+    fn submenu(app: &AppHandle, item: crate::extensions::windows::NativeItem) -> tauri::Result<Submenu<tauri::Wry>> {
+        let parent = Submenu::with_id(app, item.id, item.title, item.enabled)?;
+        for child in item.children {
+            if child.separator { parent.append(&PredefinedMenuItem::separator(app)?)?; }
+            else if child.children.is_empty() { parent.append(&MenuItem::with_id(app, child.id, child.title, child.enabled, None::<&str>)?)?; }
+            else { parent.append(&submenu(app, child)?)?; }
+        }
+        Ok(parent)
+    }
+    for item in crate::extensions::windows::menu_snapshot(app) {
+        if item.children.is_empty() { menu.append(&MenuItem::with_id(app, item.id, item.title, item.enabled, None::<&str>)?)?; }
+        else { menu.append(&submenu(app, item)?)?; }
+    }
+    Ok(menu)
+}
+
+pub(crate) fn refresh_extension_menu(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(ID) {
+        match extension_menu(app).and_then(|menu| tray.set_menu(Some(menu))) {
+            Ok(()) => {},
+            Err(error) => eprintln!("Extension tray menu unavailable; protected previous menu retained: {error}"),
+        }
+    }
 }
 
 /// Updates the icon title off the caller's thread, so callers may hold any lock.
@@ -97,6 +125,8 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     match event.id.as_ref() {
         "show" => show(app),
         "quit" => app.exit(0),
+        "extension-recovery" => { if let Err(error) = crate::extensions::windows::recover(app) { eprintln!("Extension recovery failed: {error}"); } },
+        id if id.starts_with("extension:") => { if let Err(error) = crate::extensions::windows::native_selected(app, id) { eprintln!("Extension tray action refused: {error}"); } },
         _ => {}
     }
 }

@@ -1,6 +1,7 @@
 /** Owner/version/activation-scoped declarative registrations, with no DOM or private service API. */
 import { validateContract, evaluateCondition, type Json } from './contracts.ts';
 import type { ExtensionSnapshot, ExtensionMenuItem, ExtensionAction } from './manager';
+import { surfaceWindow } from './window-surfaces.ts';
 export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activationId: number) {
   const packages = snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled);
   const checked = validateContract('packages', packages.map(item => item.manifest));
@@ -62,7 +63,7 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
       if (!command || !conditionAllows(command.enabled, context) || !['showMessage', 'showDialog'].includes(command.action.kind)) return;
       const captured = structuredClone(context);
       const valid = validateContract('context', captured);
-      if (!valid.ok || captured.surfaceId !== entry.menu.location || captured.windowId !== 'main') return;
+      if (!valid.ok || captured.surfaceId !== entry.menu.location || captured.windowId !== surfaceWindow(entry.menu.location)) return;
       if (![entry.menu, ...path].every(item => allows(item, captured))) return;
       if (leaf?.kind === 'checkbox') states.set(id, !(states.get(id) ?? leaf.checked));
       if (leaf?.kind === 'radio') {

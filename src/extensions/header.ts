@@ -8,6 +8,8 @@ import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './
 import { createDeclarativeActivation } from './activation';
 import { layout, layoutProject, applyControlOrder } from './layout-host';
 import { openExtensionDialog } from './dialogs';
+import type { ExtensionAction } from './manager';
+type WindowBinding = { windowId: string; invoke(id: string, version: string): Promise<ExtensionAction | undefined> };
 
 /** Append only owned nodes; never remount or delegate legacy controls. Native buttons supply
  * pointer/Enter/Space activation, avoiding duplicate synthetic keyboard click dispatch. */
@@ -16,7 +18,7 @@ export function mountExtensionHeader(host: HTMLElement, context: () => Record<st
 }
 
 /** Public action surfaces share validation, invocation and owner-scoped disposal. */
-export function mountExtensionActions(host: HTMLElement, location: ActionLocation, context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void, active: () => boolean = () => true, coreControls: ReadonlyArray<readonly [string, HTMLElement]> = []): () => void {
+export function mountExtensionActions(host: HTMLElement, location: ActionLocation, context: () => Record<string, Json>, showMessage: (message: string) => void, onContextChanged?: (listener: () => void) => () => void, active: () => boolean = () => true, coreControls: ReadonlyArray<readonly [string, HTMLElement]> = [], binding?: WindowBinding): () => void {
   const slot = document.createElement('div');
   slot.className = 'extension-header-actions'; slot.dataset.tauriDragRegion = 'false'; slot.dataset.extensionLocation = location;
   slot.setAttribute('role', 'group'); slot.setAttribute('aria-label', coreControls.length ? `${location.split('.')[2]} actions` : 'Extension actions');
@@ -34,7 +36,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
     (prompt && eligible(prompt) ? prompt : [...document.querySelectorAll<HTMLElement>('button:not([disabled])')].find(eligible))?.focus({ preventScroll: true });
   };
   const refreshConditions = () => {
-    const captured = { ...context(), schemaVersion: 1, windowId: 'main', surfaceId: location };
+    const captured = { ...context(), schemaVersion: 1, windowId: binding?.windowId ?? 'main', surfaceId: location };
     const allows = (condition: Json | undefined) => {
       if (condition === undefined) return true;
       const result = evaluateCondition(condition, captured);
@@ -96,10 +98,14 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
         button.addEventListener('pointerdown', event => { if (menu.items && closeMenu) event.preventDefault(); });
         button.addEventListener('click', () => {
           if (activation !== extensionGeneration() || !button.isConnected) return;
-          const captured = structuredClone({ ...context(), schemaVersion: 1, windowId: 'main', surfaceId: menu.location });
-          const invoke = (id: string) => {
+          const captured = structuredClone({ ...context(), schemaVersion: 1, windowId: binding?.windowId ?? 'main', surfaceId: menu.location });
+          const invoke = async (id: string) => {
             if (activation !== extensionGeneration() || !button.isConnected) return;
-            const action = owned.actionFor(id, captured);
+            let action = owned.actionFor(id, captured);
+            if (!action) return;
+            try { if (binding) action = await binding.invoke(id, entry.owner.version); }
+            catch (error) { if (activation === extensionGeneration() && button.isConnected) showMessage(String(error)); return; }
+            if (activation !== extensionGeneration() || !button.isConnected) return;
             if (action?.kind === 'showMessage') showMessage(action.message);
             if (action?.kind === 'showDialog') {
               if (closeDialog) return;
@@ -118,11 +124,11 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
             if (closeMenu) { const wasOpen = button.getAttribute('aria-expanded') === 'true'; closeMenu(); if (wasOpen) return; }
             const items = extensionChoices(owned.itemsFor(menu.id, captured), entry.icons, captured);
             closeMenu = openChoiceMenu({ anchor: button, title: command.title, items, itemLimit: 128, actions: true, onSelect: id => {
-              invoke(id);
+              void invoke(id);
             }, onClose: () => { closeMenu = undefined; } });
             return;
           }
-          invoke(menu.id);
+          void invoke(menu.id);
         });
         slot.append(button);
         conditions.push({ button, visible: menu.visible, enabled: { op: 'all', args: [menu.enabled ?? true, command.enabled ?? true] }, hasItems: Boolean(menu.items) });

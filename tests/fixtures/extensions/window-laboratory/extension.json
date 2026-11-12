@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.window-laboratory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.window-laboratory/info", "asset": "assets/info.svg" }],
+    "commands": [
+      { "id": "sample.window-laboratory/note", "title": "Window laboratory", "action": { "kind": "showMessage", "message": "Window-scoped laboratory action" } },
+      { "id": "sample.window-laboratory/denied", "title": "Denied window action", "enabled": false, "action": { "kind": "showMessage", "message": "Must not run" } },
+      { "id": "sample.window-laboratory/form", "title": "Window laboratory form", "action": { "kind": "showDialog", "dialog": { "title": "Window laboratory select", "fields": [{ "id": "format", "kind": "select", "label": "Window report format", "required": true, "options": [{ "value": "short", "label": "Short report" }, { "value": "long", "label": "Long report" }, { "value": "disabled", "label": "Unavailable report", "disabled": true }] }], "successMessage": "Window report confirmed", "cancelMessage": "Window report cancelled" } } }
+    ],
+    "menus": [
+      { "id": "sample.window-laboratory/tray", "location": "panda.tray.actions", "command": "sample.window-laboratory/note", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/tray-group", "kind": "submenu", "title": "Reports", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/tray-form", "kind": "command", "title": "Choose report format", "command": "sample.window-laboratory/form", "icon": "sample.window-laboratory/info" }] }] },
+      { "id": "sample.window-laboratory/launcher", "location": "panda.launcher.actions", "command": "sample.window-laboratory/note", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/launcher-group", "kind": "submenu", "title": "Reports", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/launcher-form", "kind": "command", "title": "Choose report format", "command": "sample.window-laboratory/form", "icon": "sample.window-laboratory/info" }] }] },
+      { "id": "sample.window-laboratory/dock", "location": "panda.agentsDock.actions", "command": "sample.window-laboratory/note", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/dock-group", "kind": "submenu", "title": "Reports", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/dock-form", "kind": "command", "title": "Choose report format", "command": "sample.window-laboratory/form", "icon": "sample.window-laboratory/info" }] }] },
+      { "id": "sample.window-laboratory/native", "location": "panda.tray.menu", "command": "sample.window-laboratory/note", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/native-group", "kind": "submenu", "title": "Reports", "icon": "sample.window-laboratory/info", "items": [{ "id": "sample.window-laboratory/native-form", "kind": "command", "title": "Choose report format", "command": "sample.window-laboratory/form", "icon": "sample.window-laboratory/info" }, { "id": "sample.window-laboratory/native-denied", "kind": "command", "title": "Unavailable command", "command": "sample.window-laboratory/denied" }] }] }
+    ]
+  }
+}

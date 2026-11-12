@@ -1,0 +1,22 @@
+/* Compact windows share the host choice-menu renderer, with their own existing palette tokens.
+   Forms/quick picks are presented in main, where the existing dialog glass/focus stack lives. */
+body[data-extension-window] { --text: var(--tray-text,var(--launcher-text,CanvasText)); --muted: var(--tray-muted,var(--launcher-muted,GrayText)); --bg: var(--launcher-solid,Canvas); --ds-border: color-mix(in srgb,var(--text) 9%,transparent); --ds-card-inner: color-mix(in srgb,var(--text) 3%,var(--bg)); --ds-row-hover: color-mix(in srgb,var(--text) 7%,transparent); --ds-row-press: color-mix(in srgb,var(--text) 10%,transparent); --ds-radius-control: 8px; }
+body[data-extension-window] .extension-header-actions { flex-wrap: wrap; max-height: 96px; overflow: auto; }
+body[data-extension-window] .extension-window-actions { flex-shrink: 0; }
+body[data-extension-window] .extension-header-actions button, .extension-window-recovery { min-height: 28px; padding: 4px 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); }
+body[data-extension-window] .extension-window-recovery { display: inline-grid; place-items: center; flex-shrink: 0; margin-inline-start: auto; }
+body[data-extension-window] .extension-window-recovery .icon { width: 16px; height: 16px; }
+body[data-extension-window] .launcher-heading > .extension-window-recovery { min-height: 20px; height: 20px; width: 24px; padding: 2px; margin-inline-end: 8px; }
+body[data-extension-window] .agents-dock-window-head > .extension-window-recovery { min-height: 24px; height: 24px; }
+.extension-window-notice { font-size: var(--text-xs); overflow-wrap: anywhere; }
+body[data-extension-window] .floating-menu.choice-menu { position: fixed; z-index: 80; display: flex; flex-direction: column; width: 300px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 6px; border: 1px solid var(--glass-border); border-radius: 12px; color: var(--text); background: var(--glass-warm); backdrop-filter: blur(26px); -webkit-backdrop-filter: blur(26px); box-shadow: 0 4px 12px var(--glass-shadow-near); }
+body[data-extension-window] .choice-menu-list { display: flex; flex-direction: column; overflow: auto; min-height: 0; }
+body[data-extension-window] .choice-menu-option { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-height: 32px; width: 100%; padding: 5px 8px; border-radius: var(--ds-radius-control); text-align: start; }
+body[data-extension-window] .choice-menu-option:is(:hover,:focus-visible,.choice-menu-active) { background: var(--ds-row-hover); }
+body[data-extension-window] .choice-menu-copy { display: flex; flex: 1; min-width: 0; gap: 8px; }
+body[data-extension-window] .choice-menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body[data-extension-window] .choice-menu-option:disabled { opacity: .5; }
+body[data-extension-window] .choice-menu-option .icon { width: 16px; height: 16px; flex-shrink: 0; }
+body[data-extension-window] .choice-menu-description { color: var(--muted); font-size: var(--text-xs); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { body[data-extension-window] .floating-menu.choice-menu { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+@media (forced-colors: active) { body[data-extension-window] .floating-menu.choice-menu { color: CanvasText; background: Canvas; border-color: CanvasText; } }

@@ -10,6 +10,7 @@ import { mountFileMentions } from './file-mentions';
 import { CLASSIC, restorePalette } from './palette';
 import { accentTokens } from './palette-core';
 import { parseHex } from './color';
+import { mountAuxiliaryExtensions } from './extensions/windows';
 
 function refreshTheme(): void {
   try { document.documentElement.dataset.theme = localStorage.getItem('pandacode.theme') === 'light' ? 'light' : 'dark'; } catch { /* Default to dark. */ }
@@ -25,6 +26,10 @@ window.addEventListener('storage', event => { if (event.key === 'pandacode.theme
 const host = document.querySelector<HTMLDivElement>('#app')!;
 host.innerHTML = `<main class="launcher" aria-label="PandaCode quick launcher"><header class="launcher-heading"><span>${icon('bamboo')}PandaCode</span><button type="button" class="launcher-close" aria-label="Close launcher"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">New task</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="What should we work on?" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="Task project"></select></label><button type="button" class="launcher-agent" aria-label="Choose harness and model" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="Start task">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>Active agents <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="Search tasks" placeholder="Find a task" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="Active agents"><p class="launcher-empty">Loading tasks…</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> start task</span><span><kbd>⇧ ↵</kbd> new line</span><span class="launcher-live">Live status</span></footer></div><section class="launcher-thread" hidden></section></main>`;
 const prompt = host.querySelector<HTMLTextAreaElement>('textarea')!;
+document.body.dataset.extensionWindow = 'launcher';
+const extensionHost = document.createElement('section'); extensionHost.className = 'extension-window-actions';
+host.querySelector('.launcher-heading')!.after(extensionHost);
+mountAuxiliaryExtensions(extensionHost, 'panda.launcher.actions', host.querySelector('.launcher-heading')!);
 const project = host.querySelector<HTMLSelectElement>('select')!;
 const list = host.querySelector<HTMLDivElement>('.launcher-tasks')!;
 const search = host.querySelector<HTMLInputElement>('input[type=search]')!;
