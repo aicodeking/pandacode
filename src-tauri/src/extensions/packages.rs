@@ -115,7 +115,10 @@ fn validate(bytes: &[u8]) -> Result<Package> {
     }
     let raw: Value = serde_json::from_slice(&files.get("extension.json").ok_or("Missing extension.json.")?.1).map_err(|_| "Malformed extension.json.")?;
     let checked = super::contracts::validate_contract("packages", &json!([raw]));
-    if checked["ok"] != true { return Err(format!("Invalid manifest: {}", checked["error"]["code"])); }
+    if checked["ok"] != true {
+        if checked["error"]["code"] == "UnsupportedRuntime" { return Err(format!("UnsupportedRuntime: {}", super::runtime::unsupported_reason())); }
+        return Err(format!("Invalid manifest: {}", checked["error"]["code"]));
+    }
     let manifest = checked["value"]["packages"][0].clone();
     let contributions = &manifest["contributes"];
     if contributions["views"].as_array().is_some_and(|a| !a.is_empty()) || contributions["commands"].as_array().into_iter().flatten().any(|c| c["action"]["kind"] != "showMessage" && c["action"]["kind"] != "showDialog") { return Err("This delivery supports declarative showMessage and showDialog only.".into()); }
@@ -371,6 +374,22 @@ mod tests {
         packages.enable("sample.menu-laboratory", true).unwrap();
         assert!(storage.packages(false).snapshot().packages[0].enabled);
         packages.enable("sample.menu-laboratory", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
+    fn unqualified_execution_has_a_reason_and_cannot_replace_declarative_packages() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        assert!(packages.snapshot().packages.is_empty());
+        let mut manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+        manifest["entrypoint"] = json!("main.js");
+        let executable = archive(&[("extension.json", &serde_json::to_vec(&manifest).unwrap()), ("main.js", b"while(true){}")]);
+        let error = packages.install(&executable).expect_err("execution must stay disabled");
+        assert_eq!(error, format!("UnsupportedRuntime: {}", super::super::runtime::unsupported_reason()));
+        assert!(packages.snapshot().packages.is_empty());
+        packages.install(&sample()).unwrap(); packages.enable("sample.project-helper", true).unwrap();
+        assert!(packages.install(&executable).is_err());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.project-helper", false).unwrap();
         assert!(!storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]

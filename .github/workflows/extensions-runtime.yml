@@ -1,0 +1,46 @@
+name: Extension runtime qualification (execution stays disabled)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  engine:
+    name: Restricted JS experiment (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-latest, macos-15-intel, ubuntu-22.04, windows-11-arm, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: clippy
+      - run: cargo test --locked --manifest-path src-tauri/src/extensions/qualification/Cargo.toml -- --nocapture
+      - run: cargo clippy --locked --manifest-path src-tauri/src/extensions/qualification/Cargo.toml --all-targets -- -D warnings
+      # Compile the static packaging candidate, not a shipped/qualified sidecar or a support toggle.
+      - run: cargo test --release --locked --manifest-path src-tauri/src/extensions/qualification/Cargo.toml -- --nocapture
+  continuity:
+    name: Native experiment plus preview typing/streaming
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', cache: npm }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - run: cargo build --locked --manifest-path src-tauri/src/extensions/qualification/Cargo.toml
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit
+      - run: node -e 'console.log("PANDACODE_TEST_CHROME=" + require("playwright").chromium.executablePath())' >> "$GITHUB_ENV"
+      - name: Run real child faults alongside synthetic preview streaming
+        env:
+          PW_PORT: '15554'
+          PW_PROD: '1'
+          PW_WORKERS: '1'
+          BASELINE_REVISION: ${{ github.sha }}
+        run: npx playwright test -c tests/fixtures/extensions/runtime/playwright.config.ts

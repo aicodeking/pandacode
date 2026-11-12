@@ -1,0 +1,2 @@
+# Reusable test/packaging build cache; never include generated binaries in the package.
+/target/
