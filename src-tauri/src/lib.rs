@@ -3966,6 +3966,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
+    app.manage(extensions::context::ContextBroker::default());
     secret_store::setup(&dir);
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
@@ -4204,6 +4205,7 @@ pub fn run() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 extensions::windows::extensions_present_action,
+                extensions::context::extensions_context,
                 extensions::packages::extensions_snapshot,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,

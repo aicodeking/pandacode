@@ -20,6 +20,7 @@
     },
     "action": {
       "anyOf": [
+        { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "showProjectContext" } } },
         { "type": "object", "required": ["kind", "message"], "additionalProperties": false, "properties": { "kind": { "const": "showMessage" }, "message": { "type": "string", "minLength": 1, "maxLength": 4096 } } },
         { "type": "object", "required": ["kind", "view"], "additionalProperties": false, "properties": { "kind": { "const": "openView" }, "view": { "$ref": "#/$defs/id" } } },
         { "type": "object", "required": ["kind", "dialog"], "additionalProperties": false, "properties": { "kind": { "const": "showDialog" }, "dialog": { "$ref": "#/$defs/dialog" } } }

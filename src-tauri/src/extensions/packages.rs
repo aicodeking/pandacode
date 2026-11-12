@@ -24,6 +24,10 @@ pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>
 pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String> }
 pub struct Packages { root: PathBuf, pub(super) safe: bool }
 pub struct ExtensionPackages(pub Mutex<Packages>);
+#[cfg(test)]
+pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None }], diagnostics: vec![] }
+}
 impl ExtensionPackages {
     pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe })) }
 }
@@ -306,15 +310,15 @@ pub fn extensions_install(app: tauri::AppHandle, state: tauri::State<'_, Extensi
 }
 #[tauri::command]
 pub fn extensions_enable(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String, enabled: bool) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; let snapshot = state.snapshot(); drop(state); if !enabled { super::context::invalidate(&app, Some(&id)); } super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
 pub fn extensions_uninstall(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let snapshot = state.snapshot(); drop(state); super::context::invalidate(&app, Some(&id)); super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
 pub fn extensions_safe_mode(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {
-    let mut state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.safe = true; let snapshot = state.snapshot(); drop(state); super::windows::changed(&app); Ok(snapshot)
+    let mut state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.safe = true; let snapshot = state.snapshot(); drop(state); super::context::invalidate(&app, None); super::windows::changed(&app); Ok(snapshot)
 }
 
 #[cfg(test)]

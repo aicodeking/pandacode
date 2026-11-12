@@ -21,3 +21,11 @@
 .extension-field-error, .extension-dialog-error { color: var(--ds-danger); font-size: var(--text-xs); }
 .extension-dialog-confirm { color: var(--text); font-size: var(--text-sm); }
 .extension-dialog-status { color: var(--muted); font-size: var(--text-xs); }
+.extension-context-inspector { position: fixed; z-index: 80; inset-block-start: 64px; inset-inline-end: 24px; width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 100px); overflow: auto; padding: var(--space-3); background: var(--glass-warm); color: var(--text); border: 1px solid var(--glass-border); border-radius: var(--ds-radius-card); box-shadow: var(--ds-shadow-card); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); font-size: var(--text-sm); }
+.extension-context-inspector .dialog-heading { display: flex; align-items: center; justify-content: space-between; }
+.extension-context-inspector h2 { font-size: var(--text-md); }
+.extension-context-inspector p { overflow-wrap: anywhere; }
+.extension-context-consent, .extension-context-navigation { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-block: var(--space-3); }
+.extension-context-output { padding: var(--space-3); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-inner); background: var(--ds-card-inner); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .extension-context-inspector { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; border-color: var(--border); } }
+@media (forced-colors: active) { .extension-context-inspector, .extension-context-output { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; } }

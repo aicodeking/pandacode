@@ -107,6 +107,7 @@ pub fn window_closed(app: &tauri::AppHandle, label: &str) {
 }
 pub fn recover(app: &tauri::AppHandle) -> Result<(), String> {
     app.state::<ExtensionPackages>().0.lock().map_err(|_| "Extension manager unavailable.")?.safe = true;
+    super::context::invalidate(app, None);
     changed(app); crate::tray::show(app); Ok(())
 }
 #[tauri::command]

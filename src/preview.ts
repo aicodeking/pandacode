@@ -1476,8 +1476,31 @@ async function previewVoice(command: string, args: Record<string, any>): Promise
   throw new Error(`Unknown voice command: ${command}`);
 }
 
+let extensionContextBroker: ReturnType<typeof import('./extensions/context-preview').createPreviewContextBroker> | undefined;
+// Apply after normal fixture initialization (which decorates the canonical sample tasks).
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('project-context') && new URLSearchParams(location.search).has('no-project')) { projects = []; sessions = []; }
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
-  if (command.startsWith('extensions_')) return (await import('./extensions/preview')).previewExtensions(command, args, emit) as T;
+  if (command === 'extensions_context') {
+    const { previewExtensionSnapshot } = await import('./extensions/preview');
+    const { createPreviewContextBroker } = await import('./extensions/context-preview');
+    const broker = extensionContextBroker ??= createPreviewContextBroker();
+    if (new URLSearchParams(location.search).has('project-context')) {
+      const fixture = (window as any).__extensionContext ??= {};
+      fixture.call = (request: Record<string, unknown>) => broker(request, previewExtensionSnapshot(), { projects, tasks: sessions });
+      if (args.request?.op === 'query' && fixture.hold) { fixture.hold = false; await new Promise<void>(resolve => { fixture.release = resolve; fixture.waiting = true; }); fixture.waiting = false; }
+      if (args.request?.op === 'query' && fixture.timeout) { fixture.timeout = false; return { ok: false, error: { schemaVersion: 1, code: 'Timeout', path: '$', ids: [] } } as T; }
+      fixture.removeProject = (id: string) => { projects = projects.filter(project => project.id !== id); };
+      fixture.change = () => { const task = sessions.find(task => task.projectId === 'project-1'); if (task) task.status = task.status === 'pending' ? 'completed' : 'pending'; };
+      fixture.addTasks = () => { const source = sessions[0]; for (let i = 0; i < 12; i++) sessions.push({ ...source, id: `context-page-${String(i).padStart(2, '0')}`, title: 'TRANSCRIPT_SENTINEL', status: 'pending' }); };
+    }
+    return broker(args.request, previewExtensionSnapshot(), { projects, tasks: sessions }) as T;
+  }
+  if (command.startsWith('extensions_')) {
+    const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);
+    if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') extensionContextBroker?.invalidate(args.id);
+    if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') extensionContextBroker?.invalidate();
+    return result as T;
+  }
   // Opt-in synthetic baseline instrumentation also works in a production preview build.
   // No live/native session or executable is involved; normal preview behavior is unchanged.
   if (new URLSearchParams(location.search).has('extensions-baseline')) {

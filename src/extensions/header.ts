@@ -8,6 +8,7 @@ import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './
 import { createDeclarativeActivation } from './activation';
 import { layout, layoutProject, applyControlOrder } from './layout-host';
 import { openExtensionDialog } from './dialogs';
+import { openProjectContext } from './context-inspector';
 import type { ExtensionAction } from './manager';
 type WindowBinding = { windowId: string; invoke(id: string, version: string): Promise<ExtensionAction | undefined> };
 
@@ -27,6 +28,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
   let registration: ReturnType<typeof createDeclarativeActivation> | undefined;
   let closeMenu: (() => void) | undefined;
   let closeDialog: (() => void) | undefined;
+  let closeContext: (() => void) | undefined;
   let conditions: { button: HTMLElement; visible?: Json; enabled?: Json; hasItems: boolean }[] = [];
   const fallbackFocus = () => {
     const eligible = (element: HTMLElement) => !element.closest('[inert]') && element.checkVisibility();
@@ -54,6 +56,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
     applyControlOrder(location, [...coreControls.filter(([, node]) => node.parentElement === slot), ...conditions.map(({ button }) => [button.dataset.extensionContribution!, button] as const)]);
   };
   const draw = () => {
+    closeContext?.(); closeContext = undefined;
     closeDialog?.(); closeDialog = undefined;
     closeMenu?.();
     const focused = conditions.some(({ button }) => button === document.activeElement);
@@ -67,7 +70,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
     for (const entry of owned.entries) {
         const { menu, command, svg } = entry;
         if (menu.location !== location) continue;
-        if (!command || !['showMessage', 'showDialog'].includes(command.action.kind)) continue;
+        if (!command || !['showMessage', 'showDialog', 'showProjectContext'].includes(command.action.kind)) continue;
         const passive = menu.presentation === 'status' || menu.presentation === 'badge';
         const button = passive ? document.createElement('span') : document.createElement('button');
         if (button instanceof HTMLButtonElement) button.type = 'button';
@@ -107,6 +110,10 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
             catch (error) { if (activation === extensionGeneration() && button.isConnected) showMessage(String(error)); return; }
             if (activation !== extensionGeneration() || !button.isConnected) return;
             if (action?.kind === 'showMessage') showMessage(action.message);
+            if (action?.kind === 'showProjectContext') {
+              closeMenu?.(); closeContext?.();
+              closeContext = openProjectContext(id, entry.owner.version, captured, button, () => { closeContext = undefined; });
+            }
             if (action?.kind === 'showDialog') {
               if (closeDialog) return;
               closeMenu?.();
@@ -137,5 +144,5 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
     if (focused) fallbackFocus();
   };
   const cleanup = onExtensionsChanged(draw), cleanupContext = onContextChanged?.(refreshConditions), cleanupLayout = layout.subscribe(() => { closeMenu?.(); refreshConditions(); }); draw();
-  return () => { closeDialog?.(); closeMenu?.(); const focused = slot.contains(document.activeElement); cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; for (const [, node] of coreControls) if (node.parentElement === slot) host.insertBefore(node, slot); slot.remove(); if (focused) fallbackFocus(); };
+  return () => { closeContext?.(); closeDialog?.(); closeMenu?.(); const focused = slot.contains(document.activeElement); cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; for (const [, node] of coreControls) if (node.parentElement === slot) host.insertBefore(node, slot); slot.remove(); if (focused) fallbackFocus(); };
 }

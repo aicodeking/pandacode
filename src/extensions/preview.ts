@@ -6,6 +6,7 @@ import threadManifest from '../../tests/fixtures/extensions/thread-laboratory/ex
 import threadSvg from '../../tests/fixtures/extensions/thread-laboratory/assets/info.svg?raw';
 import settingsManifest from '../../tests/fixtures/extensions/settings-laboratory/extension.json';
 import windowManifest from '../../tests/fixtures/extensions/window-laboratory/extension.json';
+import contextManifest from '../../tests/fixtures/extensions/project-context/extension.json';
 import windowSvg from '../../tests/fixtures/extensions/window-laboratory/assets/info.svg?raw';
 import { validSettingsValues } from './settings-state';
 import { validateContract } from './contracts';
@@ -30,6 +31,7 @@ function read(): ExtensionSnapshot {
     return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
+export const previewExtensionSnapshot = read;
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
   const label = windowLabel;
   if (label === 'main' && command.startsWith('extensions_window_')) throw new Error('PermissionDenied');
@@ -66,7 +68,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
-    const selected = new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
+    const selected = new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
     snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {} });
   } else if (command === 'extensions_uninstall') {

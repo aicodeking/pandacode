@@ -62,7 +62,7 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
       if (!entry || !path.length && entry.menu.items || entry.menu.presentation === 'status' || entry.menu.presentation === 'badge') return;
       const leaf = path.at(-1);
       const command = leaf ? normalized.packages.find(manifest => manifest.id === entry.owner.extensionId)?.contributes.commands?.find(command => command.id === leaf.command) : entry.command;
-      if (!command || !conditionAllows(command.enabled, context) || !['showMessage', 'showDialog'].includes(command.action.kind)) return;
+      if (!command || !conditionAllows(command.enabled, context) || !['showMessage', 'showDialog', 'showProjectContext'].includes(command.action.kind)) return;
       const captured = structuredClone(context);
       const valid = validateContract('context', captured);
       if (!valid.ok || captured.surfaceId !== entry.menu.location || captured.windowId !== surfaceWindow(entry.menu.location)) return;
