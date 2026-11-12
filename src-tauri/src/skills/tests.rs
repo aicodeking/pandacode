@@ -1,5 +1,6 @@
 use super::*;
 use std::process::Command;
+#[cfg_attr(not(unix), allow(unused_imports))] // only Unix link tests use it
 use super::adapter::Links;
 
 thread_local!(pub(super) static FAIL_SAVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
@@ -623,6 +624,7 @@ fn in_project_links_to_other_files_are_never_written() {
     assert!(!root.join(".github/workflows/release-notes").exists());
 }
 
+#[cfg_attr(not(unix), allow(dead_code))] // only Unix tests call it
 fn ignored(root: &Path, path: &str) -> bool {
     Command::new("git").args(["check-ignore", "-q", path]).current_dir(root).status().unwrap().success()
 }
@@ -1130,6 +1132,7 @@ fn project_rule_files_are_replaced_whole_and_keep_their_permissions() {
     assert!(fs::read_dir(&root).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
 }
 
+#[cfg_attr(not(unix), allow(dead_code))] // only Unix tests call it
 fn git_status(root: &Path) -> String {
     let out = Command::new("git").args(["status", "--porcelain", "--untracked-files=all"]).current_dir(root).output().unwrap();
     String::from_utf8_lossy(&out.stdout).into_owned()
