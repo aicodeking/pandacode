@@ -1025,7 +1025,10 @@ instead of silently running in a different one.
 Accept edits → `edit`, Full access → `yolo`. Permission requests arrive as
 `interaction/requestPermission` reverse requests with ready-made response objects;
 PandaCode answers with the offered `allow`/`deny` response, never inventing a
-standing grant. Sessions use deferred persistence, so captures and failed starts
+standing grant. In Full access, a request that offers a one-time allow is answered
+with it automatically; one that offers only a lasting allow (such as `allow_project`)
+asks a person instead, and a team worker declines it with a plain deny (no offered
+deny option is needed). Sessions use deferred persistence, so captures and failed starts
 leave nothing in the user's ZCode history; `session/resume` keeps a task's session
 across turns.
 
