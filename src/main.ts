@@ -121,6 +121,8 @@ import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
 import { createCouncil } from './council-panel';
 import { councilNotice } from './council';
+// No CSS of its own (architect.css arrives with ./architect): safe in the always-loaded bundle.
+import { workerActive } from './architect-worker-list';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
@@ -5319,9 +5321,7 @@ function onAgent(event: AgentEvent): void {
       // panel's own definition (a worker not yet in any team snapshot counts as active).
       if (event.kind === 'approval' || event.kind === 'input_request') {
         const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
-        void import('./architect-worker-list').then(({ workerActive }) => {
-          if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
-        });
+        if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
       }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
     }).catch(report);

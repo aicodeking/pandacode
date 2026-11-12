@@ -131,7 +131,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-assist:hover { background: var(--raised); }
 .architect-panel-error { padding: 0 14px 8px; margin: 0; color: var(--danger); font-size: var(--text-2xs); line-height: 1.45; }
 .architect-panel-scroll { overflow: auto; min-height: 0; overscroll-behavior: contain; padding: 0 6px 8px; scrollbar-gutter: stable; }
-.architect-panel-scroll.is-overflowing { mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent); }
+.architect-panel-scroll.is-overflowing { mask-image: linear-gradient(to bottom, currentColor calc(100% - 24px), transparent); }
 /* One row per worker (38px, 2px apart): status glyph, then two lines: the name with a right-aligned status word and
    a fixed-width elapsed column, and below it the harness logo · model · effort · attempt. The row opens the
    transcript; a trailing caret unfolds the assignment and summary below it. */
@@ -207,7 +207,11 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-tally-count, .architect-tally-more { display: inline-flex; align-items: center; gap: 3px; height: 24px; margin-inline-start: 8px; vertical-align: top; }
 .architect-tally-glyph { display: flex; color: var(--state-tone); }
 /* Worded counts sit a little closer: the words fit the default 400px panel. */
-.architect-tally-count[data-worded], .architect-tally-count[data-worded] + .architect-tally-more { margin-inline-start: 6px; }
+.architect-tally-count[data-worded], .architect-tally-count[data-worded] + .architect-tally-more { position: relative; margin-inline-start: 6px; }
+/* Worded counts read "1 needs you · 2 working": a 2px dot centred in the 6px gap between them. It is drawn out of flow
+   (the line is no wider, so the words still fit at 400px), has no content for screen readers (the readable copy says
+   it), and is a border so forced colours keep it. */
+:is(.architect-panel-tally-text, .architect-panel-tally-measure) > * + .architect-tally-count[data-worded]::before, .architect-tally-count[data-worded] + .architect-tally-more::before { content: ''; position: absolute; inset-inline-start: -4px; inset-block-start: calc(50% - 1px); width: 2px; height: 0; border-top: 2px solid var(--faint); border-radius: 50%; }
 .architect-tally-glyph > svg { width: 11px; height: 11px; }
 .architect-tally-glyph .architect-glyph-pulse { animation: none; }
 .architect-tally-more { height: 24px; min-height: 24px; padding: 0 4px; border: 0; border-radius: var(--ds-radius-control); background: none; color: var(--text); font: inherit; cursor: pointer; }
@@ -253,8 +257,10 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-panel-access[hidden] { display: none; }
 .architect-panel-access-icon { display: flex; flex: none; padding-top: 1px; color: var(--state-tone); }
 .architect-panel-access-icon .icon { width: 12px; height: 12px; }
-/* One quiet line that wraps (never cut); the deploy and scheduling exception is its tooltip and on the setup screen. */
+/* One quiet line that wraps (never cut); the deploy and scheduling exception is the tip of its leading icon (a Tab
+   stop that shows it on keyboard focus) and on the setup screen. */
 .architect-panel-access-text { min-width: 0; overflow-wrap: anywhere; }
+.architect-panel-access-icon:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
 @media (prefers-contrast: more) { .architect-panel-access { color: var(--text); } }
 @media (forced-colors: active) { .architect-panel-access-icon { color: CanvasText; } }
 .architect-panel-tally[hidden] + .architect-panel-access { margin-top: 0; }
@@ -281,6 +287,8 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
    after the last row (nothing above moves). Scroll padding (no layout) keeps it in view under a focused last row. */
 .architect-worker-keyhint { display: none; height: 24px; margin: 0; padding: 0 13px; overflow: hidden; color: var(--faint); font-size: var(--ds-text-chip); line-height: 24px; white-space: nowrap; }
 .architect-panel-scroll:has(.architect-worker-row:focus-visible) { scroll-padding-block-end: 24px; }
+/* The open transcript's sticky header (its height measured into --architect-meta-h) never hides a focused control. */
+.architect-panel-scroll:has(> .architect-worker-detail:not([hidden])) { scroll-padding-block-start: var(--architect-meta-h, 48px); }
 .architect-panel-scroll:has(.architect-worker-row:focus-visible) .architect-worker-keyhint { display: block; }
 @media (prefers-contrast: more) { .architect-worker-keyhint { color: var(--text); } }
 /* An overflowing assignment or summary fades at its bottom (an alpha mask, no colour) until scrolled to its end. */

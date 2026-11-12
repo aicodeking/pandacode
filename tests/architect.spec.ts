@@ -1523,8 +1523,9 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   await expect(compactItem(page, 'index').locator('.architect-worker-attempt .sr-only')).toHaveText('attempt 2');
   await expect(compactItem(page, 'search').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'team');
   // Failed reads as failed: the danger tone, never the amber of "needs you".
-  await expect(compactItem(page, 'index').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'failed');
+  await expect(compactItem(page, 'index').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'danger');
   const toneOf = (locator: Locator) => locator.evaluate(element => getComputedStyle(element).color);
+  expect(await page.evaluate(() => document.querySelectorAll('[data-state-tone="failed"]').length)).toBe(0);
   expect(await toneOf(compactItem(page, 'index').locator('.architect-worker-glyph'))).not.toBe(await toneOf(panel(page).locator('.architect-panel-tally-text .architect-tally-icon')));
   await expect(compactItem(page, 'tests').locator('.architect-worker-glyph')).toHaveAttribute('data-state-tone', 'ready');
   await expect(compactItem(page, 'search').locator('.architect-worker-elapsed')).toHaveText(/^\d+m$/);
@@ -1540,6 +1541,11 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   // Words first, glyphs as the fallback: at the default width the minor buckets (queued, stopped) fold into "+2 more"
   // while failed, working and done keep their words. "needs you" keeps its words: it is a button.
   await expect.poll(() => drawnText(tally)).toBe('1 needs you1 failed1 working1 done+2 more');
+  // A dot separates the worded counts on screen: drawn out of flow in the gap (the line is no wider) with no content,
+  // so screen readers skip it.
+  for (const count of await tally.locator('.architect-tally-count[data-worded], .architect-tally-more').all()) {
+    expect(await count.evaluate(element => { const dot = getComputedStyle(element, '::before'); return [dot.content, dot.position, dot.borderTopWidth]; })).toEqual(['""', 'absolute', '2px']);
+  }
   for (const count of await tally.locator('.architect-tally-count').all()) { expect(await count.textContent()).toBe(await count.getAttribute('title')); await expect(count).toHaveAttribute('data-worded', ''); }
   // Wide enough, every bucket reads its words.
   await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '600px'; });
@@ -1548,7 +1554,7 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   // Narrower, the kept buckets go compact: the glyph (in its tone) and the number, the word in the title.
   await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '340px'; });
   await expect.poll(() => drawnText(tally)).toBe('1 needs you111+2 more');
-  await expect(tally.locator('.architect-tally-count').first().locator('.architect-tally-glyph')).toHaveAttribute('data-state-tone', 'failed');
+  await expect(tally.locator('.architect-tally-count').first().locator('.architect-tally-glyph')).toHaveAttribute('data-state-tone', 'danger');
   for (const count of await tally.locator('.architect-tally-count').all()) expect(await count.textContent()).toBe((await count.getAttribute('title'))!.split(' ')[0]);
   await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '760px'; });
   await expect.poll(() => visibleTally(tally)).toEqual(['1 needs you', '1 failed', '1 working', '1 queued', '1 stopped', '1 done']);
@@ -1962,15 +1968,18 @@ test.describe('workers full access note', () => {
     await panel(page).locator('.architect-worker-approvals .approval-card').getByRole('button', { name: 'Approve', exact: true }).click();
     await panel(page).getByRole('button', { name: 'Back to workers' }).click();
     await expect(note).toBeVisible();
-    // One visible line; the deploy and scheduling exception is in the tooltip, in visually hidden text inside the note
-    // (screen readers and keyboard users get it without hovering), and on the setup screen.
+    // One visible line; the deploy and scheduling exception is the tip of its leading icon: a Tab stop whose tip shows
+    // on hover and keyboard focus and is its accessible description (and on the setup screen).
     const text = note.locator('.architect-panel-access-text');
-    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access; you approve only this lead.');
-    await expect(text.locator('.sr-only')).toHaveText(' Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.');
-    await expect(text).toContainText('Deploy and scheduling tools are the exception');
-    // The tooltip adds what the line leaves out, rather than repeating it.
-    await expect(note).toHaveAttribute('title', "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.");
-    await expect(note.locator('.architect-panel-access-icon')).toHaveAttribute('data-state-tone', 'worker-idle');
+    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access; only the lead needs approval.');
+    const exception = "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.";
+    const mark = note.getByRole('img', { name: 'Deploy and scheduling exception' });
+    await expect(mark).toHaveAttribute('data-tip', exception);
+    await expect(mark).toHaveAttribute('aria-description', exception);
+    await expect(mark).toHaveAttribute('tabindex', '0');
+    await expect(note).not.toHaveAttribute('title', /.+/);
+    await expect(mark).toHaveClass(/architect-panel-access-icon/);
+    await expect(mark).toHaveAttribute('data-state-tone', 'worker-idle');
     // One line at the default width (two would be ~38px with the note's bottom padding).
     expect(await text.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(20);
     // In a narrow panel it wraps rather than being cut.
@@ -1991,11 +2000,16 @@ test.describe('workers full access note', () => {
     expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(28);
     await pickMode(page, 'Standard');
     await expect(note).toBeVisible();
-    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers have full access; you approve only this lead.');
+    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers have full access; only the lead needs approval.');
     // Like the tally, it belongs to the list: hidden while a worker's transcript is open.
     await row(page, 'build').click();
     await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
     await expect(note).toBeHidden();
+    // The transcript's sticky header is matched by scroll padding, so a control focused at the top is not hidden under it.
+    await expect.poll(() => panel(page).locator('.architect-panel-scroll').evaluate(element => {
+      const meta = element.querySelector<HTMLElement>('.architect-worker-meta')!;
+      return meta.offsetHeight > 0 && parseFloat(getComputedStyle(element).scrollPaddingTop) === meta.offsetHeight;
+    })).toBe(true);
     await panel(page).getByRole('button', { name: 'Back to workers' }).click();
     await expect(note).toBeVisible();
     // Dismissed, it stays away for this team for the session (reopening the panel too).
@@ -2003,6 +2017,8 @@ test.describe('workers full access note', () => {
     expect(await dismiss.evaluate(element => { const box = element.getBoundingClientRect(); return box.width >= 24 && box.height >= 24; })).toBe(true);
     await dismiss.click();
     await expect(note).toBeHidden();
+    // Focus moves on to the first worker row, not up to Close.
+    await expect(row(page, 'build')).toBeFocused();
     await panel(page).getByRole('button', { name: 'Close workers' }).click();
     await openWorkers(page).click();
     await expect(panel(page).locator('.architect-panel-access')).toBeHidden();
@@ -2331,7 +2347,7 @@ test.describe('compact workers round 22', () => {
     // Keyboard focus: the hint shows.
     await page.keyboard.press('ArrowDown');
     await expect(hint).toBeVisible();
-    await expect(hint).toHaveText('→ details · Enter opens');
+    await expect(hint).toHaveText('↑↓ move · → details · ← hides · Enter opens');
     await expect(hint).toHaveAttribute('aria-hidden', 'true');
     // A queue reason and a failure reason stand without the harness logo.
     await expect(panel(page).locator('.architect-worker-item[data-worker-id="review"] .architect-worker-logo')).toHaveCount(0);
