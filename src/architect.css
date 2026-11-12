@@ -263,7 +263,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-panel-access[hidden] { display: none; }
 /* Its info mark keeps a 12px glyph but a 24px hit area: padding taken back by negative margins, so the line does not
    move; no press scale (it anchors a pinned tip) and no press fill on the padded box. */
-.architect-panel-access .info-mark { width: 24px; height: 24px; padding: 6px; margin: -5px -6px -6px; --press: 1; }
+.architect-panel-access .info-mark { width: 24px; height: 24px; padding: 6px; margin: -5px -6px -6px; --press: 1; cursor: pointer; }
 .architect-panel-access .info-mark .icon { width: 12px; height: 12px; }
 .architect-panel-access .info-mark:active { background: none; }
 .architect-panel-access .info-mark:focus-visible { outline-offset: -4px; }
@@ -295,7 +295,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* Keyboard users see the row keys while a row has keyboard focus (not for pointer focus): one quiet line right after
    the rows (before Team messages), so the tally keeps every count in view. Hidden, it takes no space; shown, it only adds a line
    after the last row (nothing above moves). Scroll padding (no layout) keeps it in view under a focused last row. */
-.architect-worker-keyhint { display: none; height: 24px; margin: 0; padding: 0 13px; overflow: hidden; color: var(--faint); font-size: var(--ds-text-chip); line-height: 24px; white-space: nowrap; }
+.architect-worker-keyhint { display: none; height: 24px; margin: 0; padding: 0 13px; overflow: hidden; color: var(--faint); font-size: var(--ds-text-chip); line-height: 24px; white-space: nowrap; text-overflow: ellipsis; }
 .architect-panel-scroll:has(.architect-worker-row:focus-visible) { scroll-padding-block-end: 24px; }
 /* The open transcript's sticky header (its height measured into --architect-meta-h) never hides a focused control. */
 .architect-panel-scroll:has(> .architect-worker-detail:not([hidden])) { scroll-padding-block-start: var(--architect-meta-h, 48px); }

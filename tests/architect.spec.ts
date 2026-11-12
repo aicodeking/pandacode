@@ -2075,6 +2075,41 @@ test.describe('workers full access note', () => {
     await expect(note).toBeHidden();
     await expect(panel(page).locator('.architect-worker-list .architect-worker-row[tabindex="0"]')).toBeFocused();
   });
+  test('Escape on a pinned tip hides only the tip; a second Escape closes the flyout', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [worker('build', { status: 'completed' })] }) });
+    await openWorkers(page).click();
+    await pickMode(page, 'Standard');
+    const mark = panel(page).locator('.architect-panel-access').getByRole('button', { name: 'Deploy and scheduling exception', exact: true });
+    // Clickable, so the button cursor rather than help.
+    expect(await mark.evaluate(element => getComputedStyle(element).cursor)).toBe('pointer');
+    // Pinned from the keyboard (WebKit does not focus a clicked button), so focus is on the mark.
+    await mark.focus();
+    await page.keyboard.press('Enter');
+    await expect(mark).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.tip-bubble')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.tip-bubble')).toHaveCount(0);
+    await expect(mark).toHaveAttribute('aria-expanded', 'false');
+    await expect(panel(page)).toBeVisible();
+    await expect(mark).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(panel(page)).toBeHidden();
+  });
+});
+
+test.describe('workers key hint', () => {
+  test('a narrow flyout ends the key hint with an ellipsis and keeps the full text in its title', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' }), worker('review', { status: 'queued', dependsOn: ['build'] })] }) });
+    // Narrowed after the task loads (the sidebar folds away at this width): the flyout is min(400px, 100vw - 96px).
+    await page.setViewportSize({ width: 420, height: 800 });
+    await openWorkers(page).click();
+    await row(page, 'build').focus();
+    await page.keyboard.press('ArrowDown');
+    const hint = panel(page).locator('.architect-worker-keyhint');
+    await expect(hint).toBeVisible();
+    await expect(hint).toHaveAttribute('title', '↑↓ move · → shows details · ← hides · Enter opens');
+    expect(await hint.evaluate(element => ({ overflow: getComputedStyle(element).textOverflow, wrap: getComputedStyle(element).whiteSpace, cut: element.scrollWidth > element.clientWidth }))).toEqual({ overflow: 'ellipsis', wrap: 'nowrap', cut: true });
+  });
 });
 
 test.describe('compact workers focus on filled buttons', () => {

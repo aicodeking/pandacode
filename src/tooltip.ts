@@ -22,6 +22,12 @@ function hide(): void {
   anchor = undefined; pinned = false;
 }
 
+/** Hides a pinned tip (its mark keeps focus); true when there was one, so an Escape handler can stop there. */
+export function dismissPinnedTip(): boolean {
+  if (!pinned) return false;
+  hide(); return true;
+}
+
 function place(): void {
   frame = 0;
   if (!bubble || !anchor) return;
