@@ -50,7 +50,8 @@ fn version_37_survives_malformed_settings_json() {
     };
     let store = Store::open(&path).unwrap();
     assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
-    assert!(!saved_remotely(&store, &id).unwrap());
+    // Version 36 recorded nothing, so a user-made schedule fails closed.
+    assert!(saved_remotely(&store, &id).unwrap());
     drop(store);
     let _ = std::fs::remove_file(&path);
 }
@@ -72,6 +73,24 @@ fn version_37_moves_remotely_saved_ids_into_a_column() {
     assert!(settings(&store).unwrap().paused);
     let content: String = store.db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).unwrap();
     assert!(!content.contains("remoteSaved"));
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn version_37_marks_user_schedules_but_not_agent_wakeups() {
+    let path = std::env::temp_dir().join(format!("pandacode-schedules-{}.sqlite3", uuid::Uuid::new_v4()));
+    let (user, agent) = {
+        let store = store_at(&path);
+        let user = once(&store).id;
+        let agent = create(&store, &ScheduleInput { run_at: Some(NOW + MINUTE), ..input("once") }, "agent", None, NOW).unwrap().id;
+        store.db.execute_batch("ALTER TABLE task_schedules DROP COLUMN saved_remotely; PRAGMA user_version=36;").unwrap();
+        (user, agent)
+    };
+    let store = Store::open(&path).unwrap();
+    assert!(saved_remotely(&store, &user).unwrap(), "fails closed: version 36 never recorded a phone's save");
+    assert!(!saved_remotely(&store, &agent).unwrap());
+    assert!(REMOTE_TEAM_SKIP.contains("save it again"), "the skip says how to clear the mark");
     drop(store);
     let _ = std::fs::remove_file(&path);
 }

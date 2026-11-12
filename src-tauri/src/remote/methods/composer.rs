@@ -369,6 +369,13 @@ fn reusable_side((main_id, main_project): (&str, &str), (side_id, side_project, 
     linked && side_project == main_project && !archived && side_id != main_id
 }
 
+/// A new side thread of `main`, as the desktop's `create_session` makes one: no saved default
+/// team, and `side_thread_mode`, so a team worker's full access stays out of the user's side chat.
+fn new_side(store: &crate::storage::Store, main: &crate::storage::Session) -> Result<crate::storage::Session> {
+    let mode = crate::architect::side_thread_mode(store, Some(&main.id), None)?;
+    crate::architect::profiles::create_task_without_team(store, &main.project_id, &main.provider, &main.model, mode.as_deref(), None)
+}
+
 /// `btwRefusal` in src/main.ts.
 fn btw_refusal(task: &crate::storage::Session, bot_projects: &[String]) -> Option<&'static str> {
     if task.remote_device.is_some() || task.cloud.is_some() {
@@ -399,9 +406,7 @@ impl BtwAsk {
             let last = page.messages.iter().rev().find(|m| m.id > 0 && (m.role == "user" || m.role == "assistant")).ok_or("Send a first message in this task before asking on the side.")?;
             return Ok((crate::conversation_fork::at_message(&store, &main.id, last.id)?, true));
         }
-        // A side thread never gets the saved default team, as on the desktop.
-        let side = crate::architect::profiles::create_task_without_team(&store, &main.project_id, &main.provider, &main.model, Some(&main.mode), None)?;
-        Ok((side, true))
+        Ok((new_side(&store, &main)?, true))
     }
 
     /// The question with the main thread's news since `seen_id`, and the new seen id.
@@ -1193,8 +1198,8 @@ mod tests {
     #[test]
     fn side_threads_get_no_team_and_usage_resumes_check_the_team_gate() {
         let source = include_str!("composer.rs");
-        let side = &source[source.find("fn side(&self, state: &AppState)").unwrap()..];
-        let side = &side[..side.find("\n    }\n").unwrap()];
+        let side = &source[source.find("fn new_side(").unwrap()..];
+        let side = &side[..side.find("\n}\n").unwrap()];
         assert!(side.contains("create_task_without_team(") && !side.contains("create_user_task("));
         for start in ["impl Run for ResumeAtReset", "impl Run for ClearLimit"] {
             let body = &source[source.find(start).unwrap()..];
@@ -1202,6 +1207,19 @@ mod tests {
             let gate = body.find("allow_remote_team_for(").unwrap_or_else(|| panic!("{start}"));
             assert!(gate < body.find(".lock()").unwrap(), "{start}: the gate comes before the change");
         }
+    }
+
+    /// A worker's side thread takes its lead's mode, not the worker's full access; others keep theirs.
+    #[test]
+    fn a_new_side_thread_takes_the_desktops_side_thread_mode() {
+        let (store, _, _) = queue_store();
+        let project = store.projects().unwrap().remove(0);
+        let lead = store.create_session(&project.id, "codex", "m", "ask").unwrap();
+        let worker = store.create_session(&project.id, "codex", "m", "full").unwrap();
+        store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'w1',?2)", rusqlite::params![lead.id, worker.id]).unwrap();
+        assert_eq!(new_side(&store, &worker).unwrap().mode, "ask");
+        let plain = store.create_session(&project.id, "codex", "m", "auto").unwrap();
+        assert_eq!(new_side(&store, &plain).unwrap().mode, "auto");
     }
 
     #[test]

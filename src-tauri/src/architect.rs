@@ -542,6 +542,11 @@ pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
         .map(|s| serde_json::from_str(&s).map_err(|e| format!("Invalid saved team: {e}")))
         .transpose()
 }
+/// Whether a task leads a team: has one saved, configured, active or not. Every gate that keeps
+/// remote devices, bots and schedules from driving full-access workers asks this.
+pub(crate) fn leads_team(store: &Store, sid: &str) -> Result<bool> {
+    store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |row| row.get(0)).map_err(|e| e.to_string())
+}
 /// Whether a task's saved team is working. Every listing asks this for every task while holding
 /// both global locks, so it reads the status alone: a team's snapshot can be megabytes.
 pub(crate) fn is_active(store: &Store, sid: &str) -> bool {

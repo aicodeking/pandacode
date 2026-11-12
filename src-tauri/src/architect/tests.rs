@@ -5821,3 +5821,18 @@ fn a_launched_worker_carries_its_run_start_and_a_requeued_one_does_not() {
     assert_eq!((worker().status.as_str(), worker().started_at), ("queued", None));
     assert!(serde_json::to_value(worker()).unwrap().get("startedAt").is_none());
 }
+
+#[test]
+fn leads_team_is_true_only_for_a_task_with_a_saved_team() {
+    let path = std::env::temp_dir().join(format!("pandacode-leads-team-{}.db", storage::id()));
+    let store = Store::open(&path).unwrap();
+    let project = store.add_project(&std::env::temp_dir()).unwrap();
+    let lead = store.create_session(&project.id, "codex", "default", "full").unwrap().id;
+    let plain = store.create_session(&project.id, "codex", "default", "full").unwrap().id;
+    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead]).unwrap();
+    assert!(leads_team(&store, &lead).unwrap());
+    assert!(!leads_team(&store, &plain).unwrap());
+    assert!(!leads_team(&store, "missing").unwrap());
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

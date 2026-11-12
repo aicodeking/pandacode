@@ -729,10 +729,7 @@ fn allow_cross_thread_team(store: &crate::storage::Store, caller: &str, target: 
     if caller == target {
         return Ok(());
     }
-    let leads_team: bool = store
-        .db
-        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [target], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+    let leads_team = crate::architect::leads_team(store, target)?;
     if !leads_team {
         return Ok(());
     }

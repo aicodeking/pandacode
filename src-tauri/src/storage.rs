@@ -626,12 +626,15 @@ impl Store {
                 // again when it fires (`schedules::remote_team_gate`). Version 35's schema already
                 // carries the column on databases created since; ids an unreleased build kept in
                 // the settings row's `remoteSaved` list move into it (malformed settings JSON is skipped,
-                // never failing startup).
+                // never failing startup). Released version 36 recorded nothing, so a schedule saved from a
+                // phone there is indistinguishable: fail closed and mark every user-made schedule (agents'
+                // own wakeups stay unmarked); a skipped run tells the user to save it on the desktop.
                 let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name='saved_remotely')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
                 if !exists {
                     migration.execute_batch("ALTER TABLE task_schedules ADD COLUMN saved_remotely INTEGER NOT NULL DEFAULT 0;").map_err(|e| e.to_string())?;
                 }
-                migration.execute_batch("UPDATE task_schedules SET saved_remotely=1 WHERE id IN (SELECT j.value FROM scheduler_settings s, json_each(CASE WHEN json_valid(s.content) THEN s.content ELSE '{}' END,'$.remoteSaved') j WHERE s.id=1);
+                migration.execute_batch("UPDATE task_schedules SET saved_remotely=1 WHERE created_by='user';
+                  UPDATE task_schedules SET saved_remotely=1 WHERE id IN (SELECT j.value FROM scheduler_settings s, json_each(CASE WHEN json_valid(s.content) THEN s.content ELSE '{}' END,'$.remoteSaved') j WHERE s.id=1);
                   UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
                   PRAGMA user_version=37;").map_err(|e| e.to_string())?;
             }

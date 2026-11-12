@@ -120,7 +120,7 @@ mod tests {
         let (dir, root, store) = setup();
         let library = serde_json::json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
         store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
-        let leads_team = |sid: &str| -> bool { store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |r| r.get(0)).unwrap() };
+        let leads_team = |sid: &str| crate::architect::leads_team(&store, sid).unwrap();
         // A phone's chat.start without "Full access for remote tasks" passes team: false.
         let plain = create(&store, &root, "codex", "default", None, false).unwrap();
         assert!(!leads_team(&plain.id));

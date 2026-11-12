@@ -652,10 +652,7 @@ pub(crate) fn allow_remote_team(store: &crate::storage::Store, session_id: &str,
     if full_access {
         return Ok(());
     }
-    let leads_team: bool = store
-        .db
-        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [session_id], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+    let leads_team = crate::architect::leads_team(store, session_id)?;
     if leads_team { Err(TEAM_NEEDS_FULL_ACCESS.into()) } else { Ok(()) }
 }
 
@@ -1670,7 +1667,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::Approve { session_id, request_id, approve } => {
             drivable_task(app, from, &session_id, full_access).await?;
-            // Approving lets a lead go on and dispatch full-access workers; declining only stops it.
+            // Approving lets a lead run the tool and dispatch full-access workers. Declining is allowed
+            // without the switch: the lead's turn goes on, but the phone adds no text and approves nothing.
             if approve {
                 allow_remote_team_for(&state, &session_id, full_access).await?;
             }
@@ -1680,7 +1678,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::Answer { session_id, request_id, response } => {
             drivable_task(app, from, &session_id, full_access).await?;
-            // An answer steers a lead like a prompt; cancelling or declining only stops it.
+            // An answer steers a lead like a prompt. Cancelling or declining is allowed without the switch:
+            // the lead's turn may go on, but with no text from the phone.
             if !declines_input(&response) {
                 allow_remote_team_for(&state, &session_id, full_access).await?;
             }
@@ -5208,7 +5207,7 @@ mod tests {
         let library = json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
         store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
         let params = json!({"projectId": project.id, "prompt": "Fix the parser.", "provider": "codex", "model": "default"});
-        let leads_team = |sid: &str| -> bool { store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |r| r.get(0)).unwrap() };
+        let leads_team = |sid: &str| crate::architect::leads_team(&store, sid).unwrap();
         for (full_access, team) in [(false, false), (true, true)] {
             let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
             assert_eq!(start.team, team);
@@ -5297,7 +5296,7 @@ mod tests {
         let github = include_str!("methods/github.rs");
         assert!(after(github, "async fn solve_issue(", "\n}\n").contains("start.team = full_access;"), "github.startTask");
         let composer = include_str!("methods/composer.rs");
-        assert!(after(composer, "fn side(&self, state: &AppState)", "\n    }\n").contains("create_task_without_team("), "btw.ask");
+        assert!(after(composer, "fn new_side(", "\n}\n").contains("create_task_without_team("), "btw.ask");
         assert!(after(composer, "fn queue_edit_allowed(", "\n}\n").contains("allow_remote_team(store, &task.id, full_access)"), "queue.update");
         assert!(after(composer, "fn may_drain(", "\n}\n").contains("queue_edit_allowed(store, &task, full_access)"), "queue drain");
         assert!(after(composer, "impl Run for QueueUpdate", "\n}\n").contains("queue_edit_allowed(store, "), "queue.update");

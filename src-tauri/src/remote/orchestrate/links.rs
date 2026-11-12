@@ -695,6 +695,8 @@ pub async fn orchestration_link_respond(app: tauri::AppHandle, request_id: Strin
             return Err(error);
         }
     }
+    // A decline (allowed without the switch, `allow_remote_accept`) may also wake a team lead: it
+    // reads only the fixed "declined" outcome, no text from the phone, which is acceptable.
     if deliver(&request_id, outcome(&app, &answer)) {
         super::wake_link(&app, session);
     }

@@ -165,9 +165,10 @@ pub(crate) fn saved_remotely(store: &Store, id: &str) -> Result<bool> {
     Ok(store.db.query_row("SELECT saved_remotely FROM task_schedules WHERE id=?1", [id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.unwrap_or(false))
 }
 
-/// Recorded when a schedule saved from a remote device fires at a thread that now leads a team
+/// Recorded when a schedule saved from a remote device (or carried over from before version 37,
+/// which did not record it) fires at a thread that now leads a team
 /// while "Full access for remote tasks" is off: the team's workers would run in full access.
-pub(crate) const REMOTE_TEAM_SKIP: &str = "Skipped: this schedule was saved from a remote device and its thread now leads a team, whose workers run with full access. Allow full access for remote tasks, or save the schedule on this computer.";
+pub(crate) const REMOTE_TEAM_SKIP: &str = "Skipped: this schedule may have been saved from a remote device and its thread now leads a team, whose workers run with full access. Allow full access for remote tasks, or open the schedule on this computer and save it again to clear this.";
 
 /// Whether a firing schedule may send: one saved from a remote device reaches a thread that
 /// leads a team only while the host allows full access for remote tasks (as at save time).
@@ -175,10 +176,7 @@ pub(crate) fn remote_team_gate(store: &Store, schedule: &TaskSchedule, remote_fu
     if remote_full_access || !saved_remotely(store, &schedule.id)? {
         return Ok(None);
     }
-    let leads_team: bool = store
-        .db
-        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [&schedule.session_id], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+    let leads_team = crate::architect::leads_team(store, &schedule.session_id)?;
     Ok(leads_team.then_some(REMOTE_TEAM_SKIP))
 }
 

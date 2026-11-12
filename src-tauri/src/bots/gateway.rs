@@ -197,10 +197,7 @@ fn allow_team_turn(store: &Store, bot: &Bot, session_id: &str) -> Result<()> {
     if bot.mode == "full" {
         return Ok(());
     }
-    let leads_team: bool = store
-        .db
-        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [session_id], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+    let leads_team = crate::architect::leads_team(store, session_id)?;
     if leads_team { Err(TEAM_NEEDS_FULL_BOT.into()) } else { Ok(()) }
 }
 
