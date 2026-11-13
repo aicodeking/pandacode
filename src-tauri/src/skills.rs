@@ -72,6 +72,10 @@ pub struct Activation {
     /// Lines this activation added to the checkout's `.git/info/exclude`.
     #[serde(default)]
     pub excluded: Vec<String>,
+    /// The canonical exclude list those lines are in, so they can still be released once the
+    /// checkout itself is gone (a removed worktree).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_list: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -299,6 +303,10 @@ impl Library {
         serde_json::from_slice(&bytes).map_err(|e| format!("The library entry for {id} is damaged: {e}"))
     }
     fn save(&self, meta: &Meta) -> Result<(), String> {
+        #[cfg(test)]
+        if tests::FAIL_SAVE.with(std::cell::Cell::get) {
+            return Err("Could not save the library: test failure".into());
+        }
         let json = serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?;
         let temp = self.dir.join(format!(".{}.json.tmp", meta.id));
         fs::write(&temp, json).and_then(|_| fs::rename(&temp, self.meta_path(&meta.id))).map_err(|e| format!("Could not save the library: {e}"))
@@ -427,6 +435,23 @@ impl Library {
         }
     }
 
+    /// `activation`'s recorded files split into those inside the surface it writes
+    /// ([`adapter::recorded_in_surface`]) and the paths of the rest, which a tampered record
+    /// added: those are logged and never removed or rewritten. A project activation whose
+    /// folder is not plain ([`adapter::plain_project`]) has every file refused.
+    fn vetted(&self, id: &str, kind: Kind, activation: &Activation, base: &Path) -> (Vec<Written>, Vec<String>) {
+        let plain = activation.scope == Scope::User || adapter::plain_project(base, &self.home);
+        let (ok, refused): (Vec<Written>, Vec<Written>) = activation
+            .files
+            .iter()
+            .cloned()
+            .partition(|w| plain && adapter::recorded_in_surface(&activation.harness, kind, activation.scope, base, id, Path::new(&w.path)));
+        for w in &refused {
+            eprintln!("[skills] {} is not where {id} is written for {} in {}; PandaCode left it alone", w.path, activation.harness, base.display());
+        }
+        (ok, refused.into_iter().map(|w| w.path).collect())
+    }
+
     pub fn activate(&self, id: &str, harness: &str, scope: Scope, root: Option<&Path>, acknowledge: bool) -> Result<Change, String> {
         if !adapter::known(harness) {
             return Err("Unknown harness.".into());
@@ -445,47 +470,90 @@ impl Library {
         let project = (scope == Scope::Project).then(|| base.to_string_lossy().into_owned());
         let matches = |a: &Activation| a.harness == harness && a.scope == scope && a.project == project;
         let previous = meta.activations.iter().find(|a| matches(a)).cloned();
-        let old_files = previous.as_ref().map(|a| a.files.clone()).unwrap_or_default();
+        // Only recorded files inside the surface are ever removed or rewritten.
+        let (old_files, mut kept) = previous.as_ref().map(|a| self.vetted(id, meta.kind, a, base)).unwrap_or_default();
         let mut excluded = previous.as_ref().map(|a| a.excluded.clone()).unwrap_or_default();
-        let moved = previous.as_ref().is_some_and(|a| outside_surface(meta.kind, a));
-        let mut kept = Vec::new();
+        // Judged on the vetted files: a refused path is not an old surface to move from.
+        let moved = previous.as_ref().is_some_and(|a| outside_surface(meta.kind, &Activation { files: old_files.clone(), ..a.clone() }));
+        // What the previous activation had in place, to put back if the save fails.
+        let mut restore = Restore::Remove;
+        // Old lines a surface move releases, only once the new record is saved.
+        let mut release = Vec::new();
+        let mut items = Vec::new();
         let files = self.files(id)?;
-        let (surface, written) = match adapter::surface(harness, meta.kind, scope, base) {
+        let checkout = (scope == Scope::Project).then_some(base);
+        // A project's exclude line is added after the write's read-only checks pass (so a
+        // refused write, such as the user's own folder already there, never hides anything)
+        // and before any file is written, so a failed exclude update leaves the files (and the
+        // recorded activation's hashes) exactly as they were. A line this call added is taken
+        // back when the write then fails; files it wrote that had to stay are named instead.
+        let add_exclude = |path: &Path, folder: bool| -> Result<Option<String>, String> {
+            let Some(root) = checkout else { return Ok(None) };
+            let Some(entry) = adapter::exclude_entry(root, path, folder)? else { return Ok(None) };
+            Ok(adapter::exclude(base, &entry)?.then_some(entry))
+        };
+        // Taking a line back can fail too (the list changed since); that is said, not hidden.
+        let undo_exclude = |added: &Option<String>| match added.as_deref().map(|entry| (entry, adapter::unexclude(base, entry))) {
+            Some((entry, Err(e))) => format!(" Could not remove the exclude line {entry}: {e}."),
+            _ => String::new(),
+        };
+        let surface_target = match adapter::surface(harness, meta.kind, scope, base) {
+            Surface::Folder(dir) => Some(dir.join(id)),
+            Surface::Block(file) => Some(file),
+            Surface::Prompt => None,
+        };
+        if let Some(target) = &surface_target {
+            shared_target(id, meta.activations.iter().filter(|a| !matches(a)), base, target)?;
+        }
+        let mut checkouts = Checkouts::default();
+        let (surface, written, added) = match adapter::surface(harness, meta.kind, scope, base) {
             Surface::Folder(dir) => {
                 // After a surface move the new folder must be free, as for a first activation;
                 // the old copy goes only once the new one is written, and an edited file stays.
-                let written = adapter::write_folder(&dir, id, &files, if moved { &[] } else { &old_files })?;
+                let previous_files = if moved { &[][..] } else { &old_files[..] };
+                adapter::check_folder(&dir, id, &files, previous_files, checkout)?;
+                // Loaded before anything is written, so a damaged entry refuses the move cleanly.
                 if moved {
-                    kept = adapter::remove_folder(&old_files);
-                    if kept.is_empty() {
-                        excluded.drain(..).for_each(|entry| adapter::unexclude(base, &entry));
-                    }
+                    items = self.list()?;
+                } else if previous.is_some() {
+                    restore = Restore::Folder(dir.clone(), snapshot(&dir.join(id), &old_files));
                 }
-                if scope == Scope::Project {
-                    if let Some(entry) = adapter::exclude_entry(base, &dir.join(id), true) {
-                        if adapter::exclude(base, &entry)? {
-                            excluded.push(entry);
-                        }
-                    }
+                let added = add_exclude(&dir.join(id), true)?;
+                let written = adapter::write_folder(&dir, id, &files, previous_files, checkout).map_err(|(e, left)| {
+                    // Nothing stays hidden: files that had to stay are named and show in Git.
+                    format!("{e}{}{}", undo_exclude(&added), left_in_place(&left))
+                })?;
+                if moved {
+                    // The old copy goes once the new record is saved (below); its lines too.
+                    release = excluded.drain(..).filter(|entry| Some(entry) != added.as_ref()).collect();
                 }
-                ("folder", written)
+                ("folder", written, added)
             }
             Surface::Block(file) => {
-                let created = !file.exists();
+                adapter::check_block(&file, id, old_files.first(), checkout)?;
+                let added = if file.exists() { None } else { add_exclude(&file, false)? };
                 let text = files.first().map(|(_, b)| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
                 let (_, _, body) = frontmatter(&text);
-                let written = adapter::write_block(&file, id, body, old_files.first())?;
-                if scope == Scope::Project && created {
-                    if let Some(entry) = adapter::exclude_entry(base, &file, false) {
-                        if adapter::exclude(base, &entry)? {
-                            excluded.push(entry);
-                        }
-                    }
+                // Checked against the record by `check_block`, so it is what the record holds.
+                let old_body = old_files.first().and_then(|w| adapter::read_text(Path::new(&w.path)).ok()).and_then(|text| adapter::block(&text, id)).map(|(body, _)| body);
+                if let Some(body) = old_body {
+                    restore = Restore::Block(file.clone(), body);
                 }
-                ("block", vec![written])
+                // A failed block write wrote nothing that counts, so the line always goes.
+                let written = adapter::write_block(&file, id, body, old_files.first(), checkout).map_err(|e| format!("{e}{}", undo_exclude(&added)))?;
+                ("block", vec![written], added)
             }
-            Surface::Prompt => ("prompt", Vec::new()),
+            Surface::Prompt => ("prompt", Vec::new(), None),
         };
+        if let Some(entry) = added.as_ref().filter(|entry| !excluded.contains(entry)) {
+            excluded.push(entry.clone());
+        }
+        let exclude_list = if excluded.is_empty() {
+            None
+        } else {
+            checkouts.get(base).map(|(list, _)| list.to_string_lossy().into_owned()).or_else(|| previous.as_ref().and_then(|a| a.exclude_list.clone()))
+        };
+        let written_now = written.clone();
         let activation = Activation {
             harness: harness.into(),
             scope,
@@ -494,19 +562,33 @@ impl Library {
             sha256: meta.sha256.clone(),
             files: written,
             excluded,
+            exclude_list,
         };
-        let activations = meta
+        let activations: Vec<Activation> = meta
             .activations
             .iter()
             .filter(|a| !matches(a))
             .cloned()
             .chain([activation])
             .collect();
-        self.save(&Meta {
-            acknowledged,
-            activations,
-            ..meta
-        })?;
+        if let Err(e) = self.save(&Meta { acknowledged, activations, ..meta }) {
+            // The previous record is still the saved one, so what it records is put back: its
+            // files where this call replaced them, nothing where it had none (unrecorded files
+            // would be refused as the user's own next time). A moved copy was not touched yet.
+            // The old lines stay with the previous record.
+            let left = restore.apply(id, surface, &written_now, checkout);
+            return Err(format!("{e}{}{}", undo_exclude(&added), left_in_place(&left)));
+        }
+        if moved {
+            // An edited file stays, unmanaged, and its line goes too, as on deactivate.
+            kept.extend(adapter::remove_folder(&old_files, checkout));
+        }
+        // Lines another activation still has files under stay and are handed to it.
+        if let (false, Some(previous)) = (release.is_empty(), &previous) {
+            let others = other_activations(&items, id, previous);
+            let heirs = release_excludes(base, previous.exclude_list.as_deref(), release, &others, &mut checkouts);
+            self.hand_over(heirs);
+        }
         drop(_guard);
         Ok(Change {
             items: self.list()?,
@@ -530,22 +612,38 @@ impl Library {
         let Some(activation) = meta.activations.iter().find(|a| matches(a)).cloned() else {
             return Err(format!("{} is not active there.", meta.name));
         };
-        let kept = undo(id, &activation, Some(base));
-        let activations = meta
+        let items = self.list()?;
+        let others = other_activations(&items, id, &activation);
+        let (kept, heirs) = self.undo(id, meta.kind, &activation, Some(base), &others, &mut Checkouts::default());
+        let mut activations: Vec<Activation> = meta
             .activations
             .iter()
             .filter(|a| !matches(a))
             .cloned()
             .collect();
+        let heirs = heirs.into_iter().filter(|h| h.id != id || !inherit(&mut activations, h)).collect();
         self.save(&Meta {
             activations,
             ..meta
         })?;
+        self.hand_over(heirs);
         drop(_guard);
         Ok(Change {
             items: self.list()?,
             kept,
         })
+    }
+
+    /// Records each kept exclude line in the activation of another item that relies on it.
+    /// Runs after the change itself was saved, so a failure is logged, not returned: the line
+    /// stays in the exclude list, only unowned.
+    fn hand_over(&self, heirs: Vec<Heir>) {
+        for heir in heirs {
+            let handed = self.load(&heir.id).and_then(|mut meta| if inherit(&mut meta.activations, &heir) { self.save(&meta) } else { Ok(()) });
+            if let Err(e) = handed {
+                eprintln!("[skills] could not hand the exclude line {} to {}: {e}", heir.entry, heir.id);
+            }
+        }
     }
 
     /// Turns an item off for every harness and scope it was activated in, including
@@ -554,13 +652,32 @@ impl Library {
     pub fn deactivate_all(&self, id: &str) -> Result<Change, String> {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
         let meta = self.load(id)?;
+        let items = self.list()?;
         let mut kept = Vec::new();
-        for activation in &meta.activations {
+        let mut checkouts = Checkouts::default();
+        // Lines handed over within the loop go to the activations still to be undone.
+        let mut pending = meta.activations.clone();
+        for at in 0..pending.len() {
+            let activation = pending[at].clone();
+            // Heirs are only activations that remain after this loop's step: other items', and
+            // this item's still to be undone (ones undone earlier are dropped with the record).
+            let rest = pending[at + 1..].to_vec();
+            let others: Vec<(&str, &Activation)> = items
+                .iter()
+                .filter(|item| item.meta.id != id)
+                .flat_map(|item| item.meta.activations.iter().map(move |a| (item.meta.id.as_str(), a)))
+                .chain(rest.iter().map(|a| (id, a)))
+                .collect();
             let base = match activation.scope {
                 Scope::User => Some(self.home.as_path()),
                 Scope::Project => activation.project.as_deref().map(Path::new),
             };
-            kept.extend(undo(id, activation, base));
+            // A project activation without its checkout can't be undone: its record goes (no
+            // place could ever turn it off) and its files are reported as kept.
+            let (left, heirs) = self.undo(id, meta.kind, &activation, base, &others, &mut checkouts);
+            kept.extend(left);
+            let heirs = heirs.into_iter().filter(|h| h.id != id || !inherit(&mut pending[at + 1..], h)).collect();
+            self.hand_over(heirs);
         }
         self.save(&Meta {
             activations: Vec::new(),
@@ -571,6 +688,32 @@ impl Library {
             items: self.list()?,
             kept,
         })
+    }
+
+    /// Removes one activation's files (an edited file stays, unmanaged, and is returned) and
+    /// the project exclude lines it added to `base` that no other activation in `others` still
+    /// relies on, so a kept file shows in Git; the lines kept for others are returned for them
+    /// to own. Recorded paths outside the activation's surface, and every path of a project
+    /// activation whose folder is not plain, are returned as kept and never touched.
+    fn undo(&self, id: &str, kind: Kind, activation: &Activation, base: Option<&Path>, others: &[(&str, &Activation)], checkouts: &mut Checkouts) -> (Vec<String>, Vec<Heir>) {
+        let all = || activation.files.iter().map(|w| w.path.clone()).collect();
+        let (base, checkout) = match (activation.scope, base) {
+            (Scope::User, _) => (self.home.as_path(), None),
+            (Scope::Project, Some(base)) if adapter::plain_project(base, &self.home) => (base, Some(base)),
+            (Scope::Project, Some(base)) => {
+                eprintln!("[skills] {} is not a project folder PandaCode works in; {id}'s files and exclude lines there were left alone", base.display());
+                return (all(), Vec::new());
+            }
+            // A project activation without its checkout can't be checked for links: left as it is.
+            (Scope::Project, None) => return (all(), Vec::new()),
+        };
+        let (files, mut kept) = self.vetted(id, kind, activation, base);
+        kept.extend(remove_written(id, &activation.surface, &files, checkout));
+        let heirs = match checkout {
+            Some(base) => release_excludes(base, activation.exclude_list.as_deref(), activation.excluded.iter().cloned(), others, checkouts),
+            None => Vec::new(),
+        };
+        (kept, heirs)
     }
 
     /// Refuses while anything is active, so no harness keeps files the library forgot.
@@ -593,7 +736,7 @@ impl Library {
             return "outdated";
         }
         let present = |w: &Written| match activation.surface.as_str() {
-            "block" => fs::read_to_string(&w.path).ok().map(|text| adapter::block(&text, &meta.id).map(|(body, _)| sha256_hex(body.as_bytes()) == w.sha256)),
+            "block" => adapter::read_text(Path::new(&w.path)).ok().map(|text| adapter::block(&text, &meta.id).map(|(body, _)| sha256_hex(body.as_bytes()) == w.sha256)),
             _ => adapter::file_hash(Path::new(&w.path)).map(|hash| Some(hash == w.sha256)),
         }
         .flatten();
@@ -650,20 +793,21 @@ impl Library {
                     }
                 }
                 if let Surface::Block(file) = adapter::surface(harness, Kind::Rule, *scope, base) {
-                    if let Ok(text) = fs::read_to_string(&file) {
-                        let (ids, other) = adapter::blocks_in(&text);
-                        let path = file.to_string_lossy().into_owned();
-                        for id in ids.iter().filter(|id| !managed.contains(&id.as_str())) {
-                            unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path: path.clone(), detail: format!("Has a PandaCode block for {id} that the library does not track.") });
+                    let path = file.to_string_lossy().into_owned();
+                    match adapter::read_text(&file) {
+                        Ok(text) => {
+                            let (ids, other) = adapter::blocks_in(&text);
+                            for id in ids.iter().filter(|id| !managed.contains(&id.as_str())) {
+                                unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path: path.clone(), detail: format!("Has a PandaCode block for {id} that the library does not track.") });
+                            }
+                            if other {
+                                unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path, detail: "Has instructions PandaCode does not manage.".into() });
+                            }
                         }
-                        if other {
-                            unmanaged.push(Unmanaged {
-                                scope: *scope,
-                                kind: Kind::Rule,
-                                path,
-                                detail: "Has instructions PandaCode does not manage.".into(),
-                            });
-                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        // Round 24: oversized, not text, or not a regular file (a link to
+                        // `/dev/zero`, a FIFO) is never read in full.
+                        Err(_) => unmanaged.push(Unmanaged { scope: *scope, kind: Kind::Rule, path, detail: "Has instructions PandaCode does not manage.".into() }),
                     }
                 }
             }
@@ -679,26 +823,221 @@ impl Library {
     }
 }
 
-/// Removes one activation's files (an edited file stays and is returned) and, when nothing
-/// was kept, the project exclude lines it added to `base`.
-fn undo(id: &str, activation: &Activation, base: Option<&Path>) -> Vec<String> {
-    let kept: Vec<String> = match activation.surface.as_str() {
-        "folder" => adapter::remove_folder(&activation.files),
-        "block" => activation
-            .files
-            .iter()
-            .filter(|w| !matches!(adapter::remove_block(w, id), Ok(true)))
-            .map(|w| w.path.clone())
-            .collect(),
-        _ => Vec::new(),
+/// Refuses a write to `target` when it is a link (`AGENTS.md -> CLAUDE.md`, `.agents/skills ->
+/// ../.claude/skills`) to where another activation of the same item already wrote: writing it
+/// twice would trip the edited-on-disk checks, and turning one off would break the other.
+/// Only what is still there counts: a recorded block or file since removed does not.
+fn shared_target<'a>(id: &str, others: impl Iterator<Item = &'a Activation>, base: &Path, target: &Path) -> Result<(), String> {
+    let Some(real) = adapter::real_location(target) else { return Ok(()) };
+    // Compared canonical on both sides: `base` itself may sit behind a link (`/var` on macOS).
+    let plain = target.strip_prefix(base).ok().and_then(|inside| Some(adapter::real_location(base)?.join(inside)));
+    let present = |surface: &str, path: &Path| match surface {
+        "block" => adapter::read_text(path).ok().is_some_and(|text| adapter::block(&text, id).is_some()),
+        _ => path.exists(),
     };
-    if let (Scope::Project, true, Some(base)) = (activation.scope, kept.is_empty(), base) {
-        for entry in &activation.excluded {
-            adapter::unexclude(base, entry);
+    for other in others {
+        let lands_there = other.files.iter().any(|w| {
+            let path = Path::new(&w.path);
+            adapter::real_location(path).is_some_and(|at| at.starts_with(&real)) && present(&other.surface, path)
+        });
+        if lands_there {
+            return Err(if plain.as_ref() == Some(&real) {
+                format!("PandaCode already manages {} for {}.", target.display(), other.harness)
+            } else {
+                format!("{} is a link to {}, which PandaCode already manages for {}.", target.display(), real.display(), other.harness)
+            });
         }
     }
-    kept
+    Ok(())
 }
+
+/// Every recorded activation of every item except `activation` of `id`, with its item's id.
+fn other_activations<'a>(items: &'a [Item], id: &str, activation: &Activation) -> Vec<(&'a str, &'a Activation)> {
+    let same = |a: &Activation| a.harness == activation.harness && a.scope == activation.scope && a.project == activation.project;
+    items
+        .iter()
+        .flat_map(|item| item.meta.activations.iter().filter(move |a| item.meta.id != id || !same(a)).map(move |a| (item.meta.id.as_str(), a)))
+        .collect()
+}
+
+/// Each checkout's exclude list and repository top level, resolved once per operation.
+#[derive(Default)]
+struct Checkouts(std::collections::HashMap<PathBuf, Option<(PathBuf, adapter::Checkout)>>);
+
+impl Checkouts {
+    fn get(&mut self, root: &Path) -> Option<&(PathBuf, adapter::Checkout)> {
+        self.0.entry(root.to_path_buf()).or_insert_with(|| Some((adapter::exclude_list(root)?, adapter::Checkout::open(root)?))).as_ref()
+    }
+}
+
+/// The other project activations that still have a file in place that `entry` of the
+/// exclude list `list` hides: a rule sharing the CLAUDE.md the first one created, or the same
+/// skill in another worktree sharing the repository's exclude list. Only activations whose
+/// checkout uses `list` count.
+fn exclude_heirs<'a>(list: &Path, entry: &str, others: &[(&'a str, &'a Activation)], checkouts: &mut Checkouts) -> Vec<(&'a str, &'a Activation)> {
+    let covers = |line: &str| line == entry || (entry.ends_with('/') && line.starts_with(entry));
+    others
+        .iter()
+        .filter(|(_, other)| {
+            let (Scope::Project, Some(project)) = (other.scope, other.project.as_deref()) else { return false };
+            let Some((theirs, checkout)) = checkouts.get(Path::new(project)) else { return false };
+            theirs == list && other.files.iter().any(|w| {
+                let path = Path::new(&w.path);
+                path.exists() && checkout.entry(path, false).is_some_and(|line| covers(&line))
+            })
+        })
+        .copied()
+        .collect()
+}
+
+/// An exclude line handed to another activation (item `id`'s activation `harness`, `scope`,
+/// `project`) that still relies on it, so the last one relying on it removes it.
+struct Heir {
+    id: String,
+    harness: String,
+    scope: Scope,
+    project: Option<String>,
+    entry: String,
+    /// The exclude list holding `entry`.
+    list: PathBuf,
+}
+
+/// Drops each of `entries` from `base`'s exclude list unless another activation in `others`
+/// still relies on it; those lines are returned as handed to every such activation. When the
+/// checkout can't be resolved (deleted, or its `.git` pruned), `stored` (the list recorded with
+/// the lines) stands in for its list, but only while it still is a Git exclude list and is
+/// vouched for: its Git folder still registers `base` as a worktree, or another live
+/// activation's checkout uses it. Anything else is logged and the lines stay.
+fn release_excludes(base: &Path, stored: Option<&str>, entries: impl IntoIterator<Item = String>, others: &[(&str, &Activation)], checkouts: &mut Checkouts) -> Vec<Heir> {
+    let entries: Vec<String> = entries.into_iter().collect();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let live = checkouts.get(base).map(|(list, _)| list.clone());
+    if live.is_none() {
+        eprintln!("[skills] could not resolve the Git exclude list of {}; using the recorded one if it is still valid", base.display());
+    }
+    let list = match (live.clone(), stored) {
+        (Some(list), _) => list,
+        (None, Some(stored)) => {
+            let stored = PathBuf::from(stored);
+            let vouched = adapter::trusted_exclude_list(&stored) && (adapter::registers_worktree(&stored, base) || live_lists(others, checkouts).contains(&stored));
+            if !vouched {
+                eprintln!("[skills] {} is not the Git exclude list of {} any more; its lines {} were left there", stored.display(), base.display(), entries.join(", "));
+                return Vec::new();
+            }
+            stored
+        }
+        (None, None) => return hand_to_siblings(base, entries, others, checkouts),
+    };
+    let mut heirs = Vec::new();
+    for entry in entries {
+        let relying = exclude_heirs(&list, &entry, others, checkouts);
+        if relying.is_empty() {
+            let dropped = if live.is_some() { adapter::unexclude(base, &entry) } else { adapter::unexclude_at(&list, &entry) };
+            if let Err(e) = dropped {
+                eprintln!("[skills] could not remove the exclude line {entry}: {e}");
+            }
+        }
+        heirs.extend(relying.into_iter().map(|(id, a)| Heir { id: id.into(), harness: a.harness.clone(), scope: a.scope, project: a.project.clone(), entry: entry.clone(), list: list.clone() }));
+    }
+    heirs
+}
+
+/// The exclude lists the live project checkouts of `others` use.
+fn live_lists(others: &[(&str, &Activation)], checkouts: &mut Checkouts) -> Vec<PathBuf> {
+    others.iter().filter_map(|(_, a)| a.project.as_deref().filter(|_| a.scope == Scope::Project)).filter_map(|project| checkouts.get(Path::new(project)).map(|(list, _)| list.clone())).collect()
+}
+
+/// Lines an older record (no recorded exclude list) left for a checkout that can't be
+/// resolved: each is handed to the live activations of the same folder, or of a sibling
+/// worktree whose Git folder still registers it, whose exclude list holds the line, so the
+/// last one of them removes it. Lines nobody takes stay and are logged.
+fn hand_to_siblings(base: &Path, entries: Vec<String>, others: &[(&str, &Activation)], checkouts: &mut Checkouts) -> Vec<Heir> {
+    let mut heirs = Vec::new();
+    for entry in entries {
+        let before = heirs.len();
+        for (id, other) in others {
+            let (Scope::Project, Some(project)) = (other.scope, other.project.as_deref()) else { continue };
+            let Some((list, _)) = checkouts.get(Path::new(project)) else { continue };
+            let sibling = Path::new(project) == base || adapter::registers_worktree(list, base);
+            if sibling && adapter::lists_line(list, &entry) {
+                heirs.push(Heir { id: (*id).into(), harness: other.harness.clone(), scope: other.scope, project: other.project.clone(), entry: entry.clone(), list: list.clone() });
+            }
+        }
+        if heirs.len() == before {
+            eprintln!("[skills] the exclude line {entry} of {} was left in place: its checkout is gone and no other activation uses that exclude list", base.display());
+        }
+    }
+    heirs
+}
+
+/// Adds `heir`'s line to the matching record in `activations`; whether one matched.
+fn inherit(activations: &mut [Activation], heir: &Heir) -> bool {
+    let Some(a) = activations.iter_mut().find(|a| a.harness == heir.harness && a.scope == heir.scope && a.project == heir.project) else { return false };
+    if !a.excluded.contains(&heir.entry) {
+        a.excluded.push(heir.entry.clone());
+    }
+    a.exclude_list = Some(heir.list.to_string_lossy().into_owned());
+    true
+}
+
+/// What a failed save puts back: the previous activation's skill files (relative path and
+/// bytes, written into the folder), its rule block's body, or nothing (the write is removed).
+enum Restore {
+    Remove,
+    Folder(PathBuf, Files),
+    Block(PathBuf, String),
+}
+
+impl Restore {
+    /// Undoes the write `written` of `surface`; returns the files it had to leave in place.
+    fn apply(self, id: &str, surface: &str, written: &[Written], checkout: Option<&Path>) -> Vec<String> {
+        match self {
+            Restore::Remove => remove_written(id, surface, written, checkout),
+            Restore::Folder(dir, files) => adapter::write_folder(&dir, id, &files, written, checkout).map_or_else(|(e, left)| {
+                eprintln!("[skills] could not put back the previous {id}: {e}");
+                left
+            }, |_| Vec::new()),
+            Restore::Block(file, body) => match adapter::write_block(&file, id, &body, written.first(), checkout) {
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    eprintln!("[skills] could not put back the previous {id} block: {e}");
+                    vec![file.to_string_lossy().into_owned()]
+                }
+            },
+        }
+    }
+}
+
+/// The recorded files under `target` that still hold what was written, as relative paths and
+/// bytes, so a failed save can write them back.
+fn snapshot(target: &Path, written: &[Written]) -> Files {
+    written
+        .iter()
+        .filter_map(|w| {
+            let path = Path::new(&w.path);
+            let relative = path.strip_prefix(target).ok()?.to_string_lossy().replace('\\', "/");
+            let bytes = crate::workspace::read_regular_target(path, adapter::READ_LIMIT).ok()?;
+            (sha256_hex(&bytes) == w.sha256).then_some((relative, bytes))
+        })
+        .collect()
+}
+
+/// Removes the files of a `surface` write that still match; returns the ones left in place.
+fn remove_written(id: &str, surface: &str, files: &[Written], checkout: Option<&Path>) -> Vec<String> {
+    match surface {
+        "folder" => adapter::remove_folder(files, checkout),
+        "block" => files.iter().filter(|w| !matches!(adapter::remove_block(w, id, checkout), Ok(true))).map(|w| w.path.clone()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// ` Left in place: a, b.` for files a failed change could not take back, or nothing.
+fn left_in_place(left: &[String]) -> String {
+    if left.is_empty() { String::new() } else { format!(" Left in place: {}.", left.join(", ")) }
+}
+
 fn active_in<'m>(
     meta: &'m Meta,
     harness: &str,

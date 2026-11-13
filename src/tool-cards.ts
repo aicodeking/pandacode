@@ -1,4 +1,6 @@
-import { basename, mcpAction, parseFields, shellCommand, toolKind, type TraceKind } from './tool-trace.ts';
+import { basename, clip, stripAnsi, unwrapHarness } from './tool-text.ts';
+import { exitCode } from './tool-trace-outcome.ts';
+import { mcpAction, parseFields, shellCommand, toolFailed, toolKind, type Tool, type TraceKind } from './tool-trace.ts';
 import { escape, fileIcon, icon } from './dom.ts';
 
 /** Rich, escaped result-card bodies per tool kind, in the reference's language: hairline rows with a
@@ -16,10 +18,6 @@ const MATCHES_PER_FILE = 3;
 const KEYS = 6;
 const OMITTED = '[Non-text content omitted]';
 
-const clip = (value: string, limit = 140) => {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  return flat.length > limit ? flat.slice(0, limit - 1) + '…' : flat;
-};
 const str = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
 const field = (fields: Fields, ...keys: string[]) => {
   for (const key of keys) { const value = str(fields[key]); if (value) return value; }
@@ -29,10 +27,7 @@ const objects = (value: unknown): Fields[] => Array.isArray(value) ? value.filte
 const splitLines = (value: string) => value ? value.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n') : [];
 const plural = (count: number, one: string, many = one + 's') => `${count} ${count === 1 ? one : many}`;
 const dirname = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-export function stripAnsi(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b[@-_]/g, '');
-}
+export { stripAnsi };
 function domain(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return clip(url, 60); }
 }
@@ -41,7 +36,7 @@ function urlPath(url: string): string {
 }
 function cleanOutput(output: string): string {
   const value = output.slice(0, MAX_SCAN);
-  return value.trim() === OMITTED ? '' : unwrapContent(value);
+  return value.trim() === OMITTED ? '' : unwrapHarness(unwrapContent(value));
 }
 /** MCP results often arrive as `[{"type":"text","text":"…"}]` content blocks. */
 function unwrapContent(output: string): string {
@@ -69,7 +64,8 @@ const iconMark = (name: string, cls = '') => `<span class="tc-mark${cls ? ' ' + 
 const fileMark = (path: string, isDir = false) => `<span class="tc-mark tc-file-mark" aria-hidden="true">${fileIcon(basename(path), isDir)}</span>`;
 
 function head(mark: string, title: string, meta = '', right = ''): string {
-  return `<div class="tc-head">${mark}<span class="tc-head-title">${title}</span>${meta ? `<span class="tc-head-meta">${escape(meta)}</span>` : ''}${right ? `<span class="tc-head-right">${right}</span>` : ''}</div>`;
+  const metaHtml = meta ? `<span class="tc-head-meta">${escape(meta)}</span>` : '';
+  return `<div class="tc-head">${mark}<span class="tc-head-title">${title}</span>${metaHtml}${right ? `<span class="tc-head-right">${right}</span>` : ''}</div>`;
 }
 function more(count: number, noun = 'more'): string {
   return count > 0 ? `<div class="tc-more">+${count} ${escape(noun)}</div>` : '';
@@ -78,21 +74,27 @@ function rowHtml(row: Row): string {
   const title = row.titleHtml ?? escape(clip(row.title, 120));
   const status = row.status ? ` data-status="${escape(row.status)}"` : '';
   const body = row.bodyHtml ?? (row.body ? escape(clip(row.body, 220)) : '');
-  return `<li class="tc-row"${status}>${row.mark}<div class="tc-row-main"><div class="tc-row-line"><span class="tc-row-title">${title}</span>${row.meta ? `<span class="tc-row-meta">${escape(clip(row.meta, 80))}</span>` : ''}${row.time ? `<span class="tc-row-time">${escape(row.time)}</span>` : ''}</div>${body ? `<div class="tc-row-body">${body}</div>` : ''}</div></li>`;
+  const meta = row.meta ? `<span class="tc-row-meta">${escape(clip(row.meta, 80))}</span>` : '';
+  const time = row.time ? `<span class="tc-row-time">${escape(row.time)}</span>` : '';
+  return `<li class="tc-row"${status}>${row.mark}<div class="tc-row-main"><div class="tc-row-line"><span class="tc-row-title">${title}</span>${meta}${time}</div>`
+    + `${body ? `<div class="tc-row-body">${body}</div>` : ''}</div></li>`;
 }
 function rows(items: Row[], total = items.length, noun = 'more'): string {
   if (!items.length) return '';
   return `<ul class="tc-rows">${items.slice(0, ROWS).map(rowHtml).join('')}</ul>${more(total - Math.min(items.length, ROWS), noun)}`;
 }
+/** ` data-digits="4"` when a gutter's widest number needs more than the default three digits (tool-cards.css sizes it). */
+function digitsAttr(numbers: (number | null | undefined)[]): string {
+  const digits = String(Math.max(0, ...numbers.map(n => n ?? 0))).length;
+  return digits > 3 ? ` data-digits="${Math.min(digits, 7)}"` : '';
+}
 /** Numbered code lines; `numbers` null leaves the gutter blank. */
 function codeLines(values: string[], numbers: (number | null)[] | number, label: string, total = values.length): string {
   if (!values.length) return '';
   const shown = values.slice(0, LINES);
-  const body = shown.map((line, i) => {
-    const n = typeof numbers === 'number' ? numbers + i : numbers[i];
-    return `<span class="tc-line"><span class="tc-gutter">${n ?? ''}</span><span class="tc-code">${escape(line.slice(0, 400)) || ' '}</span></span>`;
-  }).join('');
-  return `<pre class="tc-lines" tabindex="0" aria-label="${escape(label)}">${body}</pre>${more(total - shown.length, total - shown.length === 1 ? 'more line' : 'more lines')}`;
+  const gutter = shown.map((_, i) => typeof numbers === 'number' ? numbers + i : numbers[i]);
+  const body = shown.map((line, i) => `<span class="tc-line"><span class="tc-gutter">${gutter[i] ?? ''}</span><span class="tc-code">${escape(line.slice(0, 400)) || ' '}</span></span>`).join('');
+  return `<pre class="tc-lines"${digitsAttr(gutter)} tabindex="0" aria-label="${escape(label)}">${body}</pre>${more(total - shown.length, total - shown.length === 1 ? 'more line' : 'more lines')}`;
 }
 function pathTitle(path: string): string {
   const dir = dirname(path);
@@ -106,6 +108,11 @@ function excerpt(text: string, limit = 4): string {
   const shown = splitLines(text.trim()).map(line => line.trim()).filter(Boolean);
   return shown.length ? `<p class="tc-excerpt">${inlineCode(clip(shown.slice(0, limit).join(' '), 360))}</p>` : '';
 }
+/** An excerpt that keeps its lines, so a numbered or bulleted list stays a list. */
+function lineExcerpt(text: string, limit: number): string {
+  const shown = splitLines(text.trim()).map(line => clip(line.trim(), 200)).filter(Boolean).slice(0, limit);
+  return shown.length ? `<p class="tc-excerpt is-lines">${shown.map(inlineCode).join('\n')}</p>` : '';
+}
 function clockTime(value: string): string {
   if (!/\d{4}-\d{2}-\d{2}|^\d{10,13}$/.test(value)) return '';
   const date = new Date(/^\d{10}$/.test(value) ? Number(value) * 1000 : /^\d{13}$/.test(value) ? Number(value) : value);
@@ -116,32 +123,46 @@ function clockTime(value: string): string {
 
 // ── Shell ────────────────────────────────────────────────────────────────────
 
-function exitCode(output: string): { code?: number; body: string } {
-  const codex = /^Exit code: (-?\d+)\n?/.exec(output);
-  if (codex) return { code: Number(codex[1]), body: output.slice(codex[0].length).replace(/^Wall time:.*\n?/, '').replace(/^Output:\n?/, '') };
-  const json = parseFields(output);
-  const code = typeof json.exitCode === 'number' ? json.exitCode : typeof json.exit_code === 'number' ? json.exit_code : undefined;
-  if (code !== undefined) return { code, body: [str(json.stdout), str(json.stderr)].filter(Boolean).join('\n') };
-  const trailing = /(?:^|\n)Exit code:? (-?\d+)\s*$/.exec(output);
-  return trailing ? { code: Number(trailing[1]), body: output.slice(0, trailing.index) } : { body: output };
-}
 function shellCard(tool: CardTool, fields: Fields, output: string): string {
   const command = shellCommand(tool.input, fields);
   if (!command) return '';
   const { code, body } = exitCode(output);
-  const failed = code !== undefined ? code !== 0 : tool.status === 'failed';
-  const badge = code !== undefined || failed ? `<span class="tc-badge${failed ? ' is-failed' : ''}">${escape(code !== undefined ? `exit ${code}` : 'failed')}</span>` : '';
+  // The row's outcome: a search that found nothing (exit 1) or a command stopped by a signal (143/137) is not a failure.
+  const failed = toolFailed(tool as Tool);
+  const badge = exitBadgeHtml(code, failed);
   const where = /vm_exec$/.test(tool.name) ? field(fields, 'name', 'vm') : '';
-  const all = splitLines(stripAnsi(body).trimEnd());
-  const tail = all.slice(-LINES);
+  const text = stripAnsi(body);
+  if (isUnifiedDiff(text)) return `<div class="tc-term${failed ? ' is-failed' : ''}">${termHead(command, where, badge)}</div>${diffSections(parsePatch(text))}`;
+  const all = splitLines(text.trimEnd());
+  const tail = shownLines(all);
   const earlier = all.length - tail.length;
   const out = tail.length
-    ? `${earlier > 0 ? `<div class="tc-more tc-earlier">${escape(plural(earlier, 'earlier line'))}</div>` : ''}<pre class="tc-term-out" tabindex="0" aria-label="Command output, last lines">${escape(tail.map(line => line.slice(0, 400)).join('\n'))}</pre>`
+    ? `${earlier > 0 ? `<div class="tc-more tc-earlier">${escape(plural(earlier, 'earlier line'))}</div>` : ''}`
+      + `<pre class="tc-term-out" tabindex="0" aria-label="Command output, last lines">${escape(tail.map(line => line.slice(0, 400)).join('\n'))}</pre>`
     : '';
   return `<div class="tc-term${failed ? ' is-failed' : ''}">${termHead(command, where, badge)}${out}</div>`;
 }
+/** A card's exit-code pill (tool-trace.css), right-aligned in its header: red only when the call failed, quiet for any other
+ *  nonzero exit (`no matches`, a signal stop), green for 0. */
+export function exitBadgeHtml(code: number | undefined, failed: boolean): string {
+  if (code === undefined && !failed) return '';
+  const tone = failed && code !== 0 ? ' is-failed' : code ? ' is-quiet' : '';
+  return `<span class="tool-trace-badge${tone}">${escape(code !== undefined ? `exit ${code}` : 'failed')}</span>`;
+}
+/** The output lines a card shows: the last ones, except that a typecheck's counted `error TS…` lines (the row says
+ *  `2 errors`) lead, above the rest of the output. */
+const TSC_ERROR_LINE = /\berror TS\d+:/;
+function shownLines(all: string[]): string[] {
+  const errors = all.filter(line => TSC_ERROR_LINE.test(line)).slice(0, LINES);
+  if (!errors.length) return all.slice(-LINES);
+  const room = LINES - errors.length;
+  return [...errors, ...(room > 0 ? all.filter(line => !TSC_ERROR_LINE.test(line)).slice(-room) : [])];
+}
+/** The `$ command` line every shell card starts with, on its own (a blocked call's card). */
+export function terminalHeadHtml(command: string): string { return termHead(command, ''); }
 function termHead(command: string, where: string, badge = ''): string {
-  return `<div class="tc-term-head"><span class="tc-dollar" aria-hidden="true">$</span><code class="tc-command">${escape(clip(command, 400))}</code>${where ? `<span class="tc-head-meta">on ${escape(where)}</span>` : ''}${badge}</div>`;
+  return `<div class="tc-term-head"><span class="tc-dollar" aria-hidden="true">$</span><code class="tc-command">${escape(clip(command, 400))}</code>`
+    + `${where ? `<span class="tc-head-meta">on ${escape(where)}</span>` : ''}${badge}</div>`;
 }
 
 // ── Files: read, write, edit ─────────────────────────────────────────────────
@@ -157,7 +178,9 @@ function readCard(tool: CardTool, fields: Fields, output: string): string {
   if (!path) return '';
   const numbered = splitLines(output).map(line => /^\s*(\d+)(?:→|\t)(.*)$/.exec(line));
   const isNumbered = numbered.length > 0 && numbered.filter(Boolean).length >= numbered.length * 0.8;
-  const entries = isNumbered ? numbered.filter((m): m is RegExpExecArray => !!m).map(m => ({ n: Number(m[1]), text: m[2] })) : splitLines(output).map((text, i) => ({ n: i + 1, text }));
+  const entries = isNumbered
+    ? numbered.filter((m): m is RegExpExecArray => !!m).map(m => ({ n: Number(m[1]), text: m[2] }))
+    : splitLines(output).map((text, i) => ({ n: i + 1, text }));
   const offset = Number(fields.offset) || 0;
   const start = entries[0]?.n ?? (offset || 1);
   const end = entries.length ? entries[entries.length - 1].n : 0;
@@ -229,14 +252,26 @@ function diffSection(file: FileDiff, budget: number): { html: string; used: numb
   const shown = file.lines.slice(0, budget);
   const numbered = shown.some(l => l.old !== undefined || l.new !== undefined);
   const gutters = (l: DiffLine) => numbered ? `<span class="tc-gutter">${l.old ?? ''}</span><span class="tc-gutter">${l.new ?? ''}</span>` : '';
-  const body = shown.map(l => `<span class="tc-diff-line" data-sign="${l.sign === '+' ? 'add' : l.sign === '-' ? 'del' : 'ctx'}">${gutters(l)}<span class="tc-sign">${l.sign === '-' ? '−' : l.sign}</span><span class="tc-code">${escape(l.text.slice(0, 300)) || ' '}</span></span>`).join('');
+  const body = shown.map(l => `<span class="tc-diff-line" data-sign="${l.sign === '+' ? 'add' : l.sign === '-' ? 'del' : 'ctx'}">${gutters(l)}`
+    + `<span class="tc-sign">${l.sign === '-' ? '−' : l.sign}</span><span class="tc-code">${escape(l.text.slice(0, 300)) || ' '}</span></span>`).join('');
   const meta = file.action === 'Add' ? 'New file' : file.action === 'Delete' ? 'Deleted' : '';
   const title = file.path ? fileHead(file.path, meta) : head(iconMark('edit'), '<b>Edit</b>', meta);
   const rest = file.lines.length - shown.length;
-  return { html: `<div class="tc-diff-file">${title}${shown.length ? `<pre class="tc-diff${numbered ? '' : ' is-unnumbered'}" tabindex="0" aria-label="${escape(`Changes to ${basename(file.path) || 'file'}`)}">${body}</pre>` : ''}${more(rest, rest === 1 ? 'more line' : 'more lines')}</div>`, used: shown.length };
+  const label = escape(`Changes to ${basename(file.path) || 'file'}`);
+  const digits = numbered ? digitsAttr(shown.flatMap(l => [l.old, l.new])) : '';
+  const pre = shown.length ? `<pre class="tc-diff${numbered ? '' : ' is-unnumbered'}"${digits} tabindex="0" aria-label="${label}">${body}</pre>` : '';
+  return { html: `<div class="tc-diff-file">${title}${pre}${more(rest, rest === 1 ? 'more line' : 'more lines')}</div>`, used: shown.length };
+}
+/** Output that is a unified diff (`git diff`, `git show`, `diff -u`): a file header and at least one hunk. */
+function isUnifiedDiff(text: string): boolean {
+  return /^(?:diff --git |\+\+\+ )/m.test(text) && /^@@ -\d/m.test(text);
 }
 function editCard(tool: CardTool, fields: Fields): string {
-  const files = editDiffs(tool, fields);
+  const diff = diffSections(editDiffs(tool, fields));
+  // A failed edit wrote nothing: its diff is what it tried.
+  return diff && tool.status === 'failed' ? labelled('Not applied', diff) : diff;
+}
+function diffSections(files: FileDiff[]): string {
   let budget = DIFF_ROWS;
   const sections = files.slice(0, 3).map(file => { const section = diffSection(file, Math.max(budget, 4)); budget -= section.used; return section.html; });
   return sections.join('') + more(files.length - sections.length, files.length - sections.length === 1 ? 'more file' : 'more files');
@@ -261,7 +296,8 @@ export function highlight(text: string, pattern?: RegExp): string {
 }
 function searchCard(tool: CardTool, fields: Fields, output: string): string {
   const pattern = field(fields, 'pattern', 'query', 'regex', 'glob');
-  const found = splitLines(output).map(line => line.trimEnd()).filter(line => line.trim() && !/^(Found \d+|No (files|matches) found|Showing |\(Results are truncated)/i.test(line.trim()));
+  const noise = /^(Found \d+|No (files|matches) found|Showing |\(Results are truncated)/i;
+  const found = splitLines(output).map(line => line.trimEnd()).filter(line => line.trim() && !noise.test(line.trim()));
   const isGlob = /glob|file_search/i.test(tool.name);
   const isList = /^(ls|list|list_dir)$/i.test(tool.name);
   const groups = new Map<string, { n?: number; text: string }[]>();
@@ -282,7 +318,10 @@ function searchCard(tool: CardTool, fields: Fields, output: string): string {
     const isDir = path.endsWith('/');
     const clean = path.replace(/\/$/, '');
     const shown = hits.slice(0, MATCHES_PER_FILE);
-    const bodyHtml = shown.length ? `<span class="tc-hits">${shown.map(hit => `<span class="tc-hit">${hit.n !== undefined ? `<span class="tc-gutter">${hit.n}</span>` : ''}<span class="tc-code">${highlight(clip(hit.text, 160), re)}</span></span>`).join('')}${hits.length > shown.length ? `<span class="tc-hit-more">+${hits.length - shown.length} more in file</span>` : ''}</span>` : '';
+    const hitHtml = (hit: typeof shown[number]) => `<span class="tc-hit">${hit.n !== undefined ? `<span class="tc-gutter">${hit.n}</span>` : ''}`
+      + `<span class="tc-code">${highlight(clip(hit.text, 160), re)}</span></span>`;
+    const moreHits = hits.length > shown.length ? `<span class="tc-hit-more">+${hits.length - shown.length} more in file</span>` : '';
+    const bodyHtml = shown.length ? `<span class="tc-hits">${shown.map(hitHtml).join('')}${moreHits}</span>` : '';
     return { mark: fileMark(clean, isDir), title: basename(clean), meta: dirname(clean), time: hits.length > 1 ? String(hits.length) : '', bodyHtml };
   });
   return top + rows(items, files.length, files.length - ROWS === 1 ? 'more file' : 'more files');
@@ -294,15 +333,31 @@ type WebResult = { title: string; url: string; snippet: string };
 function webResults(output: string): WebResult[] {
   const at = output.indexOf('Links:');
   const start = at >= 0 ? output.indexOf('[', at) : -1;
-  const json = start >= 0 ? (() => { const end = output.indexOf(']\n', start); return parseJson(output.slice(start, end > 0 ? end + 1 : output.lastIndexOf(']') + 1)); })() : parseJson(output);
+  const json = start >= 0
+    ? (() => { const end = output.indexOf(']\n', start); return parseJson(output.slice(start, end > 0 ? end + 1 : output.lastIndexOf(']') + 1)); })()
+    : parseJson(output);
   const list = objects(Array.isArray(json) ? json : json && typeof json === 'object' ? (json as Fields).results : undefined);
-  const parsed = list.map(item => ({ title: field(item, 'title', 'name'), url: field(item, 'url', 'link', 'href'), snippet: field(item, 'snippet', 'description', 'content', 'text') })).filter(item => item.title && item.url);
+  const parsed = list
+    .map(item => ({ title: field(item, 'title', 'name'), url: field(item, 'url', 'link', 'href'), snippet: field(item, 'snippet', 'description', 'content', 'text') }))
+    .filter(item => item.title && item.url);
   if (parsed.length) return parsed;
   return [...output.matchAll(/\[([^\]\n]{2,200})\]\((https?:\/\/[^)\s]+)\)(?:\s*[-—:]\s*([^\n]+))?/g)].map(m => ({ title: m[1], url: m[2], snippet: m[3] ?? '' }));
+}
+/** `1. **a** — b` lines as plain text: bold marks dropped, links read by their text. */
+function markdownItems(output: string): string[] {
+  const items = splitLines(output).map(line => /^\s*\d+[.)]\s+(.+)$/.exec(line)?.[1]).filter((item): item is string => Boolean(item));
+  return items.map(item => item.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/\[([^\]\n]+)\]\([^)\s]+\)/g, '$1'));
+}
+function orderedList(items: string[]): string {
+  const shown = items.slice(0, ROWS).map(item => `<li>${inlineCode(clip(item, 220))}</li>`).join('');
+  return `<ol class="tc-list">${shown}</ol>${more(items.length - Math.min(items.length, ROWS), 'more results')}`;
 }
 function webCard(fields: Fields, output: string): string {
   // The row above shows the query; the card is the results.
   const results = webResults(output);
+  // A Markdown list of results with fewer links than items stays a numbered list.
+  const listed = markdownItems(output);
+  if (listed.length > results.length) return orderedList(listed);
   if (!results.length) return output.trim() ? excerpt(output) : '';
   return rows(results.map(r => ({ mark: letterMark(domain(r.url)), title: r.title, meta: domain(r.url), body: r.snippet })), results.length);
 }
@@ -312,7 +367,9 @@ function fetchCard(fields: Fields, output: string): string {
   const text = output.trim();
   const titleLine = /^#{1,2}\s+(.+)$/m.exec(text)?.[1] ?? /<title>([^<]{1,200})<\/title>/i.exec(text)?.[1] ?? '';
   const body = text.replace(/<[^>]+>/g, ' ').split('\n').filter(line => line.trim() && !line.trim().startsWith('#') && line.trim() !== titleLine).join('\n');
-  return `<div class="tc-page">${letterMark(domain(url))}<div class="tc-row-main"><div class="tc-row-line"><span class="tc-row-title">${escape(clip(titleLine || domain(url), 120))}</span><span class="tc-row-meta">${escape(clip(titleLine ? domain(url) + urlPath(url) : urlPath(url), 80))}</span></div>${body ? excerpt(body, 4) : ''}</div></div>`;
+  const title = `<span class="tc-row-title">${escape(clip(titleLine || domain(url), 120))}</span>`;
+  const meta = `<span class="tc-row-meta">${escape(clip(titleLine ? domain(url) + urlPath(url) : urlPath(url), 80))}</span>`;
+  return `<div class="tc-page">${letterMark(domain(url))}<div class="tc-row-main"><div class="tc-row-line">${title}${meta}</div>${body ? excerpt(body, 4) : ''}</div></div>`;
 }
 
 // ── Plans, agents, skills ────────────────────────────────────────────────────
@@ -324,7 +381,8 @@ function statusMark(status: string): string {
     : s === 'in_progress' ? '<circle cx="8" cy="8" r="6"/><path d="M8 3.5a4.5 4.5 0 0 1 0 9Z" class="tc-fill"/>'
       : s === 'cancelled' ? '<circle cx="8" cy="8" r="6"/><path d="m5.8 5.8 4.4 4.4m0-4.4-4.4 4.4"/>'
         : '<circle cx="8" cy="8" r="6"/>';
-  return `<span class="tc-mark tc-status" data-status="${s}" role="img" aria-label="${STATUS_LABEL[s]}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${glyph}</svg></span>`;
+  return `<span class="tc-mark tc-status" data-status="${s}" role="img" aria-label="${STATUS_LABEL[s]}">`
+    + `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${glyph}</svg></span>`;
 }
 function todoCard(fields: Fields): string {
   const todos = objects(fields.todos ?? fields.plan ?? fields.steps);
@@ -338,7 +396,8 @@ function todoCard(fields: Fields): string {
     const active = status === 'in_progress' ? field(todo, 'activeForm') : '';
     return rowHtml({ mark: statusMark(status), title: field(todo, 'content', 'step', 'title', 'text') || 'Untitled step', status, body: active });
   }).join('');
-  return head(iconMark('plan'), '<b>Plan</b>', `${done} of ${todos.length} done`, bar) + (explanation ? excerpt(explanation, 2) : '') + `<ul class="tc-rows tc-todos">${items}</ul>` + more(todos.length - 10, 'more steps');
+  return head(iconMark('plan'), '<b>Plan</b>', `${done} of ${todos.length} done`, bar) + (explanation ? excerpt(explanation, 2) : '')
+    + `<ul class="tc-rows tc-todos">${items}</ul>` + more(todos.length - 10, 'more steps');
 }
 function agentCard(tool: CardTool, fields: Fields, output: string): string {
   const description = field(fields, 'description', 'title');
@@ -346,7 +405,8 @@ function agentCard(tool: CardTool, fields: Fields, output: string): string {
   if (!description && !prompt && !output.trim()) return '';
   const state = tool.status === 'running' ? 'Working' : tool.status === 'failed' ? 'Failed' : 'Done';
   // The row above names the agent and its description; the card adds the prompt, the state and the result.
-  const top = `<div class="tc-agent"><div class="tc-row-main">${prompt ? `<div class="tc-row-body">${escape(clip(prompt, 200))}</div>` : ''}</div><span class="tc-pill" data-state="${state.toLowerCase()}">${state}</span></div>`;
+  const top = `<div class="tc-agent"><div class="tc-row-main">${prompt ? `<div class="tc-row-body">${escape(clip(prompt, 200))}</div>` : ''}</div>`
+    + `<span class="tc-pill" data-state="${state.toLowerCase()}">${state}</span></div>`;
   return top + (output.trim() ? `<div class="tc-result"><span class="tc-label">Result</span>${excerpt(output, 6)}</div>` : '');
 }
 /** The row above names the skill and its args; a card appears only for the skill's description. */
@@ -377,7 +437,8 @@ function pandacodeCard(tool: string, fields: Fields, output: string): string | u
       const name = field(fields, 'name', 'file', 'path', 'title') || 'Artboard';
       const html = field(fields, 'html', 'content');
       const size = [field(fields, 'width'), field(fields, 'height')].filter(Boolean).join(' × ');
-      return head(iconMark('sketch'), `<b>${escape(clip(name, 80))}</b>`, ['Design artboard', size].filter(Boolean).join(' · '), html ? `<span class="tc-count">${escape(plural(splitLines(html).length, 'line'))}</span>` : '');
+      const lines = html ? `<span class="tc-count">${escape(plural(splitLines(html).length, 'line'))}</span>` : '';
+      return head(iconMark('sketch'), `<b>${escape(clip(name, 80))}</b>`, ['Design artboard', size].filter(Boolean).join(' · '), lines);
     }
     case 'vm_screenshot': {
       const vm = field(fields, 'name', 'vm', 'id') || 'VM';
@@ -393,7 +454,8 @@ function pandacodeCard(tool: string, fields: Fields, output: string): string | u
   }
 }
 function mcpParts(name: string): { server: string; tool: string } {
-  const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  // Claude's `mcp__server__tool`, Codex's `server · tool`.
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name) ?? /^(.+?) · (.+)$/.exec(name);
   if (mcp && (/^pandacode/.test(mcp[1]) || /^pandacode_/.test(mcp[2]))) return { server: 'PandaCode', tool: mcp[2].replace(/^pandacode_/, '') };
   if (mcp) return { server: mcp[1].replace(/^claude_ai_/, '').replace(/_/g, ' '), tool: mcp[2] };
   return { server: 'PandaCode', tool: name.replace(/^pandacode_architect_/, '').replace(/^pandacode_/, '') };
@@ -412,7 +474,8 @@ function keyValues(fields: Fields, cls: string): string {
 }
 /** A JSON record becomes a reference row: title, short meta, right-aligned time, second line. */
 function recordRow(item: Fields): Row {
-  const title = field(item, 'title', 'name', 'subject', 'summary', 'identifier', 'key', 'id') || clip(valueText(Object.values(item).find(v => typeof v === 'string') ?? ''), 80) || 'Item';
+  const named = field(item, 'title', 'name', 'subject', 'summary', 'identifier', 'key', 'id');
+  const title = named || clip(valueText(Object.values(item).find(v => typeof v === 'string') ?? ''), 80) || 'Item';
   const link = field(item, 'url', 'link', 'href');
   const meta = field(item, 'from', 'author', 'user', 'repo', 'repository', 'channel', 'state', 'status', 'identifier', 'number') || (link ? domain(link) + urlPath(link) : '');
   const time = clockTime(field(item, 'updated_at', 'updatedAt', 'created_at', 'createdAt', 'date', 'time', 'timestamp', 'ts'));
@@ -434,13 +497,20 @@ function mcpCard(tool: CardTool, fields: Fields, output: string): string {
   const input = keyValues(Object.fromEntries(Object.entries(fields).filter(([key]) => key !== queryKey)), 'tc-kv-input');
   const result = records.length ? rows(records.map(recordRow), records.length)
     : json && typeof json === 'object' && !Array.isArray(json) ? keyValues(json as Fields, 'tc-kv-output')
-      : output.trim() ? excerpt(output, 5) : '';
-  return input + result;
+      : output.trim() ? lineExcerpt(output, 5) : '';
+  // Two tables of the same shape each say what they hold, as tool-trace-cards' sections do; a lone one needs no label.
+  return input && result ? labelled('Arguments', input) + labelled('Result', result) : input + result;
+}
+function labelled(label: string, html: string): string {
+  return `<section class="tool-trace-section"><h5 class="tool-trace-label">${label}</h5>${html}</section>`;
 }
 
 // ── States ───────────────────────────────────────────────────────────────────
 
-const RUNNING_LABEL: Partial<Record<TraceKind, string>> = { shell: 'Running command…', read: 'Reading file…', edit: 'Applying edit…', write: 'Writing file…', search: 'Searching…', web: 'Searching the web…', fetch: 'Fetching page…', agent: 'Agent working…', skill: 'Loading skill…', mcp: 'Waiting for result…' };
+const RUNNING_LABEL: Partial<Record<TraceKind, string>> = {
+  shell: 'Running command…', read: 'Reading file…', edit: 'Applying edit…', write: 'Writing file…', search: 'Searching…', web: 'Searching the web…',
+  fetch: 'Fetching page…', agent: 'Agent working…', skill: 'Loading skill…', mcp: 'Waiting for result…',
+};
 /** One quiet line where the result will land; a shell keeps its final `$ command` header above it. */
 function runningCard(kind: TraceKind, tool: CardTool, fields: Fields): string {
   const line = `<p class="tc-running" role="status">${escape(RUNNING_LABEL[kind] ?? 'Working…')}</p>`;
@@ -448,8 +518,9 @@ function runningCard(kind: TraceKind, tool: CardTool, fields: Fields): string {
   return command ? `<div class="tc-term">${termHead(command, /vm_exec$/.test(tool.name) ? field(fields, 'name', 'vm') : '')}${line}</div>` : line;
 }
 function failedCard(tool: CardTool, output: string): string {
+  // The row names the call (`Couldn't use [frobnicate]`); the card is the error it reported, in the calm section shape.
   const error = splitLines(stripAnsi(output).trim()).filter(line => line.trim()).slice(0, 4);
-  return `<div class="tc-failed" role="alert">${iconMark('alert', 'tc-failed-mark')}<div class="tc-row-main"><div class="tc-row-line"><span class="tc-row-title">Failed</span><span class="tc-row-meta">${escape(clip(tool.name, 60))}</span></div>${error.length ? `<pre class="tc-failed-out">${escape(error.map(line => clip(line, 200)).join('\n'))}</pre>` : ''}</div></div>`;
+  return error.length ? labelled('Error', `<pre class="tc-failed-out">${escape(error.map(line => clip(line, 200)).join('\n'))}</pre>`) : '';
 }
 
 function body(kind: TraceKind, tool: CardTool, fields: Fields, output: string): string {
@@ -478,7 +549,8 @@ export function richCard(tool: CardTool): string {
   const fields = parseFields(tool.input);
   const output = cleanOutput(tool.output ?? '');
   // Inputs-only kinds (edit, write, todo, agent, plan, title) render their card while running too.
-  if (tool.status === 'running' && !output.trim() && !['edit', 'write', 'todo', 'agent'].includes(kind) && !/title$|dispatch_workers$/.test(tool.name)) return `<div class="tc" data-kind="${kind}">${runningCard(kind, tool, fields)}</div>`;
+  const quiet = ['edit', 'write', 'todo', 'agent'].includes(kind) || /title$|dispatch_workers$/.test(tool.name);
+  if (tool.status === 'running' && !output.trim() && !quiet) return `<div class="tc" data-kind="${kind}">${runningCard(kind, tool, fields)}</div>`;
   if (tool.status === 'failed' && kind !== 'shell' && kind !== 'edit' && kind !== 'write') return failedCard(tool, output);
   const html = body(kind, tool, fields, output);
   return html ? `<div class="tc" data-kind="${kind}">${html}</div>` : '';

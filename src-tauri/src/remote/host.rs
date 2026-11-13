@@ -9,7 +9,6 @@ use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -31,6 +30,8 @@ const JOURNAL_EVENTS: usize = 2000;
 const JOURNAL_BYTES: usize = 2 * 1024 * 1024;
 const JOURNAL_TOTAL: usize = 8 * 1024 * 1024;
 const JOURNAL_TASKS: usize = 2048;
+/// Dropped rings whose newest event `seq` is remembered (see [`Journal::retired`]).
+const JOURNAL_RETIRED: usize = 4096;
 /// A finished task's events are dropped once no viewer has followed it for this long.
 const JOURNAL_IDLE: Duration = Duration::from_secs(10 * 60);
 /// The part of a subscribe reply that replayed events may fill; the rest comes in later
@@ -66,8 +67,8 @@ const MIN_KEPT_TEXT: usize = 16;
 /// Room a `subagent` event's envelope needs beside its snapshot within [`MAX_MESSAGE`].
 const EVENT_ENVELOPE: usize = 1024;
 const DIFF_BUDGET: usize = 120 * 1024;
-const MAX_PATH: usize = 4096;
-const MAX_BATCH_CALLS: usize = 8;
+pub(crate) const MAX_PATH: usize = 4096;
+pub(crate) const MAX_BATCH_CALLS: usize = 8;
 const PULL_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_PULL_CACHE_ENTRIES: usize = 64;
 /// A single message or event larger than this is cut, with [`CUT`] marking the cut.
@@ -85,6 +86,33 @@ const LAGGED: &str = "lagged";
 const CUT: &str = "\n…[cut on the host to fit a remote page]";
 /// Harness ids `providers.models` accepts (the same list `storage` allows).
 pub(crate) const PROVIDERS: [&str; 19] = ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes"];
+
+/// Whether this host serves `method`: a built-in one or one from the `methods/` registry.
+/// client.rs checks calls to other hosts against it too.
+pub(crate) fn is_method(method: &str) -> bool {
+    METHODS.contains(&method) || super::methods::find(method).is_some()
+}
+
+/// Every method this host serves, built-in first, for `host.hello`.
+pub(crate) fn all_methods() -> Vec<&'static str> {
+    METHODS.iter().copied().chain(super::methods::all().map(|method| method.name)).collect()
+}
+
+/// The request limits `host.hello` reports, from the constants that enforce them.
+pub(crate) fn limits() -> Value {
+    json!({
+        "maxText": MAX_TEXT,
+        "pageBudget": PAGE_BUDGET,
+        "packedPageMax": PACKED_PAGE_MAX,
+        "maxBatch": MAX_BATCH_CALLS,
+        "maxIds": MAX_IDS,
+        "maxPath": MAX_PATH,
+        "maxFrame": socket::MAX_FRAME,
+        "maxImages": images::MAX_IMAGES,
+        "maxImageBytes": images::MAX_BYTES,
+        "imageChunk": images::CHUNK,
+    })
+}
 
 /// Hosting must be on. The socket already limits frames to devices in presence.
 pub(crate) fn gate(host_enabled: bool) -> Result<()> {
@@ -147,10 +175,11 @@ pub(crate) enum Call {
     WorkerMessages { session_id: String, worker_id: String, after_id: i64, before_id: Option<i64>, limit: i64 },
     Attachment { session_id: String, id: String, variant: crate::attachments::Variant, offset: u64 },
     WorkspaceImage { session_id: String, path: String, variant: crate::attachments::Variant, offset: u64 },
-    Send { session_id: String, text: String, image_ids: Vec<String> },
+    /// `send_id`: the viewer's id for this prompt; a repeat answers what the first did ([`SentIds`]).
+    Send { session_id: String, text: String, image_ids: Vec<String>, send_id: Option<String> },
     PutImage(images::Chunk),
     Stop { session_id: String },
-    Steer { session_id: String, text: String },
+    Steer { session_id: String, text: String, send_id: Option<String> },
     Configure { session_id: String, model: Option<(String, String)>, effort: Option<Option<String>>, mode: Option<String> },
     Approve { session_id: String, request_id: String, approve: bool },
     Answer { session_id: String, request_id: String, response: Value },
@@ -162,9 +191,11 @@ pub(crate) enum Call {
     Diff { session_id: String, path: Option<String>, staged: bool },
     BotsList,
     BotThread { bot_id: String },
-    BotMessage { bot_id: String, text: String },
+    BotMessage { bot_id: String, text: String, send_id: Option<String> },
     BotPause { bot_id: String, paused: bool },
     Batch(Vec<std::result::Result<Call, String>>),
+    /// A method from the registry in `methods/` (docs/remote-access.md, "Adding a method").
+    Ext(super::methods::Parsed),
 }
 
 impl Call {
@@ -202,14 +233,17 @@ impl Call {
             Self::BotMessage { .. } => "bot.message",
             Self::BotPause { .. } => "bot.pause",
             Self::Batch(_) => "batch",
+            Self::Ext(parsed) => parsed.name,
         }
     }
 }
 
 /// These methods may be run concurrently because they do not change task state.
-/// `task.pullMerge` intentionally stays ordered because it changes the linked PR.
+/// `task.pullMerge` changes the linked PR: it runs in socket.rs's background lane (Round 23),
+/// one per task at a time ([`claim_merge`]).
+/// Registry methods say so themselves (`Method::read_only`).
 pub(crate) fn is_read_only_method(method: &str) -> bool {
-    matches!(
+    super::methods::find(method).is_some_and(|method| method.read_only) || matches!(
         method,
         "subscribe"
             | "tasks.list"
@@ -244,7 +278,15 @@ pub(crate) fn id_param(params: &Value, key: &str) -> Result<String> {
     Ok(id.to_owned())
 }
 
-fn uuid_param(params: &Value, key: &str) -> Result<String> {
+/// An optional id (`startId`-style): absent or null is None, anything else must be a valid id.
+fn optional_id(params: &Value, key: &str) -> Result<Option<String>> {
+    match params.get(key).filter(|value| !value.is_null()) {
+        None => Ok(None),
+        Some(value) => value.as_str().filter(|id| valid_id(id).is_ok()).map(|id| Some(id.to_owned())).ok_or_else(|| format!("Invalid {key}.")),
+    }
+}
+
+pub(crate) fn uuid_param(params: &Value, key: &str) -> Result<String> {
     let id = id_param(params, key)?;
     let parsed = uuid::Uuid::parse_str(&id).map_err(|_| format!("Invalid {key}."))?;
     if parsed.to_string() != id { return Err(format!("Invalid {key}.")); }
@@ -280,7 +322,7 @@ pub(crate) fn name_param(params: &Value, key: &str) -> Result<Option<String>> {
     }
 }
 
-fn force_param(params: &Value) -> Result<bool> {
+pub(crate) fn force_param(params: &Value) -> Result<bool> {
     match params.get("force").filter(|v| !v.is_null()) {
         None => Ok(false),
         Some(value) => value.as_bool().ok_or_else(|| "Invalid force.".into()),
@@ -355,13 +397,13 @@ fn plain_budget(call: Call, packs: bool) -> Call {
     }
 }
 
-fn path_param(params: &Value, key: &str) -> Result<Option<String>> {
+pub(crate) fn path_param(params: &Value, key: &str) -> Result<Option<String>> {
     match params.get(key).filter(|value| !value.is_null()) {
         None => Ok(None),
         Some(value) => {
             let path = value.as_str().filter(|path| !path.is_empty() && path.len() <= MAX_PATH && !path.contains('\0')).ok_or_else(|| format!("Invalid {key}."))?;
             if !Path::new(path).components().all(|part| match part {
-                Component::Normal(name) => name != ".git",
+                Component::Normal(name) => !names_git_dir(&name.to_string_lossy()),
                 Component::CurDir => true,
                 _ => false,
             }) {
@@ -370,6 +412,14 @@ fn path_param(params: &Value, key: &str) -> Result<Option<String>> {
             Ok(Some(path.to_owned()))
         }
     }
+}
+
+/// Whether a path component names the `.git` folder under any spelling a file system accepts:
+/// any case (macOS, Windows), with trailing dots or spaces or an NTFS stream suffix (`.git.`,
+/// `.git ::$INDEX_ALLOCATION`), or as its Windows short name `git~1`.
+fn names_git_dir(name: &str) -> bool {
+    let name = name.split(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
+    name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case("git~1")
 }
 
 fn staged_param(params: &Value) -> Result<bool> {
@@ -479,10 +529,10 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
             let path = path_param(params, "path")?.ok_or("Missing path.")?;
             Call::WorkspaceImage { session_id: id_param(params, "sessionId")?, path, variant, offset }
         }
-        "task.send" => Call::Send { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")?, image_ids: images::ids_param(params)? },
+        "task.send" => Call::Send { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")?, image_ids: images::ids_param(params)?, send_id: optional_id(params, "sendId")? },
         "image.put" => Call::PutImage(images::parse_chunk(params)?),
         "task.stop" => Call::Stop { session_id: id_param(params, "sessionId")? },
-        "task.steer" => Call::Steer { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")? },
+        "task.steer" => Call::Steer { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")?, send_id: optional_id(params, "sendId")? },
         "task.configure" => configure(params)?,
         "approval.respond" => Call::Approve { session_id: id_param(params, "sessionId")?, request_id: id_param(params, "requestId")?, approve: params["approve"].as_bool().ok_or("Missing approve.")? },
         "input.respond" => Call::Answer { session_id: id_param(params, "sessionId")?, request_id: id_param(params, "requestId")?, response: params.get("response").cloned().ok_or("Missing response.")? },
@@ -498,10 +548,10 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
         "task.diff" => Call::Diff { session_id: id_param(params, "sessionId")?, path: path_param(params, "path")?, staged: staged_param(params)? },
         "bots.list" => Call::BotsList,
         "bot.thread" => Call::BotThread { bot_id: id_param(params, "botId")? },
-        "bot.message" => Call::BotMessage { bot_id: id_param(params, "botId")?, text: text_param(params, "text")? },
+        "bot.message" => Call::BotMessage { bot_id: id_param(params, "botId")?, text: text_param(params, "text")?, send_id: optional_id(params, "sendId")? },
         "bot.pause" => Call::BotPause { bot_id: id_param(params, "botId")?, paused: params.get("paused").and_then(Value::as_bool).ok_or("Missing paused.")? },
         "batch" => Call::Batch(batch_calls(params)?),
-        _ => return Err("Unknown method.".into()),
+        _ => Call::Ext(super::methods::parse(method, params).ok_or("Unknown method.")??),
     })
 }
 
@@ -557,33 +607,83 @@ fn batch_methods<'a>(method: &str, params: &'a Value) -> impl Iterator<Item = &'
 }
 
 /// Without "Full access for remote tasks", an explicit `full` is refused and a start
-/// without a mode (which would default to full) asks for approvals.
+/// without a mode (which would default to full) asks for approvals. Either way a start
+/// carries the switch as it was at admission, so the [`crate::workspace::Trust`] of its Git
+/// calls matches the request's admission even if the switch changes before it runs.
 fn cap_mode(call: Call, full_access: bool) -> Result<Call> {
     const SAFE: &str = "ask";
     if full_access {
-        return Ok(call);
+        return Ok(match call {
+            Call::Start(start) => Call::Start(start::Start { team: true, full_access: Some(true), ..start }),
+            other => other,
+        });
     }
     let refuse = || Err(full_access_off());
     Ok(match call {
         Call::Start(start) if start.mode.as_deref() == Some("full") => return refuse(),
-        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), ..start }),
+        // No saved default team either (`team: false`): its workers would run in full access.
+        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), team: false, full_access: Some(false), ..start }),
         Call::Configure { mode: Some(mode), .. } if mode == "full" => return refuse(),
         other => other,
     })
 }
 
-fn full_access_off() -> String {
+pub(crate) fn full_access_off() -> String {
     format!("Full access is off for remote tasks on {}.", super::config::device_name())
 }
 
 /// Without "Full access for remote tasks", a prompt, steer or configure that would run a
 /// task stored in `full` is refused, unless it switches the task to another mode. The
 /// task's own mode is the user's and is never changed here.
-fn allow_task_mode(stored: &str, requested: Option<&str>, full_access: bool) -> Result<()> {
+pub(crate) fn allow_task_mode(stored: &str, requested: Option<&str>, full_access: bool) -> Result<()> {
     if !full_access && stored == "full" && requested.is_none_or(|mode| mode == "full") {
         return Err(full_access_off());
     }
     Ok(())
+}
+
+/// Told to a remote device that would drive a team without "Full access for remote tasks".
+pub(crate) const TEAM_NEEDS_FULL_ACCESS: &str = "Team workers run with full access; allow full access for remote tasks to drive a team remotely.";
+
+/// Without "Full access for remote tasks", a task that leads a team (configured, active or
+/// not) is not prompted, steered or resumed remotely: its lead would dispatch workers, which
+/// always run in full access, whatever the lead's own mode.
+pub(crate) fn allow_remote_team(store: &crate::storage::Store, session_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let leads_team = crate::architect::leads_team(store, session_id)?;
+    if leads_team { Err(TEAM_NEEDS_FULL_ACCESS.into()) } else { Ok(()) }
+}
+
+/// [`allow_remote_team`] for a bot's thread on `channel` (its desktop thread for `bot.message`,
+/// `"schedule"` for `bot.runSchedule`), which the bot prompts; a thread not made yet leads no team.
+pub(crate) fn allow_remote_bot_team(store: &crate::storage::Store, bot_id: &str, channel: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let session: Option<String> = store
+        .db
+        .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?2", [bot_id, channel], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    session.map_or(Ok(()), |session| allow_remote_team(store, &session, full_access))
+}
+
+/// `allow_remote_team` off the async runtime.
+pub(crate) async fn allow_remote_team_for(state: &AppState, session_id: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let (store, id) = (state.store.clone(), session_id.to_owned());
+    crate::blocking(move || allow_remote_team(&*store.lock().map_err(|e| e.to_string())?, &id, full_access)).await
+}
+
+/// Whether an `input.respond` response only cancels or declines the question
+/// (`{action: "cancel" | "decline"}`, or a questions form sent back with no answers).
+fn declines_input(response: &Value) -> bool {
+    matches!(response["action"].as_str(), Some("cancel" | "decline"))
+        || (response.get("action").is_none() && response["answers"].as_object().is_some_and(|answers| answers.is_empty()))
 }
 
 /// The response to one request frame, or None when it has no usable id.
@@ -618,7 +718,7 @@ fn response(id: &str, result: Result<Value>) -> Value {
 }
 
 /// The task must exist here; a mirror never forwards a second hop.
-async fn local_task(state: &AppState, session_id: &str) -> Result<crate::storage::Session> {
+pub(crate) async fn local_task(state: &AppState, session_id: &str) -> Result<crate::storage::Session> {
     let store = state.store.clone();
     let session_id = session_id.to_owned();
     crate::blocking(move || {
@@ -628,7 +728,7 @@ async fn local_task(state: &AppState, session_id: &str) -> Result<crate::storage
     .await
 }
 
-fn local_session_from(store: &crate::storage::Store, session_id: &str) -> Result<crate::storage::Session> {
+pub(crate) fn local_session_from(store: &crate::storage::Store, session_id: &str) -> Result<crate::storage::Session> {
     let task = store.session(session_id)?;
     if task.remote_device.is_some() {
         return Err("That task runs on another computer.".into());
@@ -636,23 +736,90 @@ fn local_session_from(store: &crate::storage::Store, session_id: &str) -> Result
     Ok(task)
 }
 
-async fn task_root(state: &AppState, session_id: &str) -> Result<PathBuf> {
+/// Why a phone may not reach a bot task's workspace (`~/PandaCode Bots/<slug>`) by `sessionId`;
+/// its conversation (`bot.thread`, `task.messages`) stays readable through [`local_task`].
+pub(crate) const BOT_WORKSPACE_REFUSED: &str = "That task belongs to a bot.";
+
+/// A local task whose checkout a phone may read or change: [`local_session_from`], and not a
+/// bot's (Round 19). Every phone file, Git, terminal and tools path reaches a task's folder
+/// through this ([`task_root`], [`linked_pull`], [`optional_pull`], `files::resolve`).
+pub(crate) fn workspace_session_from(store: &crate::storage::Store, session_id: &str) -> Result<crate::storage::Session> {
+    let task = local_session_from(store, session_id)?;
+    if crate::bots::project_ids(store)?.contains(&task.project_id) {
+        return Err(BOT_WORKSPACE_REFUSED.into());
+    }
+    Ok(task)
+}
+
+/// Why a device below Full may not drive a bot's thread (Round 20).
+pub(crate) const BOT_THREAD_REFUSED: &str = "Only a device with Full access can drive a bot's thread.";
+
+/// The bot whose workspace holds `task`, if it is a bot's thread.
+fn task_bot(store: &crate::storage::Store, task: &crate::storage::Session) -> Result<Option<String>> {
+    store
+        .db
+        .query_row("SELECT id FROM bots WHERE project_id=?1 ORDER BY id LIMIT 1", [&task.project_id], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
+}
+
+/// A local task a phone may drive: send, steer, configure, approve, fork, rewind, rewrite its
+/// queue, change its goal or stage, or clear its limit. A bot's thread needs a Full device
+/// (as `bot.message` does) and then the bot's own mode rule ([`allow_bot_mode`]); viewing
+/// (`task.messages`, `bot.thread`, `subscribe`) still goes through [`local_session_from`].
+///
+/// [`allow_bot_mode`]: super::methods::admin::allow_bot_mode
+pub(crate) fn drivable_session_from(store: &crate::storage::Store, session_id: &str, device_full: bool, full_access: bool) -> Result<crate::storage::Session> {
+    let task = local_session_from(store, session_id)?;
+    if let Some(bot) = task_bot(store, &task)? {
+        if !device_full {
+            return Err(BOT_THREAD_REFUSED.into());
+        }
+        super::methods::admin::allow_bot_mode(store, &bot, full_access)?;
+    }
+    Ok(task)
+}
+
+/// [`drivable_session_from`] off the async thread, for the device `from`.
+pub(crate) async fn drivable_task(app: &tauri::AppHandle, from: &str, session_id: &str, full_access: bool) -> Result<crate::storage::Session> {
+    let device_full = super::methods::files::device_from_has_full(app, from);
+    let store = app.state::<AppState>().store.clone();
+    let session_id = session_id.to_owned();
+    crate::blocking(move || {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        drivable_session_from(&store, &session_id, device_full, full_access)
+    })
+    .await
+}
+
+/// [`workspace_session_from`] off the async thread.
+pub(crate) async fn workspace_task(state: &AppState, session_id: &str) -> Result<crate::storage::Session> {
     let store = state.store.clone();
     let session_id = session_id.to_owned();
     crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
-        let task = local_session_from(&store, &session_id)?;
+        workspace_session_from(&store, &session_id)
+    })
+    .await
+}
+
+pub(crate) async fn task_root(state: &AppState, session_id: &str) -> Result<PathBuf> {
+    let store = state.store.clone();
+    let session_id = session_id.to_owned();
+    crate::blocking(move || {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let task = workspace_session_from(&store, &session_id)?;
         store.workspace_root(&task.project_id, Some(&session_id))
     })
     .await
 }
 
-async fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
+pub(crate) async fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
     let store = state.store.clone();
     let session_id = session_id.to_owned();
     crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
-        let task = local_session_from(&store, &session_id)?;
+        let task = workspace_session_from(&store, &session_id)?;
         let number = task.pull_request.as_ref().map(|link| link.number).ok_or("This task has no linked pull request.")?;
         let root = store.workspace_root(&task.project_id, Some(&session_id))?;
         Ok((root, number))
@@ -660,12 +827,23 @@ async fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64
     .await
 }
 
-async fn optional_pull(state: &AppState, session_id: &str) -> Result<Option<(PathBuf, i64)>> {
+/// The repository (`owner/name`) a phone's pull request call pins with `--repo=…` (Round 21):
+/// the task's pull request link's, else the project's `origin`; refused without either.
+async fn pull_repo(state: &AppState, session_id: &str, root: &Path) -> Result<String> {
+    let (store, session_id, root) = (state.store.clone(), session_id.to_owned(), root.to_path_buf());
+    crate::blocking(move || {
+        let url = store.lock().map_err(|e| e.to_string())?.session(&session_id)?.pull_request.map(|link| link.url);
+        crate::github_pull::pinned_repo(&root, url.as_deref())
+    })
+    .await
+}
+
+pub(crate) async fn optional_pull(state: &AppState, session_id: &str) -> Result<Option<(PathBuf, i64)>> {
     let store = state.store.clone();
     let session_id = session_id.to_owned();
     crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
-        let task = local_session_from(&store, &session_id)?;
+        let task = workspace_session_from(&store, &session_id)?;
         let Some(number) = task.pull_request.map(|link| link.number) else { return Ok(None) };
         let root = store.workspace_root(&task.project_id, Some(&session_id))?;
         Ok(Some((root, number)))
@@ -702,7 +880,7 @@ fn remote_worker_status(status: &str) -> &str {
     }
 }
 
-fn bounded_text(text: &str, max: usize) -> String {
+pub(crate) fn bounded_text(text: &str, max: usize) -> String {
     let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -1199,7 +1377,7 @@ async fn queue_team_settled(app: tauri::AppHandle, session_id: String, team: Tea
     let id = session_id.clone();
     let data = crate::blocking(move || {
         let state = handle.state::<AppState>();
-        if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&id) {
+        if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&id) {
             return Ok(None);
         }
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -1349,6 +1527,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::Providers { force } => {
             let mut providers = serde_json::to_value(crate::local_providers(force).await).map_err(|e| e.to_string())?;
+            phone_provider_paths(&mut providers, crate::agent_usage_providers::home().as_deref());
             fit_providers(&mut providers);
             Ok(providers)
         }
@@ -1359,7 +1538,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             }
             Ok(models)
         }
-        Call::Start(request) => start_once(app, from, request).await,
+        // A start that bypassed cap_mode (inside a batch) still takes the admission's switch.
+        Call::Start(request) => start_once(app, from, start::Start { full_access: request.full_access.or(Some(full_access)), ..request }).await,
         Call::StartStatus { start_id } => Ok(start_status_of(from, &start_id)),
         Call::CancelStart { start_id } => cancel_start_of(from, &start_id),
         Call::Messages { session_id, page, budget } => {
@@ -1410,8 +1590,10 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::WorkspaceImage { session_id, path, variant, offset } => {
             let root = task_root(&state, &session_id).await?;
+            let full = super::methods::files::device_from_has_full(app, from);
             crate::blocking(move || {
-                let data_url = crate::workspace::image_data_url(&root, &path)?;
+                // Same gates as `files.image`: `.git`, secret files below Full, hard links.
+                let data_url = super::methods::files::checked_image_data_url(&root, &path, full)?;
                 let (header, encoded) = data_url.split_once(',').ok_or("Invalid workspace image.")?;
                 let mime = header.strip_prefix("data:").and_then(|value| value.strip_suffix(";base64")).ok_or("Invalid workspace image.")?;
                 let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|error| error.to_string())?;
@@ -1420,25 +1602,9 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             }).await
         }
         Call::PutImage(chunk) => images::put(app, from, chunk).await,
-        Call::Send { session_id, text, image_ids } => {
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
-            // Only images this caller just sent; they are now this task's.
-            images::claim(app, from, &image_ids)?;
-            // Like Enter in the composer: a running task queues the message.
-            let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
-            if busy()? {
-                let queued: Vec<Value> = image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Image", "width": 0, "height": 0, "thumbnail": "", "source": "file"})).collect();
-                let entry = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!(queued))?;
-                // If the run ended between the check and the add, nothing would deliver the
-                // entry: take it back (unless a run end already did) and send it now.
-                if busy()? || message_queue::take(&*state.store.lock().map_err(|e| e.to_string())?, &entry.id).is_err() {
-                    let _ = app.emit("queue-changed", json!({"sessionId": session_id}));
-                    return Ok(json!({"queued": true}));
-                }
-            }
-            crate::send_message(app.clone(), state, session_id, text, Some(image_ids), None).await?;
-            let _ = app.emit("sessions-changed", ());
-            Ok(json!({"queued": false}))
+        Call::Send { session_id, text, image_ids, send_id } => {
+            let key = send_key(from, &session_id, send_id.as_deref());
+            once_per_send(key, send_prompt(app, from, session_id, text, image_ids, full_access)).await
         }
         Call::Stop { session_id } => {
             local_task(&state, &session_id).await?;
@@ -1460,7 +1626,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::TeamResume { session_id } => {
             // Resuming starts agents again, so it follows the rule for prompts, not for Stop.
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, None, full_access)?;
+            allow_remote_team_for(&state, &session_id, full_access).await?;
             let store = state.store.clone();
             let id = session_id.clone();
             crate::blocking(move || {
@@ -1471,12 +1638,18 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             crate::architect::architect_control(app.clone(), state, session_id, "resume".into()).await?;
             Ok(json!({}))
         }
-        Call::Steer { session_id, text } => {
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
-            message_queue::steer_task(app.clone(), state, session_id, text).await
+        Call::Steer { session_id, text, send_id } => {
+            let key = send_key(from, &session_id, send_id.as_deref());
+            once_per_send(key, async move {
+                allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, None, full_access)?;
+                // A steered lead can dispatch workers too.
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+                message_queue::steer_task(app.clone(), state, session_id, text).await
+            })
+            .await
         }
         Call::Configure { session_id, model, effort, mode } => {
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, mode.as_deref(), full_access)?;
+            allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, mode.as_deref(), full_access)?;
             if let Some((provider, _)) = &model {
                 start::require_installed(provider).await?;
             }
@@ -1493,38 +1666,72 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             Ok(json!({}))
         }
         Call::Approve { session_id, request_id, approve } => {
-            local_task(&state, &session_id).await?;
+            drivable_task(app, from, &session_id, full_access).await?;
+            // Approving lets a lead run the tool and dispatch full-access workers. Declining is allowed
+            // without the switch: the lead's turn goes on, but the phone adds no text and approves nothing.
+            if approve {
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+            }
             crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
             answered(app, session_id, "approval_cancelled", request_id);
             Ok(json!({}))
         }
         Call::Answer { session_id, request_id, response } => {
-            local_task(&state, &session_id).await?;
+            drivable_task(app, from, &session_id, full_access).await?;
+            // An answer steers a lead like a prompt. Cancelling or declining is allowed without the switch:
+            // the lead's turn may go on, but with no text from the phone.
+            if !declines_input(&response) {
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+            }
             crate::respond_user_input(app.clone(), state, session_id.clone(), request_id.clone(), response).await?;
             answered(app, session_id, "input_cancelled", request_id);
             Ok(json!({}))
         }
         Call::Pull { session_id } => {
             let Some((root, number)) = optional_pull(&state, &session_id).await? else { return Ok(json!({"pull": null })) };
-            let pull = pull_detail_cached(&session_id, root, number).await?;
+            let repo = pull_repo(&state, &session_id, &root).await?;
+            let pull = pull_detail_cached(&session_id, root, repo, number, crate::workspace::Trust::phone(full_access)).await?;
             Ok(json!({"pull": pull}))
         }
         Call::PullDiff { session_id, path } => {
             let (root, number) = linked_pull(&state, &session_id).await?;
+            let repo = pull_repo(&state, &session_id, &root).await?;
             if let Some(path) = path {
-                pull_diff_cached(&session_id, root, number, path).await
+                // Secret files stay hidden below Full, as in `task.diff`.
+                let full = super::grants::scope_name(app, from) == Some("full");
+                // `secret_path` canonicalizes (file system), so it runs off the async thread.
+                let (check_root, check_path) = (root.clone(), path.clone());
+                let (secret, linked) = crate::blocking(move || Ok((secret_path(&check_root, &check_path), crate::workspace::hard_linked(&check_root.join(&check_path))))).await?;
+                if !full && secret {
+                    return Err(SECRET_DIFF_REFUSED.into());
+                }
+                if linked {
+                    // Hard-linked locally (Round 12): left out for every device, as in `task.diff`.
+                    return Ok(hard_linked_pull_patch());
+                }
+                let reply = pull_diff_cached(&session_id, root.clone(), repo, number, path, crate::workspace::Trust::phone(full_access)).await?;
+                if full {
+                    Ok(reply)
+                } else {
+                    crate::blocking(move || Ok(without_secret_pull_patch(&root, reply))).await
+                }
             } else {
-                let pull = pull_detail_cached(&session_id, root, number).await?;
+                let pull = pull_detail_cached(&session_id, root, repo, number, crate::workspace::Trust::phone(full_access)).await?;
                 Ok(fit_pull_files(pull["files"].clone()))
             }
         }
         Call::PullMerge { session_id, method } => {
+            // Round 23: background lane, so a retry may arrive while the first merge runs.
+            let _merging = claim_merge(&session_id)?;
             let (root, number) = linked_pull(&state, &session_id).await?;
             crate::github_pull::merge_flag(&method)?;
+            let repo = pull_repo(&state, &session_id, &root).await?;
             let store = state.store.clone();
             let cache_session_id = session_id.clone();
+            let trust = crate::workspace::Trust::phone(full_access);
             crate::blocking(move || {
-                let link = crate::github_pull::merge(&root, number, &method)?;
+                // `merge_as` refuses a checkout whose config names a program while the switch is off.
+                let link = crate::github_pull::merge_as(&root, Some(&repo), number, &method, trust)?;
                 store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link)).map(|_| ())
             })
             .await?;
@@ -1532,23 +1739,40 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             let _ = app.emit("sessions-changed", ());
             Ok(json!({}))
         }
-        Call::PullDetect { session_id } => detect_pull(app, &state, &session_id).await,
+        Call::PullDetect { session_id } => detect_pull(app, &state, &session_id, crate::workspace::Trust::phone(full_access)).await,
         Call::Changes { session_id } => {
             let root = task_root(&state, &session_id).await?;
             crate::blocking(move || {
-                let status = crate::workspace::git_status(&root)?;
-                let (ahead, behind) = if status.is_repo { ahead_behind(&root)? } else { (0, 0) };
+                let trust = crate::workspace::Trust::phone(full_access);
+                let status = crate::workspace::git_status(&root, trust)?;
+                let (ahead, behind) = if status.is_repo { ahead_behind(&root, trust)? } else { (0, 0) };
                 Ok(changes_reply(status, ahead, behind))
             })
             .await
         }
         Call::Diff { session_id, path, staged } => {
             let root = task_root(&state, &session_id).await?;
+            // Secret files (files.rs's list) stay hidden below Full, as in `files.read`.
+            let full = super::grants::scope_name(app, from) == Some("full");
             crate::blocking(move || {
-                let diff = crate::workspace::git_diff(&root, path, staged)?;
+                // Round 22: a project rooted at the home folder (or above) is Full-only.
+                super::methods::files::allow_root(&root, full)?;
+                // Inside `blocking`: `secret_path` canonicalizes (file system).
+                if !full && path.as_deref().is_some_and(|path| secret_path(&root, path)) {
+                    return Err(SECRET_DIFF_REFUSED.into());
+                }
+                // Hard-linked files are left out for every device (Round 12) and counted too.
+                let (diff, linked) = crate::workspace::git_diff_counted(&root, path, staged, crate::workspace::Trust::phone(full_access))?;
+                let (diff, hidden) = if full { (diff, 0) } else { without_secret_patches(&root, &diff) };
+                let hidden = hidden + linked;
                 let underlying_truncated = diff.contains("[Preview truncated at 256 KiB]");
                 let (diff, truncated) = bounded_diff(diff, underlying_truncated);
-                Ok(json!({"diff": diff, "truncated": truncated}))
+                let mut reply = json!({"diff": diff, "truncated": truncated});
+                if hidden > 0 {
+                    // Files left out because they may hold secrets (the device is below Full).
+                    reply["hiddenSecrets"] = json!(hidden);
+                }
+                Ok(reply)
             })
             .await
         }
@@ -1576,9 +1800,22 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             }
             Ok(json!({"sessionId": session_id}))
         }
-        Call::BotMessage { bot_id, text } => {
-            let session_id = crate::bots::bot_message(app.clone(), bot_id, text, None, None, None).await?;
-            Ok(json!({"sessionId": session_id}))
+        Call::BotMessage { bot_id, text, send_id } => {
+            let key = send_key(from, &format!("bot:{bot_id}"), send_id.as_deref());
+            let store = state.store.clone();
+            once_per_send(key, async move {
+                let id = bot_id.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let store = store.lock().map_err(|e| e.to_string())?;
+                    super::methods::admin::allow_bot_mode(&store, &id, full_access)?;
+                    allow_remote_bot_team(&store, &id, crate::bots::DESKTOP, full_access)
+                })
+                .await
+                    .map_err(|e| e.to_string())??;
+                let session_id = crate::bots::bot_message(app.clone(), bot_id, text, None, None, None).await?;
+                Ok(json!({"sessionId": session_id}))
+            })
+            .await
         }
         Call::BotPause { bot_id, paused } => {
             if paused {
@@ -1594,7 +1831,349 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             Ok(json!({}))
         }
         Call::Batch(_) => Err("Nested batch calls are not supported.".into()),
+        Call::Ext(parsed) => parsed.call.run(super::methods::Ctx { app, from, full_access }).await,
     }
+}
+
+/// `task.send`: like Enter in the composer, a running task queues the message.
+async fn send_prompt(app: &tauri::AppHandle, from: &str, session_id: String, text: String, image_ids: Vec<String>, full_access: bool) -> Result<Value> {
+    allow_task_mode(&drivable_task(app, from, &session_id, full_access).await?.mode, None, full_access)?;
+    allow_remote_team_for(&app.state::<AppState>(), &session_id, full_access).await?;
+    // Only images this caller just sent; they are now this task's. If the message is neither
+    // sent nor queued they go back to the caller, so a retry with the same sendId finds them.
+    images::claim(app, from, &image_ids)?;
+    let sent = deliver_prompt(app, session_id, text, image_ids.clone()).await;
+    if sent.is_err() {
+        images::restore(app, from, &image_ids);
+    }
+    sent
+}
+
+/// The part of [`send_prompt`] after the images are claimed: queue behind a running turn, or send.
+async fn deliver_prompt(app: &tauri::AppHandle, session_id: String, text: String, image_ids: Vec<String>) -> Result<Value> {
+    let state = app.state::<AppState>();
+    let _turn = task_send_lock(&session_id).await;
+    let busy = || crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
+    if busy()? {
+        let queued: Vec<Value> = image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Image", "width": 0, "height": 0, "thumbnail": "", "source": "file"})).collect();
+        let entry = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!(queued))?;
+        // If the run ended between the check and the add, nothing would deliver the
+        // entry: take it back (unless a run end already did) and send it now.
+        if busy()? || message_queue::withdraw(&*state.store.lock().map_err(|e| e.to_string())?, &entry.id).is_err() {
+            let _ = app.emit("queue-changed", json!({"sessionId": session_id}));
+            return Ok(json!({"queued": true}));
+        }
+    }
+    let before = newest_user_message(&state, &session_id)?;
+    if let Err(error) = crate::send_message(app.clone(), state.clone(), session_id.clone(), text, Some(image_ids), None).await {
+        // Saved, then the harness failed to start: a retry must not save the prompt again.
+        let saved = newest_user_message(&state, &session_id).is_ok_and(|after| after > before);
+        let _ = app.emit("sessions-changed", ());
+        return Err(if saved { saved_failure(error) } else { error });
+    }
+    let _ = app.emit("sessions-changed", ());
+    Ok(json!({"queued": false}))
+}
+
+/// The id of the task's newest user message (0 if none): one written by a failed send
+/// shows up as a larger id.
+fn newest_user_message(state: &AppState, session_id: &str) -> Result<i64> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    newest_user_message_in(&store, session_id)
+}
+
+fn newest_user_message_in(store: &crate::storage::Store, session_id: &str) -> Result<i64> {
+    store
+        .db
+        .query_row("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role='user'", [session_id], |row| row.get(0))
+        .map_err(|e| e.to_string())
+}
+
+/// A prompt's `sendId` is remembered this long, so a viewer's retry after a lost reply
+/// gets the first answer instead of sending the prompt twice.
+const SEND_MEMORY: Duration = Duration::from_secs(3600);
+/// Remembered `sendId`s in all; past it the oldest are forgotten first.
+const MAX_SEND_IDS: usize = 4096;
+
+/// Answers of `task.send`, `task.steer` and `bot.message` by (viewer, task or bot, `sendId`).
+/// Requests from one viewer run in order in its state-changing lane (socket.rs), so a
+/// repeat always arrives after the first has answered.
+#[derive(Default)]
+pub(crate) struct SentIds {
+    /// A failure is kept only when the work had already begun ([`saved_failure`]).
+    answers: HashMap<String, Result<Value>>,
+    order: std::collections::VecDeque<(Instant, String)>,
+}
+
+impl SentIds {
+    fn expire(&mut self, now: Instant) {
+        while let Some((at, _)) = self.order.front() {
+            if now.saturating_duration_since(*at) < SEND_MEMORY && self.answers.len() <= MAX_SEND_IDS {
+                break;
+            }
+            if let Some((_, key)) = self.order.pop_front() {
+                self.answers.remove(&key);
+            }
+        }
+    }
+
+    pub(crate) fn recall(&mut self, key: &str, now: Instant) -> Option<Result<Value>> {
+        self.expire(now);
+        self.answers.get(key).cloned()
+    }
+
+    pub(crate) fn remember(&mut self, key: String, answer: Result<Value>, now: Instant) {
+        if self.answers.insert(key.clone(), answer).is_none() {
+            self.order.push_back((now, key));
+        }
+        self.expire(now);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.answers.len()
+    }
+}
+
+fn sent_ids() -> &'static StdMutex<SentIds> {
+    static SENT: OnceLock<StdMutex<SentIds>> = OnceLock::new();
+    SENT.get_or_init(Default::default)
+}
+
+/// The memory key of a prompt with a `sendId`: per viewer and per task (or bot).
+fn send_key(from: &str, scope: &str, send_id: Option<&str>) -> Option<String> {
+    send_id.map(|id| format!("{from}\n{scope}\n{id}"))
+}
+
+/// Registry writes that cannot simply be repeated and take a `sendId` the same way (hello
+/// feature `actionSendId`): a retry after a lost reply answers the first result.
+/// The last four came with hello feature `backgroundSendId`.
+#[cfg_attr(not(test), allow(dead_code))] // read by tests and docs only
+pub(crate) const ONCE_METHODS: [&str; 15] = [
+    "github.comment", "pull.review", "pull.create", "recipes.run", "schedules.runNow", "worktree.create", "thread.fork", "rewind.to", "bot.runSchedule", "git.commit",
+    "btw.ask", "vm.start", "vm.stop", "moodboards.add", "schedules.create",
+];
+
+/// The memory scope of one of the [`ONCE_METHODS`]: the method and what it acts on.
+fn action_scope(method: &str, target: &str) -> String {
+    format!("{method}:{target}")
+}
+
+/// What a [`ONCE_METHODS`] call acts on, from its params: as each method passes it to
+/// [`once_per_action`].
+fn action_target(method: &str, params: &Value) -> Option<String> {
+    match method {
+        "pull.create" | "pull.review" | "recipes.run" | "worktree.create" | "git.commit" | "btw.ask" => Some(params["sessionId"].as_str()?.to_owned()),
+        "vm.start" | "vm.stop" => Some(params["name"].as_str()?.to_owned()),
+        "moodboards.add" => Some(moodboard_add_target(params["projectId"].as_str()?, params["board"].as_str()?, params["imageId"].as_str()?)),
+        "bot.runSchedule" => Some(run_schedule_target(params["botId"].as_str()?, params["scheduleId"].as_str()?)),
+        // A fork is of one message: two forks of different messages are two actions.
+        "thread.fork" | "rewind.to" => Some(format!("{}@{}", params["sessionId"].as_str()?, params["messageId"].as_i64()?)),
+        "schedules.runNow" => Some(params["scheduleId"].as_str()?.to_owned()),
+        // The thread it sends to; the `sendId` (one per draft) keeps two schedules on one thread apart.
+        "schedules.create" => Some(params["input"]["sessionId"].as_str()?.to_owned()),
+        "github.comment" => Some(github_comment_target(params["projectId"].as_str()?, params["number"].as_i64()?)),
+        _ => None,
+    }
+}
+
+/// `bot.runSchedule`'s target: the bot and its schedule.
+pub(crate) fn run_schedule_target(bot_id: &str, schedule_id: &str) -> String {
+    format!("{bot_id}/{schedule_id}")
+}
+
+/// `moodboards.add`'s target: the project, the board and the uploaded image.
+pub(crate) fn moodboard_add_target(project_id: &str, board: &str, image_id: &str) -> String {
+    format!("{project_id}/{board}/{image_id}")
+}
+
+/// `github.comment`'s target: the project and the issue or pull request number.
+pub(crate) fn github_comment_target(project_id: &str, number: i64) -> String {
+    format!("{project_id}#{number}")
+}
+
+/// The memory key of a `task.send`, `task.steer`, `bot.message` or [`ONCE_METHODS`] request
+/// that carries a `sendId`.
+fn request_send_key(from: &str, message: &Value) -> Option<String> {
+    let params = &message["params"];
+    let method = message["method"].as_str()?;
+    let scope = match method {
+        "task.send" | "task.steer" => params["sessionId"].as_str()?.to_owned(),
+        "bot.message" => format!("bot:{}", params["botId"].as_str()?),
+        _ => action_scope(method, &action_target(method, params)?),
+    };
+    send_key(from, &scope, Some(params["sendId"].as_str()?))
+}
+
+/// The optional `sendId` of a [`ONCE_METHODS`] call.
+pub(crate) fn send_id_param(params: &Value) -> Result<Option<String>> {
+    optional_id(params, "sendId")
+}
+
+/// Runs one of the [`ONCE_METHODS`] once per (viewer, method, target, `sendId`), as
+/// [`once_per_send`] does for prompts; without a `sendId` it just runs.
+pub(crate) async fn once_per_action(from: &str, method: &str, target: &str, send_id: Option<&str>, run: impl std::future::Future<Output = Result<Value>>) -> Result<Value> {
+    once_per_send(send_key(from, &action_scope(method, target), send_id), run).await
+}
+
+/// Tasks whose linked pull request a phone is merging now. `task.pullMerge` runs in the
+/// background lane (Round 23), where a retry could otherwise run beside the first merge; a
+/// second one for the same task is refused at once instead (a later retry finds it merged).
+fn merges_running() -> &'static StdMutex<HashSet<String>> {
+    static RUNNING: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    RUNNING.get_or_init(Default::default)
+}
+
+pub(crate) const MERGE_RUNNING: &str = "This pull request is already being merged.";
+
+/// Holds a task's place in [`merges_running`] until dropped (also when the call is dropped halfway).
+struct MergeClaim(String);
+
+impl Drop for MergeClaim {
+    fn drop(&mut self) {
+        merges_running().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
+}
+
+fn claim_merge(session_id: &str) -> Result<MergeClaim> {
+    let mut running = merges_running().lock().unwrap_or_else(|e| e.into_inner());
+    if !running.insert(session_id.to_owned()) {
+        return Err(MERGE_RUNNING.into());
+    }
+    Ok(MergeClaim(session_id.to_owned()))
+}
+
+/// Per-task locks around "is it busy? then queue or send": `task.send` runs in the ordered
+/// lane but `recipes.run` and `schedules.runNow` in the background one, so without it two
+/// could both see the task idle and both start a turn.
+fn task_send_locks() -> &'static StdMutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>> {
+    static LOCKS: OnceLock<StdMutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(Default::default)
+}
+
+/// Waits for this task's send lock ([`task_send_locks`]). Holders keep it only for the busy
+/// check and the send itself (which returns once the turn starts), never for a whole turn.
+pub(crate) async fn task_send_lock(session_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut table = task_send_locks().lock().unwrap_or_else(|e| e.into_inner());
+        table.retain(|_, lock| lock.strong_count() > 0);
+        match table.get(session_id).and_then(std::sync::Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+                table.insert(session_id.to_owned(), std::sync::Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    lock.lock_owned().await
+}
+
+/// Whether a prompt request's `sendId` already ran or is running now (its first answer is
+/// remembered, or its first copy is in flight), so a late copy is answered from memory or
+/// waits for the first instead of being refused as never run (socket.rs).
+pub(crate) fn already_sent(from: &str, message: &Value) -> bool {
+    request_send_key(from, message).is_some_and(|key| send_known(&key))
+}
+
+/// [`already_sent`] by key. Lock order as in [`claim_send`]: in-flight, then the answer memory.
+fn send_known(key: &str) -> bool {
+    let running = sends_in_flight().lock().unwrap_or_else(|e| e.into_inner());
+    running.contains_key(key) || sent_ids().lock().unwrap_or_else(|e| e.into_inner()).recall(key, Instant::now()).is_some()
+}
+
+/// Prompts with a `sendId` running now, so a concurrent repeat (a retry after a generation
+/// change) waits for the first instead of sending the prompt twice.
+type SendWaiters = StdMutex<HashMap<String, tokio::sync::watch::Sender<Option<Result<Value>>>>>;
+
+fn sends_in_flight() -> &'static SendWaiters {
+    static IN_FLIGHT: OnceLock<SendWaiters> = OnceLock::new();
+    IN_FLIGHT.get_or_init(Default::default)
+}
+
+/// Where a keyed send stands: answered before, running elsewhere (wait), or ours to run.
+enum SendClaim {
+    Answered(Result<Value>),
+    Running(tokio::sync::watch::Receiver<Option<Result<Value>>>),
+    Mine(tokio::sync::watch::Sender<Option<Result<Value>>>),
+}
+
+fn claim_send(key: &str) -> SendClaim {
+    // Lock order: in-flight, then the answer memory (the runner remembers before it clears).
+    let mut running = sends_in_flight().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(answer) = sent_ids().lock().unwrap_or_else(|e| e.into_inner()).recall(key, Instant::now()) {
+        return SendClaim::Answered(answer);
+    }
+    if let Some(sender) = running.get(key) {
+        return SendClaim::Running(sender.subscribe());
+    }
+    let sender = tokio::sync::watch::channel(None).0;
+    running.insert(key.to_owned(), sender.clone());
+    SendClaim::Mine(sender)
+}
+
+/// Clears a keyed send's in-flight marker when its runner ends (also when it is dropped
+/// halfway), waking any waiter; one that sees no answer tries the send itself.
+struct SendMarker {
+    key: String,
+    sender: tokio::sync::watch::Sender<Option<Result<Value>>>,
+}
+
+impl Drop for SendMarker {
+    fn drop(&mut self) {
+        sends_in_flight().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.key);
+        self.sender.send_if_modified(|slot| slot.is_none() && slot.replace(Err(SEND_ENDED.into())).is_none());
+    }
+}
+
+const SEND_ENDED: &str = "The message did not go. Try again.";
+
+/// Leads an error from work that had already changed something (a prompt saved before its
+/// harness failed to start), so [`once_per_send`] remembers it like an answer. Never shown.
+const SAVED_FAILURE: char = '\u{1}';
+
+/// An error [`once_per_send`] remembers: a same-`sendId` retry gets it back instead of running
+/// again (which would save the prompt twice).
+pub(crate) fn saved_failure(error: String) -> String {
+    format!("{SAVED_FAILURE}{error}")
+}
+
+/// The result without the [`saved_failure`] mark, and whether it should be remembered.
+fn settle(result: Result<Value>) -> (Result<Value>, bool) {
+    match result {
+        Ok(answer) => (Ok(answer), true),
+        Err(error) => match error.strip_prefix(SAVED_FAILURE) {
+            Some(error) => (Err(error.to_owned()), true),
+            None => (Err(error), false),
+        },
+    }
+}
+
+/// Runs a prompt once per key: a repeat answers what the first did, and a repeat while the
+/// first still runs waits for it. Failures are not remembered (the prompt did not go), so a
+/// retry, or a waiter whose first run failed, tries again; unless the run marked its failure
+/// with [`saved_failure`] (it went partway), which a retry gets back.
+async fn once_per_send(key: Option<String>, run: impl std::future::Future<Output = Result<Value>>) -> Result<Value> {
+    let Some(key) = key else { return settle(run.await).0 };
+    let marker = loop {
+        match claim_send(&key) {
+            SendClaim::Answered(answer) => return answer,
+            SendClaim::Mine(sender) => break SendMarker { key: key.clone(), sender },
+            SendClaim::Running(mut done) => {
+                let settled = done.wait_for(Option::is_some).await.ok().and_then(|slot| slot.clone());
+                if let Some(Ok(answer)) = settled {
+                    return Ok(answer);
+                }
+            }
+        }
+    };
+    let (result, keep) = settle(run.await);
+    if keep {
+        sent_ids().lock().unwrap_or_else(|e| e.into_inner()).remember(key, result.clone(), Instant::now());
+    }
+    marker.sender.send_if_modified(|slot| slot.is_none() && slot.replace(result.clone()).is_none());
+    drop(marker);
+    result
 }
 
 /// A remote answer clears the card in this window and on every other viewer, as a
@@ -1712,10 +2291,11 @@ fn start_status(start: Option<&HostStart>) -> Value {
     let Some(start) = start else { return json!({"state": "unknown"}) };
     match &*start.result.borrow() {
         None => json!({"state": "running"}),
-        // With the worktree note too, for a viewer whose `task.start` reply was lost.
+        // With the worktree note, an unsent first message (`sent: false`, `error`) and a chat's
+        // `projectId` too, for a viewer whose `task.start` / `chat.start` reply was lost.
         Some(Ok(reply)) => {
             let mut done = json!({"state": "done", "sessionId": reply["sessionId"]});
-            for key in ["worktree", "note"].into_iter().filter(|key| !reply[key].is_null()) {
+            for key in ["worktree", "note", "sent", "error", "projectId"].into_iter().filter(|key| !reply[key].is_null()) {
                 done[key] = reply[key].clone();
             }
             done
@@ -1747,7 +2327,8 @@ fn cancel_start(start: &HostStart) -> Value {
     answer
 }
 
-/// Recent agent events of subscribed tasks, numbered by one process-wide `seq`, so a
+/// Recent agent events of subscribed tasks, numbered by one process-wide `seq` (each agent
+/// event also names its task's previous one as `prev`, so a viewer sees a gap), so a
 /// viewer that comes back gets exactly what it missed (docs/remote-access.md). `epoch`
 /// is new with every launch, when `seq` starts over.
 pub(crate) struct Journal {
@@ -1755,13 +2336,18 @@ pub(crate) struct Journal {
     seq: u64,
     bytes: usize,
     rings: HashMap<String, Ring>,
+    /// For tasks whose ring was dropped (swept or evicted) and that have had no event since:
+    /// (newest entry `seq`, newest agent event `seq`). A ring made again for one starts there,
+    /// so its first event's `prev` and a viewer's replay follow on with no false gap on a
+    /// long-open thread. An event nobody numbered forgets the task ([`Journal::unseen`]).
+    retired: HashMap<String, (u64, u64)>,
     /// A delayed sweep ([`sweep_later`]) is scheduled.
     sweeping: bool,
 }
 
 impl Default for Journal {
     fn default() -> Self {
-        Self { epoch: uuid::Uuid::new_v4().simple().to_string(), seq: 0, bytes: 0, rings: HashMap::new(), sweeping: false }
+        Self { epoch: uuid::Uuid::new_v4().simple().to_string(), seq: 0, bytes: 0, rings: HashMap::new(), retired: HashMap::new(), sweeping: false }
     }
 }
 
@@ -1770,6 +2356,9 @@ struct Ring {
     since: u64,
     /// The newest `seq` dropped to stay in bounds.
     dropped: u64,
+    /// The `seq` of the task's newest agent event (run ends aside), or `since`: the next
+    /// event's `prev`, so a viewer that never saw it knows it missed something.
+    last_event: u64,
     bytes: usize,
     /// When a viewer last followed the task or its run last ended.
     touched: Instant,
@@ -1805,11 +2394,31 @@ impl Journal {
         self.sweep(now);
         if self.rings.len() >= JOURNAL_TASKS {
             let quiet = self.rings.iter().min_by_key(|(_, ring)| ring.events.back().map_or(ring.since, |(seq, ..)| *seq)).map(|(id, _)| id.clone());
-            if let Some(ring) = quiet.and_then(|id| self.rings.remove(&id)) {
+            if let Some((id, ring)) = quiet.and_then(|id| self.rings.remove_entry(&id)) {
                 self.bytes -= ring.bytes;
+                self.retire(id, &ring);
             }
         }
-        self.rings.insert(session.to_owned(), Ring { since: self.seq, dropped: 0, bytes: 0, touched: now, finished: false, events: Default::default() });
+        let (since, last_event) = self.retired.remove(session).unwrap_or((self.seq, self.seq));
+        self.rings.insert(session.to_owned(), Ring { since, dropped: 0, last_event, bytes: 0, touched: now, finished: false, events: Default::default() });
+    }
+
+    /// Remembers where a dropped ring ended, within [`JOURNAL_RETIRED`] (the oldest go first).
+    fn retire(&mut self, session: String, ring: &Ring) {
+        let newest = ring.events.back().map_or(0, |(seq, _)| *seq).max(ring.since).max(ring.dropped).max(ring.last_event);
+        self.retired.insert(session, (newest, ring.last_event));
+        while self.retired.len() > JOURNAL_RETIRED {
+            let Some(oldest) = self.retired.iter().min_by_key(|(_, (seq, _))| *seq).map(|(id, _)| id.clone()) else { break };
+            self.retired.remove(&oldest);
+        }
+    }
+
+    /// A task had an event nobody numbered: a ring made for it later can't vouch for what
+    /// came before, so it starts at the current `seq` again.
+    fn unseen(&mut self, session: &str) {
+        if !self.retired.is_empty() {
+            self.retired.remove(session);
+        }
     }
 
     /// How long until the first finished ring goes idle, when no sweep is scheduled yet;
@@ -1834,14 +2443,13 @@ impl Journal {
     /// Drops the rings of finished tasks nobody has followed for [`JOURNAL_IDLE`]. Run on
     /// a new ring, a subscribe and a run end, and by [`sweep_later`] once a run end idles.
     fn sweep(&mut self, now: Instant) {
-        let bytes = &mut self.bytes;
-        self.rings.retain(|_, ring| {
-            let keep = !ring.finished || now.saturating_duration_since(ring.touched) < JOURNAL_IDLE;
-            if !keep {
-                *bytes -= ring.bytes;
+        let idle: Vec<String> = self.rings.iter().filter(|(_, ring)| ring.finished && now.saturating_duration_since(ring.touched) >= JOURNAL_IDLE).map(|(id, _)| id.clone()).collect();
+        for id in idle {
+            if let Some(ring) = self.rings.remove(&id) {
+                self.bytes -= ring.bytes;
+                self.retire(id, &ring);
             }
-            keep
-        });
+        }
     }
 
     /// Numbers and keeps an event of a recorded (or, with `subscribed`, newly recorded)
@@ -1854,15 +2462,22 @@ impl Journal {
         }
         if !self.rings.contains_key(session) {
             if !subscribed {
+                self.unseen(session);
                 return None;
             }
             self.watch(session);
         }
         self.seq += 1;
+        let ring = self.rings.get_mut(session)?;
         event["seq"] = json!(self.seq);
+        // Run ends go out in their own frames, after the events flushed with them, so only
+        // agent events chain: a viewer's cursor covers `prev` unless it missed an event.
+        if !finished {
+            event["prev"] = json!(ring.last_event);
+            ring.last_event = self.seq;
+        }
         let text = event.to_string();
         let size = text.len();
-        let ring = self.rings.get_mut(session)?;
         if subscribed || finished {
             ring.touched = now;
         }
@@ -1976,6 +2591,29 @@ struct PullCache {
     diffs: HashMap<(String, i64, String), PullCacheEntry>,
     detects: HashMap<(String, i64, Option<i64>), PullCacheEntry>,
     flights: HashMap<PullFlightKey, Arc<tokio::sync::Mutex<()>>>,
+    /// Per task, bumped by every [`invalidate_pull_cache`]: a fetch stores its result only if
+    /// the generation it read before fetching is still current, so one that started before an
+    /// invalidation never caches a stale value after it. Never trimmed (a removed entry would
+    /// read as 0 again); one small entry per task whose cache was ever cleared.
+    generations: HashMap<String, u64>,
+}
+
+impl PullCache {
+    fn generation(&self, session_id: &str) -> u64 {
+        self.generations.get(session_id).copied().unwrap_or(0)
+    }
+
+    fn invalidate(&mut self, session_id: &str) {
+        *self.generations.entry(session_id.to_owned()).or_insert(0) += 1;
+        self.details.retain(|(id, _), _| id != session_id);
+        self.diffs.retain(|(id, _, _), _| id != session_id);
+        self.detects.retain(|(id, _, _), _| id != session_id);
+    }
+
+    /// Whether a fetch for `session_id` that read generation `started` may store its result.
+    fn may_store(&self, session_id: &str, started: u64) -> bool {
+        self.generation(session_id) == started
+    }
 }
 
 static PULL_CACHE: OnceLock<StdMutex<PullCache>> = OnceLock::new();
@@ -2015,41 +2653,52 @@ fn pull_flight(key: PullFlightKey) -> Arc<tokio::sync::Mutex<()>> {
     })
 }
 
-async fn pull_detail_cached(session_id: &str, root: PathBuf, number: i64) -> Result<Value> {
+async fn pull_detail_cached(session_id: &str, root: PathBuf, repo: String, number: i64, trust: crate::workspace::Trust) -> Result<Value> {
     let key = (session_id.to_owned(), number);
     if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.details, &key)) {
         return Ok(value);
     }
     let flight = pull_flight(PullFlightKey::Detail(key.0.clone(), key.1));
     let _flight = flight.lock().await;
-    if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.details, &key)) {
-        return Ok(value);
-    }
-    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail(&root, number)).await?)
+    // The generation is read with the cache check, before fetching.
+    let started = match with_pull_cache(|cache| cached_pull_entry(&mut cache.details, &key).ok_or_else(|| cache.generation(session_id))) {
+        Ok(value) => return Ok(value),
+        Err(started) => started,
+    };
+    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail_as(&root, Some(&repo), number, trust)).await?)
         .map_err(|error| error.to_string())?;
     fit_pull_detail(&mut value);
-    with_pull_cache(|cache| store_pull_entry(&mut cache.details, key, value.clone()));
+    with_pull_cache(|cache| {
+        if cache.may_store(session_id, started) {
+            store_pull_entry(&mut cache.details, key, value.clone());
+        }
+    });
     Ok(value)
 }
 
-async fn pull_diff_cached(session_id: &str, root: PathBuf, number: i64, path: String) -> Result<Value> {
+async fn pull_diff_cached(session_id: &str, root: PathBuf, repo: String, number: i64, path: String, trust: crate::workspace::Trust) -> Result<Value> {
     let key = (session_id.to_owned(), number, path.clone());
     if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.diffs, &key)) {
         return Ok(value);
     }
     let flight = pull_flight(PullFlightKey::Diff(key.0.clone(), key.1, key.2.clone()));
     let _flight = flight.lock().await;
-    if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.diffs, &key)) {
-        return Ok(value);
-    }
+    let started = match with_pull_cache(|cache| cached_pull_entry(&mut cache.diffs, &key).ok_or_else(|| cache.generation(session_id))) {
+        Ok(value) => return Ok(value),
+        Err(started) => started,
+    };
     let value = crate::blocking(move || {
-        let diff = crate::github_pull::diff(&root, number)?;
+        let diff = crate::github_pull::diff_as(&root, Some(&repo), number, trust)?;
         let (patch, truncated) = pull_file_patch(&diff.patch, &path, diff.truncated);
         let (patch, truncated) = bounded_diff(patch, truncated);
         Ok(json!({"patch": patch, "truncated": truncated}))
     })
     .await?;
-    with_pull_cache(|cache| store_pull_entry(&mut cache.diffs, key, value.clone()));
+    with_pull_cache(|cache| {
+        if cache.may_store(session_id, started) {
+            store_pull_entry(&mut cache.diffs, key, value.clone());
+        }
+    });
     Ok(value)
 }
 
@@ -2063,20 +2712,16 @@ fn store_pull_detect(session_id: &str, latest_message_id: i64, existing_number: 
     with_pull_cache(|cache| store_pull_entry(&mut cache.detects, key, value));
 }
 
-fn invalidate_pull_cache(session_id: &str) {
-    with_pull_cache(|cache| {
-        cache.details.retain(|(id, _), _| id != session_id);
-        cache.diffs.retain(|(id, _, _), _| id != session_id);
-        cache.detects.retain(|(id, _, _), _| id != session_id);
-    });
+pub(crate) fn invalidate_pull_cache(session_id: &str) {
+    with_pull_cache(|cache| cache.invalidate(session_id));
 }
 
-async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str) -> Result<Value> {
+async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str, trust: crate::workspace::Trust) -> Result<Value> {
     let store = state.store.clone();
     let session_id_owned = session_id.to_owned();
     let context = crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
-        let task = local_session_from(&store, &session_id_owned)?;
+        let task = workspace_session_from(&store, &session_id_owned)?;
         if task.pull_request.as_ref().is_some_and(|link| ["open", "draft"].contains(&link.state.as_str())) {
             return Ok(None);
         }
@@ -2095,10 +2740,21 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str)
             return Ok(None);
         }
         let root = store.workspace_root(&task.project_id, Some(&session_id_owned))?;
-        Ok(Some((root, turn, started, task.pull_request.map(|link| link.number), latest_message_id)))
+        // Round 22: a link to any of the checkout's GitHub remotes (and the task's own link's
+        // repository) counts, as on the desktop; with none nothing can be detected.
+        let mut repos = crate::github_hub::github_remotes(&root);
+        if let Ok(linked) = crate::github_pull::pinned_repo(&root, task.pull_request.as_ref().map(|link| link.url.as_str())) {
+            if !repos.contains(&linked) {
+                repos.push(linked);
+            }
+        }
+        if repos.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((root, repos, turn, started, task.pull_request.map(|link| link.number), latest_message_id)))
     })
     .await?;
-    let Some((root, turn, started, existing_number, latest_message_id)) = context else { return Ok(json!({"pull": null })) };
+    let Some((root, repos, turn, started, existing_number, latest_message_id)) = context else { return Ok(json!({"pull": null })) };
     if let Some(value) = cached_pull_detect(session_id, latest_message_id, existing_number) {
         return Ok(value);
     }
@@ -2109,13 +2765,10 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str)
     }
     let detect_root = root.clone();
     let detection = crate::blocking(move || {
-        let repo = match crate::github::repository(&detect_root) {
-            Ok(repo) => repo,
-            Err(error) if error.is_empty() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let branch = crate::workspace::git_status(&detect_root).map(|status| status.branch).unwrap_or_default();
-        crate::github_pull::detect(&detect_root, &repo, &turn, &branch, started)
+        // The branch alone: a full status would run the checkout's filters and enter submodules.
+        let branch = crate::workspace::current_branch(&detect_root, trust).unwrap_or_default();
+        // Each lookup is pinned to the repository in its link (never `gh repo view`).
+        crate::github_pull::detect_in_as(&detect_root, &repos, &turn, &branch, started, trust)
     })
     .await?;
     let Some(link) = detection else {
@@ -2128,7 +2781,8 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str)
         store_pull_detect(session_id, latest_message_id, existing_number, value.clone());
         return Ok(value);
     }
-    let pull = pull_detail_cached(session_id, root, link.number).await?;
+    let repo = crate::github_pull::pinned_repo(&root, Some(&link.url)).map_err(|error| error.to_string())?;
+    let pull = pull_detail_cached(session_id, root, repo, link.number, trust).await?;
     let store = state.store.clone();
     let session_id_owned = session_id.to_owned();
     let saved_link = link.clone();
@@ -2150,7 +2804,7 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str)
 }
 
 fn bots_list(state: &AppState) -> Result<Value> {
-    let active: HashSet<String> = state.agents.lock().map_err(|e| e.to_string())?.keys().cloned().collect();
+    let active: HashSet<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let active_projects: HashSet<String> = store
         .sessions()?
@@ -2181,10 +2835,10 @@ fn bots_list(state: &AppState) -> Result<Value> {
     Ok(json!({"bots": items}))
 }
 
-fn ahead_behind(root: &Path) -> Result<(usize, usize)> {
-    let mut command = Command::new("git");
-    command.args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]).current_dir(root);
-    let output = crate::workspace::run_process(command, "Git", 8192, Duration::from_secs(10))?;
+/// Commits ahead of and behind the upstream, through `workspace::git_inspect` (hooks skipped;
+/// for an untrusted phone the same closed gate as `task.changes`' status).
+fn ahead_behind(root: &Path, trust: crate::workspace::Trust) -> Result<(usize, usize)> {
+    let output = crate::workspace::git_inspect(root, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], 8192, Duration::from_secs(10), trust)?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr.bytes).to_ascii_lowercase();
         if error.contains("upstream") || error.contains("unknown revision") || error.contains("ambiguous argument") {
@@ -2220,6 +2874,79 @@ fn changes_reply(status: crate::workspace::GitStatus, ahead: usize, behind: usiz
     let mut reply = json!({"branch": status.branch, "ahead": ahead, "behind": behind, "files": files});
     shrink(&mut reply, PAGE_BUDGET);
     reply
+}
+
+const SECRET_DIFF_REFUSED: &str = "This file may hold secrets. Give this phone Full access on the computer to see its changes.";
+
+/// Whether a repo path names one of files.rs's secret files, by name or by folder and name
+/// (`.kube/config`, `.docker/config.json`), or is a symlink in `root` that resolves to one.
+fn secret_path(root: &Path, path: &str) -> bool {
+    use super::methods::files::is_secret_path;
+    is_secret_path(Path::new(path)) || root.join(path).canonicalize().is_ok_and(|resolved| is_secret_path(&resolved))
+}
+
+/// A unified diff without the patches of secret files: a file section (from its `diff --git`
+/// line) is dropped when any path on that line names one (overcautious for names with spaces),
+/// or (Round 10) any path its header names: `--- `/`+++ ` before the first hunk and
+/// `rename`/`copy` lines, so a checkout's own `diff.srcPrefix`/`dstPrefix`/`noprefix` cannot
+/// hide a secret file from the filter. Also returns how many were dropped.
+fn without_secret_patches(root: &Path, diff: &str) -> (String, usize) {
+    let mut out = String::with_capacity(diff.len());
+    let (mut section, mut hidden, mut in_header, mut count) = (String::new(), false, false, 0);
+    let mut flush = |section: &mut String, hidden: bool, out: &mut String| {
+        if hidden {
+            count += 1;
+        } else {
+            out.push_str(section);
+        }
+        section.clear();
+    };
+    for line in diff.split_inclusive('\n') {
+        if let Some(paths) = line.strip_prefix("diff --git ") {
+            flush(&mut section, hidden, &mut out);
+            hidden = paths.split_whitespace().map(|part| part.trim_matches('"')).map(|part| part.strip_prefix("a/").or_else(|| part.strip_prefix("b/")).unwrap_or(part)).any(|part| secret_path(root, part));
+            in_header = true;
+        } else if in_header {
+            if line.starts_with("@@") {
+                in_header = false;
+            } else if let Some(path) = header_path(line) {
+                hidden |= header_path_is_secret(root, &path);
+            }
+        }
+        section.push_str(line);
+    }
+    flush(&mut section, hidden, &mut out);
+    (out, count)
+}
+
+/// The path a file section's header line names (`--- a/x`, `+++ b/x`, `rename from x`…),
+/// unquoted, without the tab Git adds after a name with spaces; `None` for `/dev/null`.
+fn header_path(line: &str) -> Option<String> {
+    let rest = ["--- ", "+++ ", "rename from ", "rename to ", "copy from ", "copy to "].iter().find_map(|prefix| line.strip_prefix(prefix))?;
+    let rest = rest.trim_end_matches(['\n', '\r']).trim_end_matches('\t');
+    (rest != "/dev/null" && !rest.is_empty()).then(|| unquote_git_path(rest).unwrap_or_else(|| rest.to_owned()))
+}
+
+/// Whether a header path names a secret file, read with and without an `a/`/`b/` prefix.
+fn header_path_is_secret(root: &Path, path: &str) -> bool {
+    secret_path(root, path) || path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).is_some_and(|path| secret_path(root, path))
+}
+
+/// A `task.pullDiff` file reply for a device below Full: a section naming a secret file (a
+/// rename from one, say) is dropped and counted in `hiddenSecrets`.
+fn without_secret_pull_patch(root: &Path, mut reply: Value) -> Value {
+    let Some(patch) = reply["patch"].as_str() else { return reply };
+    let (patch, hidden) = without_secret_patches(root, patch);
+    if hidden > 0 {
+        reply["patch"] = json!(patch);
+        reply["hiddenSecrets"] = json!(hidden);
+    }
+    reply
+}
+
+/// The `task.pullDiff` file reply for a path that is hard-linked in the local checkout.
+fn hard_linked_pull_patch() -> Value {
+    json!({"patch": "", "truncated": false, "hiddenSecrets": 1})
 }
 
 fn bounded_diff(mut diff: String, truncated: bool) -> (String, bool) {
@@ -2518,7 +3245,7 @@ fn live_run(agent: &crate::RunningAgent) -> Result<LiveRun> {
 /// already omits drafts and architect workers; mirrors are filtered and bot workspaces tagged here.
 fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
     let (last_event_by_session, pending_by_session) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut last_event = HashMap::new();
         let mut pending = HashMap::new();
         for (session_id, agent) in agents.iter() {
@@ -2585,6 +3312,7 @@ fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
                 "lastPromptAt": task.last_prompt_at,
                 "pending": pending_by_session.get(&task.id).cloned().unwrap_or_default(),
             });
+            add_task_stage(&mut item, &task.task_stage, task.archived);
             shape_task_status(&mut item, last_event_by_session.contains_key(&task.id), teams.get(&task.id));
             if let Some(&last_event_at) = last_event_by_session.get(&task.id) {
                 add_live_timing(&mut item, Some(LiveTiming { last_event_at, run_started_at }));
@@ -2603,6 +3331,17 @@ fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
         })
         .collect();
     Ok(fit_task_lists(tasks, projects))
+}
+
+/// The task's stage (`completed` once settled, which a phone's archive does) and the legacy
+/// archive flag, only when set: phones hide both from their inbox until there is something to see.
+fn add_task_stage(item: &mut Value, stage: &str, archived: bool) {
+    if !stage.is_empty() {
+        item["stage"] = json!(stage);
+    }
+    if archived {
+        item["archived"] = json!(true);
+    }
 }
 
 /// Resolves only registered non-bot projects, keeping filesystem icon reads off the async runtime.
@@ -2662,7 +3401,7 @@ fn fit_project_icons(icons: impl IntoIterator<Item = (String, Option<String>)>) 
 /// not tasks here (deleted, or never were), so the viewer stops waiting on them.
 fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<(Vec<Value>, Vec<Value>)> {
     let (active_runs, pending_by_session) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut active_runs = HashMap::new();
         let mut pending = HashMap::new();
         for id in ids {
@@ -3004,6 +3743,25 @@ pub(crate) fn fit_list(list: &mut Vec<Value>, budget: usize) {
 }
 
 /// Trims the longest model lists until the provider list fits one reply.
+/// A harness's install path as a phone may see it (Round 19): `~/…` under the home folder,
+/// else only the file name, so `providers.list` (View) names no absolute local path.
+pub(crate) fn phone_provider_path(path: &str, home: Option<&Path>) -> String {
+    let path = Path::new(path);
+    if let Some(rest) = home.filter(|home| home.as_os_str().len() > 1).and_then(|home| path.strip_prefix(home).ok()) {
+        return format!("~/{}", rest.to_string_lossy());
+    }
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Rewrites every provider row's `path` with [`phone_provider_path`].
+pub(crate) fn phone_provider_paths(providers: &mut Value, home: Option<&Path>) {
+    for row in providers.as_array_mut().into_iter().flatten() {
+        if let Some(path) = row.get("path").and_then(Value::as_str).map(|path| phone_provider_path(path, home)) {
+            row["path"] = json!(path);
+        }
+    }
+}
+
 pub(crate) fn fit_providers(providers: &mut Value) {
     while providers.to_string().len() > PAGE_BUDGET {
         let Some(models) = providers.as_array_mut().and_then(|list| list.iter_mut().filter_map(|p| p["models"].as_array_mut()).max_by_key(|models| models.len())).filter(|models| !models.is_empty()) else { return };
@@ -3093,6 +3851,7 @@ pub(crate) fn agent_event(app: &tauri::AppHandle, event: &AgentEvent) {
     let delay = {
         let mut inner = state.lock();
         if followed(&inner, &event.session_id).is_none() {
+            inner.journal.unseen(&event.session_id);
             return;
         }
         let Ok(value) = serde_json::to_value(event) else { return };
@@ -3175,7 +3934,10 @@ async fn sweep_later(app: tauri::AppHandle, mut delay: Duration) {
 /// Run ends are journaled as `kind: "run.finished"` entries carrying the frame's fields; the
 /// live `run.finished` frame carries the same object, `seq` included.
 fn journal_and_enqueue(inner: &mut super::Inner, session_id: &str, mut value: Value, queue: Queue) -> Option<Duration> {
-    let subscribed = followed(inner, session_id)?;
+    let Some(subscribed) = followed(inner, session_id) else {
+        inner.journal.unseen(session_id);
+        return None;
+    };
     if queue == Queue::Settled && inner.subscribers.values().any(|s| s.finished.iter().any(|item| item["sessionId"] == session_id)) {
         return None;
     }
@@ -3373,6 +4135,9 @@ mod tests {
             provider: "codex".into(),
             model: "test-model".into(),
             reasoning_effort: None,
+            note: None,
+            effort_retried: false,
+            started_at: None,
             status: status.into(),
             assignment: "Inspect the implementation".into(),
             summary: "Worker summary".into(),
@@ -3867,10 +4632,28 @@ mod tests {
 
     #[test]
     fn everything_is_refused_while_hosting_is_off() {
-        for method in METHODS {
+        for method in all_methods() {
             assert_eq!(parse(false, method, &json!({"sessionId": "s", "text": "hi", "requestId": "r", "approve": true})), Err(OFF.to_string()));
         }
         assert_eq!(parse(false, "nope", &json!({})), Err(OFF.to_string()));
+    }
+
+    #[test]
+    fn registry_methods_dispatch_through_parse_lanes_and_batch() {
+        let Ok(Call::Ext(parsed)) = parse(true, "host.hello", &json!({})) else { panic!("host.hello is not dispatched to the registry") };
+        assert_eq!(parsed.name, "host.hello");
+        assert_eq!(Call::Ext(parsed).method_name(), "host.hello");
+        assert!(is_method("host.hello") && is_read_only_method("host.hello"));
+        assert!(!is_method("nope.nothing") && !is_read_only_method("nope.nothing"));
+        assert_eq!(parse(true, "nope.nothing", &json!({})), Err("Unknown method.".to_string()));
+        assert_eq!(parse(false, "host.hello", &json!({})), Err(OFF.to_string()));
+        let Ok(Call::Batch(calls)) = parse(true, "batch", &json!({"calls": [{"method": "host.hello", "params": {}}]})) else { panic!("batch refused host.hello") };
+        assert!(matches!(calls.as_slice(), [Ok(Call::Ext(_))]));
+        assert!(all_methods().contains(&"host.hello") && all_methods().contains(&"task.send"));
+        for method in super::super::methods::all() {
+            assert_eq!(is_read_only_method(method.name), method.read_only, "{}", method.name);
+            assert!(batch_methods("batch", &json!({"calls": [{"method": method.name}]})).any(|m| m == method.name));
+        }
     }
 
     #[test]
@@ -3885,9 +4668,9 @@ mod tests {
         assert!(parse(true, "subscribe", &json!({})).is_err());
         assert!(parse(true, "subscribe", &json!({"sessionIds": ["a b"]})).is_err());
         assert!(parse(true, "subscribe", &json!({"sessionIds": vec!["s"; MAX_IDS + 1]})).is_err());
-        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": " hi "})), Ok(Call::Send { session_id: "s1".into(), text: "hi".into(), image_ids: vec![] }));
+        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": " hi "})), Ok(Call::Send { session_id: "s1".into(), text: "hi".into(), image_ids: vec![], send_id: None }));
         let image = uuid::Uuid::new_v4().to_string();
-        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "imageIds": [image]})), Ok(Call::Send { session_id: "s1".into(), text: "hi".into(), image_ids: vec![image.clone()] }));
+        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "imageIds": [image]})), Ok(Call::Send { session_id: "s1".into(), text: "hi".into(), image_ids: vec![image.clone()], send_id: None }));
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "imageIds": ["../x"]})).is_err());
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "imageIds": vec![image; 5]})).is_err());
         assert!(parse(true, "image.put", &json!({"uploadId": "u1", "index": 0, "size": 3, "data": "iVBO"})).is_ok());
@@ -4100,7 +4883,7 @@ mod tests {
         let changes = changes_reply(
             crate::workspace::GitStatus {
                 branch: "b".repeat(PAGE_BUDGET),
-                files: (0..500).map(|n| crate::workspace::GitFile { path: format!("src/{}-{n}", "f".repeat(512)), index: " ".into(), working: "M".into() }).collect(),
+                files: (0..500).map(|n| crate::workspace::GitFile { path: format!("src/{}-{n}", "f".repeat(512)), index: " ".into(), working: "M".into(), orig_path: None }).collect(),
                 is_repo: true,
             },
             2,
@@ -4191,6 +4974,33 @@ mod tests {
         assert_eq!(PULL_CACHE_TTL, Duration::from_secs(30));
     }
 
+    /// A fetch that read the generation before an invalidation never stores its (stale) result
+    /// after it; other tasks and fetches that started afterwards store as before.
+    #[test]
+    fn a_pull_fetch_started_before_an_invalidation_is_not_cached() {
+        let mut cache = PullCache::default();
+        let before = cache.generation("task");
+        assert!(cache.may_store("task", before), "nothing invalidated: store");
+        store_pull_entry(&mut cache.details, ("task".to_owned(), 7), json!({"number": 7}));
+        let other = cache.generation("other");
+        cache.invalidate("task");
+        assert!(cache.details.is_empty(), "invalidate clears the task's entries");
+        assert!(!cache.may_store("task", before), "a fetch from before the invalidation is dropped");
+        assert!(cache.may_store("other", other), "another task is unaffected");
+        let after = cache.generation("task");
+        assert!(cache.may_store("task", after), "a fetch started afterwards stores");
+        cache.invalidate("task");
+        assert!(!cache.may_store("task", after), "each invalidation bumps it again");
+        let source = include_str!("host.rs");
+        for name in ["async fn pull_detail_cached(", "async fn pull_diff_cached("] {
+            let body = &source[source.find(name).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            let read = body.find("cache.generation(session_id)").expect(name);
+            assert!(read < body.find("crate::blocking(").unwrap(), "{name}: read before fetching");
+            assert!(body.contains("if cache.may_store(session_id, started)"), "{name}: store only if unchanged");
+        }
+    }
+
     #[test]
     fn concurrent_pull_misses_for_the_same_key_share_a_flight() {
         let key = PullFlightKey::Detail("flight-test-task".into(), 101);
@@ -4247,6 +5057,17 @@ mod tests {
         fit_providers(&mut providers);
         assert!(providers.to_string().len() <= PAGE_BUDGET);
         assert_eq!(providers[1]["models"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn task_rows_carry_their_stage_and_archive_flag() {
+        let mut item = json!({"sessionId": "s"});
+        add_task_stage(&mut item, "completed", true);
+        assert_eq!(item["stage"], "completed");
+        assert_eq!(item["archived"], true);
+        let mut plain = json!({"sessionId": "s"});
+        add_task_stage(&mut plain, "", false);
+        assert!(plain.get("stage").is_none() && plain.get("archived").is_none());
     }
 
     #[test]
@@ -4357,6 +5178,18 @@ mod tests {
     }
 
     #[test]
+    fn a_start_keeps_the_full_access_switch_from_its_admission() {
+        let start = || parse(true, "task.start", &json!({"projectId": "p", "prompt": "go", "provider": "claude", "model": "sonnet"})).unwrap();
+        let admitted = |call: Call| match call {
+            Call::Start(start) => start.full_access,
+            _ => unreachable!(),
+        };
+        assert_eq!(admitted(start()), None, "parse alone leaves it unset");
+        assert_eq!(admitted(cap_mode(start(), false).unwrap()), Some(false));
+        assert_eq!(admitted(cap_mode(start(), true).unwrap()), Some(true));
+    }
+
+    #[test]
     fn a_full_task_takes_no_remote_prompts_without_full_access() {
         let off = |stored, requested| allow_task_mode(stored, requested, false);
         assert!(off("full", None).unwrap_err().starts_with("Full access is off for remote tasks on "), "send, steer, model-only configure");
@@ -4364,6 +5197,138 @@ mod tests {
         assert!(off("full", Some("ask")).is_ok(), "switching it to an approving mode");
         assert!(off("ask", None).is_ok() && off("auto", None).is_ok());
         assert!(allow_task_mode("full", None, true).is_ok());
+    }
+
+    #[test]
+    fn a_remote_start_without_full_access_never_gets_the_default_team() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        // A saved default team that new tasks inherit.
+        let library = json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
+        store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
+        let params = json!({"projectId": project.id, "prompt": "Fix the parser.", "provider": "codex", "model": "default"});
+        let leads_team = |sid: &str| crate::architect::leads_team(&store, sid).unwrap();
+        for (full_access, team) in [(false, false), (true, true)] {
+            let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
+            assert_eq!(start.team, team);
+            let task = start::create_task(&store, &project.id, &start).unwrap();
+            assert_eq!(leads_team(&task.id), team, "full access for remote tasks: {full_access}");
+            if !team {
+                // A plain task: nothing it runs can dispatch a worker.
+                assert!(allow_remote_team(&store, &task.id, false).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn a_team_lead_takes_no_remote_prompt_or_resume_without_full_access() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        // An Ask lead: its own mode passes the task-mode rule, but its workers run in full access.
+        let lead = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        let plain = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        assert!(allow_task_mode(&lead.mode, None, false).is_ok());
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead.id]).unwrap();
+        // task.send, task.steer and task.teamResume all pass this gate.
+        assert_eq!(allow_remote_team(&store, &lead.id, false), Err(TEAM_NEEDS_FULL_ACCESS.into()));
+        assert!(allow_remote_team(&store, &lead.id, true).is_ok(), "allowed with full access for remote tasks");
+        assert!(allow_remote_team(&store, &plain.id, false).is_ok(), "a task without a team is unaffected");
+    }
+
+    #[test]
+    fn a_bot_thread_that_leads_a_team_takes_no_remote_prompt_without_full_access() {
+        let root = std::env::temp_dir().join(format!("pandacode-bot-team-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = crate::bots::BotInput { name: "Scout".into(), role: "r".into(), instructions: "i".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let bot = crate::bots::create(&store, &input, &root).unwrap();
+        assert!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, false).is_ok(), "no thread yet, no team");
+        let (desktop, _) = crate::bots::thread_session(&store, &bot, crate::bots::DESKTOP, crate::bots::DESKTOP, "Scout · You").unwrap();
+        crate::bots::thread_session(&store, &bot, "schedule", "schedule", "Scout · Scheduled work").unwrap();
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&desktop]).unwrap();
+        assert_eq!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, false), Err(TEAM_NEEDS_FULL_ACCESS.into()));
+        assert!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, true).is_ok(), "allowed with the switch");
+        assert!(allow_remote_bot_team(&store, &bot.id, "schedule", false).is_ok(), "the schedule thread leads no team");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A phone without the switch may still cancel or decline a lead's question, but not answer it.
+    #[test]
+    fn only_cancelling_or_declining_a_question_skips_the_team_gate() {
+        for stop in [json!({"action": "cancel", "content": null}), json!({"action": "decline", "content": null}), json!({"answers": {}})] {
+            assert!(declines_input(&stop), "{stop}");
+        }
+        for answer in [json!({"action": "accept", "content": {"a": 1}}), json!({"action": "accept"}), json!({"answers": {"q": {"answers": ["Ship it"]}}}), json!("free text"), json!(null), json!({"action": "accept", "answers": {}})] {
+            assert!(!declines_input(&answer), "{answer}");
+        }
+    }
+
+    /// Every remote way to prompt, steer, resume or start a team checks the team gate.
+    #[test]
+    fn every_remote_entry_that_drives_a_team_checks_the_team_gate() {
+        fn after<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            let at = source.find(start).unwrap_or_else(|| panic!("{start}"));
+            let rest = &source[at..];
+            &rest[..rest.find(end).unwrap_or(rest.len())]
+        }
+        let host = include_str!("host.rs");
+        let gate = "allow_remote_team_for(";
+        assert!(after(host, "async fn send_prompt(", "\n}\n").contains(gate), "task.send");
+        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
+            let body = after(host, call, "\n        Call::");
+            let at = body.find(gate).unwrap_or_else(|| panic!("{call}"));
+            assert!(body.find("crate::respond_").is_none_or(|respond| at < respond), "{call} checks before it responds");
+        }
+        assert!(after(host, "Call::Start(start) => Call::Start(start::Start { mode: Some(", "\n").contains("team: false"), "task.start");
+        let tools = include_str!("methods/tools.rs");
+        assert!(after(tools, "async fn run_recipe(", "\n}\n").contains(gate), "recipes.run");
+        let schedules = include_str!("methods/schedules.rs");
+        assert!(after(schedules, "fn check_target(", "\n}\n").contains("allow_remote_team(store, session_id, full_access)"), "schedules");
+        let team = include_str!("methods/team.rs");
+        let run = after(team, "impl Run for TeamStart", "\n}\n");
+        assert!(run.find("TEAM_NEEDS_FULL_ACCESS").unwrap() < run.find("start_keyed(").unwrap(), "team.start refuses before it starts");
+        assert!(super::super::methods::SWITCH_METHODS.contains(&"team.start"), "hello lists team.start as needing the switch");
+        let projects = include_str!("methods/projects.rs");
+        assert!(projects.contains("mode.as_deref(), full_access)?"), "chat.start applies the default team only with the switch");
+        // A start's default team is off unless a caller that saw the switch turns it on.
+        assert!(after(include_str!("start.rs"), "pub(crate) fn parse(", "\n}\n").contains("team: false,"), "start::parse fails closed");
+        assert!(after(host, "fn cap_mode(", "\n}\n").contains("team: true, full_access: Some(true)"), "task.start with the switch");
+        let github = include_str!("methods/github.rs");
+        assert!(after(github, "async fn solve_issue(", "\n}\n").contains("start.team = full_access;"), "github.startTask");
+        let composer = include_str!("methods/composer.rs");
+        assert!(after(composer, "fn new_side(", "\n}\n").contains("create_task_without_team("), "btw.ask");
+        assert!(after(composer, "fn queue_edit_allowed(", "\n}\n").contains("allow_remote_team(store, &task.id, full_access)"), "queue.update");
+        assert!(after(composer, "fn may_drain(", "\n}\n").contains("queue_edit_allowed(store, &task, full_access)"), "queue drain");
+        assert!(after(composer, "impl Run for QueueUpdate", "\n}\n").contains("queue_edit_allowed(store, "), "queue.update");
+        for run in ["impl Run for ResumeAtReset", "impl Run for ClearLimit"] {
+            assert!(after(composer, run, "\n}\n").contains(gate), "{run}");
+        }
+        let threads = include_str!("methods/threads.rs");
+        for run in ["impl Run for SetStage", "impl Run for Archive", "impl Run for SetGoal"] {
+            let body = after(threads, run, "\n}\n");
+            let at = body.find(gate).unwrap_or_else(|| panic!("{run}"));
+            assert!(["set_task_stage(", "update_session(", "update_task_details("].iter().all(|change| body.find(change).is_none_or(|c| at < c)), "{run} checks before it changes");
+        }
+        let git = include_str!("methods/git.rs");
+        assert!(after(git, "fn create_task_worktree(", "\n}\n").contains("if !trust.untrusted() {\n            crate::architect::profiles::apply_default("), "worktree.create");
+        let bot = after(host, "Call::BotMessage { bot_id, text, send_id } => {", "\n        Call::");
+        assert!(bot.find("allow_remote_bot_team(&store, &id, crate::bots::DESKTOP, full_access)").unwrap() < bot.find("bot_message(").unwrap(), "bot.message");
+        let admin = include_str!("methods/admin.rs");
+        let schedule = after(admin, "async fn run_schedule(", "\n}\n");
+        assert!(schedule.find("allow_remote_bot_team(store, &bot, \"schedule\", full_access)").unwrap() < schedule.find("bot_run_schedule_now(").unwrap(), "bot.runSchedule");
+        let failover = after(admin, "impl Run for Failover", "\n}\n");
+        assert!(failover.find("allow_remote_team(store, &session, full_access)").unwrap() < failover.find("bot_failover_decide(").unwrap(), "bot.failoverDecide");
+    }
+
+    #[test]
+    fn only_a_start_that_saw_the_switch_gets_the_default_team() {
+        let params = json!({"projectId": "p1", "prompt": "Fix it.", "provider": "codex", "model": "default"});
+        let Call::Start(parsed) = parse(true, "task.start", &params).unwrap() else { panic!("not a start") };
+        assert!(!parsed.team, "parse alone never applies the default team");
+        for full_access in [false, true] {
+            let Call::Start(start) = cap_mode(parse(true, "task.start", &params).unwrap(), full_access).unwrap() else { panic!("not a start") };
+            assert_eq!(start.team, full_access);
+        }
     }
 
     #[test]
@@ -4434,6 +5399,420 @@ mod tests {
         journal.record("c", event("c", "tool", "x"), false).unwrap();
         assert_eq!(journal.missed("c", 2, REPLAY_BUDGET, true), Missed::Gap);
         assert!(matches!(journal.missed("c", 4, REPLAY_BUDGET, true), Missed::Events { events, .. } if events.len() == 1));
+    }
+
+    #[test]
+    fn each_agent_event_names_its_tasks_previous_event_so_a_viewer_sees_a_gap() {
+        let mut journal = Journal::default();
+        let mut tasks = vec![json!({"sessionId": "a"}), json!({"sessionId": "b"})];
+        journal.resume(&mut tasks, &HashMap::new(), None, REPLAY_BUDGET);
+        assert_eq!(tasks[0]["seq"], 0, "the subscribe's position");
+        let first = journal.record("a", event("a", "text", "x"), true).unwrap();
+        assert_eq!((first["seq"].as_u64(), first["prev"].as_u64()), (Some(1), Some(0)), "the first follows the subscribe's position");
+        journal.record("b", event("b", "tool", "ls"), true).unwrap();
+        let second = journal.record("a", event("a", "tool", "pwd"), true).unwrap();
+        assert_eq!((second["seq"].as_u64(), second["prev"].as_u64()), (Some(3), Some(1)), "another task's events don't count");
+        // A run end goes in its own frame after the events flushed with it: it is not chained,
+        // so the event after it still names the last agent event.
+        let end = journal.record("a", json!({"sessionId": "a", "kind": "run.finished", "text": ""}), true).unwrap();
+        assert!(end.get("prev").is_none());
+        let after = journal.record("a", event("a", "status", "idle"), true).unwrap();
+        assert_eq!(after["prev"], 3);
+        // A ring recorded again from a later point says so: its first event follows that point.
+        let mut fresh = Journal { seq: 41, ..Default::default() };
+        let late = fresh.record("c", event("c", "text", "x"), true).unwrap();
+        assert_eq!((late["seq"].as_u64(), late["prev"].as_u64()), (Some(42), Some(41)));
+        // A replay keeps each event's `prev`, a joined delta the first one's.
+        journal.record("a", event("a", "text", "1"), true).unwrap();
+        journal.record("a", event("a", "text", "2"), true).unwrap();
+        let Missed::Events { events, .. } = journal.missed("a", 5, REPLAY_BUDGET, true) else { panic!("no gap") };
+        assert_eq!((events.len(), events[0]["seq"].as_u64(), events[0]["prev"].as_u64()), (1, Some(7), Some(5)));
+    }
+
+    #[test]
+    fn a_repeated_send_id_answers_the_first_reply_for_an_hour_and_memory_stays_bounded() {
+        let now = Instant::now();
+        let mut sent = SentIds::default();
+        let key = send_key("phone", "s1", Some("send-1")).unwrap();
+        assert_eq!(send_key("phone", "s1", None), None, "older viewers send no id");
+        assert_ne!(Some(key.clone()), send_key("tablet", "s1", Some("send-1")), "per viewer");
+        assert_ne!(Some(key.clone()), send_key("phone", "s2", Some("send-1")), "per task");
+        assert_eq!(sent.recall(&key, now), None);
+        sent.remember(key.clone(), Ok(json!({"queued": true})), now);
+        assert_eq!(sent.recall(&key, now + Duration::from_secs(60)), Some(Ok(json!({"queued": true}))));
+        assert_eq!(sent.recall(&key, now + SEND_MEMORY + Duration::from_secs(1)), None, "forgotten after an hour");
+        assert_eq!(sent.len(), 0);
+        for i in 0..MAX_SEND_IDS + 10 {
+            sent.remember(format!("k{i}"), Ok(json!(i)), now);
+        }
+        assert_eq!(sent.len(), MAX_SEND_IDS, "bounded");
+        assert_eq!(sent.recall("k0", now), None, "the oldest go first");
+        assert_eq!(sent.recall(&format!("k{}", MAX_SEND_IDS + 9), now), Some(Ok(json!(MAX_SEND_IDS + 9))));
+    }
+
+    #[test]
+    fn prompts_carry_an_optional_send_id() {
+        let send = parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "sendId": "abc-1"}));
+        assert_eq!(send, Ok(Call::Send { session_id: "s1".into(), text: "hi".into(), image_ids: vec![], send_id: Some("abc-1".into()) }));
+        assert_eq!(parse(true, "task.steer", &json!({"sessionId": "s1", "text": "hi", "sendId": null})), Ok(Call::Steer { session_id: "s1".into(), text: "hi".into(), send_id: None }));
+        assert_eq!(parse(true, "bot.message", &json!({"botId": "b1", "text": "hi", "sendId": "x"})), Ok(Call::BotMessage { bot_id: "b1".into(), text: "hi".into(), send_id: Some("x".into()) }));
+        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "sendId": "has space"})), Err("Invalid sendId.".into()));
+        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "sendId": 5})), Err("Invalid sendId.".into()));
+    }
+
+    #[tokio::test]
+    async fn a_late_copy_of_a_prompt_that_already_ran_is_known() {
+        let send_id = uuid::Uuid::new_v4().to_string();
+        let message = json!({"method": "task.send", "params": {"sessionId": "late-task", "text": "hi", "sendId": send_id}});
+        assert!(!already_sent("phone", &message), "nothing ran yet");
+        once_per_send(request_send_key("phone", &message), async { Ok(json!({"queued": false})) }).await.unwrap();
+        assert!(already_sent("phone", &message));
+        assert!(!already_sent("other-phone", &message), "per viewer");
+        let bot = json!({"method": "bot.message", "params": {"botId": "b1", "text": "hi", "sendId": send_id}});
+        assert_eq!(request_send_key("phone", &bot), send_key("phone", "bot:b1", Some(&send_id)));
+        assert!(!already_sent("phone", &json!({"method": "task.stop", "params": {"sessionId": "late-task"}})));
+        assert!(!already_sent("phone", &json!({"method": "task.send", "params": {"sessionId": "late-task", "text": "hi"}})));
+    }
+
+    #[tokio::test]
+    async fn worktrees_forks_and_rewinds_run_once_per_send_id() {
+        let send_id = uuid::Uuid::new_v4().to_string();
+        let cases = [
+            ("worktree.create", json!({"sessionId": "once-wt", "sendId": send_id}), "once-wt".to_owned()),
+            ("thread.fork", json!({"sessionId": "once-fork", "messageId": 7, "before": true, "sendId": send_id}), super::super::methods::threads::fork_target("once-fork", 7)),
+            ("rewind.to", json!({"sessionId": "once-rw", "messageId": 9, "sendId": send_id}), super::super::methods::threads::fork_target("once-rw", 9)),
+        ];
+        for (method, params, target) in cases {
+            assert!(ONCE_METHODS.contains(&method), "{method}");
+            let message = json!({"method": method, "params": params});
+            // The key the host checks before dispatch is the one the method itself runs under.
+            assert_eq!(request_send_key("phone", &message), send_key("phone", &action_scope(method, &target), Some(&send_id)), "{method}");
+            assert!(!already_sent("phone", &message), "{method}");
+            let runs = std::sync::atomic::AtomicUsize::new(0);
+            for _ in 0..2 {
+                once_per_action("phone", method, &target, Some(&send_id), async {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"sessionId": "new"}))
+                })
+                .await
+                .unwrap();
+            }
+            assert_eq!(runs.load(Ordering::SeqCst), 1, "{method} ran once");
+            assert!(already_sent("phone", &message), "{method}");
+        }
+        // Another message of the same task is another fork.
+        let other = json!({"method": "thread.fork", "params": {"sessionId": "once-fork", "messageId": 8, "sendId": send_id}});
+        assert!(!already_sent("phone", &other));
+    }
+
+    #[test]
+    fn a_ring_made_again_after_a_sweep_follows_on_from_where_the_task_left_off() {
+        let mut journal = Journal::default();
+        let first = journal.record("a", event("a", "text", "x"), true).unwrap();
+        journal.record("a", json!({"sessionId": "a", "kind": "run.finished", "text": ""}), true).unwrap();
+        for _ in 0..5 {
+            journal.record("b", event("b", "tool", "ls"), true).unwrap();
+        }
+        journal.sweep(Instant::now() + JOURNAL_IDLE + Duration::from_secs(1));
+        assert!(!journal.rings.contains_key("a"), "a's ring was swept");
+        // The thread stayed open: its next event names a's last one, not the current seq.
+        let next = journal.record("a", event("a", "text", "again"), true).unwrap();
+        assert_eq!(next["prev"], first["seq"]);
+        // A viewer that saw the run end replays with no gap.
+        assert!(matches!(journal.missed("a", 2, REPLAY_BUDGET, true), Missed::Events { events, .. } if events.len() == 1));
+
+        // An event nobody numbered while the ring was gone: the next one can't vouch for it.
+        let mut journal = Journal::default();
+        journal.record("c", event("c", "text", "x"), true).unwrap();
+        journal.record("c", json!({"sessionId": "c", "kind": "run.finished", "text": ""}), true).unwrap();
+        journal.record("d", event("d", "text", "y"), true).unwrap();
+        journal.sweep(Instant::now() + JOURNAL_IDLE + Duration::from_secs(1));
+        assert!(journal.record("c", event("c", "text", "unseen"), false).is_none());
+        let later = journal.record("c", event("c", "text", "z"), true).unwrap();
+        assert_eq!(later["prev"], 3, "starts at the seq it was made at");
+        assert_eq!(journal.missed("c", 2, REPLAY_BUDGET, true), Missed::Gap);
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_repeat_waits_for_the_running_send() {
+        let key = send_key("phone", "race-task", Some(&uuid::Uuid::new_v4().to_string()));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let first = {
+            let (key, runs) = (key.clone(), runs.clone());
+            tokio::spawn(async move {
+                once_per_send(key, async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    let _ = gate.await;
+                    Ok(json!({"queued": true}))
+                })
+                .await
+            })
+        };
+        while runs.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        let repeat = {
+            let (key, runs) = (key.clone(), runs.clone());
+            tokio::spawn(async move { once_per_send(key, async move { runs.fetch_add(1, Ordering::SeqCst); Ok(json!({"queued": false})) }).await })
+        };
+        tokio::task::yield_now().await;
+        release.send(()).unwrap();
+        assert_eq!(first.await.unwrap(), Ok(json!({"queued": true})));
+        assert_eq!(repeat.await.unwrap(), Ok(json!({"queued": true})), "the repeat got the first's answer");
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the prompt went once");
+        assert!(!sends_in_flight().lock().unwrap().contains_key(key.as_deref().unwrap()), "the marker is cleared");
+    }
+
+    #[test]
+    fn paths_refuse_windows_spellings_of_the_git_folder() {
+        for bad in [".git", ".GIT/config", ".git./config", ".git ", ".git. . /HEAD", "GIT~1/config", "a/git~1", ".git::$INDEX_ALLOCATION/config", "Git~1."] {
+            assert!(path_param(&json!({"path": bad}), "path").is_err(), "{bad}");
+        }
+        for good in ["src/.gitignore", "git~10", ".github/x.yml", "a.git/b", "git/x", "notes/git~1x"] {
+            assert_eq!(path_param(&json!({"path": good}), "path").unwrap().as_deref(), Some(good), "{good}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_expired_copy_of_a_running_send_counts_as_sent_and_waits() {
+        let send_id = uuid::Uuid::new_v4().to_string();
+        let message = json!({"method": "task.send", "params": {"sessionId": "expiry-task", "sendId": send_id, "text": "hi"}});
+        let key = request_send_key("phone", &message);
+        assert!(!already_sent("phone", &message), "never seen: a queue-expired copy is NOT_RUN");
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let first = {
+            let (key, runs) = (key.clone(), runs.clone());
+            tokio::spawn(async move {
+                once_per_send(key, async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    let _ = gate.await;
+                    Ok(json!({"queued": false}))
+                })
+                .await
+            })
+        };
+        while runs.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        // The retry sat in the lane past its expiry while the first still runs: it goes through.
+        assert!(already_sent("phone", &message), "in flight counts as sent");
+        assert!(!already_sent("other-phone", &message), "per viewer");
+        let repeat = {
+            let (key, runs) = (key.clone(), runs.clone());
+            tokio::spawn(async move { once_per_send(key, async move { runs.fetch_add(1, Ordering::SeqCst); Ok(json!({"queued": true})) }).await })
+        };
+        tokio::task::yield_now().await;
+        release.send(()).unwrap();
+        assert_eq!(first.await.unwrap(), Ok(json!({"queued": false})));
+        assert_eq!(repeat.await.unwrap(), Ok(json!({"queued": false})), "the expired copy got the first's answer");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(already_sent("phone", &message), "answered: remembered");
+    }
+
+    #[tokio::test]
+    async fn a_waiter_retries_when_the_running_send_is_dropped() {
+        let key = send_key("phone", "drop-task", Some(&uuid::Uuid::new_v4().to_string()));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let first = {
+            let (key, started) = (key.clone(), started.clone());
+            tokio::spawn(async move {
+                once_per_send(key, async move {
+                    started.notify_one();
+                    std::future::pending::<Result<Value>>().await
+                })
+                .await
+            })
+        };
+        started.notified().await;
+        let repeat = tokio::spawn({
+            let key = key.clone();
+            async move { once_per_send(key, async { Ok(json!({"queued": false})) }).await }
+        });
+        tokio::task::yield_now().await;
+        first.abort();
+        assert_eq!(repeat.await.unwrap(), Ok(json!({"queued": false})), "the waiter sent it itself");
+    }
+
+    #[test]
+    fn diffs_leave_out_secret_files_below_full() {
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-a\n+b\n\
+diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-KEY=1\n+KEY=2\n\
+diff --git a/certs/server.pem b/certs/server.pem\nnew file mode 100644\n+++ b/certs/server.pem\n+-----BEGIN\n\
+diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-x\n+y\n";
+        let root = std::env::temp_dir().join(format!("pandacode-no-such-root-{}", uuid::Uuid::new_v4()));
+        let (shown, hidden) = without_secret_patches(&root, diff);
+        assert_eq!(hidden, 2);
+        assert!(!shown.contains("KEY=") && !shown.contains("BEGIN") && !shown.contains(".env"), "{shown}");
+        assert!(shown.starts_with("diff --git a/src/main.rs") && shown.contains("+b\n") && shown.ends_with("+y\n"), "{shown}");
+        assert_eq!(without_secret_patches(&root, "diff --git a/x.rs b/x.rs\n+1\n"), ("diff --git a/x.rs b/x.rs\n+1\n".to_owned(), 0));
+        assert!(secret_path(&root, "config/.env.local") && secret_path(&root, "id_rsa") && !secret_path(&root, "src/env.rs"));
+        // Folder-aware, as files.read: the name alone is harmless.
+        assert!(secret_path(&root, ".kube/config") && secret_path(&root, "home/.docker/config.json") && !secret_path(&root, "src/config"));
+        let (shown, hidden) = without_secret_patches(&root, "diff --git a/.kube/config b/.kube/config\n+token: x\n");
+        assert_eq!((shown.as_str(), hidden), ("", 1));
+    }
+
+    /// Round 10: a checkout's own `diff.srcPrefix`/`dstPrefix` (or `noprefix`) rewrites the
+    /// `diff --git` line, so the `---`/`+++` header lines are checked too; a removed line that
+    /// looks like a header inside a hunk is content, not a header.
+    #[test]
+    fn diffs_with_odd_prefixes_still_leave_out_secret_files() {
+        let root = std::env::temp_dir().join(format!("pandacode-no-such-root-{}", uuid::Uuid::new_v4()));
+        for diff in [
+            "diff --git Qx Rx\n--- Qx\n+++ b/.env\n@@ -1 +1 @@\n+KEY=2\n",
+            "diff --git Qx Rx\n--- \"a/my dir/.env\"\n+++ /dev/null\n@@ -1 +0,0 @@\n-KEY=1\n",
+            "diff --git Qx Rx\n--- a/sp ace/id_rsa\t\n+++ b/sp ace/id_rsa\t\n@@ -1 +1 @@\n-k\n+l\n",
+            "diff --git Qx Ry\nsimilarity index 90%\nrename from .env\nrename to x.txt\n",
+        ] {
+            let (shown, hidden) = without_secret_patches(&root, diff);
+            assert_eq!((shown.as_str(), hidden), ("", 1), "{diff}");
+        }
+        let content = "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1 @@\n--- .env\n+++ .env\n";
+        assert_eq!(without_secret_patches(&root, content), (content.to_owned(), 0), "hunk lines are content");
+        let mixed = format!("{content}diff --git a/.env b/.env\n+K\n{content}");
+        assert_eq!(without_secret_patches(&root, &mixed), (format!("{content}{content}"), 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_secret_file_is_a_secret_diff() {
+        let root = std::env::temp_dir().join(format!("pandacode-secret-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".env"), "KEY=1").unwrap();
+        std::os::unix::fs::symlink(root.join(".env"), root.join("notes.txt")).unwrap();
+        assert!(secret_path(&root, "notes.txt"));
+        assert!(!secret_path(&root, "other.txt"));
+        let (_, hidden) = without_secret_patches(&root, "diff --git a/notes.txt b/notes.txt\n+x\n");
+        assert_eq!(hidden, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pull_file_patches_drop_secret_sections_below_full() {
+        let root = std::env::temp_dir().join(format!("pandacode-no-such-root-{}", uuid::Uuid::new_v4()));
+        let renamed = json!({"patch": "diff --git a/.env b/settings.txt\nrename from .env\nrename to settings.txt\n+KEY=2\n", "truncated": false});
+        let reply = without_secret_pull_patch(&root, renamed);
+        assert_eq!(reply["patch"], "");
+        assert_eq!(reply["hiddenSecrets"], 1);
+        let plain = json!({"patch": "diff --git a/a.rs b/a.rs\n+1\n", "truncated": false});
+        assert_eq!(without_secret_pull_patch(&root, plain.clone()), plain);
+    }
+
+    #[test]
+    fn paths_never_reach_into_git_in_any_case() {
+        for path in [".git/config", "a/.GIT/hooks/pre-commit", ".Git", "x/.gIt/HEAD", "../x", "/etc/passwd"] {
+            assert!(path_param(&json!({"path": path}), "path").is_err(), "{path}");
+        }
+        assert_eq!(path_param(&json!({"path": "src/.gitignore"}), "path").unwrap().as_deref(), Some("src/.gitignore"));
+    }
+
+    /// Round 8: `secret_path` canonicalizes, so the diff paths call it inside `crate::blocking`.
+    #[test]
+    fn secret_path_checks_run_off_the_async_thread() {
+        let source = include_str!("host.rs");
+        let source = &source[..source.find("\nmod tests {").unwrap()];
+        for arm in ["Call::PullDiff {", "Call::Diff {"] {
+            let body = &source[source.find(arm).unwrap()..];
+            let body = &body[..body.find("\n        Call::").unwrap()];
+            for call in ["secret_path(&", "without_secret_patches(&", "without_secret_pull_patch(&"] {
+                if let Some(at) = body.find(call) {
+                    let blocking = body.find("crate::blocking(move ||").expect(arm);
+                    assert!(blocking < at, "{arm}: {call} before any crate::blocking");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn once_methods_run_once_per_send_id_and_late_copies_are_known() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let id = format!("act-{}", uuid::Uuid::new_v4().simple());
+        let calls = [
+            ("pull.create", json!({"sessionId": "s1", "title": "t", "sendId": id}), "s1".to_owned()),
+            ("recipes.run", json!({"sessionId": "s1", "name": "ship", "sendId": id}), "s1".to_owned()),
+            ("schedules.runNow", json!({"scheduleId": "sch1", "sendId": id}), "sch1".to_owned()),
+            ("github.comment", json!({"projectId": "p1", "number": 7, "body": "hi", "sendId": id}), github_comment_target("p1", 7)),
+            // Round 8: commits and bot schedule runs are once-methods too.
+            ("git.commit", json!({"sessionId": "s1", "message": "m", "sendId": id}), "s1".to_owned()),
+            ("bot.runSchedule", json!({"botId": "b1", "scheduleId": "sch1", "sendId": id}), run_schedule_target("b1", "sch1")),
+            // Round 9: the background calls a phone retries after a lost reply.
+            ("btw.ask", json!({"sessionId": "s1", "text": "why?", "sendId": id}), "s1".to_owned()),
+            ("vm.start", json!({"name": "dev", "sendId": id}), "dev".to_owned()),
+            ("vm.stop", json!({"name": "dev", "sendId": id}), "dev".to_owned()),
+            ("moodboards.add", json!({"projectId": "p1", "board": "b1", "imageId": "img1", "sendId": id}), moodboard_add_target("p1", "b1", "img1")),
+            // A retried create answers the first schedule.
+            ("schedules.create", json!({"input": {"sessionId": "s1", "prompt": "p", "kind": "daily"}, "sendId": id}), "s1".to_owned()),
+        ];
+        for (method, params, target) in calls {
+            let message = json!({"method": method, "params": params});
+            assert!(!already_sent("phone-once", &message), "{method}");
+            for _ in 0..2 {
+                let runs = runs.clone();
+                let answer = once_per_action("phone-once", method, &target, Some(&id), async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"ok": method}))
+                })
+                .await;
+                assert_eq!(answer, Ok(json!({"ok": method})));
+            }
+            // socket.rs answers a late copy from memory instead of refusing it as never run.
+            assert!(already_sent("phone-once", &message), "{method}");
+            assert!(!already_sent("another-phone", &message), "{method}: per viewer");
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 11, "each method ran once");
+        // Without an id every call runs; send_id_param refuses a malformed one.
+        assert_eq!(send_id_param(&json!({})), Ok(None));
+        assert!(send_id_param(&json!({"sendId": "a b"})).is_err());
+    }
+
+    #[tokio::test]
+    async fn once_per_send_runs_a_prompt_once_and_retries_a_failure() {
+        let key = send_key("phone", "once-task", Some(&uuid::Uuid::new_v4().to_string()));
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let run = || async { runs.fetch_add(1, Ordering::SeqCst); Ok(json!({"queued": false})) };
+        assert_eq!(once_per_send(key.clone(), run()).await, Ok(json!({"queued": false})));
+        assert_eq!(once_per_send(key.clone(), run()).await, Ok(json!({"queued": false})));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the repeat answered from memory");
+        let failing = send_key("phone", "once-task", Some(&uuid::Uuid::new_v4().to_string()));
+        assert!(once_per_send(failing.clone(), async { Err::<Value, String>("No such task.".into()) }).await.is_err());
+        assert_eq!(once_per_send(failing, run()).await, Ok(json!({"queued": false})), "a failure is not remembered");
+        assert_eq!(once_per_send(None, run()).await, Ok(json!({"queued": false})));
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_the_prompt_was_saved_is_remembered() {
+        let key = send_key("phone", "saved-task", Some(&uuid::Uuid::new_v4().to_string()));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let spawn_fails = || {
+            let runs = runs.clone();
+            async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                Err::<Value, String>(saved_failure("Could not start claude.".into()))
+            }
+        };
+        // The caller sees the plain error, and a retry gets it back without running again.
+        assert_eq!(once_per_send(key.clone(), spawn_fails()).await, Err("Could not start claude.".into()));
+        assert_eq!(once_per_send(key.clone(), spawn_fails()).await, Err("Could not start claude.".into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the prompt is not saved twice");
+        assert!(already_sent("phone", &json!({"method": "task.send", "params": {"sessionId": "saved-task", "sendId": key.unwrap().rsplit('\n').next().unwrap()}})));
+        // Without a sendId the mark is still stripped.
+        assert_eq!(once_per_send(None, spawn_fails()).await, Err("Could not start claude.".into()));
+    }
+
+    #[test]
+    fn a_saved_prompt_shows_up_as_a_newer_user_message() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
+        let before = newest_user_message_in(&store, &task.id).unwrap();
+        assert_eq!(before, 0);
+        store.message(&task.id, "assistant", "hello").unwrap();
+        assert_eq!(newest_user_message_in(&store, &task.id).unwrap(), before, "only user messages count");
+        store.start_turn_message(&task.id, "do it").unwrap();
+        assert!(newest_user_message_in(&store, &task.id).unwrap() > before);
     }
 
     #[test]
@@ -4725,6 +6104,10 @@ mod tests {
         // A worktree fallback's note survives a lost `task.start` reply.
         done.result.send_replace(Some(Ok(json!({"sessionId": "h1", "worktree": true, "note": "Started in a worktree: busy."}))));
         assert_eq!(start_status(Some(&done)), json!({"state": "done", "sessionId": "h1", "worktree": true, "note": "Started in a worktree: busy."}));
+        // So does a made task (or chat) whose first message did not go, with a chat's project.
+        let unsent = json!({"sessionId": "h1", "sent": false, "error": "Could not start claude.", "projectId": "p1"});
+        done.result.send_replace(Some(Ok(unsent)));
+        assert_eq!(start_status(Some(&done)), json!({"state": "done", "sessionId": "h1", "sent": false, "error": "Could not start claude.", "projectId": "p1"}));
         // Cancelled while its task is being made: too late, the start goes on and is not failed.
         let (making, _) = claim_start(&mut starts, "st6", "viewer", now).unwrap();
         assert!(!making.cancel.is_set());
@@ -4942,5 +6325,170 @@ mod tests {
         assert!(before.to_string().len() <= PAGE_BUDGET);
         assert_eq!(before["hasOlder"], true);
         assert_eq!(before["hasMore"], true);
+    }
+
+    /// Round 19: a bot task's workspace is refused by `sessionId` as its project is by
+    /// `projectId`, while its conversation stays readable for the task screen.
+    #[test]
+    fn bot_task_workspaces_are_refused_by_session_id() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let bot_home = std::env::temp_dir().join(format!("pandacode-bot-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&bot_home).unwrap();
+        let bot_project = store.add_project(&bot_home).unwrap();
+        store
+            .db
+            .execute("INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at) VALUES('b','Bot',?1,'claude','sonnet','full',0,0)", [&bot_project.id])
+            .unwrap();
+        let plain = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
+        let bot_task = store.create_session(&bot_project.id, "claude", "sonnet", "full").unwrap();
+        assert_eq!(workspace_session_from(&store, &plain.id).unwrap().id, plain.id);
+        assert_eq!(workspace_session_from(&store, &bot_task.id).unwrap_err(), BOT_WORKSPACE_REFUSED);
+        // `bot.thread` / `task.messages` read through `local_session_from`, which still works.
+        assert_eq!(local_session_from(&store, &bot_task.id).unwrap().id, bot_task.id);
+        let _ = std::fs::remove_dir_all(&bot_home);
+    }
+
+    /// Round 19 source scan: every phone path that reaches a task's folder goes through the
+    /// bot-refusing helpers, never the conversation-only `local_task`/`local_session_from`.
+    #[test]
+    fn phone_workspace_paths_refuse_bot_tasks() {
+        let host = include_str!("host.rs");
+        for name in ["task_root", "linked_pull", "optional_pull", "detect_pull"] {
+            let start = host.find(&format!("async fn {name}(")).expect(name);
+            let body = &host[start..start + host[start..].find("\n}\n").unwrap()];
+            assert!(body.contains("workspace_session_from(&store"), "{name}");
+            assert!(!body.contains("local_session_from("), "{name}");
+        }
+        let files = include_str!("methods/files.rs");
+        let resolve = &files[files.find("pub(crate) async fn resolve(").unwrap()..];
+        let resolve = &resolve[..resolve.find("\n}\n").unwrap()];
+        assert!(resolve.contains("host::workspace_task(state, session_id)"));
+        assert!(resolve.contains("bots::project_ids"));
+        for (file, source) in [("git.rs", include_str!("methods/git.rs")), ("tools.rs", include_str!("methods/tools.rs"))] {
+            let code = &source[..source.find("#[cfg(test)]").unwrap_or(source.len())];
+            assert!(!code.contains("local_task("), "{file}");
+            assert!(!code.contains("local_session_from("), "{file}");
+        }
+        // The terminal opens only where `files::resolve` points; its one `workspace_root` lists bot folders to hide.
+        let terminal = include_str!("methods/terminal.rs");
+        let code = &terminal[..terminal.find("#[cfg(test)]").unwrap_or(terminal.len())];
+        assert!(!code.contains("task_root(") && !code.contains("local_task("));
+        assert_eq!(code.matches("workspace_root(").count(), 1);
+    }
+
+    /// Round 20: driving a bot's thread needs a Full device and the bot's mode rule; a plain
+    /// task is unchanged, and viewing a bot thread still works.
+    #[test]
+    fn driving_a_bot_thread_needs_a_full_device_and_the_bots_mode_rule() {
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let bot_home = std::env::temp_dir().join(format!("pandacode-bot-drive-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&bot_home).unwrap();
+        let bot_project = store.add_project(&bot_home).unwrap();
+        store
+            .db
+            .execute("INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at) VALUES('b','Bot',?1,'claude','sonnet','full',0,0)", [&bot_project.id])
+            .unwrap();
+        let plain = store.create_session(&project.id, "claude", "sonnet", "auto").unwrap();
+        let bot_task = store.create_session(&bot_project.id, "claude", "sonnet", "auto").unwrap();
+        // A plain task: any device, either switch position (the task's own mode is checked by the caller).
+        assert_eq!(drivable_session_from(&store, &plain.id, false, false).unwrap().id, plain.id);
+        // A bot thread: a Control device is refused outright.
+        assert_eq!(drivable_session_from(&store, &bot_task.id, false, true).unwrap_err(), BOT_THREAD_REFUSED);
+        // A Full device follows `allow_bot_mode`: a full-mode bot needs the switch, as `bot.message` does.
+        let bot_rule = super::super::methods::admin::allow_bot_mode(&store, "b", false).unwrap_err();
+        assert_eq!(drivable_session_from(&store, &bot_task.id, true, false).unwrap_err(), bot_rule);
+        assert_eq!(drivable_session_from(&store, &bot_task.id, true, true).unwrap().id, bot_task.id);
+        store.db.execute("UPDATE bots SET mode='auto' WHERE id='b'", []).unwrap();
+        assert_eq!(drivable_session_from(&store, &bot_task.id, true, false).unwrap().id, bot_task.id);
+        // Viewing (`task.messages`, `bot.thread`, `subscribe`) stays on `local_session_from`.
+        assert_eq!(local_session_from(&store, &bot_task.id).unwrap().id, bot_task.id);
+        let _ = std::fs::remove_dir_all(&bot_home);
+    }
+
+    /// Round 20 source scan: every method that drives a task by `sessionId` checks
+    /// [`drivable_task`] / [`drivable_session_from`], and command discovery refuses bot workspaces.
+    #[test]
+    fn phone_methods_that_drive_a_task_refuse_bot_threads_below_full() {
+        fn body<'a>(source: &'a str, start: &str) -> &'a str {
+            let at = source.find(start).unwrap_or_else(|| panic!("{start}"));
+            let rest = &source[at..];
+            &rest[..rest.find("\n}\n").unwrap()]
+        }
+        fn arm<'a>(source: &'a str, start: &str) -> &'a str {
+            let at = source.find(start).unwrap_or_else(|| panic!("{start}"));
+            let rest = &source[at + start.len()..];
+            &rest[..rest.find("\n        Call::").unwrap()]
+        }
+        let host = include_str!("host.rs");
+        assert!(body(host, "async fn send_prompt(").contains("drivable_task(app, from, &session_id, full_access)"), "task.send");
+        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::Configure { session_id, model, effort, mode } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
+            let code = arm(host, call);
+            assert!(code.contains("drivable_task(app, from, &session_id, full_access)"), "{call}");
+            assert!(!code.contains("local_task("), "{call}");
+        }
+        let threads = include_str!("methods/threads.rs");
+        for start in ["impl Run for Fork", "impl Run for SetGoal", "impl Run for SetStage", "impl Run for Archive"] {
+            assert!(body(threads, start).contains("drivable_task(ctx.app, ctx.from, &self.session_id, ctx.full_access)"), "{start}");
+        }
+        // Round 24: settling and reopening share one guard, so Undo is never refused.
+        assert!(!body(threads, "impl Run for Archive").contains("local_task("), "thread.archive");
+        let rewind = include_str!("methods/rewind.rs");
+        let to = body(rewind, "async fn rewind(ctx: Ctx<'_>, this: To)");
+        assert!(to.contains("drivable_task(ctx.app, ctx.from, &this.session_id, ctx.full_access)") && !to.contains("local_task("), "rewind.to");
+        let composer = include_str!("methods/composer.rs");
+        assert!(body(composer, "impl Run for QueueUpdate").contains("drivable_session_from(store, &session, device_full, full_access)"), "queue.update");
+        // Round 22: every queue change (remove, reorder, restore, update) goes through `on_queue`'s guard.
+        let on_queue = body(composer, "async fn on_queue(");
+        assert!(on_queue.contains("if changes {\n            drivable_session_from(&store, &id, device_full, full_access)?;"), "on_queue changes");
+        for start in ["impl Run for QueueUpdate", "impl Run for QueueRemove", "impl Run for QueueRestore", "impl Run for QueueReorder"] {
+            assert!(body(composer, start).contains("on_queue(ctx, session_id, true,"), "{start}");
+        }
+        for start in ["impl Run for ClearLimit", "impl Run for ResumeAtReset"] {
+            assert!(body(composer, start).contains("drivable_task(ctx.app, ctx.from, &self.session_id, ctx.full_access)"), "{start}");
+        }
+        // Round 21: schedules send to their target thread (runNow, setEnabled(true), create, update).
+        let schedules = include_str!("methods/schedules.rs");
+        assert!(body(schedules, "fn check_target(").contains("drivable_session_from(store, session_id, device_full, full_access)?"), "schedules check_target");
+        for start in ["async fn act_on(", "async fn save("] {
+            let code = body(schedules, start);
+            assert!(code.contains("check_target(store, &") && code.contains("drivable_session_from(store, watch, device_full, full_access)?"), "{start}");
+        }
+        // `slash.list` / `slash.resolve` / recipes discover through `command_context`, never in a bot's workspace.
+        let context = body(composer, "async fn command_context(");
+        assert!(context.contains("workspace_session_from(&store, &session_id)") && !context.contains("local_session_from("), "command_context");
+    }
+
+    /// Round 19: `providers.list` names no absolute local path.
+    #[test]
+    fn provider_paths_are_home_relative_or_file_names() {
+        let home = Path::new("/Users/someone");
+        assert_eq!(phone_provider_path("/Users/someone/.local/bin/claude", Some(home)), "~/.local/bin/claude");
+        assert_eq!(phone_provider_path("/opt/homebrew/bin/codex", Some(home)), "codex");
+        assert_eq!(phone_provider_path("/Users/someone2/bin/gemini", Some(home)), "gemini", "a component match, not a prefix");
+        assert_eq!(phone_provider_path("/usr/bin/kimi", None), "kimi");
+        let mut rows = json!([{"id": "claude", "path": "/Users/someone/bin/claude"}, {"id": "codex", "path": null}, {"id": "x"}]);
+        phone_provider_paths(&mut rows, Some(home));
+        assert_eq!(rows, json!([{"id": "claude", "path": "~/bin/claude"}, {"id": "codex", "path": null}, {"id": "x"}]));
+        let source = include_str!("host.rs");
+        let call = &source[source.find("Call::Providers { force } => {").unwrap()..];
+        assert!(call[..call.find("Ok(providers)").unwrap()].contains("phone_provider_paths(&mut providers"));
+    }
+
+    /// Round 23: `task.pullMerge` runs in the background lane, so a retry arriving while the
+    /// first merge runs is refused instead of merging twice; the claim ends with the call.
+    #[test]
+    fn one_pull_merge_per_task_runs_at_a_time() {
+        let first = claim_merge("merge-s1").unwrap();
+        assert_eq!(claim_merge("merge-s1").err().as_deref(), Some(MERGE_RUNNING));
+        let other = claim_merge("merge-s2").expect("another task's merge runs beside it");
+        drop(first);
+        drop(claim_merge("merge-s1").expect("free again once the first ends"));
+        drop(other);
+        let source = include_str!("host.rs");
+        let call = &source[source.find("Call::PullMerge { session_id, method } => {").unwrap()..];
+        let call = &call[..call.find("Ok(json!({}))").unwrap()];
+        assert!(call.find("claim_merge(&session_id)?").unwrap() < call.find("merge_as(").unwrap());
     }
 }

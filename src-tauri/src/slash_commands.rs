@@ -325,12 +325,17 @@ async fn unfiltered(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, 
 /// Local actions and the latest known catalog are available without starting a
 /// harness. A stale snapshot is for completion; command dispatch still validates.
 pub async fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
+    let catalog = known_unfiltered(provider, cwd)?;
+    skill_switches::for_path(provider, catalog, cwd).await
+}
+
+/// The latest cached catalog before switched-off skills are hidden; never discovers.
+fn known_unfiltered(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
-    let catalog = CACHE
+    Ok(CACHE
         .lock()
         .map_err(|_| "Command discovery is unavailable.".to_string())?
-        .snapshot(&catalog_key(provider, cwd));
-    skill_switches::for_path(provider, catalog, cwd).await
+        .snapshot(&catalog_key(provider, cwd)))
 }
 
 pub(crate) fn invalidate_provider(provider: &str) {
@@ -674,6 +679,29 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
     // A switched-off skill is hidden from the catalog; typing it says so instead of "Unknown".
     let catalog = unfiltered(provider, cwd, false).await?;
     skill_switches::resolve_at(provider, text, catalog, cwd).await
+}
+
+/// [`resolve`] against the latest known catalog only: never starts the harness, for callers
+/// (a phone below the task's mode) that may not launch discovery in the project.
+pub async fn resolve_known(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
+    resolve_known_by(provider, cwd, text, |catalog| skill_switches::resolve_at(provider, text, catalog, cwd)).await
+}
+
+/// [`resolve_known`] with the switch check (`resolve_at`, which reads the user's settings)
+/// passed in, so a test can supply the switches.
+async fn resolve_known_by<F>(provider: &str, cwd: &Path, text: &str, switches: impl FnOnce(Catalog) -> F) -> Result<Resolution, String>
+where
+    F: std::future::Future<Output = Result<Resolution, String>>,
+{
+    let Some((name, _)) = split_command(text) else {
+        return Ok(plain_resolution(text));
+    };
+    if is_local_control(name) {
+        return resolve_from_catalog(provider, text, &Catalog::default());
+    }
+    // Unfiltered, so a switched-off skill gets the switched-off error, as in `resolve`.
+    let catalog = known_unfiltered(provider, cwd)?;
+    switches(catalog).await
 }
 
 /// A command may be removed after the picker cached it. Claude's fresh
@@ -1117,6 +1145,43 @@ mod tests {
         cache.snapshot(&recent);
         assert!(!cache.entries.contains_key(&waiting));
         assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// A phone below the task's mode resolves against the cache: a switched-off skill there
+    /// gets the switched-off error (not "Unknown command"), and a stale entry is never
+    /// refreshed, so no harness is launched.
+    #[tokio::test]
+    async fn resolve_known_reports_switched_off_skills_without_launching_a_harness() {
+        let cwd = PathBuf::from(format!("/resolve-known-{}", uuid::Uuid::new_v4()));
+        let key = catalog_key("claude", &cwd);
+        let skill = SlashCommand {
+            id: "test:/release".into(),
+            name: "/release".into(),
+            description: "Release".into(),
+            argument_hint: None,
+            kind: "prompt".into(),
+            source: "skill".into(),
+            reason: None,
+            invocation: Invocation::Skill { name: "release".into(), path: cwd.join(".claude/skills/release/SKILL.md") },
+        };
+        let stale = Instant::now() - CACHE_AGE;
+        let revision = {
+            let mut cache = CACHE.lock().unwrap();
+            let revision = cache.insert(key.clone(), Some(Catalog { commands: vec![skill], warnings: vec![] }), HashSet::new());
+            cache.entries.get_mut(&key).unwrap().updated = stale;
+            revision
+        };
+        let disabled: std::collections::BTreeSet<String> = ["release".to_string()].into();
+        let error = resolve_known_by("claude", &cwd, "/release now", |catalog| async {
+            skill_switches::resolve_with("claude", "/release now", catalog, &disabled, Default::default)
+        })
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error, crate::skill_manager::off_error(&disabled, "release"));
+        let cache = CACHE.lock().unwrap();
+        let entry = &cache.entries[&key];
+        assert_eq!((entry.revision, entry.updated), (revision, stale), "no discovery ran");
     }
 
     #[tokio::test]

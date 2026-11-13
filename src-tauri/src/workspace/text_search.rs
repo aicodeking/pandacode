@@ -50,6 +50,29 @@ pub fn search_text(
     whole_word: bool,
     regex: bool,
 ) -> Result<TextSearchResult, String> {
+    search_text_with(root, query, match_case, whole_word, regex, false)
+}
+
+/// [`search_text`] for a phone (`files.grep`): files with more than one hard link are never
+/// read, as `files.read` refuses them (docs/remote-access.md, "No hard-linked files").
+pub fn search_text_for_phone(
+    root: &Path,
+    query: &str,
+    match_case: bool,
+    whole_word: bool,
+    regex: bool,
+) -> Result<TextSearchResult, String> {
+    search_text_with(root, query, match_case, whole_word, regex, true)
+}
+
+fn search_text_with(
+    root: &Path,
+    query: &str,
+    match_case: bool,
+    whole_word: bool,
+    regex: bool,
+    skip_links: bool,
+) -> Result<TextSearchResult, String> {
     if query.is_empty() || query.len() > 512 || query.contains('\0') {
         return Err("Search text must be 1 to 512 bytes and contain no null characters.".into());
     }
@@ -109,7 +132,7 @@ pub fn search_text(
             files.sort_by(|a, b| a.path.cmp(&b.path));
             return Ok(TextSearchResult { files, truncated: true });
         }
-        let Some(bytes) = read_inside(&root, entry.path()) else { continue };
+        let Some(bytes) = read_inside(&root, entry.path(), skip_links) else { continue };
         bytes_read += bytes.len() as u64;
         // Binary and non-UTF-8 files are skipped, as in VS Code's default search.
         if bytes[..bytes.len().min(8192)].contains(&0) {
@@ -152,8 +175,9 @@ pub fn search_text(
 }
 
 /// Reads a regular file through one opened handle, refusing it if the path is (or became) a
-/// symlink, resolves outside `root`, or is no longer the file that was opened.
-fn read_inside(root: &Path, path: &Path) -> Option<Vec<u8>> {
+/// symlink, resolves outside `root`, or is no longer the file that was opened; `skip_links`
+/// also refuses a file with more than one hard link (checked on the opened handle).
+fn read_inside(root: &Path, path: &Path, skip_links: bool) -> Option<Vec<u8>> {
     use std::io::Read;
     if std::fs::symlink_metadata(path).ok()?.file_type().is_symlink() {
         return None;
@@ -173,7 +197,12 @@ fn read_inside(root: &Path, path: &Path) -> Option<Vec<u8>> {
         if (now.dev(), now.ino()) != (opened.dev(), opened.ino()) {
             return None;
         }
+        if skip_links && opened.nlink() > 1 {
+            return None;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = skip_links;
     let mut bytes = Vec::with_capacity(opened.len() as usize);
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
     (bytes.len() as u64 <= MAX_FILE_BYTES).then_some(bytes)
@@ -332,14 +361,14 @@ mod tests {
     fn read_inside_refuses_symlinks_and_outside_paths() {
         let f = Fixture::new();
         f.write("ok.txt", "hi");
-        assert_eq!(read_inside(&f.0, &f.0.join("ok.txt")).unwrap(), b"hi");
+        assert_eq!(read_inside(&f.0, &f.0.join("ok.txt"), false).unwrap(), b"hi");
         let other = Fixture::new();
         other.write("x.txt", "hi");
-        assert!(read_inside(&f.0, &other.0.join("x.txt")).is_none());
+        assert!(read_inside(&f.0, &other.0.join("x.txt"), false).is_none());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(other.0.join("x.txt"), f.0.join("link.txt")).unwrap();
-            assert!(read_inside(&f.0, &f.0.join("link.txt")).is_none());
+            assert!(read_inside(&f.0, &f.0.join("link.txt"), false).is_none());
         }
     }
 
@@ -361,5 +390,19 @@ mod tests {
         let f = Fixture::new();
         std::os::unix::fs::symlink(&outside.0, f.0.join("link")).unwrap();
         assert!(f.search("needle", false, false, false).files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn phone_searches_skip_hard_linked_files() {
+        let outside = Fixture::new();
+        outside.write("id_rsa", "needle secret");
+        let f = Fixture::new();
+        f.write("plain.txt", "needle");
+        std::fs::hard_link(outside.0.join("id_rsa"), f.0.join("notes.txt")).unwrap();
+        let paths = |result: TextSearchResult| result.files.into_iter().map(|file| file.path).collect::<Vec<_>>();
+        assert_eq!(paths(search_text_for_phone(&f.0, "needle", false, false, false).unwrap()), ["plain.txt"], "the hard link is never read for a phone");
+        assert_eq!(paths(f.search("needle", false, false, false)), ["notes.txt", "plain.txt"], "the desktop's search is unchanged");
+        assert!(read_inside(&f.0, &f.0.join("notes.txt"), true).is_none());
     }
 }

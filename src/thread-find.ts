@@ -1,17 +1,56 @@
 import './thread-find.css';
 import { icon, isImeKey } from './dom';
 
-/* ⌘F in a thread: a slim find bar over the conversation. Matches in your messages and the
- * agent's are highlighted with the CSS Custom Highlight API, so the message DOM is never
- * rewritten; the current match scrolls into view and opens any folded turn around it. */
+/* ⌘F in a thread: a slim find bar over the conversation. Matches in your messages, the
+ * agent's and its tools' details are highlighted with the CSS Custom Highlight API, so the message
+ * DOM is never rewritten; the current match scrolls into view and opens any folded turn around it.
+ * A long thread draws only its newest turns: the host searches the rest in memory (`older`) and
+ * draws down to the next match when stepping past the oldest one drawn (`extend`). */
 
-const MESSAGE_TEXT = 'article.message :is(.message-content, .streaming-content)';
+const MESSAGE_TEXT = 'article.message :is(.message-content, .streaming-content), .tool-activity-body';
+
+/** Markdown's punctuation: a query holding any of it is compared with the source as written (sourceText). */
+const MARKS = /[*_`~#>|\\]/;
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+const decodeEntities = (text: string): string => text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]+);/gi, (whole, name: string) => {
+  if (name[0] !== '#') return ENTITIES[name.toLowerCase()] ?? whole;
+  const code = name[1] === 'x' || name[1] === 'X' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+});
+/** Markdown source as the in-memory search compares it while its formatted text is not known: lower case, escapes and
+ *  entities read as they draw, and (`loose`) without Markdown's punctuation or link targets. Line breaks stay, as they
+ *  do in the drawn text, so a match never spans two blocks. It errs towards matching. */
+export function sourceText(text: string, loose: boolean): string {
+  const read = decodeEntities(text.replace(/\\([!-/:-@[-`{-~])/g, '$1'));
+  return (loose ? read.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`~#>|]/g, '') : read).toLocaleLowerCase();
+}
+/** What one reply's in-memory count reads, filled as it is needed: its formatted text once known, else its source. */
+export type ReplyText = { drawn?: string; exact?: string; loose?: string };
+/** How many times `query` occurs in a reply: in its formatted text when `formatted` knows it (drawnText), else in its
+ *  source, compared as written when the query holds Markdown punctuation (`C#`, `a_b`) and loosely otherwise. */
+export function replyCount(known: ReplyText, source: string, formatted: string | undefined, query: string): number {
+  if (known.drawn === undefined && formatted !== undefined) known.drawn = drawnText(`<article class="message"><div class="message-content">${formatted}</div></article>`);
+  if (known.drawn !== undefined) return exactCount(known.drawn, query);
+  if (MARKS.test(query)) return exactCount(known.exact ??= sourceText(source, false), query);
+  return exactCount(known.loose ??= sourceText(source, true), query);
+}
+/** How long Find waits after a keystroke before it searches. */
+const FIND_TYPING_MS = 60;
 const ALL = 'thread-find', CURRENT = 'thread-find-current';
+/** Dispatched on the bar's input by the host when what it counts changed: a refresh, never a fresh search that moves the current match. */
+export const FIND_REFRESH = 'find-refresh';
 
 type Host = {
   /** The pane the bar floats over, and the scrolling transcript inside it. */
   pane(): HTMLElement | null;
-  transcript(): HTMLElement | null;
+  /** The transcript, asked before each search with the query (a closed tool's details are drawn when they match). */
+  transcript(query?: string): HTMLElement | null;
+  /** Matches for `query` in turns loaded but not drawn yet, all older than the drawn ones. */
+  older?(query: string): number;
+  /** Whether the count is final: nothing the host counts (tools above the window, replies to format) is still being worked out. */
+  settled?(): boolean;
+  /** Draws down to the newest match not drawn (`all`: to the oldest), then calls `done`. False when there is none. */
+  extend?(query: string, all: boolean, done: () => void): boolean;
   /** The transcript stops following its bottom, which would otherwise pull it back off a match. */
   release(): void;
   /** Opens a turn card's clamped reply, so a match past its clamp can be seen. */
@@ -20,6 +59,35 @@ type Host = {
   restoreFocus(): void;
 };
 
+/** A searched block's text as Find reads it: its text nodes in order (skipping actions and screen-reader text), and
+ *  where each starts in the joined text. */
+function blockText(block: HTMLElement): { nodes: Text[]; starts: number[]; text: string } {
+  const nodes: Text[] = [], starts: number[] = [];
+  let text = '';
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    if (node.parentElement?.closest('.message-actions, .sr-only')) continue;
+    nodes.push(node); starts.push(text.length); text += node.data;
+  }
+  return { nodes, starts, text };
+}
+
+/** The text Find would search in `html` once drawn, lower case, one line per searched block: what the in-memory
+ *  count of a turn not drawn yet compares (exactCount), so it agrees with what findRanges finds once it is. */
+export function drawnText(html: string): string {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  return [...template.content.querySelectorAll<HTMLElement>(MESSAGE_TEXT)].map(block => blockText(block).text).join('\n').toLocaleLowerCase();
+}
+/** How many times `query` occurs in `text` (drawnText), counted as findRanges counts. */
+export function exactCount(text: string, query: string): number {
+  const needle = query.toLocaleLowerCase();
+  if (!needle) return 0;
+  let count = 0;
+  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) count++;
+  return count;
+}
+
 /** Every case-insensitive occurrence of `query` in `root`'s text, as ranges that may span
  *  inline formatting (a match across **bold** text is still one match). */
 export function findRanges(root: ParentNode, query: string): Range[] {
@@ -27,13 +95,7 @@ export function findRanges(root: ParentNode, query: string): Range[] {
   if (!needle) return [];
   const ranges: Range[] = [];
   for (const block of root.querySelectorAll<HTMLElement>(MESSAGE_TEXT)) {
-    const nodes: Text[] = [], starts: number[] = [];
-    let text = '';
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-      if (node.parentElement?.closest('.message-actions, .sr-only')) continue;
-      nodes.push(node); starts.push(text.length); text += node.data;
-    }
+    const { nodes, starts, text } = blockText(block);
     const haystack = text.toLocaleLowerCase();
     // Find the node holding a character offset (nodes are in order, so search from `from`).
     const locate = (offset: number, from: number): number => {
@@ -57,7 +119,7 @@ export function findRanges(root: ParentNode, query: string): Range[] {
 
 export function createThreadFind(host: Host) {
   let bar: HTMLElement | undefined, input: HTMLInputElement | undefined, count: HTMLElement | undefined;
-  let ranges: Range[] = [], current = -1, frame = 0;
+  let ranges: Range[] = [], current = -1, frame = 0, typing = 0;
   const highlights = typeof CSS !== 'undefined' && 'highlights' in CSS ? (CSS as unknown as { highlights: Map<string, unknown> }).highlights : undefined;
   const Highlight = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
   const observer = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; search(false); }); });
@@ -102,10 +164,16 @@ export function createThreadFind(host: Host) {
     if (ranges[current]) highlights.set(CURRENT, new Highlight(ranges[current])); else highlights.delete(CURRENT);
   }
 
+  const olderMatches = (): number => input?.value ? host.older?.(input.value) ?? 0 : 0;
   function label(): void {
     if (!count || !input) return;
-    count.textContent = !input.value ? '' : ranges.length ? `${current + 1} of ${ranges.length}` : 'No results';
-    bar?.querySelectorAll<HTMLButtonElement>('[data-find-step]').forEach(button => { button.disabled = ranges.length < 2; });
+    // Matches not drawn yet are all above the drawn ones.
+    const older = olderMatches(), total = ranges.length + older;
+    count.textContent = !input.value ? '' : total ? `${ranges.length ? older + current + 1 : older} of ${total}` : 'No results';
+    bar?.querySelectorAll<HTMLButtonElement>('[data-find-step]').forEach(button => { button.disabled = total < 2; });
+    // The query whose count is final (every match above the window counted), for anything waiting on it.
+    if (!bar) return;
+    if (input.value && (host.settled?.() ?? true)) bar.dataset.counted = input.value; else delete bar.dataset.counted;
   }
 
   /** The top of the transcript's clear area: below its scroll padding (the header it scrolls under,
@@ -117,7 +185,7 @@ export function createThreadFind(host: Host) {
 
   /** Bring the current match into view, opening any folded turn that hides it. */
   function reveal(): void {
-    const range = ranges[current], transcript = host.transcript();
+    const range = ranges[current], transcript = host.transcript(input?.value);
     if (!range || !transcript) return;
     let opened = false;
     for (let node = range.startContainer.parentElement; node && node !== transcript; node = node.parentElement) {
@@ -134,7 +202,7 @@ export function createThreadFind(host: Host) {
   /** Re-run the query. A fresh query starts at the match nearest the reader; a refresh after
    *  the transcript changed keeps the current position. */
   function search(fresh: boolean): void {
-    const transcript = host.transcript();
+    const transcript = host.transcript(input?.value);
     if (!bar || !input || !transcript) return;
     const previous = ranges[current];
     ranges = findRanges(transcript, input.value);
@@ -149,6 +217,22 @@ export function createThreadFind(host: Host) {
   }
 
   function step(by: 1 | -1): void {
+    if (typing) { clearTimeout(typing); typing = 0; search(true); }
+    // Past the oldest drawn match (or wrapping round to the first), the next one may not be drawn yet: draw down to it,
+    // then land on it. Going back lands just above where the reader was; wrapping lands on the very first.
+    const query = input?.value ?? '';
+    const pastOldest = by === -1 ? current <= 0 : ranges.length > 0 && current === ranges.length - 1;
+    if (query && pastOldest && olderMatches() > 0) {
+      const all = by === 1, drawn = ranges.length > 0;
+      const drawing = host.extend?.(query, all, () => {
+        if (input?.value !== query) return;
+        search(false);
+        if (!ranges.length) return;
+        current = all ? 0 : drawn ? Math.max(0, current - 1) : ranges.length - 1;
+        paint(); label(); reveal();
+      });
+      if (drawing) return;
+    }
     if (!ranges.length) return;
     current = (current + by + ranges.length) % ranges.length;
     paint(); label(); reveal();
@@ -163,7 +247,10 @@ export function createThreadFind(host: Host) {
       bar.setAttribute('role', 'search');
       bar.innerHTML = `${icon('search')}<input type="search" aria-label="Find in thread" placeholder="Find in thread" autocomplete="off" spellcheck="false" maxlength="200"><span class="thread-find-count" aria-live="polite"></span><button type="button" class="icon-button thread-find-previous" data-find-step="-1" aria-label="Previous match" title="Previous match (⇧↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-step="1" aria-label="Next match" title="Next match (↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-close aria-label="Close find" title="Close (Esc)">${icon('close')}</button>`;
       input = bar.querySelector('input')!; count = bar.querySelector<HTMLElement>('.thread-find-count')!;
-      input.addEventListener('input', () => search(true));
+      // A keystroke's search waits for typing to pause: each one counts every turn not drawn yet.
+      input.addEventListener('input', () => { clearTimeout(typing); typing = window.setTimeout(() => { typing = 0; search(true); }, FIND_TYPING_MS); });
+      // The host's text changed under the bar (older replies formatted): count and search again, keeping the current match.
+      input.addEventListener(FIND_REFRESH, () => { if (!typing) search(false); });
       input.addEventListener('keydown', event => {
         if (event.key === 'Enter' && !isImeKey(event)) { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
@@ -187,7 +274,7 @@ export function createThreadFind(host: Host) {
   function close(): void {
     observer.disconnect(); resize?.disconnect();
     window.removeEventListener('resize', place);
-    cancelAnimationFrame(frame); frame = 0;
+    cancelAnimationFrame(frame); frame = 0; clearTimeout(typing); typing = 0;
     highlights?.delete(ALL); highlights?.delete(CURRENT);
     bar?.remove(); bar = undefined; input = undefined; count = undefined; ranges = []; current = -1;
     host.restoreFocus();

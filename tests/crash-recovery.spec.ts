@@ -12,7 +12,8 @@ test.describe('crash recovery notice', () => {
     await ready(page);
     const toast = page.locator('#toast');
     await expect(toast).toHaveText(`PandaCode crashed ${await when(page)} and restarted.`);
-    await expect(toast).toHaveAttribute('role', 'status');
+    // The live region is the toast's text alone (its buttons are never read with it).
+    await expect(toast.locator('.toast-text')).toHaveAttribute('role', 'status');
     // Only the close button: no report was kept.
     await expect(toast.getByRole('button')).toHaveCount(1);
     await expect(toast.getByRole('button', { name: 'Dismiss notice' })).toBeVisible();

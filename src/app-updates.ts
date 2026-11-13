@@ -11,12 +11,14 @@
 import { call, preview } from './bridge';
 import { CHECK_EVERY, downloadsOnItsOwn, parseUpdateMode, restartNow, updatePrompt, type UpdateMode, type UpdateState } from './app-updates-policy';
 import { PROJECT_LINKS } from './about-settings';
+import { errorText } from './error-text';
 export { describeUpdate, type UpdateMode, type UpdateState } from './app-updates-policy';
 
 export interface UpdatesHost {
   /** True while any agent is working; installing waits for it to finish. */
   busy(): boolean;
   notify(text: string): void;
+  notifyError?(text: string): void;
 }
 export interface AppUpdates {
   readonly state: UpdateState;
@@ -29,6 +31,8 @@ export interface AppUpdates {
   check(): Promise<void>;
   /** Installs a downloaded update and restarts; refuses while an agent is working. */
   restart(): Promise<void>;
+  /** Opens the release page for an update this copy can't install itself; a failure is reported through the host. */
+  openReleases(): Promise<void>;
 }
 
 const KEY = 'pandacode.autoUpdate';
@@ -49,7 +53,7 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     .then(value => { installable = value; }, cause => { console.warn('Could not tell how PandaCode was installed:', cause); });
   let pending: Pending | null = null, lastCheck = 0, lastInput = Date.now(), checking: Promise<void> | null = null;
   const set = (next: UpdateState) => { state = next; listeners.forEach(listener => listener()); };
-  const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
+  const message = (cause: unknown) => errorText(cause, 'An unexpected error occurred.');
 
   async function download(update: Pending): Promise<void> {
     let total = 0, received = 0;
@@ -78,6 +82,11 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     }
   }
   const check = () => (checking ??= run().finally(() => { checking = null; }));
+
+  async function openReleases(): Promise<void> {
+    try { await call('open_external_url', { url: PROJECT_LINKS.releases }); }
+    catch (cause) { (host.notifyError ?? host.notify)(`Couldn’t open the release page: ${message(cause)}`); }
+  }
 
   /** Re-signs the bundle with the stable local identity (macOS); never blocks an update. */
   async function localSign(): Promise<void> {
@@ -127,6 +136,7 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     },
     check,
     restart,
+    openReleases,
   };
   return instance;
 }
@@ -154,7 +164,7 @@ export function mountUpdatePill(pill: HTMLButtonElement, updates: AppUpdates): v
   };
   updates.subscribe(paint);
   pill.addEventListener('click', () => {
-    if (updates.state.kind === 'available' && !updates.installable) void call('open_external_url', { url: PROJECT_LINKS.releases });
+    if (updates.state.kind === 'available' && !updates.installable) void updates.openReleases();
     else void updates.restart();
   });
   later.addEventListener('click', () => { if (updates.state.kind === 'available') dismissed = updates.state.version; paint(); });

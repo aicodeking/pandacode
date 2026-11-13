@@ -2,11 +2,13 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import type { Activity, BotDetail, Channel, Schedule } from './bots';
 import { channelGuide, connectChange, connectClick, connectSection, connectSubmit, kindLabel } from './bots-connect';
+import { errorText } from './error-text';
 
 export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'channels' | 'rules' | 'activity';
 export interface PanelContext {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   openTask(sessionId: string): void;
   running(sessionId: string): boolean;
   detail(): BotDetail | null;
@@ -130,7 +132,7 @@ async function loadActivity(context: PanelContext, older: boolean): Promise<void
     activity = { botId, items: older ? [...activity.items, ...items] : items, done: items.length < 100, loading: false };
   } catch (cause) {
     activity = { ...activity, done: true, loading: false };
-    context.notify(cause instanceof Error ? cause.message : String(cause));
+    (context.notifyError ?? context.notify)(errorText(cause));
   }
   context.rerender();
 }

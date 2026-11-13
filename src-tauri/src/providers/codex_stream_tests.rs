@@ -231,3 +231,81 @@ fn reasoning_summary_deltas_surface_as_thinking_events() {
     }
     assert_eq!(thinking, "Plan\n\nAct");
 }
+
+fn tool_item(p: &mut Protocol, method: &str, item: Value) -> ToolActivity {
+    let step = p.receive(json!({"method":method,"params":{"threadId":"main","turnId":"turn-main","item":item}})).unwrap();
+    step.events.iter().rev().find_map(|event| event.tool.clone()).expect("tool event")
+}
+
+#[test]
+fn image_view_items_keep_the_viewed_path() {
+    let mut p = protocol();
+    let item = json!({"type":"imageView","id":"img1","path":"/tmp/shot.png"});
+    let started = tool_item(&mut p, "item/started", item.clone());
+    assert_eq!((started.name.as_str(), started.status.as_str()), ("View image", "running"));
+    let done = tool_item(&mut p, "item/completed", item);
+    assert_eq!(done.name, "View image");
+    assert_eq!(done.status, "completed");
+    assert_eq!(serde_json::from_str::<Value>(&done.input).unwrap(), json!({"path":"/tmp/shot.png"}));
+    assert!(done.input.contains('\n'), "pretty JSON like other inputs");
+    assert_eq!(done.output, "");
+}
+
+#[test]
+fn web_search_items_keep_query_action_and_result_links() {
+    let mut p = protocol();
+    let started = tool_item(&mut p, "item/started", json!({"type":"webSearch","id":"ws1","query":""}));
+    assert_eq!((started.name.as_str(), started.input.as_str()), ("web_search", ""));
+    let done = tool_item(&mut p, "item/completed", json!({
+        "type":"webSearch","id":"ws1","query":"rust serde",
+        "action":{"type":"search","query":"rust serde","queries":["rust serde","serde json"],"secret":{"nested":"HIDDEN"}},
+        "results":[
+            {"title":"Serde","url":"https://serde.rs","extra":{"nested":"HIDDEN"}},
+            {"url":"https://docs.rs/serde"},
+            {"title":"No url"}
+        ]
+    }));
+    assert_eq!(done.name, "web_search");
+    assert_eq!(done.status, "completed");
+    assert_eq!(serde_json::from_str::<Value>(&done.input).unwrap(), json!({
+        "query":"rust serde",
+        "action":{"type":"search","query":"rust serde","queries":["rust serde","serde json"]}
+    }));
+    let links = done.output.strip_prefix("Links: ").expect("Links prefix");
+    assert_eq!(serde_json::from_str::<Value>(links).unwrap(), json!([
+        {"title":"Serde","url":"https://serde.rs"},
+        {"title":"https://docs.rs/serde","url":"https://docs.rs/serde"}
+    ]));
+    assert!(!done.output.contains("HIDDEN") && !done.input.contains("HIDDEN"));
+}
+
+#[test]
+fn web_search_without_results_has_empty_output_and_bounded_links() {
+    let mut p = protocol();
+    let done = tool_item(&mut p, "item/completed", json!({"type":"webSearch","id":"ws2","query":"q","action":{"type":"openPage","url":"https://example.com"}}));
+    assert_eq!(serde_json::from_str::<Value>(&done.input).unwrap(), json!({"query":"q","action":{"type":"openPage","url":"https://example.com"}}));
+    assert_eq!(done.output, "");
+    let many: Vec<Value> = (0..50).map(|i| json!({"title":"t".repeat(300),"url":format!("https://example.com/{i}/{}", "p".repeat(400))})).collect();
+    let done = tool_item(&mut p, "item/completed", json!({"type":"webSearch","id":"ws3","query":"q","results":many}));
+    assert!(done.output.len() <= TOOL_OUTPUT_LIMIT);
+    let links: Vec<Value> = serde_json::from_str(done.output.strip_prefix("Links: ").unwrap()).unwrap();
+    assert!(!links.is_empty() && links.len() < 50);
+}
+
+#[test]
+fn sleep_and_agent_items_keep_named_fields() {
+    let mut p = protocol();
+    let sleep = tool_item(&mut p, "item/completed", json!({"type":"sleep","id":"s1","durationMs":1500}));
+    assert_eq!(sleep.name, "sleep");
+    assert_eq!(serde_json::from_str::<Value>(&sleep.input).unwrap(), json!({"durationMs":1500}));
+    let agent = tool_item(&mut p, "item/completed", json!({
+        "type":"collabAgentToolCall","id":"a1","tool":"spawnAgent","status":"completed","senderThreadId":"main",
+        "prompt":"Review the diff","model":"gpt-5","receiverThreadIds":["child"],
+        "agentsStates":{"child":{"status":"completed","message":"Looks good"}}
+    }));
+    assert_eq!(agent.name, "Agent · spawnAgent");
+    assert_eq!(serde_json::from_str::<Value>(&agent.input).unwrap(), json!({"prompt":"Review the diff","model":"gpt-5","receiverThreadIds":["child"]}));
+    assert_eq!(agent.output, "child: completed — Looks good");
+    let unknown = tool_item(&mut p, "item/completed", json!({"type":"futureThing","id":"u1","payload":{"secret":"HIDDEN"}}));
+    assert_eq!((unknown.name.as_str(), unknown.input.as_str(), unknown.output.as_str()), ("futureThing", "", ""));
+}

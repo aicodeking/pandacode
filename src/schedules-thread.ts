@@ -22,6 +22,9 @@ export const DEFAULT_WAKE_PROMPT = 'Continue where you left off.';
 
 let host: WakeHost | undefined;
 let schedules: TaskSchedule[] = [];
+/** Bumped whenever `schedules` changes: a user message's wake-up mark (scheduledMark) is drawn from them. */
+let version = 0;
+export const schedulesVersion = (): number => version;
 let runs: ScheduleRun[] = [], runsFor = '';
 let settings: SchedulerSettings | null = null;
 let paused = false, expanded = false, confirming = '', loading = 0, ticker = 0;
@@ -55,6 +58,8 @@ export async function refreshWakeups(): Promise<void> {
       schedulesApi.list(null), id ? schedulesApi.runs({ sessionId: id, limit: HISTORY }) : Promise.resolve([]), schedulesApi.settings(),
     ]);
     if (request !== loading) return;
+    // Only a list that changed redraws the user messages that mark a wake-up (main.ts markupEnv reads `version`).
+    if (JSON.stringify(list) !== JSON.stringify(schedules)) version++;
     schedules = list; runs = history; runsFor = id; settings = loaded; paused = loaded.paused;
   } catch (error) { if (request === loading) host.report(error); return; }
   paint(); host.changed();

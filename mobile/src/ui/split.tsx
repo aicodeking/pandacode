@@ -3,7 +3,9 @@
 // item on the New thread pane and in tasks.
 import { useVerticalBarEdgeIOS } from 'expo-status-bar';
 import { useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { create } from 'zustand';
+import { paneInsets, type SideInsets } from './pane-insets.ts';
 
 const SPLIT_WIDTH = 700;
 
@@ -16,4 +18,13 @@ export function useSplit(): boolean {
   const edge = useVerticalBarEdgeIOS();
   const { width } = useWindowDimensions();
   return edge != null && width >= SPLIT_WIDTH;
+}
+
+/** The side insets a pane screen keeps clear of: the safe area's, except the left one while the split
+ * view's sidebar shows (it takes that inset itself, so adding it again doubled the gutter). */
+export function usePaneInsets(): SideInsets {
+  const { left, right } = useSafeAreaInsets();
+  const split = useSplit();
+  const collapsed = useSidebar(s => s.collapsed);
+  return paneInsets({ left, right }, split && !collapsed);
 }

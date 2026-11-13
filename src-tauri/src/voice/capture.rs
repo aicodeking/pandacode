@@ -186,51 +186,250 @@ pub struct MicDevice {
     pub is_default: bool,
 }
 
-/// Input devices by name; the id is the name (what preferences store).
-pub(super) fn devices() -> Vec<MicDevice> {
+/// FriendlyName on Windows: cpal 0.17 names an endpoint by DeviceDesc there ("Microphone", shared
+/// by most inputs) and keeps a differing FriendlyName ("Microphone (USB Audio)") in `extended`.
+pub(super) fn friendly_name(description: &cpal::DeviceDescription) -> String {
+    description
+        .extended()
+        .first()
+        .map_or_else(|| description.name().to_owned(), Clone::clone)
+}
+
+/// The string preferences store for a device; the Settings select uses it as both label and value.
+/// macOS keeps the deprecated `name()` (the CoreAudio name, as in cpal 0.16). Windows uses the
+/// FriendlyName. On Linux `name()` is the raw ALSA PCM id since cpal 0.17 ("plughw:CARD=0,DEV=0"),
+/// where 0.16 named a card by its card name: `devices` and `saved_device` add that name back
+/// through `alsa_picker_names` and `alsa_resolve`, so choices saved by either version still match.
+#[allow(deprecated)]
+pub(super) fn saved_name(device: &cpal::Device) -> Option<String> {
+    if cfg!(windows) {
+        device.description().ok().map(|d| friendly_name(&d))
+    } else {
+        device.name().ok()
+    }
+}
+
+/// Input devices by name; the id is the name (what preferences store). `saved` is the stored
+/// choice, which Linux lists even when it is a raw PCM id it would otherwise hide.
+pub(super) fn devices(saved: Option<&str>) -> Vec<MicDevice> {
     let host = cpal::default_host();
-    let default = host.default_input_device().and_then(|d| d.name().ok());
+    let default = host.default_input_device().and_then(|d| saved_name(&d));
+    let ids: Vec<String> = host
+        .input_devices()
+        .map(|list| list.filter_map(|d| saved_name(&d)).collect())
+        .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
-    host.input_devices()
-        .map(|list| {
-            list.filter_map(|d| d.name().ok())
-                .filter(|name| seen.insert(name.clone()))
-                .map(|name| MicDevice {
-                    id: name.clone(),
-                    is_default: default.as_deref() == Some(name.as_str()),
-                    name,
-                })
-                .collect()
+    listed_names(ids, saved)
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .map(|name| MicDevice {
+            id: name.clone(),
+            is_default: default.as_deref() == Some(name.as_str()),
+            name,
         })
+        .collect()
+}
+
+/// The named input device, or the OS default when it is gone or unnamed (what `open` opens
+/// first); the real-audio smoke checks it.
+#[cfg(test)]
+pub(super) fn input_device(name: Option<&str>) -> Result<cpal::Device> {
+    name.and_then(saved_device).map_or_else(default_device, Ok)
+}
+
+/// The connected input device a saved choice names, if any.
+fn saved_device(name: &str) -> Option<cpal::Device> {
+    let list: Vec<cpal::Device> = cpal::default_host().input_devices().map(Iterator::collect).unwrap_or_default();
+    let ids: Vec<Option<String>> = list.iter().map(saved_name).collect();
+    resolve_saved(name, &ids).and_then(|at| list.into_iter().nth(at))
+}
+
+fn default_device() -> Result<cpal::Device> {
+    cpal::default_host()
+        .default_input_device()
+        .ok_or_else(|| "No microphone is available. Connect an input device and try again.".into())
+}
+
+#[cfg(target_os = "linux")]
+fn listed_names(ids: Vec<String>, saved: Option<&str>) -> Vec<String> {
+    alsa_picker_names(&ids, &alsa_cards(), saved)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn listed_names(ids: Vec<String>, _saved: Option<&str>) -> Vec<String> {
+    ids
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_saved(saved: &str, ids: &[Option<String>]) -> Option<usize> {
+    alsa_resolve(saved, ids, &alsa_cards())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resolve_saved(saved: &str, ids: &[Option<String>]) -> Option<usize> {
+    ids.iter().position(|id| id.as_deref() == Some(saved))
+}
+
+/// The sound cards the kernel lists. Without procfs no card names are known, so the raw PCM ids
+/// (what 0.3.109 listed and saved) still list and resolve.
+#[cfg(target_os = "linux")]
+fn alsa_cards() -> Vec<AlsaCard> {
+    std::fs::read_to_string("/proc/asound/cards")
+        .map(|text| parse_asound_cards(&text))
         .unwrap_or_default()
 }
 
-/// The named input device, or the OS default when it is gone or unnamed.
-fn input_device(name: Option<&str>) -> Result<cpal::Device> {
-    let host = cpal::default_host();
-    if let Some(name) = name {
-        if let Some(device) = host
-            .input_devices()
-            .ok()
-            .and_then(|mut list| list.find(|d| d.name().ok().as_deref() == Some(name)))
-        {
-            return Ok(device);
-        }
+/// One ALSA sound card: its index, its id (`CARD=` in hint PCM names) and its name, the kernel's
+/// short name, which is what `snd_ctl_card_info_get_name` returns and cpal 0.16 stored.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AlsaCard {
+    pub index: u32,
+    pub id: String,
+    pub name: String,
+}
+
+/// The cards in `/proc/asound/cards`, whose lines the kernel prints as
+/// `"%2i [%-15s]: %s - %s"` (index, id, driver, short name), each followed by a long-name line.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn parse_asound_cards(text: &str) -> Vec<AlsaCard> {
+    text.lines()
+        .filter_map(|line| {
+            let (index, rest) = line.trim_start().split_once(" [")?;
+            let index = index.trim().parse().ok()?;
+            let (id, rest) = rest.split_once("]: ")?;
+            let (_driver, name) = rest.split_once(" - ")?;
+            let (id, name) = (id.trim(), name.trim());
+            (!id.is_empty() && !name.is_empty())
+                .then(|| AlsaCard { index, id: id.to_owned(), name: name.to_owned() })
+        })
+        .collect()
+}
+
+/// The PCMs cpal 0.16 listed by their own name (it opened each one to check).
+#[cfg(any(test, target_os = "linux"))]
+const ALSA_BUILTINS: [&str; 5] = ["default", "pipewire", "pulse", "jack", "oss"];
+
+/// How well a listed PCM stands in for `card` (lower is better), or `None` when it is not one of
+/// the card's PCMs by index. cpal 0.16 opened `plughw:<index>` (device 0, with the plug layer's
+/// format and rate conversion); 0.17 lists that PCM as `plughw:CARD=<index>,DEV=0`, and lists
+/// these indexed forms only for devices `pcm_info` reports, so as input devices they can capture.
+/// Card-id hint forms (`plughw:CARD=PCH,…`) list as duplex even on playback-only cards (HDMI), so
+/// they never stand in for a card. Order: plughw before hw, then the lowest device.
+#[cfg(any(test, target_os = "linux"))]
+fn alsa_card_rank(card: &AlsaCard, pcm_id: &str) -> Option<(u8, u32)> {
+    let (plugin, args) = pcm_id.split_once(':')?;
+    let plugin_rank = match plugin {
+        "plughw" => 0,
+        "hw" => 1,
+        _ => return None,
+    };
+    let (index, device) = args.strip_prefix("CARD=")?.split_once(",DEV=")?;
+    (index.parse::<u32>().ok()? == card.index).then_some((plugin_rank, device.parse().ok()?))
+}
+
+/// The position in `ids` (cpal 0.17 input PCM names) of the best capture PCM for `card`.
+#[cfg(any(test, target_os = "linux"))]
+fn alsa_card_pcm(card: &AlsaCard, ids: &[Option<String>]) -> Option<usize> {
+    ids.iter()
+        .enumerate()
+        .filter_map(|(at, id)| Some((alsa_card_rank(card, id.as_deref()?)?, at)))
+        .min()
+        .map(|(_, at)| at)
+}
+
+/// The Linux picker: the builtins 0.16 listed, then each card with a capture PCM by its 0.16 card
+/// name, then the raw PCM id `saved` names when it is listed (a 0.3.109 choice still shows as
+/// connected). Other raw ids (`hw:…`, `dsnoop:…`, `null`) are hidden, except without procfs, where
+/// no card names are known and every raw id lists as in 0.3.109. Duplicates are dropped by the caller.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_picker_names(ids: &[String], cards: &[AlsaCard], saved: Option<&str>) -> Vec<String> {
+    let listed: Vec<Option<String>> = ids.iter().cloned().map(Some).collect();
+    let builtins = ALSA_BUILTINS.iter().filter(|b| ids.iter().any(|id| id == *b)).map(|b| (*b).to_owned());
+    let mut sorted_cards: Vec<&AlsaCard> = cards.iter().collect();
+    sorted_cards.sort_by_key(|card| card.index);
+    let card_names = sorted_cards
+        .into_iter()
+        .filter(|card| alsa_card_pcm(card, &listed).is_some())
+        .map(|card| card.name.clone());
+    let raw = ids
+        .iter()
+        .filter(|id| !ALSA_BUILTINS.contains(&id.as_str()))
+        .filter(|id| cards.is_empty() || saved == Some(id.as_str()))
+        .cloned();
+    builtins.chain(card_names).chain(raw).collect()
+}
+
+/// The position in `ids` of the device a saved Linux choice names: an exact PCM id first (the
+/// builtins, ids saved by 0.3.109, user-defined PCMs), else a 0.16 card name, resolved like 0.16's
+/// lookup did to the lowest-index card of that name, on its best capture PCM (`alsa_card_rank`).
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_resolve(saved: &str, ids: &[Option<String>], cards: &[AlsaCard]) -> Option<usize> {
+    if let Some(at) = ids.iter().position(|id| id.as_deref() == Some(saved)) {
+        return Some(at);
     }
-    host.default_input_device()
-        .ok_or_else(|| "No microphone is available. Connect an input device and try again.".into())
+    let mut named: Vec<&AlsaCard> = cards.iter().filter(|card| card.name == saved).collect();
+    named.sort_by_key(|card| card.index);
+    named.into_iter().find_map(|card| alsa_card_pcm(card, ids))
 }
 
 type Opened = (cpal::Stream, Arc<Mutex<Pcm>>, Arc<AtomicBool>);
 
-/// Builds (does not start) an input stream on the chosen device.
-fn open(device_name: Option<&str>) -> Result<Opened> {
-    let device = input_device(device_name)?;
+/// The ALSA plugin PCMs cpal 0.17 lists from config hints without opening them: alsa-plugins
+/// defines both, so they list with no JACK server or OSS device behind them.
+#[cfg(any(test, target_os = "linux"))]
+const ALSA_UNPROBED: [&str; 2] = ["jack", "oss"];
+
+/// Whether a saved Linux choice that fails to open falls back to the default input: only when it
+/// resolved to `jack` or `oss` (`resolved` is the PCM id it resolved to; `None` when it did not
+/// resolve, so the default was opened already), and never in the mic test (`probe`), which must
+/// open exactly the chosen device or report why not. A card name or raw id reports its failure
+/// (a busy `hw` device, a permission problem) rather than recording from another microphone.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_falls_back(resolved: Option<&str>, probe: bool) -> bool {
+    !probe && resolved.is_some_and(|id| ALSA_UNPROBED.contains(&id))
+}
+
+/// Builds (does not start) an input stream on the chosen device, or on the default input when
+/// the choice is unset or not connected. On Linux see `alsa_falls_back`.
+fn open(device_name: Option<&str>, probe: bool) -> Result<Opened> {
+    let Some(chosen) = device_name.and_then(saved_device) else {
+        return open_on(default_device()?);
+    };
+    #[cfg(target_os = "linux")]
+    if alsa_falls_back(saved_name(&chosen).as_deref(), probe) {
+        return open_on(chosen).or_else(|saved_error| {
+            default_device().and_then(open_on).map_err(|default_error| {
+                format!(
+                    "The saved microphone did not open: {saved_error} \
+                     The default input did not open either: {default_error}"
+                )
+            })
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = probe;
+    open_on(chosen)
+}
+
+/// Tests only: records from `device` through `open` (dictation when `probe` is false, the mic
+/// test when true) for `length`, and returns how many samples arrived.
+#[cfg(test)]
+pub(super) fn open_and_record(device: &str, probe: bool, length: Duration) -> Result<usize> {
+    let (stream, pcm, _) = open(Some(device), probe)?;
+    stream.play().map_err(|error| error.to_string())?;
+    std::thread::sleep(length);
+    drop(stream);
+    let samples = pcm.lock().map_err(|_| "Could not finish microphone audio.".to_owned())?.samples.len();
+    Ok(samples)
+}
+
+fn open_on(device: cpal::Device) -> Result<Opened> {
     let config = device.default_input_config().map_err(|_| {
         "Could not read the microphone format. Check your OS input device and permission."
     })?;
     let pcm = Arc::new(Mutex::new(Pcm::new(
-        config.sample_rate().0,
+        config.sample_rate(),
         config.channels(),
     )?));
     let failed = Arc::new(AtomicBool::new(false));
@@ -248,6 +447,7 @@ fn open(device_name: Option<&str>) -> Result<Opened> {
         cpal::SampleFormat::I64 => build!(i64),
         cpal::SampleFormat::U8 => build!(u8),
         cpal::SampleFormat::U16 => build!(u16),
+        cpal::SampleFormat::U24 => build!(cpal::U24),
         cpal::SampleFormat::U32 => build!(u32),
         cpal::SampleFormat::U64 => build!(u64),
         cpal::SampleFormat::F32 => build!(f32),
@@ -259,6 +459,11 @@ fn open(device_name: Option<&str>) -> Result<Opened> {
 
 /// How often a recording reports its input level (10 Hz).
 const METER_EVERY: Duration = Duration::from_millis(100);
+/// Automatic stops keep the audio; the card's button then reads Transcribe recording, not Retry.
+pub(super) const MIC_STOPPED: &str =
+    "Microphone input stopped. Choose Transcribe recording to transcribe it, or discard it.";
+pub(super) const LIMIT_REACHED: &str =
+    "Recording limit reached. Choose Transcribe recording to transcribe it, or discard it.";
 
 /// Receives a test recording's live input level (0..1) while it records.
 pub(super) type Meter = Box<dyn Fn(f32) + Send>;
@@ -295,7 +500,7 @@ impl Probe {
         let thread = std::thread::Builder::new()
             .name("voice-probe".into())
             .spawn(move || {
-                let (stream, pcm, failed) = match open(device.as_deref()).and_then(|o| {
+                let (stream, pcm, failed) = match open(device.as_deref(), true).and_then(|o| {
                     o.0.play().map_err(|_| "Could not start the microphone. Check microphone permission in OS settings.".to_owned())?;
                     Ok(o)
                 }) {
@@ -391,7 +596,7 @@ pub(super) fn run(worker: Worker) {
         if *cancel.borrow() {
             return Err(CANCELLED.into());
         }
-        let (stream, pcm, failed) = open(device.as_deref())?;
+        let (stream, pcm, failed) = open(device.as_deref(), false)?;
         // Commit to Recording before play: a cancel that won the race never hears the microphone.
         if *cancel.borrow() || !voice.recording(&id) {
             return Err(CANCELLED.into());
@@ -418,17 +623,13 @@ pub(super) fn run(worker: Worker) {
             break;
         }
         if failed.load(Ordering::Acquire) {
-            automatic_error = Some(
-                "Microphone input stopped. Retry to transcribe the captured audio, or discard it.",
-            );
+            automatic_error = Some(MIC_STOPPED);
             break;
         }
         if started.elapsed() >= Duration::from_secs(MAX_SECONDS)
             || pcm.lock().map(|p| p.full()).unwrap_or(true)
         {
-            automatic_error = Some(
-                "Recording limit reached. Retry to transcribe the captured audio, or discard it.",
-            );
+            automatic_error = Some(LIMIT_REACHED);
             break;
         }
         if last_meter.elapsed() >= METER_EVERY {

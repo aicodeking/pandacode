@@ -632,6 +632,14 @@ pub async fn orchestration_pending() -> Vec<Value> {
     requests().pending.iter().map(|(id, p)| p.view(id)).collect()
 }
 
+/// Accepting a link request answers or wakes its task, so without "Full access for remote
+/// tasks" a phone may not accept one for a task that leads a team (`allow_remote_team`);
+/// declining stays allowed. An unknown request passes: answering it fails as already answered.
+pub(crate) fn allow_remote_accept(store: &crate::storage::Store, request_id: &str, full_access: bool) -> Result<()> {
+    let session = requests().pending.get(request_id).map(|p| p.session_id.clone());
+    session.map_or(Ok(()), |session| super::super::host::allow_remote_team(store, &session, full_access))
+}
+
 /// Takes a request out of the pending list, so exactly one answer wins; returns its task
 /// and the cancellation generation.
 fn take(request_id: &str) -> Result<(String, u64)> {
@@ -687,6 +695,8 @@ pub async fn orchestration_link_respond(app: tauri::AppHandle, request_id: Strin
             return Err(error);
         }
     }
+    // A decline (allowed without the switch, `allow_remote_accept`) may also wake a team lead: it
+    // reads only the fixed "declined" outcome, no text from the phone, which is acceptable.
     if deliver(&request_id, outcome(&app, &answer)) {
         super::wake_link(&app, session);
     }

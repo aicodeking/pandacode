@@ -288,7 +288,7 @@ impl Failure {
         match self {
             Self::TimedOut => "The local speech model took too long and was stopped. Retry, or choose a smaller model.".into(),
             Self::Cancelled => super::super::CANCELLED.into(),
-            Self::Died => "The local speech engine stopped unexpectedly. Retry the recording.".into(),
+            Self::Died => "The local speech engine stopped unexpectedly. Retry, or use a speech service if it keeps happening.".into(),
             Self::Engine(message) => format!("The local speech model failed: {message}"),
         }
     }

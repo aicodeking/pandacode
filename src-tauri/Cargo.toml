@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.108"
+version = "0.3.120"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -56,7 +56,7 @@ tauri-plugin-process = ">=2, <2.4"
 if-addrs = "=0.15.0"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
 libm = "0.2"
-cpal = "0.16"
+cpal = "0.17"
 # On-device dictation (src/voice/local): 16 kHz resampling and the free-space check before downloads.
 rubato = "5"
 fs4 = "1.1"
@@ -103,6 +103,10 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 # feature is not a default; it reaches Niri, Hyprland, KDE and GNOME's data-control.
 # WKWebView and WebView2 hand pasted images over as files, so other targets skip it.
 arboard = { version = "3", features = ["wayland-data-control"] }
+
+[dev-dependencies]
+# Paused tokio clock for deterministic usage-check timing tests (test builds only).
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,12 @@
+[
+  { "toolName": "mcp__pandacode__pandacode_capture_browser", "input": {}, "output": "{\"path\":\"/tmp/pandacode/browser.png\"}", "image": "/tmp/pandacode/browser.png" },
+  { "toolName": "mcp__puppeteer__puppeteer_screenshot", "input": { "name": "home" }, "output": "Screenshot saved: /tmp/puppeteer/home.png", "image": "/tmp/puppeteer/home.png" },
+  { "toolName": "mcp__chrome-devtools__take_screenshot", "input": {}, "output": "Saved screenshot to /Users/me/shots/page.png", "image": "/Users/me/shots/page.png" },
+  { "toolName": "mcp__playwright__browser_take_screenshot", "input": {}, "output": "/var/folders/xy/T/playwright/page-1.png", "image": "/var/folders/xy/T/playwright/page-1.png" },
+  { "toolName": "mcp__playwright__playwright_screenshot", "input": { "name": "login" }, "output": "{\"path\":\"/tmp/playwright/login.png\"}", "image": "/tmp/playwright/login.png" },
+  { "toolName": "mcp__browserbase__browserbase_screenshot", "input": {}, "output": "Screenshot saved: /tmp/bb/shot.jpg", "image": "/tmp/bb/shot.jpg" },
+  { "toolName": "mcp__capture_notes__save", "input": {}, "output": "Screenshot saved: /tmp/notes/a.png", "image": null },
+  { "toolName": "mcp__notes__recapture_page", "input": {}, "output": "Screenshot saved: /tmp/notes/b.png", "image": null },
+  { "toolName": "mcp__screenshot_store__save", "input": {}, "output": "Screenshot saved: /tmp/store/c.png", "image": null },
+  { "toolName": "Running: curl https://site/capture", "input": "curl https://site/capture", "output": "/tmp/site/capture.png", "image": null }
+]

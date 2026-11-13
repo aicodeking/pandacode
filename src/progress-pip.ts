@@ -5,6 +5,7 @@ import { createDimmer } from './progress-dim';
 import { legend, linkMarks, marks, type Annotation } from './progress-marks';
 import { createMedia, lazyThumbs } from './progress-media';
 import { flipHeight, play, settle, still } from './progress-motion';
+import { errorText } from './error-text';
 
 /* Visual progress: a picture-in-picture over the conversation showing the screenshots
  * and idea sketches an agent posted, iteration by iteration. Collapsed it is a pill of
@@ -14,7 +15,7 @@ import { flipHeight, play, settle, still } from './progress-motion';
 
 export type { Annotation, Tone } from './progress-marks';
 export type Snapshot = { id: string; iteration: number; title: string; note?: string; kind: 'image' | 'idea'; annotations: Annotation[]; createdAt: number; width?: number; height?: number };
-export type ProgressHost = { call<T>(command: string, args?: Record<string, unknown>): Promise<T>; notify(text: string): void };
+export type ProgressHost = { call<T>(command: string, args?: Record<string, unknown>): Promise<T>; notify(text: string): void; notifyError?(text: string): void };
 export type ProgressPip = {
   /** The pane's thread, whether the PiP may show there, and whether its agent runs. */
   update(sessionId: string, allowed: boolean, running: boolean): void;
@@ -45,7 +46,7 @@ function readSaved(): { collapsed: boolean; corner: Corner } {
     return { collapsed: value.collapsed === true, corner: CORNERS.includes(value.corner) ? value.corner : 'tl' };
   } catch { return { collapsed: false, corner: 'tl' }; }
 }
-const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
+const failure = (error: unknown) => errorText(error);
 const label = (s: Snapshot) => `Iteration ${s.iteration}: ${s.title}${s.kind === 'idea' ? ' (idea sketch)' : ''}`;
 const fromHtml = (html: string): HTMLElement => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild as HTMLElement; };
 
@@ -359,7 +360,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
   async function clear(): Promise<void> {
     const id = sessionId;
     try { await host.call('progress_clear', { sessionId: id }); }
-    catch (error) { host.notify(`Could not clear visual progress. ${failure(error)}`); return; }
+    catch (error) { (host.notifyError ?? host.notify)(`Could not clear visual progress. ${failure(error)}`); return; }
     if (id !== sessionId) return;
     snaps = []; index = 0; render();
     document.querySelector<HTMLElement>('#prompt')?.focus();

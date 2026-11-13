@@ -209,12 +209,13 @@ function keepUntilClosed(notice: Lasting): void {
   /** Rewrites the showing notice in place when its text has changed, or whole (still unannounced)
    * when its buttons have (the kept-closed thread is gone). */
   const rewrite = () => {
-    const text = notice.text(), node = toast.firstChild;
-    if (done || !ours || toast.hidden || node?.nodeType !== Node.TEXT_NODE) return;
+    // The text is the first node of the toast's live region (`.toast-text`).
+    const text = notice.text(), label = toast.querySelector<HTMLElement>(':scope > .toast-text'), node = label?.firstChild;
+    if (done || !ours || toast.hidden || !label || node?.nodeType !== Node.TEXT_NODE) return;
     if (notice.actions() !== buttons) { present(true); return; }
     if (node.nodeValue === text) return;
     // Already announced: the new wording is not read out.
-    toast.setAttribute('aria-live', 'off');
+    for (const live of [toast, label]) live.setAttribute('aria-live', 'off');
     node.nodeValue = text;
   };
   const checkDate = () => {

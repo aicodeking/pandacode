@@ -76,8 +76,12 @@ test('isolated app data and literal NSIS arguments do not inherit credentials', 
   assert.throws(() => installArguments('bad"path'), /Invalid/);
 });
 
+// Fixtures that exit at once settle the observation as soon as they exit, so a long window costs
+// nothing normally but keeps a cold Node start (over 1.5 s on windows-11-arm) inside it.
+const EXIT_WINDOW_MS = 10_000;
+
 test('startup observation rejects early clean exits, crashes, and missing executables', async () => {
-  const options = { env: process.env, cwd: tmpdir(), durationMs: 500, stdio: 'ignore' };
+  const options = { env: process.env, cwd: tmpdir(), durationMs: EXIT_WINDOW_MS, stdio: 'ignore' };
   await assert.rejects(observeProcess(process.execPath, ['-e', 'process.exit(0)'], options), /App exited/);
   await assert.rejects(observeProcess(process.execPath, ['-e', 'process.exit(42)'], options), /42/);
   await assert.rejects(observeProcess(join(tmpdir(), 'nonexistent-pandacode-smoke-executable'), [], options), /ENOENT/);
@@ -88,13 +92,22 @@ test('startup observation stops a surviving fixture and bounds installer executi
   const directory = await mkdtemp(join(tmpdir(), 'pandacode-smoke-test-'));
   try {
     const pidFile = join(directory, 'pid');
-    await observeProcess(process.execPath, ['-e', 'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', pidFile], { ...options, durationMs: 1000 });
-    const pid = Number(await readFile(pidFile, 'utf8'));
+    const survivor = ['-e', 'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', pidFile];
+    // A cold Node start can outlast a short window before the pid is written; widen and retry.
+    let pid;
+    for (let durationMs = 1000; pid === undefined && durationMs <= 16_000; durationMs *= 2) {
+      await observeProcess(process.execPath, survivor, { ...options, durationMs });
+      const text = await readFile(pidFile, 'utf8').catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      if (text) pid = Number(text);
+    }
+    assert.ok(Number.isInteger(pid) && pid > 0, `the survivor never wrote its pid within 16 s (read ${pid})`);
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the observed process must be gone before returning');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-  await observeProcess(process.execPath, ['-e', 'process.exit(0)'], { ...options, durationMs: 1000, expectExit: true });
+  await observeProcess(process.execPath, ['-e', 'process.exit(0)'], { ...options, durationMs: EXIT_WINDOW_MS, expectExit: true });
   await assert.rejects(observeProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { ...options, expectExit: true }), /timeout/);
 });
 

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test('launcher preserves saved harness authors and renders handoffs beside the current live provider', async ({page}) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
@@ -1003,4 +1003,301 @@ test('launcher ignores the Enter that commits an IME composition', async ({page}
   expect(await launches()).toBe(0);
   await prompt.press('Enter');
   await expect.poll(launches).toBe(1);
+});
+
+const longError = 'Provider request failed: '.padEnd(200, 'x') + '\nLine two of the stack\nLine three of the stack';
+const errorThread = `if (command === 'overlay_thread') return {status:'idle',hasOlder:false,liveText:'',messages:[
+  {id:1,sessionId:args.sessionId,role:'user',content:'Run it',createdAt:1},
+  {id:2,sessionId:args.sessionId,role:'error',content:'Rate limited',createdAt:2},
+  {id:3,sessionId:args.sessionId,role:'error',content:'Rate limited',createdAt:3},
+  {id:4,sessionId:args.sessionId,role:'error',content:'Rate limited',createdAt:4},
+  {id:5,sessionId:args.sessionId,role:'error',content:${JSON.stringify(longError)},createdAt:5}]};`;
+const dismissCall = (fail: boolean) => `if (command === 'dismiss_error_messages') ${fail ? `throw new Error('disk is full');` : 'return args.ids.length;'}`;
+
+const dismissed = (page: Page) => page.evaluate(() => ((window as any).__overlayCalls ?? []).filter((c: any) => c.command === 'dismiss_error_messages').map((c: any) => c.args));
+const dismissButton = (row: Locator) => row.getByRole('button', {name: 'Dismiss error'});
+async function openErrorThread(page: Page, intercept: string) {
+  await instrumentLauncher(page, intercept);
+  await page.clock.install({time: 1_000_000});
+  await page.goto('/?view=launcher');
+  await page.locator('.launcher-task[data-task="preview-active"]').click();
+}
+
+test('launcher groups repeated errors into one row and clamps long ones behind a chevron button', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText('Rate limited');
+  await expect(rows.nth(0).locator('.launcher-error-count')).toContainText('×3');
+  await expect(rows.nth(0).locator('.launcher-error-toggle')).toHaveCount(0);
+  await expect(rows.nth(1).locator('.launcher-error-count')).toHaveCount(0);
+  const summary = await rows.nth(1).locator('.launcher-error-summary').innerText();
+  expect(summary.length).toBeLessThanOrEqual(160);
+  expect(summary.endsWith('…')).toBe(true);
+  const toggle = rows.nth(1).locator('.launcher-error-toggle'), detail = rows.nth(1).locator('.launcher-error-detail');
+  await expect(toggle).toHaveJSProperty('tagName', 'BUTTON');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(detail).toBeHidden();
+  const detailId = await detail.getAttribute('id');
+  await expect(toggle).toHaveAttribute('aria-controls', detailId!);
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(detail).toContainText('Line three of the stack');
+  await expect(detail).toHaveAttribute('role', 'region');
+  await expect(detail).toHaveAttribute('tabindex', '0');
+  await expect(detail).toHaveAccessibleName(/Provider request failed/);
+  await expect(dismissButton(rows.nth(0))).toHaveAccessibleDescription(/Rate limited/);
+  await expect(dismissButton(rows.nth(1))).toHaveAccessibleDescription(/Provider request failed/);
+  const box = await dismissButton(rows.nth(0)).boundingBox();
+  expect([box!.width, box!.height]).toEqual([28, 28]);
+});
+
+test('dismissing hides the row and offers Undo without deleting anything yet; Undo restores row and focus', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row'), undo = page.locator('.launcher-thread-undo');
+  await expect(rows).toHaveCount(2);
+  await dismissButton(rows.nth(0)).click();
+  await expect(rows).toHaveCount(1);
+  await expect(undo.locator('[role=status]')).toHaveText('Error dismissed');
+  await expect(undo).not.toHaveAttribute('role', /./);
+  await expect(undo.getByRole('button', {name: 'Undo'})).not.toHaveAttribute('role', /./);
+  expect(await undo.getByRole('button', {name: 'Undo'}).evaluate(el => !el.closest('[role=status]'))).toBe(true);
+  await expect(undo).toContainText('Error dismissed');
+  await expect(dismissButton(rows.nth(0))).toBeFocused();
+  expect(await dismissed(page)).toEqual([]);
+  await undo.getByRole('button', {name: 'Undo'}).click();
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).locator('.launcher-error-count')).toContainText('×3');
+  await expect(dismissButton(rows.nth(0))).toBeFocused();
+  await expect(undo).toBeHidden();
+  await page.clock.fastForward(10_000);
+  expect(await dismissed(page)).toEqual([]);
+  await expect(rows).toHaveCount(2);
+});
+
+test('the Undo window passing deletes the saved ids; a second dismissal commits the first', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await expect(rows).toHaveCount(2);
+  await dismissButton(rows.nth(0)).click();
+  await page.clock.fastForward(4_500);
+  expect(await dismissed(page)).toEqual([]);
+  await page.clock.fastForward(1_000);
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4]}]);
+  await expect(page.locator('.launcher-thread-undo')).toBeHidden();
+  await expect(rows).toHaveCount(1);
+  // Dismiss the last row, then leave the thread: closing commits it without waiting.
+  await dismissButton(rows.nth(0)).click();
+  await expect(rows).toHaveCount(0);
+  await expect(page.locator('.launcher-thread-scroll')).toBeFocused();
+  await page.locator('.launcher-thread-back').click();
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4]}, {sessionId: 'preview-active', ids: [5]}]);
+});
+
+test('a second dismissal commits the first at once', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await expect(rows).toHaveCount(2);
+  await dismissButton(rows.nth(0)).click();
+  expect(await dismissed(page)).toEqual([]);
+  await dismissButton(rows.nth(0)).click();
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4]}]);
+  await page.clock.fastForward(5_500);
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4]}, {sessionId: 'preview-active', ids: [5]}]);
+});
+
+test('more than 500 saved ids go out in batches of 500', async ({page}) => {
+  await openErrorThread(page, `if (command === 'overlay_thread') return {status:'idle',hasOlder:false,liveText:'',messages:[
+    {id:1,sessionId:args.sessionId,role:'user',content:'Run it',createdAt:1},
+    ...Array.from({length:1100},(_, i) => ({id:i + 2,sessionId:args.sessionId,role:'error',content:'Rate limited',createdAt:i + 2}))]};` + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.locator('.launcher-error-count')).toContainText('×1100');
+  await dismissButton(rows.nth(0)).click();
+  await page.clock.fastForward(5_500);
+  await expect.poll(async () => (await dismissed(page)).map((call: any) => call.ids.length)).toEqual([500, 500, 100]);
+  const ids = (await dismissed(page)).flatMap((call: any) => call.ids);
+  expect(ids).toEqual(Array.from({length: 1100}, (_, i) => i + 2));
+});
+
+test('a failed delete restores the row and shows the reason', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(true));
+  const rows = page.locator('.launcher-error-row');
+  await expect(rows).toHaveCount(2);
+  await dismissButton(rows.nth(0)).click();
+  await expect(rows).toHaveCount(1);
+  await page.clock.fastForward(5_500);
+  await expect(page.locator('.launcher-thread-notice')).toContainText('disk is full');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).locator('.launcher-error-count')).toContainText('×3');
+  await expect(page.locator('.launcher-thread-undo')).toBeHidden();
+});
+
+/** WCAG contrast of `fg` over `bg`, each any CSS colour; `bg` is first laid over `under` (the window is translucent). */
+const contrastOf = (page: Page, fg: string, bg: string, under: string) => page.evaluate(([f, b, u]) => {
+  const ctx = document.createElement('canvas').getContext('2d', {willReadFrequently: true})!;
+  const px = (css: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = '#000'; ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data]; };
+  const lum = (c: number[]) => { const [r, g, bl] = c.slice(0, 3).map(v => { const s = v / 255; return s <= .03928 ? s / 12.92 : ((s + .055) / 1.055) ** 2.4; }); return .2126 * r + .7152 * g + .0722 * bl; };
+  const over = (top: number[], below: number[]) => top.slice(0, 3).map((v, i) => v * top[3] / 255 + below[i] * (1 - top[3] / 255));
+  const base = over(px(b), px(u)), a = lum([...over(px(f), base), 255]), c = lum([...base, 255]);
+  return (Math.max(a, c) + .05) / (Math.min(a, c) + .05);
+}, [fg, bg, under]);
+
+test('the launcher Undo reads at 4.5:1 in light and dark, is underlined, 24px tall and uses the duration tokens', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row'), undo = page.locator('.launcher-thread-undo');
+  await dismissButton(rows.nth(0)).click();
+  const button = undo.getByRole('button', {name: 'Undo'});
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(t => { document.documentElement.dataset.theme = t; }, theme);
+    const [color, text, bg, box, decoration] = await Promise.all([
+      button.evaluate(el => getComputedStyle(el).color),
+      page.evaluate(() => getComputedStyle(document.querySelector('.launcher-thread-undo')!).color),
+      page.evaluate(() => getComputedStyle(document.querySelector('.launcher')!).backgroundColor),
+      button.boundingBox(), button.evaluate(el => getComputedStyle(el).textDecorationLine),
+    ]);
+    expect(color).toBe(text);
+    expect(decoration).toBe('underline');
+    expect(box!.height).toBeGreaterThanOrEqual(24);
+    expect(await contrastOf(page, color, bg, theme === 'light' ? '#ffffff' : '#000000')).toBeGreaterThanOrEqual(4.5);
+  }
+  for (const selector of ['.launcher-error-dismiss', '.launcher-error-toggle', '.launcher-thread-undo button']) {
+    const durations = await page.evaluate(sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).transitionDuration : null; }, selector);
+    if (durations !== null) expect(durations.split(',').every(d => ['0.12s', '0.18s'].includes(d.trim()))).toBe(true);
+  }
+  const rules = await page.evaluate(() => [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].map(rule => rule.cssText)).filter(css => /launcher-(error|thread-undo)/.test(css) && /\.12s/.test(css)));
+  expect(rules).toEqual([]);
+});
+
+test('errors saved after a changes row fold into one launcher row', async ({page}) => {
+  await openErrorThread(page, `if (command === 'overlay_thread') return {status:'idle',hasOlder:false,liveText:'',messages:[
+    {id:1,sessionId:args.sessionId,role:'user',content:'Run it',createdAt:1},
+    {id:2,sessionId:args.sessionId,role:'changes',content:'',createdAt:2},
+    ...Array.from({length:7},(_, i) => ({id:i + 3,sessionId:args.sessionId,role:'error',content:'Rate limited',createdAt:i + 3}))]};` + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.locator('.launcher-error-count')).toContainText('×7');
+  await expect(page.locator('.launcher-error-dismiss-all')).toHaveCount(0);
+  await expect(page.locator('.launcher-thread-turn')).toHaveCount(1);
+});
+
+test('a dismissal waiting out Undo survives a reload: the delete is replayed and the row stays gone', async ({page}) => {
+  // The quit never lets the native delete finish: it hangs until the page has been reloaded.
+  await page.addInitScript(() => sessionStorage.setItem('loads', String(Number(sessionStorage.getItem('loads') ?? 0) + 1)));
+  await openErrorThread(page, errorThread + `if (command === 'dismiss_error_messages' && sessionStorage.getItem('loads') === '1') return new Promise(() => {});` + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await dismissButton(rows.nth(0)).click();
+  expect(await dismissed(page)).toEqual([]);
+  expect(JSON.parse((await page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes')))!)).toEqual({'preview-active': [2, 3, 4]});
+  await page.reload();
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4]}]);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes'))).toBeNull();
+  await page.locator('.launcher-task[data-task="preview-active"]').click();
+  await expect(page.locator('.launcher-error-row')).toHaveCount(1);
+  await expect(page.locator('.launcher-error-row .launcher-error-count')).toHaveCount(0);
+});
+
+test('a journal written by something else is validated and merged, never trusted', async ({page}) => {
+  await page.addInitScript(() => { if (!localStorage.getItem('seeded')) { localStorage.setItem('seeded', '1'); localStorage.setItem('pandacode.launcher.pendingDeletes', JSON.stringify({a: [1, 'x', -2, 3.5, 7], b: 'nope'})); } });
+  await instrumentLauncher(page, dismissCall(false));
+  await page.goto('/?view=launcher');
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'a', ids: [1, 7]}]);
+});
+
+test('Undo and a confirmed delete both clear the journal', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row'), key = () => page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes'));
+  await dismissButton(rows.nth(0)).click();
+  await page.locator('.launcher-thread-undo').getByRole('button', {name: 'Undo'}).click();
+  expect(await key()).toBeNull();
+  await dismissButton(rows.nth(0)).click();
+  await page.clock.fastForward(5_500);
+  await expect.poll(key).toBeNull();
+  expect((await dismissed(page)).length).toBe(1);
+});
+
+test('the Undo line holds its window while it has focus; once left it clears, deletes and focus stays on a control', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row'), undo = page.locator('.launcher-thread-undo');
+  await dismissButton(rows.nth(0)).click();
+  await undo.getByRole('button', {name: 'Undo'}).focus();
+  await page.clock.fastForward(15_000);
+  await expect(undo).toBeVisible();
+  await expect(undo.getByRole('button', {name: 'Undo'})).toBeFocused();
+  expect(await dismissed(page)).toEqual([]);
+  await page.locator('.launcher-thread-back').focus();
+  await page.clock.fastForward(2_500);
+  await expect(undo).toBeHidden();
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4]}]);
+});
+
+test('an Undo line cleared while it has focus hands focus to a real control, never the page', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row'), undo = page.locator('.launcher-thread-undo');
+  await dismissButton(rows.nth(0)).click();
+  await undo.getByRole('button', {name: 'Undo'}).focus();
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect(undo).toBeHidden();
+  await expect(dismissButton(rows.nth(0))).toBeFocused();
+  await dismissButton(rows.nth(0)).click();
+  await undo.getByRole('button', {name: 'Undo'}).focus();
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect(page.locator('.launcher-thread-scroll')).toBeFocused();
+});
+
+test('a clamped first line is not shown twice: the detail carries only the rest', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const row = page.locator('.launcher-error-row').nth(1);
+  const summary = (await row.locator('.launcher-error-summary').innerText()).slice(0, -1);
+  await row.locator('.launcher-error-toggle').click();
+  const detail = await row.locator('.launcher-error-detail').innerText();
+  expect(detail).not.toContain(summary);
+  expect(detail.startsWith('…')).toBe(true);
+  expect(detail).toContain('Line three of the stack');
+  expect((summary + detail.slice(1)).replace(/\s+/g, '')).toContain(longError.replace(/\s+/g, ''));
+});
+
+test('Dismiss all hides every group behind one Undo, deletes in one batch and Undo brings them back', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row'), undo = page.locator('.launcher-thread-undo');
+  await page.locator('.launcher-error-dismiss-all').click();
+  await expect(rows).toHaveCount(0);
+  await expect(undo.locator('[role=status]')).toHaveText('2 errors dismissed');
+  await undo.getByRole('button', {name: 'Undo'}).click();
+  await expect(rows).toHaveCount(2);
+  await expect(dismissButton(rows.nth(0))).toBeFocused();
+  await page.locator('.launcher-error-dismiss-all').click();
+  await page.clock.fastForward(5_500);
+  await expect.poll(() => dismissed(page)).toEqual([{sessionId: 'preview-active', ids: [2, 3, 4, 5]}]);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes'))).toBeNull();
+});
+
+test('Cmd/Ctrl+Z undoes the pending dismissal unless focus is in a text field', async ({page}) => {
+  await openErrorThread(page, errorThread + dismissCall(false));
+  const rows = page.locator('.launcher-error-row');
+  await dismissButton(rows.nth(0)).click();
+  await page.evaluate(() => { const field = document.createElement('textarea'); field.id = 'probe'; document.body.append(field); field.focus(); });
+  await page.keyboard.press('Control+z');
+  await expect(rows).toHaveCount(1);
+  await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+  await page.keyboard.press('Control+z');
+  await expect(rows).toHaveCount(2);
+  expect(await dismissed(page)).toEqual([]);
+});
+
+test('a launch-time replay that keeps failing is given up after a few launches', async ({page}) => {
+  await page.addInitScript(() => { if (!localStorage.getItem('seeded')) { localStorage.setItem('seeded', '1'); localStorage.setItem('pandacode.launcher.pendingDeletes', JSON.stringify({a: [1]})); localStorage.setItem('pandacode.launcher.replayFailures', JSON.stringify({a: 2})); } });
+  await instrumentLauncher(page, dismissCall(true));
+  await page.goto('/?view=launcher');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes'))).toBeNull();
+  expect(await page.evaluate(() => localStorage.getItem('pandacode.launcher.replayFailures'))).toBeNull();
+});
+
+test('a failed replay below the limit keeps the entry and counts the failure', async ({page}) => {
+  await page.addInitScript(() => { if (!localStorage.getItem('seeded')) { localStorage.setItem('seeded', '1'); localStorage.setItem('pandacode.launcher.pendingDeletes', JSON.stringify({a: [1]})); } });
+  await instrumentLauncher(page, dismissCall(true));
+  await page.goto('/?view=launcher');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.launcher.replayFailures'))).toBe('{"a":1}');
+  expect(await page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes'))).toBe('{"a":[1]}');
 });

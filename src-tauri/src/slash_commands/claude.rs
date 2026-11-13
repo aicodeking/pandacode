@@ -41,6 +41,8 @@ fn discovery_command(path: &Path, provider: &str) -> Result<Command, String> {
         "--permission-prompt-tool",
         "stdio",
         "--no-session-persistence",
+        // Project `.mcp.json` servers would start inside the task folder; none are needed.
+        "--strict-mcp-config",
     ]);
     if matches!(provider, "glm" | "mimo") {
         let mut args = if provider == "glm" {
@@ -48,9 +50,8 @@ fn discovery_command(path: &Path, provider: &str) -> Result<Command, String> {
         } else {
             crate::providers::mimo_arguments()?
         };
-        let mut settings: Value = serde_json::from_str(args.last().unwrap()).unwrap();
-        settings["disableAllHooks"] = json!(true);
-        *args.last_mut().unwrap() = settings.to_string();
+        let settings = discovery_settings(args.last().map(String::as_str));
+        *args.last_mut().unwrap() = settings;
         command.args(args);
         // Metadata initialization requires no account. In particular, never
         // forward the user's regular Claude credential to the Z.AI endpoint.
@@ -67,9 +68,21 @@ fn discovery_command(path: &Path, provider: &str) -> Result<Command, String> {
             command.env_remove(name);
         }
     } else {
-        command.args(["--settings", r#"{"disableAllHooks":true}"#]);
+        // Only the user's own settings: the task folder's `.claude/settings*.json` (hooks,
+        // statusLine, apiKeyHelper, env) never loads during discovery.
+        command.args(["--setting-sources", "user"]);
+        command.arg("--settings").arg(discovery_settings(None));
     }
     Ok(command)
+}
+
+/// The `--settings` JSON of every Claude-family discovery: the provider's own settings (if
+/// any) with `disableAllHooks`, since discovery starts `claude -p` inside the task folder,
+/// whose `.claude/settings.json` hooks would otherwise run (from a phone, too).
+fn discovery_settings(base: Option<&str>) -> String {
+    let mut settings: Value = base.and_then(|text| serde_json::from_str(text).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
+    settings["disableAllHooks"] = json!(true);
+    settings.to_string()
 }
 
 async fn discover_process(
@@ -441,6 +454,31 @@ mod tests {
             .err()
             .unwrap()
             .contains("cluster"));
+    }
+
+    /// Round 8: every Claude-family discovery (plain Claude included) runs with hooks off,
+    /// through exactly one `--settings`.
+    #[test]
+    fn every_claude_family_discovery_disables_all_hooks() {
+        let path = Path::new(if cfg!(windows) { r"C:\claude.exe" } else { "/opt/custom/claude" });
+        for provider in ["claude", "glm"] {
+            let command = discovery_command(path, provider).unwrap();
+            let args: Vec<String> = command.as_std().get_args().map(|s| s.to_string_lossy().into_owned()).collect();
+            assert!(args.iter().any(|arg| arg == "-p"), "{provider}");
+            let at: Vec<usize> = args.iter().enumerate().filter(|(_, arg)| *arg == "--settings").map(|(i, _)| i).collect();
+            assert_eq!(at.len(), 1, "{provider}: {args:?}");
+            let settings: Value = serde_json::from_str(&args[at[0] + 1]).unwrap();
+            assert_eq!(settings["disableAllHooks"], true, "{provider}");
+            // Round 11: no project MCP servers, and no project settings (glm already loads none).
+            assert!(args.iter().any(|arg| arg == "--strict-mcp-config"), "{provider}");
+            let sources: Vec<usize> = args.iter().enumerate().filter(|(_, arg)| *arg == "--setting-sources").map(|(i, _)| i).collect();
+            assert_eq!(sources.len(), 1, "{provider}: {args:?}");
+            let expected = if provider == "claude" { "user" } else { "" };
+            assert_eq!(args[sources[0] + 1], expected, "{provider}");
+        }
+        let merged: Value = serde_json::from_str(&discovery_settings(Some(r#"{"env":{"A":"1"},"disableAllHooks":false}"#))).unwrap();
+        assert_eq!(merged, json!({"env": {"A": "1"}, "disableAllHooks": true}));
+        assert_eq!(discovery_settings(Some("not json")), r#"{"disableAllHooks":true}"#);
     }
 
     #[test]

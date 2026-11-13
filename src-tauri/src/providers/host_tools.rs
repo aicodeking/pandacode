@@ -249,7 +249,11 @@ impl Protocol {
             }
         };
         let protected = host.host.approval_tools.contains(&call.tool);
-        if protected && self.config.mode == "plan" {
+        if let Some(reason) = super::worker_tool_refusal(&self.config.session_id, &call.tool) {
+            // A team worker never gets an always-ask tool, however the harness words the prompt.
+            host.finish(&call.id);
+            step.write.push(reply(call.id, Err(reason)));
+        } else if protected && self.config.mode == "plan" {
             host.finish(&call.id);
             step.write.push(reply(
                 call.id,
@@ -286,6 +290,8 @@ impl Protocol {
         let due: Vec<String> = host.expires.iter().filter(|(_, at)| **at <= now).map(|(id, _)| id.clone()).collect();
         host.expires.retain(|_, at| *at > now);
         for id in due {
+            // An expired approval never reaches a decline: its reason would otherwise linger.
+            super::take_decline_reason(&self.config.session_id, &id);
             let Some(request) = self.pending.remove(&id) else { continue };
             if let Some(host) = &mut self.host {
                 host.finish(&request["id"]);
@@ -297,7 +303,15 @@ impl Protocol {
         }
         step
     }
+    /// A live decision (the user's, or PandaCode's for a team worker). One the protocol could not
+    /// apply is reported; the run's sink handles it (only a team worker's run acts on it) and
+    /// never saves or shows it.
     pub(super) fn approval_step(&mut self, id: &str, approved: bool) -> Step {
+        self.decision_step(id, approved, true)
+    }
+    /// `report`: whether a decision nothing can take is reported. The run's own cleanup
+    /// (`cancel_requests`) never reports one: nothing waits on it any more.
+    fn decision_step(&mut self, id: &str, approved: bool, report: bool) -> Step {
         let now = tokio::time::Instant::now();
         if self.host.as_ref().and_then(|host| host.expires.get(id)).is_some_and(|at| *at <= now) {
             return self.expire_approvals(now);
@@ -311,6 +325,7 @@ impl Protocol {
             .get(id)
             .is_some_and(|request| request["method"] == "item/tool/call")
         {
+            let declined = super::decline_text(&self.config.session_id, id);
             let request = self.pending.remove(id).unwrap();
             let Some(host) = &mut self.host else {
                 return step;
@@ -325,13 +340,18 @@ impl Protocol {
                 }
             } else {
                 host.finish(&request["id"]);
-                step.write.push(reply(
-                    request["id"].clone(),
-                    Err("Declined by the user".into()),
-                ));
+                step.write.push(reply(request["id"].clone(), Err(declined)));
             }
         } else if let Some(response) = self.approve(id, approved) {
             step.write.push(response);
+        } else if report && self.pending.contains_key(id) {
+            // The request is still waiting but nothing here can take this decision (Muse offered
+            // no matching choice): a team worker answered automatically would wait on it forever.
+            // A request already settled (cancelled by the harness, expired) needs nothing.
+            eprintln!("PandaCode: approval {id} could not be applied");
+            let mut event = self.event(UNANSWERED_APPROVAL, "", None);
+            event.request_id = Some(id.to_owned());
+            step.events.push(event);
         }
         step
     }
@@ -423,7 +443,7 @@ impl Protocol {
         let mut step = Step::default();
         let ids: Vec<_> = self.pending.keys().cloned().collect();
         for id in ids {
-            let mut declined = self.approval_step(&id, false);
+            let mut declined = self.decision_step(&id, false, false);
             step.write.append(&mut declined.write);
             let mut event = self.event("approval_cancelled", "", None);
             event.request_id = Some(id);
@@ -755,12 +775,14 @@ mod protocol_tests {
         assert!(p.expire_approvals(tokio::time::Instant::now()).write.is_empty(), "not yet");
         // The wait ran out.
         p.host.as_mut().unwrap().expires.insert(id.clone(), tokio::time::Instant::now());
+        super::super::set_decline_reason(&p.config.session_id, &id, "Declined: team workers cannot run it.");
         // An Approve that arrives after the wait (before the timer fires) is declined too.
         let late = p.approval_step(&id, true);
         assert!(late.calls.is_empty());
         assert_eq!(late.write[0]["result"]["success"], false);
         assert_eq!(late.events[0].kind, "approval_cancelled");
         assert!(p.approval_step(&id, true).calls.is_empty() && p.pending.is_empty());
+        assert!(super::super::take_decline_reason(&p.config.session_id, &id).is_none(), "an expired approval leaves no reason behind");
         assert_eq!(p.approval_deadline(), None);
         // Other tools keep waiting for the user.
         let mut p = protocol("ask", true);
@@ -782,6 +804,99 @@ mod protocol_tests {
         assert_eq!(cancel.write.len(), 1);
         assert_eq!(cancel.events[0].kind, "approval_cancelled");
         assert!(p.pending.is_empty());
+    }
+    #[test]
+    fn the_runs_own_cleanup_never_reports_an_unanswered_decision() {
+        // A Muse approval with no matching choice: nothing can take a decision on it.
+        let mut cfg = super::super::tests::config("muse");
+        cfg.mode = "ask".into();
+        let mut p = Protocol::new(cfg);
+        p.pending.insert("held".into(), json!({"method":"approval/request","params":{"availableChoices":[]}}));
+        assert_eq!(p.approval_step("held", true).events[0].kind, super::super::UNANSWERED_APPROVAL, "a live decision reports it");
+        let cleanup = p.cancel_requests();
+        assert!(cleanup.events.iter().all(|e| e.kind != super::super::UNANSWERED_APPROVAL), "{:?}", cleanup.events);
+        assert!(cleanup.events.iter().any(|e| e.kind == "approval_cancelled"));
+    }
+    #[test]
+    fn a_stale_decline_reason_from_another_run_never_relabels_a_decline() {
+        let mut p = protocol("ask", true);
+        let step = p.receive(request()).unwrap();
+        let id = step.events[0].request_id.clone().unwrap();
+        // A reason left by another task's run under the same harness ID.
+        super::super::set_decline_reason("another-session", &id, "Declined: team workers cannot run it.");
+        let declined = p.approval_step(&id, false);
+        let text = serde_json::to_string(&declined.write[0]).unwrap();
+        assert!(text.contains(super::super::USER_DECLINE) && !text.contains("team workers"), "{text}");
+        // A run's end drops its session's reasons.
+        super::super::forget_decline_reasons("another-session");
+        assert!(super::super::take_decline_reason("another-session", &id).is_none());
+    }
+    #[test]
+    fn a_decision_nothing_can_take_is_reported() {
+        // Still waiting, but Muse offers no matching choice: reported.
+        let mut cfg = super::super::tests::config("muse");
+        cfg.mode = "ask".into();
+        let mut p = Protocol::new(cfg);
+        p.pending.insert("held".into(), json!({"method":"approval/request","params":{"availableChoices":[]}}));
+        let step = p.approval_step("held", true);
+        assert!(step.write.is_empty() && step.calls.is_empty());
+        assert_eq!(step.events[0].kind, super::super::UNANSWERED_APPROVAL);
+        assert_eq!(step.events[0].request_id.as_deref(), Some("held"));
+        // A request that no longer exists is a no-op.
+        assert!(p.approval_step("gone", true).events.is_empty());
+    }
+    #[test]
+    fn a_decision_on_a_request_the_harness_already_settled_is_a_no_op() {
+        // The harness cancelled (or the wait expired) before the decision arrived.
+        let mut p = protocol("ask", true);
+        let step = p.receive(request()).unwrap();
+        let id = step.events[0].request_id.clone().unwrap();
+        p.pending.remove(&id);
+        let late = p.approval_step(&id, true);
+        assert!(late.events.iter().all(|e| e.kind != super::super::UNANSWERED_APPROVAL), "{:?}", late.events);
+        assert!(late.calls.is_empty());
+    }
+    #[test]
+    fn a_team_workers_always_ask_tool_is_refused_at_the_host_before_any_prompt() {
+        let session = format!("host-worker-{}", uuid::Uuid::new_v4());
+        let call = json!({"id":"rpc","method":"item/tool/call","params":{"threadId":"thread","turnId":"turn","namespace":null,"tool":"pandacode_cloud_cli","arguments":{},"callId":"call"}});
+        let protocol = |session: &str| {
+            let mut p = protocol("full", true);
+            p.config.session_id = session.into();
+            let mut tools = host(true);
+            tools.tools.push(json!({"type":"function","name":"pandacode_cloud_cli","description":"cloud","inputSchema":{"type":"object"}}));
+            tools.approval_tools.insert("pandacode_cloud_cli".into());
+            p.host = Some(HostTools::new(tools).unwrap());
+            p
+        };
+        // Not a worker: the always-ask tool still prompts in full access.
+        let step = protocol(&session).receive(call.clone()).unwrap();
+        assert_eq!(step.events[0].kind, "approval");
+        super::super::mark_worker_run(&session, "run", true);
+        let step = protocol(&session).receive(call).unwrap();
+        super::super::clear_worker_run(&session, "run");
+        assert!(step.events.is_empty() && step.calls.is_empty(), "{:?}", step.events);
+        let text = serde_json::to_string(&step.write[0]).unwrap();
+        assert!(text.contains("team workers cannot run pandacode_cloud_cli") && text.contains("ask your lead"), "{text}");
+    }
+    #[test]
+    fn a_team_worker_decline_carries_its_reason_and_a_user_decline_is_unchanged() {
+        let mut p = protocol("ask", true);
+        let step = p.receive(request()).unwrap();
+        let id = step.events[0].request_id.clone().unwrap();
+        let user = p.approval_step(&id, false);
+        let text = serde_json::to_string(&user.write[0]).unwrap();
+        assert!(text.contains(super::super::USER_DECLINE), "{text}");
+        let mut p = protocol("ask", true);
+        let step = p.receive(request()).unwrap();
+        let id = step.events[0].request_id.clone().unwrap();
+        let reason = "Declined: team workers cannot run pandacode_cloud_cli; ask your lead to run it or decide, then continue with the rest of your work.";
+        super::super::set_decline_reason(&p.config.session_id, &id, reason);
+        let worker = p.approval_step(&id, false);
+        let text = serde_json::to_string(&worker.write[0]).unwrap();
+        assert!(text.contains(reason) && !text.contains(super::super::USER_DECLINE), "{text}");
+        assert_eq!(worker.write[0]["result"]["success"], false);
+        assert!(super::super::take_decline_reason(&p.config.session_id, &id).is_none(), "claimed once");
     }
     #[test]
     fn question_reply_preserves_rpc_and_invalid_reply_keeps_pending_for_retry() {

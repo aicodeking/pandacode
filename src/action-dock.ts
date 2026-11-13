@@ -271,6 +271,7 @@ function placement(dock: HTMLElement, ready: () => void) {
 export function mountActionDock(dock: HTMLElement): void {
   let entered = false;
   const tip = tooltip(dock), pill = indicator(dock), place = placement(dock, () => { if (!entered) { entered = true; enterDock(dock); } });
+  let roveFrame = 0;
   const takeTitle = (item: HTMLElement) => { if (item.title) { item.dataset.dockTip = item.title; item.removeAttribute('title'); } };
   for (const item of buttons(dock)) takeTitle(item);
   // Panel toggles say whether their panel is on; a disclosure (aria-expanded) or popup trigger already says it its own way.
@@ -302,7 +303,9 @@ export function mountActionDock(dock: HTMLElement): void {
         else track(item, item.animate([{ opacity: 1, scale: 1, offset: 0 }], { duration: 150, easing: 'ease-out', pseudoElement: '::before' }), '::before');
       }
     }
-    if (structure) { rove(dock); place(); }
+    // The tab stop reads layout (dockItems): with focus elsewhere it waits for the next frame, past a thread switch's own
+    // layout, rather than force one in the task that changed the items.
+    if (structure) { if (dock.contains(document.activeElement)) { cancelAnimationFrame(roveFrame); roveFrame = 0; rove(dock); } else roveFrame ||= requestAnimationFrame(() => { roveFrame = 0; rove(dock); }); place(); }
   }).observe(dock, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class', 'title'], attributeOldValue: true });
 
   let keyboard = false;

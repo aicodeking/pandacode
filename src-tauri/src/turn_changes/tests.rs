@@ -235,6 +235,45 @@ fn symlink_targets_are_compared_without_reading_external_contents() {
     assert!(!got.details[0].patch.contains("secret never read"));
     assert!(got.details[0].patch.contains("different-target"));
 }
+#[cfg(unix)]
+#[test]
+fn hard_linked_files_are_listed_but_their_content_is_never_stored() {
+    let f = Fixture::new(false);
+    let outside = f.base.join("id_rsa");
+    fs::write(&outside, "PRIVATE KEY one\n").unwrap();
+    f.write("plain.txt", "one\n");
+    let got = capture(&f, || {
+        // An agent links a secret in under an ordinary name, then it changes.
+        fs::hard_link(&outside, f.root.join("notes.txt")).unwrap();
+        fs::write(&outside, "PRIVATE KEY two\n").unwrap();
+        f.write("plain.txt", "two\n");
+    });
+    let find = |name: &str| got.details.iter().find(|x| x.path == name).unwrap();
+    let linked = find("notes.txt");
+    assert!(linked.hard_linked() && linked.patch.is_empty() && linked.truncated, "{:?}", linked.error);
+    assert!(!find("plain.txt").hard_linked() && find("plain.txt").patch.contains("+two"));
+    let file = got.summary.files.iter().find(|x| x.path == "notes.txt").unwrap();
+    assert_eq!((file.status.as_str(), file.additions, file.binary), ("added", None, false));
+    // A file that was linked at the start and is modified in place keeps no "before" either.
+    let modified = capture(&f, || fs::write(&outside, "PRIVATE KEY three\n").unwrap());
+    assert_eq!(modified.details.len(), 1);
+    assert!(modified.details[0].hard_linked() && modified.details[0].patch.is_empty());
+    // Stored as JSON and read back, the marker survives (turn.diff refuses it).
+    let blob = serde_json::to_string(&modified.details[0]).unwrap();
+    assert!(!blob.contains("PRIVATE KEY"));
+    assert!(serde_json::from_str::<TurnChangeDiff>(&blob).unwrap().hard_linked());
+    // No snapshot copy of the linked content was written to the cache either.
+    let mut pending = vec![f.cache.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if entry.path().is_dir() {
+                pending.push(entry.path());
+            } else {
+                assert!(!fs::read(entry.path()).unwrap().starts_with(b"PRIVATE KEY"), "{:?}", entry.path());
+            }
+        }
+    }
+}
 
 #[test]
 fn bounded_myers_reconstructs_original_inputs_and_matches_minimum_edit_counts() {

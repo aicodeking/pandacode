@@ -125,11 +125,7 @@ impl Voice {
             false
         };
         if changed {
-            let message = error.replace(
-                "Retry to transcribe the captured audio",
-                "Choose Transcribe recording to send the captured audio",
-            );
-            self.emit(app, id, "error", 0.0, Some(&message));
+            self.emit(app, id, "error", 0.0, Some(error));
         }
     }
 

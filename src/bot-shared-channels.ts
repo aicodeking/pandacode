@@ -2,6 +2,7 @@ import type { Bot } from './bots';
 import { botAvatarHtml } from './bot-avatars';
 import { escape, icon } from './dom';
 import { WORKING_LABELS } from './bot-thread';
+import { errorText } from './error-text';
 
 export interface SharedChannelSummary {
   id: string;
@@ -33,6 +34,7 @@ export interface SharedChannelUiOptions {
   changed(): Promise<void>;
   openChannel(channelId: string): void;
   notify(text: string): void;
+  notifyError?(text: string): void;
 }
 
 const channelName = (name: string) => `#${name.replace(/^#+/, '')}`;
@@ -65,7 +67,7 @@ export function openCreateChannel(options: SharedChannelUiOptions): void {
       await options.changed();
       options.closeModal();
       options.openChannel(channel.id);
-    }).catch(error => options.notify(error instanceof Error ? error.message : String(error)));
+    }).catch(error => (options.notifyError ?? options.notify)(errorText(error)));
   });
   dialog.querySelector('[data-shared-action="cancel"]')?.addEventListener('click', options.closeModal);
 }
@@ -135,7 +137,7 @@ async function editChannel(options: SharedChannelUiOptions, channel: SharedChann
     void options.call('bot_shared_channel_update', { channelId: channel.id, name: String(data.get('name') ?? ''), memberIds, leadBotId }).then(async () => {
       options.closeModal();
       await options.changed();
-    }).catch(error => options.notify(error instanceof Error ? error.message : String(error))).finally(() => { if (save?.isConnected) save.disabled = false; });
+    }).catch(error => (options.notifyError ?? options.notify)(errorText(error))).finally(() => { if (save?.isConnected) save.disabled = false; });
   });
   dialog.querySelector('[data-shared-action="settings-cancel"]')?.addEventListener('click', options.closeModal);
 }
@@ -146,6 +148,6 @@ export async function openSharedChannel(channelId: string, options: SharedChanne
 
 export async function openSharedChannelSettings(channelId: string, options: SharedChannelUiOptions): Promise<void> {
   try { await editChannel(options, await options.call<SharedChannelDetail>('bot_shared_channel_detail', { channelId })); }
-  catch (error) { options.notify(error instanceof Error ? error.message : String(error)); }
+  catch (error) { (options.notifyError ?? options.notify)(errorText(error)); }
 }
 

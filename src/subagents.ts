@@ -7,6 +7,7 @@ import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './f
 import { renderToolActivity } from './tool-activity';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { SubagentActivity } from './types';
+import { errorText } from './error-text';
 
 /** `full` is false for a list row (`list_subagents`), which has no tools and a short preview. */
 type Entry = { value: SubagentActivity; revision: number; number: number; full: boolean };
@@ -16,6 +17,13 @@ const statusName = (agent: SubagentActivity) => ({ running: 'Working', waiting: 
 function agentName(entry: Entry): string {
   const name = entry.value.name.trim();
   return name && !/[\\/]/.test(name) && !/^(?:subagent|agent)$/i.test(name) ? name : `#${entry.number}`;
+}
+
+/** `tool_image` only authorizes paths from the main thread's tool records, not the subagents table, so a subagent's
+ *  viewed image would be a thumbnail that never loads: its row keeps the file name, with no button and no card. */
+function dropImageButtons(root: Element): void {
+  root.querySelectorAll('.tool-image-card').forEach(card => card.remove());
+  root.querySelectorAll('[data-tool-image]').forEach(button => button.remove());
 }
 
 /** Native keeps a child's newest tools up to this many (`CHILD_TOOL_LIMIT`). */
@@ -65,7 +73,7 @@ export class Subagents {
       },
       report: error => {
         const notice = this.panel?.querySelector<HTMLElement>('.subagent-action-notice');
-        if (notice) { notice.textContent = error instanceof Error ? error.message : String(error); notice.hidden = false; }
+        if (notice) { notice.textContent = errorText(error); notice.hidden = false; }
       },
     });
     // Capture Escape before the main task's stop shortcut or Board dismissal.
@@ -157,7 +165,7 @@ export class Subagents {
       if (value && known && known.revision <= revision && this.tasks.get(taskId) === task) this.upsert(task, value, revision, true);
     } catch (error) {
       const notice = this.panel?.querySelector<HTMLElement>('.subagent-action-notice');
-      if (notice && this.selected === agentId) { notice.textContent = `Couldn’t load this subagent’s full work: ${error instanceof Error ? error.message : String(error)}`; notice.hidden = false; }
+      if (notice && this.selected === agentId) { notice.textContent = `Couldn’t load this subagent’s full work: ${errorText(error)}`; notice.hidden = false; }
     } finally {
       if (this.fetching === agentId) this.fetching = '';
       if (taskId === this.sessionId) this.schedule();
@@ -314,6 +322,7 @@ export class Subagents {
           const template = document.createElement('template'); template.innerHTML = html;
           const next = template.content.firstElementChild as HTMLDetailsElement;
           next.dataset.snapshot = JSON.stringify(tool); next.open = old?.open ?? false;
+          dropImageButtons(next);
           const raw = next.querySelector<HTMLDetailsElement>('.tool-trace-raw');
           if (raw) raw.open = Boolean(old?.querySelector<HTMLDetailsElement>('.tool-trace-raw')?.open);
           const focusedIndex = old ? [...old.querySelectorAll('summary, pre')].findIndex(control => control === document.activeElement) : -1;

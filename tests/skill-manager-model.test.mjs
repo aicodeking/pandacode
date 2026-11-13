@@ -352,7 +352,7 @@ test('small text helpers', () => {
   assert.equal(errorText(new Error('boom')), 'boom');
   assert.equal(errorText('disk full'), 'disk full');
   assert.equal(errorText({ message: 'from IPC' }), 'from IPC');
-  assert.equal(errorText(42), 'Something went wrong. Try again.');
+  assert.equal(errorText({ code: 42 }), 'Something went wrong. Try again.');
 });
 
 // The browser preview mirrors normalize_source/validate_source in src-tauri/src/skill_manager{,/cli}.rs.

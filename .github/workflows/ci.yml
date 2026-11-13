@@ -8,7 +8,8 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Only a pull_request run is cancelled in progress by a newer run in its group; a running push or manual run is never cancelled (the release gate counts push runs on main), though a pending run waiting for the slot is still replaced by a newer one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   web:
     name: Typecheck, unit tests, website
@@ -35,7 +36,8 @@ jobs:
   rust:
     name: Rust check and tests (Linux)
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    # Tests and clippy, then the up-to-55-minute release smoke.
+    timeout-minutes: 120
     env:
       # Same x86_64 transcribe-cpp floor as the linux-x86_64 release row (see release.yml).
       TRANSCRIBE_CMAKE_ARGS: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON'
@@ -50,15 +52,36 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Install Linux native dependencies
+        # Normally ~30 s; a stalled mirror otherwise holds the job until its own timeout.
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils libasound2-plugins
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
       - run: npm ci
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - if: ${{ !cancelled() }}
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      # CI runners have no sound card, so ALSA's default can't capture and the smoke would skip. A
+      # null default captures silence, and its hint makes cpal list `default` as the default input.
+      # libasound2-plugins (installed above) defines `jack`, which lists with no JACK server, so the
+      # smoke also checks that dictation on a saved `jack` falls back to this default.
+      - name: Null ALSA default input
+        run: printf '%s\n' 'pcm.!default { type null; hint { show on; description "CI null capture" } }' > ~/.asoundrc
+      # The real audio smoke under the release profile, as in rust-platforms.
+      - name: Real audio smoke (release profile)
+        timeout-minutes: 55
+        env:
+          PANDACODE_REQUIRE_REAL_MIC: '1'
+        shell: bash
+        # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run,
+        # and require the jack/oss fallback line, which the test skips silently if jack is missing.
+        # `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
+        run: |
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/real-audio.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/real-audio.log"
+          grep -q 'fell back to the default input' "$RUNNER_TEMP/real-audio.log"
 
   router:
     # x86_64 Linux builds without ONNX Runtime (see `panda_onnx` in src-tauri/build.rs), so Panda Router's
@@ -101,7 +124,8 @@ jobs:
     # Linux job does not cover, so a platform-only break shows up in CI instead of first at release time.
     # Each row copies its release.yml build row: same runner and TRANSCRIBE_CMAKE_ARGS (see the comment
     # there; an empty value adds no CMake arguments). Clippy covers the same targets as the Linux job;
-    # tests stay on Linux. The Linux arm64 row installs the same native packages as the Linux job.
+    # tests stay on Linux, except the release-profile real-audio smoke (as in the Linux job) on macOS,
+    # Windows x64 and Linux arm64. The Linux arm64 row installs the same native packages as the Linux job.
     name: Rust clippy (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -119,7 +143,8 @@ jobs:
           # Linux arm64 pinned to plain ARMv8-A, never the runner's CPU.
           - { os: ubuntu-24.04-arm, target: linux-aarch64, transcribe_cmake: '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a' }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Clippy plus the up-to-75-minute release smoke on the rows that run it.
+    timeout-minutes: 120
     env:
       TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
     steps:
@@ -134,10 +159,42 @@ jobs:
           workspaces: src-tauri
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils libasound2-plugins
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
       - run: npm ci
+      # The release startup smoke flaked on windows-11-arm (cold Node starts), so its tests run there too.
+      - name: Release startup smoke tests (Windows arm64)
+        if: matrix.target == 'windows-aarch64'
+        run: node --test scripts/release/ci-startup-smoke.test.mjs
       - run: npm run build
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      # CI runners have no sound card, so ALSA's default can't capture and the smoke would skip. A
+      # null default captures silence, and its hint makes cpal list `default` as the default input.
+      # libasound2-plugins (installed above) defines `jack`, which lists with no JACK server, so the
+      # smoke also checks that dictation on a saved `jack` falls back to this default.
+      - name: Null ALSA default input
+        if: runner.os == 'Linux'
+        run: printf '%s\n' 'pcm.!default { type null; hint { show on; description "CI null capture" } }' > ~/.asoundrc
+      # The real audio stack under the shipped release profile: cpal 0.16's undefined behaviour only
+      # crashed optimised builds, so debug tests passed while the released app segfaulted.
+      # macOS and Linux require a recording; the Windows x64 runner may have no usable input, so there
+      # the smoke lists devices, opens the default if one exists, and passes without one.
+      - name: Real audio smoke (release profile)
+        if: runner.os == 'macOS' || matrix.target == 'windows-x86_64' || matrix.target == 'linux-aarch64'
+        # The release build alone took ~34 min on darwin-x86_64, and the whole step up to 43 min.
+        timeout-minutes: 75
+        # macOS runners have virtual inputs (Null Audio Device, Apple Virtual Sound Device) and Linux
+        # has the null default above, so a runner with no input must fail instead of passing.
+        env:
+          PANDACODE_REQUIRE_REAL_MIC: ${{ runner.os != 'Windows' && '1' || '' }}
+        shell: bash
+        # `--exact` passes a filter that matches nothing (`0 passed`), so require the one test to run;
+        # on Linux also require the jack/oss fallback line, which the test skips silently if jack is
+        # missing. `shell: bash` runs with `-eo pipefail`, so a cargo failure still fails through `tee`.
+        run: |
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib voice::tests::real_audio::real_audio_lists_opens_and_records -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/real-audio.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/real-audio.log"
+          if [ "$RUNNER_OS" = Linux ]; then grep -q 'fell back to the default input' "$RUNNER_TEMP/real-audio.log"; fi

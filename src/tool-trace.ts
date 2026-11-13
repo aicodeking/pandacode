@@ -1,30 +1,72 @@
 import type { ToolActivity } from './types';
-import { escape, icon } from './dom.ts';
 import { brandFor } from './trace-brands.ts';
-import { richCard } from './tool-cards.ts';
-import { pandacodeCard, pandacodeFamily, pandacodeTool, pandacodeTrace } from './tool-trace-pandacode.ts';
+import { pandacodeTool, pandacodeTrace } from './tool-trace-pandacode.ts';
+import { fieldsOf, normalizeTool } from './tool-names.ts';
+import { parseFields, type Fields } from './tool-fields.ts';
+import { ROW_TEXT, basename, clip, lines, strings, unwrapHarness } from './tool-text.ts';
+import {
+  blockedVerb, editFailureReason, isBlockedOutput, isDeniedOutput, isInterruptedOutput, unavailableToolName, withoutInterrupt,
+} from './tool-trace-errors.ts';
+import { exitCode, missingProgram, neverStarted, searchFoundNothing, unknownToolName, type ExitAnswer } from './tool-trace-outcome.ts';
+import {
+  backgroundedShell, harnessUnstarted, interruptedShell, refusedShell, signalStop, stoppedShell, timedOutShell,
+} from './tool-trace-refusal.ts';
+export { exitCode };
+import { pandacodeImage, shellTrace, specialKind, specialTrace } from './tool-trace-intent.ts';
+import { describeShell } from './shell-intent.ts';
+import { isHomeConfig, isSystemPath, overwroteConfig, overwroteSystem, risksOf } from './shell-intent-risk.ts';
+import { FAILED_CHECKS } from './tool-trace-shell.ts';
+export { parseFields, type Fields };
+export { traceRowHtml } from './tool-trace-row.ts';
+export { groupTallies, summarizeGroup, summarizeTools, summaryIcons } from './tool-trace-summary.ts';
+export {
+  COMPLETE, PARTIAL, badge, excerptCard, head, kvTable, linesPre, list, mcpCard, resultCard, searchCard, section, summarizeValue, terminalCard,
+  toolPreview, type ListItem,
+} from './tool-trace-cards.ts';
 
 /** Sentence-style tool traces: `Verb [chip] object` rows, result cards and group summaries. Pure and escaped. */
-export type TraceKind = 'shell' | 'read' | 'edit' | 'write' | 'search' | 'web' | 'fetch' | 'todo' | 'agent' | 'skill' | 'mcp' | 'tool';
+export type TraceKind = 'shell' | 'read' | 'image' | 'edit' | 'write' | 'search' | 'web' | 'fetch' | 'todo' | 'agent' | 'skill' | 'mcp' | 'tool';
 /** `svg` is a brand mark (trusted markup from trace-brands), the only mark drawn inside the chip. */
 export type TraceChip = { icon: string; label: string; title: string; svg?: string };
-/** `family` tints the row icon (PandaCode tool families, `agent`, `mcp`); `icon` overrides the kind's icon (an MCP search reads as a search). */
-export type Trace = { kind: TraceKind; verb: string; chip?: TraceChip; object: string; mono?: boolean; added?: number; removed?: number; family?: string; icon?: string; exit?: number };
+/** `family` tints the row icon (PandaCode tool families, `agent`, `mcp`); `icon` overrides the kind's icon (an MCP search reads as a search).
+ *  `image` is a viewed image's path (an inline thumbnail), `chips` several chips in place of `chip`, `quiet` a housekeeping row drawn faint,
+ *  `destructive` a shell command that discards work (a quiet danger badge). */
+export type Trace = {
+  kind: TraceKind; verb: string; object: string; mono?: boolean;
+  chip?: TraceChip; chips?: TraceChip[]; image?: string; quiet?: boolean; destructive?: boolean;
+  added?: number; removed?: number; family?: string; icon?: string; exit?: number;
+} & TraceExtras;
+/** `more` is a muted `+2 more commands` after the sentence, `chipLast` puts the chip after the object (`Searched for "x" in [src]`),
+ *  `risks` say why a destructive command is (highest first; the badge's tooltip), `note` is free text (a summary, a prompt)
+ *  drawn after a separator as a muted quote, `title` the row's tooltip (a Bash call's own description), `blocked` a call the
+ *  harness refused before it ran (`Blocked: read a.txt`, drawn quiet), `produced` an image a command wrote (its thumbnail beside the chip or object
+ *  that names it, else after the sentence and before the badges; tool-trace-row.ts). */
+export type TraceExtras = {
+  more?: string; chipLast?: boolean; risks?: string[]; note?: string; title?: string; blocked?: boolean; produced?: string;
+  /** A compound command that failed after its lead step: the verb is the lead's, the badge says `then failed`. */
+  then?: boolean;
+  /** Several chips read as a list (`Ran [python3] and [grep]`), not side by side. */
+  joined?: boolean;
+  /** A check that exited 0 (a pipe's last stage did) whose output says it failed (`Tests failed · 3 of 12`). */
+  outputFailed?: boolean;
+  /** Why a call wrote or ran nothing (`string to replace not found`, `disk is full`): a muted note after the sentence. */
+  reason?: string;
+  /** The turn ended before the call reported (`Interrupted: [npm] test`): quiet, neither a success nor a failure. */
+  interrupted?: boolean;
+  /** The count or answer this code appended to `object` after ` · ` (`no matches`, `3 files`): the row gives only it the tally
+   *  span, so a ` · ` inside the object's own text (a quoted query) never splits it. */
+  tally?: string;
+};
 export type Tool = Pick<ToolActivity, 'name' | 'status' | 'input' | 'output'>;
-export type Fields = Record<string, unknown>;
 
-const MAX_SCAN = 20_000;
-const MAX_TEXT = 140;
-const LIST_ITEMS = 6;
-const PREVIEW_LINES = 8;
-const DIFF_LINES = 14;
-const MCP_ROWS = 3;
+export const MAX_SCAN = 20_000;
 const OMITTED = '[Non-text content omitted]';
 
 // [running verb, finished verb, row icon, summary noun singular, plural]
 const KINDS: Record<TraceKind, [string, string, string, string, string]> = {
   shell: ['Running', 'Ran', 'terminal', 'command', 'commands'],
   read: ['Reading', 'Read', 'file', 'file', 'files'],
+  image: ['Viewing', 'Viewed', 'images', 'image', 'images'],
   edit: ['Editing', 'Edited', 'edit', 'file', 'files'],
   write: ['Writing', 'Wrote', 'plus', 'file', 'files'],
   search: ['Searching', 'Searched', 'search', 'search', 'searches'],
@@ -36,10 +78,9 @@ const KINDS: Record<TraceKind, [string, string, string, string, string]> = {
   mcp: ['Using', 'Used', 'server', 'tool', 'tools'],
   tool: ['Using', 'Used', 'command', 'tool', 'tools'],
 };
-// Summary phrasing: searches read as "Ran 2 searches" like the reference, the rest keep their row verb.
-const SUMMARY_VERB: Partial<Record<TraceKind, [string, string]>> = { search: ['Running', 'Ran'], web: ['Running', 'Ran'] };
-
 export function kindIcon(kind: TraceKind): string { return KINDS[kind][2]; }
+/** A kind's [running verb, finished verb, singular noun, plural noun] for group summaries (tool-trace-summary.ts). */
+export function kindNouns(kind: TraceKind): [string, string, string, string] { const [now, done, , one, many] = KINDS[kind]; return [now, done, one, many]; }
 export function traceIcon(trace: Trace): string { return trace.icon ?? kindIcon(trace.kind); }
 
 /** Like clip, but keeps line breaks for multi-line prose. */
@@ -47,27 +88,17 @@ export function clipText(value: string, limit: number): string {
   const trimmed = value.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   return trimmed.length > limit ? trimmed.slice(0, limit - 1) + '…' : trimmed;
 }
-export function clip(value: string, limit = MAX_TEXT): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  return flat.length > limit ? flat.slice(0, limit - 1) + '…' : flat;
+export { basename, clip, lines };
+export function text(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return Array.isArray(value) && value.every(part => typeof part === 'string') ? value.join(' ') : '';
 }
-export function basename(path: string): string { return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path; }
-export function text(value: unknown): string { return typeof value === 'string' ? value : Array.isArray(value) && value.every(part => typeof part === 'string') ? value.join(' ') : ''; }
 export function field(fields: Fields, ...keys: string[]): string {
   for (const key of keys) { const value = text(fields[key]); if (value) return value; }
   return '';
 }
-export function lines(value: string): string[] { return value ? value.replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n') : []; }
-function cleanOutput(output: string): string { return output.trim() === OMITTED ? '' : output.slice(0, MAX_SCAN); }
+export function cleanOutput(output: string): string { return output.trim() === OMITTED ? '' : unwrapHarness(output.slice(0, MAX_SCAN)); }
 
-export function parseFields(input: string): Fields {
-  const value = input.slice(0, MAX_SCAN).trim();
-  if (!value.startsWith('{')) return {};
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Fields : {};
-  } catch { return {}; }
-}
 
 /** Any JSON value, or undefined for text. */
 export function parseJson(value: string): unknown {
@@ -94,9 +125,21 @@ export function toolKind(name: string): TraceKind {
   return 'tool';
 }
 
+/** The kind of a recorded call: its canonical name (tool-names.ts), images it looked at, then the name's own kind. */
+export function traceKind(tool: Tool): TraceKind {
+  const normal = normalizeTool(tool);
+  return specialKind(normal) ?? toolKind(normal.name);
+}
+
+/** Codex's plain-text command line: every line of it (a heredoc's body included) less the trailing `Working directory: …`. */
+export function plainCommand(input: string): string {
+  const trimmed = input.trim();
+  return trimmed.startsWith('{') ? '' : trimmed.replace(/\n+Working directory: [^\n]*$/, '');
+}
+
 /** Codex records plain text: `/bin/zsh -lc "cmd"\nWorking directory: …`. */
 export function shellCommand(input: string, fields: Fields): string {
-  const command = field(fields, 'command', 'cmd') || (input.trim().startsWith('{') ? '' : input.trim().split('\n', 1)[0] ?? '');
+  const command = field(fields, 'command', 'cmd') || plainCommand(input);
   const wrapped = /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(command.trim());
   return (wrapped ? wrapped[2] : command).trim();
 }
@@ -105,16 +148,23 @@ export function domain(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return clip(url, 60); }
 }
 
-function editLines(fields: Fields): { old: string; new: string }[] {
+export function editLines(fields: Fields): { old: string; new: string }[] {
   const edits = Array.isArray(fields.edits) ? fields.edits as Fields[] : [fields];
   return edits.filter(edit => edit && typeof edit === 'object')
-    .map(edit => ({ old: field(edit, 'old_string', 'oldText', 'old_str'), new: field(edit, 'new_string', 'newText', 'new_str', 'content') }));
+    .map(edit => ({ old: field(edit, 'old_string', 'oldText', 'old_str', 'find'), new: field(edit, 'new_string', 'newText', 'new_str', 'content', 'replace') }));
 }
-function diffCounts(fields: Fields): { added: number; removed: number } {
-  return editLines(fields).reduce((sum, edit) => ({ added: sum.added + lines(edit.new).length, removed: sum.removed + lines(edit.old).length }), { added: 0, removed: 0 });
+/** The +/− delta: recorded counts, a patch's lines, or old/new text; nothing when unknown (a cut record), never a false +0 −0. */
+function diffCounts(fields: Fields): { added?: number; removed?: number } {
+  if (typeof fields._added === 'number' && typeof fields._removed === 'number') return { added: fields._added, removed: fields._removed };
+  if (fields._partial === true) return {};
+  const patch = lines(field(fields, 'patch', 'diff', 'input')).filter(line => !/^(\+\+\+|---|\*\*\*) /.test(line));
+  if (patch.length) return { added: patch.filter(line => line.startsWith('+')).length, removed: patch.filter(line => line.startsWith('-')).length };
+  const edits = editLines(fields);
+  if (edits.every(edit => !edit.old && !edit.new)) return {};
+  return edits.reduce((sum, edit) => ({ added: sum.added + lines(edit.new).length, removed: sum.removed + lines(edit.old).length }), { added: 0, removed: 0 });
 }
 
-function filePath(input: string, fields: Fields): string {
+export function filePath(input: string, fields: Fields): string {
   return field(fields, 'file_path', 'path', 'filePath', 'target_file') || (input.trim().startsWith('{') ? '' : input.trim().split('\n', 1)[0] ?? '');
 }
 
@@ -123,8 +173,17 @@ function fileChip(path: string): TraceChip | undefined {
 }
 
 const MCP_VERB = '(search|find|query|lookup|get|list|read|fetch|retrieve|view|show|load)';
-/** What an MCP tool does, from its name: `search_messages` searches, `list_issues` reads. */
-export function mcpAction(tool: string): 'search' | 'read' | undefined {
+/** `deleteFile`, `delete-file` → `delete_file`: one word separator for the patterns below. */
+const snake = (tool: string) => tool.replace(/([a-z\d])([A-Z])/g, '$1_$2').replace(/-/g, '_');
+const word = (words: string) => new RegExp(`(?:^|_)(?:${words})(?:_|$)`, 'i');
+/** Words that lose data: the row gets the destructive badge. */
+const MCP_DESTROYS = word('delete|drop|destroy|remove|purge|wipe|truncate');
+/** Words that change anything: such a tool never reads as a search or a read (`lookup_delete`, `find_and_replace`). */
+const MCP_CHANGES = word('delete|remove|drop|destroy|purge|wipe|truncate|update|create|replace|write|set|put|patch|insert|execute|exec|run|send|post|push|merge|move|rename');
+/** What an MCP tool does, from its name: `search_messages` searches, `list_issues` reads; one that changes anything, neither. */
+export function mcpAction(name: string): 'search' | 'read' | undefined {
+  const tool = snake(name);
+  if (MCP_CHANGES.test(tool)) return;
   if (/(^|_)(search|find|query|lookup)(_|$)/i.test(tool)) return 'search';
   if (new RegExp(`(^|_)${MCP_VERB}(_|$)`, 'i').test(tool)) return 'read';
   return;
@@ -141,76 +200,240 @@ export function mcpParts(name: string): { server: string; tool: string } {
   return { server: 'MCP', tool: name };
 }
 
-function describeFields(kind: TraceKind, name: string, input: string, fields: Fields, running: boolean, output: string): Omit<Trace, 'kind' | 'verb'> & { verb?: string } {
-  switch (kind) {
-    case 'shell': {
-      const command = shellCommand(input, fields);
-      const [program = '', ...rest] = command.split(/\s+/);
-      // A VM command names its machine, so identical commands on different machines stay apart.
-      const target = /vm_exec$/.test(name) ? field(fields, 'name', 'vm', 'id') : '';
-      const where = target ? ` · on ${target}` : '';
-      return program ? { chip: { icon: 'terminal', label: basename(program), title: command }, object: clip(rest.join(' ')) + where, mono: true } : { object: field(fields, 'description') + where };
-    }
-    case 'read': case 'write': {
-      const path = filePath(input, fields);
-      const content = field(fields, 'content', 'contents');
-      const count = lines(content).length;
-      return { chip: fileChip(path), object: kind === 'write' && content ? `${count} ${count === 1 ? 'line' : 'lines'}` : '' };
-    }
-    case 'edit': {
-      const path = field(fields, 'file_path', 'path', 'filePath', 'target_file');
-      return { chip: fileChip(path), object: '', ...diffCounts(fields) };
-    }
-    case 'search': {
-      const where = field(fields, 'path', 'directory', 'target_directory');
-      const pattern = field(fields, 'pattern', 'query', 'glob', 'regex');
-      const glob = /glob|ls|list/.test(name.toLowerCase());
-      return { chip: { icon: glob ? 'folder' : 'search', label: where ? basename(where) : 'workspace', title: where || 'workspace' }, object: pattern ? `${glob ? 'for files matching' : 'for'} ${clip(pattern, 80)}` : '' };
-    }
-    case 'web': return { chip: { icon: 'globe', label: 'Web', title: 'Web search' }, object: field(fields, 'query', 'q') ? `for ${clip(field(fields, 'query', 'q'))}` : '' };
-    case 'fetch': {
-      const url = field(fields, 'url');
-      return { chip: url ? { icon: 'globe', label: domain(url), title: url, svg: brandFor(url)?.svg } : undefined, object: clip(field(fields, 'prompt'), 90) };
-    }
-    case 'todo': {
-      const todos = Array.isArray(fields.todos) ? fields.todos.length : Array.isArray(fields.plan) ? fields.plan.length : 0;
-      return { object: todos ? `the plan · ${todos} ${todos === 1 ? 'step' : 'steps'}` : 'the plan' };
-    }
-    case 'agent': {
-      const type = field(fields, 'subagent_type', 'agent_type', 'agent', 'name');
-      return { family: 'agent', chip: { icon: 'bot', label: type || 'agent', title: type || 'agent' }, object: clip(field(fields, 'description', 'objective', 'prompt', 'message') || (input.trim().startsWith('{') ? '' : input), 90) };
-    }
-    case 'skill': {
-      const skill = field(fields, 'skill', 'name', 'command');
-      return { verb: running ? 'Loading skill' : 'Loaded skill', chip: skill ? { icon: 'spark', label: skill, title: skill } : undefined, object: clip(field(fields, 'args', 'arguments'), 80), mono: true };
-    }
-    case 'mcp': {
-      const own = pandacodeTool(name);
-      if (own) return pandacodeTrace(own, fields, output, running) ?? { family: 'pandacode', chip: { icon: 'server', label: 'PandaCode', title: name }, object: own.replace(/_/g, ' ') };
-      const { server, tool } = mcpParts(name);
-      const brand = brandFor(server);
-      const chip = { icon: 'server', label: brand?.label ?? server, title: name, svg: brand?.svg };
-      const action = mcpAction(tool);
-      const query = clip(field(fields, 'query', 'q', 'search', 'filter'), 80);
-      if (action === 'search') return { verb: running ? 'Searching' : 'Searched', family: 'mcp', icon: 'search', chip, object: `for ${query || mcpNoun(tool)}` };
-      if (action === 'read') return { verb: running ? 'Reading the' : 'Read the', family: 'mcp', icon: 'file', chip, object: query || mcpNoun(tool) };
-      return { family: 'mcp', chip, object: tool.replace(/_/g, ' ') };
-    }
-    default: return { chip: { icon: 'command', label: name || 'Tool', title: name || 'Tool' }, object: inputHint(input) };
+/** `settled` marks a verb that already reads as the outcome (`Tests failed`), which a failure must not rewrite to `Couldn't …`. */
+type Parts = Omit<Trace, 'kind' | 'verb'> & { verb?: string; settled?: boolean };
+/** One kind's row parts. `failed` asks for the present-tense verb, which describeTool turns into `Couldn't …`. */
+type Describe = (call: { kind: TraceKind; name: string; input: string; fields: Fields; failed: boolean; output: string; status?: Tool['status'] }) => Parts;
+const tense = (failed: boolean, present: string, past: string) => failed ? present : past;
+const plural = (count: number, one: string) => `${count} ${count === 1 ? one : one + 's'}`;
+
+function describeShellRow({ name, input, fields, failed, output, status }: Parameters<Describe>[0]): Parts {
+  const command = shellCommand(input, fields);
+  const program = command.split(/\s/, 1)[0] ?? '';
+  // A VM command names its machine, so identical commands on different machines stay apart.
+  const target = /vm_exec$/.test(name) ? field(fields, 'name', 'vm', 'id') : '';
+  const where = (target ? ` · on ${target}` : '') + (fields.run_in_background === true ? ' · in background' : '');
+  const raw = field(fields, 'command', 'cmd') || plainCommand(input);
+  // The output picks a compound's test step, and a nonzero exit lets a failed test run read `Tests failed`, not `Couldn't run tests`.
+  const { code, body } = exitCode(output);
+  const nonzero = failed || (code !== undefined && code !== 0);
+  const description = field(fields, 'description');
+  // Devin's `workdir`, Codex's `Working directory:` line: where a relative image the command wrote lives.
+  const cwd = field(fields, 'workdir', 'cwd') || (/\nWorking directory: ([^\n]+)\s*$/.exec(input)?.[1] ?? '').trim();
+  const intent = shellTrace(command, failed, where, raw, { output: body, nonzero, description, code, inspect: status === 'completed' && !nonzero, cwd });
+  const title = description ? { title: description } : {};
+  if (intent) return { ...intent, ...title };
+  if (!program) return { object: description + where };
+  const chip = { icon: 'terminal', label: basename(program), title: command };
+  // Claude's own description says more than raw arguments; the card keeps the command.
+  if (description) return { chip, object: where, note: clip(description, ROW_TEXT), ...title };
+  return { chip, object: clip(command.slice(program.length), ROW_TEXT) + where, mono: true, ...title };
+}
+
+/** `lines 12–36`, `+1 more file`: what a read names beyond its first file. */
+function readObject(fields: Fields): string {
+  const more = Array.isArray(fields.files) ? fields.files.length - 1 : 0;
+  if (more > 0) return `+${more} more ${more === 1 ? 'file' : 'files'}`;
+  // Devin's `Read lines 871, 873, 1025 in …` names lines that are no one range.
+  if (typeof fields._lines === 'string' && fields._lines) return `lines ${fields._lines}`;
+  // Kimi records its range as `line_offset` and `n_lines`.
+  const offset = fields.offset ?? fields.line_offset;
+  const limit = fields.limit ?? fields.n_lines;
+  return typeof offset === 'number' && typeof limit === 'number' && offset > 1 ? `lines ${offset}–${offset + limit - 1}` : '';
+}
+
+function describeFile({ kind, input, fields }: Parameters<Describe>[0]): Parts {
+  const path = filePath(input, fields);
+  // A record cut before its path (or with none) still says what it did: `Wrote a file`.
+  if (!path) return { object: 'a file' };
+  if (kind === 'read') return { chip: fileChip(path), object: readObject(fields) };
+  const content = field(fields, 'content', 'contents');
+  const count = lines(content).length;
+  const more = fields._partial === true ? '+' : '';
+  // `· 46+ lines`: a count after a separator, so it never runs into the file name or reads as a +/− delta.
+  return { chip: fileChip(path), object: content ? `· ${count}${more} ${count === 1 && !more ? 'line' : 'lines'}` : '', ...(kind === 'write' ? writeRisks(path) : {}) };
+}
+
+/** Legacy Codex `Update files` that only created or only deleted files (tool-trace-legacy.ts's `_action`). */
+const EDIT_ACTIONS: Record<string, [string, string]> = { add: ['Creating', 'Created'], delete: ['Deleting', 'Deleted'] };
+
+function describeEdit({ fields, failed }: Parameters<Describe>[0]): Parts {
+  const path = field(fields, 'file_path', 'path', 'filePath', 'target_file');
+  const more = Array.isArray(fields.files) ? fields.files.length - 1 : 0;
+  const action = typeof fields._action === 'string' ? EDIT_ACTIONS[fields._action] : undefined;
+  const verb = action ? { verb: tense(failed, action[0], action[1]) } : {};
+  return { ...verb, chip: fileChip(path), object: more > 0 ? `+${more} more ${more === 1 ? 'file' : 'files'}` : '', ...diffCounts(fields) };
+}
+
+/** Where a search looked: its folder or file, its `paths` (one by name, more as `N paths`), else its `include` filter. */
+function searchPlace(fields: Fields): TraceChip | undefined {
+  const one = field(fields, 'path', 'directory', 'target_directory', 'dir_path');
+  if (one) return { icon: 'folder', label: basename(one) || one, title: one };
+  const paths = strings(fields.paths);
+  if (paths.length > 1) return { icon: 'folder', label: `${paths.length} paths`, title: paths.join(', ') };
+  if (paths.length === 1) return { icon: 'folder', label: basename(paths[0]) || paths[0], title: paths[0] };
+  const include = field(fields, 'include', 'file_pattern');
+  return include ? { icon: 'folder', label: clip(include, 40), title: include } : undefined;
+}
+/** `“pattern”`, without adding quotes to a pattern that has its own. */
+export function quotedPattern(pattern: string, limit = ROW_TEXT): string {
+  const shown = clip(pattern, limit);
+  return /["“”]/.test(pattern) ? shown : `“${shown}”`;
+}
+
+/** `Searched for "x" in [src]`, `Found files matching *.ts in [src]`, `Listed [folder]`: one wording for every provider. */
+/** Claude's Grep and Glob report what they found on the first line: `No files found` → `no matches`, `Found 3 files` → `3 files`. */
+function searchTally(output: string): string {
+  const first = output.trimStart().split('\n', 1)[0].trim();
+  if (/^No (?:files|matches) found$/i.test(first)) return ' · no matches';
+  const files = /^Found (\d+) (files?)$/i.exec(first);
+  return files ? ` · ${files[1]} ${files[2].toLowerCase()}` : '';
+}
+
+function describeSearch({ name, fields, failed, output }: Parameters<Describe>[0]): Parts {
+  const lower = name.toLowerCase();
+  // A directory listing names its folder; there is nothing it searched for.
+  if (/^(ls|list|list_dir)$/.test(lower)) {
+    const where = field(fields, 'path', 'directory', 'target_directory');
+    const more = Array.isArray(fields.paths) ? fields.paths.length - 1 : 0;
+    const chip = { icon: 'folder', label: where ? basename(where) : 'workspace', title: where || 'workspace' };
+    return { verb: tense(failed, 'Listing', 'Listed'), chip, object: more > 0 ? `+${more} more ${more === 1 ? 'folder' : 'folders'}` : '', icon: 'folder' };
   }
+  const place = searchPlace(fields);
+  const pattern = field(fields, 'pattern', 'query', 'glob', 'regex');
+  const glob = /glob|^find$|file_search/.test(lower);
+  const what = !pattern ? '' : glob ? `files matching ${quotedPattern(pattern)}` : `for ${quotedPattern(pattern)}`;
+  const tally = failed ? '' : searchTally(output);
+  const object = [what, place ? 'in' : ''].filter(Boolean).join(' ') + tally;
+  return { ...(glob ? { verb: tense(failed, 'Finding', 'Found') } : {}), chip: place, chipLast: true, object, icon: 'search', ...(tally ? { tally: tally.slice(3) } : {}) };
+}
+
+/** A web query always reads inside curly quotes, its own quotes kept (`for “tauri "drag drop" macos”`). */
+function webQuote(query: string): string {
+  const whole = /^["“]([^"“”]*)["”]$/.exec(query.trim());
+  return `“${clip(whole ? whole[1] : query, ROW_TEXT)}”`;
+}
+/** `/path?q=1` of a URL, '' for a site's root. */
+function urlPath(url: string): string {
+  try { const { pathname, search } = new URL(url); return pathname === '/' && !search ? '' : clip(pathname + search, ROW_TEXT); } catch { return ''; }
+}
+const urlChip = (url: string): TraceChip => ({ icon: 'globe', label: domain(url), title: url, svg: brandFor(url)?.svg });
+
+/** Codex's `action` on a web_search: `Opened [example.com] /path`, `Searched [example.com] for “foo”`; undefined for a search. */
+function webAction(action: Fields, failed: boolean): Parts | undefined {
+  const url = field(action, 'url');
+  const type = field(action, 'type');
+  const others = typeof action.others === 'number' && action.others > 0 ? { more: `+${action.others} more` } : {};
+  if (url && type === 'openPage') return { verb: tense(failed, 'Opening', 'Opened'), chip: urlChip(url), object: urlPath(url), icon: 'external', ...others };
+  const clicks = typeof action.clicks === 'number' ? action.clicks : 0;
+  if (type === 'click' && clicks) return { verb: tense(failed, 'Following', 'Followed'), object: plural(clicks, 'link'), icon: 'external' };
+  if (!url || type !== 'findInPage') return undefined;
+  const pattern = field(action, 'pattern');
+  return { verb: tense(failed, 'Searching', 'Searched'), chip: urlChip(url), object: pattern ? `for ${webQuote(pattern)}` : '', icon: 'search' };
+}
+
+function describeWeb({ fields, failed }: Parameters<Describe>[0]): Parts {
+  const action = fields.action && typeof fields.action === 'object' && !Array.isArray(fields.action) ? fields.action as Fields : {};
+  const acted = webAction(action, failed);
+  if (acted) return acted;
+  const queries = strings(action.queries);
+  // Codex's legacy `webSearch` items kept no query.
+  const query = field(fields, 'query', 'q') || field(action, 'query') || queries[0] || '';
+  const extra = queries.length - 1;
+  const more = extra > 0 ? { more: `+${extra} more ${extra === 1 ? 'query' : 'queries'}` } : {};
+  return { verb: tense(failed, 'Searching the web', 'Searched the web'), object: query ? `for ${webQuote(query)}` : '', ...more };
+}
+
+function describeFetch({ fields }: Parameters<Describe>[0]): Parts {
+  const url = field(fields, 'url');
+  return { chip: url ? { icon: 'globe', label: domain(url), title: url, svg: brandFor(url)?.svg } : undefined, object: '', note: clip(field(fields, 'prompt'), ROW_TEXT) };
+}
+
+function describeTodo({ fields }: Parameters<Describe>[0]): Parts {
+  const todos = Array.isArray(fields.todos) ? fields.todos.length : Array.isArray(fields.plan) ? fields.plan.length : 0;
+  return { object: todos ? `the plan · ${plural(todos, 'step')}` : 'the plan' };
+}
+
+function describeAgent({ input, fields }: Parameters<Describe>[0]): Parts {
+  const type = field(fields, 'subagent_type', 'agent_type', 'agent', 'name');
+  const what = field(fields, 'description', 'objective', 'prompt', 'message') || (input.trim().startsWith('{') ? '' : input);
+  return { family: 'agent', chip: { icon: 'bot', label: type || 'agent', title: type || 'agent' }, object: clip(what, ROW_TEXT) };
+}
+
+function describeSkill({ fields, failed }: Parameters<Describe>[0]): Parts {
+  const skill = field(fields, 'skill', 'name', 'command');
+  const chip = skill ? { icon: 'spark', label: skill, title: skill } : undefined;
+  // One token (`src/lib`, `--fix`) is code; words are prose, quoted after a separator (`· “Read-only review”`).
+  const args = clip(field(fields, 'args', 'arguments'), ROW_TEXT);
+  return { verb: tense(failed, 'Loading skill', 'Loaded skill'), chip, ...(/\s/.test(args) ? { object: '', note: args } : { object: args, mono: true }) };
+}
+
+function describeMcp({ name, fields, failed, output }: Parameters<Describe>[0]): Parts {
+  const own = pandacodeTool(name);
+  if (own) return pandacodeTrace(own, fields, output, failed) ?? { family: 'pandacode', chip: { icon: 'server', label: 'PandaCode', title: name }, object: own.replace(/_/g, ' ') };
+  const { server, tool } = mcpParts(name);
+  const brand = brandFor(server);
+  const chip = { icon: 'server', label: brand?.label ?? server, title: name, svg: brand?.svg };
+  const danger = mcpRisks(server, tool, fields);
+  if (danger.length) return { family: 'mcp', chip, object: tool.replace(/_/g, ' '), destructive: true, risks: danger };
+  const action = mcpAction(tool);
+  const query = clip(field(fields, 'query', 'q', 'search', 'filter'), ROW_TEXT);
+  if (action === 'search') return { verb: tense(failed, 'Searching', 'Searched'), family: 'mcp', icon: 'search', chip, object: `for ${query ? webQuote(query) : mcpNoun(tool)}` };
+  if (action === 'read') return { verb: tense(failed, 'Reading the', 'Read the'), family: 'mcp', icon: 'file', chip, object: query || mcpNoun(tool) };
+  return { family: 'mcp', chip, object: tool.replace(/_/g, ' ') };
+}
+
+/** Why an MCP call loses data: a deleting tool name (`delete_repository`), or SQL that drops or deletes, read by the
+ *  shell's own database rule (shell-intent-system.ts) as if `psql -c` ran it. */
+function mcpRisks(server: string, tool: string, fields: Fields): string[] {
+  const named = MCP_DESTROYS.test(snake(tool)) ? [`Deletes data: ${server} ${tool}`] : [];
+  const sql = field(fields, 'query', 'sql', 'statement').trim();
+  if (!sql) return named;
+  const quoted = `'${sql.slice(0, 2000).replace(/'/g, `'\\''`)}'`;
+  const shown = clip(sql.replace(/\s+/g, ' '), 80);
+  const fromShell = describeShell(`psql -c ${quoted}`).risks.map(risk => `${risk.split(': ', 1)[0]}: ${shown}`);
+  // ponytail: ALTER … DROP is not in the shell's SQL rule yet; move it there when shell-intent-system.ts is next touched.
+  const altered = !fromShell.length && /\bALTER\s+TABLE\b[\s\S]*?\bDROP\b/i.test(sql) ? [`Drops a column: ${shown}`] : [];
+  return [...named, ...fromShell, ...altered];
+}
+
+/** A Write over a dotfile or a system file carries the risk the shell gives `echo x > ~/.zshrc` (shell-intent-risk.ts). */
+function writeRisks(path: string): Pick<Parts, 'destructive' | 'risks'> {
+  const described = isSystemPath(path) ? overwroteSystem(path, 'Overwrote', path) : isHomeConfig(path) ? overwroteConfig(path, path) : undefined;
+  const risks = described ? risksOf(described).map(risk => risk.text) : [];
+  return risks.length ? { destructive: true, risks } : {};
+}
+
+const DESCRIBE: Partial<Record<TraceKind, Describe>> = {
+  shell: describeShellRow, read: describeFile, write: describeFile, edit: describeEdit, search: describeSearch, web: describeWeb,
+  fetch: describeFetch, todo: describeTodo, agent: describeAgent, skill: describeSkill, mcp: describeMcp,
+};
+
+function describeFields(kind: TraceKind, tool: Tool, fields: Fields, failed: boolean, output: string): Parts {
+  const { name, input, status } = tool;
+  const describe = DESCRIBE[kind];
+  return describe ? describe({ kind, name, input, fields, failed, output, status }) : { chip: { icon: 'command', label: name || 'Tool', title: name || 'Tool' }, object: inputHint(input) };
 }
 
 export function inputHint(input: string): string {
-  const fields = parseFields(input);
+  const fields = fieldsOf(input);
   const value = input.trim().startsWith('{')
     ? field(fields, 'command', 'cmd', 'file_path', 'filePath', 'path', 'query', 'url', 'pattern', 'description')
     : input.trim().split('\n', 1)[0] ?? '';
-  return clip(value, 96);
+  return clip(value, ROW_TEXT);
 }
 
-// `-ing` stems that need their `e` back, and doubled `l`s that English does not double.
-const E_STEM = /^(creat|sav|mov|renam|nam|archiv|queu|remov|resolv|writ|typ|us|clos|captur|prepar|schedul|choos|updat|restor|tak|manag|delet|execut|leav|receiv|shar|describ|stag|pars|messag|coordinat|delegat|navigat|swip|generat|validat|complet|configur|chang|replac|enabl|disabl|invok|provid|decid|merg|serv|mak|giv|hid|guid|analyz|summariz)$/i;
-const LL_STEM: Record<string, string> = { cancell: 'cancel', controll: 'control', labell: 'label', modell: 'model', travell: 'travel', signall: 'signal' };
+// `-ing` stems that need their `e` back, doubled `l`s that English does not double, and stems whose double letter is their own (`add`).
+const E_STEMS = [
+  'prob', 'encod', 'locat', 'eras', 'rebas', 'clon', 'creat', 'sav', 'mov', 'renam', 'nam', 'archiv', 'queu', 'remov', 'resolv', 'writ',
+  'overwrit', 'truncat', 'typ', 'us', 'clos', 'captur', 'prepar', 'schedul', 'choos', 'updat', 'restor', 'tak', 'manag', 'delet', 'execut',
+  'leav', 'receiv', 'shar', 'describ', 'stag', 'pars', 'messag', 'coordinat', 'delegat', 'navigat', 'swip', 'generat', 'validat',
+  'complet', 'configur', 'chang', 'replac', 'enabl', 'disabl', 'invok', 'provid', 'decid', 'merg', 'serv', 'mak', 'giv', 'hid', 'guid',
+  'analyz', 'summariz', 'resum', 'upgrad', 'profil', 'resiz', 'expir', 'prun', 'rewrit', 'purg', 'wip', 'revok', 'unstag', 'paus',
+  'initializ', 'measur', 'compil', 'decod', 'rotat', 'compar', 'optimiz', 'transcod', 'migrat', 'terminat', 'simulat', 'trac',
+];
+const E_STEM = new RegExp(`^(${E_STEMS.join('|')})$`, 'i');
+const LL_STEM: Record<string, string> = { add: 'add', cancell: 'cancel', controll: 'control', labell: 'label', modell: 'model', travell: 'travel', signall: 'signal' };
 /** `Creating task` → `Couldn't create task`; failure-first wording for failed rows. */
 export function failedVerb(running: string): string {
   const [first = '', ...rest] = running.split(' ');
@@ -224,456 +447,232 @@ export function failedVerb(running: string): string {
   return ["Couldn't", (prefix ?? '') + stem, ...rest].join(' ');
 }
 
-export function describeTool(tool: Tool): Trace {
-  const kind = toolKind(tool.name);
-  const failed = tool.status === 'failed';
-  const fields = parseFields(tool.input);
-  // Rows read as finished sentences even while they run (the shimmer marks the running step); a failed row leads with `Couldn't …`.
-  const described = describeFields(kind, tool.name, tool.input, fields, failed, cleanOutput(tool.output));
-  const vm = kind === 'shell' && pandacodeTool(tool.name) === 'vm_exec' ? { family: 'vm' } : {};
-  const verb = described.verb ?? KINDS[kind][failed ? 0 : 1];
-  const code = !failed && toolFailed(tool) ? exitCode(cleanOutput(tool.output)).code : undefined;
-  return { ...described, ...vm, kind, verb: failed ? failedVerb(verb) : verb, ...(code !== undefined ? { exit: code } : {}) };
+/** One ` · ` between counts and notes: no doubled or trailing separators; a leading one stays (the row joins it to its
+ *  chip). Split on the separator, never a `\s*·\s*` pattern, which backtracks over long whitespace runs. */
+function tidySeparators(object: string): string {
+  if (!object.includes('·')) return object.trimStart();
+  const [first, ...rest] = object.split('·');
+  const kept = rest.map(part => part.trim()).filter(Boolean);
+  const lead = first.trim();
+  if (!lead) return kept.length ? `· ${kept.join(' · ')}` : '';
+  return [lead, ...kept].join(' · ');
 }
 
-/** One escaped sentence for a row's summary: verb, chip, object and edit delta. */
-export function traceRowHtml(trace: Trace): string {
-  // Only a brand mark rides inside the chip; a line icon would repeat the row's own kind icon.
-  const chip = trace.chip ? `<span class="tool-trace-chip" title="${escape(trace.chip.title)}">${trace.chip.svg ?? ''}<b>${escape(trace.chip.label)}</b></span>` : '';
-  const object = trace.object ? `<span class="tool-trace-object${trace.mono ? ' is-mono' : ''}">${escape(trace.object)}</span>` : '';
-  const delta = trace.added !== undefined ? `<span class="tool-trace-delta"><ins>+${trace.added}</ins> <del>−${trace.removed ?? 0}</del></span>` : '';
-  const exit = trace.exit !== undefined ? `<span class="tool-trace-badge is-failed">exit ${trace.exit}</span>` : '';
-  return `<span class="tool-trace-verb">${escape(trace.verb)}</span>${chip}${object}${delta}${exit}`;
+/** How a call was refused before it ran: a harness rule (`Blocked: …`) or the user (`Denied: …`). */
+type Refusal = 'Blocked' | 'Denied' | undefined;
+function refusalOf(tool: Tool): Refusal {
+  if (!isBlockedOutput(tool.status, tool.output)) return undefined;
+  return isDeniedOutput(tool.status, tool.output) ? 'Denied' : 'Blocked';
 }
 
-function joinPhrases(parts: string[]): string {
-  return parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+/** The finished verb: `Couldn't …` for a failure (unless the verb is already its outcome), `Blocked: …`/`Denied: …` for a refusal. */
+function rowVerb(verb: string, failed: boolean, settled: boolean | undefined, refusal: Refusal): string {
+  if (refusal) return settled && verb.startsWith(refusal) ? verb : blockedVerb(failedVerb(verb), refusal);
+  return failed && !settled ? failedVerb(verb) : verb;
 }
 
-// PandaCode tool families in summaries: [running verb, finished verb, singular, plural].
-const FAMILY_NOUNS: Record<string, [string, string, string, string]> = {
-  team: ['Coordinating', 'Coordinated', 'team step', 'team steps'],
-  task: ['Managing', 'Managed', 'task action', 'task actions'],
-  vm: ['Operating', 'Operated', 'VM action', 'VM actions'],
-  simulator: ['Operating', 'Operated', 'simulator action', 'simulator actions'],
-  design: ['Updating', 'Updated', 'design step', 'design steps'],
-  browser: ['Using', 'Used', 'preview tool', 'preview tools'],
-  cloud: ['Running', 'Ran', 'cloud command', 'cloud commands'],
-  code: ['Using', 'Used', 'code tool', 'code tools'],
-  moodboard: ['Reading', 'Read', 'moodboard', 'moodboards'],
-  bot: ['Updating', 'Updated', 'bot action', 'bot actions'],
-  jev: ['Running', 'Ran', 'Jev check', 'Jev checks'],
-  meta: ['Updating', 'Updated', 'task detail', 'task details'],
-};
-/** PandaCode families by their own nouns; third-party MCP searches count with searches and MCP reads as sources. */
-function summaryNoun(tool: Tool | undefined): { key: string; noun: [string, string, string, string] } {
-  const kind = tool ? toolKind(tool.name) : 'tool';
-  const family = kind === 'mcp' && tool ? pandacodeFamily(tool.name) : undefined;
-  if (family && FAMILY_NOUNS[family]) return { key: family, noun: FAMILY_NOUNS[family] };
-  const action = tool && kind === 'mcp' ? mcpAction(mcpParts(tool.name).tool) : undefined;
-  if (action === 'search') return { key: 'search', noun: ['Running', 'Ran', 'search', 'searches'] };
-  if (action === 'read') return { key: 'source', noun: ['Reading', 'Read', 'source', 'sources'] };
-  const [present, past, , one, many] = KINDS[kind];
-  const [sPresent, sPast] = SUMMARY_VERB[kind] ?? [present, past];
-  return { key: kind === 'web' ? 'search' : kind, noun: [sPresent, sPast, one, many] };
+/** `Interrupted: read a.ts`: the call's own words after the lead, like a refusal's. A call that recorded no input was cut
+ *  before it said what it would do: `Interrupted before it ran`. */
+function interruptedVerb(verb: string, settled: boolean | undefined, input: string): string {
+  if (!EMPTY_INPUT.test(input)) return settled && verb.startsWith('Interrupted') ? verb : blockedVerb(failedVerb(verb), 'Interrupted');
+  return 'Interrupted before it ran';
+}
+const EMPTY_INPUT = /^\s*(?:\{\s*\})?\s*$/;
+
+/** A search that exited 1 having found nothing (`none`), or a compound whose last step did (`tail`): not a failure. */
+function foundNothing(tool: Tool, kind: TraceKind): ExitAnswer | undefined {
+  if (kind !== 'shell' || tool.status === 'running') return undefined;
+  const { code, body } = exitCode(cleanOutput(tool.output));
+  return searchFoundNothing(shellCommand(tool.input, fieldsOf(tool.input)), code, body);
 }
 
-// A summary names at most this many counts; the rest read as `+N more`, so it stays one line.
-const SUMMARY_PHRASES = 2;
-type GroupSummary = { sentence: string; running: number; failed: number };
+const EXIT_TAIL: Record<ExitAnswer, string> = { none: ' · no matches', tail: '', differ: ' · differ', changes: ' · changes' };
 
-/** Totals of completed calls (`Operated 4 VM actions`), at most two phrases then `and N more steps`; running and failed are counted apart.
- *  With nothing completed yet, the running calls lead in present tense; with only failures, `Couldn't …`.
- *  Only a live turn has running calls: a saved record stuck at `running` counts as completed. */
-export function summarizeGroup(tools: (Tool | undefined)[], options: { live?: boolean } = {}): GroupSummary {
-  const live = Boolean(options.live);
-  const failed = tools.filter(tool => tool && toolFailed(tool));
-  const running = live ? tools.filter(tool => tool?.status === 'running') : [];
-  const done = tools.filter(tool => !tool || !toolFailed(tool) && (tool.status === 'completed' || !live && tool.status === 'running'));
-  const [lead, tense] = done.length ? [done, 1] as const : running.length ? [running, 0] as const : [failed, 0] as const;
-  const entries = new Map<string, { verb: string; noun: [string, string, string, string]; count: number }>();
-  for (const tool of lead) {
-    const { key, noun } = summaryNoun(tool);
-    const verb = lead === failed ? failedVerb(noun[0]) : noun[tense];
-    entries.set(key, { verb, noun, count: (entries.get(key)?.count ?? 0) + 1 });
+/** A command the shell never started (no output at all, a full disk, a missing program): `Couldn't run [cat a.txt]`, not
+ *  what the command would have done. */
+function unstartedShell(tool: Tool, fields: Fields): Parts | undefined {
+  const command = shellCommand(tool.input, fields);
+  if (!neverStarted(cleanOutput(tool.output), command)) return undefined;
+  // A lone step that already reads as running something (`Ran tests`) says `Couldn't run tests [playwright]` by itself.
+  // A lone test run keeps that wording even when its runner was not found; any other missing program reads `Couldn't start [x]`.
+  const intent = command ? describeShell(command) : undefined;
+  const lone = intent !== undefined && intent.steps === 1;
+  const wrapped = describeShell(command, exitCode(cleanOutput(tool.output)).body).missing !== undefined;
+  const missing = lone && intent.kind === 'test' && !wrapped ? undefined : missingShell(command, tool.output);
+  if (missing) return missing;
+  if (lone && intent.verb.startsWith('Ran')) return undefined;
+  const { code } = exitCode(cleanOutput(tool.output));
+  const chip = command ? { icon: 'terminal', label: clip(command, 48), title: command } : undefined;
+  return { verb: "Couldn't run", settled: true, chip, object: '', icon: 'terminal', ...(code ? { exit: code } : {}) };
+}
+
+/** `Couldn't start [timeout]`: the shell could not find the command's program, whatever exit a pipe reported. A failure,
+ *  with no exit badge (a pipe's 0 or the shell's 127 says nothing more). */
+function missingShell(command: string, output: string): Parts | undefined {
+  const body = exitCode(cleanOutput(output)).body;
+  const name = missingProgram(command, body);
+  if (!name) return undefined;
+  // A missing wrapper (`timeout 600 cargo test`) names what it would have run: `Couldn't start [timeout] (not installed) · cargo test`.
+  const intent = describeShell(command, body);
+  if (intent.missing === name) {
+    const inner = intent.label && intent.label !== 'shell' ? ` · ${intent.label}` : '';
+    return { verb: "Couldn't start", settled: true, chip: { icon: 'terminal', label: name, title: command }, object: `(not installed)${inner}`, icon: 'terminal', outputFailed: true };
   }
-  const shown = [...entries].slice(0, SUMMARY_PHRASES);
-  const byVerb = new Map<string, string[]>();
-  for (const [key, { verb, noun, count }] of shown) byVerb.set(verb, [...(byVerb.get(verb) ?? []), key === 'todo' ? 'the plan' : `${count} ${noun[count === 1 ? 2 : 3]}`]);
-  const phrases = [...byVerb].map(([verb, nouns]) => `${verb.toLowerCase()} ${joinPhrases(nouns)}`);
-  const hidden = [...entries].slice(SUMMARY_PHRASES).reduce((sum, [, entry]) => sum + entry.count, 0);
-  let sentence = hidden > 0 ? `${phrases.join(', ')} and ${hidden} more ${hidden === 1 ? 'step' : 'steps'}` : joinPhrases(phrases);
-  if (!done.length && running.length) sentence += '…';
+  return { verb: "Couldn't start", settled: true, chip: { icon: 'terminal', label: name, title: command }, object: '', icon: 'terminal', outputFailed: true };
+}
+
+/** A call of a tool the session does not have: `Unavailable tool: [bash]`, quiet (Claude Code); Devin's `Tool` that asked
+ *  for one: `Couldn't use [X] (unknown tool)`. */
+function unknownTool(tool: Tool): Parts | undefined {
+  const missing = unavailableToolName(tool.status, tool.output);
+  if (missing) return { verb: 'Unavailable tool:', settled: true, chip: { icon: 'command', label: missing, title: missing }, object: '', quiet: true };
+  const name = unknownToolName(tool.name, tool.output);
+  // `pandacode_send_team_message` reads `send_team_message`, as PandaCode's own tools do everywhere; the tooltip keeps the name.
+  return name ? { verb: "Couldn't use", settled: true, chip: { icon: 'command', label: name.replace(/^pandacode_(?=\w)/, ''), title: name }, object: '(unknown tool)' } : undefined;
+}
+
+/** A shell call whose outcome is its row: refused (`Denied: npm install …`), interrupted, stopped by a signal, or never started. */
+function shellOutcome(tool: Tool, fields: Fields, failed: boolean, refusal: Refusal): Parts | undefined {
+  const command = shellCommand(tool.input, fields);
+  if (refusal) return refusedShell(command, tool.output, refusal);
+  if (isInterruptedOutput(tool.status, tool.output)) return interruptedShell(command);
+  if (!failed) return stoppedShell(tool, command) ?? backgroundedShell(command, cleanOutput(tool.output)) ?? missingShell(command, tool.output);
+  const unstarted = harnessUnstarted(command, tool.output);
+  return timedOutShell(command, tool.output) ?? (unstarted && unstartedRead(command, unstarted)) ?? unstartedShell(tool, fields);
+}
+
+/** A read of one file the harness never started says so plainly: `Couldn't read [subagent_state.rs]`, not
+ *  `Couldn't start [cat] src/subagent_state.rs`. Any other command keeps `Couldn't start`. */
+function unstartedRead(command: string, unstarted: Parts): Parts {
+  const intent = describeShell(command);
+  if (intent.kind !== 'read' || intent.steps !== 1 || !intent.label || /^\+\d/.test(intent.object)) return unstarted;
+  return { ...unstarted, verb: "Couldn't read", chip: { icon: intent.icon, label: intent.label, title: command }, object: '', mono: false, more: undefined };
+}
+
+function partsOf(kind: TraceKind, tool: Tool, fields: Fields, failed: boolean, refusal: Refusal, output: string): Parts {
+  const own = unknownTool(tool) ?? (kind === 'shell' ? shellOutcome(tool, fields, failed, refusal) : undefined);
+  const parts = own ?? specialTrace(kind, tool, fields, failed, output) ?? describeFields(kind, tool, fields, failed, output);
+  // Nothing was written by a failed edit, so it claims no +/− delta or risk but says why; nothing ran in a denied call, so it carries no risk.
+  const { added, removed, destructive, risks, ...rest } = parts;
+  const file = failed && (kind === 'edit' || kind === 'write');
+  const delta = file ? { reason: editFailureReason(withoutInterrupt(tool.output)) || undefined } : { added, removed };
+  return { ...rest, ...defined({ ...delta, ...(refusal === 'Denied' || file ? {} : { destructive, risks }) }) };
+}
+
+/** The entries whose value is set, so a row never carries `added: undefined`. */
+function defined<T extends object>(values: T): Partial<T> {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined)) as Partial<T>;
+}
+
+const WORKING_TREE = 'the working tree';
+/** A chip of only `.` names the folder the agent stands in. */
+function placeChip(chip: TraceChip | undefined): TraceChip | undefined {
+  return chip && /^\.\/?$/.test(chip.label) ? { ...chip, label: WORKING_TREE } : chip;
+}
+/** A shell row's quoted prose reads with curly quotes (`to contain “ready”`), like every other row's; code (a mono object)
+ *  keeps the quotes it was written with, and text that already has curly quotes (a pattern quoting itself) is left alone. */
+function proseQuotes(object: string, kind: TraceKind, mono: boolean | undefined): string {
+  if (kind !== 'shell' || mono) return object;
+  // A search's pattern shows exactly as searched: only the quotes around it curl (`for “a|"b"” in src`).
+  const pattern = SEARCH_OBJECT.exec(object);
+  if (pattern) return `${pattern[1]} “${pattern[3]}”${pattern[4]}`;
+  return /[“”]/.test(object) ? object : object.replace(/"([^"\n]*)"/g, '“$1”');
+}
+const SEARCH_OBJECT = /^(for|matching) (["'])([^\n]*?)\2((?: in(?: [^\n]*)?)?(?: · [^\n]*)?)$/;
+
+/** The row, its card, the group summary and its icons each describe the same record; a recent record is described once.
+ *  Keyed by every field the trace reads, so a record that changes (a call finishing) is described again. */
+type CachedTrace = { name: string; status: string; output: string; trace: Trace };
+const TRACE_CACHE = new Map<string, CachedTrace[]>();
+const TRACE_CACHE_SIZE = 64;
+const CHECK_VERBS: ReadonlySet<string> = new Set(Object.values(FAILED_CHECKS));
+
+export function describeTool(raw: Tool): Trace {
+  const hits = TRACE_CACHE.get(raw.input) ?? [];
+  const hit = hits.find(entry => entry.name === raw.name && entry.status === raw.status && entry.output === raw.output);
+  if (hit) return hit.trace;
+  const trace = Object.freeze(traceOf(raw));
+  if (TRACE_CACHE.size >= TRACE_CACHE_SIZE && !TRACE_CACHE.has(raw.input)) TRACE_CACHE.delete(TRACE_CACHE.keys().next().value as string);
+  TRACE_CACHE.set(raw.input, [...hits.slice(-3), { name: raw.name, status: raw.status, output: raw.output, trace }]);
+  return trace;
+}
+
+/** A call that says it completed while its result reports an error (an MCP `isError` or `MCP error -32603`, an edit,
+ *  write or read result that starts with `<tool_use_error>`) failed: the record reads as one with status `failed` everywhere.
+ *  Only the start counts: an edit's `cat -n` snippet may quote the tag. */
+const MCP_ERROR = /^\s*(?:MCP error -?\d+|\{\s*"isError"\s*:\s*true\b)/;
+const TOOL_ERROR_LEAD = /^\s*<tool_use_error>/;
+const FILE_KINDS: ReadonlySet<TraceKind> = new Set(['edit', 'write', 'read']);
+export function withReportedFailure(tool: Tool): Tool {
+  if (tool.status !== 'completed') return tool;
+  const kind = traceKind(tool);
+  const reported = kind === 'mcp' ? MCP_ERROR.test(tool.output) : FILE_KINDS.has(kind) && TOOL_ERROR_LEAD.test(tool.output);
+  return reported ? { ...tool, status: 'failed' } : tool;
+}
+
+function traceOf(raw: Tool): Trace {
+  const tool = withReportedFailure(normalizeTool(raw));
+  const kind = traceKind(tool);
+  const nothing = foundNothing(tool, kind);
+  const interrupted = isInterruptedOutput(tool.status, tool.output);
+  const failed = tool.status === 'failed' && !nothing && !interrupted && !signalStop(tool, kind) && !toolUnavailable(tool);
+  const refusal = refusalOf(tool);
+  const fields = fieldsOf(tool.input);
+  // A refusal's text says nothing about what the call did, so the row reads as if it had no output; a search that found
+  // nothing reads without its exit code.
+  const cleaned = refusal ? '' : cleanOutput(interrupted ? withoutInterrupt(tool.output) : tool.output);
+  const output = nothing ? exitCode(cleaned).body : cleaned;
+  // Rows read as finished sentences even while they run (the shimmer marks the running step); a failed row leads with `Couldn't …`.
+  // An interrupted call asks for the present tense too: `Interrupted: write a.ts`.
+  const { settled, produced, ...described } = partsOf(kind, tool, fields, failed || interrupted, refusal, output);
+  const shot = kind === 'mcp' ? pandacodeImage(tool.name, fields, output) : '';
+  // A VM command's image lives in the VM, so there is no thumbnail to show.
+  const inVm = kind === 'shell' && pandacodeTool(tool.name) === 'vm_exec';
+  const verb = described.verb ?? KINDS[kind][failed || interrupted ? 0 : 1];
+  // A program that never started (`Couldn't start [pnpm]`) has no answer of its own: the shell's 127 is no badge.
+  const unstarted = described.verb === "Couldn't start";
+  // A failed check's verb (`Tests failed`) already says it failed: its exit code adds nothing.
+  const checkFailed = CHECK_VERBS.has(verb);
+  const code = refusal || interrupted || unstarted || checkFailed ? undefined : !failed && exitFailed(tool, kind, nothing) ? exitCode(cleanOutput(tool.output)).code : described.exit;
+  const exitTail = EXIT_TAIL[nothing ?? 'tail'];
+  const object = tidySeparators(described.object) + exitTail;
+  const tally = [described.tally, exitTail.slice(3)].filter(Boolean).join(' · ');
+  const chips = described.chips ? { chips: described.chips.map(chip => placeChip(chip) ?? chip) } : {};
   return {
-    sentence: sentence.charAt(0).toUpperCase() + sentence.slice(1),
-    running: done.length ? running.length : 0,
-    failed: failed.length,
+    ...described, ...chips, ...(described.chip ? { chip: placeChip(described.chip) } : {}), ...(inVm ? { family: 'vm' } : {}), ...(shot ? { image: shot } : {}), kind,
+    verb: interrupted ? interruptedVerb(verb, settled, tool.input) : rowVerb(verb, failed, settled, refusal), object: proseQuotes(object.replace(/^ · /, described.chip || described.chips?.length ? '· ' : ''), kind, described.mono),
+    ...(tally ? { tally } : {}), ...(refusal ? { icon: 'shield', blocked: true } : interrupted ? { icon: 'stop', quiet: true, interrupted: true } : {}), ...(code !== undefined ? { exit: code } : {}),
+    ...(produced && !inVm && tool.status === 'completed' && code === undefined ? { produced } : {}),
   };
 }
 
-/** The group sentence with its state counts: `Operated 4 VM actions · 1 running · 1 failed`. */
-export function summarizeTools(tools: (Tool | undefined)[], options: { live?: boolean } = {}): string {
-  const { sentence, running, failed } = summarizeGroup(tools, options);
-  return sentence + (running ? ` · ${running} running` : '') + (failed ? ` · ${failed} failed` : '');
-}
+/** A call of a tool the session does not have (`No such tool available: X`): quiet, never a failure. */
+export function toolUnavailable(tool: Tool): boolean { return unavailableToolName(tool.status, tool.output) !== ''; }
 
-/** Up to `limit` distinct marks for the folded header: brand logos for MCP servers, else the row's line icon. */
-export function summaryIcons(tools: (Tool | undefined)[], limit = 3): string[] {
-  const marks = new Map<string, string>();
-  for (const tool of tools) {
-    const kind = tool ? toolKind(tool.name) : 'tool';
-    const brand = tool && kind === 'mcp' && !pandacodeTool(tool.name) ? brandFor(mcpParts(tool.name).server) : undefined;
-    const name = tool ? traceIcon(describeTool(tool)) : kindIcon('tool');
-    const id = brand ? 'brand:' + brand.id : name;
-    if (!marks.has(id)) marks.set(id, brand?.svg ?? icon(name));
-  }
-  return [...marks.values()].slice(0, limit);
-}
+/** A call the harness refused before it ran (`<tool_use_error>Blocked: …`). */
+export function toolBlocked(tool: Tool): boolean { return isBlockedOutput(tool.status, tool.output); }
 
-// --- Cards ---------------------------------------------------------------
-
-const LONE_NOTE = /^(<!--trace-partial-->)?<p class="tool-trace-note( is-error)?">[^<]{0,120}<\/p>$/;
-/** A card; a lone short note (a screenshot size, an error line) stays an inline result without the bordered plate. */
-function card(kind: TraceKind, body: string): string {
-  if (!body || body === COMPLETE) return body;
-  return LONE_NOTE.test(body) ? body.replace('<p class="tool-trace-note', '<p data-trace-kind="' + kind + '" class="tool-trace-inline tool-trace-note') : `<div class="tool-trace-card" data-trace-kind="${kind}">${body}</div>`;
-}
-const BADGE_DONE = /^(completed?|done|saved|succeeded|success|resolved|booted|connected|available|delivered|true|passed)$/i;
-const BADGE_LIVE = /^(running|in[_ ]progress|starting|working|active|waiting)$/i;
-const BADGE_FAIL = /^(failed|error|errored|abandoned|cancell?ed|interrupted|blocked|false)$/i;
-/** Status pill: success green, running accent with a still dot, failed red, everything else (queued, stopped, open) neutral. */
-export function badge(label: string): string {
-  if (!label) return '';
-  const tone = BADGE_FAIL.test(label) ? ' is-failed' : BADGE_LIVE.test(label) ? ' is-live' : BADGE_DONE.test(label) ? '' : ' is-quiet';
-  return `<span class="tool-trace-badge${tone}">${escape(clip(label.replace(/_/g, ' '), 24))}</span>`;
-}
-export function head(main: string, meta = ''): string {
-  return `<div class="tool-trace-card-head">${main}${meta ? `<span class="tool-trace-card-meta">${escape(meta)}</span>` : ''}</div>`;
-}
-export function linesPre(value: string[], label: string): string {
-  return value.length ? `${value.some(line => line.length > 400) ? PARTIAL : ''}<pre class="tool-trace-lines" tabindex="0" aria-label="${escape(label)}">${escape(value.map(line => line.slice(0, 400)).join('\n'))}</pre>` : '';
-}
-export type ListItem = { title: string; meta?: string; hint?: string; badge?: string };
-export function list(items: ListItem[], total = items.length): string {
-  if (!items.length) return '';
-  const rows = items.slice(0, LIST_ITEMS).map(item => `<li><span class="tool-trace-item-title"${item.hint ? ` title="${escape(item.hint)}"` : ''}>${escape(clip(item.title, 120))}</span>${item.meta ? `<span class="tool-trace-item-meta">${escape(clip(item.meta, 80))}</span>` : ''}${item.badge ? badge(item.badge) : ''}</li>`).join('');
-  const more = total - Math.min(items.length, LIST_ITEMS);
-  const clipped = more > 0 || items.some(item => item.title.length > 120 || (item.meta?.length ?? 0) > 80);
-  return `${clipped ? PARTIAL : ''}<ul class="tool-trace-list">${rows}${more > 0 ? `<li class="tool-trace-more">+${more} more</li>` : ''}</ul>`;
-}
-
-function exitCode(output: string): { code?: number; body: string } {
-  const codex = /^Exit code: (-?\d+)\n?/.exec(output);
-  if (codex) return { code: Number(codex[1]), body: output.slice(codex[0].length).replace(/^Wall time:.*\n?/, '').replace(/^Output:\n?/, '') };
-  const json = parseFields(output);
-  if (typeof json.exitCode === 'number') return { code: json.exitCode, body: [text(json.stdout), text(json.stderr)].filter(Boolean).join('\n') };
-  return { body: output };
-}
-
-function shellCard(tool: Tool, fields: Fields): string {
-  return terminalCard(shellCommand(tool.input, fields), cleanOutput(tool.output), tool.status);
-}
-
-/** A failed call, or a command that exited nonzero. */
-export function toolFailed(tool: Tool): boolean {
-  if (tool.status === 'failed') return true;
-  if (tool.status !== 'completed') return false;
-  const kind = toolKind(tool.name);
+/** A completed shell (or cloud CLI) call whose exit code is nonzero, a search's `no matches` aside. */
+function exitFailed(tool: Tool, kind: TraceKind, nothing: ExitAnswer | undefined): boolean {
+  if (tool.status !== 'completed' || nothing || signalStop(tool, kind)) return false;
   if (kind !== 'shell' && pandacodeTool(tool.name) !== 'cloud_cli') return false;
   const { code } = exitCode(cleanOutput(tool.output));
   return code !== undefined && code !== 0;
 }
 
-/** Command line, exit badge and the output's last lines (Codex text or `{exitCode, stdout, stderr}`). */
-export function terminalCard(command: string, output: string, status: Tool['status']): string {
-  const { code, body } = exitCode(output);
-  const failed = code !== undefined ? code !== 0 : status === 'failed';
-  const pill = code !== undefined || status === 'failed'
-    ? `<span class="tool-trace-badge${failed ? ' is-failed' : ''}">${escape(code !== undefined ? `exit ${code}` : 'failed')}</span>` : '';
-  const all = lines(body.trimEnd());
-  if (!command) return '';
-  if (status === 'completed' && !all.length && !pill && command.length <= 120) return COMPLETE;
-  const partial = all.length > PREVIEW_LINES ? PARTIAL : '';
-  return `${partial || command.length > 400 ? PARTIAL : ''}${head(`<code class="tool-trace-command">${escape(clip(command, 400))}</code>${pill}`)}${linesPre(all.slice(-PREVIEW_LINES), 'Command output, last lines')}`;
+/** A failed call, a command that exited nonzero, or a check whose output says it failed though it exited 0. A search
+ *  that found nothing and a command stopped by a signal (exit 143/137) are not failures. */
+export function toolFailed(tool: Tool): boolean {
+  if (isInterruptedOutput(tool.status, tool.output) || toolUnavailable(tool)) return false;
+  const normal = withReportedFailure(normalizeTool(tool));
+  const kind = traceKind(normal);
+  if (normal.status === 'failed') return !foundNothing(normal, kind) && !signalStop(normal, kind);
+  if (exitFailed(normal, kind, foundNothing(normal, kind))) return true;
+  return tool.status === 'completed' && kind === 'shell' && describeTool(tool).outputFailed === true;
 }
 
-function fileCard(path: string, meta: string, preview: string[], partial = false): string {
-  return path ? `${partial ? PARTIAL : ''}${head(`<span class="tool-trace-chip" title="${escape(path)}">${icon('file')}<b>${escape(basename(path))}</b></span>`, meta)}${linesPre(preview, 'File preview')}` : '';
-}
+/** A call the turn ended before it reported (`Interrupted: …`): quiet, tallied apart, never a failure. */
+export function toolInterrupted(tool: Tool): boolean { return isInterruptedOutput(tool.status, tool.output) && !toolBlocked(tool); }
 
-function diffCard(tool: Tool, fields: Fields): string {
-  const rows: string[] = [];
-  for (const edit of editLines(fields)) {
-    for (const line of lines(edit.old)) rows.push(`<del>- ${escape(line.slice(0, 300))}</del>`);
-    for (const line of lines(edit.new)) rows.push(`<ins>+ ${escape(line.slice(0, 300))}</ins>`);
-  }
-  const shown = rows.slice(0, DIFF_LINES).join('\n');
-  const clipped = rows.length > DIFF_LINES || editLines(fields).some(edit => lines(edit.old + '\n' + edit.new).some(line => line.length > 300));
-  const more = rows.length > DIFF_LINES ? `<p class="tool-trace-more">+${rows.length - DIFF_LINES} more lines</p>` : '';
-  const path = field(fields, 'file_path', 'path', 'filePath', 'target_file');
-  // The row already shows the +/− delta.
-  return (clipped ? PARTIAL : '') + (path ? fileCard(path, '', []) : '') + (shown ? `<pre class="tool-trace-diff" tabindex="0" aria-label="Edit preview">${shown}</pre>${more}` : '');
-}
-
-export function searchCard(output: string): string {
-  const found = lines(output).map(line => line.trim()).filter(line => line && !/^Found \d+ (files?|matches?)/i.test(line) && !/^No (files|matches) found/i.test(line));
-  if (!found.length) return output.trim() ? `${output.trim().length > 200 ? PARTIAL : ''}<p class="tool-trace-note">${escape(clip(output, 200))}</p>` : '';
-  return list(found.slice(0, LIST_ITEMS).map(line => {
-    const [path, ...match] = line.split(':');
-    const lineNo = match.length && /^\d+$/.test(match[0] ?? '') ? match[0] : '';
-    const meta = lineNo ? match.slice(1).join(':') : match.join(':');
-    return { title: basename(path) + (lineNo ? `:${lineNo}` : ''), meta: [path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '', meta.trim()].filter(Boolean).join(' · '), hint: line };
-  }), found.length);
-}
-
-function webResults(output: string): { title: string; url: string }[] {
-  const at = output.indexOf('Links:');
-  if (at < 0) return [];
-  const start = output.indexOf('[', at);
-  const end = output.indexOf(']\n', start) > 0 ? output.indexOf(']\n', start) + 1 : output.lastIndexOf(']') + 1;
-  try {
-    const value: unknown = JSON.parse(output.slice(start, end));
-    return Array.isArray(value) ? value.filter((item): item is { title: string; url: string } => typeof item?.title === 'string' && typeof item?.url === 'string') : [];
-  } catch { return []; }
-}
-
-function webCard(output: string): string {
-  const results = webResults(output);
-  // The search summary after the links is not shown.
-  if (results.length) return PARTIAL + list(results.map(result => ({ title: result.title, meta: domain(result.url), hint: result.url })), results.length);
-  return excerptCard(output);
-}
-
-function fetchCard(fields: Fields, output: string): string {
-  const url = field(fields, 'url');
-  const prompt = field(fields, 'prompt');
-  const top = url ? head(`<span class="tool-trace-chip" title="${escape(url)}">${icon('globe')}<b>${escape(domain(url))}</b></span>`) : '';
-  return (output.length > 600 || prompt.length > 240 ? PARTIAL : '') + top + (prompt ? `<p class="tool-trace-prompt">${escape(clip(prompt, 240))}</p>` : '') + (output.trim() ? `<p class="tool-trace-note">${escape(clip(output, 600))}</p>` : '');
-}
-
-function todoCard(fields: Fields): string {
-  const todos = (Array.isArray(fields.todos) ? fields.todos : Array.isArray(fields.plan) ? fields.plan : []) as Fields[];
-  const items = todos.filter(todo => todo && typeof todo === 'object').slice(0, 12).map(todo => {
-    const status = field(todo, 'status');
-    return `<li data-status="${escape(status)}">${icon(status === 'completed' ? 'check' : status === 'in_progress' ? 'activity' : 'circle')}<span>${escape(clip(field(todo, 'content', 'step', 'title'), 160))}</span></li>`;
-  }).join('');
-  const clipped = todos.length > 12 || todos.some(todo => todo && typeof todo === 'object' && field(todo, 'content', 'step', 'title').length > 160);
-  return items ? `${clipped ? PARTIAL : ''}<ul class="tool-trace-todos">${items}</ul>` : '';
-}
-
-/** Marks a card that shows less than the record, so the row keeps its `Full tool data` disclosure. */
-export const PARTIAL = '<!--trace-partial-->';
-/** A deliberately empty card: the row already says everything, so there is nothing to expand. */
-export const COMPLETE = '<!--trace-complete-->';
-export function excerptCard(output: string): string {
-  const all = lines(output.trim());
-  const pre = linesPre(all.slice(0, PREVIEW_LINES), 'Result preview');
-  return pre && all.length > PREVIEW_LINES ? PARTIAL + pre : pre;
-}
-
-/** One short value: strings clipped, arrays and objects summarized, never raw nested JSON. */
-export function summarizeValue(value: unknown): string {
-  if (value === null || value === undefined) return '—';
-  if (typeof value === 'string') return clip(value, 120) || '""';
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) {
-    return value.length && value.every(item => typeof item === 'string' || typeof item === 'number')
-      ? clip(value.join(', '), 120) : `${value.length} ${value.length === 1 ? 'item' : 'items'}`;
-  }
-  const keys = Object.keys(value as object);
-  return `{ ${clip(keys.join(', '), 100)} }`;
-}
-
-/** Compact key/value table for arguments and JSON results. */
-export function kvTable(fields: Fields, label: string, limit = 8): string {
-  const entries = Object.entries(fields).filter(([key, value]) => !key.startsWith('_') && value !== undefined && value !== '');
-  if (!entries.length) return '';
-  const rows = entries.slice(0, limit).map(([key, value]) => `<dt>${escape(clip(key, 40))}</dt><dd>${escape(summarizeValue(value))}</dd>`).join('');
-  const more = entries.length > limit ? `<dt class="tool-trace-more">+${entries.length - limit} more</dt><dd></dd>` : '';
-  const partial = entries.length > limit || entries.some(([, value]) => value !== null && typeof value === 'object' || typeof value === 'string' && value.length > 120);
-  return `${partial ? PARTIAL : ''}<dl class="tool-trace-kv" aria-label="${escape(label)}">${rows}${more}</dl>`;
-}
-
-/** A JSON object as a key table, an array as a list, anything else as a text excerpt. */
-function isRecord(value: unknown): value is Fields { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
-const TITLE_KEYS = ['name', 'title', 'label', 'summary', 'id'];
-/** One generic JSON object as a list row: its best title, then up to two other short scalars. */
-function objectItem(item: Fields): ListItem {
-  const key = TITLE_KEYS.find(k => typeof item[k] === 'string' && item[k]);
-  const meta = Object.entries(item).filter(([k, v]) => k !== key && (typeof v === 'string' && v.length <= 80 || typeof v === 'number'))
-    .slice(0, 2).map(([k, v]) => k === 'number' || k === 'id' ? `#${v}` : String(v));
-  return { title: key ? String(item[key]) : summarizeValue(item), meta: meta.join(' · ') };
-}
-function itemList(values: unknown[]): string {
-  return list(values.slice(0, LIST_ITEMS).map(item => isRecord(item) ? objectItem(item) : { title: summarizeValue(item) }), values.length);
-}
-/** A JSON object as a key table (arrays of objects as short item lists), an array as a list, anything else as a text excerpt. */
-export function resultCard(output: string): string {
-  const json = parseJson(output);
-  if (Array.isArray(json)) return PARTIAL + itemList(json);
-  if (!isRecord(json)) return excerptCard(output);
-  const lists = Object.entries(json).filter(([, v]) => Array.isArray(v) && v.length && v.some(isRecord));
-  const scalars = Object.fromEntries(Object.entries(json).filter(([k]) => !lists.some(([l]) => l === k)));
-  return kvTable(scalars, 'Result') + (lists.length ? PARTIAL : '') + lists.map(([key, values]) => section(key.replace(/_/g, ' '), itemList(values as unknown[]))).join('');
-}
-
-export function section(label: string, body: string): string {
-  return body ? `<section class="tool-trace-section"><h5 class="tool-trace-label">${escape(label)}</h5>${body}</section>` : '';
-}
-
-/** Arguments and result as key tables: the fallback when an MCP result is not a list of records. */
-function argsCard(tool: Tool, fields: Fields, output: string): string {
-  const own = pandacodeTool(tool.name);
-  if (own) return pandacodeCard(own, fields, output, tool.status) ?? section('Result', resultCard(output));
-  const failed = tool.status === 'failed' && output.trim() && parseJson(output) === undefined;
-  return section('Arguments', kvTable(fields, 'Arguments')) + (failed ? `${output.length > 400 ? PARTIAL : ''}<p class="tool-trace-note is-error">${escape(clip(output, 400))}</p>` : section('Result', resultCard(output)));
-}
-
-function agentCard(tool: Tool, fields: Fields, output: string): string {
-  const prompt = field(fields, 'prompt', 'message', 'objective', 'description') || (tool.input.trim().startsWith('{') ? '' : tool.input);
-  const model = field(fields, 'model');
-  const clipped = prompt.length > 400 || output.length > 600 ? PARTIAL : '';
-  // Running: one compact line of model, state and prompt. Finished: the result first, the prompt one click away.
-  if (tool.status === 'running') {
-    // The row already shows the description; only the model adds anything while it runs.
-    return model ? head(`<span class="tool-trace-route">${escape(clip(model, 40))}</span>${badge('running')}`) : '';
-  }
-  const top = model ? head(`<span class="tool-trace-route">${escape(clip(model, 40))}</span>`) : '';
-  const result = output.trim()
-    ? tool.status === 'failed' ? `<p class="tool-trace-note is-error">${escape(clipText(output, 600))}</p>` : `<p class="tool-trace-prose">${escape(clipText(output, 600))}</p>`
-    : '';
-  const promptBox = prompt ? `<details class="tool-trace-aside"><summary>${icon('chevron')}Prompt</summary><p class="tool-trace-prompt">${escape(clipText(prompt, 400))}</p></details>` : '';
-  return clipped + top + result + promptBox;
-}
-
-// --- MCP result rows (Slack, Granola, Gmail, GitHub, Linear…) ---------------
-
-const LIST_KEYS = ['results', 'messages', 'items', 'issues', 'pull_requests', 'pullRequests', 'pulls', 'threads', 'notes', 'meetings', 'events', 'documents', 'pages', 'files', 'records', 'data'];
-
-/** JSON from the output, unwrapping MCP's `[{ type: 'text', text }]` content blocks. */
-function outputJson(output: string): unknown {
-  const value = output.trim();
-  if (!/^[[{]/.test(value)) return;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    const blocks = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.content) ? parsed.content : undefined;
-    if (blocks?.length && blocks.every(block => isRecord(block) && block.type === 'text' && typeof block.text === 'string')) {
-      return outputJson(blocks.map(block => (block as Fields).text).join('\n')) ?? parsed;
-    }
-    return parsed;
-  } catch { return; }
-}
-
-function records(value: unknown): { items: Fields[]; collection: string } {
-  if (Array.isArray(value)) return { items: value.filter(isRecord), collection: '' };
-  if (!isRecord(value)) return { items: [], collection: '' };
-  const key = LIST_KEYS.find(name => Array.isArray(value[name])) ?? Object.keys(value).find(name => Array.isArray(value[name]) && (value[name] as unknown[]).some(isRecord));
-  return key ? { items: (value[key] as unknown[]).filter(isRecord), collection: key } : { items: [], collection: '' };
-}
-
-/** A string, or the readable name of a `{ name | display_name | login | email }` object. */
-function label(item: Fields, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = item[key];
-    const named = isRecord(value) ? field(value, 'name', 'display_name', 'real_name', 'login', 'email', 'title') : text(value);
-    if (named) return named;
-  }
-  return '';
-}
-
-function shortTime(value: string): string {
-  const date = /^\d{9,10}(\.\d+)?$/.test(value) ? new Date(Number(value) * 1000) : /^\d{4}-\d\d-\d\d/.test(value) ? new Date(value) : undefined;
-  if (!date || Number.isNaN(date.getTime())) return clip(value, 16);
-  return date.toDateString() === new Date().toDateString()
-    ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
-
-// 16px status marks: GitHub pull requests and Linear-style issue circles.
-const ISSUE_MARKS: Record<string, string> = {
-  done: '<circle cx="8" cy="8" r="6" fill="currentColor"/><path d="m5.4 8.1 1.8 1.8 3.4-3.6" fill="none" stroke="var(--bg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
-  canceled: '<circle cx="8" cy="8" r="6" fill="currentColor"/><path d="m6 6 4 4m0-4-4 4" stroke="var(--bg)" stroke-width="1.5" stroke-linecap="round"/>',
-  progress: '<circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.6a3.4 3.4 0 0 1 0 6.8Z" fill="currentColor"/>',
-  todo: '<circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 1.6"/>',
-};
-function statusMark(state: string, pull: boolean): string {
-  const value = state.toLowerCase();
-  if (pull) {
-    const tone = /merged/.test(value) ? 'merged' : /draft/.test(value) ? 'draft' : /closed/.test(value) ? 'closed' : 'open';
-    return `<span class="trace-mark is-pull" data-state="${tone}">${icon(tone === 'merged' ? 'merge' : 'pull')}</span>`;
-  }
-  const tone = /done|complete|closed|resolved|shipped/.test(value) ? 'done' : /cancel|duplicate|wont/.test(value) ? 'canceled' : /progress|started|doing|review|active/.test(value) ? 'progress' : 'todo';
-  return `<span class="trace-mark is-issue" data-state="${tone}"><svg viewBox="0 0 16 16" aria-hidden="true">${ISSUE_MARKS[tone]}</svg></span>`;
-}
-
-function mcpRow(item: Fields, collection: string, brandSvg: string | undefined): string {
-  const person = label(item, 'from', 'user', 'author', 'sender', 'username', 'user_name', 'owner', 'assignee', 'creator');
-  const where = label(item, 'identifier', 'channel', 'channel_name', 'repo', 'repository', 'key', 'project', 'team');
-  const titled = label(item, 'title', 'name', 'subject');
-  const title = titled || person || where;
-  const meta = titled ? person || where : person ? where : '';
-  const time = shortTime(label(item, 'ts', 'time', 'date', 'updated_at', 'updatedAt', 'created_at', 'createdAt', 'timestamp', 'start'));
-  const body = label(item, 'text', 'snippet', 'body', 'summary', 'description', 'preview', 'content');
-  const state = label(item, 'state', 'status');
-  const pull = /pull|merge/i.test(collection) || typeof item.merged === 'boolean' || typeof item.draft === 'boolean' || /\/pull\//.test(text(item.url) || text(item.html_url));
-  const unread = typeof item.unread === 'boolean' ? item.unread : typeof item.is_unread === 'boolean' ? item.is_unread : undefined;
-  const mark = state ? statusMark(state, pull)
-    : unread !== undefined ? `<span class="trace-mark is-unread"${unread ? ' data-unread' : ''}></span>`
-    : !titled && person ? `<span class="trace-mark is-avatar">${escape(person.trim().charAt(0).toUpperCase())}</span>`
-    : `<span class="trace-mark">${brandSvg ?? icon('file')}</span>`;
-  if (!title) return '';
-  return `<li class="trace-row"${unread ? ' data-unread' : ''}>${mark}<span class="trace-row-head"><b>${escape(clip(title, 120))}</b>${meta ? `<span class="trace-row-meta">${escape(clip(meta, 60))}</span>` : ''}</span>${time ? `<span class="trace-row-time">${escape(time)}</span>` : ''}${body ? `<span class="trace-row-body">${escape(clip(body, 200))}</span>` : ''}</li>`;
-}
-
-/** Brand-style result rows for an MCP call's JSON output; empty when the output has no list of records. */
-export function mcpCard(tool: Tool): string {
-  if (toolKind(tool.name) !== 'mcp') return '';
-  const { server } = mcpParts(tool.name);
-  const { items, collection } = records(outputJson(cleanOutput(tool.output)));
-  const brand = brandFor(server);
-  const rows = items.map(item => mcpRow(item, collection, brand?.svg)).filter(Boolean);
-  if (!rows.length) return '';
-  const more = rows.length - MCP_ROWS;
-  return `<div class="tool-trace-card is-rows" data-trace-kind="mcp"${brand ? ` data-brand="${escape(brand.id)}"` : ''}><ul class="trace-rows">${rows.slice(0, MCP_ROWS).join('')}${more > 0 ? `<li class="tool-trace-more">+${more} more</li>` : ''}</ul></div>`;
-}
-
-function previewBody(kind: TraceKind, tool: Tool, fields: Fields, output: string): string {
-  switch (kind) {
-    case 'shell': return shellCard(tool, fields);
-    case 'read': {
-      const path = filePath(tool.input, fields);
-      const all = lines(output);
-      return fileCard(path, all.length ? `${all.length} ${all.length === 1 ? 'line' : 'lines'}` : '', all.slice(0, PREVIEW_LINES), all.length > PREVIEW_LINES);
-    }
-    case 'write': {
-      const content = lines(field(fields, 'content', 'contents'));
-      return fileCard(field(fields, 'file_path', 'path', 'filePath'), `New file · ${content.length} lines`, content.slice(0, PREVIEW_LINES), content.length > PREVIEW_LINES);
-    }
-    case 'edit': return diffCard(tool, fields);
-    case 'search': return searchCard(output);
-    case 'web': return webCard(output);
-    case 'fetch': return fetchCard(fields, output);
-    case 'todo': return todoCard(fields);
-    case 'agent': return agentCard(tool, fields, output);
-    case 'mcp': return argsCard(tool, fields, output);
-    // The step row already names the skill and its args; only a description (tool-cards.ts) earns a card.
-    case 'skill': return '';
-    default: return excerptCard(output);
-  }
-}
-
-/** Structured, escaped result card for an expanded row; empty when there is nothing better than the raw record. */
-export function toolPreview(tool: Tool): string {
-  const kind = toolKind(tool.name);
-  const fields = parseFields(tool.input);
-  const body = previewBody(kind, tool, fields, cleanOutput(tool.output));
-  const own = () => card(kind, body && tool.output.length > MAX_SCAN ? PARTIAL + body : body);
-  // PandaCode's own tools and subagents use the catalog's cards, which mark what they clip; a row that says it all has none.
-  if (pandacodeTool(tool.name) || kind === 'agent' || body === COMPLETE) return own();
-  // The rich cards (tool-cards.ts) and brand rows are excerpts that never mark what they clip, so they always keep the raw record.
-  const rich = richCard(tool);
-  // Brand rows for an MCP collection, else the argument/result tables; docs servers read better as rich cards (URLs).
-  if (kind === 'mcp' && /docs|context7/i.test(mcpParts(tool.name).server)) return rich ? PARTIAL + card(kind, rich) : own();
-  if (kind === 'mcp') { const rows = mcpCard(tool); return rows ? PARTIAL + rows : own(); }
-  return rich ? PARTIAL + card(kind, rich) : own();
-}
+/** A call the user turned down (`Denied: …`), as opposed to one a harness rule blocked. */
+export function toolDenied(tool: Tool): boolean { return isDeniedOutput(tool.status, tool.output); }

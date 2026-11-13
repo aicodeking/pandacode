@@ -15,7 +15,7 @@ fn team_busy(store: &Store, session_id: &str) -> Result<bool> {
 /// An open harness console with no agent run: nothing can send to it, the window's queue
 /// included, so its schedules wait (still due, not advanced) until the console closes.
 pub(super) fn console_only(state: &AppState, session_id: &str) -> bool {
-    let running = state.agents.lock().map(|agents| agents.contains_key(session_id)).unwrap_or(true);
+    let running = crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(session_id)).unwrap_or(true);
     !running && crate::terminal::harness_running(&state.terminals, session_id).unwrap_or(false)
 }
 
@@ -28,8 +28,11 @@ pub(super) fn take_due(store: &Store, now: i64, held: &HashSet<String>) -> Resul
 pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, manual: bool) -> Result<ScheduleRun> {
     let state = app.state::<AppState>();
     let now = crate::storage::now();
+    // Read before the store lock: the remote state is never locked while the store is.
+    // (A manual run was checked by whoever ran it.)
+    let remote_full_access = manual || crate::remote::full_access_for_remote_tasks(app);
     let team = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let store = crate::run_requests::lock_store(&state.store)?;
         let session = store.session(&schedule.session_id).map_err(|_| String::from("The thread was deleted."))?;
         if session.archived {
             let run = record_run(&store, schedule, now, "skipped", "Thread is archived", manual)?;
@@ -37,10 +40,17 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, man
             changed(app, Some(&schedule.session_id));
             return Ok(run);
         }
+        // Saved from a remote device: its team gate holds when it fires too, not only at save.
+        if let Some(reason) = super::remote_team_gate(&store, schedule, remote_full_access)? {
+            let run = record_run(&store, schedule, now, "skipped", reason, manual)?;
+            drop(store);
+            changed(app, Some(&schedule.session_id));
+            return Ok(run);
+        }
         team_busy(&store, &schedule.session_id)?
     };
     let text = message(schedule, manual, now);
-    let busy = team || state.agents.lock().map_err(|e| e.to_string())?.contains_key(&schedule.session_id);
+    let busy = team || crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&schedule.session_id);
     let result = if busy {
         let queued = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &schedule.session_id, &text, &json!([]));
         if queued.is_ok() {

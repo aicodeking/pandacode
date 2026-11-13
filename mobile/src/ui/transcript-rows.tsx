@@ -1,23 +1,31 @@
 // The rows of a transcript: prompts, folded work, replies, the live run and unsent messages. Rows new
 // since the thread opened enter once with a few points of travel; prompts and replies that were
 // already on screen as an optimistic bubble or streamed text settle instead. No per-row timers.
-// A long press on a prompt offers Copy with its time as the sheet's title (the system's action sheet: a
-// context menu's preview would come out upside down from the inverted list). A long press on a reply
-// selects its text as usual, and the selection menu gains Copy reply.
+// A long press on a prompt offers Copy and Fork from here (a new thread up to just before it, to ask
+// again differently) with its time as the sheet's title (the system's action sheet: a context menu's
+// preview would come out upside down from the inverted list). A long press on a reply selects its text
+// as usual, and the selection menu gains Copy reply and Fork from here (also a VoiceOver action).
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { createContext, memo, use, useEffect, useMemo, useState } from 'react';
-import { AccessibilityInfo, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { Easing, Keyframe, ReduceMotion, useReducedMotion } from 'react-native-reanimated';
 import type { Message } from '../connect/types.ts';
 import { taskKey, useConnect, useLive, useSent, type LiveItem } from '../store/index.ts';
-import type { Sent } from '../store/sent.ts';
-import { removeOutbox, retryOutbox, useLocal } from '../store/local.ts';
+import { sentLabel } from '../store/sent.ts';
+import { discardSent, removeOutbox, retryOutbox, sendAgain, useLocal } from '../store/local.ts';
 import { duration, type TurnRow } from '../store/turns.ts';
+import { handoffTitle, type Handoff } from '../store/handoff.ts';
+import { HarnessLogo, harnessName } from './harness.tsx';
 import { bubbleAttachments } from '../store/attachments.ts';
-import { steeredAt } from '../store/draft.ts';
-import { Chips, ImageGrid, ThreadContext } from './Attachments.tsx';
+import { draftKey, setDraft, steeredAt } from '../store/draft.ts';
+import { Chips, ImageGrid, LocalImageGrid, ThreadContext } from './Attachments.tsx';
 import { useColors } from './theme.ts';
+import { useHostAllows, useHostCapabilities, useHostSupports } from '../connect/api/capabilities.ts';
+import { BLOCKED_TITLE, gatedPress, menuGate } from './menu-gate.ts';
+import { useComputerName } from './hub/common.tsx';
+import { forkAction } from './TaskHeader.tsx';
+import { rewindTo } from '../connect/api/rewind.ts';
 import { Card, Chevron, Collapse, CrossFadeText, crossFadeIn, crossFadeOut, geometry, haptic, PressScale, type as textStyle } from './ds/index.ts';
 import { Icon } from './Icon.tsx';
 import { MarkdownMenuContext } from './generative/MarkdownText.tsx';
@@ -85,15 +93,79 @@ function CopiedTick({ align }: { align: 'left' | 'right' }) {
   );
 }
 
-function PromptText({ text, at }: { text: string; at: number }) {
+/** The menu gate (menu-gate.ts) of `method` on this thread's computer: hidden only where the
+ * computer lacks it; where this phone's grant or the Full access switch blocks it, the item stays
+ * and a tap explains why (BLOCKED_TITLE alert) instead of running. */
+function useThreadGate(method: string) {
+  const thread = use(ThreadContext);
+  const caps = useHostCapabilities(thread?.deviceId ?? '');
+  const computer = useComputerName(thread?.deviceId ?? '');
+  return menuGate(caps, method, computer);
+}
+
+const explainBlocked = (note: string) => Alert.alert(BLOCKED_TITLE, note);
+
+/** Fork from a stored message of this thread, where the computer serves thread.fork (useThreadGate:
+ * a tap explains it when this phone's access blocks it); null otherwise. */
+function useFork(id: number, before: boolean): (() => void) | null {
+  const thread = use(ThreadContext);
+  const gate = useThreadGate('thread.fork');
+  if (!thread || !gate.shown || id <= 0) return null;
+  return gatedPress(gate, () => forkAction(thread.deviceId, thread.sessionId, id, before), explainBlocked);
+}
+
+/** Rewind (docs/rewind.md): a new task forked to just before this stored prompt, with the prompt in
+ * its composer to fix and send. Null where the computer has no rewind.to; where this phone's access
+ * blocks it a tap explains why (useThreadGate). Asks first, and refuses
+ * while the agent runs, as the desktop's Edit does. */
+function useRewind(id: number): (() => void) | null {
+  const thread = use(ThreadContext);
+  const gate = useThreadGate('rewind.to');
+  // The live run status first (as TaskHeader reads it), else the task list's, which lags a run that just started.
+  const running = useConnect(s => {
+    if (!thread) return false;
+    const live = s.live[taskKey(thread.deviceId, thread.sessionId)]?.status;
+    const status = live && live !== 'idle' ? live : s.tasks[thread.deviceId]?.tasks.find(t => t.sessionId === thread.sessionId)?.status;
+    return status === 'running' || status === 'waiting';
+  });
+  if (!thread || !gate.shown || id <= 0) return null;
+  const { deviceId, sessionId } = thread;
+  const rewind = () => {
+    haptic('selection');
+    rewindTo(deviceId, sessionId, id).then(rewound => {
+      // Attached files and images are not re-attached: only what was typed returns.
+      if (rewound.draft) setDraft(draftKey(deviceId, rewound.sessionId), rewound.draft);
+      haptic('success');
+      AccessibilityInfo.announceForAccessibility('Rewound to before your message. Edit it and send.');
+      router.push({ pathname: '/task/[device]/[session]', params: { device: deviceId, session: rewound.sessionId } });
+    }, (error: Error) => { haptic('error'); Alert.alert('Could not rewind', error.message); });
+  };
+  return gatedPress(gate, () => {
+    if (running) return void Alert.alert('Stop the agent first', 'Rewind is available once this run ends.');
+    Alert.alert('Rewind to here?', 'A new task starts from just before this message, with it in the composer to edit and send. This message and everything after it are left out. Files on your computer are not changed, and this task stays as it is.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Rewind', style: 'destructive', onPress: rewind },
+    ]);
+  }, explainBlocked);
+}
+
+function PromptText({ text, at, id }: { text: string; at: number; id: number }) {
   const colors = useColors();
   const { copied, doCopy } = useCopied(text);
+  const fork = useFork(id, true);
+  const rewind = useRewind(id);
   const menu = () => {
     haptic('selection');
-    showActions(clock(at), [{ label: 'Copy', ios: 'doc.on.doc', android: 'content_copy', onPress: doCopy }]);
+    showActions(clock(at), [
+      { label: 'Copy', ios: 'doc.on.doc', android: 'content_copy', onPress: doCopy },
+      ...(fork ? [{ label: 'Fork from here', ios: 'arrow.branch', android: 'fork_right', onPress: fork } as const] : []),
+      ...(rewind ? [{ label: 'Rewind to here', ios: 'arrow.uturn.backward', android: 'undo', destructive: true, onPress: rewind } as const] : []),
+    ]);
   };
+  const act = (name: string) => (name === 'fork' ? fork?.() : name === 'rewind' ? rewind?.() : doCopy());
   return (
-    <Pressable onLongPress={menu} accessible accessibilityActions={[{ name: 'copy', label: 'Copy' }]} onAccessibilityAction={doCopy} accessibilityLabel={`${text}, ${clock(at)}`}>
+    <Pressable onLongPress={menu} accessible accessibilityActions={[{ name: 'copy', label: 'Copy' }, ...(fork ? [{ name: 'fork', label: 'Fork from here' }] : []), ...(rewind ? [{ name: 'rewind', label: 'Rewind to here' }] : [])]}
+      onAccessibilityAction={e => act(e.nativeEvent.actionName)} accessibilityLabel={`${text}, ${clock(at)}`}>
       <Text style={[textStyle.callout, { color: colors.text }]}>{text}</Text>
       {copied && <CopiedTick align="right" />}
     </Pressable>
@@ -102,10 +174,14 @@ function PromptText({ text, at }: { text: string; at: number }) {
 
 function Reply({ message }: { message: Message }) {
   const { copied, doCopy } = useCopied(message.content);
-  const menu = useMemo(() => ({ text: `Copy reply · ${clock(message.createdAt)}`, icon: 'doc.on.doc', onPress: doCopy }), [message.createdAt, doCopy]);
+  const fork = useFork(message.id, false);
+  const menu = useMemo(() => ({
+    text: `Copy reply · ${clock(message.createdAt)}`, icon: 'doc.on.doc', onPress: doCopy,
+    more: fork ? [{ text: 'Fork from here', icon: 'arrow.branch', onPress: fork }] : undefined,
+  }), [message.createdAt, doCopy, fork]);
   return (
     <MarkdownMenuContext.Provider value={menu}>
-      <View style={styles.reply}>
+      <View style={styles.reply} accessibilityActions={fork ? [{ name: 'fork', label: 'Fork from here' }] : undefined} onAccessibilityAction={fork ? e => e.nativeEvent.actionName === 'fork' && fork() : undefined}>
         <Markdown text={message.content} />
         {copied && <CopiedTick align="left" />}
       </View>
@@ -126,7 +202,7 @@ function UserBubble({ message }: { message: Message }) {
     <View style={styles.userTurn}>
       <View style={[styles.bubble, { backgroundColor: colors.bubble, borderColor: colors.border, boxShadow: colors.shadowRaised }]}>
         <ImageGrid images={files.images} />
-        {!!prompt && <PromptText text={prompt} at={message.createdAt} />}
+        {!!prompt && <PromptText text={prompt} at={message.createdAt} id={message.id} />}
         <Chips chips={files.chips} />
         {cut >= 0 && (
           <PressScale onPress={() => setShowContext(s => !s)} accessibilityState={{ expanded: showContext }}>
@@ -179,19 +255,43 @@ function Steps({ steps }: { steps: Message[] }) {
   );
 }
 
-/** What the turn changed, as on the desktop: opens Changes. */
-function ChangesRow({ files, additions, deletions }: { files: number; additions: number; deletions: number }) {
+/** What the turn changed, as on the desktop: opens this turn's changes where the computer serves
+ * turn.summary, the task's Changes otherwise. */
+function ChangesRow({ messageId, files, additions, deletions }: { messageId: number; files: number; additions: number; deletions: number }) {
   const colors = useColors();
   const thread = use(ThreadContext);
+  const perTurn = useHostSupports(thread?.deviceId ?? '', 'turn.summary');
   const label = `${files} changed ${files === 1 ? 'file' : 'files'}`;
+  const open = () => {
+    if (!thread) return;
+    const params = { device: thread.deviceId, session: thread.sessionId };
+    router.push({ pathname: '/changes', params: perTurn ? { ...params, turn: String(messageId) } : params });
+  };
   return (
-    <PressScale onPress={() => thread && router.push({ pathname: '/changes', params: { device: thread.deviceId, session: thread.sessionId } })} unstable_pressDelay={ROW_PRESS_DELAY_MS} hitSlop={6}
+    <PressScale onPress={open} unstable_pressDelay={ROW_PRESS_DELAY_MS} hitSlop={6}
       style={styles.changes} accessibilityLabel={`${label}, ${additions} added, ${deletions} removed`} accessibilityHint="Opens the changes">
       <Text style={[textStyle.subhead, { color: colors.muted }]}>{label}</Text>
       <Text style={[textStyle.subhead, styles.tabular, { color: colors.success }]}>+{additions}</Text>
       <Text style={[textStyle.subhead, styles.tabular, { color: colors.danger }]}>−{deletions}</Text>
       <Icon ios="chevron.right" android="chevron_right" size={11} color={colors.muted} />
     </PressScale>
+  );
+}
+
+/** The task switched agents (a 'handoff' message): who took over, and what the new agent was handed. */
+function HandoffCard({ handoff }: { handoff: Handoff }) {
+  const colors = useColors();
+  const title = handoffTitle(handoff, harnessName);
+  return (
+    <Card style={styles.handoff} accessible accessibilityLabel={`${title}. ${handoff.summary}`}>
+      <View style={styles.handoffHead}>
+        <HarnessLogo id={handoff.fromProvider} size={16} color={colors.text} />
+        <Icon ios="arrow.right" android="arrow_forward" size={12} color={colors.muted} />
+        <HarnessLogo id={handoff.toProvider} size={16} color={colors.text} />
+        <Text style={[textStyle.subheadMedium, styles.handoffTitle, { color: colors.text }]} numberOfLines={2}>{title}</Text>
+      </View>
+      {!!handoff.summary && <Text style={[textStyle.footnote, { color: colors.muted }]}>{handoff.summary}</Text>}
+    </Card>
   );
 }
 
@@ -220,7 +320,8 @@ export const Row = memo(function Row({ row }: { row: TurnRow }) {
       case 'user': return <UserBubble message={row.message} />;
       case 'work': return <WorkRow steps={row.steps} durationMs={row.durationMs} fallbackAt={row.at} />;
       case 'reply': return <Reply message={row.message} />;
-      case 'changes': return <ChangesRow files={row.files} additions={row.additions} deletions={row.deletions} />;
+      case 'changes': return <ChangesRow messageId={row.messageId} files={row.files} additions={row.additions} deletions={row.deletions} />;
+      case 'handoff': return <HandoffCard handoff={row.handoff} />;
       default: return <Text style={[textStyle.subhead, styles.note, { color: row.message.role === 'error' ? colors.danger : colors.muted }]}>{row.message.content}</Text>;
     }
   })();
@@ -261,32 +362,61 @@ export function Pending({ deviceId, sessionId }: { deviceId: string; sessionId: 
   );
 }
 
-const SENT_LABEL: Record<Sent['state'], string> = { sending: 'Sending…', steering: 'Steer · Sending…', queued: 'Queued' };
-
 /** Prompts sent from this phone, shown at once until the stored copy replaces them: the ones
  * starting a turn above the live run (`before`), steers and queued ones after it. */
 export function SentBubbles({ deviceId, sessionId, before }: { deviceId: string; sessionId: string; before: boolean }) {
   const colors = useColors();
   const reduced = useReducedMotion();
   const sent = useSent(deviceId, sessionId);
+  const computer = useConnect(s => s.devices.find(d => d.id === deviceId)?.name ?? 'The computer');
   const shown = sent.filter(e => (e.state === 'sending') === before);
+  // A View phone can't send: Not delivered bubbles then offer only Copy and Discard.
+  const canSend = useHostAllows(deviceId, 'task.send');
   const fresh = use(FreshContext);
   useEffect(() => { sent.forEach(e => fresh?.entered.add(`sent:${e.text.trim()}`)); }, [sent, fresh]);
   if (!shown.length) return null;
   return (
     <>
-      {shown.map(entry => (
-        <Animated.View key={entry.id} entering={reduced ? crossFadeIn : RISE} style={styles.userTurn} accessible accessibilityLabel={`${entry.text}, ${SENT_LABEL[entry.state]}`}>
-          <View style={[styles.bubble, styles.sending, { backgroundColor: colors.bubble, borderColor: colors.border }]}>
+      {shown.map(entry => {
+        const label = `${entry.text}${entry.images?.length ? `, ${entry.images.length} ${entry.images.length === 1 ? 'image' : 'images'}` : ''}, ${sentLabel(entry)}`;
+        const bubble = (
+          <View style={[styles.bubble, entry.undelivered ? styles.pending : styles.sending, { backgroundColor: colors.bubble, borderColor: entry.undelivered ? colors.danger : colors.border }]}>
+            <LocalImageGrid uris={entry.images} />
             <Text style={[textStyle.callout, { color: colors.text }]}>{entry.text}</Text>
           </View>
+        );
+        const meta = (
           <View style={[styles.meta, styles.metaRight]}>
-            {entry.state === 'steering' && <Icon ios="arrow.uturn.right" android="alt_route" size={11} color={colors.muted} />}
+            {entry.state === 'steering' && !entry.undelivered && <Icon ios="arrow.uturn.right" android="alt_route" size={11} color={colors.muted} />}
             {entry.state === 'queued' && <Icon ios="clock" android="schedule" size={11} color={colors.muted} />}
-            <CrossFadeText text={SENT_LABEL[entry.state]} style={[textStyle.caption, { color: colors.muted }]} />
+            {entry.unconfirmed && <Icon ios="questionmark.circle" android="help" size={11} color={colors.warning} />}
+            {entry.undelivered && <Icon ios="exclamationmark.circle" android="error" size={12} color={colors.danger} />}
+            <CrossFadeText text={entry.undelivered && canSend ? `${sentLabel(entry)} · tap to send again` : sentLabel(entry)} style={[textStyle.caption, { color: entry.undelivered ? colors.danger : colors.muted }]} />
           </View>
-        </Animated.View>
-      ))}
+        );
+        // The host never got it (no stored copy, the task idle): the user sends it again or drops it.
+        if (entry.undelivered) {
+          const menu = () => showActions(`${computer} never received this message.`, [
+            ...(canSend ? [{ label: 'Send again', ios: 'arrow.up.circle', android: 'send', onPress: () => sendAgain(deviceId, sessionId, entry.id) } as const] : []),
+            { label: 'Copy', ios: 'doc.on.doc', android: 'content_copy', onPress: () => copy(entry.text) },
+            { label: 'Discard', ios: 'trash', android: 'delete', destructive: true, onPress: () => discardSent(deviceId, sessionId, entry.id) },
+          ]);
+          return (
+            <Animated.View key={entry.id} entering={reduced ? crossFadeIn : RISE} exiting={crossFadeOut}>
+              <PressScale onPress={menu} onLongPress={menu} unstable_pressDelay={ROW_PRESS_DELAY_MS} style={styles.userTurn} accessibilityLabel={label} accessibilityHint={canSend ? 'Send again or discard' : 'Copy or discard'}>
+                {bubble}
+                {meta}
+              </PressScale>
+            </Animated.View>
+          );
+        }
+        return (
+          <Animated.View key={entry.id} entering={reduced ? crossFadeIn : RISE} style={styles.userTurn} accessible accessibilityLabel={label}>
+            {bubble}
+            {meta}
+          </Animated.View>
+        );
+      })}
     </>
   );
 }
@@ -350,4 +480,7 @@ const styles = StyleSheet.create({
   steps: { marginTop: 4, marginBottom: 4, gap: 6 },
   interim: { paddingHorizontal: 10, paddingVertical: 4 },
   note: { marginVertical: 6 },
+  handoff: { marginVertical: geometry.cardPadding, padding: geometry.rowInset, gap: geometry.cardPadding },
+  handoffHead: { flexDirection: 'row', alignItems: 'center', gap: geometry.cardPadding },
+  handoffTitle: { flex: 1 },
 });

@@ -1,5 +1,6 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
 import { ACCOUNT_SWITCH_PREFIX, accountSwitchDetail } from './account-switch-note';
+import { revealSetting } from './settings-reveal';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
@@ -24,6 +25,7 @@ import './usage-limit.css';
 import './document-viewer.css';
 import './tool-trace.css';
 import './tool-cards.css';
+import './tool-images.css';
 import './trace-motion.css';
 import './action-dock.css';
 import './inset-shell.css';
@@ -37,7 +39,7 @@ import './voice-dictation.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
 import { setDocumentView } from './document-viewer';
 import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
-import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
+import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
@@ -47,7 +49,7 @@ import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards, isCombined, mountCombinedReview } from './turn-changes';
-import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, openReply, replyHtml, timeHtml, watchReplies } from './turn-card';
+import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, openReply, measureReplies, replyHtml, replyOpen, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
@@ -55,8 +57,13 @@ import { parseSkyTime } from './sky-math';
 import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
+import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
+import { attachToolImages, REVEAL_LABEL } from './tool-image-viewer';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
+import { MORE_TURNS, ROWS_MARGIN, ROW_BUDGET, drawRows, markupCache, parseRow, rowsIntact, swapRowNodes, turnIds, untouchedFields, viewIndex, windowAnchor, windowShort, windowStart, type DrawnRow } from './transcript-rows';
+import { LAZY_REPLY_CHARS, drawnFrom, lazyMarkdown, prepareMarkdown, touchedRows } from './transcript-window';
+import { leftRowsCache, leftViews, mountTileWindows, mountTranscriptView } from './transcript-view';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
@@ -89,6 +96,7 @@ import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
 import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
+import { captureAccountSwitches, captureTools, fillMatchingToolBodies, fillToolBody as fillDrawnToolBody, dispatchHeld, findCounter, lastHandoff, markupShared, mergeTaskDetails, restoreAccountSwitches, restoreToolViews, rowViews, takeAccountSwitch, turnMessages, type AccountSwitchView, type HeldQueueHost, type ToolView } from './transcript-host';
 import { installPointerDrag } from './pointer-drag';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import type { RemoteStart } from './remote-progress';
@@ -121,7 +129,7 @@ import { councilNotice } from './council';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
-import { isMac, isWindows, shortcut } from './platform';
+import { isMac, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
 import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
@@ -137,12 +145,17 @@ import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, sa
 import { TailText } from './tail-text';
 import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
+import { errorText } from './error-text';
+import { escapeClosesToast, globalErrorText, isBenignGlobalError, nextToastCount, queueToast, shouldShowGlobalError, shouldToastLiveError, toastTitle, type ToastTone } from './toast-model';
+import { DISMISS_BATCH, dismissJournal, errorKey, foldErrorTurns, hiddenRunErrors, parseDismissJournal, errorSummary, groupErrors, savedErrorId, shouldAnnounce, stripErrorPrefix, type ErrorGroup, type RunHide, type ShownTurn } from './thread-errors';
 
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
  * Content: project navigation → conversation → contextual source review.
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
 type WorkspaceView = 'conversation' | 'board' | 'github';
-type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
+/** `count`: how many identical error events this one row stands for; `dismissed`: hidden by Dismiss, Undo shows it again;
+ * `savedIds`: the saved rows of those events (the event's `messageId`; an event never saved has none). */
+type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean; count?: number; dismissed?: boolean; savedIds?: number[] };
 type LiveAccountSwitch = Message & { eventSeen?: boolean };
 type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; accountSwitches: LiveAccountSwitch[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges; earlier?: LiveEarlier };
 /** The exchange a lead's wake run continues, drawn inside its live card (renderTranscript). */
@@ -184,6 +197,28 @@ let settledDock: HTMLElement | null = null;
 const settledResize = new ResizeObserver(() => { if (settledDock) $('#navigation').style.setProperty('--settled-height', `${settledDock.offsetHeight}px`); });
 type FinishingStream = { stream: Stream; finishedAt: number; error?: string };
 const finishingStreams = new Map<string, FinishingStream>();
+/* Thread error state (declared early: the first render reads it). */
+/** Disclosures the reader opened are remembered by scope and key, up to this many, across the live region's redraws. */
+const OPEN_ERRORS_MAX = 200;
+const openErrors = new Set<string>();
+/** Live disclosures the reader opened, by `sessionId|key`: the saved ids of that live row (addLiveError adds later
+ * ones), so its saved rows (or transient ones) open too when the live card hands off to the saved one. */
+const openLiveErrors = new Map<string, Set<number>>();
+/** Saved error rows a dismissal hid (deleted natively, or waiting on it); transient negative ids too. */
+const hiddenErrors = new Set<number>();
+/** Bumped whenever hiddenErrors changes, so a tile's cached rows redraw (drawTile). */
+let hiddenErrorsRevision = 0;
+/** Live errors dismissed in threads mirrored from another computer, by thread (RunHide): their events carry no saved id,
+ * and the run's copies arrive with new ids when it ends, so those copies are hidden by key (hiddenRunErrors) for the
+ * rest of the app session. At most RUN_HIDES_MAX in all; the oldest goes first. */
+const runHides = new Map<string, RunHide[]>();
+const RUN_HIDES_MAX = 200;
+/** The dismissal whose Undo the toast offers; its native delete runs when the toast settles (commitDismiss). */
+type PendingDismiss = { sessionId: string; saved: number[]; transient: number[]; liveTools: string[]; runHides: RunHide[]; focus: { key: string; scope: string; action: string } };
+let pendingDismiss: PendingDismiss | null = null;
+/** When each thread last announced each live error, by `sessionId|errorKey` (shouldAnnounce); the oldest goes past
+ * OPEN_ERRORS_MAX entries. Per thread, so the same error in another thread is still told. */
+const lastErrorToasts = new Map<string, number>();
 // Ignore late snapshots/events for IDs removed during this window's lifetime.
 const deletedSessions = new Set<string>();
 let inspectorRequest = 0;
@@ -240,7 +275,7 @@ void call<import('./jev').JevConfiguration>('jev_configuration').then(config => 
 window.addEventListener('pandacode:jev-settings', event => setJevAvailability(Boolean((event as CustomEvent<import('./jev').JevConfiguration>).detail.decisionsEnabled)));
 async function ensureArchitectView(): Promise<ArchitectView> {
   return architectLoading ??= import('./architect').then(({ ArchitectView }) => {
-    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice) });
+    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice), leadMode: sessionId => state.sessions.find(task => task.id === sessionId)?.mode ?? null });
     architectView.setAssistEnabled(jevDecisionsEnabled);
     $('#subagents-host').before(architectView.host);
     architectView.setTask(state.sessionId, teams.get(state.sessionId) ?? null, state.providers);
@@ -261,10 +296,10 @@ function onArchitect(team: TeamEvent): void {
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
   if (task && teamActive(team)) { task.status = 'running'; task.taskStage = 'in_progress'; }
   if (task && !teamActive(team) && !state.streams.has(task.id)) task.status = 'idle';
-  void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); });
+  void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
   // A snapshot that only moved its revision shows nothing new: no composer, thread or sidebar paint.
   if (current && teamSignature(current) === teamSignature(team) && taskState === `${task?.status}:${task?.taskStage}`) return;
-  if (team.sessionId === state.sessionId) scheduleTeamRender(wasActive !== teamActive(team));
+  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team)); if (!current) syncTeamRows(); }
   scheduleNavigation();
 }
 /** Team snapshots can arrive many times a frame: the composer (and thread worker lines) paint once per frame. */
@@ -284,7 +319,8 @@ async function loadTeam(id: string): Promise<TeamSnapshot | null> {
   // An update or a removal that arrived during the fetch is newer than this snapshot.
   if (teams.has(id) !== known || teams.get(id) !== before) return teams.get(id) ?? null;
   teams.set(id, loaded);
-  if (teams.size > 64) { const old = [...teams].find(([key, value]) => key !== state.sessionId && !teamActive(value)); if (old) teams.delete(old[0]); }
+  // A remembered thread keeps its answer: coming back to it must not wait for its team again (selectSession).
+  if (teams.size > 64) { const old = [...teams].find(([key, value]) => key !== state.sessionId && !threadPages.has(key) && !teamActive(value)); if (old) teams.delete(old[0]); }
   if (loaded) await ensureArchitectView();
   if (id === state.sessionId) architectView?.setTask(id, loaded, state.providers);
   return loaded;
@@ -530,7 +566,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
   <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file" tabindex="-1"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
-</div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
+</div><div id="toast" class="toast" hidden></div><dialog id="dialog"></dialog>`;
 mountDesktopBrand($('.brand-name'));
 // Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.
 if (preview && new URLSearchParams(location.search).has('ds')) void import('./redesign/gallery').then(gallery => gallery.mountGallery());
@@ -544,7 +580,7 @@ const projectRunner = new ProjectRunner({
   context: () => project() ? workspaceContext() : undefined,
   start: requestId => terminalPanel.runScript(requestId),
   navigate: openRunPreview,
-  notify,
+  notify, notifyError,
 });
 let sidebarDragging = false, orderingBusy = false;
 /** The open thread stays in the section it was opened from, so its row does not jump from under the click. */
@@ -583,7 +619,7 @@ bindThreadReordering($('#navigation'), {
 });
 /* Branch and worktree control, plus optional GitHub through the user's gh CLI. */
 const github = createGithub({
-  call, modal, closeModal, notify,
+  call, modal, closeModal, notify, notifyError,
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
@@ -597,7 +633,7 @@ const github = createGithub({
 });
 /* Per-thread token saving: packs ride along with messages as folded guidance. */
 const tokenSaver = createTokenSaver({
-  call, notify,
+  call, notify, notifyError,
   contextUsage: sessionId => {
     const s = session();
     return s && s.id === sessionId ? state.streams.get(s.id)?.contextUsage ?? s.contextUsage ?? null : null;
@@ -651,7 +687,7 @@ const pullView = createPullView({
     notify(`Pull request #${task.pullRequest?.number ?? ''} unlinked`);
   },
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
-  notify,
+  notify, notifyError,
 });
 function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); }
 /** Show a task's linked pull request in the inspector. */
@@ -673,7 +709,7 @@ async function detectPullRequest(sessionId: string): Promise<void> {
   } catch { /* Detection is best effort; the branch menu can link it by hand. */ }
 }
 const worktrees = createWorktrees({
-  call, modal, closeModal, notify, showChoices,
+  call, modal, closeModal, notify, notifyError, showChoices,
   session, project,
   git: () => state.git, gitError: () => state.gitError,
   draft: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '',
@@ -985,6 +1021,16 @@ followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTransc
 const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
+// Images agents viewed (tool rows, cards, the live header) all come from `tool_image`: only paths the thread's tool
+// records name, absolute (/tmp screenshots included) or relative to the task's checkout. Network paths never load.
+// Rows and cards ask for a downscaled copy (`maxEdge`); only the viewer asks for the whole image.
+const toolImageLoader: ToolImageLoader = (sessionId, path, maxEdge) => isNetworkPath(path)
+  ? Promise.reject(new Error(NETWORK_PATH_ERROR))
+  : call<string>('tool_image', maxEdge ? { sessionId, path, maxEdge } : { sessionId, path });
+// Thumbnails load once near the viewport, whichever render inserted them, with the thread that rendered them (a
+// held transcript keeps showing the previous thread's rows after a switch); a click opens the viewer and never
+// toggles the row around it.
+attachToolImages(transcriptScroller, () => state.sessionId ?? '', toolImageLoader);
 const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
 // Composer mutations do not imply a resize; the transcript ResizeObserver handles actual size changes before paint.
 const composerArea = $('#composer-area');
@@ -997,28 +1043,35 @@ transcriptScroller.addEventListener('scroll', () => {
   // scroll back down to the end pins again). A clamp (the old top past the end, or the scroll still at the end after a
   // pixel's shrink) is not the reader moving.
   const scrollEnd = transcriptScroller.scrollHeight - transcriptScroller.clientHeight;
+  if (top >= scrollEnd - 2) transcriptView.scheduleTrim();
   if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= scrollEnd + 1 && top < scrollEnd - 1) {
     absorbTailRoom(); stickToBottom = false; lastTranscriptTop = transcriptScroller.scrollTop;
     void loadOlderMessages(); return;
   }
-  // Following and not moving up (the observer's own pins): nothing can change, so skip measuring.
-  if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; void loadOlderMessages(); return; }
+  // Following and not moving up (the observer's own pins): nothing can change, so skip measuring. A pin is not the
+  // reader asking for history: drawing it here would widen every thread as it opens, only for the trim to cut it again.
+  if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; return; }
   // Native focus/anchoring scrolls after Read more are not the reader asking to follow again.
   if (resumeFollow && transcriptGap() <= 2) stickToBottom = true;
   // Content that shrank clamps the scroll up (the old top is past the end now): that is not the reader leaving.
   else if (stickToBottom && lastTranscriptTop > transcriptScroller.scrollHeight - transcriptScroller.clientHeight) followTranscript();
   else if (top < lastTranscriptTop) stickToBottom = false;
   lastTranscriptTop = transcriptScroller.scrollTop;
-  void loadOlderMessages();
+  if (!stickToBottom) void loadOlderMessages();
 }, { passive: true });
 transcriptScroller.addEventListener('click', event => {
   const target = event.target as Element;
+  // Before the fold opens, so it opens at its full height.
+  const tool = target.closest('details[data-tool-key] > summary')?.parentElement;
+  if (tool) fillToolBody(tool as HTMLDetailsElement);
   const holdFold = stickToBottom && target.closest('summary');
   if (target.closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false;
   if (target.closest('.turn-card-more, .team-progress-toggle')) resumeFollow = false;
   // A manual fold still gives its lost height back once, without re-arming continuous following.
   if (holdFold) queueMicrotask(keepTopOnShrink);
 }, true);
+// Any other way a tool comes open (a restore, a script) still gets its body.
+transcriptScroller.addEventListener('toggle', event => { const tool = event.target as HTMLDetailsElement; if (tool.open && tool.matches('details[data-tool-key]')) fillToolBody(tool); }, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
 transcriptScroller.addEventListener('wheel', event => { if (event.deltaY > 0) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; } else if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
@@ -1079,9 +1132,10 @@ const tiles = mountThreadTiles({
   signal: id => { const s = state.sessions.find(item => item.id === id); if (!s) return { status: '', label: '', word: '' }; const { status, statusLabel, word } = taskSignal(s, Date.now()); return { status, label: statusLabel, word }; },
   exists: id => state.sessions.some(s => s.id === id) && !deletedSessions.has(id),
   running: id => isRunning(id),
-  open: async (id, scrollTop) => { await selectSession(id); if (scrollTop !== undefined) { transcriptScroller.scrollTop = scrollTop; releaseTranscript(); } },
+  open: (id, scrollTop) => openFromTile(id, scrollTop),
   focusPrompt: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
   draw: (id, rows, scroller) => drawTile(id, rows, scroller),
+  more: (id, rows, scroller) => tileWindows.showMore(id, rows, scroller),
   scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: () => !wallpapers.preferences.enabled, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
   notify,
 });
@@ -1199,6 +1253,11 @@ function teamHeld(id = state.sessionId): boolean {
 /** The empty-thread layout (no header underlap) changes only once the thread's page is known, in the
  * frame that draws it: a switch never moves the transcript 39px while it loads or mid-settle. */
 function syncNewTaskPage(): void { if (!state.messagesLoading) $('.conversation-pane').classList.toggle('new-task-page', newTaskView()); }
+/** The first load of a thread whose page is drawn while its task's details and team are still on the way: what acts on
+ *  the task (sending, editing) waits until that load's details settle, whatever redraws the page meanwhile (a run
+ *  finishing): a send before the team is known would go to a team thread as a plain message. Another load ends it. */
+let taskDetailsPending: { id: string; generation: number } | undefined;
+const threadLoading = (): boolean => state.messagesLoading || (taskDetailsPending?.id === state.sessionId && taskDetailsPending.generation === state.generation);
 function newTaskView(): boolean { const s = session(); return Boolean(s && !s.resumeId && !isRunning() && !state.messagesLoading && !state.messagesError && state.messages.length === 0); }
 function stream(id: string): Stream {
   let s = state.streams.get(id);
@@ -1303,60 +1362,195 @@ function refreshModelLabels(): void {
   refreshTeamProgress();
 }
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
-/** The toast's Undo, while it shows; ⌘Z runs it too. */
-let toastUndo: (() => void) | undefined, toastGeneration = 0;
+/** The toast's Undo, while it shows; ⌘Z runs it too. `toastSettle` runs once when that toast leaves without its Undo
+ * (expires, is closed, or another toast replaces it): work an Undo can still cancel waits for it. */
+let toastUndo: (() => void) | undefined, toastSettle: (() => void) | undefined, toastDismiss: (() => void) | undefined, toastGeneration = 0, toastShown: { text: string; count: number; plain: boolean; tone: ToastTone } | null = null, toastShownAt = 0;
+const toastVisible = (toast: HTMLElement): boolean => !toast.hidden;
 /** The thread boot held back (the stuck-thread rule); the crash notice names it. */
 let heldBackThread: Session | undefined, heldBackNotLast = false;
 /** Boot opened no thread by itself in case one caused the crash, and how the window's content died before this page, if it did. */
 let bootOpenedNothing = false, windowDeath: import('./crash-recovery-model').WindowDeath | undefined;
+/** `important`: the notice asks the user to act (an approval, a question), so it is never dropped from the queue.
+ * `holdMs`: how long it stays (Infinity: until closed or its action is used). `dismiss` makes it a lasting notice
+ * (toast-clearance.ts places it) whose close button (Escape too, with focus in the toast) runs it. `quiet`: it comes
+ * back as it was, unannounced and without its entrance. */
+type ToastOptions = { tone?: ToastTone; settle?: () => void; important?: boolean; holdMs?: number; dismiss?: () => void; quiet?: boolean };
 /** `name`: an accessible name fuller than the label (it should start with it); `keep`: using it leaves the toast showing. */
 type ToastAction = { label: string; run: () => void; name?: string; keep?: boolean; quiet?: boolean };
-/** A short notice; a function adds Undo, `{ label, run }` one other button that stays a little longer,
- * and a list adds the first as that button and the rest as quieter text buttons after it.
- * `dismiss` adds a close button (Escape too, with focus in the toast) and runs when the user closes it.
- * `quiet`: it comes back as it was, unannounced and without its entrance. */
-function notify(text: string, undo?: (() => void) | ToastAction | readonly ToastAction[], holdMs?: number, dismiss?: () => void, quiet = false): void {
-  const toast = $('#toast'), generation = ++toastGeneration;
+function settleToast(): void { const settle = toastSettle; toastSettle = undefined; toastUndo = undefined; settle?.(); }
+/** Runs the toast's Undo (its button or ⌘Z); its settle work is cancelled, not run. */
+function runToastUndo(): boolean {
+  const undo = toastUndo;
+  if (!undo) return false;
+  toastUndo = undefined; toastSettle = undefined; toastShown = null; releaseToastRoom(); void hideToast($('#toast')); undo();
+  leaveToastFocus();
+  showQueuedToast();
+  return true;
+}
+/** Notices that arrived while a dismissal's Undo toast showed (queueToast); shown one by one once it settles. */
+type QueuedToast = { text: string; tone?: ToastTone; important?: boolean; undo?: (() => void) | ToastAction | readonly ToastAction[]; options: ToastOptions };
+let toastQueue: QueuedToast[] = [];
+function showQueuedToast(): void {
+  const [next, ...rest] = toastQueue;
+  if (!next) return;
+  toastQueue = rest;
+  notify(next.text, next.undo, next.options);
+}
+const toastCountHtml = (count: number): string => `<span class="toast-count" aria-hidden="true">×${count}</span><span class="sr-only">Repeated ${count} times</span>`;
+/** A short notice; a function adds Undo, `{ label, run }` one other button that stays a little longer, and a list adds
+ * the first as that button and the rest as quieter text buttons after it. `tone: 'danger'`
+ * marks a notice raised by a failure. An identical notice while it shows only bumps its count, so a screen reader hears
+ * "Repeated N times" rather than the whole message again. */
+function notify(text: string, undo?: (() => void) | ToastAction | readonly ToastAction[], options: ToastOptions = {}): void {
+  const toast = $('#toast'), wasVisible = toastVisible(toast), plain = !undo && !options.settle;
+  const queued = queueToast({ holding: wasVisible && Boolean(toastSettle), queue: toastQueue }, { text, tone: options.tone, important: options.important, undo, options }, Boolean(options.settle));
+  toastQueue = queued.queue;
+  if (!queued.show) return;
+  const count = nextToastCount(toastShown, text, wasVisible, plain, options.tone);
+  const generation = ++toastGeneration;
+  if (count > 1 && toast.querySelector('.toast-counter')) {
+    toastShown = { text, count, plain, tone: options.tone };
+    toast.querySelector('.toast-counter')!.innerHTML = toastCountHtml(count);
+    hideToastLater(toast, generation, 4500);
+    return;
+  }
+  settleToast();
+  // The toast's controls are about to be replaced: focus in them goes back where the last toast was raised from.
+  leaveToastFocus();
+  const raisedFrom = document.activeElement;
+  toastOrigin = raisedFrom instanceof HTMLElement && raisedFrom !== document.body ? raisedFrom : null;
   const actions: readonly ToastAction[] = typeof undo === 'function' || !undo ? [] : Array.isArray(undo) ? undo : [undo as ToastAction];
-  const action = actions[0];
+  toastShown = { text, count, plain, tone: options.tone }; toastUndo = typeof undo === 'function' ? undo : undefined; toastSettle = options.settle; toastDismiss = options.dismiss;
+  // The live region is the text alone (never the buttons), kept from toast to toast so each new text is announced once,
+  // and not atomic: a count bump says only "Repeated N times".
+  const label = toast.querySelector<HTMLElement>(':scope>.toast-text') ?? document.createElement('span');
+  label.className = 'toast-text'; label.setAttribute('role', 'status'); label.setAttribute('aria-atomic', 'false'); label.title = toastTitle(text);
+  const counter = document.createElement('span');
+  counter.className = 'toast-counter';
+  if (count > 1) counter.innerHTML = toastCountHtml(count);
+  label.replaceChildren(text, counter);
+  for (const child of [...toast.children]) if (child !== label) child.remove();
+  if (!label.isConnected) toast.append(label);
   // `quiet`: shown again after another toast, already announced once.
-  if (quiet) toast.setAttribute('aria-live', 'off'); else toast.removeAttribute('aria-live');
-  toast.textContent = text; toastUndo = typeof undo === 'function' ? undo : undefined;
+  for (const live of [toast, label]) if (options.quiet) live.setAttribute('aria-live', 'off'); else live.removeAttribute('aria-live');
+  toast.toggleAttribute('data-danger', options.tone === 'danger');
+  if (options.tone === 'danger') {
+    const mark = document.createElement('span');
+    mark.className = 'toast-icon'; mark.dataset.stateTone = 'danger'; mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = icon('alert');
+    toast.prepend(mark);
+  }
   if (typeof undo === 'function') {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'toast-undo'; button.textContent = 'Undo'; button.setAttribute('aria-keyshortcuts', 'Meta+Z Control+Z');
-    button.addEventListener('click', () => { if (toastUndo !== undo) return; toastUndo = undefined; void hideToast(toast); undo(); });
+    button.addEventListener('click', () => { if (toastUndo === undo) runToastUndo(); });
     toast.append(button);
   }
   actions.forEach((item, index) => {
     const button = document.createElement('button');
     button.type = 'button'; button.className = index || item.quiet ? 'toast-secondary' : 'toast-action'; button.textContent = item.label;
     if (item.name) button.setAttribute('aria-label', item.name);
-    button.addEventListener('click', () => { if (!item.keep) void hideToast(toast); item.run(); });
+    button.addEventListener('click', () => {
+      if (!item.keep) { releaseToastRoom(); void hideToast(toast); }
+      item.run();
+      if (!item.keep) leaveToastFocus();
+    });
     toast.append(button);
   });
-  toast.classList.toggle('toast-dismissible', Boolean(dismiss));
-  if (dismiss) addToastClose(toast, () => { toastUndo = undefined; void hideToast(toast); dismiss(); });
+  const dismissible = Boolean(options.dismiss);
+  toast.classList.toggle('toast-dismissible', dismissible);
+  if (dismissible) addToastClose(toast, dismissToast);
+  else {
+    const close = document.createElement('button');
+    close.type = 'button'; close.className = 'toast-close'; close.setAttribute('aria-label', 'Dismiss'); close.innerHTML = icon('close');
+    close.addEventListener('click', dismissToast);
+    toast.append(close);
+  }
   labelToastShortcut(toast);
-  showToast(toast, quiet);
+  toastShownAt = Date.now();
+  showToast(toast, options.quiet);
+  placeToast(toast);
+  const composerArea = document.querySelector('#composer-area');
+  if (composerArea) toastPlacement.observe(composerArea);
   // Infinity: it stays until the user closes it or uses its action.
-  const delay = holdMs ?? (action ? 9000 : typeof undo === 'function' ? 5000 : 4500);
+  const delay = options.holdMs ?? (actions.length ? 9000 : undo ? 5000 : 4500);
   if (Number.isFinite(delay)) hideToastLater(toast, generation, delay);
 }
-/** The toast stays while the pointer rests on it or a button in it has focus, then leaves shortly after. */
+/** The toast keeps its bottom-right corner unless that would cover the composer (narrow windows, where the composer
+ * reaches the corner): then it sits just above it. Placed before its first frame, never animated. */
+const TOAST_COMPOSER_GAP = 8;
+/** While a toast shows, a composer that grows or shrinks (a run starts, the prompt wraps) places it again. */
+const toastPlacement = new ResizeObserver(() => { const toast = $('#toast'); if (toastVisible(toast)) placeToast(toast); else toastPlacement.disconnect(); });
+function placeToast(toast: HTMLElement): void {
+  toast.style.removeProperty('bottom');
+  // A lasting notice is placed by toast-clearance.ts, which gives the transcript its own room (`--toast-room`).
+  if (toast.classList.contains('toast-dismissible')) { document.querySelector<HTMLElement>('#transcript')?.style.removeProperty('--toast-clear'); return; }
+  const composer = document.querySelector('#composer-area')?.getBoundingClientRect(), box = toast.getBoundingClientRect();
+  if (composer?.width && !(box.left >= composer.right || box.right <= composer.left || box.top >= composer.bottom || box.bottom <= composer.top)) {
+    toast.style.bottom = `${Math.round(window.innerHeight - composer.top + TOAST_COMPOSER_GAP)}px`;
+  }
+  makeToastRoom(toast);
+}
+/** A toast over the end of the open thread would cover its live errors' controls: while it shows, the transcript ends
+ * that much higher (`--toast-clear`, extra room after the last row, turn-card.css), followed to the bottom when it was
+ * there. A jump, never animated; a reader scrolled up is left where they are. */
+function makeToastRoom(toast: HTMLElement): void {
+  const transcript = document.querySelector<HTMLElement>('#transcript'), live = transcript?.querySelector<HTMLElement>('#stream-region .live-errors');
+  if (!transcript) return;
+  const current = parseFloat(transcript.style.getPropertyValue('--toast-clear')) || 0;
+  const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 2;
+  const box = toast.hidden ? null : toast.getBoundingClientRect(), errors = live?.childElementCount ? live.getBoundingClientRect() : null;
+  if (!atBottom && box) return;
+  const across = box && errors && errors.height && box.left < errors.right && box.right > errors.left;
+  const room = across ? Math.max(0, Math.ceil(current + errors.bottom + TOAST_COMPOSER_GAP - box.top)) : 0;
+  if (room === current) return;
+  if (room) transcript.style.setProperty('--toast-clear', `${room}px`); else transcript.style.removeProperty('--toast-clear');
+  if (atBottom) transcript.scrollTop = transcript.scrollHeight;
+}
+/** The toast is leaving: the room it took goes with it. */
+function releaseToastRoom(): void { toastPlacement.disconnect(); document.querySelector<HTMLElement>('#transcript')?.style.removeProperty('--toast-clear'); }
+function dismissToast(): void {
+  const toast = $('#toast');
+  if (!toastVisible(toast)) return;
+  const dismiss = toastDismiss;
+  toastGeneration++; toastShown = null; toastDismiss = undefined; settleToast(); leaveToastFocus(); releaseToastRoom(); void hideToast(toast);
+  dismiss?.();
+  showQueuedToast();
+}
+/** What had focus when the toast was raised (for an error dismissal, the next row's control or the composer). */
+let toastOrigin: HTMLElement | null = null;
+/** The toast is leaving or being replaced: focus in it moves to where it was raised from if that is still shown, else
+ * the composer; never left on <body>. */
+function leaveToastFocus(): void {
+  const toast = $('#toast');
+  if (!toast.contains(document.activeElement)) return;
+  const back = toastOrigin?.isConnected && !toast.contains(toastOrigin) && toastOrigin.getClientRects().length ? toastOrigin : document.querySelector<HTMLElement>('#prompt');
+  back?.focus({ preventScroll: true });
+}
+/** The toast stays while the pointer rests on it or focus is in it (WCAG 2.2.1), then leaves shortly after. */
 function hideToastLater(toast: HTMLElement, generation: number, delay: number): void {
   window.setTimeout(() => {
     if (generation !== toastGeneration) return;
     if (toast.matches(':hover, :focus-within')) { hideToastLater(toast, generation, 1200); return; }
-    toastUndo = undefined; void hideToast(toast);
+    toastShown = null; toastDismiss = undefined; settleToast(); releaseToastRoom(); void hideToast(toast);
+    showQueuedToast();
   }, delay);
 }
-function errorText(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (error instanceof Error) return error.message;
-  try { return JSON.stringify(error) ?? String(error); } catch { return String(error); }
+/** A notice raised by a failure (danger tone); modules get it as `host.notifyError`. */
+function notifyError(text: string): void { notify(text, undefined, { tone: 'danger' }); }
+function report(error: unknown): void { console.error(error); notifyError(errorText(error, 'Something went wrong. Please try again.')); }
+/** Rejections and errors nothing caught: logged in full, shown once and calmly (globalErrorText). Never throws. */
+let lastGlobalError: { key: string; at: number } | null = null;
+function onGlobalError(reason: unknown, message: string): void {
+  try {
+    if (isBenignGlobalError(reason, message)) return;
+    console.error('Uncaught error', reason ?? message);
+    const text = globalErrorText(reason), now = Date.now();
+    if (!shouldShowGlobalError(lastGlobalError, text, now)) return;
+    lastGlobalError = { key: text, at: now }; notifyError(text);
+  } catch (inner) { console.error(inner); }
 }
-function report(error: unknown): void { console.error(error); notify(typeof error === 'string' ? error : error instanceof Error ? error.message : 'Something went wrong. Please try again.'); }
+window.addEventListener('unhandledrejection', event => onGlobalError(event.reason, errorText(event.reason, '')));
+window.addEventListener('error', event => onGlobalError(event.error, event.message || ''));
 function run(work: Promise<unknown>): void { void work.catch(report); }
 async function openSupport(): Promise<void> {
   if (openingSupport) return;
@@ -1684,8 +1878,9 @@ function renderNavigation(): void {
     settledResize.disconnect(); settledDock = dock;
     if (dock) settledResize.observe(dock); else nav.style.removeProperty('--settled-height');
   }
-  // A row action that moved its task to another section hands focus to the task's row.
-  syncRovingFocus(nav);
+  // A row action that moved its task to another section hands focus to the task's row. Its tab stops read layout,
+  // so unless focus is in the list (keyboard use, kept instant) they settle in the frame, after the thread's own work.
+  syncNavigationFocus(nav);
   if (focusSelector) (nav.querySelector<HTMLElement>(focusSelector) ?? (focused?.dataset.task ? nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(focused.dataset.task)}"]`) : null))?.focus({ preventScroll: true });
   renderBoardView();
   updateWorkTimer();
@@ -1759,27 +1954,32 @@ function botCrumb(bot: import('./bots').Bot): string {
   return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
-function workerSlot(turn: { user?: Message; coordination?: Message; workerStart?: number }, sessionId = state.sessionId): string {
+function workerSlot(turn: { user?: Message; coordination?: Message; workerStart?: number }, sessionId = state.sessionId, topLevel = false): string {
   const start = turn.workerStart ?? turn.user?.createdAt ?? turn.coordination?.createdAt;
-  return teams.has(sessionId) && start !== undefined ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
+  // A card always carries its (hidden) slot, so a team landing after the rows fills slots rather than redrawing every
+  // card. A slot that would be a row of its own (chat rows, a turn with no card) is drawn only with a team.
+  return start !== undefined && (!topLevel || teams.get(sessionId)) ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
 }
 /** Each spawned worker shows in the turn it was spawned in; while that turn is still running,
  *  it follows the live activity at the end of the thread. */
 function refreshTeamProgress(): void {
-  const live = document.querySelector<HTMLElement>('#team-progress-host');
-  if (!live) return;
+  const liveHost = document.querySelector<HTMLElement>('#team-progress-host');
+  if (!liveHost) return;
   const team = teams.get(state.sessionId), workers = team?.workers ?? [];
   const slots = [...document.querySelectorAll<HTMLElement>('#transcript .team-progress-slot')].map(slot => ({ slot, start: Number(slot.dataset.turnStart) }));
-  const placed = new Map<HTMLElement, typeof workers>([[live, []], ...slots.map(({ slot }) => [slot, []] as [HTMLElement, typeof workers])]);
+  const placed = new Map<HTMLElement, typeof workers>([[liveHost, []], ...slots.map(({ slot }) => [slot, []] as [HTMLElement, typeof workers])]);
   // Only a turn that is still streaming has no saved place yet. Workers spawned before it
   // started (a coordination turn whose message hasn't loaded yet) keep their saved place.
   const startedAt = state.streams.get(state.sessionId)?.startedAt;
   for (const worker of workers) {
     let index = -1;
     slots.forEach((slot, at) => { if (slot.start <= worker.createdAt) index = at; });
+    // Its turn is older than the ones drawn so far; it takes its place when that turn is. A worker of the running turn
+    // always shows, whatever the drawn rows hold.
+    const live = startedAt !== undefined && worker.createdAt >= startedAt;
+    if (index < 0 && !live && transcriptView.view.first !== null && transcriptView.view.sessionId === state.sessionId) continue;
     const turn = slots[Math.max(index, 0)];
-    const host = !turn || (startedAt !== undefined && worker.createdAt >= startedAt && index === slots.length - 1) ? live : turn.slot;
-    placed.get(host)!.push(worker);
+    placed.get(!turn || (live && index === slots.length - 1) ? liveHost : turn.slot)!.push(worker);
   }
   const asking = (sessionId: string) => architectView?.needsInput(sessionId) ?? false;
   for (const [host, shown] of placed) updateTeamProgress(host, team, state.providers, shown, asking);
@@ -1811,19 +2011,21 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const live = tilePages.has(id) ? state.streams.get(id) : undefined;
   let messages = page.messages;
   if (live) messages = liveVisibleMessages(messages, live);
-  const key = `${messages.length}:${messages.at(-1)?.id ?? ''}:${live ? 'live' : ''}`;
+  const key = `${messages.length}:${messages.at(-1)?.id ?? ''}:${live ? 'live' : ''}:${hiddenErrorsRevision}`;
   if (rows.dataset.key !== key) {
     const switches = captureAccountSwitches(rows);
     rows.dataset.key = key;
     const thread = { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider };
-    const turns = mergeLeadTurns(groupTurns(messages));
+    const turns = mergeLeadTurns(withErrorTurns(groupTurns(messages)));
     const { saved, earlier } = live ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
-    rows.innerHTML = `${saved.map(turn => turnHtml(turn, id, false, thread)).join('')}${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`;
-    restoreAccountSwitches(rows, switches);
+    const env = markupEnv(id, false, thread);
+    const { from, added } = tileWindows.draw(rows, saved, turn => savedTurnHtml(turn, id, false, env, thread), `${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`, () => restoreAccountSwitches(rows, switches));
     rows.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
     const byId = new Map(messages.map(message => [String(message.id), message]));
-    rows.querySelectorAll<HTMLElement>('[data-markdown]').forEach(node => { const message = byId.get(node.dataset.markdown!); if (message) void markdown(node, message.content, scroller).catch(report); });
-    watchReplies(rows);
+    // Only what was just drawn, the live card included: kept rows already hold their formatted text.
+    for (const node of added) if (node instanceof Element) node.querySelectorAll<HTMLElement>('[data-markdown]').forEach(target => { const message = byId.get(target.dataset.markdown!); if (message) void markdown(target, message.content, scroller).catch(report); });
+    watchReplies(added);
+    if (from > 0 && windowShort(scroller.scrollHeight, scroller.clientHeight)) tileWindows.showMore(id, rows, scroller);
   }
   const slot = rows.querySelector<HTMLElement>('.thread-mirror-live');
   if (!slot) return;
@@ -1836,11 +2038,15 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   reply.hidden = !live.text;
   if (live.text && reply.dataset.source !== live.text) { reply.dataset.source = live.text; void markdown(reply.querySelector<HTMLElement>('.markdown')!, live.text, scroller).catch(report); }
 }
+/** What each tile view has drawn, and the steps that draw more of it (transcript-view.ts). */
+const tileWindows = mountTileWindows<TranscriptTurn>({
+  redraw: (id, rows, scroller) => drawTile(id, rows, scroller), turnIds, messagesOf: turns => turnsMessages(turns), fillToolBody: tool => fillToolBody(tool), report,
+});
 /** A tile's live card: its read-only header and reply, with the exchange a wake continues folded between them. */
 function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
   const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
   const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
-  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, sessionId) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
 }
 /** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
 function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
@@ -1851,35 +2057,71 @@ function turnLeadHtml(turn: TranscriptTurn, thread = shownThread()): string {
   return (turn.user ? messageHtml(turn.user, false, true, thread) : '') + (turn.handoff ? messageHtml(turn.handoff, false, true, thread) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '');
 }
 const notesHtml = (turn: TranscriptTurn, thread: Thread): string => turn.notes.map(message => messageHtml(message, false, true, thread)).join('');
-const cardErrorsHtml = (turn: TranscriptTurn, thread: Thread): string => turn.errors.length ? `<div class="turn-card-errors">${turn.errors.map(message => messageHtml(message, false, true, thread)).join('')}</div>` : '';
+const cardErrorsHtml = (turn: TranscriptTurn, sessionId: string): string => savedErrorsHtml(turn.errors, turn.key, sessionId, 'turn-card-errors');
 const earlierChangeSets = (turn: TranscriptTurn): TurnChanges[] => [...(turn.earlierChanges ?? []), ...(turn.changes ? [turn.changes] : [])];
 /** A card's one footer: a single run's snapshot as it is, several runs of a merged exchange combined (combineChanges). */
 function cardFootHtml(sessionId: string, changes: TurnChanges[]): string {
   const shown = changes.filter(set => set.attributed && set.files.length);
   return shown.length > 1 ? changesFoot(sessionId, combineChanges(shown)) : shown[0] ? changesFoot(sessionId, shown[0]) : '';
 }
+/** Each saved turn's markup in the open thread, kept while nothing it is drawn from changed, so a redraw compares
+ *  strings rather than rebuilding every drawn card. Keyed by the turn's first message: the turn is the same while it
+ *  holds the same message objects (saved messages are never edited in place, and a pending one, id <= 0, is never kept)
+ *  and `markupEnv` (everything else the markup reads) is unchanged. RULE: a new input to turnHtml or what it calls goes
+ *  into `parts` or `markupEnv` (tests/transcript-markup.test.mjs flags any change to turnHtml's code). */
+const turnMarkup = markupCache<Message>();
+/** What every saved turn's markup reads from outside the app's state (transcript-host.ts markupShared). */
+const turnInputs = markupShared();
+/** What a turn's markup reads besides its own messages; computed once per draw. `thread` is a tile's (the open thread's otherwise). */
+function markupEnv(sessionId: string, chatRows: boolean, thread = shownThread()): string {
+  const task = state.sessions.find(item => item.id === sessionId);
+  // A later handoff names the harness of every reply before it (historicalProvider).
+  // Whether the thread is the open one: only its changes cards act (changesRow, changesFoot); a tile of it does not.
+  return JSON.stringify([sessionId, sessionId === state.sessionId, chatRows, thread.provider, task?.remoteDevice?.id ?? '', chatRows && Boolean(teams.get(sessionId)), activityExpanded(), state.view === 'board', projectRunner.available(), lastHandoff(thread.messages), state.providers.length, schedulesVersion(), ...turnInputs.inputs()]);
+}
+/** A saved turn's markup, from turnMarkup when it still holds: the open thread's, or a tile's with its `thread`. */
+function savedTurnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, env: string, thread?: Thread): string {
+  const messages = turnMessages(turn);
+  const head = messages.find(Boolean);
+  if (!head || (!thread && sessionId !== state.sessionId) || messages.some(message => message && message.id <= 0)) return turnHtml(turn, sessionId, chatRows, thread);
+  const parts = [...messages, ...(turn.timeline ?? []), turn.changes, ...(turn.earlierChanges ?? []), turn.key, turn.durationMs, turn.estimated, turn.workerStart, state.providers, replyOpen(turn.key), cardless(turn) && Boolean(teams.get(sessionId)), (turn as ShownTurn).dismissedErrors, (turn as ShownTurn).errorsDismissed, errorsOpenKey(turn, sessionId)];
+  return turnMarkup(head, parts, env, () => turnHtml(turn, sessionId, chatRows, thread));
+}
+/** Which of a saved turn's error rows are expanded (errorRowHtml reads openErrors and openLiveErrors): part of what
+ *  its cached markup depends on (savedTurnHtml). */
+const errorsOpenKey = (turn: TranscriptTurn, sessionId: string): string => turn.errors.length ? groupErrors(turn.errors).map(group => openErrors.has(`${turn.key}|${group.key}`) || liveErrorOpen(group, sessionId, false) ? '1' : '0').join('') : '';
+/** A turn drawn without a card (no activity, reply or error): its workers slot is a row of its own (workerSlot). */
+const cardless = (turn: TranscriptTurn): boolean => !turn.activity.length && !turn.final && !turn.errors.length && !(turn as ShownTurn).errorsDismissed;
 function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
   const lead = turnLeadHtml(turn, thread);
   const notes = notesHtml(turn, thread);
-  if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + turn.errors.map(message => messageHtml(message, false, true, thread)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
-  if (!turn.activity.length && !turn.final && !turn.errors.length) return lead + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
+  if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + savedErrorsHtml(turn.errors, turn.key, sessionId) + dismissedNoteHtml(turn) + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId, true) + changesRow(sessionId, turn.changes);
+  if (cardless(turn)) return lead + notes + workerSlot(turn, sessionId, true) + changesRow(sessionId, turn.changes);
   return lead + turnCardHtml(turn, sessionId, thread) + notes;
 }
 function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): string {
   const decoded = turn.activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
   const tools = decoded.filter((tool): tool is ToolActivity => Boolean(tool)), steps = decoded.every(Boolean);
   const time = timeHtml(turn.durationMs);
-  const label = tools.length ? foldedLabelHtml(tools) : escape(turn.final ? 'Replied' : turn.errors.length ? 'Stopped' : 'Worked');
+  const label = tools.length ? foldedLabelHtml(tools) : escape(turn.final ? 'Replied' : turn.errors.length || (turn as ShownTurn).errorsDismissed ? 'Stopped' : 'Worked');
   const head = turn.activity.length
-    ? activityHtml(turn.key, label, savedActivityHtml(turn.activity, steps || activityExpanded(), thread), { steps, meta: time })
+    ? activityHtml(turn.key, label, savedActivityHtml(turn.activity, steps || activityExpanded(), thread, true), { steps, meta: time })
     : `<div class="turn-card-head"><span class="turn-activity-label">${label}</span>${time}</div>`;
   const final = turn.final;
-  const reply = final ? replyHtml(messageHtml(final, true, false, thread), turn.key, messageActionsHtml(final.sessionId, final.id, final.id > 0)) : '';
-  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, thread)}${cardFootHtml(sessionId, earlierChangeSets(turn))}</section>`;
+  const reply = final ? replyHtml(messageHtml(final, true, false, thread), turn.key, messageActionsHtml(final.sessionId, final.id, final.id > 0), false, String(final.id)) : '';
+  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, sessionId)}${dismissedNoteHtml(turn)}${cardFootHtml(sessionId, earlierChangeSets(turn))}</section>`;
 }
 /** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
  *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
 const TRANSCRIPT_HOLD_MS = 150;
+/** Whether the open thread's rows were drawn with a team: a turn with no card draws its workers slot only then. A
+ *  thread found to have none reads as before its team was known, so learning that redraws nothing. */
+let rowsTeam = false;
+/** The open thread's team became known (or went) after its rows drew: rows whose markup depends on it redraw (drawRows
+ *  keeps the rest); otherwise the workers just move into their slots. */
+function syncTeamRows(): void {
+  if (transcriptRows === state.sessionId && rowsTeam !== Boolean(teams.get(state.sessionId))) renderTranscript(); else refreshTeamProgress();
+}
 let transcriptRows: string | undefined, transcriptHold: { expired: boolean; timer: number } | undefined;
 function holdTranscript(transcript: HTMLElement, id: string, rows: string | undefined): boolean {
   if (transcriptHold) { if (transcriptHold.expired) return false; transcriptRows = rows; return true; }
@@ -1893,6 +2135,77 @@ function releaseTranscriptHold(transcript: HTMLElement, settle: boolean): void {
   clearTimeout(transcriptHold.timer); transcriptHold = undefined;
   releaseHold(transcript, settle);
 }
+/** What a reader had set in a row: its folds, change cards and open account notes. */
+type RowViews = { turns: TurnView[]; groups: ToolGroupView[]; tools: Map<string, ToolView>; changes: Map<string, boolean>; notes: AccountSwitchView[] };
+/** What the reader set in a row; undefined for a row they never touched, which redraws as it was. */
+const rowViewsKept = rowViews<RowViews>(transcriptScroller, roots => ({
+  turns: roots.flatMap(root => captureTurns(root)), groups: roots.flatMap(captureToolGroups),
+  tools: new Map(roots.flatMap(root => [...captureTools(root)])), changes: new Map(roots.flatMap(root => [...captureChangeCards(root)])),
+  notes: roots.flatMap(root => root.matches('details[data-account-switch]') ? [{ node: root as HTMLDetailsElement, focused: false }] : captureAccountSwitches(root)).filter(note => note.node.open),
+}), (root, views) => { restoreTurns(root, views.turns); restoreToolGroups(root, views.groups); restoreChangeCards(root, views.changes); restoreTools(root, views.tools); });
+const captureRowViews = rowViewsKept.capture, restoreRowViews = rowViewsKept.restore;
+const turnsMessages = (turns: readonly TranscriptTurn[], all = false): (Message | undefined)[] => turns.flatMap(turn => [all || !lazyReply(turn) ? turn.final : undefined, ...turn.activity]);
+/** What the transcript has drawn, and the steps that widen and narrow it (transcript-view.ts). */
+const transcriptView = mountTranscriptView<TranscriptTurn, RowViews>({
+  scroller: transcriptScroller,
+  openId: () => state.sessionId,
+  drawsWhole: () => Boolean(botForThread()),
+  elsewhere: () => Boolean(state.sharedChannelId),
+  visible: transcriptVisible,
+  savedTurns: sessionId => shownTurns(sessionId, false).saved,
+  turnIds,
+  messagesOf: (turns, all) => turnsMessages(turns, all),
+  markup: sessionId => { const env = markupEnv(sessionId, false); return turn => savedTurnHtml(turn, sessionId, false, env); },
+  captureViews: captureRowViews,
+  restoreViews: restoreRowViews,
+  prepare: (fragment, back) => {
+    const swaps = restoreAccountSwitches(fragment, back.flatMap(views => views?.notes ?? []));
+    // Formatted in the fragment, in one pass: already-prepared text lands before anything lays out.
+    paintSavedMarkdown(fragment, state.messages, new Map(), workspaceContext(), followTranscript, transcriptScroller);
+    return swaps;
+  },
+  redrawRow,
+  rowsChanged: workersOnly => { refreshTeamProgress(); if (!workersOnly) decorateTranscript(); },
+  watch: (nodes, defer) => measureReplies(nodes, defer),
+  placed: top => { lastTranscriptTop = top; },
+  trimBlocked: () => transcriptGap() > 2 || Boolean(tailRoom) || tailBridging || Boolean(followFrame) || threadFind.isOpen(),
+  findInput: () => document.querySelector<HTMLInputElement>('.thread-find input'),
+  findCount: (turn, query) => turnMatches(turn, query),
+  prepareCounts: turns => findCounts.prepare(turns),
+  deferredReplies: () => lazyReplies.pending().map(el => ({ role: 'assistant', content: savedMarkdownSources.get(el) ?? '' })),
+  paintDeferred: () => lazyReplies.flush(el => markdownCache.get(savedMarkdownSources.get(el) ?? '') !== undefined),
+  // A page that failed is asked for again only by the reader scrolling, never by every redraw.
+  fetchOlder: () => { if (state.messages.find(message => message.id > 0)?.id !== olderFailedAt) void loadOlderMessages(true, false); },
+  report,
+});
+let rowsSeed: { sessionId: string; first: string | null } | undefined;
+/** The last threads left, kept to reattach (transcript-view.ts). Bot threads are not kept: their decorations span rows. */
+const leftRows = leftRowsCache<RowViews>();
+function keepLeftRows(): void {
+  const view = transcriptView.view, task = state.sessions.find(item => item.id === view.sessionId);
+  if (task && !sidebarBots.some(bot => bot.projectId === task.projectId) && rowsIntact(transcriptScroller, view.rows)) leftRows.keep(view.sessionId, { rows: view.rows, trimmed: view.trimmed, keys: view.ids.slice(drawnFrom(view)).map(ids => ids.at(-1)!) });
+}
+/** A tile opened in the pane. A reader who left the bottom of the tile keeps their place, so the pane draws from the
+ *  tile's oldest drawn turn; when the pane's page does not hold that turn (it keeps fewer messages), the same scroll
+ *  offset would land on other content, so the pane stays at its bottom instead. */
+async function openFromTile(id: string, scrollTop: number | undefined): Promise<void> {
+  const tile = scrollTop === undefined ? undefined : tileWindows.ofThread(id);
+  const anchor = tile?.ids[drawnFrom(tile)]?.[0];
+  rowsSeed = tile ? { sessionId: id, first: tile.first } : undefined;
+  await selectSession(id);
+  const view = transcriptView.view;
+  if (scrollTop === undefined || anchor === undefined || view.sessionId !== id || state.sessionId !== id || !view.ids[drawnFrom(view)]?.includes(anchor)) return;
+  transcriptScroller.scrollTop = scrollTop; releaseTranscript();
+}
+/** A thread's turns as drawn, and what a live card takes over from the last one. */
+function shownTurns(sessionId: string, bot: boolean): { saved: TranscriptTurn[]; earlier: TranscriptTurn | undefined; running: Stream | undefined } {
+  const grouped = withErrorTurns(groupTurns(visibleMessages(sessionId)));
+  const turns = bot ? grouped : mergeLeadTurns(grouped);
+  // A lead's wake run takes the exchange it continues into its live card, so one reply is one card while it streams too.
+  const running = bot || wakeHolds.has(sessionId) ? undefined : state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
+  const { saved, earlier } = running ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
+  return { saved, earlier, running };
+}
 function renderTranscript(preservePosition = false): void {
   closeContentMenus();
   const open = session();
@@ -1901,7 +2214,10 @@ function renderTranscript(preservePosition = false): void {
   syncNewTaskPage();
   const transcript = $('#transcript');
   transcript.removeAttribute('aria-busy');
-  const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
+  // Another thread's rows are about to go: nothing in them carries over, so don't read them (it forces their layout).
+  const leaving = Boolean(transcriptView.view.sessionId) && transcriptView.view.sessionId !== open?.id && document.getElementById('stream-region')?.dataset.sessionId !== open?.id;
+  if (leaving) keepLeftRows();
+  const toolViews = leaving ? new Map<string, ToolView>() : captureTools(transcript), groupViews = leaving ? [] : captureToolGroups(transcript), turnViews = leaving ? [] : captureTurns(transcript), changeViews = leaving ? new Map<string, boolean>() : captureChangeCards(transcript), scrollTop = transcript.scrollTop;
   const switches = captureAccountSwitches(transcript);
   const liveTurn = transcript.querySelector<HTMLElement>('#stream-region .live-activity[open]:not([data-folded])');
   const unfolded = liveTurn && !liveTurnStaysOpen(liveTurn) ? captureTurns(liveTurn.parentElement!, true)[0] : undefined;
@@ -1959,11 +2275,7 @@ function renderTranscript(preservePosition = false): void {
     transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project()?.path)}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1></div><div id="stream-region"></div>`;
     return;
   }
-  const grouped = groupTurns(visibleMessages());
-  const turns = bot ? grouped : mergeLeadTurns(grouped);
-  // A lead's wake run takes the exchange it continues into its live card, so one reply is one card while it streams too.
-  const running = bot || wakeHolds.has(s.id) ? undefined : state.streams.get(s.id) ?? finishingStreams.get(s.id)?.stream;
-  const { saved, earlier } = running ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
+  const { saved, earlier, running } = shownTurns(s.id, Boolean(bot));
   if (running) running.earlier = earlier && { turn: earlier, tools: earlier.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) };
   // Whether the earlier rows show is the reader's: a trace open before the wake, or the fold as they left it.
   if (earlier && turnViews.some(view => view.key === earlier.key && view.open)) wakeOpenTraces.add(earlier.key);
@@ -1989,11 +2301,29 @@ function renderTranscript(preservePosition = false): void {
   const liveTrace = liveCard?.querySelector<HTMLDetailsElement>(':scope > details.turn-activity'), liveTraceOpen = Boolean(liveTrace?.open && liveTrace.dataset.folded === undefined);
   // A trace that folded as the reply started and the reader opened again stays open in the saved card.
   const traceReopened = Boolean(liveTrace?.open && liveTrace.dataset.folded !== undefined && liveTrace.dataset.closing === undefined);
+  // Back on a thread left a moment ago: its rows go back in first, and drawRows keeps every one whose markup still matches.
+  const left = leaving && !bot ? leftRows.take(s.id) : undefined;
+  if (left) transcript.replaceChildren(...left.rows.flatMap(row => row.nodes));
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${saved.map(turn => turnHtml(turn, s.id, Boolean(bot))).join('')}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  const emptyHtml = state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : '';
+  // A thread opens from its newest turns; a redraw keeps the window and every row that did not change.
+  // Bot threads draw whole: bot-thread.ts decorates and groups the transcript's children across all of them.
+  const rowsView = transcriptView.view, intact = rowsView.sessionId === s.id && rowsIntact(transcript, rowsView.rows);
+  // A running thread draws before its page arrives: the seed waits for that page, and those rows are not a window yet.
+  const pageIn = !state.messagesLoading && saved.length > 0;
+  const ids = saved.map(turnIds);
+  // A tile's anchor this page does not list (it keeps fewer messages) opens from the newest turns, as any open does.
+  const seed = pageIn && rowsSeed?.sessionId === s.id && (rowsSeed.first === null || ids.some(list => list.includes(rowsSeed!.first!))) ? rowsSeed.first : undefined;
+  if (pageIn || rowsSeed?.sessionId !== s.id) rowsSeed = undefined;
+  const from = bot ? 0 : windowStart(ids, intact ? rowsView.first : seed), env = markupEnv(s.id, Boolean(bot));
+  const { rows: drawn, added } = drawRows(transcript, intact && !bot ? rowsView.rows : left?.rows ?? [], saved.slice(from).map(turn => savedTurnHtml(turn, s.id, Boolean(bot), env)), `${emptyHtml}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`);
+  // Folds the reader opened in rows of a widened window the reopened one leaves out come back with those rows.
+  const lastIds = left ? new Map(ids.map((list, index) => [list.at(-1)!, index])) : undefined;
+  const trimmed = intact ? rowsView.trimmed : left ? leftViews(left, drawn, key => (lastIds!.get(key) ?? from) < from, captureRowViews) : new Map<string, RowViews>();
+  transcriptView.view = { sessionId: s.id, first: windowAnchor(ids, from), ids, turns: saved, rows: state.messagesLoading ? [] : drawn, trimmed };
   paintSavedMarkdown(transcript, state.messages, previousMarkdown, workspaceContext(), followTranscript);
-  watchReplies(transcript);
+  watchReplies(added);
   reusableMarkdown = previousMarkdown;
   renderStream();
   reusableMarkdown = undefined;
@@ -2010,12 +2340,15 @@ function renderTranscript(preservePosition = false): void {
   lastTranscriptTop = transcript.scrollTop;
   // After every restore and the pin, so the saved card is measured where it will stay.
   if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened, liveFoot);
-  restoreAccountSwitches(transcript, switches);
+  // A note the reader had open goes back in place of the redrawn one, so the row lists the node that is on screen.
+  transcriptView.view = { ...transcriptView.view, rows: swapRowNodes(transcriptView.view.rows, restoreAccountSwitches(transcript, switches)) };
   if (bot) {
     botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
     if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
   }
-  transcriptRows = s.id;
+  transcriptView.fill();
+  transcriptView.syncFarRows();
+  transcriptRows = s.id; rowsTeam = Boolean(teams.get(s.id));
 }
 /** The live card is gone and the saved one stands in its place, in the same task: its reply stays open and the
  * footer fades in. If the live trace was still open (no reply folded it), the saved trace opens in its place and
@@ -2138,33 +2471,57 @@ onReplyCollapse((shrink, timing) => {
 });
 /** A side thread's saved turns: the By the way panel keeps the plain chat rows, since its live turn has no card to hand off to. */
 function turnRowsHtml(sessionId: string, visible: Message[], thread = shownThread()): string {
-  return groupTurns(visible).map(turn => turnHtml(turn, sessionId, true, thread)).join('');
+  return withErrorTurns(groupTurns(visible)).map(turn => turnHtml(turn, sessionId, true, thread)).join('');
 }
 /** Formats saved answers, reusing nodes whose source is unchanged so nothing reparses. */
-function paintSavedMarkdown(root: HTMLElement, messages: Message[], previousMarkdown: Map<string, HTMLElement>, context: FileLinkContext, follow: () => void): void {
+function paintSavedMarkdown(root: ParentNode, messages: Message[], previousMarkdown: Map<string, HTMLElement>, context: FileLinkContext, follow: () => void, scroller = root as HTMLElement): void {
   const byId = new Map(messages.map(message => [String(message.id), message]));
   root.querySelectorAll<HTMLElement>('[data-markdown]').forEach(el => {
     const message = byId.get(el.dataset.markdown!);
     if (!message) return;
     const previous = previousMarkdown.get(el.dataset.markdown!);
-    if (previous && savedMarkdownSources.get(previous) === message.content) {
-      // Prepending history must not reparse responses the reader already loaded.
-      el.replaceWith(previous);
+    if (previous && savedMarkdownSources.get(previous) === message.content && !staleMarkdown.has(previous)) {
+      // Prepending history must not reparse responses the reader already loaded; a kept row already holds its own.
+      if (previous !== el) el.replaceWith(previous);
       bindFileLinkContext(previous, context);
     } else {
       savedMarkdownSources.set(el, message.content);
+      staleMarkdown.delete(el);
       bindFileLinkContext(el, context);
-      // Following skips the paint's own pin (the ResizeObserver pins before paint); pin now so no task sees the gap.
-      void markdown(el, message.content, root).then(follow, report);
+      const lazy = message.content.length > LAZY_REPLY_CHARS && markdownCache.get(message.content) === undefined && el.closest('.turn-card-reply') && !el.closest('.turn-card-reply[data-open]');
+      if (lazy && lazyReplies.defer(el, follow)) return;
+      paintMarkdown(el, message.content, scroller, follow);
     }
   });
 }
-function savedActivityHtml(messages: Message[], expanded = activityExpanded(), thread = shownThread()): string {
-  return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
-    .map(run => run.kind === 'tools'
-      ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), expanded)
-      : messageHtml(run.item, false, false, thread)).join('');
+/** Following skips the paint's own pin (the ResizeObserver pins before paint); pin now so no task sees the gap. A
+ *  paint that finished while its node was out of the document wrote nothing: the node is marked, and formatted again
+ *  when it comes back (a thread's rows kept across a switch). */
+function paintMarkdown(el: HTMLElement, content: string, scroller: HTMLElement, follow: () => void): void {
+  void markdown(el, content, scroller).then(() => { if (!el.isConnected) staleMarkdown.add(el); follow(); }, report);
 }
+const staleMarkdown = new WeakSet<HTMLElement>();
+/** Long folded replies, formatted as they near the reader (transcript-window.ts LAZY_REPLY_CHARS). */
+const lazyReplies = lazyMarkdown(transcriptScroller, (el, follow) => { const content = savedMarkdownSources.get(el); if (content !== undefined) paintMarkdown(el, content, transcriptScroller, follow); }, el => leftRows.holds(el));
+/** Whether a saved reply is left to format lazily rather than ahead of its step (see LAZY_REPLY_CHARS). */
+const lazyReply = (turn: TranscriptTurn): boolean => Boolean(turn.final && turn.final.content.length > LAZY_REPLY_CHARS && !replyOpen(turn.key));
+/** `lazy` leaves each tool's body to `fillToolBody`. Narration is always drawn, so Find can reach it inside a closed fold. */
+function savedActivityHtml(messages: Message[], expanded = activityExpanded(), thread = shownThread(), lazy = false): string {
+  return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
+    .map(run => {
+      if (run.kind !== 'tools') return messageHtml(run.item, false, false, thread);
+      return renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content, id: String(message.id) })), expanded, false, lazy);
+    }).join('');
+}
+/** Draws a saved tool's body the first time it is needed, from the messages of the view it is in: the open thread's
+ *  `state.messages` in the transcript, the turns a tile drew in a tile. */
+function fillToolBody(tool: HTMLDetailsElement): void {
+  const rows = tool.closest<HTMLElement>('.thread-mirror-rows');
+  fillDrawnToolBody(tool, rows ? tileWindows.of(rows)?.turns.flatMap(turn => turn.activity) ?? [] : state.messages);
+}
+/** Find's in-memory counts (transcript-host.ts findCounter). */
+const findCounts = findCounter({ userHtml: message => messageHtml(message, false, false), version: schedulesVersion });
+const turnMatches = findCounts.turn;
 /** A turn of only tool calls folds to its summary sentence and mark stack (`Ran 2 searches and read 3 sources`),
  * opening onto the step rail; turns with narration keep `Worked for …` over their groups. */
 function savedTurnActivity(key: string, label: string, activity: Message[], thread = shownThread()): string {
@@ -2173,8 +2530,11 @@ function savedTurnActivity(key: string, label: string, activity: Message[], thre
   return activityHtml(key, foldedLabelHtml(tools as ToolActivity[]), savedActivityHtml(activity, true, thread), { steps: true, title: label });
 }
 function foldedLabelHtml(tools: ToolActivity[]): string {
-  const [sentence, failures] = summarizeTools(tools).split(' · ');
-  return `<span class="trace-summary-text">${escape(sentence)}${failures ? `<span class="tool-group-status has-failure"> · ${escape(failures)}</span>` : ''}</span>${toolStackHtml(tools)}`;
+  // Tallies after the sentence (`2 running`, `1 failed`, `1 blocked`, `1 interrupted`): only failures read as a failure.
+  const [sentence, ...tallies] = summarizeTools(tools).split(' · ');
+  const status = tallies.map(tally => `<span class="tool-group-status${/\bfailed$/.test(tally) ? ' has-failure' : /\b(blocked|denied|interrupted)$/.test(tally) ? ' is-blocked' : /\brunning$/.test(tally) ? ' is-running' : ''}"><span class="tool-group-sep"> · </span>${escape(tally)}</span>`).join('');
+  // The sentence ellipsizes; the tallies after it never shrink, so a narrow header still says what failed.
+  return `<span class="trace-summary-text"><span class="trace-summary-sentence">${escape(sentence)}</span>${status}</span>${toolStackHtml(tools)}`;
 }
 function savedToolKey(message: Message): string {
   const tool = decodeToolActivity(message.content);
@@ -2196,11 +2556,12 @@ function captureToolGroups(root: ParentNode): ToolGroupView[] {
   }));
 }
 function restoreToolGroups(root: ParentNode, views: ToolGroupView[]): void {
+  if (!views.length) return;
+  const find = viewIndex(views);
   root.querySelectorAll<HTMLDetailsElement>('.tool-group').forEach(group => {
-    const keys = new Set([...group.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey));
-    const view = views.find(view => view.key === group.dataset.toolGroupKey || view.toolKeys.some(key => keys.has(key)));
+    const view = find(group.dataset.toolGroupKey, [...group.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey));
     if (!view) return;
-    group.open = view.open;
+    if (group.open !== view.open) group.open = view.open;
     if (view.focused) group.querySelector<HTMLElement>('.tool-group-summary')?.focus({ preventScroll: true });
   });
 }
@@ -2222,13 +2583,14 @@ function foldSavedTurn(root: ParentNode, live: TurnView): void {
   foldTurn(turn);
 }
 function restoreTurns(root: ParentNode, views: TurnView[]): void {
+  if (!views.length) return;
+  const find = viewIndex(views);
   root.querySelectorAll<HTMLDetailsElement>('.turn-activity').forEach(turn => {
-    const keys = new Set([...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey));
     // A live trace holds a wake's earlier tools, but a saved card's folded state is not its own.
     const live = turn.classList.contains('live-activity');
-    const view = views.find(view => view.key === turn.dataset.turnKey || (!live && view.toolKeys.some(key => keys.has(key))));
+    const view = find(turn.dataset.turnKey, live ? [] : [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey));
     if (!view) return;
-    turn.open = view.open;
+    if (turn.open !== view.open) turn.open = view.open;
     if (view.focused) turn.querySelector<HTMLElement>('.turn-activity-summary')?.focus({ preventScroll: true });
   });
 }
@@ -2249,7 +2611,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
     return renderToolActivity(tool ?? m.content, tool ? 'tool:' + tool.id : 'message:' + m.id);
   }
   if (m.role === 'status') return renderToolStatus(m.content);
-  if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
+  if (m.role === 'error') return errorRowHtml({ key: errorKey(m.content), content: m.content, count: 1, ids: [m.id] }, 'message:' + m.id, m.sessionId);
   if (m.role === 'system') return accountSwitchHtml(m) ?? `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
@@ -2280,6 +2642,7 @@ function loadSentImage(id: string): void {
   call<string | null>('prompt_image', { id }).then(url => {
     if (!url?.startsWith('data:image/')) return;
     sentImages.set(id, url);
+    turnInputs.bump();
     for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${id}"]`)) {
       img.src = url; img.hidden = false;
       if (img.nextElementSibling?.matches('svg.icon')) img.nextElementSibling.remove();
@@ -2306,57 +2669,11 @@ async function openMessageAttachment(element: HTMLElement): Promise<void> {
   if (!/^(?:\/|[A-Za-z]:[\\/])/.test(item.path)) throw new Error(`${item.name} was dropped from a browser, so its location is unknown.`);
   await call('reveal_path', { path: item.path });
 }
-type ToolView = { open: boolean; rawOpen: boolean; controls: { selector: string; top: number; left: number; focused: boolean }[] };
-function captureTools(root: ParentNode): Map<string, ToolView> {
-  const views = new Map<string, ToolView>();
-  const selectors = ['summary', '.tool-trace-raw > summary', '.tool-trace-card pre', '[data-tool-section="input"] pre', '[data-tool-section="output"] pre', '.tool-activity-legacy-body'];
-  root.querySelectorAll<HTMLDetailsElement>('details[data-tool-key]').forEach(tool => {
-    const controls: ToolView['controls'] = [];
-    for (const selector of selectors) {
-      const control = tool.querySelector<HTMLElement>(selector);
-      if (control) controls.push({ selector, top: control.scrollTop, left: control.scrollLeft, focused: control === document.activeElement });
-    }
-    views.set(tool.dataset.toolKey!, { open: tool.open, rawOpen: Boolean(tool.querySelector<HTMLDetailsElement>('.tool-trace-raw')?.open), controls });
-  });
-  return views;
-}
-function restoreTools(root: ParentNode, views: Map<string, ToolView>): void {
-  root.querySelectorAll<HTMLDetailsElement>('details[data-tool-key]').forEach(tool => {
-    const view = views.get(tool.dataset.toolKey!); if (!view) return;
-    tool.open = view.open;
-    const raw = tool.querySelector<HTMLDetailsElement>('.tool-trace-raw');
-    if (raw) raw.open = view.rawOpen;
-    for (const saved of view.controls) {
-      const control = tool.querySelector<HTMLElement>(saved.selector);
-      if (saved.focused) (control ?? tool.querySelector<HTMLElement>('summary'))?.focus({ preventScroll: true });
-      if (control) { control.scrollTop = saved.top; control.scrollLeft = saved.left; }
-    }
-  });
-}
+/** A saved tool's folds and scroll offsets, put back after a redraw (transcript-host.ts restoreToolViews). */
+const restoreTools = (root: ParentNode, views: Map<string, ToolView>): void => restoreToolViews(root, views, fillToolBody);
 function accountSwitchHtml(message: Message): string | null {
   const detail = accountSwitchDetail(message.content);
   return detail === null ? null : `<details class="account-switch-note" data-account-switch="${escape(message.sessionId)}:${message.id}" data-account-switch-session="${escape(message.sessionId)}"><summary>${icon('refresh')}<span>Account switched</span>${icon('chevron')}</summary><p>${escape(detail)}</p></details>`;
-}
-type AccountSwitchView = { node: HTMLDetailsElement; focused: boolean };
-const captureAccountSwitches = (root: ParentNode): AccountSwitchView[] => [...root.querySelectorAll<HTMLDetailsElement>('details[data-account-switch]')].map(node => ({ node, focused: node.querySelector('summary') === document.activeElement }));
-function takeAccountSwitch(views: AccountSwitchView[], key: string, sessionId: string, detail: string, keys: Set<string>): AccountSwitchView | undefined {
-  let index = views.findIndex(view => view.node.dataset.accountSwitch === key);
-  // A transient event becomes a saved row. Match occurrences, never all equal prose across turns.
-  if (index < 0) for (let i = views.length - 1; i >= 0; i--) {
-    const view = views[i];
-    if (!keys.has(view.node.dataset.accountSwitch!) && view.node.dataset.accountSwitchSession === sessionId && view.node.querySelector('p')?.textContent === detail && (/:-\d+$/.test(view.node.dataset.accountSwitch!) || /:-\d+$/.test(key))) { index = i; break; }
-  }
-  return index < 0 ? undefined : views.splice(index, 1)[0];
-}
-function restoreAccountSwitches(root: ParentNode, views: AccountSwitchView[], departing?: Element): void {
-  const notes = [...root.querySelectorAll<HTMLDetailsElement>('details[data-account-switch]')].filter(note => !departing?.contains(note)), keys = new Set(notes.map(note => note.dataset.accountSwitch!));
-  for (const fresh of notes.reverse()) {
-    const view = takeAccountSwitch(views, fresh.dataset.accountSwitch!, fresh.dataset.accountSwitchSession!, fresh.querySelector('p')!.textContent!, keys);
-    if (!view || view.node === fresh) continue;
-    view.node.dataset.accountSwitch = fresh.dataset.accountSwitch;
-    fresh.replaceWith(view.node);
-    if (view.focused) view.node.querySelector('summary')!.focus({ preventScroll: true });
-  }
 }
 function paintAccountSwitches(host: HTMLElement, messages: LiveAccountSwitch[]): void {
   const views = captureAccountSwitches(host), keys = new Set(messages.map(message => `${message.sessionId}:${message.id}`));
@@ -2420,8 +2737,8 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     const switches = captureAccountSwitches(region);
-    region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
+    region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors thread-errors"></div>'
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, sessionId) : ''}<div class="live-errors thread-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
     paintAccountSwitches(region.querySelector<HTMLElement>('.live-account-switches')!, current.accountSwitches);
     restoreAccountSwitches(region, switches);
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
@@ -2437,9 +2754,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (region.dataset.revision !== String(current.revision)) {
     paintAccountSwitches(parts.accountSwitches, current.accountSwitches);
     paintLiveActivity(region, current, transcript, context);
-    const errors = parts.errors;
-    const errorHtml = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
-    if (liveErrorHtml.get(errors) !== errorHtml) { errors.innerHTML = errorHtml; liveErrorHtml.set(errors, errorHtml); }
+    paintLiveErrors(parts.errors, current, sessionId, finishing?.error);
     // Approvals live in the bar above the prompt, not in the transcript.
     if (parts.approvals.firstChild) parts.approvals.replaceChildren();
     if (main) renderApprovalBar();
@@ -2510,6 +2825,299 @@ function queryStreamParts(region: HTMLElement): StreamParts {
 const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidden !== hidden) node.hidden = hidden; };
 const liveGroupEntries = new WeakMap<HTMLElement, LiveTool[]>();
 const liveErrorHtml = new WeakMap<Element, string>();
+/* Thread errors (pure helpers in thread-errors.ts): identical errors are one row with a count, the full text folds
+ * open under a disclosure, and a row (or every row of a turn) can be dismissed, with Undo in the toast. Clicks reach
+ * `action` by delegation. */
+/** A transient error row a turn boundary wrote for a live row (materializeTurn): `count` events in one row, and the
+ * saved rows of those events, which dismissing the transient row deletes. */
+type CountedMessage = Message & { count?: number; savedIds?: number[] };
+/** "3 errors dismissed" where an emptied turn's error box was; plain muted text, not announced (the toast was). */
+function dismissedNoteHtml(turn: ShownTurn): string {
+  const count = turn.dismissedErrors ?? 0;
+  return count && !turn.errors.length ? `<p class="errors-dismissed-note">${count === 1 ? '1 error' : `${count} errors`} dismissed</p>` : '';
+}
+/** Drops dismissed error rows (hiddenErrors, and a mirrored thread's run copies, runHides) and folds errors-only turns
+ * into the turn before (foldErrorTurns). */
+function withErrorTurns(turns: TranscriptTurn[]): ShownTurn[] {
+  const sessionId = turns.find(turn => turn.errors.length)?.errors[0].sessionId, hides = sessionId ? runHides.get(sessionId) : undefined;
+  const fromRun = hides?.length ? hiddenRunErrors(turns.flatMap(turn => [turn.user, turn.coordination, ...turn.activity, turn.final, ...turn.errors, ...turn.notes].filter((message): message is Message => Boolean(message))), hides) : undefined;
+  if (!hiddenErrors.size && !fromRun?.size) return foldErrorTurns(turns, () => false);
+  return foldErrorTurns(turns, message => hiddenErrors.has(message.id) || Boolean(fromRun?.has(message.id)));
+}
+/** Whether a live disclosure the reader opened carries over to this row: the live row itself, or the run's saved rows. */
+function liveErrorOpen(group: ErrorGroup, sessionId: string, live: boolean): boolean {
+  const saved = openLiveErrors.get(`${sessionId}|${group.key}`);
+  if (!saved) return false;
+  return live || group.ids.some(id => typeof id === 'number' && (id < 0 || saved.has(id)));
+}
+function errorRowHtml(group: ErrorGroup, scope: string, sessionId: string, live = false): string {
+  const { summary, detail } = errorSummary(group.content);
+  // Unique per session, scope and row; the By the way panel prefixes its copies (scopeErrorIds), tiles drop ids.
+  const baseId = `err-${[sessionId, scope, String(group.ids[0])].join('-').replace(/[^\w-]/g, '_')}`, detailId = `${baseId}-detail`;
+  const open = detail !== null && (openErrors.has(`${scope}|${group.key}`) || liveErrorOpen(group, sessionId, live));
+  const count = group.count > 1 ? `<span class="error-row-count"><span aria-hidden="true">×${group.count}</span><span class="sr-only">Repeated ${group.count} times</span></span>` : '';
+  const toggle = detail === null ? '' : `<button type="button" class="error-row-button error-row-toggle" data-action="toggle-error" aria-label="Error details" aria-describedby="${baseId}-summary" aria-expanded="${open}" aria-controls="${detailId}">${icon('chevron')}</button>`;
+  const dismiss = `<button type="button" class="error-row-button error-row-dismiss" data-action="dismiss-error" aria-label="Dismiss error" aria-describedby="${baseId}-summary">${icon('close')}</button>`;
+  // Focusable so the keyboard can scroll a long detail (WKWebView does not scroll an unfocusable overflow box); a named
+  // region, so a screen reader reads its text after the summary that names it.
+  const body = detail === null ? '' : `<pre class="error-row-detail" id="${detailId}" role="region" aria-labelledby="${baseId}-summary" tabindex="0"${open ? '' : ' hidden'}>${escape(detail)}</pre>`;
+  return `<div class="message-error error-row" data-error-key="${escape(group.key)}" data-error-scope="${escape(scope)}" data-error-ids="${escape(group.ids.join(' '))}" data-error-count="${group.count}" data-session="${escape(sessionId)}"${live ? ' data-live' : ''}><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary" id="${baseId}-summary">${escape(summary)}</span>${count}${toggle}${dismiss}</div>${body}</div>`;
+}
+/** The By the way panel can show the open thread too: its error rows get their own ids (and references to them). */
+function scopeErrorIds(root: HTMLElement): void {
+  root.querySelectorAll<HTMLElement>('.message-error [id^="err-"]').forEach(node => { node.id = 'btw-' + node.id; });
+  for (const attribute of ['aria-controls', 'aria-labelledby', 'aria-describedby']) {
+    root.querySelectorAll<HTMLElement>(`.message-error [${attribute}^="err-"]`).forEach(node => node.setAttribute(attribute, 'btw-' + node.getAttribute(attribute)));
+  }
+}
+const dismissAllHtml = (groups: number): string => groups > 1 ? '<div class="error-dismiss-all-row"><button type="button" class="error-dismiss-all" data-action="dismiss-errors">Dismiss all</button></div>' : '';
+/** A turn's saved errors, grouped, in one `.thread-errors` box (none at all when every error was dismissed). */
+function savedErrorsHtml(errors: Message[], scope: string, sessionId: string, extraClass = ''): string {
+  if (!errors.length) return '';
+  // A transient row (materializeTurn) stands in for saved rows too: dismissing it deletes those.
+  const savedOf = new Map(errors.map(error => [error.id, (error as CountedMessage).savedIds ?? []]));
+  const groups = groupErrors(errors).map(group => ({ ...group, ids: [...group.ids, ...group.ids.flatMap(id => savedOf.get(id as number) ?? [])] }));
+  return `<div class="thread-errors${extraClass ? ' ' + extraClass : ''}">${groups.map(group => errorRowHtml(group, scope, sessionId)).join('')}${dismissAllHtml(groups.length)}</div>`;
+}
+/** A live error row keeps at most the last this many characters (the tool path bounds its text the same way). */
+const LIVE_ERROR_CHARS = 8192;
+const isLiveError = (tool: LiveTool): boolean => Boolean(tool.statusOnly) && typeof tool.content === 'string';
+/** The live turn's errors (one row per key, already counted by addLiveError) and a failed saved-page load. Redrawn only
+ * when its markup changes; a focused control in it is focused again in the new markup. */
+function paintLiveErrors(container: HTMLElement, current: Stream, sessionId: string, loadError?: string): void {
+  const tools = current.tools.filter(tool => isLiveError(tool) && !tool.dismissed);
+  // The stream key first (it names the row), then the saved rows its events became.
+  const groups = tools.map(tool => ({ key: errorKey(tool.content as string), content: stripErrorPrefix(tool.content as string), count: tool.count ?? 1, ids: [tool.key, ...(tool.savedIds ?? [])] }));
+  const html = groups.map(group => errorRowHtml(group, 'live:' + current.turnKey, sessionId, true)).join('') + dismissAllHtml(groups.length);
+  paintRetryRow(container, sessionId, loadError);
+  if (liveErrorHtml.get(container) === html) return;
+  const focused = container.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+  const focusKey = focused?.closest<HTMLElement>('.message-error')?.dataset.errorKey, focusAction = focused?.dataset.action;
+  // The Retry row (paintRetryRow) is left in place: only the live rows before it are rewritten.
+  for (const child of [...container.children]) if (!child.classList.contains('live-retry')) child.remove();
+  container.insertAdjacentHTML('afterbegin', html); liveErrorHtml.set(container, html);
+  if (focusAction) refocusError(container, focusKey, focusAction);
+  // After this frame's follow-to-bottom, so the room is measured where the rows end up.
+  requestAnimationFrame(() => { const toast = $('#toast'); if (!toast.hidden) makeToastRoom(toast); });
+}
+/** The load error each session's Retry row has already announced (paintRetryRow). */
+const announcedLoadErrors = new Map<string, string>();
+/** A failed saved-page load: its own node after the live rows, rewritten only when its text changes, and `role=alert`
+ * only the first time that error shows for the session, so a redraw (a new live row, a dismissal rebuilding the region)
+ * does not announce it again. Not saved, so no dismiss: Retry is its one action. */
+function paintRetryRow(container: HTMLElement, sessionId: string, loadError?: string): void {
+  let retry = container.querySelector<HTMLElement>(':scope>.live-retry');
+  if (!loadError) { retry?.remove(); announcedLoadErrors.delete(sessionId); return; }
+  if (retry?.dataset.loadError === loadError) return;
+  retry?.remove();
+  retry = document.createElement('div');
+  retry.className = 'message-error error-row live-retry'; retry.dataset.loadError = loadError;
+  if (announcedLoadErrors.get(sessionId) !== loadError) { retry.setAttribute('role', 'alert'); announcedLoadErrors.set(sessionId, loadError); }
+  retry.innerHTML = `<div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary">Couldn't load the saved response. ${escape(loadError)}</span><button type="button" class="secondary-button" data-action="retry-response">Retry loading response</button></div>`;
+  container.append(retry);
+}
+function refocusError(root: ParentNode, key: string | undefined, action: string, scope?: string): void {
+  const row = key ? `.message-error[data-error-key="${CSS.escape(key)}"]${scope ? `[data-error-scope="${CSS.escape(scope)}"]` : ''} ` : '';
+  root.querySelector<HTMLElement>(`${row}[data-action="${CSS.escape(action)}"]`)?.focus({ preventScroll: true });
+}
+/** An identical error bumps its row's count (a dismissed row stays dismissed: the repeat starts a new row, which an Undo
+ * merges back, mergeLiveErrors). Its toast
+ * shows once per `shouldAnnounce` window, and only when the row is not already in front of the reader
+ * (shouldToastLiveError). */
+function addLiveError(current: Stream, sessionId: string, text: string, savedId?: number): void {
+  // Bounded like a tool row's text (the saved row keeps the backend's own bound); identity is savedId, never the text.
+  const content = 'Error: ' + (text.length > LIVE_ERROR_CHARS ? text.slice(-LIVE_ERROR_CHARS) : text), key = errorKey(content);
+  const saved = savedId === undefined ? [] : [savedId];
+  const same = current.tools.find(tool => isLiveError(tool) && !tool.dismissed && errorKey(tool.content as string) === key);
+  if (same) current.tools = current.tools.map(tool => tool === same ? { ...tool, count: (tool.count ?? 1) + 1, savedIds: [...(tool.savedIds ?? []), ...saved] } : tool);
+  else { current.tools.push({ key: 'error:' + transientId--, content, statusOnly: true, savedIds: saved }); trimLiveActivity(current, sessionId); }
+  // A disclosure opened on this row stays open on the saved row this event became.
+  const open = openLiveErrors.get(`${sessionId}|${key}`);
+  if (open && savedId !== undefined) openLiveErrors.set(`${sessionId}|${key}`, new Set([...open, savedId]));
+  current.revision++;
+  const onScreen = sessionId === state.sessionId && state.view === 'conversation' && !settingsView;
+  const toastKey = `${sessionId}|${key}`, last = lastErrorToasts.get(toastKey);
+  const now = Date.now(), fresh = shouldAnnounce(last === undefined ? null : { key, at: last }, key, now);
+  if (fresh) {
+    lastErrorToasts.delete(toastKey); lastErrorToasts.set(toastKey, now);
+    if (lastErrorToasts.size > OPEN_ERRORS_MAX) lastErrorToasts.delete(lastErrorToasts.keys().next().value!);
+  }
+  // The row in front of the reader needs no toast, but the toast was also what a screen reader heard.
+  if (!shouldToastLiveError({ onScreen, attended: !document.hidden && document.hasFocus(), undoShowing: Boolean(toastUndo) })) { if (fresh) announce(stripErrorPrefix(content)); return; }
+  if (fresh) notifyError(errorSummary(text).summary);
+}
+function toggleError(button: HTMLElement): void {
+  const row = button.closest<HTMLElement>('.message-error'), detail = row?.querySelector<HTMLElement>('.error-row-detail');
+  if (!row || !detail) return;
+  const open = button.getAttribute('aria-expanded') !== 'true', id = `${row.dataset.errorScope}|${row.dataset.errorKey}`;
+  const liveId = `${row.dataset.session}|${row.dataset.errorKey}`;
+  openErrors.delete(id); openLiveErrors.delete(liveId);
+  if (open && row.hasAttribute('data-live')) openLiveErrors.set(liveId, new Set(rowSavedIds(row)));
+  else if (open) openErrors.add(id);
+  if (openErrors.size > OPEN_ERRORS_MAX) openErrors.delete(openErrors.values().next().value!);
+  if (openLiveErrors.size > OPEN_ERRORS_MAX) openLiveErrors.delete(openLiveErrors.keys().next().value!);
+  button.setAttribute('aria-expanded', String(open)); detail.hidden = !open;
+}
+/** Redraws every view of a thread's errors: the open transcript, the By the way panel and its tile. */
+function redrawErrors(sessionId: string): void {
+  hiddenErrorsRevision++;
+  if (sessionId === state.sessionId) { renderTranscript(true); renderStream(); }
+  btwPanel.refresh();
+  tiles.event(sessionId);
+}
+/** The loaded page of a thread's saved messages: the open thread's, else its tile's or cached page. */
+const threadMessages = (sessionId: string): Message[] | undefined => sessionId === state.sessionId ? state.messages : (tilePages.get(sessionId) ?? threadPages.get(sessionId))?.messages;
+const errorStream = (sessionId: string): Stream | undefined => state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
+/** The saved row ids a rendered error row stands for (positive ids in `data-error-ids`). */
+const rowSavedIds = (row: HTMLElement): number[] => (row.dataset.errorIds ?? '').split(' ').map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
+/* Dismissing live errors. The backend saves each error event as a row before it emits the event, and the event carries
+ * that row's id (`data.messageId`, lib.rs `attach_message_id`; savedErrorId). The live row keeps the ids of the events it
+ * stands for (LiveTool.savedIds, also on the transient row materializeTurn writes), so dismissing it is dismissing those
+ * saved rows: they hide at once (hiddenErrors, the live row by its `dismissed` flag), Undo shows them again, and the
+ * native delete runs when the Undo toast settles, as for any saved row. An event without an id (the backend could not
+ * save it, or a task mirrored from another computer, whose ids name the host's rows) is dismissed in the view only.
+ * Deletes not yet confirmed are kept in localStorage (journalDismissals) and replayed at the next launch, since quitting
+ * can end the webview before an IPC call finishes. */
+/** Dismisses one row or every row of a `.thread-errors` box: the rows hide at once and the toast offers Undo; saved rows
+ * are deleted natively only when that toast settles (commitDismiss). */
+function dismissErrors(target: HTMLElement | null): void {
+  const rows = !target ? [] : target.matches('.message-error') ? [target] : [...target.querySelectorAll<HTMLElement>('.message-error[data-error-key]')];
+  const sessionId = rows[0]?.dataset.session;
+  if (!target || !sessionId) return;
+  const single = target.matches('.message-error');
+  const box = rows[0].closest('.thread-errors'), siblings = box ? [...box.querySelectorAll<HTMLElement>('.message-error[data-error-key]')] : [];
+  const neighbour = single ? siblings[siblings.indexOf(target) + 1] ?? siblings[siblings.indexOf(target) - 1] : undefined;
+  const pending: PendingDismiss = { sessionId, saved: [], transient: [], liveTools: [], runHides: [], focus: { key: rows[0].dataset.errorKey!, scope: rows[0].dataset.errorScope!, action: single ? 'dismiss-error' : 'dismiss-errors' } };
+  // A thread that runs on another computer shows this computer's copies, which the mirror's backfill could copy again:
+  // dismissing there only hides them for this app session (with the transient ids), never deletes them. Its live rows
+  // carry no saved id, so the run's copies, which arrive when it ends, are hidden by key (runHides).
+  const task = state.sessions.find(item => item.id === sessionId), mirrored = Boolean(task?.remoteDevice);
+  // A bot thread's failover reads the failed turn's error rows when the run ends (bots/failover.rs failed_turn), so
+  // errors dismissed while it runs are hidden for this app session and never deleted.
+  const viewOnly = mirrored || (sidebarBots.some(bot => bot.projectId === task?.projectId || bot.desktopSession === sessionId) && isRunning(sessionId));
+  const newest = mirrored ? threadMessages(sessionId)?.reduce((max, message) => Math.max(max, message.id), 0) : undefined;
+  for (const row of rows) {
+    const ids = (row.dataset.errorIds ?? '').split(' ').filter(Boolean);
+    if (row.hasAttribute('data-live')) pending.liveTools.push(ids[0]);
+    if (row.hasAttribute('data-live') && newest !== undefined) pending.runHides.push({ key: row.dataset.errorKey!, after: newest });
+    (viewOnly ? pending.transient : pending.saved).push(...rowSavedIds(row));
+    pending.transient.push(...ids.map(Number).filter(id => Number.isInteger(id) && id < 0));
+  }
+  applyDismiss(pending);
+  redrawErrors(sessionId);
+  if (neighbour) refocusError(document, neighbour.dataset.errorKey, 'dismiss-error', neighbour.dataset.errorScope);
+  // The last error went with its box: the keyboard continues from the composer, not from <body>.
+  const active = document.activeElement;
+  if (!active || active === document.body || !active.isConnected) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true });
+  // Replacing this toast with another dismissal settles (commits) the one before; other notices wait (toastQueue).
+  notify(rows.length === 1 ? 'Error dismissed' : `${rows.length} errors dismissed`, () => undoDismiss(pending), { settle: () => commitDismiss(pending) });
+  pendingDismiss = pending;
+  journalDismissals();
+}
+function setLiveDismissed(pending: PendingDismiss, dismissed: boolean): void {
+  const current = errorStream(pending.sessionId);
+  if (!current || !pending.liveTools.length) return;
+  const tools = current.tools.map(tool => pending.liveTools.includes(tool.key) ? { ...tool, dismissed } : tool);
+  current.tools = dismissed ? tools : mergeLiveErrors(tools); current.revision++;
+}
+/** One shown live row per key: a restored row takes in the repeat that started a new row while it was dismissed
+ * (addLiveError), at the earlier row's place, so a later dismissal carries every saved id. */
+function mergeLiveErrors(tools: LiveTool[]): LiveTool[] {
+  const merged: LiveTool[] = [], at = new Map<string, number>();
+  for (const tool of tools) {
+    const key = isLiveError(tool) && !tool.dismissed ? errorKey(tool.content as string) : undefined, index = key === undefined ? undefined : at.get(key);
+    if (index === undefined) { if (key !== undefined) at.set(key, merged.length); merged.push(tool); continue; }
+    const kept = merged[index];
+    merged[index] = { ...kept, count: (kept.count ?? 1) + (tool.count ?? 1), savedIds: [...(kept.savedIds ?? []), ...(tool.savedIds ?? [])] };
+  }
+  return merged;
+}
+function applyDismiss(pending: PendingDismiss): void {
+  for (const id of [...pending.saved, ...pending.transient]) hiddenErrors.add(id);
+  if (pending.runHides.length) {
+    runHides.set(pending.sessionId, [...(runHides.get(pending.sessionId) ?? []), ...pending.runHides]);
+    let total = [...runHides.values()].reduce((sum, hides) => sum + hides.length, 0);
+    for (const [sessionId, hides] of runHides) {
+      if (total <= RUN_HIDES_MAX) break;
+      const drop = Math.min(hides.length, total - RUN_HIDES_MAX);
+      if (drop === hides.length) runHides.delete(sessionId); else runHides.set(sessionId, hides.slice(drop));
+      total -= drop;
+    }
+  }
+  setLiveDismissed(pending, true);
+}
+/** Undo: the rows come back where they were, and focus returns to the control that dismissed them. */
+function undoDismiss(pending: PendingDismiss): void {
+  if (pendingDismiss !== pending) return;
+  pendingDismiss = null;
+  for (const id of [...pending.saved, ...pending.transient]) hiddenErrors.delete(id);
+  const hides = (runHides.get(pending.sessionId) ?? []).filter(hide => !pending.runHides.includes(hide));
+  if (hides.length) runHides.set(pending.sessionId, hides); else runHides.delete(pending.sessionId);
+  setLiveDismissed(pending, false);
+  journalDismissals();
+  redrawErrors(pending.sessionId);
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected && !$('#toast').contains(active)) return;
+  const { key, scope, action } = pending.focus;
+  const row = document.querySelector<HTMLElement>(`.message-error[data-error-key="${CSS.escape(key)}"][data-error-scope="${CSS.escape(scope)}"]`);
+  const control = action === 'dismiss-errors' ? row?.closest('.thread-errors')?.querySelector<HTMLElement>('[data-action="dismiss-errors"]') : row?.querySelector<HTMLElement>('[data-action="dismiss-error"]');
+  control?.focus({ preventScroll: true });
+}
+/** The undo window passed: delete the saved rows (in any thread, open or not, the run over or not: they exist). */
+function commitDismiss(pending: PendingDismiss): void {
+  if (pendingDismiss !== pending) return;
+  pendingDismiss = null;
+  if (pending.saved.length) void deleteSavedErrors(pending.sessionId, pending.saved);
+  journalDismissals();
+}
+/** Commits a dismissal still waiting on its Undo (the toast leaves with it): on leaving or hiding the window, and on a
+ * thread switch. */
+function flushPendingDismiss(): void {
+  if (!pendingDismiss) return;
+  if (toastSettle) dismissToast(); else commitDismiss(pendingDismiss);
+}
+window.addEventListener('pagehide', flushPendingDismiss);
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushPendingDismiss(); });
+/** Saved ids whose native delete has started but not answered yet. */
+const unconfirmedDeletes = new Map<string, Set<number>>();
+async function deleteSavedErrors(sessionId: string, ids: number[]): Promise<void> {
+  const unconfirmed = unconfirmedDeletes.get(sessionId) ?? new Set<number>();
+  unconfirmedDeletes.set(sessionId, unconfirmed);
+  for (const id of ids) unconfirmed.add(id);
+  journalDismissals();
+  const failed: number[] = [];
+  for (let start = 0; start < ids.length; start += DISMISS_BATCH) {
+    const batch = ids.slice(start, start + DISMISS_BATCH);
+    try { await call<number>('dismiss_error_messages', { sessionId, ids: batch }); }
+    catch (error) { console.error('dismiss_error_messages failed', error); failed.push(...batch); }
+  }
+  for (const id of ids) unconfirmed.delete(id);
+  if (!unconfirmed.size) unconfirmedDeletes.delete(sessionId);
+  journalDismissals();
+  if (!failed.length) return;
+  for (const id of failed) hiddenErrors.delete(id);
+  redrawErrors(sessionId);
+  notifyError("Couldn't dismiss the error. It's shown again.");
+}
+const DISMISS_JOURNAL_KEY = 'pandacode.errors.pendingDeletes';
+/** Stores what a quit right now would lose: unconfirmed deletes and the pending dismissal (leaving commits it).
+ * Replayed by replayDismissals at the next launch. */
+function journalDismissals(): void {
+  const saved = new Map([...unconfirmedDeletes].map(([sessionId, ids]) => [sessionId, new Set(ids)]));
+  if (pendingDismiss?.saved.length) saved.set(pendingDismiss.sessionId, new Set([...(saved.get(pendingDismiss.sessionId) ?? []), ...pendingDismiss.saved]));
+  const raw = dismissJournal(saved);
+  try { if (raw) localStorage.setItem(DISMISS_JOURNAL_KEY, raw); else localStorage.removeItem(DISMISS_JOURNAL_KEY); }
+  catch (error) { console.error('Could not keep dismissed errors for the next launch', error); }
+}
+/** At launch: hides and deletes what the last session dismissed but could not finish deleting (journalDismissals),
+ * for threads that still exist. */
+function replayDismissals(): void {
+  let raw: string | null = null;
+  try { raw = localStorage.getItem(DISMISS_JOURNAL_KEY); } catch (error) { console.error('Could not read dismissed errors', error); }
+  const saved = parseDismissJournal(raw), known = new Set(state.sessions.map(task => task.id));
+  for (const [sessionId, ids] of saved) if (known.has(sessionId)) { for (const id of ids) hiddenErrors.add(id); void deleteSavedErrors(sessionId, ids); }
+  journalDismissals();
+}
 /** Patch only changed groups; text frames do not recreate tool controls or open details. */
 function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTMLElement, context: FileLinkContext): void {
   const host = region.querySelector<HTMLElement>('.live-tools')!;
@@ -2676,7 +3284,8 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
   } else if (last && !status) {
     const trace = describeTool(last);
     mode = 'step'; step = last.id;
-    const thumb = carded ? stepImage(last) : '';
+    // An image row already carries its thumbnail in the sentence (traceRowHtml).
+    const thumb = carded && !trace.image ? stepImage(last) : '';
     html = `${answerMs >= 0 ? traceGlyphHtml('bars') : traceGlyphHtml('step', trace.icon ?? kindIcon(trace.kind))}<span class="trace-sentence">${traceRowHtml(trace)}</span>${thumb ? `<img class="turn-card-thumb" alt="" data-thumb="${escape(thumb)}" hidden>` : ''}`;
   } else {
     mode = 'status';
@@ -2722,13 +3331,29 @@ function stepImage(tool: ToolActivity): string {
   const match = /"(?:file_path|path|image_path)"\s*:\s*"([^"]+\.(?:png|jpe?g|gif|webp))"/i.exec(tool.input) ?? /^\s*(\S+\.(?:png|jpe?g|gif|webp))\s*$/i.exec(tool.input);
   return match?.[1] ?? '';
 }
-const stepImages = new Map<string, Promise<string | null>>();
-function loadStepImage(label: HTMLElement): void {
-  const image = label.querySelector<HTMLImageElement>('img[data-thumb]'), sessionId = state.sessionId;
-  if (!image) return;
-  const path = image.dataset.thumb!, key = sessionId + '\0' + path;
-  if (!stepImages.has(key)) stepImages.set(key, call<string>('workspace_image', { sessionId, path }).then(url => url.startsWith('data:image/') ? url : null, () => null));
-  void stepImages.get(key)!.then(url => { if (url && image.isConnected) { image.src = url; image.hidden = false; } });
+/** The header thumbnail shares the tool rows' image cache: a success stays cached, and a failure is asked again
+ * when the header re-renders and a few times after `RETRY_MS` while the image stays. */
+/** Forced retries the header has asked per session and image: it re-renders on every step, so without a cap a
+ * missing image would be asked again about once a second for as long as it stays. */
+const stepImageForced = new Map<string, number>();
+const STEP_IMAGE_FORCED_LIMIT = 64;
+function forceStepImage(sessionId: string, path: string): boolean {
+  const key = sessionId + '\0' + path, tries = stepImageForced.get(key) ?? 0;
+  if (tries >= MAX_RETRIES) return false;
+  stepImageForced.delete(key);
+  stepImageForced.set(key, tries + 1);
+  while (stepImageForced.size > STEP_IMAGE_FORCED_LIMIT) stepImageForced.delete(stepImageForced.keys().next().value!);
+  return true;
+}
+function loadStepImage(label: HTMLElement, retry = true, sessionId = state.sessionId): void {
+  const image = label.querySelector<HTMLImageElement>('img[data-thumb]');
+  if (!image || !sessionId) return;
+  const path = image.dataset.thumb!;
+  void toolImageCache(toolImageLoader).get(sessionId, path, { retry: retry && forceStepImage(sessionId, path) }).then(url => {
+    if (!image.isConnected) return;
+    if (url) { image.src = url; image.hidden = false; return; }
+    retryLater(image, () => loadStepImage(label, false, sessionId));
+  });
 }
 function workingLabel(current: Stream): string {
   let label = current.inputs.size ? 'Waiting for your answer' : current.approvals.size ? 'Waiting for approval' : current.status;
@@ -2892,7 +3517,7 @@ function renderComposer(): void {
   // The prompt stays open during a run: messages typed then are queued or steered.
   // A finished run whose history failed to load waits for Retry before anything else is sent.
   // Writing an unchanged value would still clear the reused field's undo history in some engines.
-  if (prompt) { if (prompt.value !== previous) prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
+  if (prompt) { if (prompt.value !== previous) prompt.value = previous; prompt.disabled = threadLoading() || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
   if (prompt && typing?.id === s.id && !prompt.disabled) { prompt.focus({ preventScroll: true }); prompt.setSelectionRange(typing.start, typing.end); }
   if (barControl) {
     // Redrawn while the run goes on: the same control keeps focus. Gone or hidden: the prompt takes it.
@@ -3000,13 +3625,13 @@ function renderBoardView(): void {
   else { pane.removeAttribute('role'); pane.removeAttribute('aria-label'); }
   $('#project-board').hidden = !board;
   $('#task-details-heading').hidden = !board && !(hub && state.boardPanel);
-  if (hub && state.boardPanel) renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), state.messagesLoading || Boolean(state.messagesError));
+  if (hub && state.boardPanel) renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), threadLoading() || Boolean(state.messagesError));
   if (!board) return;
   const boardProject = state.projectFilter || project()?.id || state.projects[0]?.id || '';
   if (boardProject) void github.status(boardProject);
   const boardNow = Date.now(), boardSignal = (s: Session) => ({ ...taskSignal(s, boardNow), unread: Boolean(unreviewed?.has(s.id)) && s.id !== state.sessionId });
   renderTaskBoard($('#project-board'), listedSessions(), state.projects, state.boardPanel ? state.sessionId : '', state.projectFilter, isRunning, github.connected(boardProject), boardSignal);
-  renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), state.messagesLoading || Boolean(state.messagesError));
+  renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), threadLoading() || Boolean(state.messagesError));
 }
 /** The GitHub view, mounted the first time it is shown and refreshed with the workspace. */
 let githubHub: import('./github-hub').HubView | undefined;
@@ -3025,7 +3650,7 @@ function syncGithubHub(shown: boolean): void {
       openTask: id => run(openHubTask(id)),
       startTask: input => startHubTask(input),
       showChoices: (anchor, options) => showChoices(anchor, options),
-      chooseFolder, notify,
+      chooseFolder, notify, notifyError,
       projectsChanged: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); },
     });
     // The hub fades in once it has drawn (opacity only: a transform would move its full-height repository list).
@@ -3139,7 +3764,7 @@ function setWorkspaceView(view: WorkspaceView): void {
 }
 async function editBoardTask(): Promise<void> {
   const task = session(), generation = state.generation;
-  if (!task || task.archived || isRunning() || state.messagesLoading || state.messagesError) return;
+  if (!task || task.archived || isRunning() || threadLoading() || state.messagesError) return;
   const details = await call<Session>('get_task', { sessionId: task.id });
   if (task.id !== state.sessionId || generation !== state.generation || isRunning()) return;
   fullTaskDescription = { id: task.id, value: details.taskDescription ?? '' };
@@ -3235,6 +3860,13 @@ async function startBoardTask(id: string): Promise<void> {
 }
 
 function render(): void { renderNavigation(); renderHeader(); renderTranscript(); renderComposer(); }
+let navigationFocusFrame = 0;
+/** The sidebar's one tab stop (thread-order.ts syncRovingFocus): at once while focus is in the list, else in the next
+ *  frame, so a thread switch lays out once with everything it changed instead of for these reads first. */
+function syncNavigationFocus(nav: HTMLElement): void {
+  if (nav.contains(document.activeElement)) { cancelAnimationFrame(navigationFocusFrame); navigationFocusFrame = 0; syncRovingFocus(nav); return; }
+  navigationFocusFrame ||= requestAnimationFrame(() => { navigationFocusFrame = 0; syncRovingFocus(nav); });
+}
 let navigationAfterFrame = 0;
 /** Redraws the sidebar just after the next paint (one at a time), for work that need not hold up the frame. */
 function navigationAfterPaint(): void {
@@ -3296,9 +3928,16 @@ async function latestMessagePage(sessionId: string): Promise<MessagePage> {
   return latest;
 }
 
-async function loadOlderMessages(anywhere = false): Promise<void> {
+/** `anywhere`: a host's backfill or the window filling itself, not the reader near the top; `whole` draws the page in
+ *  one step (a backfill), otherwise it joins and the usual steps follow. */
+/** The oldest loaded message when an older page last failed to load. */
+let olderFailedAt = 0;
+async function loadOlderMessages(anywhere = false, whole = anywhere): Promise<void> {
   const transcript = $('#transcript'), sessionId = state.sessionId, generation = state.generation;
-  if (!sessionId || !state.hasOlder || state.messagesLoading || state.messagesError || !transcriptVisible() || (!anywhere && transcript.scrollTop > 200)) return;
+  if (!sessionId || state.sharedChannelId || state.messagesLoading || state.messagesError || !transcriptVisible() || (!anywhere && transcript.scrollTop > ROWS_MARGIN)) return;
+  // Turns already loaded but not drawn yet come first; a host's backfill (`anywhere`) is not the reader asking for them.
+  if (!anywhere && transcriptView.showOlder(undefined, undefined, () => void loadOlderMessages())) return;
+  if (!state.hasOlder) return;
   if (olderMessagesRequest?.sessionId === sessionId && olderMessagesRequest.generation === generation) return;
   const beforeId = state.messages.find(message => message.id > 0)?.id;
   if (!beforeId) return;
@@ -3309,14 +3948,47 @@ async function loadOlderMessages(anywhere = false): Promise<void> {
     if (sessionId !== state.sessionId || generation !== state.generation || state.messages.find(message => message.id > 0)?.id !== beforeId) return;
     const ids = new Set(state.messages.map(message => message.id));
     const earlier = older.messages.filter(message => message.id < beforeId && !ids.has(message.id));
+    // What draws at once (the turn the page's end joins to) is formatted first, so it never lands as raw text that
+    // reflows under the reader; each later step formats its own turns. A long reply waits until it nears the reader.
+    let joined = earlier.length - 1;
+    while (joined > 0 && earlier[joined].role !== 'user') joined--;
+    await prepareMarkdown(earlier.slice(joined).filter(message => message.content.length <= LAZY_REPLY_CHARS)).catch(report);
+    if (sessionId !== state.sessionId || generation !== state.generation || state.messages.find(message => message.id > 0)?.id !== beforeId) return;
     state.hasOlder = Boolean(earlier.length && older.hasOlder);
-    if (earlier.length) { state.messages = [...earlier, ...state.messages]; renderTranscript(true); }
+    if (earlier.length) showFetchedPage(earlier, whole);
   } catch {
-    if (sessionId === state.sessionId && generation === state.generation) notify('Could not load earlier messages. Scroll up to retry.');
+    olderFailedAt = beforeId;
+    if (sessionId === state.sessionId && generation === state.generation) notifyError('Could not load earlier messages. Scroll up to retry.');
   } finally {
     if (olderMessagesRequest === request) { olderMessagesRequest = undefined; transcript.removeAttribute('aria-busy'); }
     if (mirrorOlderPending === sessionId) { mirrorOlderPending = ''; void mirrorMessages({ sessionId, older: true }); }
   }
+}
+
+/** Adds an older page under the window: the rows stay, then one step draws above them. A host's backfill draws its
+ *  whole page in that step, once, with no scroll waiting on it; the reader's scroll takes the usual step and the rest follows. */
+function showFetchedPage(earlier: Message[], backfill: boolean): void {
+  const view = transcriptView.view, wholeDrawn = view.first === null && transcriptView.onScreen(view);
+  state.messages = [...earlier, ...state.messages];
+  if (!transcriptView.joinPage()) {
+    if (wholeDrawn) transcriptView.view = { ...view, first: view.ids[0][0] };
+    renderTranscript(true);
+  }
+  // Everything above the window is this page (the whole thread was drawn before it).
+  if (wholeDrawn) transcriptView.showOlder(backfill ? Infinity : MORE_TURNS, backfill ? Infinity : ROW_BUDGET);
+}
+/** Redraws one row in place, keeping its folds and formatted text; the caller holds the reader's position. */
+function redrawRow(row: DrawnRow, html: string): DrawnRow {
+  const transcript = transcriptScroller, roots = row.nodes.filter((node): node is HTMLElement => node instanceof HTMLElement);
+  const switches = captureAccountSwitches(transcript), views = captureRowViews(row);
+  const previous = new Map(roots.flatMap(root => [...root.querySelectorAll<HTMLElement>('[data-markdown]')]).map(node => [node.dataset.markdown!, node]));
+  const fresh = parseRow(html), inserted = document.createDocumentFragment();
+  inserted.append(...fresh.nodes);
+  paintSavedMarkdown(inserted, state.messages, previous, workspaceContext(), followTranscript, transcript);
+  transcript.insertBefore(inserted, row.nodes[0]);
+  row.nodes.forEach(node => node.remove());
+  if (views) restoreRowViews(fresh, views);
+  return swapRowNodes([fresh], restoreAccountSwitches(transcript, switches))[0];
 }
 
 /* A mirror's history arrives from its host newest page first, then older pages beneath it
@@ -3396,13 +4068,16 @@ function selectSession(id: string, focusComposer = false): Promise<void> {
   if (id !== state.sessionId) voiceDictation.detach();
   return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
 }
+/** What a thread's load sends from its queue once the team is known (transcript-host.ts dispatchHeld). */
+const heldQueue: HeldQueueHost = { queued: id => queueOf(id).length > 0, hasTeam: id => teams.has(id), loadTeam, dispatch: id => dispatchQueue(id), run };
 async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (deletedSessions.has(id)) return;
   const s = state.sessions.find(s => s.id === id); if (!s) return;
   closeMenus();
   if (document.querySelector('#dialog')?.classList.contains('change-review-dialog')) closeModal();
   const previousTask = session(), changingTask = previousTask?.id !== id;
-  if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); }
+  // A first load left before its details landed never clears its own wait: its page, remembered, must not come back disabled.
+  if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); }
   // However it is opened (click, ⌘1…9, ⌘⇧[ / ], board, palette), the thread holds the sidebar
   // section its row is in while it stays open, so the row never jumps from under the pointer.
   if (changingTask) {
@@ -3426,6 +4101,10 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   const remembered = changingTask ? threadPages.get(id) : undefined;
   state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
   const generation = ++state.generation;
+  // What acts on the task waits for this load's details and team. A remembered page whose team is already known has
+  // been usable since it was left; one left before its team landed waits again, so a send never goes out as a plain
+  // message to what turns out to be a team thread.
+  taskDetailsPending = remembered && teams.has(id) ? undefined : { id, generation };
   renderInspector();
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
@@ -3437,47 +4116,77 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   const settle = changingTask && Boolean(previousTask);
   if (settle && remembered) settleIn($('#transcript'));
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-  let page: MessagePage, details: Session;
-  try { [page, details] = await Promise.all([latestMessagePage(id), call<Session>('get_task', { sessionId: id }), loadTeam(id)]); }
-  catch (error) {
+  // The rows draw the moment the page is in; the task's details and team land after, and a failure of theirs is met below.
+  // The task as it was when its details were asked for: a field changed here since (a rename, a model picked, a run
+  // starting) is newer than what the details say.
+  const askedTask = state.sessions.find(task => task.id === id), asked = askedTask ? { ...askedTask } : undefined;
+  const taskLoad = Promise.all([call<Session>('get_task', { sessionId: id }), loadTeam(id)]);
+  taskLoad.catch(() => undefined);
+  /* A load another one took over (a switch, the same thread opened again) never reaches its own dispatch, while a
+   * dispatch made meanwhile waited for it (dispatchQueue): what the queue holds goes once the team is known. If this
+   * thread is the open one loading again, dispatchQueue leaves it to that load. */
+  // Superseded: its restore mark goes (a later thread's stays).
+  const superseded = (): void => { finishThreadRestore(localStorage, id); dispatchHeld(heldQueue, id, taskLoad); };
+  const failLoad = (error: unknown, shownMessages: Message[]): boolean => {
     // A failed load did not take the app down; a later thread's mark stays.
     finishThreadRestore(localStorage, id);
-    if (generation !== state.generation) return;
+    if (generation !== state.generation) { superseded(); return false; }
+    taskDetailsPending = undefined;
+    // What the queue held back for this load goes now, once the team is known (asked again if its load is what failed).
+    dispatchHeld(heldQueue, id);
     // A failed thread load still owns the inspector cleared during the switch.
     run(refreshInspector());
     state.messagesLoading = false;
-    if (state.messages !== requestedMessages) return;
-    state.messagesError = errorText(error); renderTranscript(); renderComposer(); throw error;
-  }
-  // Superseded before it rendered: its mark goes (a later thread's stays).
-  if (generation !== state.generation) { finishThreadRestore(localStorage, id); return; }
-  fullTaskDescription = { id, value: details.taskDescription ?? '' };
-  const loaded = state.sessions.find(task => task.id === id);
+    if (state.messages !== shownMessages) { renderComposer(); return false; }
+    state.messagesError = errorText(error); renderTranscript(); renderComposer();
+    return true;
+  };
+  let page: MessagePage;
+  try { page = await latestMessagePage(id); }
+  catch (error) { if (failLoad(error, requestedMessages)) throw error; return; }
+  if (generation !== state.generation) { superseded(); return; }
   // A send or completed turn can replace the transcript while this earlier
   // history request is in flight. Keep that newer state instead of erasing it.
-  const shown = pageSignature(state.messages);
-  if (state.messages === requestedMessages) {
-    if (loaded && state.streams.get(id) === requestedStream && finishingStreams.get(id) === requestedFinishing) {
-      Object.assign(loaded, details, { pinned: loaded.pinned, sidebarOrder: loaded.sidebarOrder }); if (state.streams.has(id)) { loaded.taskStage = 'in_progress'; loaded.status = 'running'; }
-    }
-    setMessagePage(page);
-  }
+  const shown = pageSignature(state.messages), pageTaken = state.messages === requestedMessages;
+  const steady = pageTaken && state.streams.get(id) === requestedStream && finishingStreams.get(id) === requestedFinishing;
+  if (pageTaken) setMessagePage(page);
   state.messagesLoading = false;
   if (!state.streams.has(id) && finishingStreams.get(id) === requestedFinishing) finishingStreams.delete(id);
   // A remembered page that is still current is already on screen; leave it untouched.
   const changed = !remembered || pageSignature(state.messages) !== shown;
-  renderHeader(); if (changed) renderTranscript(); renderComposer();
+  if (changed) renderTranscript();
   if (settle && !remembered && changed) settleIn($('#transcript'));
+  if (changed) stickTranscript();
+  // Its messages are rendered: once they have painted too, a crash (in the details or inspector refresh below,
+  // say) is not this thread's opening. Until then a transcript that kills the app while painting stays marked.
+  rememberThread(id); rememberOpenThread(localStorage, id, askedTask?.draft); finishThreadRestoreAfterPaint(localStorage, id);
+  const pageMessages = state.messages;
+  let details: Session;
+  try { [details] = await taskLoad; }
+  catch (error) { if (failLoad(error, pageMessages)) throw error; return; }
+  if (generation !== state.generation) { superseded(); return; }
+  taskDetailsPending = undefined;
+  // Its details say whether it is still a New task draft (the next launch reopens it as one).
+  rememberOpenThread(localStorage, id, details.draft);
+  fullTaskDescription = { id, value: details.taskDescription ?? '' };
+  // A run that started or ended since the details were asked for owns the run's own fields; the rest still apply.
+  applyTaskDetails(id, details, asked, steady && state.streams.get(id) === requestedStream && finishingStreams.get(id) === requestedFinishing);
+  renderHeader(); renderComposer();
+  // What the queue held back while the team was unknown goes now.
+  if (queueOf(id).length) run(dispatchQueue(id));
   // A saved team can select a harness whose catalog has not been opened this run.
   // Resolve its display name in place, without delaying the task or replacing input.
   if (provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-  if (changed) stickTranscript();
-  // Its messages are rendered: once they have painted too, a crash (in the inspector refresh below,
-  // say) is not this thread's opening. Until then a transcript that kills the app while painting stays marked.
-  rememberThread(id); rememberOpenThread(localStorage, id, details.draft); finishThreadRestoreAfterPaint(localStorage, id);
   if (generation !== state.generation) return;
-  await refreshInspector(); renderHeader();
+  await refreshInspectorIfStale(); renderHeader();
+}
+/** A thread's details and team, landing after its rows: applied by thread (the caller checked the load is still the
+ *  current one), whatever redrew the page meanwhile (transcript-host.ts mergeTaskDetails). Redraws only if they change
+ *  how the rows read. */
+function applyTaskDetails(id: string, details: Session, asked: Session | undefined, steady: boolean): void {
+  const loaded = state.sessions.find(task => task.id === id);
+  if (loaded && mergeTaskDetails(loaded, details, asked, steady, state.streams.has(id))) renderTranscript(); else syncTeamRows();
 }
 /** Nothing selected; the next launch opens the newest thread of the current project, not the last one. */
 function clearOpenSession(): void { state.sessionId = ''; rememberOpenThread(localStorage, ''); }
@@ -3852,8 +4561,8 @@ async function requeueSteer(sessionId: string, text: string, reason: string): Pr
   const entry = await call<QueuedMessage>('queue_add', { sessionId, text, attachments: [] }).catch(() => null);
   const s = state.sessions.find(item => item.id === sessionId);
   if (entry) notSteered.set(entry.id, reason);
-  if (entry) { setQueue(sessionId, [...queueOf(sessionId), entry]); notify('The agent could not take that message, so it was queued.'); }
-  else { if (s) restoreComposer(s, text, [], []); notify('The agent could not take that message; it is back in the prompt.'); }
+  if (entry) { setQueue(sessionId, [...queueOf(sessionId), entry]); notifyError('The agent could not take that message, so it was queued.'); }
+  else { if (s) restoreComposer(s, text, [], []); notifyError('The agent could not take that message; it is back in the prompt.'); }
   if (sessionId === state.sessionId) renderComposer();
 }
 function steerStateHtml(m: Message): string {
@@ -3904,8 +4613,8 @@ async function steerOrQueue(s: Session, text: string): Promise<void> {
     // A host that has not approved this device would refuse it queued too: say so, keep the text.
     if (remoteRefusal(s, error)) { restoreComposer(s, text, [], []); refreshComposer(s); return; }
     // Not taken mid-turn: keep it for after the run instead of losing it.
-    const reason = error instanceof Error ? error.message : String(error);
-    notify(/\bqueued\b/i.test(reason) ? reason : `${reason} Queued instead.`);
+    const reason = errorText(error);
+    notifyError(/\bqueued\b/i.test(reason) ? reason : `${reason} Queued instead.`);
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
     if (entry) notSteered.set(entry.id, reason);
     if (entry) setQueue(s.id, [...queueOf(s.id), entry]); else restoreComposer(s, text, [], []);
@@ -3921,7 +4630,7 @@ async function steerQueued(s: Session, id: string): Promise<void> {
   steeringQueued.add(id); refreshComposer(s);
   try {
     await steer(s, entry.text);
-    await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
+    await call('queue_take_steered', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
   } finally { steeringQueued.delete(id); refreshComposer(s); }
 }
 async function saveQueueEdit(s = session()): Promise<void> {
@@ -3988,6 +4697,9 @@ async function dispatchQueue(id: string): Promise<void> {
   const task = state.sessions.find(item => item.id === id);
   const first = sendFirst.get(id), next = queueOf(id).find(item => item.id === first?.id) ?? queueOf(id)[0];
   if (first && next?.id !== first.id) sendFirst.delete(id);
+  // The open thread's team may not be known yet: like sendDraft, wait for its load (openThread dispatches again then),
+  // so a team thread's message never goes out as a plain one.
+  if (id === state.sessionId && threadLoading()) return;
   if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
   if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
@@ -3997,7 +4709,7 @@ async function dispatchQueue(id: string): Promise<void> {
     setQueue(id, queueOf(id).filter(item => item.id !== entry.id));
     await deliverQueued(task, entry);
   } catch (error) {
-    state.queueHolds.set(id, 'failed'); if (!remoteRefusal(task, error)) notify(error instanceof Error ? error.message : String(error));
+    state.queueHolds.set(id, 'failed'); if (!remoteRefusal(task, error)) notifyError(errorText(error));
   } finally { state.queueBusy.delete(id); if (id === state.sessionId) renderComposer(); renderNavigation(); }
 }
 /** Starts a turn with a queued message, for the open task or one in the background. */
@@ -4028,7 +4740,7 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
     if (entry.id) {
       const restored = await call<QueuedMessage>('queue_restore', { entry }).catch(() => null);
       if (restored) setQueue(task.id, [restored, ...queueOf(task.id).filter(item => item.id !== restored.id)]);
-      else notify('A queued message could not be put back; it was not sent.');
+      else notifyError('A queued message could not be put back; it was not sent.');
     }
     state.queueHolds.set(task.id, 'failed');
     throw error;
@@ -4061,7 +4773,7 @@ async function continueAfterLimit(task: Session, text = 'Continue where you left
     const at = Date.now();
     await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text, attachments: [], createdAt: at, updatedAt: at });
     task.limitedAt = null; task.limitedUntil = null;
-  } catch (error) { notify(error instanceof Error ? error.message : String(error)); }
+  } catch (error) { notifyError(errorText(error)); }
   finally { state.queueBusy.delete(task.id); if (task.id === state.sessionId) renderComposer(); renderNavigation(); }
 }
 /** The harness's other named connections a limited task can continue on (issue #137). */
@@ -4185,7 +4897,7 @@ async function sendDraft(): Promise<void> {
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
   const hasBotAttachments = Boolean(bot && (state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId)));
   if (councilFirstSends.has(s.id)) return;
-  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
+  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || threadLoading() || state.messagesError || configuringSessions.has(s.id)) return;
   clearComposerNote(s);
   if (remoteOffline(s)) { renderComposer(); return; }
   const fresh = !s.remoteDevice && newTaskView();
@@ -4200,7 +4912,7 @@ async function sendDraft(): Promise<void> {
   // Enter meanwhile; a failure is shown, and the message still goes.
   if (!s.remoteDevice && !state.messages.length && !bot) {
     councilFirstSends.add(s.id);
-    try { const failed = await council.enableForNewThread(s.id); if (failed) notify(`Council did not turn on: ${failed}`); }
+    try { const failed = await council.enableForNewThread(s.id); if (failed) notifyError(`Council did not turn on: ${failed}`); }
     finally { councilFirstSends.delete(s.id); }
     if (state.sessionId !== s.id) return;
   }
@@ -4322,19 +5034,22 @@ const btwPanel = new BtwPanel({
   mainRunning: () => isRunning(),
   draft: sideId => state.drafts.get(sideId) ?? '',
   setDraft: (sideId, text) => { if (text) state.drafts.set(sideId, text); else state.drafts.delete(sideId); },
-  visible: (sideId, messages) => visibleMessages(sideId, messages),
+  // Dismissed error rows leave the list the panel keys its redraws on; the rows themselves get the whole list, so
+  // withErrorTurns can drop them and say how many went (dismissedNoteHtml).
+  visible: (sideId, messages) => visibleMessages(sideId, messages).filter(message => !(message.role === 'error' && hiddenErrors.has(message.id))),
   renderRows: (log, region, side, visible, all, follow) => {
     const toolViews = captureTools(log), groupViews = captureToolGroups(log), turnViews = captureTurns(log), changeViews = captureChangeCards(log);
     const switches = captureAccountSwitches(log);
     const previous = new Map([...log.querySelectorAll<HTMLElement>('[data-markdown]')].map(node => [node.dataset.markdown!, node]));
     for (const row of [...log.children]) if (row !== region) row.remove();
-    region.insertAdjacentHTML('beforebegin', turnRowsHtml(side.id, visible, { messages: all, provider: side.provider }));
+    region.insertAdjacentHTML('beforebegin', turnRowsHtml(side.id, visibleMessages(side.id, all), { messages: all, provider: side.provider }));
     paintSavedMarkdown(log, all, previous, workspaceContext(side), follow);
     restoreTurns(log, turnViews); restoreToolGroups(log, groupViews); restoreChangeCards(log, changeViews); restoreTools(log, toolViews);
     // A finished turn's live notes leave with the stream region; the saved rows inherit them.
     restoreAccountSwitches(log, switches, state.streams.has(side.id) || finishingStreams.has(side.id) ? undefined : region);
+    scopeErrorIds(log);
   },
-  paintStream: (region, sideId, log) => paintStream(region, sideId, log),
+  paintStream: (region, sideId, log) => { paintStream(region, sideId, log); scopeErrorIds(region); },
   aboveHtml: side => {
     const running = isRunning(side.id);
     return `<div class="btw-approvals">${taskApprovalsHtml(side.id)}</div>` + queuePanel({ entries: state.queues.get(side.id) ?? [], hold: state.queueHolds.get(side.id) ?? null, running, steerable: !teams.get(side.id), sendable: true, editingId: state.queueEditing || null, busy: state.queueBusy.has(side.id), steering: steeringQueued, notSteered, agentName: provider(side.provider)?.name });
@@ -4474,7 +5189,8 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     side = await call<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
     link = { sideId: side.id, seenId: last.id, hiddenThrough: 0 };
   } else {
-    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode });
+    // `team: false`: a side thread never picks up the saved default team.
+    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false, mainSessionId: main.id });
     link = { sideId: side.id, seenId: 0 };
   }
   const title = sideTitle(prompt);
@@ -4601,7 +5317,12 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
     const messages = current ? liveVisibleMessages(existing, current) : existing.slice();
     // Materialize only at a turn boundary; tokens keep their existing incremental path.
     if (current) {
-      for (const entry of current.tools) messages.push({ id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now() });
+      for (const entry of current.tools) {
+        // A dismissed error leaves no row; a counted one is one row carrying its count (groupErrors sums it).
+        if (entry.statusOnly && entry.dismissed) continue;
+        const row: CountedMessage = { id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now(), ...(entry.count ? { count: entry.count } : {}), ...(entry.savedIds?.length ? { savedIds: entry.savedIds } : {}) };
+        messages.push(row);
+      }
       if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
       messages.push(...current.accountSwitches);
     }
@@ -4668,10 +5389,17 @@ function onAgent(event: AgentEvent): void {
     void ensureArchitectView().then(view => {
       if (deletedSessions.has(event.sessionId)) return;
       view.receive(event);
-      // A worker's approval or question must reach the user even with the panel closed.
-      if (event.kind === 'approval' || event.kind === 'input_request') notify('A worker needs your input. Open Architect & workers.');
+      // Worker questions are auto-answered and approvals auto-granted; current hosts never leave either pending, but an
+      // older or unusual host can still forward one. It notifies only while that worker is still at work, by the
+      // panel's own definition (a worker not yet in any team snapshot counts as active).
+      if (event.kind === 'approval' || event.kind === 'input_request') {
+        const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
+        void import('./architect-worker-list').then(({ workerActive }) => {
+          if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
+        });
+      }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
-    });
+    }).catch(report);
     return;
   }
   onAccountPoolSwitch(event);
@@ -4793,8 +5521,8 @@ function onAgent(event: AgentEvent): void {
     updateStreamStatus(current, event.text);
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
-  if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); current.tools.push({ key: 'error:' + transientId--, content: 'Error: ' + event.text.slice(0, 8192), statusOnly: true }); trimLiveActivity(current, event.sessionId); current.revision++; notify(event.text); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`); }
+  if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
   }
@@ -4808,7 +5536,7 @@ function onAgent(event: AgentEvent): void {
       scheduleNavigation();
     }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
-    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`);
+    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
@@ -4824,6 +5552,17 @@ function onAgent(event: AgentEvent): void {
   if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
 }
 
+/** A thread switch within the workspace whose status loaded this long ago (ms) reuses it rather than reloading the
+ *  status, file list and jj state and redrawing the inspector; anything that changes the files refreshes it itself. */
+const INSPECTOR_FRESH_MS = 5000;
+/** The workspace refreshInspector last loaded cleanly, and when. */
+let inspectorLoaded: { key: string; at: number } | undefined;
+/** refreshInspector, unless the same workspace loaded cleanly a moment ago and nothing cleared it since. */
+async function refreshInspectorIfStale(): Promise<void> {
+  const fresh = inspectorLoaded?.key === workspaceKey() && Date.now() - inspectorLoaded.at < INSPECTOR_FRESH_MS;
+  if (fresh && !state.inspectorLoading && state.git && !state.gitError && !state.filesError) return;
+  await refreshInspector();
+}
 async function refreshInspector(): Promise<void> {
   void projectRunner.refresh();
   const request = ++inspectorRequest;
@@ -4841,7 +5580,10 @@ async function refreshInspector(): Promise<void> {
     if (result.status === 'fulfilled' && state.openFolders.has(path)) state.folderFiles.set(path, result.value);
   });
   state.inspectorLoading = false;
-  state.git = results[0].status === 'fulfilled' ? results[0].value : null;
+  // An unchanged status keeps its object, so the Changes view does not refetch every loaded diff for nothing.
+  const git = results[0].status === 'fulfilled' ? results[0].value : null;
+  state.git = git && state.git && JSON.stringify(git) === JSON.stringify(state.git) ? state.git : git;
+  inspectorLoaded = results.every(result => result.status === 'fulfilled') ? { key, at: Date.now() } : undefined;
   if (state.git) noteChangedPaths(state.git.files.map(file => file.path));
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
@@ -4858,7 +5600,7 @@ function syncSimulatorPanel(): void {
   if (simulatorPanel) { simulatorPanel.show(); return; }
   simulatorLoading ??= import('./simulator').then(({ mountSimulator }) => {
     simulatorPanel = mountSimulator($('#simulator-panel'), {
-      call, notify,
+      call, notify, notifyError,
       choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 300, items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
       listen: (name, callback) => subscribe(name, callback),
     });
@@ -4887,7 +5629,7 @@ function syncProgressPip(): void {
   if (progressPip) { progressPip.update(id, allowed, allowed && isRunning()); return; }
   if (!id) return;
   progressPipLoading ??= import('./progress-pip').then(({ mountProgressPip }) => {
-    progressPip = mountProgressPip($('#progress-pip'), { call, notify });
+    progressPip = mountProgressPip($('#progress-pip'), { call, notify, notifyError });
     syncProgressPip();
   }).catch(error => { progressPipLoading = undefined; report(error); });
 }
@@ -4900,7 +5642,7 @@ function syncDesignPanel(): void {
   if (designPanel) { designPanel.show(); return; }
   designLoading ??= import('./design-canvas').then(({ mountDesignCanvas }) => {
     designPanel = mountDesignCanvas($('#design-panel'), {
-      call, notify,
+      call, notify, notifyError,
       context: () => state.projectId ? { projectId: state.projectId, sessionId: state.sessionId || null } : null,
       compose: text => { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = text; prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus(); } },
     });
@@ -4938,7 +5680,7 @@ function syncBrowserPanel(): void {
     const mount = document.createElement('div'); mount.className = 'browser-panel browser-instance';
     $('#browser-panel').append(mount);
     const panel = await mountBrowser(mount, {
-      task: () => state.sessionId === owner && session() && !isRunning() && !state.messagesLoading ? owner : undefined,
+      task: () => state.sessionId === owner && session() && !isRunning() && !threadLoading() ? owner : undefined,
       session: () => owner || undefined,
       navigated: url => { if (revision === browserRevision && state.sessionId === owner) state.browserUrl = url; },
       attach: attachBrowserContext,
@@ -5089,7 +5831,7 @@ function showChangesView(target: HTMLElement, key: string): void {
       commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
       openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
       refresh: () => run(refreshInspector()),
-      notify,
+      notify, notifyError,
       choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
       worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
     });
@@ -5195,7 +5937,8 @@ function renderInspector(): void {
       const host = target.querySelector<HTMLElement>('.inspector-diff-host')!;
       const patch = state.selectedContent, path = state.selectedFile;
       host.innerHTML = '<p class="inspector-hint" role="status">Loading diff…</p>';
-      void import('./diff-viewer').then(({ mountDiffViewer }) => {
+      // Mounted after the next paint: a thread switch restoring its file paints the thread first.
+      void import('./diff-viewer').then(module => new Promise<typeof module>(resolve => requestAnimationFrame(() => setTimeout(() => resolve(module))))).then(({ mountDiffViewer }) => {
         if (diffEpoch !== inspectorDiffEpoch || !host.isConnected) return;
         inspectorDiff = mountDiffViewer(host, { patch, path, layout: 'unified', truncated: patch.includes('[Diff truncated') });
       }).catch(error => { if (host.isConnected && diffEpoch === inspectorDiffEpoch) host.textContent = errorText(error); });
@@ -5210,7 +5953,7 @@ function renderInspector(): void {
   }
   if (state.jj?.isRepo && !state.jj.colocated) {
     showJjPanel(target, state.jj, {
-      call, notify, context: () => workspaceContext(), changed: status => { state.jj = status; },
+      call, notify, notifyError, context: () => workspaceContext(), changed: status => { state.jj = status; },
       openDiff: (path, patch) => { selectedFileContext = workspaceContext(); state.selectedFile = path; state.selectedContent = patch; state.selectedKind = 'diff'; state.selectedStaged = false; state.filePreviewLoading = false; state.inspector = true; renderInspector(); },
     });
     return;
@@ -5644,6 +6387,7 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });
       const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
+      architectView?.modeChanged();
       if (inPanel) btwPanel.refresh();
       else if (s.id === state.sessionId) {
         if (saved) syncOverlayContext({ projectId: saved.projectId, provider: saved.provider, model: saved.model || 'default', mode: saved.mode, reasoningEffort: saved.reasoningEffort ?? null });
@@ -5787,7 +6531,7 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
   await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
     { id: 'new', label: 'New task', icon: 'plus' },
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
-    { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
+    { id: 'reveal', label: REVEAL_LABEL, icon: 'folder', separator: true },
     { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
   ], onSelect: async choice => {
     closeChoiceMenu();
@@ -5859,7 +6603,7 @@ function sidebarShortcut(event: KeyboardEvent): boolean {
     event.preventDefault(); filter.focus(); return true;
   }
   if (command && !event.shiftKey && !event.altKey && event.code === 'KeyZ' && toastUndo) {
-    event.preventDefault(); const undo = toastUndo; toastUndo = undefined; void hideToast($('#toast')); undo(); return true;
+    event.preventDefault(); runToastUndo(); return true;
   }
   return false;
 }
@@ -6207,7 +6951,7 @@ async function showConversationImport(): Promise<void> {
 /** What the Bots window and a bot's page share: native calls, live turns and approvals. */
 function botsOptions(providers: Provider[]): import('./bots').BotsOptions {
   return {
-    call, providers, notify, loadModels,
+    call, providers, notify, notifyError, loadModels,
     defaultModel: provider => rememberedModel(provider),
     running: id => isRunning(id),
     openTask: id => run((async () => { closeModal(); await reloadSessions(); await selectSession(id, true); })()),
@@ -6253,6 +6997,8 @@ const botSwitches = new Map<string, BotActivity[]>();
 const botMessages = new Map<string, botThread.BotMessageMarker[]>();
 const botFailovers = new Map<string, FailoverAsk>();
 const botFailoverErrors = new Map<string, string>();
+/** The failover error each thread last announced (renderBotFailover). */
+const announcedFailoverErrors = new Map<string, string>();
 const botThreadMetaLoaded = new Set<string>();
 const botThreadMetaRequests = new Map<string, number>();
 function ensureBotProjects(): Promise<void> { return botProjectsLoad ??= reloadBotProjects(false); }
@@ -6316,7 +7062,7 @@ const userProjects = (): Project[] => state.projects.filter(project => !botProje
 const chatTask = (task: Session | undefined): boolean => Boolean(task && isChatProject(state.projects.find(p => p.id === task.projectId)));
 /* PandaCode Connect. A new task can start on another computer: the context bar offers the
  * signed-in account's targets; the started task is an ordinary session with `remoteDevice`. */
-const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, openUrl: url => call('open_external_url', { url }) };
+const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, notifyError, openUrl: url => call('open_external_url', { url }) };
 type RemoteAccountDevice = Omit<RemoteTarget, 'deviceId'> & { id: string; current: boolean; host: boolean };
 let remoteTargets: RemoteTarget[] = [], remoteChoice = LOCAL, remoteSignedIn = false, remoteConnected = false, remotePresenceReady = false;
 /** The chosen computer's last known name, for when it leaves the list (signed out or revoked). */
@@ -6477,7 +7223,7 @@ async function showCloudMenu(anchor: HTMLElement): Promise<void> {
     closeChoiceMenu();
     if (id === 'delete' && !await confirmDeleteMachine(s)) return;
     try { await call('cloud_agent_action', { sessionId: s.id, action: id }); }
-    catch (error) { notify(errorText(error)); return; }
+    catch (error) { notifyError(errorText(error)); return; }
     if (id === 'open') openVm();
     else if (id === 'delete') notify('Deleted the cloud machine. Your next message creates a new one.');
   } });
@@ -6792,7 +7538,7 @@ async function refreshSharedChannel(channelId = state.sharedChannelId): Promise<
     state.sharedChannelDetail = detail;
     renderHeader(); renderTranscript(true); renderComposer(); renderBots();
     syncChannelWorkingLabel();
-  } catch (error) { if (channelId === state.sharedChannelId) notify(error instanceof Error ? error.message : String(error)); }
+  } catch (error) { if (channelId === state.sharedChannelId) notifyError(errorText(error)); }
 }
 function activateSharedChannel(channelId: string): void {
   voiceDictation.detach();
@@ -6812,7 +7558,7 @@ function closeSharedChannel(): void {
   render(); renderInspector(); renderBots();
 }
 function sharedChannelUi(): SharedChannelUiOptions {
-  return { call, bots: sidebarBots, modal, closeModal, changed: () => reloadBotProjects(false), openChannel: activateSharedChannel, notify };
+  return { call, bots: sidebarBots, modal, closeModal, changed: () => reloadBotProjects(false), openChannel: activateSharedChannel, notify, notifyError };
 }
 async function createSharedChannel(): Promise<void> {
   const { openCreateChannel } = await import('./bot-shared-channels');
@@ -6839,7 +7585,7 @@ async function sharedChannelMenuAction(action: string, channel: SharedChannelSum
       await call('bot_shared_channel_archive', { channelId: channel.id, archived: action !== 'restore' });
       await reloadBotProjects(false);
     }
-  } catch (error) { notify(error instanceof Error ? error.message : String(error)); }
+  } catch (error) { notifyError(errorText(error)); }
 }
 async function botMenuAction(id: string, botId: string): Promise<void> {
   const bot = sidebarBots.find(item => item.id === botId); if (!bot) return;
@@ -6854,7 +7600,7 @@ async function setBotPaused(bot: import('./bots').Bot, paused: boolean): Promise
     await call('bot_set_paused', { botId: bot.id, paused });
     notify(paused ? `${bot.name} paused` : `${bot.name} resumed`);
   } catch (error) {
-    notify(`Couldn’t ${paused ? 'pause' : 'resume'} ${bot.name}: ${error instanceof Error ? error.message : String(error)}`);
+    notifyError(`Couldn’t ${paused ? 'pause' : 'resume'} ${bot.name}: ${errorText(error)}`);
   }
   await reloadBotProjects(false);
 }
@@ -6865,14 +7611,14 @@ async function duplicateBot(bot: import('./bots').Bot): Promise<void> {
     await call('bot_create', { input });
     notify(`${input.name} created`);
   } catch (error) {
-    notify(`Couldn’t duplicate ${bot.name}: ${error instanceof Error ? error.message : String(error)}`);
+    notifyError(`Couldn’t duplicate ${bot.name}: ${errorText(error)}`);
   }
   await reloadBotProjects();
 }
 async function deleteBot(bot: import('./bots').Bot): Promise<void> {
   if (!await confirmBotDelete(bot.name)) return;
   try { await call('bot_delete', { botId: bot.id }); }
-  catch (error) { notify(`Couldn’t delete ${bot.name}: ${error instanceof Error ? error.message : String(error)}`); return; }
+  catch (error) { notifyError(`Couldn’t delete ${bot.name}: ${errorText(error)}`); return; }
   setBotPinned(bot.id, false);
   notify(`${bot.name} deleted`);
   await reloadBotProjects(); await reloadSessions();
@@ -6935,7 +7681,12 @@ async function refreshBotThreadMeta(bot: import('./bots').Bot, sessionId: string
 function renderBotFailover(): void {
   const host = document.querySelector<HTMLElement>('#bot-failover-bar');
   const ask = botFailovers.get(state.sessionId);
-  if (host) host.innerHTML = `${botThread.failoverHtml(ask)}${ask && botFailoverErrors.has(state.sessionId) ? `<p class="bot-failover-error" role="alert">${escape(botFailoverErrors.get(state.sessionId)!)}</p>` : ''}`;
+  if (!ask) botFailoverErrors.delete(state.sessionId);
+  const error = ask ? botFailoverErrors.get(state.sessionId) : undefined;
+  // Every composer rebuild redraws this bar: the alert is said only the first time an error shows (as paintRetryRow).
+  const fresh = error !== undefined && announcedFailoverErrors.get(state.sessionId) !== error;
+  if (error === undefined) announcedFailoverErrors.delete(state.sessionId); else announcedFailoverErrors.set(state.sessionId, error);
+  if (host) host.innerHTML = `${botThread.failoverHtml(ask)}${error !== undefined ? `<div class="bot-failover-error message-error error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary"${fresh ? ' role="alert"' : ''}>${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-action="dismiss-failover-error" aria-label="Dismiss error">${icon('close')}</button></div></div>` : ''}`;
 }
 /** A model picked during a bot's turn takes over once the turn ends; if the next turn already
  *  started (a queued message), it stays pending and is tried again at that turn's end. */
@@ -7054,9 +7805,18 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'ui-size-reset': setUiScale(1); break;
     case 'delete-task': showDeleteTask(); break;
     case 'search': showCommands(); break;
+    case 'toggle-error': toggleError(element); break;
+    case 'dismiss-error': dismissErrors(element.closest<HTMLElement>('.message-error')); break;
+    case 'dismiss-failover-error': {
+      botFailoverErrors.delete(state.sessionId); renderBotFailover();
+      // The bar was rewritten: the keyboard continues from the hold card's first button, else the composer.
+      (document.querySelector<HTMLElement>('#bot-failover-bar button') ?? document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
+      break;
+    }
+    case 'dismiss-errors': dismissErrors(element.closest<HTMLElement>('.thread-errors')); break;
     case 'retry-response': { const id = actionTask(element)?.id ?? state.sessionId, finishing = finishingStreams.get(id); if (finishing) await finishResponse(id, finishing); break; }
     case 'settings': case 'refresh-settings': await showSettings(); break;
-    case 'settings-page': await showSettings(element.dataset.id as import('./settings').SettingsSection); break;
+    case 'settings-page': await showSettings(element.dataset.id as import('./settings').SettingsSection); if (element.dataset.reveal) revealSetting(element.dataset.reveal); break;
     case 'wallpaper-settings': await showWallpaperSettings(); break;
     case 'provider-connections': await showProviderConnections(); break;
     case 'opencode-models': await showOpenCodeModels(); break;
@@ -7191,9 +7951,9 @@ document.addEventListener('click', event => {
     run(refreshSharedChannel(channelId));
     return;
   }
-  if (action === 'stop') run(call('bot_shared_channel_stop', { channelId }).then(() => refreshSharedChannel(channelId)).catch(error => notify(String(error))));
-  else if (action === 'continue' && messageId) run(call('bot_shared_channel_continue', { channelId, messageId }).then(() => refreshSharedChannel(channelId)).catch(error => notify(String(error))));
-  else if (action === 'reassign' && messageId && button.dataset.bot) run(call('bot_shared_channel_reassign', { channelId, messageId, botId: button.dataset.bot }).then(() => refreshSharedChannel(channelId)).catch(error => notify(String(error))));
+  if (action === 'stop') run(call('bot_shared_channel_stop', { channelId }).then(() => refreshSharedChannel(channelId)).catch(error => notifyError(errorText(error))));
+  else if (action === 'continue' && messageId) run(call('bot_shared_channel_continue', { channelId, messageId }).then(() => refreshSharedChannel(channelId)).catch(error => notifyError(errorText(error))));
+  else if (action === 'reassign' && messageId && button.dataset.bot) run(call('bot_shared_channel_reassign', { channelId, messageId, botId: button.dataset.bot }).then(() => refreshSharedChannel(channelId)).catch(error => notifyError(errorText(error))));
 });
 document.addEventListener('click', event => { const target = event.target as Element; if (target.closest('.markdown,.streaming-content,.message-content') && !target.closest('.message-attachments')) return; const element = target.closest<HTMLElement>('[data-action]'); if (!element || element instanceof HTMLButtonElement && element.disabled) return; event.preventDefault(); run(action(element.dataset.action!, element)); });
 document.addEventListener('click', event => {
@@ -7211,7 +7971,7 @@ document.addEventListener('click', event => {
       botFailovers.delete(sessionId);
       if (state.sessionId === sessionId) renderComposer();
     } catch (error) {
-      botFailoverErrors.set(sessionId, error instanceof Error ? error.message : String(error));
+      botFailoverErrors.set(sessionId, errorText(error));
       if (state.sessionId === sessionId) renderComposer();
       if (button.isConnected) button.disabled = false;
     }
@@ -7233,7 +7993,7 @@ document.addEventListener('submit', event => {
     run(call('bot_shared_channel_post', { channelId, text, ...(recipients.length ? { recipients } : {}) }).then(() => { state.sharedChannelPosting.delete(channelId); return refreshSharedChannel(channelId); }).catch(error => {
       state.sharedChannelPosting.delete(channelId);
       if (!state.drafts.get(channelDraftKey(channelId))?.trim()) state.drafts.set(channelDraftKey(channelId), text);
-      notify(error instanceof Error ? error.message : String(error));
+      notifyError(errorText(error));
       if (channelId === state.sharedChannelId) renderComposer();
     }));
     return;
@@ -7253,9 +8013,14 @@ document.addEventListener('submit', event => {
     } finally { if (submitter?.isConnected) submitter.disabled = false; }
   })());
 });
+/** The prompt last sized while empty: an empty prompt is one line at any width, so sizing it again changes nothing
+ *  and would only lay out the page (every composer render asks). */
+let emptySized: HTMLTextAreaElement | undefined;
 function resizePrompt(): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (!prompt) return;
+  if (!prompt.value && emptySized === prompt) return;
+  emptySized = prompt.value ? undefined : prompt;
   prompt.style.height = 'auto';
   const natural = prompt.scrollHeight;
   prompt.style.height = Math.min(natural, 180) + 'px';
@@ -7263,7 +8028,7 @@ function resizePrompt(): void {
   const overflow = natural > 181 ? 'auto' : 'hidden';
   if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
 }
-window.addEventListener('pandacode-ui-scale-change', resizePrompt);
+window.addEventListener('pandacode-ui-scale-change', () => { emptySized = undefined; resizePrompt(); });
 document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') { resizePrompt(); if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value); } if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
 document.addEventListener('scroll', event => {
   if (!state.sharedChannelId) return;
@@ -7289,11 +8054,25 @@ document.addEventListener('keydown', event => {
 }, true);
 const threadFind = createThreadFind({
   pane: () => document.querySelector<HTMLElement>('.conversation-pane'),
-  transcript: () => document.querySelector<HTMLElement>('#transcript'),
+  // Find asks for the transcript before each search: a query the reader gave this thread draws down to its newest
+  // older match, and a closed tool whose details match draws its body so the match can be found.
+  transcript: query => {
+    const transcript = document.querySelector<HTMLElement>('#transcript');
+    if (query) { transcriptView.showForFind(query); if (transcript) fillMatchingToolBodies(transcript, query, state.messages, (message, text) => findCounts.count(message, text, true)); }
+    return transcript;
+  },
+  older: query => transcriptView.olderMatches(query),
+  settled: () => transcriptView.countsSettled(),
+  extend: (query, all, done) => transcriptView.extendFind(query, all, done),
   release: () => { stickToBottom = false; },
   openReply: keepReplyOpen,
   restoreFocus: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
 });
+// Capture, so the thread is noted before the bar's own handler searches.
+const noteFind = (): void => transcriptView.noteFind(state.sessionId);
+document.addEventListener('input', event => { if ((event.target as Element).matches?.('.thread-find input')) noteFind(); }, true);
+document.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.target as Element).matches?.('.thread-find input')) noteFind(); }, true);
+document.addEventListener('click', event => { if ((event.target as Element).closest?.('.thread-find [data-find-step]')) noteFind(); }, true);
 document.addEventListener('keydown', event => {
   // IME conversions own their keys; letter shortcuts otherwise follow the physical layout.
   if (event.defaultPrevented || isImeKey(event)) return;
@@ -7315,8 +8094,8 @@ document.addEventListener('keydown', event => {
     }
   }
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
-  if (command && !event.shiftKey && event.code === 'KeyF') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
-  if (command && event.code === 'KeyG' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
+  if (command && !event.shiftKey && event.code === 'KeyF') { if (session() && transcriptVisible()) { event.preventDefault(); noteFind(); threadFind.open(); } return; }
+  if (command && event.code === 'KeyG' && threadFind.isOpen()) { event.preventDefault(); noteFind(); threadFind.step(event.shiftKey ? -1 : 1); return; }
   if (sidebarShortcut(event)) return;
   if (command && event.code === 'KeyN') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
   else if (command && event.code === 'KeyJ') { event.preventDefault(); run(toggleTerminal()); }
@@ -7330,11 +8109,30 @@ document.addEventListener('keydown', event => {
   }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !isImeKey(event)) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey) && !isImeKey(event)) { event.preventDefault(); run(saveQueueEdit(actionTask(event.target as HTMLElement))); }
+  // A toast the reader is in, or an urgent one (danger, Undo) that just appeared, takes Escape before Settings, the board panel and Stop do.
+  else if (event.key === 'Escape' && toastVisible($('#toast')) && escapeClosesToast({ visible: true, focusInToast: $('#toast').contains(document.activeElement), urgent: $('#toast').hasAttribute('data-danger') || Boolean(toastUndo), shownAt: toastShownAt, now: Date.now(), blocked: escapeTaken(event) })) { event.preventDefault(); dismissToast(); }
   else if (event.key === 'Escape' && settingsView && !event.defaultPrevented && !document.querySelector<HTMLDialogElement>('#dialog')?.open && !document.querySelector('.floating-menu')) { event.preventDefault(); closeSettings(); }
   else if (event.key === 'Escape' && state.view !== 'conversation' && state.boardPanel && !event.defaultPrevented) { event.preventDefault(); closeMenus(); state.boardPanel = false; renderBoardView(); }
   else if (event.key === 'Escape' && (event.target as Element).closest?.('.composer-steer-bar') && !event.defaultPrevented) { event.preventDefault(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true }); }
   else if (event.key === 'Escape' && isRunning() && !terminalPanel.open && !event.defaultPrevented) { event.preventDefault(); if (session()) run(stopTask(session()!)); }
+  // Last, so menus, dialogs, the composer and Stop keep Escape; it only closes a toast nothing else wanted it for. A lasting
+  // notice (the crash notice) closes by Escape only with focus in it (toast-keys.ts).
+  else if (event.key === 'Escape' && toastVisible($('#toast')) && !$('#toast').classList.contains('toast-dismissible') && !escapeTaken(event)) { event.preventDefault(); dismissToast(); }
 });
+/** `:popover-open` is WebKit 17+ (macOS 12's WKWebView throws a SyntaxError on it): probed once, falling back to any
+ * `[popover]` that has a box. The same probe as `foreground()` in voice-dictation.ts. */
+let openPopoverSelector: string | undefined;
+function popoverOpen(): boolean {
+  if (openPopoverSelector === undefined) {
+    try { document.querySelector(':popover-open'); openPopoverSelector = '[popover]:popover-open'; }
+    catch { openPopoverSelector = '[popover]'; }
+  }
+  return [...document.querySelectorAll(openPopoverSelector)].some(node => node.getClientRects().length > 0);
+}
+/** Escape belongs to something else: a handler already took it, an IME is composing, or a dialog or menu is open. */
+function escapeTaken(event: KeyboardEvent): boolean {
+  return event.defaultPrevented || isImeKey(event) || Boolean(document.querySelector<HTMLDialogElement>('#dialog')?.open) || Boolean(document.querySelector('.floating-menu')) || popoverOpen();
+}
 let dialogBackdropPressed = false;
 function outsideDialog(event: MouseEvent): boolean {
   const dialog = event.currentTarget as HTMLDialogElement, rect = dialog.getBoundingClientRect();
@@ -7396,7 +8194,7 @@ async function boot(): Promise<void> {
   }).then(() => undefined));
   run(initRemote());
   run(initCloudAgents());
-  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), visible: () => !$('.conversation-pane').hidden, title: id => state.sessions.find(s => s.id === id)?.title }));
+  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, notifyError, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), visible: () => !$('.conversation-pane').hidden, title: id => state.sessions.find(s => s.id === id)?.title }));
   run(subscribe('bot-notification', event => { if (event?.text) notify(String(event.text).replace(/\s+/g, ' ').slice(0, 160)); }).then(() => undefined));
   run(subscribe('bot-failover', (ask: FailoverAsk) => {
     if (!ask?.sessionId) return;
@@ -7414,7 +8212,7 @@ async function boot(): Promise<void> {
   }).then(() => undefined));
   // Bots appear in the sidebar once loaded; startup does not wait for them.
   botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
-  run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`); }).then(() => undefined));
+  run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`, undefined, { important: true }); }).then(() => undefined));
   // Wake-ups for the open thread and the sidebar's clocks; refreshed on schedules-changed.
   // Motion only when the user opens these: a remembered thread or a redraw restores them still.
   document.addEventListener('click', event => {
@@ -7458,6 +8256,7 @@ async function boot(): Promise<void> {
   void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
   // New task text of projects removed some other way than this window's Remove (a failed list throws above).
   if (Array.isArray(state.projects)) dropRemovedProjectDrafts(state.drafts, state.projects.map(project => project.id));
+  replayDismissals();
   run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
@@ -7495,7 +8294,7 @@ async function boot(): Promise<void> {
   if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
-mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify }));
+mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify, notifyError }));
 const agentUpdates = initializeAgentUpdates({
   modal, closeModal, report, providers: () => state.providers,
   providersChanged: async () => { await discoverSettingsProviders(); refreshModelLabels(); slashPicker?.refresh(true); },
@@ -7511,7 +8310,7 @@ run(bootPending);
 // After a crash restart, say so once the tasks are listed (boot calls it); a failed boot still gets the notice.
 function showCrashNotice(): void {
   void showCrashRecovery({
-    notify, toast: $('#toast'), tasks: () => state.sessions, nothingOpened: () => bootOpenedNothing, openThread: id => run(selectSession(id)), openCrashSettings: () => run(showCrashSettings()), windowDied: () => windowDeath, hide: () => void hideToast($('#toast')),
+    notify: (text, actions, holdMs, dismiss, quiet) => notify(text, actions, { holdMs, dismiss, quiet }), toast: $('#toast'), tasks: () => state.sessions, nothingOpened: () => bootOpenedNothing, openThread: id => run(selectSession(id)), openCrashSettings: () => run(showCrashSettings()), windowDied: () => windowDeath, hide: () => void hideToast($('#toast')),
     // Asked each time the notice is written: a thread deleted or archived since is no longer offered.
     heldBack: () => {
       const id = heldBackThread?.id, thread = id && !deletedSessions.has(id) ? state.sessions.find(s => s.id === id && !s.archived) : undefined;
