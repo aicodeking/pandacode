@@ -430,3 +430,87 @@ test('offscreen files suspend their viewers while retaining height and cached pa
   await expect(first.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
   expect((await loads(page)).filter(path => path === 'src/f00.ts:false')).toHaveLength(1);
 });
+
+test('document hiding releases mounted diff leases after grace and restores scroll and options', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    (window as any).__workers = { started: 0, stopped: 0 };
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) { super(url, options); (window as any).__workers.started++; }
+      terminate() { (window as any).__workers.stopped++; super.terminate(); }
+    };
+  });
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  await page.evaluate(async patch => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    const { mountDiffViewer } = await import(/* @vite-ignore */ `${location.origin}/src/diff-viewer.ts`);
+    await mountDiffViewer(document.querySelector('#host'), { patch, path: 'a.ts' }).ready;
+  }, patch('a.ts', 600, 1));
+  expect(await page.evaluate(() => (window as any).__workers.started)).toBe(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).click();
+  const content = page.locator('.diff-viewer-content');
+  await content.evaluate(el => { el.style.maxHeight = '160px'; el.scrollTop = 180; });
+  const top = await content.evaluate(el => el.scrollTop);
+  expect(top).toBeGreaterThan(0);
+  const visibility = (hidden: boolean) => page.evaluate(hidden => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, hidden);
+  await page.clock.install();
+  await visibility(true);
+  await page.clock.runFor(100);
+  await visibility(false);
+  expect(await page.evaluate(() => (window as any).__workers.stopped)).toBe(0);
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  await visibility(true);
+  await page.clock.runFor(1_100);
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'suspended');
+  await page.clock.fastForward(601_000);
+  await expect.poll(() => page.evaluate(() => (window as any).__workers.stopped)).toBe(2);
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'suspended');
+  await visibility(false);
+  await page.clock.resume();
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  await expect(page.getByRole('button', { name: 'Wrap lines', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => content.evaluate(el => el.scrollTop)).toBe(top);
+  expect(await page.evaluate(() => (window as any).__workers.started)).toBe(4);
+});
+
+test('Changes patch budget evicts the least recent collapsed text, preserves height and reloads on expand', async ({ page }) => {
+  await page.route('**/src/changes-view.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace('16 * 1024 * 1024', '900') });
+  });
+  const files = ['a.ts', 'b.ts', 'c.ts'].map(path => ({ path, index: ' ', working: 'M' }));
+  await mount(page, files, Object.fromEntries(files.map(f => [f.path, patch(f.path, 3, 1)])), { hold: true });
+  await expect.poll(async () => (await loads(page)).length).toBe(3);
+  await page.evaluate(() => { const h = (window as any).harness; h.pending.get('a.ts')(); h.pending.get('b.ts')(); });
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(2, { timeout: 15_000 });
+  const first = page.locator('.cv-file[data-path="b.ts"]');
+  const height = (await first.locator('.cv-file-body').boundingBox())!.height;
+  await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+  await page.getByRole('button', { name: 'Collapse b.ts', exact: true }).click();
+  // Touch a again: b must be evicted even though a comes first in the file list.
+  await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+  await expect(page.locator('.cv-file[data-path="a.ts"] .diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+  await page.evaluate(() => (window as any).harness.pending.get('c.ts')());
+  await expect(page.locator('.cv-file[data-path="c.ts"] .diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+  await expect(page.locator('.cv-file[data-path="a.ts"] .diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  expect((await loads(page)).filter(p => p === 'a.ts:false')).toHaveLength(1);
+  await page.getByRole('button', { name: 'Expand b.ts', exact: true }).click();
+  await expect.poll(async () => (await loads(page)).filter(p => p === 'b.ts:false').length).toBe(2);
+  expect((await first.locator('.cv-file-body').boundingBox())!.height).toBeCloseTo(height, 0);
+  await page.evaluate(() => { const h = (window as any).harness; h.view.update(h.status, undefined, { refetch: false }); });
+  await expect(page.locator('.cv-adds')).toHaveText('+9');
+  await page.evaluate(() => (window as any).harness.pending.get('b.ts')());
+  await expect(first.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  await expect(first.locator('.cv-stat')).toHaveText('+3-1');
+});

@@ -51,6 +51,10 @@ button .icon{pointer-events:none}
 .header-leading>#view-divider{margin:0}
 .sidebar-actions{container-type:inline-size;container-name:sidebar-actions;padding:var(--space-3);display:grid;gap:var(--space-1)}
 .sidebar-actions button>span{white-space:nowrap}
+.sidebar-actions button[data-startup-wait]{cursor:progress;position:relative}
+.sidebar-actions button[data-startup-wait] kbd{visibility:hidden}
+.sidebar-actions button .startup-progress{position:absolute;right:10px;display:inline-block;font-size:var(--ds-text-meta);line-height:1}
+@media(prefers-reduced-motion:no-preference){html[data-ready] .startup-progress{animation:state-pulse 1.6s ease-in-out infinite}}
 @container sidebar-actions (max-width:14em){.sidebar-actions kbd{display:none}}
 .new-task-button{background:var(--accent);color:var(--on-accent);width:100%;height:var(--control-lg);justify-content:flex-start;padding:0 10px;border-radius:var(--radius-sm);font-size:var(--text-sm);font-weight:var(--weight-medium)}
 .new-task-button .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}

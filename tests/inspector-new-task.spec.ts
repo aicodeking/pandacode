@@ -16,6 +16,7 @@ test('a new task keeps the inspector closed when the user closed it', async ({ p
 
 for (const action of ['new-task', 'new-chat']) {
   test(`${action} waits visibly for discovery and drops creation after navigation`, async ({ page }) => {
+    if (action === 'new-chat') await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.route('**/src/preview.ts*', async route => {
       const response = await route.fetch();
       const body = (await response.text()).replace(/case ["']list_providers["']:/, match => `${match}
@@ -29,10 +30,15 @@ for (const action of ['new-task', 'new-chat']) {
     await expect(button).toHaveAccessibleName(action === 'new-task' ? /^New task\b/ : 'New chat');
     await expect(button).toHaveAttribute('aria-description', 'Loading agents…');
     await button.click();
+    await expect(button.locator('.startup-progress')).toBeVisible();
+    await expect(button).toHaveCSS('cursor', 'progress');
+    if (action === 'new-chat') await expect(button.locator('.startup-progress')).toHaveCSS('animation-name', 'none');
+    await expect(button).toHaveAccessibleName(action === 'new-task' ? /^New task\b/ : 'New chat');
     await page.locator('#navigation .task-item[data-id="session-2"]').click();
     await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
     await page.evaluate(() => (window as any).__releaseProviders());
     await expect(button).not.toHaveAttribute('aria-busy', 'true');
+    await expect(button.locator('.startup-progress')).toHaveCount(0);
     await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
     await page.evaluate(async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
     await expect(page.locator('#navigation .task-item[data-id="session-2"]')).toHaveAttribute('aria-current', 'page');

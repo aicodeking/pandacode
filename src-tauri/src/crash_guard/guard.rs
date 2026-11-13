@@ -104,25 +104,47 @@ pub fn watch_pipe(lines: impl IntoIterator<Item = String>, initial: Watch, clock
     watch
 }
 
-/// How often the guard checks the app by pid while its pipe stays open.
-const ALIVE_POLL: Duration = Duration::from_millis(500);
+/// Fallback only: a platform exit notification normally keeps the guard asleep.
+const ALIVE_POLL: Duration = Duration::from_secs(2);
 /// After the app is seen gone, how long a line already in the pipe may take to arrive.
 const DRAIN: Duration = Duration::from_millis(200);
 
-/// The pipe's lines (read on their own thread) until EOF, or until `gone` says the app died
-/// while a write end still exists elsewhere: a child another thread spawned in the moment
-/// between std's `pipe()` and its close-on-exec (macOS has no `pipe2`) keeps one open.
-pub fn pipe_lines(lines: std::sync::mpsc::Receiver<String>, poll: Duration, gone: impl Fn() -> bool) -> impl Iterator<Item = String> {
+enum PipeEvent {
+    Line(String),
+    Eof,
+    Gone,
+    /// Notification setup or its blocking wait failed: resume pid checks.
+    Poll,
+}
+
+/// The pipe and the exit waiter share a channel, so neither needs an idle timer. A stray
+/// inherited write end cannot keep recovery waiting forever after the app dies.
+fn pipe_lines(lines: std::sync::mpsc::Receiver<PipeEvent>, mut poll: Option<Duration>, gone: impl Fn() -> bool) -> impl Iterator<Item = String> {
     use std::sync::mpsc::RecvTimeoutError;
     let mut draining = false;
     std::iter::from_fn(move || loop {
-        match lines.recv_timeout(if draining { DRAIN } else { poll }) {
-            Ok(line) => return Some(line),
-            Err(RecvTimeoutError::Disconnected) => return None,
+        let event = match if draining { Some(DRAIN) } else { poll } {
+            Some(timeout) => lines.recv_timeout(timeout),
+            None => lines.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match event {
+            Ok(PipeEvent::Line(line)) => return Some(line),
+            Ok(PipeEvent::Eof) | Err(RecvTimeoutError::Disconnected) => return None,
+            Ok(PipeEvent::Gone) => draining = true,
+            Ok(PipeEvent::Poll) => poll = Some(ALIVE_POLL),
             Err(RecvTimeoutError::Timeout) if draining => return None,
             Err(RecvTimeoutError::Timeout) => draining = gone(),
         }
     })
+}
+
+/// False if notification setup or thread creation failed; a later wait failure sends Poll.
+fn exit_events(app: &Process, sender: std::sync::mpsc::Sender<PipeEvent>) -> bool {
+    let Ok(notification) = process::ExitNotification::open(app) else { return false };
+    std::thread::Builder::new().name("crash-guard-exit".into()).spawn(move || {
+        let event = if notification.wait().is_ok() { PipeEvent::Gone } else { PipeEvent::Poll };
+        let _ = sender.send(event);
+    }).is_ok()
 }
 
 /// Longest pipe line kept, in bytes; every line the app sends is under PIPE_BUF (512 on macOS).
@@ -150,18 +172,24 @@ pub fn bounded_lines<R: BufRead>(mut reader: R, max: usize) -> impl Iterator<Ite
     })
 }
 
-/// Stdin's lines on a channel; the channel closes at EOF or a read error.
-fn read_stdin() -> std::sync::mpsc::Receiver<String> {
+/// Stdin and process exit events. EOF is explicit because the exit waiter also owns a sender.
+fn read_stdin(app: &Process) -> std::sync::mpsc::Receiver<PipeEvent> {
     let (sender, receiver) = std::sync::mpsc::channel();
+    if !exit_events(app, sender.clone()) {
+        let _ = sender.send(PipeEvent::Poll);
+    }
+    let pipe_sender = sender.clone();
     let reader = std::thread::Builder::new().name("crash-guard-pipe".into()).spawn(move || {
         for line in bounded_lines(std::io::stdin().lock(), MAX_LINE) {
-            if sender.send(line).is_err() {
-                break;
+            if pipe_sender.send(PipeEvent::Line(line)).is_err() {
+                return;
             }
         }
+        let _ = pipe_sender.send(PipeEvent::Eof);
     });
     if let Err(error) = reader {
         eprintln!("Crash guard could not read its pipe: {error}");
+        let _ = sender.send(PipeEvent::Eof);
     }
     receiver
 }
@@ -382,7 +410,7 @@ fn run(config: Config) {
         keep_log_fresh();
     }
     let app = Process::open(config.pid);
-    let watch = watch_pipe(pipe_lines(read_stdin(), ALIVE_POLL, || app.gone()), Watch::new(config.armed), now_ms, LEAVE_AT_EXIT);
+    let watch = watch_pipe(pipe_lines(read_stdin(&app), None, || app.gone()), Watch::new(config.armed), now_ms, LEAVE_AT_EXIT);
     if LEAVE_AT_EXIT && watch.exiting {
         return;
     }
@@ -529,19 +557,78 @@ mod tests {
     #[test]
     fn lines_end_when_the_app_is_gone_even_if_a_stray_write_end_keeps_the_pipe_open() {
         let (sender, receiver) = std::sync::mpsc::channel();
-        sender.send("signal 11".to_string()).unwrap();
+        sender.send(PipeEvent::Line("signal 11".to_string())).unwrap();
         let checks = std::cell::Cell::new(0);
         let gone = || {
             checks.set(checks.get() + 1);
             checks.get() >= 2
         };
         // `sender` stays alive: no EOF ever comes.
-        let lines: Vec<String> = pipe_lines(receiver, Duration::from_millis(10), gone).collect();
+        let lines: Vec<String> = pipe_lines(receiver, Some(Duration::from_millis(10)), gone).collect();
         assert_eq!((lines, checks.get()), (vec!["signal 11".to_string()], 2));
         drop(sender);
-        let (sender, receiver) = std::sync::mpsc::channel::<String>();
+        let (sender, receiver) = std::sync::mpsc::channel::<PipeEvent>();
         drop(sender);
-        assert_eq!(pipe_lines(receiver, Duration::from_secs(60), || panic!("EOF needs no check")).count(), 0);
+        assert_eq!(pipe_lines(receiver, None, || panic!("EOF needs no check")).count(), 0);
+    }
+
+    /// A portable short-lived fixture, released by closing its stdin.
+    #[test]
+    #[ignore]
+    fn exit_notification_parent() {
+        let _ = std::io::stdin().read(&mut [0]);
+    }
+
+    fn waiting_parent() -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "crash_guard::guard::tests::exit_notification_parent", "--ignored", "--nocapture"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[test]
+    fn parent_exit_notification_drains_the_pipe_without_polling() {
+        let mut child = waiting_parent();
+        let app = Process::open(child.id());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let notified = exit_events(&app, sender.clone());
+        if !notified {
+            drop(child.stdin.take());
+            child.wait().unwrap();
+            panic!("exit notification could not be set up");
+        }
+        assert!(matches!(receiver.recv_timeout(Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+        let (done, completed) = std::sync::mpsc::channel();
+        let watcher = std::thread::spawn(move || {
+            let watch = watch_pipe(pipe_lines(receiver, None, || panic!("notification path must not poll")), Watch::new(true), || NOW, false);
+            let _ = done.send(watch);
+        });
+        sender.send(PipeEvent::Line("signal 11".into())).unwrap();
+        drop(child.stdin.take());
+        let result = completed.recv_timeout(Duration::from_secs(2));
+        child.wait().unwrap();
+        let watch = result.expect("exit notification was slow or failed");
+        watcher.join().unwrap();
+        assert_eq!(watch.signal, Some(11));
+        assert!(matches!(policy::classify(&watch, ExitStatus::Unknown, NOW), Death::Crash(_)));
+        drop(sender); // A stray write end never closes: the exit event must end the watch.
+    }
+
+    #[test]
+    fn parent_exit_falls_back_to_polling_when_notifications_fail() {
+        let mut child = waiting_parent();
+        let app = Process::open(child.id());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(PipeEvent::Poll).unwrap();
+        sender.send(PipeEvent::Line("panic fixture".into())).unwrap();
+        drop(child.stdin.take());
+        let watch = watch_pipe(pipe_lines(receiver, None, || app.gone()), Watch::new(true), || NOW, false);
+        child.wait().unwrap();
+        assert!(matches!(policy::classify(&watch, ExitStatus::Unknown, NOW), Death::Crash(_)));
+        drop(sender);
     }
 
     #[test]

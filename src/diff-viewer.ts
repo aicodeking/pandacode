@@ -131,6 +131,7 @@ let engine: Promise<Engine> | undefined;
 let engineCleanup = Promise.resolve();
 let activeViewers = 0, engineIdleTimer = 0;
 const ENGINE_IDLE_MS = 5 * 60_000;
+const HIDDEN_GRACE_MS = 1_000;
 
 function releaseEngine(): void {
   if (--activeViewers || !engine) return;
@@ -194,7 +195,9 @@ export function preloadDiffViewer(): Promise<unknown> {
 /** Read-only, bounded diff rendering. Replacing a viewer cancels its old mount. */
 export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): DiffViewerController {
   mountedViewers.get(host)?.dispose();
-  let disposed = false, usesEngine = false;
+  let disposed = false, usesEngine = false, suspended = document.hidden;
+  let hiddenTimer = 0, renderGeneration = 0;
+  let hiddenScroll: { top: number; left: number } | undefined;
   let renderers: { view: FileDiff; header: boolean; file: FileDiffMetadata }[] = [];
   let pool: WorkerPoolManager | undefined;
   let rerenderFrame = 0, primeFrame = 0, settleTimer = 0, scrolling = false, viewHeight = 0;
@@ -213,7 +216,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
 
   const root = element('section', 'diff-viewer');
   root.setAttribute('aria-label', input.path ? `Changes to ${input.path}` : 'File changes');
-  root.dataset.diffState = 'loading';
+  root.dataset.diffState = suspended ? 'suspended' : 'loading';
   const toolbar = element('div', 'diff-viewer-toolbar');
   const title = element('span', 'diff-viewer-title', input.path ?? 'Changes');
   title.title = input.path ?? 'Changes';
@@ -278,7 +281,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   /** Primes the hunk groups nearest the viewport; reruns as primes finish and on scroll. */
   function primeNearby(): void {
     primeFrame = 0;
-    if (disposed || !pool || !virtualizer) return;
+    if (disposed || suspended || !pool || !virtualizer) return;
     // Cached positions only: no layout reads while the virtualizer is writing.
     const top = virtualizer.getScrollTop(), height = viewHeight || scroller.clientHeight, bottom = top + height;
     // While scrolling only visible groups prime; offscreen ones wait for the scroll to settle.
@@ -303,7 +306,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     }
   }
   function schedulePrime(): void {
-    if (!disposed && pool && virtualizer && !primeFrame) primeFrame = requestAnimationFrame(primeNearby);
+    if (!disposed && !suspended && pool && virtualizer && !primeFrame) primeFrame = requestAnimationFrame(primeNearby);
   }
   scroller.addEventListener('scroll', () => {
     if (!virtualizer) return;
@@ -318,6 +321,8 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     cancelAnimationFrame(rerenderFrame);
     cancelAnimationFrame(primeFrame);
     clearTimeout(settleTimer);
+    mountFrame = rerenderFrame = primeFrame = settleTimer = 0;
+    scrolling = false;
     for (const { view } of renderers) view.cleanUp();
     renderers = [];
     if (virtualizer) releaseVirtualizer(scroller);
@@ -329,8 +334,8 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     cleanRenderers();
     if (usesEngine) { usesEngine = false; releaseEngine(); }
     pool = undefined;
-    resizeObserver?.disconnect();
-    themeObserver?.disconnect();
+    resizeObserver?.disconnect(); resizeObserver = undefined;
+    themeObserver?.disconnect(); themeObserver = undefined;
     content.replaceChildren();
     content.setAttribute('aria-busy', 'false');
     root.dataset.diffState = 'fallback';
@@ -407,6 +412,9 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   }, { signal: listeners.signal });
 
   async function initialize(): Promise<void> {
+    if (disposed || suspended) return;
+    const generation = ++renderGeneration;
+    const cancelled = () => disposed || suspended || generation !== renderGeneration;
     if (input.error) { showFallback(input.error); return; }
     if (input.binary || /^(?:GIT binary patch|Binary files .+ differ)$/m.test(input.patch)) {
       showFallback('Binary file changed. A text diff is not available.', false); return;
@@ -419,15 +427,18 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     const chunks = splitPatch(input.patch);
     const sections = chunks.filter(chunk => !chunk.continued).length;
     if (sections > MAX_FILES) { showFallback('Large diff — showing a limited plain text preview.'); return; }
-    const fail = () => showFallback(input.truncated
-      ? 'This patch was shortened when recorded. Showing the available plain text patch.'
-      : 'Unable to format this diff. Showing the recorded patch.');
+    const fail = () => {
+      if (cancelled()) return;
+      showFallback(input.truncated
+        ? 'This patch was shortened when recorded. Showing the available plain text patch.'
+        : 'Unable to format this diff. Showing the recorded patch.');
+    };
     try {
       clearTimeout(engineIdleTimer);
       activeViewers++;
       usesEngine = true;
       const loaded = await preloadDiffViewer() as Engine;
-      if (disposed) return;
+      if (cancelled()) return;
       const { lib } = loaded;
       pool = loaded.pool;
       highlighter = loaded.highlighter;
@@ -440,7 +451,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
           langs: [...new Set(names.map(name => lib.getFiletypeFromFileName(name)))],
           preferredHighlighter: highlighter,
         });
-        if (disposed) return;
+        if (cancelled()) return;
       }
       updateControls();
       let list: HTMLElement = content;
@@ -494,7 +505,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
         do mountChunk(); while (next < chunks.length && performance.now() - start < budget);
         if (next < chunks.length) {
           mountFrame = requestAnimationFrame(() => {
-            if (disposed) return;
+            if (cancelled()) return;
             try { pump(SLICE_MS); } catch { fail(); }
           });
         } else finish();
@@ -517,7 +528,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
         if (disposed || resizeFrame) return;
         resizeFrame = requestAnimationFrame(() => {
           resizeFrame = 0;
-          if (disposed) return;
+          if (cancelled()) return;
           const previousLayout = layout;
           updateControls();
           if (layout !== previousLayout) rerender();
@@ -530,14 +541,45 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     }
   }
 
+  // Keep geometry and reader options, but give up renderers and their engine lease while hidden.
+  document.addEventListener('visibilitychange', () => {
+    clearTimeout(hiddenTimer);
+    if (document.hidden) {
+      hiddenTimer = window.setTimeout(() => {
+        if (disposed || suspended || !document.hidden || root.dataset.diffState === 'fallback') return;
+        suspended = true;
+        renderGeneration++;
+        hiddenScroll = { top: scroller.scrollTop, left: scroller.scrollLeft };
+        content.style.minHeight = `${content.getBoundingClientRect().height}px`;
+        resizeObserver?.disconnect(); resizeObserver = undefined;
+        themeObserver?.disconnect(); themeObserver = undefined;
+        cancelAnimationFrame(resizeFrame);
+        resizeFrame = 0;
+        cleanRenderers();
+        content.replaceChildren();
+        if (usesEngine) { usesEngine = false; releaseEngine(); }
+        pool = undefined;
+        root.dataset.diffState = 'suspended';
+      }, HIDDEN_GRACE_MS);
+    } else if (suspended && !disposed) {
+      suspended = false;
+      void initialize().then(() => {
+        if (disposed || suspended) return;
+        content.style.minHeight = '';
+        if (hiddenScroll) { scroller.scrollTop = hiddenScroll.top; scroller.scrollLeft = hiddenScroll.left; }
+      });
+    }
+  }, { signal: listeners.signal });
+
   const controller: DiffViewerController = {
     ready: initialize(),
     dispose() {
       if (disposed) return;
       disposed = true;
       listeners.abort();
-      resizeObserver?.disconnect();
-      themeObserver?.disconnect();
+      clearTimeout(hiddenTimer);
+      resizeObserver?.disconnect(); resizeObserver = undefined;
+      themeObserver?.disconnect(); themeObserver = undefined;
       cancelAnimationFrame(resizeFrame);
       if (virtualizer) keepFirstScreen(true);
       cleanRenderers();

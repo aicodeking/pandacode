@@ -57,7 +57,7 @@ import { parseSkyTime } from './sky-math';
 import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
-import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
+import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, releaseToolImages, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
 import { attachToolImages, REVEAL_LABEL } from './tool-image-viewer';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
@@ -596,12 +596,28 @@ let bootPending: Promise<void> | undefined;
 let providerDiscovery: Promise<void> | undefined;
 /** Explicit navigation cancels a queued creation; automatic boot restoration does not. */
 let threadNavigation = 0;
+let startupWaitTimer = 0, startupWaitVisible = false;
 /** Keep startup waits visible without blocking thread navigation or cancelling a queued New task. */
 function syncStartupActions(): void {
+  if (bootPending && !startupWaitVisible && !startupWaitTimer) {
+    startupWaitTimer = window.setTimeout(() => {
+      startupWaitTimer = 0;
+      startupWaitVisible = Boolean(bootPending);
+      syncStartupActions();
+    }, 150);
+  } else if (!bootPending) {
+    clearTimeout(startupWaitTimer);
+    startupWaitTimer = 0;
+    startupWaitVisible = false;
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('.sidebar-actions [data-action="new-task"], .sidebar-actions [data-action="new-chat"]')) {
     button.setAttribute('aria-busy', String(Boolean(bootPending)));
     if (bootPending) button.setAttribute('aria-description', 'Loading agents…');
     else button.removeAttribute('aria-description');
+    button.toggleAttribute('data-startup-wait', startupWaitVisible);
+    const progress = button.querySelector('.startup-progress');
+    if (startupWaitVisible && !progress) button.insertAdjacentHTML('beforeend', '<span class="startup-progress" aria-hidden="true">…</span>');
+    else if (!startupWaitVisible) progress?.remove();
   }
 }
 let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
@@ -2676,6 +2692,9 @@ const imageCache = new ImageCache(32 * 1024 * 1024, () => new Set(
     const rect = image.getBoundingClientRect();
     if (rect.width && rect.height) { image.width = Math.round(rect.width); image.height = Math.round(rect.height); }
     image.removeAttribute('src');
+    // A quick scroll away and back can precede the observer's offscreen record.
+    const chip = image.parentElement!;
+    sentImageObserver.unobserve(chip); sentImageObserver.observe(chip);
   }
 });
 // Observe the chip: an image with no payload is hidden until its first successful load.
@@ -2690,6 +2709,7 @@ new MutationObserver(records => {
   for (const record of records) for (const removed of record.removedNodes) if (removed instanceof Element && !removed.isConnected) {
     // Cached rows keep their DOM for fast switching, but never keep image payloads or decoded pixels.
     // Reattachment below observes the chip again and reloads through ImageCache.
+    releaseToolImages(removed);
     const images = removed.matches('img[data-prompt-image]') ? [removed] : removed.querySelectorAll('img[data-prompt-image]');
     for (const image of images) image.removeAttribute('src');
     // IntersectionObserver holds targets strongly; detached transcript rows must be released.

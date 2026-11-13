@@ -45,7 +45,9 @@ html .workspace :is(#transcript,.thread-mirror-rows,#stream-region) .turn-card>.
 .turn-card .live-earlier .tool-group>.tool-group-summary{display:flex}
 
 /* ---------- Reply (inner card) ---------- */
-.turn-card>.turn-card-reply{gap:0;padding:12px 14px 4px}
+/* Opaque inset fill lets the one-line streaming fade blend into the reply in either theme. */
+.turn-card>.turn-card-reply{--ds-card-inner:var(--bg);gap:0;padding:12px 14px 4px}
+html[data-theme="dark"] .turn-card>.turn-card-reply{--ds-card-inner:color-mix(in srgb,var(--text) 5.5%,var(--bg))}
 .turn-card-reply-body{font-size:var(--thread-font)}
 .turn-card-reply .message{margin:0}
 .turn-card-reply .message-content{padding-left:0}
@@ -80,7 +82,7 @@ html[data-theme="dark"] .turn-card-more{color:color-mix(in srgb,var(--accent) 70
 @media(prefers-reduced-motion:no-preference){
   .turn-card:not([data-done])>.turn-card-reply .live-text{position:relative}
   .turn-card:not([data-done])>.turn-card-reply .live-text::after{content:"";position:absolute;inset:auto 0 0;height:1.6em;pointer-events:none;
-    background:var(--bg);opacity:.6;-webkit-mask-image:linear-gradient(transparent,#000);mask-image:linear-gradient(transparent,#000)}
+    background:var(--ds-card-inner);opacity:.6;-webkit-mask-image:linear-gradient(transparent,#000);mask-image:linear-gradient(transparent,#000)}
 }
 
 /* ---------- Errors and footer ---------- */

@@ -7,6 +7,7 @@ import type { Scene } from './types';
  * cools and dims a little at night (in the light theme, whose grade holds luminance, the hue carries it: a moonlit pool). Light theme: pale luminous aqua over white sand; both graded by the prelude. */
 export const scene: Scene = {
   id: 'lagoon',
+  motion: 'fast',
   label: 'Lagoon',
   fallback: () => [[.35, .8, .85], [.08, .5, .6], [.3, .45, .45]],
   fragment: `

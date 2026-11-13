@@ -6,6 +6,7 @@ import type { Scene } from './types';
  * from it where the sea shows, thins the sky's veil around it, and that brighter sky reflects in the water below. */
 export const scene: Scene = {
   id: 'ocean',
+  motion: 'fast',
   label: 'Ocean',
   fallback: colors => [colors.top, colors.horizon, [.1, .36, .42]],
   fragment: `

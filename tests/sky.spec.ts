@@ -272,18 +272,18 @@ for (const scene of SCENE_IDS) for (const theme of ['light', 'dark'] as const) {
 }
 
 /** An isolated host lets lifecycle checks drive real WebGL without the app's unrelated timers. */
-async function host(page: Page, tile = false): Promise<void> {
+async function host(page: Page, tile = false, scene?: string): Promise<void> {
   await page.route('**/sky-harness', route => route.fulfill({ contentType: 'text/html', body: '<html data-theme="light" data-ready><body><div id="workspace"><div id="pane" style="position:relative;width:800px;height:600px"></div></div></body></html>' }));
   await page.goto('/sky-harness');
-  await page.evaluate(async tile => {
+  await page.evaluate(async ({ tile, scene }) => {
     const path = '/src/sky-window.ts';
     const { mountSky } = await import(path);
     const pane = document.querySelector('#pane') as HTMLElement;
     const workspace = document.querySelector('#workspace') as HTMLElement;
     const state = { wanted: true, controller: null as any };
     (window as any).skyHost = state;
-    state.controller = mountSky(pane, workspace, { wanted: () => state.wanted, expose: true, tileRoot: tile ? pane : undefined });
-  }, tile);
+    state.controller = mountSky(pane, workspace, { wanted: () => state.wanted, expose: true, tileRoot: tile ? pane : undefined, pinnedScene: scene });
+  }, { tile, scene });
   await expect(sky(page)).toHaveAttribute('data-gl', '');
 }
 
@@ -323,6 +323,32 @@ for (const tile of [false, true]) test(`scene time and drift track wall time at 
   expect(Math.abs((awake.time - steady.time) - (awake.now - steady.now))).toBeLessThan(.55);
   expect(Math.abs((awake.drift - steady.drift) - (awake.now - steady.now) * .122)).toBeLessThan(.07);
 });
+
+for (const scene of ['rain', 'lagoon', 'dunes', 'ocean']) for (const tile of [false, true]) {
+  test(`${scene} keeps fast motion smooth at the ${tile ? 'tile' : 'focused'} cadence, then settles`, async ({ page }) => {
+    await freezeClock(page);
+    await host(page, tile, scene);
+    await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+    await page.clock.runFor(2500);
+    await expect(sky(page)).toHaveAttribute('data-wind', '1');
+    const start = await sceneClock(page), before = await frames(page);
+    await page.clock.runFor(2000);
+    const end = await sceneClock(page), paints = (await frames(page)) - before;
+    expect(paints).toBeGreaterThanOrEqual(tile ? 11 : 28);
+    expect(paints).toBeLessThanOrEqual(tile ? 13 : 31);
+    expect(end.time - start.time).toBeCloseTo(end.now - start.now, 1);
+    expect(end.drift - start.drift).toBeCloseTo((end.now - start.now) * .122, 2);
+    await page.locator('#pane').evaluate(node => node.removeAttribute('data-running'));
+    await page.clock.runFor(8500);
+    await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+    const still = await frames(page);
+    await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+    await page.clock.runFor(2000);
+    expect(await frames(page)).toBe(still);
+  });
+}
 
 test('a quiet sky settles, refreshes its clock slowly and wakes on input, theme, resize and runs', async ({ page }) => {
   await freezeClock(page);

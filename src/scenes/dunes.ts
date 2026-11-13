@@ -7,6 +7,7 @@ import type { Scene } from './types';
  * walks the ripples and blows streamers off the crests; the pointer stirs drifting sand. */
 export const scene: Scene = {
   id: 'dunes',
+  motion: 'fast',
   label: 'Dunes',
   fallback: colors => [colors.top, colors.horizon, [.86, .6, .42]],
   fragment: `

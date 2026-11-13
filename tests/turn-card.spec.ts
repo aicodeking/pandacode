@@ -143,8 +143,14 @@ for (const theme of ['light', 'dark'] as const) {
     }
     const fade = await live.locator('.live-text').evaluate(node => {
       const style = getComputedStyle(node, '::after');
-      return { height: parseFloat(style.height), line: parseFloat(getComputedStyle(node).lineHeight) };
+      const surface = getComputedStyle(node.closest('.turn-card-reply')!).backgroundColor;
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.fillStyle = surface; context.fillRect(0, 0, 1, 1);
+      return { height: parseFloat(style.height), line: parseFloat(getComputedStyle(node).lineHeight),
+        color: style.backgroundColor, surface, alpha: context.getImageData(0, 0, 1, 1).data[3] };
     });
+    expect(fade.color, 'one-line fade matches the reply surface').toBe(fade.surface);
+    expect(fade.alpha, 'reply surface is opaque over scenes').toBe(255);
     expect(fade.height).toBeGreaterThan(0);
     expect(fade.height).toBeLessThanOrEqual(fade.line + 1);
     await page.emulateMedia({ contrast: 'more' });

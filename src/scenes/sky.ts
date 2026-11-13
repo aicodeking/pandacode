@@ -5,6 +5,7 @@ import type { Scene } from './types';
  * 'Thread window'). It keeps its own grade (a dusk-aware variant of the prelude's) and is the scene with no thread. */
 export const scene: Scene = {
   id: 'sky',
+  motion: 'ambient',
   label: 'Sky',
   fallback: colors => [colors.top, colors.mid, colors.horizon],
   fragment: `/* Cumulus thickness: a billowy base (fbm over a slow domain warp), eroded at the edges by fine noise so they wisp out

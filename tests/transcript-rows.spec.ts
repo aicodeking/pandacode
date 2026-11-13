@@ -268,3 +268,38 @@ test('detached cached rows release sent image sources and reload them when reatt
   await expect(page.locator('img[data-prompt-image="detached-image"]')).toHaveAttribute('src', png);
   expect(await page.evaluate(() => (window as any).__detachedReads)).toBe(1);
 });
+
+
+test('detached cached tool images release sources and rehydrate through their stamped session', async ({ page }) => {
+  await blank(page);
+  await page.evaluate(async () => {
+    const { attachToolImages } = await import(/* @vite-ignore */ `${location.origin}/src/tool-image-viewer.ts`);
+    const { toolImageThumbHtml } = await import(/* @vite-ignore */ `${location.origin}/src/tool-images.ts`);
+    const { leftRowsCache } = await import(/* @vite-ignore */ `${location.origin}/src/transcript-view.ts`);
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'position:fixed;top:100px;left:100px';
+    const row = document.createElement('div'); row.innerHTML = toolImageThumbHtml('/tmp/cache-test.png');
+    (window as any).__toolReads = [];
+    attachToolImages(host, () => 'original-thread', async id => {
+      (window as any).__toolReads.push(id);
+      return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+    });
+    host.append(row);
+    (window as any).__toolRow = row; (window as any).__toolHost = host;
+    (window as any).__toolRows = leftRowsCache();
+  });
+  const image = page.locator('[data-tool-image="/tmp/cache-test.png"] img');
+  await expect(image).toHaveAttribute('src', /^data:image/);
+  await page.evaluate(() => {
+    const row = (window as any).__toolRow;
+    (window as any).__toolRows.keep('original-thread', { rows: [{ html: '', nodes: [row] }], trimmed: new Map(), keys: ['1'] });
+    row.remove();
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__toolRow.querySelector('img').hasAttribute('src'))).toBe(false);
+  await page.evaluate(() => {
+    const rows = (window as any).__toolRows.take('original-thread');
+    (window as any).__toolHost.append(...rows.rows.flatMap((row: any) => row.nodes));
+  });
+  await expect(image).toHaveAttribute('src', /^data:image/);
+  expect(await page.evaluate(() => (window as any).__toolReads)).toEqual(['original-thread']);
+});

@@ -27,18 +27,19 @@ export interface ChangesView {
 }
 
 type Scope = 'all' | 'unstaged' | 'staged';
-type Load = 'idle' | 'loading' | 'loaded' | 'error';
+type Load = 'idle' | 'loading' | 'loaded' | 'evicted' | 'error';
 interface Entry {
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
-  near: boolean; refresh: boolean; height?: number; scroll?: { top: number; left: number };
+  near: boolean; refresh: boolean; used: number; height?: number; scroll?: { top: number; left: number };
   viewer?: DiffViewerController; slot?: HTMLElement; shown?: string;
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
 }
 
 const REFETCH_GAP = 1_000;
+const PATCH_CACHE_BYTES = 16 * 1024 * 1024;
 // Added to each diff's shadow root (by the viewer, also for hunk groups that mount later): long lines scroll with a visible bar; wrapped code may break anywhere (so indentation never
 // sits alone on a row), and hunk headers are one slim muted line.
 const SHADOW_CSS = `
@@ -84,7 +85,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let status: GitStatus | null = null;
   let error: string | undefined;
   let disposed = false, showing = true;
-  let committing = false;
+  let committing = false, lastUsed = 0;
   const entries = new Map<string, Entry>();
   const collapsed = new Set<string>();
   let order: string[] = [];
@@ -119,6 +120,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       if (entry.near) show(entry);
       else suspend(entry);
     }
+    trimPatches();
   }, { root: body, rootMargin: '800px 0px' });
   const resizer = new ResizeObserver(() => scheduleFit());
   resizer.observe(body);
@@ -138,7 +140,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function setStat(entry: Entry): void {
     const parts: string[] = [];
-    if (entry.load === 'loaded') {
+    if (entry.load === 'loaded' || entry.load === 'evicted') {
       if (entry.adds) parts.push(`<span class="cv-add">+${entry.adds}</span>`);
       if (entry.dels) parts.push(`<span class="cv-del">-${entry.dels}</span>`);
     }
@@ -185,7 +187,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function totals(): void {
     let adds = 0, dels = 0;
-    for (const entry of entries.values()) if (entry.load === 'loaded') { adds += entry.adds; dels += entry.dels; }
+    for (const entry of entries.values()) { adds += entry.adds; dels += entry.dels; }
     const n = entries.size;
     filesLabel.textContent = n ? `${n} file${n === 1 ? '' : 's'}` : '';
     addsLabel.textContent = n ? `+${adds}` : '';
@@ -236,6 +238,23 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     entry.body.replaceChildren();
   }
 
+  function trimPatches(): void {
+    // Count UTF-16 storage conservatively, including a separate stripped patch when present.
+    const bytes = (entry: Entry) => 2 * (entry.raw.length + (entry.patch === entry.raw ? 0 : entry.patch.length));
+    let total = 0;
+    for (const entry of entries.values()) total += bytes(entry);
+    if (total <= PATCH_CACHE_BYTES) return;
+    const candidates = [...entries.values()].filter(entry => entry.load === 'loaded' && (!showing || !entry.near || collapsed.has(entry.path))).sort((a, b) => a.used - b.used);
+    for (const entry of candidates) {
+      if (total <= PATCH_CACHE_BYTES) break;
+      suspend(entry);
+      total -= bytes(entry);
+      entry.raw = entry.patch = '';
+      entry.load = 'evicted';
+      entry.token++;
+    }
+  }
+
   function reset(entry: Entry): void {
     drop(entry);
     entry.body.style.minHeight = '';
@@ -278,6 +297,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       setStat(entry);
       totals();
       mountViewer(entry);
+      trimPatches();
     } catch (reason) {
       if (disposed || token !== entry.token || (quiet && entry.load === 'loaded')) return;
       drop(entry);
@@ -368,7 +388,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       let entry = entries.get(file.path);
       if (!entry) {
         const el = element(file.path);
-        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
+        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, used: 0, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
         entries.set(file.path, entry);
         observer.observe(el);
         fresh.push(entry);
@@ -389,10 +409,11 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     if (fresh.length) scheduleFit();
   }
 
-  /** Hidden panels and folded files keep patch text, but never start the diff engine. */
+  /** Hidden panels and folded files keep budgeted patch text, but never start the diff engine. */
   function show(entry: Entry): void {
     if (!showing || !entry.near || collapsed.has(entry.path)) return;
-    if (entry.load === 'idle' || entry.refresh) {
+    entry.used = ++lastUsed;
+    if (entry.load === 'idle' || entry.load === 'evicted' || entry.refresh) {
       entry.refresh = false;
       void load(entry, entry.load === 'loaded');
     } else mountViewer(entry);
@@ -402,14 +423,15 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     if (folded) collapsed.add(path); else collapsed.delete(path);
     const entry = entries.get(path);
     if (entry) {
+      if (folded) suspend(entry);
       paint(entry, entry.code);
       if (folded) {
         drop(entry);
-        entry.body.style.minHeight = '';
         // Error and Retry are lightweight state: folding must not erase them.
         if (entry.load !== 'error') entry.body.replaceChildren();
       }
       else show(entry);
+      trimPatches();
     }
   }
 
@@ -532,6 +554,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       for (const entry of entries.values()) {
         if (showing) show(entry); else suspend(entry);
       }
+      trimPatches();
     },
     dispose() {
       if (disposed) return;

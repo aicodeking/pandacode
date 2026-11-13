@@ -8,6 +8,7 @@ import type { Scene } from './types';
  * presence spring). Light theme: pale misty glass with the lights as soft tints; both graded by the prelude. */
 export const scene: Scene = {
   id: 'rain',
+  motion: 'fast',
   label: 'Rain',
   fallback: colors => {
     const day = colors.top.reduce((sum, v) => sum + v, 0) > 1.2;

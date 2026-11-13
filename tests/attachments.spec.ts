@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { settled } from './transcript-fixtures';
 
 // Prompt attachments in the browser preview: the attach menu, image/document/folder
 // chips, paste and drop, the shared image cap, send-time context, and folder mentions.
@@ -357,6 +358,9 @@ test('sent image eviction clears offscreen sources and reloads them on intersect
   const image = page.locator('img[data-prompt-image]').last();
   await expect(image).toHaveAttribute('src', /^data:image/);
   await expect.poll(() => image.evaluate(img => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('#transcript')).not.toHaveAttribute('data-running');
+  await expect(page.locator('#stream-region .turn-card.is-live')).toHaveCount(0);
+  await settled(page);
   const size = await image.boundingBox();
   const before = (await calls(page, 'prompt_image')).length;
   await page.evaluate(() => {
