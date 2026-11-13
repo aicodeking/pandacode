@@ -1045,9 +1045,21 @@ offered. The protocol is ZCode's private surface and evolves with the CLI — fr
 are parsed defensively (unknown events ignored, unknown reverse requests answered
 `-32601`) and pinned per recorded version.
 
-ZCode cannot lead or join agent teams yet. Automatic teams exclude its models;
-selecting a ZCode model turns off a team with no worker history. Start a new task
-if the team has already run workers.
+ZCode can lead and join agent teams. A fresh session carries the host-tools MCP
+server inline in `session/create` (`mcpServers`, one entry from
+`mcp_host::zcode_config`: loopback HTTP, `isolation: "session"`, `alwaysLoad: true`
+so ZCode does not defer the tools behind its tool search); a resumed session
+pushes the run's fresh server through `mcp/list` in `connect` mode, because
+`session/resume` takes no `mcpServers` and `session/update` is not implemented
+(recorded 2026-11-13 against CLI 0.17.1). ZCode negotiates MCP revision
+2026-07-28: it probes HTTP servers with `server/discover`, and `tools/list` /
+`tools/call` results must carry `resultType: "complete"` plus `ttlMs` and
+`cacheScope` — `mcp_host` answers accordingly for every harness. When the bridge
+does not come up, a required (team, or solo with Connect orchestration) run fails
+with a clear message and an optional (title) bridge drops out quietly. The CLI
+bundled with an older ZCode.app may reject the create's `mcpServers` key with its
+own schema error — the bridge is recorded from 0.17.1, and the CLI tracks the
+installed app.
 
 Verified against the CLI bundled with ZCode.app (user-agent `ZCode/3.16.3`) on
 2026-10-25 by driving `zcode app-server` directly (create, subscribe, two turns,

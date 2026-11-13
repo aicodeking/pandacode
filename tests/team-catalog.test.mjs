@@ -5,7 +5,7 @@ import { dupModelNames, installedCatalog, limitTeamModels, TEAM_LIMIT, toggleTea
 const models = n => [{ id: 'default' }, ...Array.from({ length: n }, (_, i) => ({ id: `m${i}` }))];
 const ids = result => result.models.map(m => m.id);
 
-test('installed team catalogs omit harnesses without team tools before discovering models', async () => {
+test('installed team catalogs discover every installed harness, zcode included', async () => {
   const fallback = [{ id: 'default', name: 'Default' }];
   const providers = [
     { id: 'codex', name: 'Codex', installed: true, models: fallback },
@@ -19,10 +19,10 @@ test('installed team catalogs omit harnesses without team tools before discoveri
     if (id === 'kimi') throw new Error('Discovery unavailable');
     return [{ id: 'gpt-6-luna', name: 'GPT-6-Luna' }];
   });
-  const expected = [['codex', 'gpt-6-luna'], ['kimi', 'default']];
+  const expected = [['codex', 'gpt-6-luna'], ['zcode', 'gpt-6-luna'], ['kimi', 'default']];
   assert.deepEqual(result.catalog.map(p => [p.provider, p.model]), expected);
   assert.deepEqual(result.roster.map(p => [p.provider, p.model]), expected);
-  assert.deepEqual(discovered, ['codex', 'kimi']);
+  assert.deepEqual(discovered, ['codex', 'zcode', 'kimi']);
 });
 
 test('a long catalog keeps default and its most recent models in the catalog', () => {

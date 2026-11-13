@@ -1,0 +1,12 @@
+{
+  "plugins": {
+    "enabledPlugins": {
+      "video-agent-kit@zcode-plugins-official": false,
+      "video2code@zcode-plugins-official": false,
+      "obsidian@zcode-plugins-official": false,
+      "tianyancha@zcode-plugins-official": false,
+      "blender@zcode-plugins-official": false,
+      "zcode-guide@zcode-plugins-official": false
+    }
+  }
+}
