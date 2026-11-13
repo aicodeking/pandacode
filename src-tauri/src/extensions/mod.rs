@@ -11,4 +11,4 @@ pub mod jobs;
 pub mod connections;
 pub mod services;
 pub mod providers;
-mod supervisor;
+pub(crate) mod supervisor;

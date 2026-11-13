@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 13] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services"];
+const CONTRIBUTIONS: [&str; 14] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services", "providers"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -254,7 +254,15 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             let colors = &theme[mode];
             if appearance_contrast(text(colors, "background"), text(colors, "foreground")) < 7.0 || appearance_contrast(text(colors, "background"), text(colors, "accent")) < 3.0 { return Err(fail("InvalidAppearanceContrast", &format!("{path}/contributes/themes"), vec![])); }
         } }
-        let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").map(|command| text(command, "id").to_owned()).collect();
+        let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").chain(items(contributions, "providers").iter()).map(|command| text(command, "id").to_owned()).collect();
+        for provider in items(contributions, "providers") {
+            if manifest.get("runtime").is_none() { return Err(fail("UnsupportedRuntime", &path, vec![])); }
+            let mut models = BTreeSet::new();
+            for model in items(provider, "models") {
+                let efforts = strings(&model["efforts"]);
+                if !models.insert(text(model, "id")) || efforts.iter().collect::<BTreeSet<_>>().len() != efforts.len() { return Err(fail("DuplicateId", &path, vec![])); }
+            }
+        }
         let events = strings(&manifest["runtime"]["activationEvents"]);
         if manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id)) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
         let mut owned = BTreeSet::new();

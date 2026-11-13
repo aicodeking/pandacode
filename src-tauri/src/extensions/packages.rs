@@ -32,13 +32,13 @@ pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Packa
 pub(super) struct DevelopmentStatus { id: String, revision: u64, logs: Vec<String> }
 struct Development { path: PathBuf, record: Record, revision: u64, logs: Vec<String> }
 pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<BTreeMap<String, Development>>, streams: Mutex<BTreeMap<String, storage::Stream>> }
-pub struct ExtensionPackages(pub Mutex<Packages>);
+pub struct ExtensionPackages(pub std::sync::Arc<Mutex<Packages>>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
     Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false, rich_assets: BTreeMap::new() }], diagnostics: vec![], development: vec![] }
 }
 impl ExtensionPackages {
-    pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() })) }
+    pub fn new(dir: &Path, safe: bool) -> Self { Self(std::sync::Arc::new(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() }))) }
 }
 
 fn regular(path: &Path) -> Result<()> {
@@ -166,6 +166,14 @@ fn validate(bytes: &[u8]) -> Result<Package> {
 }
 
 impl Packages {
+    /// Revalidated, immutable executable ownership; neither discovery nor catalog executes code.
+    pub(crate) fn provider_registrations(&self) -> Vec<(Value, String, String, String)> {
+        self.snapshot().packages.into_iter().filter(|package| package.enabled && package.manifest["contributes"]["providers"].as_array().is_some_and(|providers| !providers.is_empty())).flat_map(|package| {
+            let Some(owner) = package.manifest["id"].as_str() else { return vec![] };
+            let Ok((digest, source)) = self.executable_source(owner) else { return vec![] };
+            package.manifest["contributes"]["providers"].as_array().into_iter().flatten().map(|provider| (provider.clone(), package.manifest["version"].as_str().unwrap_or_default().to_owned(), digest.clone(), source.clone())).collect::<Vec<_>>()
+        }).collect()
+    }
     fn settings_page(&self, id: &str, page: &str) -> Result<Value> {
         if self.safe { return Err("Safe mode: extension settings are dormant.".into()); }
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
@@ -431,6 +439,92 @@ mod tests {
         assert_eq!(packages.snapshot().packages.iter().filter(|p| p.enabled).count(), 2);
         packages.enable("sample.service-provider", false).unwrap();
         assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == "sample.service-provider").unwrap().enabled);
+    }
+    const HARNESS_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/extension.json");
+    const HARNESS_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/main.cjs");
+    fn install_harness(packages: &Packages, manifest: &str, source: &str) {
+        let id = serde_json::from_str::<Value>(manifest).unwrap()["id"].as_str().unwrap().to_owned();
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes())])).unwrap();
+        assert!(packages.enable(&id, true).unwrap_err().contains("ExecutableTrustRequired"));
+        let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
+        packages.trust(&id, &digest, true).unwrap(); packages.enable(&id, true).unwrap();
+    }
+    #[test]
+    fn dynamic_harness_packages_are_declared_trusted_revalidated_and_not_hardcoded() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        install_harness(&packages, HARNESS_MANIFEST, HARNESS_SOURCE);
+        let captured = packages.provider_registrations(); assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0["models"][0]["efforts"], json!(["low", "medium"]));
+        let second = HARNESS_MANIFEST.replace("sample.fake-harness", "another.recording");
+        install_harness(&packages, &second, &HARNESS_SOURCE.replace("sample.fake-harness", "another.recording"));
+        assert_eq!(packages.provider_registrations().len(), 2);
+        packages.enable("sample.fake-harness", false).unwrap();
+        assert_eq!(packages.provider_registrations().len(), 1);
+        // A captured active owner/version stays immutable; disabling never rewrites history/source.
+        assert_eq!(captured[0].1, "1.0.0"); assert_eq!(captured[0].3, HARNESS_SOURCE);
+        assert!(storage.packages(true).provider_registrations().is_empty());
+        assert_eq!(storage.packages(false).provider_registrations().len(), 1);
+        for (from, to) in [("sample.fake-harness/recorded", "panda.core/recorded"), ("\"apiVersion\": 1", "\"apiVersion\": 2"), ("\"requiredContributions\": [\"providers\"]", "\"requiredContributions\": [\"missing\"]")] {
+            let manifest = HARNESS_MANIFEST.replace(from, to);
+            assert!(validate(&archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", HARNESS_SOURCE.as_bytes())])).is_err());
+        }
+    }
+    #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn dynamic_harness_real_package_runs_start_resume_steer_approve_reject_and_stop() {
+        use crate::providers::{self, RunInput};
+        use std::sync::Arc;
+        let storage = Storage::new();
+        let packages = ExtensionPackages::new(&storage.0, false);
+        install_harness(&packages.0.lock().unwrap(), HARNESS_MANIFEST, HARNESS_SOURCE);
+        install_harness(&packages.0.lock().unwrap(), &HARNESS_MANIFEST.replace("sample.fake-harness", "another.recording"), &HARNESS_SOURCE.replace("sample.fake-harness", "another.recording"));
+        providers::dynamic_adapter::configure(&packages.0, Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")));
+        assert_eq!(providers::dynamic_adapter::discover().len(), 2);
+        for owner in ["sample.fake-harness", "another.recording"] { for resume in [false, true] { for approved in [false, true] { for stop in [false, true] {
+            let config = providers::RunConfig { session_id: uuid::Uuid::new_v4().to_string(), provider: format!("{owner}/recorded"), model: "recorded-model".into(), reasoning_effort: Some("medium".into()), mode: "ask".into(), cwd: storage.0.clone(), resume_id: resume.then(|| "recorded-conversation".into()), prompt: "Recorded prompt".into(), instructions: "Captured instructions".into(), skill: None, goal: None, codex_settings: None, images: vec![] };
+            let (input, rx) = tokio::sync::mpsc::unbounded_channel();
+            let (events, mut output) = tokio::sync::mpsc::unbounded_channel();
+            let runner = tokio::spawn(providers::run(config, Arc::new(move |event| { events.send(event).unwrap(); }), rx));
+            let mut seen = Vec::new();
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(15), output.recv()).await.unwrap().unwrap();
+                if event.kind == "approval" {
+                    input.send(RunInput::Approval { request_id: "forged".into(), approved: true }).unwrap();
+                    if stop {
+                        if resume && approved {
+                            packages.0.lock().unwrap().enable(owner, false).unwrap();
+                            providers::dynamic_adapter::stop(Some(owner));
+                            assert!(providers::dynamic_adapter::require_available(&format!("{owner}/recorded")).is_err());
+                        } else { input.send(RunInput::Stop).unwrap(); }
+                    }
+                    else {
+                        let (reply, answer) = tokio::sync::oneshot::channel();
+                        input.send(RunInput::Steer { id: "recorded-steer".into(), text: "recorded steering".into(), reply }).unwrap();
+                        assert_eq!(answer.await.unwrap().unwrap()["mode"], "live");
+                        input.send(RunInput::Approval { request_id: event.request_id.clone().unwrap(), approved }).unwrap();
+                    }
+                }
+                if event.kind == "input_request" {
+                    let (reply, answer) = tokio::sync::oneshot::channel();
+                    input.send(RunInput::UserInput { request_id: "forged".into(), response: json!({"answers":{"choice":["Finish"]}}), reply: Some(reply) }).unwrap();
+                    assert!(answer.await.unwrap().is_err());
+                    input.send(RunInput::UserInput { request_id: event.request_id.clone().unwrap(), response: json!({"answers":{"choice":["Finish"]}}), reply: None }).unwrap();
+                }
+                let done = event.kind == "done"; seen.push(event); if done { break; }
+            }
+            assert!(runner.await.unwrap().is_ok(), "{:?}", seen);
+            assert!(output.try_recv().is_err()); assert_eq!(seen.iter().filter(|event| event.kind == "done").count(), 1);
+            assert!(seen.iter().any(|event| event.kind == "session" && event.text == "recorded-conversation"));
+            assert!(seen.iter().any(|event| event.kind == "text" && event.text.starts_with(if resume { "Resumed" } else { "Started" })));
+            assert_eq!(seen.iter().filter(|event| event.kind == "usage").count(), usize::from(!stop));
+            if !stop { assert!(seen.iter().any(|event| event.kind == "text" && event.text == if approved { "Approved. " } else { "Rejected. " })); }
+            if stop && resume && approved { packages.0.lock().unwrap().enable(owner, true).unwrap(); }
+        } } } }
+        packages.0.lock().unwrap().enable("sample.fake-harness", false).unwrap();
+        assert!(providers::dynamic_adapter::require_available("sample.fake-harness/recorded").is_err());
+        assert_eq!(providers::dynamic_adapter::discover().len(), 1);
+        packages.0.lock().unwrap().enable("another.recording", false).unwrap();
+        assert!(providers::dynamic_adapter::discover().is_empty());
     }
     #[test]
     fn rich_view_archive_validates_local_assets_without_exposing_source_in_snapshot() {

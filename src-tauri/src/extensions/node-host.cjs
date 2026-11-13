@@ -58,6 +58,16 @@ process.stdin.on('data', chunk => {
         const module = new Module(join(process.cwd(), 'extension.cjs'));
         module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
         module._compile(init.source, module.filename);
+        if (invocation?.provider) {
+          const handler = module.exports.providers?.[invocation.provider.id];
+          if (typeof handler !== 'function') throw new Error('Missing provider');
+          await handler(invocation.provider, Object.freeze({
+            emit: event => rpc('providerEvent', event),
+            nextInput: () => rpc('providerInput', null),
+          }));
+          await rpc('complete', null);
+          return;
+        }
         if (invocation?.service) {
           const call = invocation.service;
           const handler = module.exports.services?.[call.id]?.[call.method];

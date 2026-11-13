@@ -1631,7 +1631,7 @@ fn prepare_task_run_in_project(
         architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
     }
     let session = reconcile_inactive_task(&store, &agents, store.session(&session_id)?);
-    extensions::providers::require_builtin_execution(&session.provider)?;
+    providers::dynamic_adapter::require_available(&session.provider)?;
     if admission.cloud_attach {
         return prepare_cloud_attach(&store, &mut agents, session, tx, stopped);
     }
@@ -3971,6 +3971,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
+    providers::dynamic_adapter::configure(&app.state::<extensions::packages::ExtensionPackages>().0, app.path().resource_dir().ok().map(|path| path.join("extension-runtime")));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
     app.manage(extensions::jobs::ExtensionJobs::default());

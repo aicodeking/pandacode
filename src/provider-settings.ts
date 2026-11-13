@@ -171,6 +171,13 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       generatedMounted = true;
       const cards = (config.providers ?? []).filter(([id]) => /^[a-z0-9-]+$/.test(id) && !host.querySelector(`[data-use-global="${id}"]`)).map(([id, name]) => generatedCard(id, name)).join('');
       feedback.insertAdjacentHTML('beforebegin', cards);
+      const extensions = (config.providers ?? []).filter(([id]) => id.includes('/'));
+      for (const [id, name] of extensions) {
+        const card = document.createElement('section'); card.className = 'connection-card'; card.dataset.extensionProvider = id;
+        const title = document.createElement('h4'); title.textContent = name;
+        const status = document.createElement('p'); status.textContent = 'Provided by a trusted extension. Manage availability and executable trust in Settings → Extensions. Core owns approvals, Stop and conversation history.';
+        card.append(title, status); feedback.before(card);
+      }
     }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
     for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {

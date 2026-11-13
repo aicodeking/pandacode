@@ -43,6 +43,7 @@ enum Request {
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
+    crate::providers::dynamic_adapter::stop(owner);
     if let Ok(mut services) = app.state::<ExtensionRuntime>().services.lock() { services.stop(owner, None); }
     app.state::<super::connections::ExtensionConnections>().stop(owner, None);
     app.state::<super::jobs::ExtensionJobs>().stop(owner, None);

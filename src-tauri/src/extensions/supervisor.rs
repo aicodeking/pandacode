@@ -62,6 +62,12 @@ pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<At
 }
 
 pub async fn run_owned(runtime: &Runtime, source: &str, context: Value, cancel: Arc<AtomicBool>, cwd: &Path, deadline: Duration, mut dispatch: impl FnMut(&str, Value) -> Value) -> Result<Vec<Value>> {
+    run_owned_async(runtime, source, context, cancel, cwd, deadline, |method, params| std::future::ready(dispatch(&method, params))).await
+}
+
+/// Async requests allow a provider to await core-owned input without blocking a runtime thread.
+pub async fn run_owned_async<F, Fut>(runtime: &Runtime, source: &str, context: Value, cancel: Arc<AtomicBool>, cwd: &Path, deadline: Duration, mut dispatch: F) -> Result<Vec<Value>>
+where F: FnMut(String, Value) -> Fut, Fut: std::future::Future<Output = Value> {
     if cancel.load(Ordering::Acquire) { return Err("Cancelled"); }
     let mut command = tokio::process::Command::new(&runtime.binary);
     command.args(["--max-old-space-size=64", "--input-type=commonjs", "--eval", BOOTSTRAP]).current_dir(cwd)
@@ -80,6 +86,7 @@ pub async fn run_owned(runtime: &Runtime, source: &str, context: Value, cancel: 
     #[cfg(all(test, feature = "extension-runtime-native-tests"))]
     let mut last_message = "bootstrap";
     let exchange = async {
+        let provider = context.get("provider").is_some();
         write_frame(&mut stdin, &json!({"token":token,"source":source,"context":context}), 300000).await?;
         let mut dialogs = Vec::new();
         for expected in 1..=128 {
@@ -92,7 +99,8 @@ pub async fn run_owned(runtime: &Runtime, source: &str, context: Value, cancel: 
             let reply = match message.method.as_str() {
                 "failed" if message.params.is_null() => return Err("HostUnavailable"),
                 "complete" if message.params.is_null() => return Ok(dialogs),
-                "context" | "dialog" | "storage" | "jobs" | "connections" | "services" | "serviceEvent" | "serviceResult" | "jobProgress" | "jobResult" => dispatch(&message.method, message.params.clone()),
+                "providerEvent" | "providerInput" if provider => dispatch(message.method.clone(), message.params.clone()).await,
+                "context" | "dialog" | "storage" | "jobs" | "connections" | "services" | "serviceEvent" | "serviceResult" | "jobProgress" | "jobResult" if !provider => dispatch(message.method.clone(), message.params.clone()).await,
                 _ => return Err("UnsupportedCapability"),
             };
             if message.method == "dialog" && reply["ok"] == true {

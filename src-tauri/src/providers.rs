@@ -20,6 +20,8 @@ use tokio::{
 mod attachments;
 #[path = "extensions/builtin_protocol.rs"]
 mod builtin_adapter;
+#[path = "extensions/dynamic_harness.rs"]
+pub(crate) mod dynamic_adapter;
 mod goals;
 mod host_inputs;
 mod host_tools;
@@ -545,6 +547,9 @@ pub struct ReasoningEffortInfo {
 }
 
 pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result<(), String> {
+    if crate::extensions::providers::extension_owner(provider).is_some() {
+        return dynamic_adapter::validate_effort(provider, effort);
+    }
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
@@ -826,7 +831,8 @@ mod inventory_tests {
     }
 }
 pub fn discover() -> Vec<ProviderInfo> {
-    let found: Vec<_> = crate::extensions::providers::all().map(|provider| provider.discover_with(discover_provider)).collect();
+    let mut found: Vec<_> = crate::extensions::providers::all().map(|provider| provider.discover_with(discover_provider)).collect();
+    found.extend(dynamic_adapter::discover());
     if let Ok(mut inventory) = INVENTORY.lock() { *inventory = found.iter().map(inventory_observation).collect(); }
     found
 }
@@ -861,6 +867,7 @@ fn discover_provider(id: &str, name: &str) -> ProviderInfo {
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
 /// create an empty session to advertise their scoped model options.
 pub async fn list_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
+    if crate::extensions::providers::extension_owner(provider).is_some() { return dynamic_adapter::models(provider); }
     let adapter = crate::extensions::providers::BuiltinProvider::get(provider)?;
     adapter.models_with(list_models_builtin).await
 }
@@ -3225,6 +3232,13 @@ pub async fn run_with_tools(
     harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
+    if crate::extensions::providers::extension_owner(&config.provider).is_some() {
+        let result = dynamic_adapter::run(config.clone(), sink.clone(), input).await;
+        let event = |kind: &str, text: String| AgentEvent { session_id: config.session_id.clone(), kind: kind.into(), text, request_id: None, data: None, tool: None };
+        if let Err(error) = &result { sink(event("error", error.clone())); }
+        sink(event("done", if result.is_ok() { "Finished" } else { "Failed" }.into()));
+        return result;
+    }
     crate::extensions::providers::require_builtin_execution(&config.provider)?;
     let (session_id, cwd) = (config.session_id.clone(), config.cwd.clone());
     if let Err(error) = crate::blocking(move || {

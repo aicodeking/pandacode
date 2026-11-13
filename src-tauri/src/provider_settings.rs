@@ -470,7 +470,7 @@ fn configuration() -> Result<Configuration> {
         global_environment,
         environment,
         use_global_environment,
-        providers: crate::providers::PROVIDERS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
+        providers: crate::providers::PROVIDERS.iter().map(|(id, name)| (id.to_string(), name.to_string())).chain(crate::providers::dynamic_adapter::discover().into_iter().map(|provider| (provider.id, provider.name))).collect(),
         provider_adapters: crate::extensions::providers::all().map(|provider| provider.descriptor()).collect(),
         glm_key_saved,
         glm_key_from_environment: from_environment(GLM_KEY.env),

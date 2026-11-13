@@ -1,5 +1,47 @@
 # Provider compatibility adapters (v1, implementation preview)
 
+## Package providers (experimental)
+
+The `tests/fixtures/extensions/fake-harness` package is an offline, executable
+conformance example. ZIP its `extension.json` and `main.cjs`, install in Settings →
+Extensions, explicitly review executable trust, then enable. The **Recorded harness**
+catalog appears in the existing model picker and provider settings. Select Recorded
+model, medium effort and Standard (native mode `ask`). No credentials/network are used.
+This is implemented on the existing Windows x64 trusted-runtime target; installed
+WebView2 interaction and other native-platform qualification are not claimed.
+
+Declare `contributes.providers` entries with `apiVersion: 1`, namespaced `id`, `name`
+and bounded `models` (`id`, `name`, `efforts`, optional `contextWindow`). Include each
+provider ID in `runtime.activationEvents`. Export `providers[id]` from `main.cjs`:
+
+```js
+exports.providers = {
+  'publisher.extension/local-id': async (run, core) => {
+    await core.emit({ kind: 'session', id: run.resumeId || 'native-conversation' });
+    await core.emit({ kind: 'text', text: 'Hello' });
+  }
+};
+```
+
+`run` is frozen and captures API/version/digest, provider ID, model, effort, mode,
+resumeId, prompt and instructions once. `core.emit` accepts only typed text,
+thinking, session, tool, approval, question and usage events. It cannot target another
+task, settle an approval or emit `done`. `core.nextInput()` awaits validated core
+approval, question or live-steer input. Questions use the existing bounded structured
+question grammar. Core generates pending request IDs and validates offered answers;
+stale/forged answers never reach the adapter. A successful return with unanswered
+requests or without a session is an error. Core emits completion exactly once.
+
+The existing supervisor authenticates framing and bounds 64-KiB frames, 128 RPCs,
+16 queued inputs, eight active managed provider runs and a one-hour run. Stop kills/reaps owned work independently of
+package cooperation. Disable/revoke/reload cancels owned managed runs and refuses
+future admission. Captured active version/source is immutable; package identity and
+saved transcript/resume IDs remain readable after disable/uninstall. Images, native
+slash skills, goals and Codex-private RPCs are explicitly unsupported by this adapter.
+No raw IPC, database or native host-tool execution API is exposed. Tool events are
+reported activity, not authority to run a host tool. Trusted package code still has
+ordinary OS-account authority independently: this API is not an OS sandbox.
+
 PandaCode's built-in harnesses remain core functionality. They do not require an
 extension package, executable-extension trust, a dynamic provider ID, or an
 extension host. Existing IDs, saved sessions, connections and native commands

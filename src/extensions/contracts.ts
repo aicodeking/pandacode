@@ -12,7 +12,7 @@ export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | 
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers'];
 const capabilities = ['services.call', 'connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -207,8 +207,13 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       const background = parseHex(String(colors.background))!.rgb;
       if (contrast(background, parseHex(String(colors.foreground))!.rgb) < 7 || contrast(background, parseHex(String(colors.accent))!.rgb) < 3) error('InvalidAppearanceContrast', `${path}/contributes/themes`);
     }
-    const executable = ((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id);
+    const executable = [...((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id), ...((contributions.providers ?? []) as ObjectValue[]).map(provider => provider.id)];
     const events = (manifest.runtime as ObjectValue | undefined)?.activationEvents as Json[] | undefined;
+    for (const provider of (contributions.providers ?? []) as ObjectValue[]) {
+      if (!manifest.runtime) error('UnsupportedRuntime', path, [id]);
+      const models = provider.models as ObjectValue[];
+      if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length)) error('DuplicateId', path, [id]);
+    }
     if (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id))) error('UnsupportedRuntime', path, [id]);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {

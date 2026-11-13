@@ -10,6 +10,7 @@ import contextManifest from '../../tests/fixtures/extensions/project-context/ext
 import executableManifest from '../../tests/fixtures/extensions/project-summary/extension.json';
 import toolManifest from '../../tests/fixtures/extensions/test-runner/extension.json';
 import connectionManifest from '../../tests/fixtures/extensions/fake-service/extension.json';
+import harnessManifest from '../../tests/fixtures/extensions/fake-harness/extension.json';
 import { createConnectionsPreview } from './connections-preview';
 import { createServicesPreview } from './services-preview';
 export const previewServices = createServicesPreview();
@@ -139,6 +140,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
+    if (new URLSearchParams(location.search).has('extension-harness')) {
+      if (snapshot.packages.some(item => item.manifest.id === harnessManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: harnessManifest as ExtensionPackage['manifest'], icons: {}, enabled: false, executable: { digest: 'recorded-harness-digest', trusted: false } });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
     const selected = new URLSearchParams(location.search).has('extension-connections') ? connectionManifest : new URLSearchParams(location.search).has('extension-jobs') ? toolManifest : new URLSearchParams(location.search).has('transcript-conformance') ? transcriptManifest : new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
     snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...([executableManifest, toolManifest, connectionManifest].includes(selected as typeof executableManifest) ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });

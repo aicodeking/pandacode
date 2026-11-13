@@ -672,6 +672,17 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   }
   onExtensionsChanged(syncExtensionViews);
   onExtensionsChanged(() => renderNavigation());
+  let harnessCatalogRevision = 0;
+  onExtensionsChanged(() => {
+    const revision = ++harnessCatalogRevision;
+    run(call<Provider[]>('list_providers').then(providers => {
+      if (revision !== harnessCatalogRevision) return;
+      const dynamic = (providers: Provider[]) => JSON.stringify(providers.filter(provider => provider.id.includes('/')));
+      // A declarative-only refresh must not remount the composer/close an open core picker.
+      if (dynamic(providers) === dynamic(state.providers)) return;
+      state.providers = providers; renderComposer();
+    }));
+  });
   const syncComposerPresentation = () => { const host = document.querySelector<HTMLElement>('#composer'); if (host) { applyComposerPresentation(host); syncProviderRecovery(); } };
   onExtensionsChanged(syncComposerPresentation);
   const syncTranscriptPresentation = () => applyTranscriptPresentation($('#transcript'));
@@ -3128,7 +3139,7 @@ function renderComposer(): void {
 }
 function syncProviderRecovery(): void {
   const host = document.querySelector<HTMLElement>('#composer');
-  if (host) renderProviderRecovery(host, session()?.provider, { install: () => run(showSettings('extensions')), change: () => run(showModel($('#model-picker-trigger'))) });
+  if (host) renderProviderRecovery(host, state.providers.some(provider => provider.id === session()?.provider && provider.installed) ? undefined : session()?.provider, { install: () => run(showSettings('extensions')), change: () => run(showModel($('#model-picker-trigger'))) });
 }
 /** Steer with nothing typed stays pressable (it focuses the prompt) but says it has nothing to send. */
 function syncSteerAvailability(): void {

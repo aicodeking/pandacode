@@ -6,6 +6,9 @@ import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessageP
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { parseProviderId, providerOwner, PROVIDER_RECOVERY } from './extensions/provider-identity';
+import { packageHarnesses } from './extensions/harnesses';
+import { previewExtensionSnapshot } from './extensions/preview';
+import { createHarnessPreview } from './extensions/harness-preview';
 import { isPreviewableFile } from './file-links';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
@@ -166,7 +169,7 @@ function previewProviderConfiguration(): Record<string, unknown> {
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
-    providers: providers.map(provider => [provider.id, provider.name]),
+    providers: [...providers, ...packageHarnesses(previewExtensionSnapshot())].map(provider => [provider.id, provider.name]),
     glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }
@@ -719,6 +722,10 @@ export function samplePick(kind: 'files' | 'folder'): string[] {
   return kind === 'folder' ? ['/Users/you/Projects/orbit-design'] : ['/Users/you/Pictures/dashboard-mockup.png', '/Users/you/Documents/Product brief.pdf'];
 }
 function agent(event: AgentEvent) { emit('agent-event', event); }
+const harnessPreview = createHarnessPreview(event => {
+  if (event.tool) (messages[event.sessionId] ??= []).push({ id: ++id, sessionId: event.sessionId, role: 'tool', content: encodeTool(event.tool), createdAt: Date.now() });
+  agent(event);
+}, (id, content) => finish(id, content));
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
@@ -1566,6 +1573,9 @@ let extensionContextBroker: ReturnType<typeof import('./extensions/context-previ
 // Apply after normal fixture initialization (which decorates the canonical sample tasks).
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('project-context') && new URLSearchParams(location.search).has('no-project')) { projects = []; sessions = []; }
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (new URLSearchParams(location.search).has('extension-harness')) {
+    (window as any).__extensionHarness ??= { call: (command: string, args: Record<string, unknown>) => invoke(command, args), task: () => structuredClone(session('session-1')), messages: () => structuredClone(messages['session-1'] ?? []) };
+  }
   // Opt-in native test-process transport. Never evaluates source in the browser and is not
   // installed-WebView evidence; ordinary preview explicitly reports UnsupportedRuntime.
   if (command === 'extensions_runtime' && new URLSearchParams(location.search).has('native-extension-fixture') && typeof (window as any).__extensionsNativeFixture === 'function' && ['activate', 'cancel'].includes(args.request?.op)) {
@@ -1624,6 +1634,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   }
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);
+    if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall' || command === 'extensions_safe_mode') {
+      for (const s of sessions.filter(s => providerOwner(s.provider) && ['running', 'waiting'].includes(s.status) && (command === 'extensions_safe_mode' || providerOwner(s.provider) === args.id))) {
+        harnessPreview.stop(s.id); s.status = 'idle'; agent({ sessionId: s.id, kind: 'done', text: 'Extension disabled' });
+      }
+    }
     if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') extensionContextBroker?.invalidate(args.id);
     if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') extensionContextBroker?.invalidate();
     return result as T;
@@ -2104,6 +2119,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'steer_task': {
       const s = session(args.sessionId), w = window as any;
+      if (providerOwner(s.provider)) { result = harnessPreview.steer(s.id, String(args.text)); break; }
       if (!timers.has(s.id) && s.status !== 'running' && !previewBotBusy(s.id)) throw new Error('The agent is not running; the message stays queued.');
       if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
       if (w.__remoteSteerHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSteerRelease = () => { w.__remoteSteerHold = false; resolve(); }; });
@@ -2177,7 +2193,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = reordered.map(taskSummary); break;
     }
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
-    case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
+    case 'list_providers': result = args.deviceId ? remoteProviders() : [...providers, ...packageHarnesses(previewExtensionSnapshot())]; break;
     case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
@@ -2192,7 +2208,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'app_update_install_supported': result = true; break;
     case 'support_details': result = { version: 'Preview', platform: 'Browser preview', architecture: 'Not reported' }; break;
     case 'browser_inspect': result = args.action === 'read' ? { url: browserState.url, title: browserState.title, text: 'Browser preview sample page', elements: [] } : { dispatched: true }; break;
-    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
+    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : packageHarnesses(previewExtensionSnapshot()).find(provider => provider.id === args.provider)?.models ?? catalogs[args.provider as ProviderId] ?? []; break;
     case 'list_opencode_models': result = {models: openCodePreviewModels, selectedModelIds: previewOpenCodeSelection(), error: null}; break;
     case 'save_opencode_models': {
       if (!Array.isArray(args.modelIds) || args.modelIds.length > 100 || args.modelIds.some((id: unknown) => typeof id !== 'string' || !id.includes('/') || id.length > 200)) throw new Error('Choose valid OpenCode models.');
@@ -2276,13 +2292,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const effort = args.reasoningEffort ?? null;
       const team = architect.get(s.id);
       if (team && (team.round > 0 || team.workers.length) && effort !== (s.reasoningEffort ?? null)) throw new Error('This run keeps its architect model and reasoning effort. Start a new task to change them.');
-      const supported = catalogs[s.provider].find(model => model.id === (s.model || 'default'))?.reasoningEfforts ?? [];
+      const supported = (packageHarnesses(previewExtensionSnapshot()).find(provider => provider.id === s.provider)?.models ?? catalogs[s.provider] ?? []).find(model => model.id === (s.model || 'default'))?.reasoningEfforts ?? [];
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
     }
     case 'configure_session': {
       const s = session(args.sessionId);
-      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      if (![...providers, ...packageHarnesses(previewExtensionSnapshot())].some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
       const projectId = args.projectId ?? s.projectId;
       if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
       if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');
@@ -2307,7 +2323,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'send_message': {
-      if (providerOwner(session(args.sessionId).provider)) throw new Error(PROVIDER_RECOVERY);
+      if (providerOwner(session(args.sessionId).provider) && !packageHarnesses(previewExtensionSnapshot()).some(provider => provider.id === session(args.sessionId).provider)) throw new Error(PROVIDER_RECOVERY);
       if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
       const s = session(args.sessionId), w = window as any; assertIdle(s);
       if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
@@ -2325,6 +2341,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (new TextEncoder().encode(text).length > MESSAGE_LIMIT) throw new Error('Message and attached context must be under 16 MiB.');
       s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
       // Recorded runs still validate and persist the prompt; only automatic response events are held.
+      if (providerOwner(s.provider)) { harnessPreview.start(s); break; }
       if (new URLSearchParams(location.search).has('extensions-baseline') && w.__extensionsBaseline?.holdRun) break;
       if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
@@ -2351,6 +2368,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       timers.set(s.id, window.setTimeout(tick, 200)); break;
     }
     case 'stop_session': {
+      harnessPreview.stop(args.sessionId);
       if (architect.isActive(args.sessionId)) { result = architect.control(args.sessionId, 'stop'); break; }
       const w = window as any;
       if (w.__stopHold) await new Promise<void>(resolve => { w.__stopRelease = () => { w.__stopHold = false; resolve(); }; });
@@ -2365,7 +2383,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       }
       const stopped = session(args.sessionId); stopped.status = 'idle'; if (stopped.goalState?.status === 'active') { stopped.goalState.status = 'paused'; emitGoal(stopped); } syncMirror(args.sessionId); agent({ sessionId: args.sessionId, kind: 'done', text: 'Stopped' }); break;
     }
-    case 'respond_approval': case 'respond_user_input': break;
+    case 'respond_approval': case 'respond_user_input':
+      if (providerOwner(session(args.sessionId).provider)) harnessPreview.respond(args.sessionId, args.requestId, command === 'respond_approval' ? args.approved : undefined, args.response);
+      break;
     case 'git_status': result = checkoutGit(args.sessionId); break;
     case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;
     case 'git_stage': checkoutGit(args.sessionId).files.forEach(file => { if (args.paths.includes(file.path)) { file.index = args.staged ? 'M' : ' '; file.working = args.staged ? ' ' : 'M'; } }); break;
