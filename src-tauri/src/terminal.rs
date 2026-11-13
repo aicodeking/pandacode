@@ -237,6 +237,7 @@ pub fn start_harness(
 /// Reads SQLite, skill settings and skill folders: `start_harness` runs only inside
 /// `crate::blocking` (`task_controls::start_harness_terminal`), never on the async runtime.
 fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandBuilder, String> {
+    crate::extensions::providers::require_console(context.provider)?;
     crate::skill_manager::begin_launch(context.session_id);
     // Unrecoverable switches never refuse a console: they deny or ask (`launch_disabled`).
     let disabled = crate::skill_manager::launch_disabled(
@@ -366,9 +367,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             }
         }
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") {
-        return Err("Choose a supported coding harness.".into());
-    }
+    crate::extensions::providers::require_console(provider)?;
     if provider == "github-copilot" {
         if resume_id.is_some() {
             return Err("Copilot CLI's interactive console cannot resume an ACP task. Continue the task in PandaCode instead.".into());
@@ -1006,6 +1005,23 @@ pub fn close(terms: &Terminals, id: &str) -> Result<(), String> {
     let terminal = terms.lock().map_err(|e| e.to_string())?.remove(id);
     drop(terminal);
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_capability_tests {
+    use super::*;
+    #[test]
+    fn console_admission_is_native_only_before_skill_or_executable_probes() {
+        for provider in ["sample.fake-harness/recorded", "sample.missing/agent", "zcode", "deepseek", "commandcode", "kilo"] {
+            let context = HarnessContext { session_id: "not-a-real-session", provider, resume_id: Some("literal-session"), model: Some("model; not a command"), reasoning_effort: None, mode: "full" };
+            assert!(harness_command(&context, Path::new("missing-cwd")).unwrap_err().contains("UnsupportedCapability"));
+        }
+        assert!(crate::extensions::providers::require_console("unknown").unwrap_err().contains("Unknown"));
+        for provider in crate::extensions::providers::all() {
+            let supported = !["antigravity", "deepseek", "commandcode", "kilo", "zcode"].contains(&provider.id);
+            assert_eq!(crate::extensions::providers::require_console(provider.id).is_ok(), supported, "{}", provider.id);
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

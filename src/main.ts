@@ -1021,6 +1021,7 @@ function openCommandPanel(task: Session, kind: string, argumentsText = ''): void
   } });
 }
 async function openHarnessConsole(task: Session, command?: string): Promise<void> {
+  (await import('./extensions/provider-cli')).requireProviderConsole(task.provider);
   if (isRunning(task.id)) throw new Error('Stop this task before opening its harness console.');
   if (task.id !== state.sessionId) return;
   terminalPanel.select(workspaceContext(task), project()?.name ?? task.title);

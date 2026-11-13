@@ -298,6 +298,7 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
 /// The harness's catalog before switched-off skills are hidden (`skill_switches`).
 async fn unfiltered(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, String> {
     validate_provider(provider)?;
+    if let Some(catalog) = control_only_catalog(provider) { return Ok(catalog); }
     let key = catalog_key(provider, cwd);
     let started = Instant::now();
     let discovery = {
@@ -326,6 +327,7 @@ async fn unfiltered(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, 
 /// harness. A stale snapshot is for completion; command dispatch still validates.
 pub async fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
+    if let Some(catalog) = control_only_catalog(provider) { return Ok(catalog); }
     let catalog = CACHE
         .lock()
         .map_err(|_| "Command discovery is unavailable.".to_string())?
@@ -348,28 +350,22 @@ pub(crate) fn invalidate_provider(provider: &str) {
 }
 
 fn validate_provider(provider: &str) -> Result<(), String> {
-    if !matches!(
-        provider,
-        "claude"
-            | "codex"
-            | "kimi"
-            | "glm"
-            | "opencode"
-            | "antigravity"
-            | "grok"
-            | "mimo"
-            | "pi"
-            | "deepseek"
-            | "commandcode" | "cline" | "kilo"
-            | "omp"
-            | "github-copilot"
-            | "muse"
-            | "devin"
-            | "hermes"
-    ) {
-        return Err("Unknown harness.".into());
+    crate::extensions::providers::validate_identity(provider)
+}
+
+/// No package command schema/transport is defined in v1. Never feed package IDs
+/// into a built-in discovery executable, infer a protocol, or trust cached frames.
+fn control_only_catalog(provider: &str) -> Option<Catalog> {
+    let dynamic = crate::extensions::providers::extension_owner(provider).is_some();
+    if !dynamic && provider != "zcode" { return None; }
+    let reason = if dynamic { crate::extensions::providers::SLASH_UNSUPPORTED }
+        else { "UnsupportedCapability: ZCode does not expose native slash-command discovery. Use PandaCode controls or task chat." };
+    let mut catalog = Catalog { commands: vec![], warnings: vec![reason.into()] };
+    if dynamic {
+        if let Err(reason) = crate::providers::dynamic_adapter::require_available(provider) { catalog.warnings.push(reason); }
     }
-    Ok(())
+    normalize(&mut catalog, provider);
+    Some(catalog)
 }
 
 async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant) -> Result<Catalog, String> {
@@ -396,7 +392,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
             "kimi" => kimi::discover(cwd).await,
             "pi" | "omp" => pi::discover(provider, cwd).await,
             "muse" => muse::discover(cwd).await,
-            _ => unreachable!(),
+            _ => Err("UnsupportedCapability: native slash-command discovery".into()),
         };
         let committed = CACHE
             .lock()
@@ -415,6 +411,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
 
 /// Called only for command metadata frames from the parent provider session.
 pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
+    if crate::extensions::providers::require_builtin_execution(provider).is_err() { return false; }
     let key = catalog_key(provider, cwd);
     if provider == "codex" && data.get("method").and_then(Value::as_str) == Some("skills/changed") {
         if let Ok(mut cache) = CACHE.lock() {
@@ -513,6 +510,15 @@ fn normalize(catalog: &mut Catalog, provider: &str) {
         .warnings
         .iter_mut()
         .for_each(|warning| *warning = bounded(warning, 500));
+    if let Err(reason) = crate::extensions::providers::require_console(provider) {
+        for command in &mut catalog.commands {
+            if matches!(&command.invocation, Invocation::Action(action) if action == "console" || action.starts_with("console:")) {
+                command.kind = "unsupported".into();
+                command.reason = Some(reason.clone());
+                command.invocation = Invocation::Unsupported;
+            }
+        }
+    }
 }
 
 const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
@@ -665,11 +671,16 @@ pub struct Resolution {
 }
 
 pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
+    validate_provider(provider)?;
     let Some((name, _)) = split_command(text) else {
         return Ok(plain_resolution(text));
     };
     if is_local_control(name) {
         return resolve_from_catalog(provider, text, &Catalog::default());
+    }
+    if let Some(catalog) = control_only_catalog(provider) {
+        if !catalog.commands.iter().any(|command| command.name == name) { return Err(catalog.warnings[0].clone()); }
+        return resolve_from_catalog(provider, text, &catalog);
     }
     // A switched-off skill is hidden from the catalog; typing it says so instead of "Unknown".
     let catalog = unfiltered(provider, cwd, false).await?;
@@ -757,6 +768,7 @@ fn resolve_from_catalog(
             result.skill = Some((name.clone(), path.clone()));
         }
         Invocation::Action(action) => {
+            if action == "console" || action.starts_with("console:") { crate::extensions::providers::require_console(provider)?; }
             if !arguments.is_empty() && !action_accepts_arguments(action) {
                 return Err(format!(
                     "{name} opens a PandaCode control and does not accept arguments."
@@ -800,6 +812,28 @@ fn action_accepts_arguments(action: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn package_commands_keep_local_controls_but_cannot_infer_native_protocols_or_consoles() {
+        let provider = "sample.fake-harness/recorded";
+        let cwd = Path::new("nonexistent-project-must-not-be-probed");
+        for catalog in [catalog(provider, cwd, true).await.unwrap(), snapshot(provider, cwd).await.unwrap()] {
+            assert!(catalog.warnings[0].contains("UnsupportedCapability"));
+            let console = command(&catalog, "/console");
+            assert_eq!(console.kind, "unsupported");
+            assert!(console.reason.as_ref().unwrap().contains("core-managed"));
+            assert!(!catalog.commands.iter().any(|command| matches!(command.invocation, Invocation::Native | Invocation::Skill { .. })));
+        }
+        assert_eq!(resolve(provider, cwd, "/rename   literal; $(no-shell)  text").await.unwrap().arguments, "literal; $(no-shell)  text");
+        assert_eq!(resolve(provider, cwd, "/pwd").await.unwrap().action.as_deref(), Some("pwd"));
+        assert_eq!(resolve(provider, cwd, "ordinary prompt").await.unwrap().prompt, "ordinary prompt");
+        for text in ["/compact", "/skill:deploy", "/exit"] { assert!(resolve(provider, cwd, text).await.err().unwrap().contains("extension-native")); }
+        assert!(resolve(provider, cwd, "/console /exit").await.err().unwrap().contains("core-managed"));
+        assert!(resolve("unknown", cwd, "/pwd").await.is_err());
+        assert!(resolve("bad/path", cwd, "ordinary prompt").await.is_err());
+        assert!(!observe_runtime(provider, cwd, &json!({"type":"system","subtype":"init","slash_commands":["compact"]})));
+        assert!(snapshot("zcode", cwd).await.unwrap().warnings[0].contains("ZCode"));
+    }
 
     fn native_catalog(names: &[&str]) -> Catalog {
         Catalog {

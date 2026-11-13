@@ -11,6 +11,8 @@ const config = defineConfig(base, {
 });
 config.testMatch = [...config.testMatch as string[], '**/extensions-provider-catalog.spec.ts'];
 config.testMatch = [...config.testMatch as string[], '**/extensions-provider-teams.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-provider-cli.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions CLI`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions teams`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions provider catalog`);
 

@@ -48,6 +48,25 @@ context when its persisted tool catalog changes. Other built-ins use their exist
 MCP/ACP transport. The router's embedded harness aliases and benchmark cards are
 scoring metadata, not an execution roster. Native regression suites cover these rules.
 
+### Launcher, slash controls and consoles (experimental)
+
+The Quick launcher stores validated package provider IDs without requiring the
+package to remain installed. Its normal task creation/send path preserves the
+project, model, effort, permission mode, prompt and core session; execution still
+requires a live trusted registration. Disable/update uses the same captured run
+lease and cancellation as composer runs. Missing providers retain the saved
+selection/history and explain reinstall/enable/change-provider recovery; no CLI
+or built-in fallback is selected.
+
+PandaCode slash controls (`/rename`, `/pwd`, `/model`, `/permissions`, etc.) remain
+available. Package-native slash discovery, skills and terminal commands are not
+defined by the v1 conversation adapter and return `UnsupportedCapability` with a
+reason. `/console` is shown unsupported for package providers. Interactive PTYs
+are an explicitly built-in-only capability: a package name or metadata can never
+be interpreted as an executable, shell command, approval policy or resume flag.
+Reviewed built-in CLI argument/environment normalization stays unchanged. ZCode
+similarly exposes local controls but no native slash discovery/interactive console.
+
 ### Catalog and status metadata
 
 An optional `metadata` object on each provider supplies its consumer capabilities:

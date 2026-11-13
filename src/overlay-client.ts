@@ -1,4 +1,7 @@
 import type { AgentEvent, Message, Provider, ProviderId, ProviderModel, Session, SubagentActivity } from './types';
+import { packageHarnesses } from './extensions/harnesses';
+import { previewExtensionSnapshot } from './extensions/preview';
+import { providerOwner, PROVIDER_RECOVERY } from './extensions/provider-identity';
 /** The launcher has its own tiny bridge and never imports the workspace preview. */
 export interface LaunchContext { projectId: string | null; provider: string; model: string; mode: string; reasoningEffort?: string | null }
 export interface OverlayPreferences { enabled: boolean; shortcut: string; context: LaunchContext; error: string | null; modelSelection?: {provider:string;model:string;reasoningEffort?:string|null} | null }
@@ -71,10 +74,15 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
     previewPreferences = {...previewPreferences, enabled:Boolean(args.enabled), shortcut, error:null}; save(); return structuredClone(previewPreferences) as T;
   }
   if (command === 'overlay_sync_context') { previewPreferences.context = args.context as LaunchContext; save(); return undefined as T; }
-  if (command === 'list_providers') return structuredClone(previewProviders) as T;
-  if (command === 'list_provider_models') return structuredClone(args.provider === 'opencode' ? (await import('./preview-opencode')).previewOpenCodeChoices() : previewCatalogs[args.provider as ProviderId] || []) as T;
+  const packageProviders = () => packageHarnesses(previewExtensionSnapshot());
+  const available = (id: string) => {
+    if (providerOwner(id) && !packageProviders().some(provider => provider.id === id && provider.installed)) throw new Error(PROVIDER_RECOVERY);
+  };
+  if (command === 'list_providers') return structuredClone([...previewProviders, ...packageProviders()]) as T;
+  if (command === 'list_provider_models') return structuredClone(args.provider === 'opencode' ? (await import('./preview-opencode')).previewOpenCodeChoices() : packageProviders().find(provider => provider.id === args.provider)?.models ?? previewCatalogs[args.provider as ProviderId] ?? []) as T;
   if (command === 'overlay_select_model') {
-    if (!previewProviders.some(provider => provider.id === args.provider) || typeof args.model !== 'string' || !args.model.trim() || args.model.length > 256) throw new Error('Invalid harness or model.');
+    available(String(args.provider));
+    if (![...previewProviders, ...packageProviders()].some(provider => provider.id === args.provider) || typeof args.model !== 'string' || !args.model.trim() || args.model.length > 200 || /[\x00-\x1f\x7f]/.test(args.model)) throw new Error('Invalid harness or model.');
     previewPreferences.modelSelection = {provider:String(args.provider),model:args.model,reasoningEffort:args.reasoningEffort as string | null ?? null};
     save(); return effectiveContext() as T;
   }
@@ -106,6 +114,7 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
     return fork as T;
   }
   if (command === 'overlay_launch') {
+    available(effectiveContext().provider);
     const id = crypto.randomUUID(), context = effectiveContext(); tasks.unshift({id,sessionId:id,kind:'task',title:String(args.prompt),projectId:'preview-project',projectName:'PandaCode',provider:context.provider,status:'running',updatedAt:Date.now()});
     window.dispatchEvent(new CustomEvent('pandacode-overlay-launched',{detail:{id,...context}})); return id as T;
   }
@@ -122,6 +131,9 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
   throw new Error(`Unknown launcher command: ${command}`);
 }
 let contextTimer: number | undefined;
+if (!nativeOverlay && new URLSearchParams(location.search).has('extension-harness')) {
+  (window as unknown as { __extensionLauncher: typeof overlayCall }).__extensionLauncher = overlayCall;
+}
 let latestContext: LaunchContext | null = null;
 let savedContext = '';
 /** Coalesce render-driven context changes; persist only actual selections. */

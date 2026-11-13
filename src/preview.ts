@@ -7,6 +7,7 @@ import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { parseProviderId, providerOwner, PROVIDER_RECOVERY } from './extensions/provider-identity';
 import { packageHarnesses } from './extensions/harnesses';
+import { requireProviderConsole, CONSOLE_UNSUPPORTED, SLASH_UNSUPPORTED } from './extensions/provider-cli';
 import { previewExtensionSnapshot } from './extensions/preview';
 import { createHarnessPreview } from './extensions/harness-preview';
 import { isPreviewableFile } from './file-links';
@@ -990,6 +991,7 @@ function slashCatalog(provider: ProviderId) {
   ];
   const accepts = new Set(['rename', 'btw', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
   const commands = [...local, ...(provider === 'codex' ? codex : [])].map(([name, description, action]) => ({ id: `pandacode:${name}`, name: `/${name}`, description, kind: 'action', source: 'PandaCode', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
+  if (providerOwner(provider)) return { commands: commands.map(command => command.action === 'console' ? { ...command, kind: 'unsupported', reason: CONSOLE_UNSUPPORTED } : command), warnings: [SLASH_UNSUPPORTED] };
   const native = provider === 'codex' ? ['review', 'compact', 'project-guide'] : provider === 'claude' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
   const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
@@ -998,6 +1000,8 @@ function resolveSlash(provider: ProviderId, text: string): { action: string | nu
   const match = /^\/([\p{L}\p{N}_:.-]+|\?)(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (!match) return { action: null, arguments: '' };
   const command = slashCatalog(provider).commands.find(command => command.name === `/${match[1]}`);
+  if (command?.action === 'console' || command?.action?.startsWith('console:')) requireProviderConsole(provider);
+  if (!command && providerOwner(provider)) throw new Error(SLASH_UNSUPPORTED);
   if (!command) throw new Error(`Unknown command /${match[1]}. Type / to browse this harness’s commands, or refresh the list.`);
   if (command.action && match[2] && !command.argumentHint) throw new Error(`${command.name} opens a PandaCode control and does not accept arguments.`);
   return { action: command.action ?? null, arguments: match[2] ?? '' };
@@ -2691,6 +2695,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'get_terminal_preferences': result = {}; break;
     case 'start_run_script_terminal':
     case 'start_harness_terminal': case 'start_terminal': {
+      if (command === 'start_harness_terminal') requireProviderConsole(session(args.sessionId).provider);
       const terminalId = 'preview-terminal-' + crypto.randomUUID(); result = terminalId;
       window.setTimeout(() => emit('terminal-event', { terminalId, data: '\x1b[38;5;108mPandaCode browser preview\x1b[0m\r\nA real PTY is available in the desktop app.\r\n\r\n$ ' }), 100); break;
     }

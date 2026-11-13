@@ -2,6 +2,10 @@
 exports.providers = {
   'sample.fake-harness/recorded': async (run, core) => {
     if (run.model !== 'recorded-model' || run.effort !== 'medium' || run.mode !== 'ask') throw new Error('Configuration mismatch');
+    if (run.prompt.startsWith('Recorded overlay prompt')) {
+      if (process.cwd() !== run.instructions) throw new Error('Captured overlay cwd mismatch');
+      await core.emit({ kind: 'text', text: run.prompt });
+    }
     await core.emit({ kind: 'session', id: run.resumeId || 'recorded-conversation' });
     await core.emit({ kind: 'text', text: run.resumeId ? 'Resumed recorded harness. ' : 'Started recorded harness. ' });
     if (run.prompt === 'Recorded team prompt') {

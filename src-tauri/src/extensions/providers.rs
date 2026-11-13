@@ -15,6 +15,17 @@ pub fn validate_identity(id: &str) -> Result<(), String> {
 
 pub const PROVIDER_RECOVERY: &str = "This extension provider is unavailable. History is preserved. Reinstall or enable its extension in Settings → Extensions, or change the provider using the model picker to continue.";
 
+pub const CONSOLE_UNSUPPORTED: &str = "UnsupportedCapability: this provider has no core-managed interactive console. Continue in PandaCode task chat.";
+pub const SLASH_UNSUPPORTED: &str = "UnsupportedCapability: extension-native slash commands are not supported. Use PandaCode controls or task chat.";
+
+/// A conversation registration cannot authorize a PTY/executable or claim that a
+/// terminal enforces core approval policy. Only reviewed native CLI adapters can.
+pub fn require_console(id: &str) -> Result<(), String> {
+    validate_identity(id)?;
+    if matches!(id, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") { Ok(()) }
+    else { Err(CONSOLE_UNSUPPORTED.into()) }
+}
+
 /// Dynamic execution is supplied by the registry adapter, not a built-in CLI fallback.
 pub fn require_builtin_execution(id: &str) -> Result<(), String> {
     validate_identity(id)?;

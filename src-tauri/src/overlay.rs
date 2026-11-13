@@ -130,9 +130,10 @@ fn desired_binding(enabled: bool, shortcut: &str) -> Result<Option<Shortcut>> {
     enabled.then(|| parse_shortcut(shortcut)).transpose()
 }
 fn validate_context(context: &LaunchContext) -> Result<()> {
+    crate::extensions::providers::validate_identity(&context.provider)?;
     if !storage::valid_permission_mode(&context.mode)
         || context.provider.is_empty()
-        || context.provider.len() > 50
+        || context.provider.len() > 200
         || context.model.is_empty()
         || context.model.len() > 256
         || context.project_id.as_ref().is_some_and(|id| id.len() > 100)
@@ -146,33 +147,17 @@ fn validate_context(context: &LaunchContext) -> Result<()> {
     Ok(())
 }
 fn validate_selection(selection: &ModelSelection) -> Result<()> {
-    if ![
-        "claude",
-        "codex",
-        "kimi",
-        "opencode",
-        "glm",
-        "antigravity",
-        "grok",
-        "mimo",
-        "pi",
-        "deepseek",
-        "commandcode",
-        "cline",
-        "kilo",
-        "omp",
-        "github-copilot",
-        "muse",
-        "devin",
-        "zcode",
-        "hermes",
-    ]
-    .contains(&selection.provider.as_str())
-        || selection.model.trim().is_empty()
+    crate::extensions::providers::validate_identity(&selection.provider)?;
+    if selection.model.trim().is_empty()
         || selection.model.len() > 200
         || selection.model.chars().any(char::is_control)
     {
         return Err("Choose a supported harness and a model ID under 200 bytes.".into());
+    }
+    // Saved unavailable package selections must survive restart. Admission (and
+    // exact model/effort checks) happens against the live registry when launching.
+    if crate::extensions::providers::extension_owner(&selection.provider).is_some() {
+        return if selection.reasoning_effort.as_ref().is_some_and(|effort| effort.len() > 40 || effort.chars().any(char::is_control)) { Err("Invalid provider effort".into()) } else { Ok(()) };
     }
     crate::providers::validate_reasoning_effort(
         &selection.provider,
@@ -444,6 +429,7 @@ pub async fn overlay_select_model(
     model: String,
     reasoning_effort: Option<String>,
 ) -> Result<LaunchContext> {
+    crate::providers::dynamic_adapter::require_available(&provider)?;
     let mut inner = state.inner.lock().map_err(|e| e.to_string())?;
     select_model(
         &state.path,
@@ -990,7 +976,7 @@ pub async fn overlay_launch(
     Ok(task.id)
 }
 
-fn create_launch_task(
+pub(crate) fn create_launch_task(
     store: &storage::Store,
     project_id: &str,
     context: &LaunchContext,
@@ -1132,6 +1118,20 @@ pub async fn overlay_open_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_selection_survives_unavailability_and_preserves_launch_context() {
+        let (store, project) = fixture();
+        let provider = format!("sample.{}harness/recorded", "long-".repeat(12));
+        let context = LaunchContext { project_id: Some(project.id.clone()), provider: provider.clone(), model: "recorded-model".into(), mode: "ask".into(), reasoning_effort: None };
+        assert!(validate_context(&context).is_ok());
+        assert!(validate_selection(&ModelSelection { provider: provider.clone(), model: context.model.clone(), reasoning_effort: Some("medium".into()) }).is_ok());
+        let task = create_launch_task(&store, &project.id, &context, true, "Literal launch", "a; $(not-a-shell)\n/prompt").unwrap();
+        assert_eq!(task.provider, provider);
+        assert_eq!(task.mode, "ask");
+        assert_eq!(task.task_description, "a; $(not-a-shell)\n/prompt");
+        assert!(crate::providers::dynamic_adapter::require_available(&task.provider).unwrap_err().contains("History is preserved"));
+        assert_eq!(store.session(&task.id).unwrap().provider, provider);
+    }
     #[test]
     fn missing_shortcut_backend_leaves_a_manual_launcher_fallback() {
         let notice = shortcut_backend_notice(false, false).unwrap();

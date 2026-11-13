@@ -480,8 +480,20 @@ mod tests {
         install_harness(&packages.0.lock().unwrap(), &HARNESS_MANIFEST.replace("sample.fake-harness", "another.recording"), &HARNESS_SOURCE.replace("sample.fake-harness", "another.recording"));
         providers::dynamic_adapter::configure(&packages.0, Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")));
         assert_eq!(providers::dynamic_adapter::discover().len(), 2);
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&storage.0).unwrap();
         for owner in ["sample.fake-harness", "another.recording"] { for resume in [false, true] { for approved in [false, true] { for stop in [false, true] {
-            let config = providers::RunConfig { session_id: uuid::Uuid::new_v4().to_string(), provider: format!("{owner}/recorded"), model: "recorded-model".into(), reasoning_effort: Some("medium".into()), mode: "ask".into(), cwd: storage.0.clone(), resume_id: resume.then(|| "recorded-conversation".into()), prompt: "Recorded prompt".into(), instructions: "Captured instructions".into(), skill: None, goal: None, codex_settings: None, images: vec![] };
+            let context = crate::overlay::LaunchContext { project_id: Some(project.id.clone()), provider: format!("{owner}/recorded"), model: "recorded-model".into(), reasoning_effort: Some("medium".into()), mode: "ask".into() };
+            let prompt = "Recorded overlay prompt; $(literal)\nnot a shell";
+            let task = crate::overlay::create_launch_task(&store, &project.id, &context, true, "Recorded overlay launch", prompt).unwrap();
+            if resume { store.resume(&task.id, "recorded-conversation").unwrap(); }
+            let task = store.session(&task.id).unwrap();
+            assert!(crate::extensions::providers::require_console(&task.provider).unwrap_err().contains("UnsupportedCapability"));
+            let renamed = crate::slash_commands::resolve(&task.provider, &storage.0, "/rename literal; $(no-shell)").await.unwrap();
+            assert_eq!(renamed.arguments, "literal; $(no-shell)");
+            assert!(crate::slash_commands::resolve(&task.provider, &storage.0, "/console /exit").await.err().unwrap().contains("core-managed"));
+            let sid = task.id.clone();
+            let config = providers::RunConfig { session_id: task.id, provider: task.provider, model: task.model, reasoning_effort: task.reasoning_effort, mode: task.mode, cwd: storage.0.clone(), resume_id: task.resume_id, prompt: task.task_description, instructions: storage.0.to_string_lossy().into(), skill: None, goal: None, codex_settings: None, images: vec![] };
             let (input, rx) = tokio::sync::mpsc::unbounded_channel();
             let (events, mut output) = tokio::sync::mpsc::unbounded_channel();
             let runner = tokio::spawn(providers::run(config, Arc::new(move |event| { events.send(event).unwrap(); }), rx));
@@ -489,6 +501,15 @@ mod tests {
             loop {
                 let event = tokio::time::timeout(std::time::Duration::from_secs(15), output.recv()).await.unwrap().unwrap();
                 if event.kind == "approval" {
+                    if owner == "sample.fake-harness" && resume && approved && !stop {
+                        // Until the update workflow exists, replacement is refused,
+                        // not promoted over a live pinned provider/session.
+                        let changed = HARNESS_MANIFEST.replace("\"version\": \"1.0.0\"", "\"version\": \"1.0.1\"");
+                        let replacement = archive(&[("extension.json", changed.as_bytes()), ("main.cjs", HARNESS_SOURCE.as_bytes()), ("assets/mark.svg", include_bytes!("../../../tests/fixtures/extensions/fake-harness/assets/mark.svg"))]);
+                        let error = packages.0.lock().unwrap().install(&replacement).unwrap_err();
+                        assert!(error.contains("already installed"), "{error}");
+                        assert_eq!(providers::dynamic_adapter::discover().iter().find(|provider| provider.id == format!("{owner}/recorded")).unwrap().version, "1.0.0");
+                    }
                     input.send(RunInput::Approval { request_id: "forged".into(), approved: true }).unwrap();
                     if stop {
                         if resume && approved {
@@ -513,6 +534,8 @@ mod tests {
                 let done = event.kind == "done"; seen.push(event); if done { break; }
             }
             assert!(runner.await.unwrap().is_ok(), "{:?}", seen);
+            assert!(seen.iter().all(|event| event.session_id == sid));
+            assert!(seen.iter().any(|event| event.kind == "text" && event.text == prompt));
             assert!(output.try_recv().is_err()); assert_eq!(seen.iter().filter(|event| event.kind == "done").count(), 1);
             assert!(seen.iter().any(|event| event.kind == "session" && event.text == "recorded-conversation"));
             assert!(seen.iter().any(|event| event.kind == "text" && event.text.starts_with(if resume { "Resumed" } else { "Started" })));
