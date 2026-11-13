@@ -442,9 +442,26 @@ mod tests {
     }
     const HARNESS_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/extension.json");
     const HARNESS_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/main.cjs");
+    const ACP_MANIFEST: &str = include_str!("../../../examples/extensions/acp-recorded/package/extension.json");
+    const ACP_SOURCE: &str = include_str!("../../../examples/extensions/acp-recorded/package/main.cjs");
+    #[test]
+    fn acp_example_package_requires_trust_and_retains_captured_source_on_disable() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        install_harness(&packages, ACP_MANIFEST, ACP_SOURCE);
+        let captured = packages.provider_registrations();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0["id"], "sample.acp-recorded/acp");
+        assert_eq!(captured[0].3, ACP_SOURCE);
+        packages.enable("sample.acp-recorded", false).unwrap();
+        assert!(packages.provider_registrations().is_empty());
+        assert_eq!(captured[0].1, "1.0.0");
+        assert!(storage.packages(true).provider_registrations().is_empty());
+    }
     fn install_harness(packages: &Packages, manifest: &str, source: &str) {
         let id = serde_json::from_str::<Value>(manifest).unwrap()["id"].as_str().unwrap().to_owned();
-        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes()), ("assets/mark.svg", include_bytes!("../../../tests/fixtures/extensions/fake-harness/assets/mark.svg"))])).unwrap();
+        let mut files = vec![("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes())];
+        if manifest.contains("assets/mark.svg") { files.push(("assets/mark.svg", include_bytes!("../../../tests/fixtures/extensions/fake-harness/assets/mark.svg"))); }
+        packages.install(&archive(&files)).unwrap();
         assert!(packages.enable(&id, true).unwrap_err().contains("ExecutableTrustRequired"));
         let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
         packages.trust(&id, &digest, true).unwrap(); packages.enable(&id, true).unwrap();
@@ -548,6 +565,37 @@ mod tests {
         assert!(providers::dynamic_adapter::require_available("sample.fake-harness/recorded").is_err());
         assert_eq!(providers::dynamic_adapter::discover().len(), 1);
         packages.0.lock().unwrap().enable("another.recording", false).unwrap();
+        assert!(providers::dynamic_adapter::discover().is_empty());
+        // Use the same process-wide broker fixture; a second configure would not
+        // replace its OnceLock. This runs the shipped package, not a copied mock.
+        install_harness(&packages.0.lock().unwrap(), ACP_MANIFEST, ACP_SOURCE);
+        for resume in [false, true] { for approved in [false, true] { for stop in [false, true] {
+            let config = providers::RunConfig {
+                session_id: "acp-example-core-task".into(), provider: "sample.acp-recorded/acp".into(),
+                model: "recorded".into(), reasoning_effort: None, mode: "ask".into(), cwd: storage.0.clone(),
+                resume_id: resume.then(|| "saved".into()), prompt: "Replay ACP".into(), instructions: "Captured instructions".into(),
+                skill: None, goal: None, codex_settings: None, images: vec![],
+            };
+            let (input, rx) = tokio::sync::mpsc::unbounded_channel();
+            let (events, mut output) = tokio::sync::mpsc::unbounded_channel();
+            let runner = tokio::spawn(providers::run(config, Arc::new(move |event| { let _ = events.send(event); }), rx));
+            let mut seen = Vec::new();
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(15), output.recv()).await.unwrap().unwrap();
+                if event.kind == "approval" {
+                    if stop { input.send(RunInput::Stop).unwrap(); }
+                    else { input.send(RunInput::Approval { request_id: event.request_id.clone().unwrap(), approved }).unwrap(); }
+                }
+                let done = event.kind == "done"; seen.push(event); if done { break; }
+            }
+            assert!(runner.await.unwrap().is_ok(), "{seen:?}");
+            assert!(seen.iter().all(|event| event.session_id == "acp-example-core-task"));
+            assert!(seen.iter().any(|event| event.kind == "session" && event.text == "saved"));
+            assert!(seen.iter().any(|event| event.kind == "text" && event.text == "Hello"));
+            assert_eq!(seen.iter().filter(|event| event.kind == "done").count(), 1);
+            assert!(!seen.iter().any(|event| event.kind == "error"));
+        } } }
+        packages.0.lock().unwrap().enable("sample.acp-recorded", false).unwrap();
         assert!(providers::dynamic_adapter::discover().is_empty());
     }
     #[test]

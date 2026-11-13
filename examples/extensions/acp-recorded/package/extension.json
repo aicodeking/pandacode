@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.acp-recorded",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.acp-recorded/acp"] },
+  "requiredContributions": ["providers"],
+  "contributes": {
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.acp-recorded/acp",
+      "name": "Recorded ACP",
+      "models": [{ "id": "recorded", "name": "Recorded ACP frames", "efforts": [] }],
+      "metadata": {
+        "modes": ["ask"],
+        "teams": false,
+        "authentication": "Offline ACP recording; no account, executable or network connection is used.",
+        "readiness": { "state": "ready", "reason": "Ready to replay the characterized ACP v1 subset." },
+        "usage": { "context": false, "limitsReason": "This recording contains no usage or account-limit frames." }
+      }
+    }]
+  }
+}

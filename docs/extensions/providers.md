@@ -123,10 +123,16 @@ No raw IPC, database or native host-tool execution API is exposed. Tool events a
 reported activity, not authority to run a host tool. Trusted package code still has
 ordinary OS-account authority independently: this API is not an OS sandbox.
 
+The standalone [`acp-recorded`](../../examples/extensions/acp-recorded/README.md)
+package demonstrates the public conversation contract with characterized ACP v1
+frames. It is installable without source edits or private core imports; its narrow
+offline capability boundary and separate opt-in live checks are documented there.
+
 PandaCode's built-in harnesses remain core functionality. They do not require an
 extension package, executable-extension trust, a dynamic provider ID, or an
 extension host. Existing IDs, saved sessions, connections and native commands
-remain valid. This is an **expand** migration, not a new external-provider SDK.
+remain valid. The public package-provider contract is experimental API v1; the
+built-in compatibility facade remains an internal core implementation.
 
 ### Skill/rule/config discovery (experimental)
 
@@ -249,15 +255,64 @@ Run the focused suite with:
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib builtin_adapter
 ```
 
-No frontend interaction or new native IPC command was added. Native installed
-WebView/platform acceptance and opt-in live CLI smoke tests are separate from
-this automated compatibility evidence. Dynamic identities, package-owned provider
-registration and capability fan-out are subsequent slices, not implemented here.
+The differential facade itself adds no frontend interaction or native IPC command.
+Native installed WebView/platform acceptance and opt-in live CLI smoke tests are
+separate from automated compatibility evidence. Dynamic identities, package-owned
+provider registration and capability fan-out are implemented as described above.
+
+## M8 provider-branch closure checklist
+
+This is an area inventory, not a claim that all provider branches should disappear.
+`Registry` means package dispatch/metadata; `Built-in` means intentionally retained
+native protocol/credential/CLI policy; `Unsupported` means a reasoned refusal, not
+a built-in fallback. Existing parser/console/skills tests keep those branches live.
+The nineteen legacy IDs and history readers are permanent compatibility inputs.
+The rules' old `src-tauri/src/acp.rs` reference resolves to the current
+`src-tauri/src/providers/acp.rs` module, not a second adapter to delete.
+
+| Rule/audit area | Disposition and implementation | Executable evidence |
+| --- | --- | --- |
+| Execution / ACP (`providers.rs`, `providers/acp.rs`) | Registry `dynamic_adapter`; built-ins retain `builtin_adapter::Session` and their original `Protocol`. Package images, goals, native skills and Codex-private requests unsupported. ACP quirks/auth/modes stay built-in. | `builtin_adapter_*` differential/catalog/error tests; `dynamic_harness_core_owns_pending_completion_identity_and_cancellation`; real-package test below; `extensions-provider-contract.test.mjs` |
+| Storage / connection references / historical IDs (`storage.rs`, `connections.rs`) | Validated namespaced references, identity metadata retained after uninstall; unchanged built-in IDs and historical sessions, transactional migration/rollback. Never use package availability to read history. | `extension_provider_identities_validate_at_storage_and_execution_boundaries`, `extension_provider_migration_36_preserves_every_existing_row_and_connections`, `extension_provider_migration_failure_rolls_back_version_and_retries_without_history_loss`; `extensions-provider-identities.test.mjs` |
+| Overlay / launcher (`overlay.rs`, `overlay-client.ts`) | Registry selection retains exact provider/model/effort/mode/project/prompt; missing package offers recovery, never CLI fallback. | `package_selection_survives_unavailability_and_preserves_launch_context`; real-package overlay lifecycle test |
+| Teams / architect (`architect*.rs`) | Registry readiness + explicit `metadata.teams`; core role-scoped tool dispatch/cancellation. ZCode remains unsupported; Codex tool-reset special case remains built-in. | `architect::tests::dynamic_package_team_fixture` through real-package test; architect native regressions |
+| Routing (`model_routing.rs`, `panda_router/`, frontend routing) | Validated package pools/exclusions; card aliases are scoring-only, not execution identity; built-in defaults preserved. | `package_model_alias_is_scoring_data_never_a_builtin_execution_fallback`; `provider-handoff.test.mjs`; router native regressions |
+| Terminal (`terminal.rs`) | Unsupported package PTY before any skill/executable probe; retained reviewed built-in launch/mode/resume/environment policy. | `console_admission_is_native_only_before_skill_or_executable_probes`; `harness_console_*`, `*_console_*` native tests |
+| Slash commands (`slash_commands*.rs`) | Local core controls remain usable; package-native discovery/skills/console unsupported with reasons; built-in native discovery unchanged. | `package_commands_keep_local_controls_but_cannot_infer_native_protocols_or_consoles`; real-package overlay test |
+| Provider settings / configuration / credentials (`provider_settings.rs`, `provider-settings.ts`) | Registry `extensionProviders` metadata, extension-managed auth instructions; native credentials, environment, vendor cards and pools remain built-in-only, never synthesized for packages. | `extensions-provider-consumers.test.mjs`; `provider_metadata_*`; native provider settings/environment tests |
+| Frontend ProviderId and Record maps (`types.ts`, `extensions/provider-identity.ts`) | Branded validated dynamic ID plus exhaustive BuiltinProviderId union, never unrestricted string. Native schema rejects reserved/foreign identities. | `extensions-provider-identities.test.mjs`; contract identity check; `npm run build`/tsc |
+| Model picker / catalog / efforts / modes (`model-catalog.ts`, `extensions/harnesses.ts`, `approval-modes.ts`) | Registry advertised models/efforts/modes only; historical unsupported choice readable/disabled with reason. Built-in catalog semantics unchanged. | `extensions-provider-consumers.test.mjs`; `provider_metadata_modes_readiness_and_legacy_defaults`; built-in catalog parity |
+| Logos / readiness (`extensions/provider-state.ts`, `provider-logos.ts`) | Owned sanitized SVG or initial mark; registry readiness disables unavailable/signed-out entries. Native brands remain built-in. | `extensions-provider-consumers.test.mjs`; `provider_metadata_rejects_foreign_icons_duplicate_modes_and_unknown_states` |
+| Usage / limits (`agent_usage.rs`, `extensions/dynamic_harness.rs`) | Core context event meter; account-quota probing explicitly unsupported with descriptor reason. Built-in quota/auth readers retained. | Consumer metadata tests; `dynamic_harness_core_owns_pending_completion_identity_and_cancellation`; real-package usage regression |
+| Skills roots / rules / config / matrix / CLI aliases / HARNESS_NAMES (`skill_manager/`, `skill-manager-model.ts`, `skills.rs`, `capabilities.rs`) | Registry bounded owned roots, advisory asked/none; presence-only config, no content. Dynamic install/config sync unsupported. Built-in roots/enforcement/CLI IDs unchanged. | `dynamic_discovery_*`; `skill_manager_matrix_fixture`; `extensions-provider-skills.test.mjs`; existing skills native regressions |
+| Remote serialization / headless / cloud placement | **Assigned to M9 (T48 onward)**: peer capability negotiation, unknown-provider fallback, remote grants/events and placement. M8 local package success is not remote execution qualification. Native CLI bridge serializers/setup remain compatibility code, not authority to execute package IDs remotely. | M9 must add its own old/new-peer and placement tests before remote support is advertised; no M8 remote pass claimed |
+
+`dynamic_harness_real_package_runs_start_resume_steer_approve_reject_and_stop`
+executes both the existing fake-harness matrix and the shipped ACP example's
+start/resume × approve/decline × stop matrix through the actual trusted supervisor
+(Windows x64, `extension-runtime-native-tests`). `acp_example_package_requires_trust_and_retains_captured_source_on_disable`
+independently checks ZIP validation/trust/registration/disable/safe mode.
+
+### Contract/retention decision
+
+No obsolete production route was identified that can be safely removed now. The
+`builtin_protocol.rs` facade is the replacement dispatch seam **around** the native
+engine, not a replacement wire parser; removing the engine would remove supported
+providers. Direct engine construction remains necessary for differential tests and
+rollback, with `builtin_adapter_*` proving its purpose. Native catalog, credentials,
+PTY, slash, skills and account-pool branches implement vendor-specific capabilities
+not provided by conversation v1. Persisted legacy ID readers must remain. Remote
+compatibility contraction belongs to M9. Thus this closure removes inaccurate
+migration-only documentation, not live compatibility code or historical evidence.
+Any later deletion requires proven replacement coverage and exact-list cleanup
+approval; this task performs no deletion or schema change.
 
 ## Recovery
 
 Safe mode and zero-extension operation use these same built-in adapters and
 original routes. Disabling an unrelated extension cannot remove a built-in
 registration. Rollback can select the unchanged core `Protocol` construction and
-native discovery/catalog entrypoints; there is no data migration to reverse and
-no extension-owned run/version to drain in this slice.
+native discovery/catalog entrypoints. Dynamic records remain readable and inactive
+after disable; their identity migration is not downgraded by rollback. Managed
+package runs are cancelled on disable/revocation; reviewed update/version lifecycle
+and remote negotiation remain M9 work.
