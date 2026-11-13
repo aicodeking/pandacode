@@ -1,0 +1,4 @@
+.provider-recovery { padding: var(--space-2); background: var(--ds-card); color: var(--text); border-bottom: 1px solid var(--ds-border); overflow-wrap: anywhere; }
+.provider-recovery p { margin: 0 0 var(--space-2); }
+.provider-recovery button + button { margin-inline-start: var(--space-2); }
+.provider-recovery[hidden] { display: none; }

@@ -5,6 +5,7 @@ import { previewHub, previewRepos } from './preview-github-hub';
 import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessagePage, Project, Provider, ProviderId, ProviderModel, Session, TaskStage, ToolActivity } from './types';
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
+import { parseProviderId, providerOwner, PROVIDER_RECOVERY } from './extensions/provider-identity';
 import { isPreviewableFile } from './file-links';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
@@ -697,6 +698,14 @@ if (new URLSearchParams(location.search).has('transcript-conformance')) {
     agent(event);
   };
   (window as any).__previewTranscriptState = () => structuredClone({ task: session('session-1'), messages: messages['session-1'] });
+}
+if (new URLSearchParams(location.search).has('provider-history')) {
+  const task = session('session-1');
+  task.provider = parseProviderId('sample.harness/agent')!; task.model = 'model/recorded'; task.resumeId = 'native-resume-extension';
+  (window as any).__providerHistory = {
+    state: () => structuredClone({ task: session('session-1'), messages: messages['session-1'] }),
+    call: (command: string, args: Record<string, unknown>) => invoke(command, args),
+  };
 }
 (window as any).__previewExtensionDialogTransport = async () => {
   const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
@@ -2217,7 +2226,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
+    case 'create_session': { if (!parseProviderId(args.provider)) throw new Error('Unknown provider.'); const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
       result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
@@ -2231,7 +2240,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'create_board_task': {
       const details = taskDetails(args.title, args.description);
       if (!projects.some(p => p.id === args.projectId)) throw new Error('Project not found.');
-      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      if (!parseProviderId(args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
       if (!['ask', 'auto', 'plan', 'full'].includes(args.mode)) throw new Error('Unknown permission mode.');
       const s = await invoke<Session>('create_session', { projectId: args.projectId, provider: args.provider, model: args.model, mode: args.mode });
       Object.assign(session(s.id), details);
@@ -2298,6 +2307,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'send_message': {
+      if (providerOwner(session(args.sessionId).provider)) throw new Error(PROVIDER_RECOVERY);
       if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
       const s = session(args.sessionId), w = window as any; assertIdle(s);
       if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);

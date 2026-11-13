@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "valid": ["claude", "codex", "hermes", "sample.harness/agent", "vendor.tool-v2/cli_v1.2"],
+  "invalid": ["", "unknown", "sample.harness", "sample/agent", "panda.harness/agent", "panda.core/claude", "Sample.harness/agent", "sample.harness/../agent", "sample.harness/a/b", "sample.harness/", "sample.harness/agent\n", "sample.harness/ agent", "sample.harness/1agent"]
+}

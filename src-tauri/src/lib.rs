@@ -919,6 +919,7 @@ async fn configure_session(
     model: String,
     project_id: Option<String>,
 ) -> Result<Session> {
+    extensions::providers::validate_identity(&provider)?;
     if project_id.is_none() {
         remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
@@ -1630,6 +1631,7 @@ fn prepare_task_run_in_project(
         architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
     }
     let session = reconcile_inactive_task(&store, &agents, store.session(&session_id)?);
+    extensions::providers::require_builtin_execution(&session.provider)?;
     if admission.cloud_attach {
         return prepare_cloud_attach(&store, &mut agents, session, tx, stopped);
     }

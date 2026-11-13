@@ -161,7 +161,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -620,6 +620,19 @@ impl Store {
                 }
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
                   PRAGMA user_version=36;").map_err(|e| e.to_string())?;
+            }
+            if version < 37 {
+                // Identity metadata is separate from executable packages. No history, resume,
+                // connection or model value is rewritten; an old binary is not a downgrade path.
+                migration.execute_batch("CREATE TABLE IF NOT EXISTS extension_provider_identities(id TEXT PRIMARY KEY, extension_id TEXT NOT NULL); PRAGMA user_version=37;").map_err(|e| e.to_string())?;
+                let mut stmt = migration.prepare("SELECT DISTINCT provider FROM sessions").map_err(|e| e.to_string())?;
+                let ids = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+                for id in ids {
+                    let id = id.map_err(|e| e.to_string())?;
+                    if let Some(owner) = crate::extensions::providers::extension_owner(&id) {
+                        migration.execute("INSERT OR IGNORE INTO extension_provider_identities(id,extension_id) VALUES (?1,?2)", params![id, owner]).map_err(|e| e.to_string())?;
+                    }
+                }
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -1294,6 +1307,14 @@ impl Store {
         Ok(())
     }
 
+    /// Durable identity metadata survives disable/uninstall; it grants no execution rights.
+    fn remember_provider_identity(&self, provider: &str) -> Result<()> {
+        if let Some(owner) = crate::extensions::providers::extension_owner(provider) {
+            self.db.execute("INSERT OR IGNORE INTO extension_provider_identities(id,extension_id) VALUES (?1,?2)", params![provider, owner]).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn create_session(
         &self,
         project_id: &str,
@@ -1302,31 +1323,7 @@ impl Store {
         mode: &str,
     ) -> Result<Session> {
         self.project(project_id)?;
-        if ![
-            "claude",
-            "codex",
-            "kimi",
-            "opencode",
-            "glm",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
-            "devin",
-            "zcode",
-            "hermes",
-        ]
-        .contains(&provider)
-        {
-            return Err("Unknown provider.".into());
-        }
+        crate::extensions::providers::validate_identity(provider)?;
         if !valid_permission_mode(mode) {
             return Err("Unknown permission mode.".into());
         }
@@ -1335,6 +1332,7 @@ impl Store {
         }
         let sid = id();
         let t = now();
+        self.remember_provider_identity(provider)?;
         self.db.execute("INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,title_origin) VALUES (?1,?2,'New conversation',?3,?4,?5,'idle',?6,?6,'auto')",params![sid,project_id,provider,model,mode,t]).map_err(|e|e.to_string())?;
         self.session(&sid)
     }
@@ -1488,31 +1486,7 @@ impl Store {
         project_id: Option<&str>,
     ) -> Result<Session> {
         crate::architect::check_manual(self, sid)?;
-        if ![
-            "claude",
-            "codex",
-            "kimi",
-            "opencode",
-            "glm",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
-            "devin",
-            "zcode",
-            "hermes",
-        ]
-        .contains(&provider)
-        {
-            return Err("Unknown provider.".into());
-        }
+        crate::extensions::providers::validate_identity(provider)?;
         if model.len() > 200 {
             return Err("Model name is too long.".into());
         }
@@ -1529,6 +1503,7 @@ impl Store {
         // New-task creation can already have a transaction. Without history,
         // configuration is still one atomic UPDATE, even if team defaults chose another harness.
         let transaction = needs_handoff.then(|| self.db.unchecked_transaction()).transpose().map_err(|e| e.to_string())?;
+        self.remember_provider_identity(provider)?;
         if needs_handoff { crate::context_recovery::queue(self, sid)?; }
         let changed = self
             .db
@@ -3536,6 +3511,92 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(newest, SCHEMA_VERSION, "bump SCHEMA_VERSION with every new migration step");
+    }
+
+    #[test]
+    fn extension_provider_identities_validate_at_storage_and_execution_boundaries() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/extensions/provider-identities.json")).unwrap();
+        let (store, task) = empty_session();
+        for id in fixture["invalid"].as_array().unwrap() {
+            let id = id.as_str().unwrap();
+            assert!(store.create_session(&task.project_id, id, "default", "full").is_err(), "{id:?}");
+            assert!(store.configure(&task.id, id, "default", None).is_err(), "{id:?}");
+            assert!(crate::extensions::providers::require_builtin_execution(id).is_err());
+        }
+        for id in fixture["valid"].as_array().unwrap() {
+            let id = id.as_str().unwrap();
+            let saved = store.create_session(&task.project_id, id, "model/exact", "full").unwrap();
+            assert_eq!(saved.provider, id);
+            if crate::extensions::providers::extension_owner(id).is_some() {
+                assert_eq!(crate::extensions::providers::require_builtin_execution(id).unwrap_err(), crate::extensions::providers::PROVIDER_RECOVERY);
+            } else { assert!(crate::extensions::providers::require_builtin_execution(id).is_ok()); }
+        }
+    }
+
+    #[test]
+    fn extension_provider_migration_36_preserves_every_existing_row_and_connections() {
+        fn rows(db: &Connection) -> Vec<(String, Vec<String>)> {
+            let tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name<>'extension_provider_identities' ORDER BY name").unwrap()
+                .query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+            tables.into_iter().map(|table| {
+                let mut stmt = db.prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid")).unwrap();
+                let count = stmt.column_count();
+                let values = stmt.query_map([], |row| Ok((0..count).map(|i| format!("{:?}", row.get_ref(i).unwrap())).collect::<Vec<_>>().join("|")))
+                    .unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+                (table, values)
+            }).collect()
+        }
+        let dir = std::env::temp_dir().join(format!("pandacode-extension-history-{}", id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        let connections = include_bytes!("../../tests/fixtures/extensions/provider-history-connections.json");
+        let _: crate::connections::Snapshot = serde_json::from_slice(connections).unwrap();
+        std::fs::write(dir.join("connections.json"), connections).unwrap();
+        let before = {
+            let store = Store::open(&path).unwrap();
+            store.db.execute_batch("DROP TABLE extension_provider_identities; PRAGMA user_version=36;").unwrap();
+            store.db.execute_batch(include_str!("../../tests/fixtures/extensions/provider-history-v36.sql")).unwrap();
+            rows(&store.db)
+        };
+        let store = Store::open(&path).unwrap();
+        assert_eq!(rows(&store.db), before, "all pre-existing tables and history are byte-for-byte unchanged");
+        assert_eq!(std::fs::read(dir.join("connections.json")).unwrap(), connections);
+        assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+        assert_eq!(store.db.query_row("SELECT extension_id FROM extension_provider_identities WHERE id='sample.harness/agent'", [], |r| r.get::<_, String>(0)).unwrap(), "sample.harness");
+        let saved = store.session("extension-task").unwrap();
+        assert_eq!(saved.resume_id.as_deref(), Some("native-resume-extension"));
+        assert_eq!(saved.model, "model/recorded");
+        assert_eq!(store.messages("extension-task", None).unwrap().len(), 3);
+        let changed = store.configure("extension-task", "claude", "sonnet", None).unwrap();
+        assert!(changed.resume_id.is_none());
+        assert_eq!(store.messages("extension-task", None).unwrap().len(), 4);
+        assert_eq!(store.messages("legacy-task", None).unwrap().len(), 2);
+        assert!(store.create_session("history-project", "codex", "default", "full").is_ok());
+    }
+
+    #[test]
+    fn extension_provider_migration_failure_rolls_back_version_and_retries_without_history_loss() {
+        let dir = std::env::temp_dir().join(format!("pandacode-extension-rollback-{}", id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        {
+            let store = Store::open(&path).unwrap();
+            store.db.execute_batch("PRAGMA user_version=36;").unwrap();
+            store.db.execute_batch(include_str!("../../tests/fixtures/extensions/provider-history-v36.sql")).unwrap();
+            store.db.execute_batch("CREATE TRIGGER fail_identity_backfill BEFORE INSERT ON extension_provider_identities BEGIN SELECT RAISE(ABORT,'recorded interruption'); END;").unwrap();
+        }
+        assert!(Store::open(&path).err().unwrap().contains("recorded interruption"));
+        {
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 36);
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM extension_provider_identities", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+            db.execute_batch("DROP TRIGGER fail_identity_backfill;").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.session("extension-task").unwrap().resume_id.as_deref(), Some("native-resume-extension"));
+        assert_eq!(store.messages("extension-task", None).unwrap().len(), 3);
+        assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

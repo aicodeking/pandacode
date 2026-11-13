@@ -74,6 +74,7 @@ import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, 
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { renderComponent, applyComposerPresentation, applyTranscriptPresentation } from './extensions/replacement';
+import { renderProviderRecovery } from './extensions/provider-history';
 import type { SlotProps, SlotObject } from './extensions/component-slot';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -671,7 +672,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   }
   onExtensionsChanged(syncExtensionViews);
   onExtensionsChanged(() => renderNavigation());
-  const syncComposerPresentation = () => { const host = document.querySelector<HTMLElement>('#composer'); if (host) applyComposerPresentation(host); };
+  const syncComposerPresentation = () => { const host = document.querySelector<HTMLElement>('#composer'); if (host) { applyComposerPresentation(host); syncProviderRecovery(); } };
   onExtensionsChanged(syncComposerPresentation);
   const syncTranscriptPresentation = () => applyTranscriptPresentation($('#transcript'));
   onExtensionsChanged(syncTranscriptPresentation);
@@ -1408,7 +1409,7 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
+ function shortProvider(id: ProviderId): string { const names: Partial<Record<ProviderId, string>> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' }; return names[id] ?? id; }
 function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
 function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
@@ -3123,6 +3124,11 @@ function renderComposer(): void {
   syncRemoteConnection();
   renderedRemoteKey = remoteComposerKey(s);
   applyComposerPresentation($('#composer'));
+  syncProviderRecovery();
+}
+function syncProviderRecovery(): void {
+  const host = document.querySelector<HTMLElement>('#composer');
+  if (host) renderProviderRecovery(host, session()?.provider, { install: () => run(showSettings('extensions')), change: () => run(showModel($('#model-picker-trigger'))) });
 }
 /** Steer with nothing typed stays pressable (it focuses the prompt) but says it has nothing to send. */
 function syncSteerAvailability(): void {

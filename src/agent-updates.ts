@@ -5,6 +5,7 @@ import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
 import { infoMark } from './tooltip';
 import type { Provider, ProviderId } from './types';
+import { parseProviderId } from './extensions/provider-identity';
 
 export interface AgentUpdate {
   provider: ProviderId;
@@ -49,7 +50,10 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
     if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
       // Initialization can precede provider discovery. Load saved choices without
       // depending on the catalog having arrived yet.
-      dismissed = Object.fromEntries(Object.entries(saved).slice(0, 16).filter(([, value]) => typeof value === 'string' && value.length <= 256));
+      for (const [key, value] of Object.entries(saved).slice(0, 16)) {
+        const id = parseProviderId(key);
+        if (id && typeof value === 'string' && value.length <= 256) dismissed[id] = value;
+      }
     }
   } catch { /* Dismissal still lasts for this window if local storage is unavailable. */ }
 

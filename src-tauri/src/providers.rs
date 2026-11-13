@@ -3225,6 +3225,7 @@ pub async fn run_with_tools(
     harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
+    crate::extensions::providers::require_builtin_execution(&config.provider)?;
     let (session_id, cwd) = (config.session_id.clone(), config.cwd.clone());
     if let Err(error) = crate::blocking(move || {
         crate::skill_manager::begin_launch_at(&session_id, &cwd);

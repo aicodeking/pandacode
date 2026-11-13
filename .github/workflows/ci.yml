@@ -103,6 +103,12 @@ jobs:
       - name: Extension appearance (Chromium)
         env: { PW_PORT: '1445', PW_PROD: '1' }
         run: npx playwright test tests/extensions-appearance.spec.ts --workers=1
+      - name: Persisted provider history (Chromium preview)
+        env: { PW_PORT: '1451', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-provider-history.spec.ts --workers=1
+      - name: Persisted provider history (WebKit preview)
+        env: { PW_PORT: '1452', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-provider-history.spec.ts --workers=1
       - name: Extension appearance (WebKit)
         env: { PW_PORT: '1446', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-appearance.spec.ts --workers=1

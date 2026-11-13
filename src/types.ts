@@ -1,4 +1,7 @@
-export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes';
+export type BuiltinProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes';
+/** Only the shared identity parser may construct extension provider references. */
+export type ExtensionProviderId = `${string}.${string}/${string}` & { readonly __extensionProviderId: unique symbol };
+export type ProviderId = BuiltinProviderId | ExtensionProviderId;
 export type Mode = 'ask' | 'auto' | 'review' | 'plan' | 'full';
 export type TaskStage = 'pending' | 'in_progress' | 'review' | 'completed';
 export interface Project { id: string; name: string; path: string; /** Increases with each project added (the native rowid); orders Projects: Added. */ addedOrder?: number; }
