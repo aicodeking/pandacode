@@ -13,7 +13,10 @@ test('extensions windows: every actual auxiliary label has an explicit surface a
   assert.deepEqual([...new Set(Object.values(WINDOW_ACTION_SURFACES))].sort(), ['agents-dock', 'launcher', 'tray']);
   const ledger = JSON.parse(readFileSync(new URL('./fixtures/extensions/surfaces.json', import.meta.url), 'utf8'));
   const actualLabels = ledger.families.filter(family => ['panda.tray', 'panda.windows'].includes(family.id)).flatMap(family => family.members.map(member => member[4] ?? family.window ?? ledger.defaults.window));
-  assert.deepEqual([...new Set(actualLabels)].sort(), ['agents-dock', 'launcher', 'main', 'tray']);
+  assert.deepEqual([...new Set(actualLabels)].sort(), ['agents-dock', 'extension-view', 'launcher', 'main', 'tray']);
+  const rich = ledger.families.find(family => family.id === 'panda.windows').members.find(member => member[4] === 'extension-view');
+  assert.equal(rich[1], 'src-tauri/src/extensions/rich_views.rs');
+  assert.match(rich[3], /native execution disabled on all targets/);
   for (const id of Object.keys(WINDOW_ACTION_SURFACES)) assert.ok(ledger.implementedAdapters.find(adapter => adapter.id === id)?.tests.includes('tests/extensions-windows.spec.ts'));
   for (const [surface, windowId] of Object.entries(WINDOW_ACTION_SURFACES)) {
     const metadata = ui.listSurfaces({ windowId, location: surface }).items[0];

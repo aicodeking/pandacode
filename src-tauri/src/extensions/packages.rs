@@ -24,7 +24,7 @@ struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[
 pub struct Executable { digest: String, trusted: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool }
+pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool, #[serde(skip)] pub(super) rich_assets: BTreeMap<String, super::rich_views::RichAssets> }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String>, development: Vec<DevelopmentStatus> }
@@ -35,7 +35,7 @@ pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<B
 pub struct ExtensionPackages(pub Mutex<Packages>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
-    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false }], diagnostics: vec![], development: vec![] }
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false, rich_assets: BTreeMap::new() }], diagnostics: vec![], development: vec![] }
 }
 impl ExtensionPackages {
     pub fn new(dir: &Path, safe: bool) -> Self { Self(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() })) }
@@ -145,8 +145,22 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         if name != asset { return Err("Icon path case mismatch.".into()); }
         icons.insert(icon["id"].as_str().unwrap().to_owned(), static_svg(content)?); allowed.insert(asset.to_owned());
     }
+    let mut rich_assets = BTreeMap::new();
+    for view in contributions["views"].as_array().into_iter().flatten().filter(|view| view.get("rich").is_some()) {
+        let read = |key: &str| -> Result<String> {
+            let asset = view["rich"][key].as_str().ok_or("Unsafe rich-view asset.")?;
+            if !safe_name(asset) || !asset.starts_with("assets/") { return Err("Unsafe rich-view asset.".into()); }
+            let (name, bytes) = files.get(&asset.to_ascii_lowercase()).ok_or("Missing rich-view asset.")?;
+            if name != asset || bytes.len() > 65536 { return Err("Invalid rich-view asset.".into()); }
+            String::from_utf8(bytes.clone()).map_err(|_| "Rich-view assets must be UTF-8.".into())
+        };
+        let assets = super::rich_views::RichAssets { html: read("html")?, css: read("css")?, script: read("script")? };
+        if assets.script.to_ascii_lowercase().contains("</script") || assets.css.to_ascii_lowercase().contains("</style") { return Err("Unsafe rich-view asset delimiter.".into()); }
+        for key in ["html", "css", "script"] { allowed.insert(view["rich"][key].as_str().unwrap().to_owned()); }
+        rich_assets.insert(view["id"].as_str().unwrap().to_owned(), assets);
+    }
     if files.values().any(|(name, _)| !allowed.contains(name)) { return Err("Undeclared package file; executable files and install hooks are unsupported.".into()); }
-    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false })
+    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false, rich_assets })
 }
 
 impl Packages {
@@ -250,7 +264,7 @@ impl Packages {
                         // A failed record remains manageable without trusting its contents.
                         if path.extension().and_then(|s| s.to_str()) == Some("json") {
                             if let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|id| safe_name(id)) {
-                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false });
+                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false, rich_assets: BTreeMap::new() });
                             }
                         }
                     }
@@ -400,6 +414,29 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     pub(super) fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    #[test]
+    fn rich_view_archive_validates_local_assets_without_exposing_source_in_snapshot() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/rich-view/extension.json");
+        let html = include_bytes!("../../../tests/fixtures/extensions/rich-view/assets/view.html");
+        let css = include_bytes!("../../../tests/fixtures/extensions/rich-view/assets/view.css");
+        let script = include_bytes!("../../../tests/fixtures/extensions/rich-view/assets/view.js");
+        let files = [("extension.json", manifest.as_slice()), ("assets/view.html", html.as_slice()), ("assets/view.css", css.as_slice()), ("assets/view.js", script.as_slice())];
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&files)).unwrap(); packages.enable("sample.rich-view", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert!(snapshot.packages[0].enabled && snapshot.packages[0].rich_assets.contains_key("sample.rich-view/report"));
+        let public = serde_json::to_value(&snapshot).unwrap();
+        assert!(public["packages"][0].get("richAssets").is_none() && public["packages"][0].get("rich_assets").is_none());
+        assert!(!public.to_string().contains("extension-invalid.example"));
+        for replacement in [b"</SCRIPT><script>bad()".as_slice(), &[0xff], &vec![b'x'; 65537]] {
+            let mut invalid = files; invalid[3] = ("assets/view.js", replacement); assert!(validate(&archive(&invalid)).is_err());
+        }
+        assert!(validate(&archive(&files[..3])).is_err());
+        let mut undeclared = files.to_vec(); undeclared.push(("assets/extra.js", b"bad()")); assert!(validate(&archive(&undeclared)).is_err());
+        let mut no_grant: Value = serde_json::from_slice(manifest).unwrap(); no_grant["permissions"] = json!(["ui.contribute"]);
+        let bytes = serde_json::to_vec(&no_grant).unwrap(); let mut invalid = files; invalid[0] = ("extension.json", &bytes); assert!(validate(&archive(&invalid)).is_err());
+        packages.enable("sample.rich-view", false).unwrap(); assert!(!packages.snapshot().packages[0].enabled);
+    }
     #[test]
     fn data_panel_views_install_restart_disable_and_reject_malformed_controls_atomically() {
         let manifest = include_str!("../../../tests/fixtures/extensions/data-panel/extension.json");

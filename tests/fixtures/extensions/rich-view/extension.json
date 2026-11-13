@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-view",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews"],
+  "contributes": {
+    "views": [{ "id": "sample.rich-view/report", "title": "Isolated report", "text": "A local report. The host-rendered fallback remains available.", "rich": { "html": "assets/view.html", "css": "assets/view.css", "script": "assets/view.js" } }],
+    "commands": [{ "id": "sample.rich-view/open", "title": "Open isolated report", "action": { "kind": "openView", "view": "sample.rich-view/report" } }],
+    "menus": [{ "id": "sample.rich-view/header", "location": "panda.workspace.header.actions", "command": "sample.rich-view/open", "presentation": "button" }]
+  }
+}

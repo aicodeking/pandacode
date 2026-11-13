@@ -98,11 +98,13 @@ pub fn forward(app: &tauri::AppHandle, request: &ActionRequest) -> Result<(), St
     app.emit_to("main", "extensions-present-action", request).map_err(|error| error.to_string())
 }
 pub fn changed(app: &tauri::AppHandle) {
+    super::rich_views::reconcile(app);
     crate::tray::refresh_extension_menu(app);
     for label in ["main", "tray", "launcher", "agents-dock"] { let _ = app.emit_to(label, "extensions-changed", ()); }
 }
 /// A destroyed compact window owns no workspace services or global package registrations.
 pub fn window_closed(app: &tauri::AppHandle, label: &str) {
+    super::rich_views::window_closed(app, label);
     if label == "main" { super::runtime::stop(app, None); super::context::invalidate(app, None); }
     if AUXILIARY.contains(&label) { let _ = app.emit_to("main", "extensions-origin-closed", json!({"windowId":label})); }
 }

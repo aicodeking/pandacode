@@ -22,6 +22,9 @@ async function add(page: Page, title: string) {
   await page.getByRole('menuitem', { name: title, exact: true }).click();
 }
 async function enable(page: Page, enabled: boolean) {
+  // After reload a built-in fallback tab can be selected before the lazy preview bridge
+  // finishes loading. Wait for the actual transport, not that intermediate DOM state.
+  await expect.poll(() => page.evaluate(enabled => typeof (window as any)[enabled ? '__previewEnableExtension' : '__previewDisableExtension'], enabled)).toBe('function');
   await page.evaluate(async enabled => { await (window as any)[enabled ? '__previewEnableExtension' : '__previewDisableExtension']('sample.data-panel'); }, enabled);
 }
 async function overlay(page: Page, value: object) {

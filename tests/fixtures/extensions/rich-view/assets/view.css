@@ -1,0 +1,4 @@
+:root { color-scheme: light dark; font: menu; }
+body { margin: 1rem; }
+button { font: inherit; }
+pre { white-space: pre-wrap; }

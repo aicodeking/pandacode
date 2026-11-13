@@ -229,12 +229,12 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         if !matches(text(&manifest["engines"], "pandacodeApi"), "1.0.0", &format!("{path}/engines/pandacodeApi"))? { return Err(fail("IncompatibleApi", &format!("{path}/engines/pandacodeApi"), vec![id])); }
         for key in ["permissions", "requiredCapabilities"] {
             for capability in strings(&manifest[key]) {
-                if !["ui.contribute", "ui.customize", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
+                if !["ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
             }
         }
         let optional = strings(&manifest["optionalCapabilities"]);
         for (i, capability) in optional.iter().enumerate() {
-            if !["ui.contribute", "ui.customize", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read"].contains(&capability.as_str()) {
+            if !["ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read"].contains(&capability.as_str()) {
                 diagnostics.push(json!({"code":"UnknownOptionalCapability", "path":format!("{path}/optionalCapabilities/{i}")}));
             }
         }
@@ -268,6 +268,7 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
             if command["action"]["kind"] == "showDialog" { dialog_fields(&command["action"]["dialog"], &format!("{path}/contributes/commands"))?; }
         }
         for view in items(contributions, "views") {
+            if view.get("rich").is_some() && !strings(&manifest["permissions"]).contains(&"ui.richViews".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }
             for item in items(view, "toolbar") { reference(contributions, "commands", &item["command"], &format!("{path}/contributes/views"))?; }
         }
         for page in items(contributions, "settings") {

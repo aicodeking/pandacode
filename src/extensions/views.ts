@@ -22,6 +22,16 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
   };
   appendText(panel, 'p', `Extension: ${entry.owner}`);
   appendText(panel, 'p', view.text);
+  if (view.rich) {
+    const button = appendText(panel, 'button', 'Open isolated extension window') as HTMLButtonElement;
+    button.type = 'button'; button.className = 'ds-btn';
+    const status = appendText(panel, 'p', 'Rich HTML is experimental. Native targets remain disabled until installed isolation qualification.'); status.setAttribute('role', 'status');
+    button.addEventListener('click', () => {
+      if (signal.aborted) return;
+      button.disabled = true;
+      void import('./rich-views').then(module => signal.aborted ? '' : module.openRichView(entry)).then(message => { if (!signal.aborted && message) status.textContent = message; }).catch(() => { if (!signal.aborted) status.textContent = 'The isolated view is unavailable. The host-rendered view remains usable.'; }).finally(() => { if (!signal.aborted) button.disabled = false; });
+    }, { signal });
+  }
   const toolbar = document.createElement('div'); toolbar.className = 'extension-view-toolbar'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', `${view.title} tools`); panel.append(toolbar);
   const captured = structuredClone({ ...context, schemaVersion: 1, windowId: 'main', surfaceId: view.id });
   const commands = extensionCommands().filter(item => item.owner.extensionId === entry.owner && item.owner.version === entry.version);

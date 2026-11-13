@@ -293,7 +293,8 @@
       ["launcher-native", "src-tauri/src/overlay.rs", "index.html?view=launcher", "label launcher; cursor placement, visibility and navigation policy", "launcher"],
       ["agents-dock", "src/agents-dock-window.ts", "unpin", "label agents-dock; opt-in pinned running agent snapshot", "agents-dock"],
       ["agents-dock-native", "src-tauri/src/agents_dock.rs", "agents-dock.html", "label agents-dock; independent window lifetime", "agents-dock"],
-      ["tray-native", "src-tauri/src/tray.rs", "index.html?view=tray", "label tray; no main-window native grants inherited", "tray"]
+      ["tray-native", "src-tauri/src/tray.rs", "index.html?view=tray", "label tray; no main-window native grants inherited", "tray"],
+      ["rich-view-native", "src-tauri/src/extensions/rich_views.rs", "extension-view-", "label extension-view-<host UUID>; M6 explicit local-asset presentation with opaque sandbox frame, deny-all native dispatcher and no capabilities; native execution disabled on all targets pending installed E16 qualification", "extension-view"]
     ] },
     { "id": "panda.appearance", "milestone": "M6", "plannedOperations": ["theme", "icons", "density", "typography", "spacing"], "members": [
       ["tokens", "src/palette-core.ts", "accent", "light/dark/imported VSIX theme; accessibility wins"],
@@ -459,7 +460,7 @@
     "src/star-panda.ts": "window footer companion; external repository URL only on explicit activation",
     "src/voice-settings-form.ts": "global voice provider/model/profile; secret values remain native"
   },
-  "nativeInventory": [["src-tauri/src/agents_dock.rs",1],["src-tauri/src/overlay.rs",1],["src-tauri/src/tray.rs",1]],
+  "nativeInventory": [["src-tauri/src/agents_dock.rs",1],["src-tauri/src/extensions/rich_views.rs",1],["src-tauri/src/overlay.rs",1],["src-tauri/src/tray.rs",1]],
   "discoveryLimits": [
     "Lexical action/call discovery is an omission tripwire, not a parser or proof that a private callback is a public API. Reviewed family/member rows cover dynamic views and generated controls.",
     "Menu/dialog call counts also include delegated host wrappers; named rows distinguish concrete transients. A count cannot detect same-count semantic replacement; scoped review must inspect that change.",

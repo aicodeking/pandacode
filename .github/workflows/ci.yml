@@ -76,6 +76,12 @@ jobs:
       - name: Dynamic inspector views (WebKit)
         env: { PW_PORT: '1440', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-views.spec.ts --workers=1
+      - name: Isolated rich views (Chromium, browser characterization only)
+        env: { PW_PORT: '1441', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-rich-views.spec.ts --workers=1
+      - name: Isolated rich views (WebKit, browser characterization only)
+        env: { PW_PORT: '1442', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-rich-views.spec.ts --workers=1
 
   rust:
     name: Rust check and tests (Linux)

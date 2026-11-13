@@ -3971,6 +3971,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
+    app.manage(extensions::rich_views::RichViews::default());
     secret_store::setup(&dir);
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
@@ -4209,6 +4210,7 @@ pub fn run() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 extensions::windows::extensions_present_action,
+                extensions::rich_views::extensions_rich_view_open,
                 extensions::context::extensions_context,
                 extensions::runtime::extensions_runtime,
                 extensions::packages::extensions_snapshot,
