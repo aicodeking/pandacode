@@ -151,22 +151,64 @@ later can use a newer `rustc` than the CI run that passed: if a new stable Rust
 lands between CI passing and tagging, re-run CI on the commit first. The Release
 workflow refuses a tag whose commit has not passed CI.
 
-## 3. Commit, wait for CI, then tag
+## 3. Commit, wait for CI, preflight, then tag
 
 ```sh
 git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml \
   src-tauri/Cargo.lock website/src/data/release-dates.json "releases/$release_version.md"
 git commit -m "chore: release $release_version"
 git push origin main
+release_commit=$(git rev-parse HEAD)
 # Wait for CI on this exact commit (polls up to ~2 min for GitHub to create the
 # run); exits non-zero if it fails or never appears.
 run_id=; for i in $(seq 24); do
-  run_id=$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push \
+  run_id=$(gh run list --workflow ci.yml --commit "$release_commit" --event push \
     --branch main --limit 1 --json databaseId --jq '.[0].databaseId // empty')
   [ -n "$run_id" ] && break; sleep 5
 done
 [ -n "$run_id" ] && gh run watch --exit-status "$run_id"
-git tag "v$release_version"
+```
+
+For an **official release**, freeze this final commit on `main`. Before creating
+or pushing any tag, inspect the newest exact-SHA `ci.yml` main-push run and require
+success across all jobs. Then run the existing artifact-only workflow:
+
+```sh
+# Stop if remote main differs from the frozen release commit.
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit"
+gh workflow run release.yml --ref main -f publish=false
+gh run list --workflow release.yml --event workflow_dispatch --commit "$release_commit" --limit 5
+# Set preflight_run to this dispatch's run ID; do not reuse an older run.
+gh run watch --exit-status "$preflight_run"
+gh run view "$preflight_run" --json headSha,status,conclusion,jobs
+```
+
+Require `run.headSha` to equal `$release_commit`, all six build jobs to succeed,
+and `main` to remain at that SHA. Download that run's six
+`pandacode-X.Y.Z-<target>` artifacts with `gh run download` into a fresh directory
+and collect their contents into one assets directory. Before tagging, require:
+
+- All six installers in the table above, each matching its `.sha256`.
+- Developer ID signing and successful notarization, stapling and Gatekeeper
+  assessment in both macOS build logs. **Do not tag while Apple's legal-agreement
+  HTTP 403 remains unresolved.**
+- All six updater files with valid `.sig` signatures, cryptographically verified
+  against `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` (the existing
+  `verifyMinisign(data, sigFile, pubkey)` export in `packages/npx/installer.mjs`
+  supports this; presence of `.sig` alone is insufficient).
+- Generate `latest.json` from those downloaded files with
+  `node scripts/release/updater-manifest.mjs ASSETS_DIR "$release_version" "releases/$release_version.md"`.
+  Inspect the version, all six platform entries, signatures and versioned asset
+  URLs; the generator permits partial manifests, so explicitly require all six.
+
+These are official-release gates; local and fork signing remains optional.
+If `main` drifts or the release commit changes, repeat CI and this preflight for
+the new final commit. Once all gates pass, recheck remote `main` immediately
+before tagging the frozen commit (the tag workflow rebuilds and publishes):
+
+```sh
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit"
+git tag "v$release_version" "$release_commit"
 git push origin "v$release_version"
 ```
 
@@ -210,6 +252,11 @@ gh run list --workflow release.yml --limit 5
 gh run watch RUN_ID
 gh release view "v$release_version"
 ```
+
+After publishing, validate the release's versioned download URLs and the
+`releases/latest/download/<asset>` URLs for all six installers, checksums, updater
+files and signatures, plus `latest.json`. Require the expected version, complete
+six-platform manifest, matching checksums and valid updater signatures again.
 
 The Windows and Linux jobs install or launch the packaged app on the runner and
 check that it stays alive (`scripts/release/ci-startup-smoke.mjs`). That proves
