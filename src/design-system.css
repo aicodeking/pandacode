@@ -490,6 +490,25 @@ html[data-theme="dark"] .choice-menu-option[aria-checked="true"]>.icon:last-chil
 /* Toast: the same glass with its hairline (no gradient, ring or highlight). */
 .toast{background:var(--glass-warm);border:1px solid var(--glass-border);box-shadow:0 18px 40px -16px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near);border-radius:12px}
 .toast::before{background:var(--ds-primary-bg);box-shadow:none}
+/* A toast with a close button (the crash notice): room for the button, and the whole notice shown. */
+/* Block, not the clamping -webkit-box: the text wraps and the buttons follow it side by side,
+ * wrapping to a line of their own only when they do not fit. Placed in the conversation pane,
+ * clear of the composer, inspector and dock (toast-clearance.ts). */
+.toast.toast-dismissible{display:block;padding-right:38px;-webkit-line-clamp:none;right:var(--toast-right,max(16px,env(safe-area-inset-right)));bottom:max(16px,env(safe-area-inset-bottom),var(--toast-lift,0px));max-width:min(360px,var(--toast-max,calc(100vw - 32px)))}
+/* Settings covers the workspace and has controls down its right side: the notice steps aside
+ * while it is open and is back as it was after (toast-clearance.ts). Not animated. */
+.workspace:has(>#settings-page:not([hidden]))~.toast.toast-dismissible{visibility:hidden}
+/* Too little room beside an inspector drawn over the pane (toast-clearance.ts): never over the drawer. */
+.toast.toast-dismissible[data-crowded]{visibility:hidden}
+/* The board's and GitHub's scrollers get room at their end while the notice sits over them. */
+:is(#project-board .board-columns,#github-hub .gh-body)::after{content:"";display:block;grid-column:1/-1;height:var(--toast-room,0px)}
+/* Its quieter second action (Show crash report after Open thread): a text button, like Undo. */
+.toast-secondary{flex:none;margin-left:2px;padding:3px 7px;border-radius:var(--ds-radius-chip);font-size:.8rem;font-weight:550;color:var(--accent-ink);--press:.96;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.toast-secondary:hover{background:var(--ds-row-hover);color:var(--text)}
+html[data-theme=dark] .toast-secondary{color:var(--accent)}
+.toast-close{position:absolute;top:6px;right:6px;display:grid;place-items:center;width:24px;height:24px;padding:0;border-radius:var(--ds-radius-control);color:var(--muted);--press:.96;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.toast-close .icon{width:14px;height:14px}
+.toast-close:hover{background:var(--ds-row-hover);color:var(--text)}
 
 /* Dialogs: a 16px sheet, 18px title, 10px controls. */
 .dialog-heading h2{font-size:1.2857rem;letter-spacing:var(--ds-row-tracking);color:var(--ds-title-ink)}
@@ -500,5 +519,6 @@ dialog .primary-button{border-radius:var(--ds-radius-inner)}
 }
 @media(prefers-contrast:more){
   .tip-bubble,.toast{background:var(--bg);border:1px solid var(--text);backdrop-filter:none;-webkit-backdrop-filter:none}
+  .toast-close{color:var(--text)}
   html[data-theme] .secondary-button{box-shadow:inset 0 0 0 1px var(--border)}
 }

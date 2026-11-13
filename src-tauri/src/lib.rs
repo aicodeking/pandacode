@@ -8,6 +8,8 @@ mod agent_usage;
 mod agent_updates;
 mod agent_usage_providers;
 mod memory;
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod app_updates;
 mod appearance;
 mod architect;
@@ -18,6 +20,7 @@ mod child_env;
 mod checks;
 mod code_search;
 mod connections;
+mod crash_guard;
 mod command_operations;
 mod context_recovery;
 mod conversation_fork;
@@ -84,6 +87,7 @@ mod headless_bots;
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
+pub use crash_guard::handle as handle_crash_guard;
 pub use voice::local::handle_speech_worker;
 
 use providers::{AgentEvent, RunConfig, RunInput};
@@ -744,6 +748,11 @@ async fn relink_project(state: State<'_, AppState>, project_id: String, path: St
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
     listed_sessions(&state)
+}
+/// The ids among `ids` with no task row at all (launch restore drops their saved drafts).
+#[tauri::command]
+async fn sessions_missing(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<String>> {
+    state.store.lock().map_err(|e| e.to_string())?.missing_sessions(&ids)
 }
 /// Tasks as the sidebar shows them, with stale running states settled.
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
@@ -3964,6 +3973,12 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Tauri gives WebKitGTK this folder as the webview's data directory (local storage holds
+    // unsent drafts); elsewhere the webview keeps its data in a folder of its own.
+    #[cfg(target_os = "linux")]
+    if let Ok(webview_data) = app.path().app_local_data_dir() {
+        crash_guard::narrow_webview_data(&webview_data);
+    }
     secret_store::setup(&dir);
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
@@ -3977,6 +3992,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     // Retain the database filename and bundle identifier so upgrades reuse existing data.
     let store = Store::open(&dir.join("kingcode.sqlite3"))?;
+    crash_guard::store_opened(store.restart_interrupted);
     if let Err(error) = store.discard_empty_drafts() {
         eprintln!("Could not clear unsent new tasks: {error}");
     }
@@ -4002,9 +4018,21 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Sent (no payload) to the main webview once a deliberate exit is committed, before shutdown.
+const APP_QUITTING_EVENT: &str = "app-quitting";
+
 /// Run-loop events shared by the desktop and serve: an exit request stops local agents
 /// (cloud runs keep going on their machines) within a deadline, then the process exits.
 fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    // After a crash the relaunch comes to the front only if PandaCode was in front.
+    // A closed window may never send its blur.
+    if let tauri::RunEvent::WindowEvent { label, event: window_event, .. } = &event {
+        match window_event {
+            tauri::WindowEvent::Focused(focused) => crash_guard::window_focused(label, *focused),
+            tauri::WindowEvent::Destroyed => crash_guard::window_focused(label, false),
+            _ => {}
+        }
+    }
     // A Dock click: other PandaCode windows can be up while the main one is hidden, so always show it.
     #[cfg(target_os = "macos")]
     if matches!(event, tauri::RunEvent::Reopen { .. }) {
@@ -4024,6 +4052,14 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         api.prevent_exit();
         if state.shutdown.swap(1, Ordering::SeqCst) == 1 {
             return;
+        }
+        // Quitting (or restarting to update) from here on: a crash now is not relaunched.
+        crash_guard::notify_exit();
+        // Tell the page before it goes: WKWebView may not fire `pagehide` on Cmd+Q, and the
+        // page clears its window-death note on this. Fire and forget, never awaited. Quit,
+        // update restarts and the webview dialog's Restart (`request_restart`) all pass here.
+        if let Err(error) = app.emit_to("main", APP_QUITTING_EVENT, ()) {
+            eprintln!("Could not tell the window PandaCode is quitting: {error}");
         }
         if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         jev::shutdown();
@@ -4063,6 +4099,13 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             handle.exit(0);
         });
     } else if matches!(event, tauri::RunEvent::Exit) {
+        crash_guard::notify_exit();
+        // The Dock's Quit and logout end here without ExitRequested; the page may not get it.
+        if app.try_state::<AppState>().is_some_and(|state| state.shutdown.load(Ordering::SeqCst) == 0) {
+            if let Err(error) = app.emit_to("main", APP_QUITTING_EVENT, ()) {
+                eprintln!("Could not tell the window PandaCode is quitting: {error}");
+            }
+        }
         if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         app.state::<file_preview::FilePreviews>().shutdown();
         // VMs PandaCode started release their memory when it quits.
@@ -4093,7 +4136,17 @@ pub fn run() {
     if std::env::args().skip(1).any(|arg| arg == "--local-sign") {
         std::process::exit(local_signing::cli());
     }
-    let app = tauri::Builder::default()
+    let context = app_context();
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    // A dead WKWebView content process leaves a blank window: reload it, within a limit.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.on_web_content_process_terminate(crash_guard::on_web_content_process_terminate);
+        // Cmd+Q quits through `app.exit(0)`, so it passes ExitRequested like the menu bar Quit.
+        builder = builder.menu(app_menu::build).on_menu_event(app_menu::on_menu_event);
+    }
+    let app = builder
         // First, as its docs require: a second launch focuses this window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             tray::show(app)
@@ -4103,16 +4156,25 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Here, not before the builder: plugin setup runs first, so a duplicate launch has
+            // already handed off to the running instance and exited without a guard of its own.
+            crash_guard::start(crash_guard::Mode::Desktop);
             // Covers DMG installs and earlier failures; only ad hoc bundles change, on disk only.
             std::thread::spawn(|| {
                 if let Err(error) = local_signing::sign_running_app() {
                     eprintln!("Local signing failed: {error}");
                 }
             });
-            let dir = setup_common(app)?;
-            app.manage(voice::Voice::new(dir.clone()));
-            agents_dock::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
-            overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
+            // A failure here is not a crash: say why and exit, never a relaunch into it.
+            let ready = (|| -> Result<()> {
+                let dir = setup_common(app)?;
+                app.manage(voice::Voice::new(dir.clone()));
+                agents_dock::setup(app.handle(), &dir)?;
+                overlay::setup(app.handle(), &dir).map_err(|error| error.to_string())
+            })();
+            if let Err(error) = ready {
+                crash_guard::desktop_startup_failed(&error);
+            }
             vm::watch_idle(app.handle().clone());
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("Menu bar item is unavailable: {error}");
@@ -4223,6 +4285,12 @@ pub fn run() {
                 model_health::model_health_list,
                 model_health::model_health_clear,
                 local_sign_app,
+                crash_guard::commands::crash_recovery_take,
+                crash_guard::commands::crash_recovery_shown,
+                crash_guard::commands::crash_restart_enabled,
+                crash_guard::commands::set_crash_restart_enabled,
+                crash_guard::commands::crash_report_reveal,
+                sessions_missing,
                 app_updates::app_update_install_supported,
                 agent_updates::check_agent_updates,
                 agent_updates::update_agent,
@@ -4607,7 +4675,7 @@ pub fn run() {
             ];
             handler(invoke)
         })
-        .build(app_context())
+        .build(context)
         .expect("Failed to launch PandaCode");
     app.run(on_run_event);
 }

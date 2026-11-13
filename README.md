@@ -240,6 +240,56 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
 ## Privacy
 
 - **No telemetry, no analytics, no accounts.** PandaCode does not phone home.
+- **Crash reports stay on your computer.** After a crash PandaCode restarts itself
+  and keeps a plain-text report in `crash-reports/` in its app data folder: the 10
+  newest crash reports and 5 window reports. A report holds the panic message, if any,
+  which can include file paths, text from your work or a credential that was in that
+  message (nothing is redacted), and a backtrace, so check it before you share it. Reports older than 90 days are deleted when a new report is written,
+  each time PandaCode starts and about once a day while it runs, so one stays longer only
+  while PandaCode is not running. `crash-guard.json` in the app data folder itself, not
+  in `crash-reports/` (`crash-guard-serve.json` for a headless `serve` host), holds the times of the
+  crashes in the 10 minutes before the latest one (at most 10; a time more than 10
+  minutes old is dropped at the next crash, when PandaCode or a `serve` host next starts
+  and about once a day while one runs, so it stays longer only while PandaCode is not
+  running) and, until the next launch of that app or host takes it, a short notice (when,
+  a cause such as "Panic" or "Crashed with SIGSEGV", whether it restarted, whether
+  running agents were stopped, and the file name of its report). A notice whose crash is more than 90 days old (or dated more than a day
+  ahead) is deleted at those same starts and daily checks.
+  A headless `serve` host restarted after a crash writes all its output, including
+  its startup line about the crash (which ends with the full path of `crash-reports/`,
+  naming your home folder), its Connect GitHub login and error messages, which can name threads and contain
+  project and file paths, to `serve-restart.log` (readable only by your user on macOS
+  and Linux; on Windows it gets the permissions of the profile folder it is in; moved to
+  `serve-restart.log.1` once past 1 MB, which the host checks every 30 seconds on macOS
+  and Linux, so it can pass 1 MB by what it writes in that time, and on Windows only when
+  a restart begins). The guard's own few lines go to `crash-guard.log` (moved to
+  `crash-guard.log.1` past 1 MB when a guard starts). Both logs and their `.1` files are
+  deleted once they have not been written for 90 days, checked when PandaCode starts and
+  about once a day while it runs; a restarted host never deletes its own
+  `serve-restart.log`, so that one goes at a later start. Empty `.lock` files beside
+  the two state files coordinate their updates.
+  The restart guard is a second PandaCode process; its command line, which other users
+  of the computer can see in the process list while PandaCode runs, includes the app data
+  folder's path and PandaCode's own arguments.
+  Nothing is sent; Settings → General can turn automatic restarts off. See
+  [crash recovery](docs/crash-recovery.md).
+- **Unsent drafts are kept as plain text.** What you type in the composer (or a
+  shared bot channel's) and haven't sent (up to 50,000 characters per draft) is saved unencrypted in the
+  app's local web storage for up to 30 days (cleared at launch and daily while the app
+  runs; longer only while PandaCode is not opened), so it usually survives a restart
+  (the web view may write it to disk slightly later, so the very last keystrokes before
+  a hard crash can be missing). A draft can include a secret you pasted. Turn off
+  Settings → General → **Keep unsent drafts** (on by default) to save none: that removes the
+  saved drafts at once and at every launch, and text in an open message box stays only until
+  you quit. **Clear saved drafts** removes the drafts kept so far and keeps saving new ones
+  (text showing in an open message box stays there until its next change). That storage is outside the app data folder on Windows and
+  macOS: on Windows it is under
+  `%LOCALAPPDATA%\ai.pandacode.desktop\`, on macOS WebKit normally keeps it under
+  `~/Library/WebKit/ai.pandacode.desktop/` (see
+  [what a launch restores](docs/crash-recovery.md#what-a-launch-restores)). On Linux
+  PandaCode makes that folder readable only by your user at every start; on Windows and
+  macOS it changes no permissions, so who can read drafts depends on what the web view
+  and the parent folders allow.
 - **Your code stays on your machine.** Projects, conversations and settings are
   stored locally in SQLite. Prompts go only to the coding CLI or service you
   pick, under that provider's own terms.

@@ -3,7 +3,7 @@
  * site actually do; change this page with them. */
 import Page from '../layouts/Page.astro';
 import { project } from '../lib/distribution';
-const updated = { iso: '2026-10-26', label: 'October 26, 2026' };
+const updated = { iso: '2026-11-12', label: 'November 12, 2026' };
 const sections = [
   ['overview', 'The short version'],
   ['app', 'The desktop app'],
@@ -18,12 +18,12 @@ const sections = [
 ---
 <Page title="Privacy Policy" current="privacy" eyebrow="YOUR WORK. YOUR BUSINESS."
   heading="Privacy, plainly put."
-  description="PandaCode collects nothing: no license checks, no telemetry, no analytics and no crash reports. Your work stays on your computer. PandaCode Connect, which links the mobile app to your computers, is optional and keeps only what it needs to find your devices."
+  description="PandaCode collects nothing: no license checks, no telemetry, no analytics and no crash reporting. Your work stays on your computer. PandaCode Connect, which links the mobile app to your computers, is optional and keeps only what it needs to find your devices."
   lede="PandaCode is free, open-source software that runs on your computer. The only server we run is the optional Connect relay, and it can’t read your work. Here is exactly what the apps, the relay and this website do.">
   <Fragment slot="hero">
     <div class="legal-summary page-rise">
       <div><b>We collect nothing.</b><span>No license checks. Connect, if you use it, keeps only your device list.</span></div>
-      <div><b>No telemetry.</b><span>No analytics, usage tracking or crash reports. None.</span></div>
+      <div><b>No telemetry.</b><span>No analytics, usage tracking or crash reporting. None.</span></div>
       <div><b>Open to inspect.</b><span>Every line is on GitHub, so you can check all of this yourself.</span></div>
     </div>
     <p class="legal-updated page-rise">Last updated <time datetime={updated.iso}>{updated.label}</time></p>
@@ -35,7 +35,7 @@ const sections = [
       <section id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title">The short version</h2>
         <ul>
-          <li><strong>Without Connect, PandaCode collects nothing.</strong> Unless you sign in to PandaCode Connect, there are no accounts, no license checks, no telemetry, no analytics, no crash reports and no PandaCode servers.</li>
+          <li><strong>Without Connect, PandaCode collects nothing.</strong> Unless you sign in to PandaCode Connect, there are no accounts, no license checks, no telemetry, no analytics, no crash reporting and no PandaCode servers.</li>
           <li><strong>PandaCode Connect</strong> (optional, for the mobile app and for running tasks on another computer) keeps your GitHub account id and your devices’ names and public keys. Everything you send through it is <strong>end-to-end encrypted</strong>; we can’t read it. See <a href="#connect">Connect and the mobile app</a>.</li>
           <li>Your projects, conversations, tasks, bots, memories and settings are stored <strong>on your device</strong>. We never receive a copy.</li>
           <li>The app talks only to the services <strong>you choose</strong>, directly from your computer, plus a few automatic requests that carry no personal data.</li>
@@ -46,7 +46,9 @@ const sections = [
       <section id="app" aria-labelledby="app-title">
         <h2 id="app-title">The desktop app</h2>
         <p>PandaCode keeps its data in your operating system’s application data folder: a local database with your projects, conversations, tasks, board, team settings, bots and their memories, and usage figures, plus cached files such as screenshots you attach. Passwords, API keys, bot tokens and cloud credentials you enter are kept in a private file readable only by your user on macOS, and in the operating system’s secure store elsewhere (Credential Manager on Windows, Secret Service on Linux).</p>
-        <p>None of this leaves your computer unless a service you use needs it (see <a href="#providers">Services you choose</a>). Uninstalling the app and deleting its data folder removes it.</p>
+        <p>None of this leaves your computer unless a service you use needs it (see <a href="#providers">Services you choose</a>). Uninstalling the app and deleting its data folder removes it. Unsent message drafts (below) live in the app’s web storage, which is inside the data folder only on Linux; on Windows and macOS deleting the data folder leaves them.</p>
+        <p>If PandaCode crashes, it writes a plain-text crash report to the same folder. A report holds the panic message, if any, which can include file paths, text from your work or a credential that was in that message (nothing is redacted), and a backtrace, so check it before you share it. Reports stay on your computer and are never sent; the 10 newest (plus up to 5 reports about the app’s window) are kept, and reports older than 90 days are deleted when a new report is written, each time PandaCode starts and about once a day while it runs, so one stays longer only while PandaCode is not running. A small file there, <code>crash-guard.json</code> (<code>crash-guard-serve.json</code> for a headless server), holds the times of the crashes in the 10 minutes before the latest one (at most 10; a time more than 10 minutes old is dropped at the next crash, when PandaCode or a headless server next starts and about once a day while one runs, so it stays longer only while PandaCode is not running) and, until the next launch of that app or server picks it up, a short notice: when it happened, a cause such as “Panic” or “Crashed with SIGSEGV”, whether PandaCode restarted, whether running agents were stopped, and the file name of its report. A notice whose crash is more than 90 days old (or dated more than a day ahead) is deleted at those same starts and daily checks. A headless server (<code>pandacode serve</code>) that restarts after a crash writes all its output, including its startup line about the crash (which ends with the full path of the crash reports folder, naming your home folder), your Connect GitHub login and error messages, which can name threads and contain project and file paths, to <code>serve-restart.log</code> in the same folder, readable only by your user on macOS and Linux (on Windows it gets the permissions of the profile folder it is in); once it passes 1 MB it moves to one older file (checked every 30 seconds on macOS and Linux, so it can pass 1 MB by what is written in that time, and on Windows only when a restart begins). The restart guard’s own few lines go to <code>crash-guard.log</code> there (moved to one older file past 1 MB when the guard starts). These logs are deleted once they haven’t been written for 90 days, checked when PandaCode starts and about once a day while it runs; a restarted server never deletes its own <code>serve-restart.log</code>, so that one goes at a later start. The restart guard runs as a second PandaCode process whose command line, which other users of the computer can see in the process list while PandaCode runs, includes the data folder’s path and PandaCode’s own arguments.</p>
+        <p>Text you type in the message box (or a shared bot channel’s) and haven’t sent yet (up to 50,000 characters per draft) is saved as plain text in the app’s local web storage for up to 30 days, so a restart usually doesn’t lose it (the web view may write it to disk slightly later, so the very last keystrokes before a hard crash can be missing). A draft can include a secret you pasted. Turn off Settings → General → <em>Keep unsent drafts</em> (on by default) to save none: that removes the saved drafts at once and at every launch, and text in an open message box stays only until you quit. <em>Clear saved drafts</em> removes the drafts kept so far and keeps saving new ones (text showing in an open message box stays there until its next change). Older text is cleared when PandaCode starts and daily while it runs, so it stays longer only while PandaCode is not opened. On Linux that storage is in the data folder, which PandaCode makes readable only by your user each time it starts. On Windows it is in <code>%LOCALAPPDATA%\ai.pandacode.desktop</code>, outside the data folder; on macOS WebKit normally keeps it in <code>~/Library/WebKit/ai.pandacode.desktop</code>. On Windows and macOS PandaCode changes no permissions there, so who can read your drafts depends on what the web view and the parent folders allow. Delete those folders too to remove drafts.</p>
       </section>
 
       <section id="automatic" aria-labelledby="automatic-title">

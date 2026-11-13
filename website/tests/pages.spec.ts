@@ -63,7 +63,7 @@ test('privacy policy says PandaCode collects nothing, with a contents rail', asy
   const prose = page.locator('.legal-prose');
   for (const fact of [
     'PandaCode collects nothing.',
-    'no accounts, no license checks, no telemetry, no analytics, no crash reports and no PandaCode servers',
+    'no accounts, no license checks, no telemetry, no analytics, no crash reporting and no PandaCode servers',
     'formulae.brew.sh', 'downloads.claude.ai', 'api.github.com', 'cdn.kimi.com', 'about every 6 hours',
     'raw.githubusercontent.com', 'at most once a day',
     'It sets no cookies, runs no analytics',

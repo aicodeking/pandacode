@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
+# The blocking error dialog when the desktop app cannot start (crash_guard/startup.rs); the
+# version tauri-plugin-dialog already brings in, which also picks its platform features.
+rfd = { version = "0.16", default-features = false }
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
@@ -37,6 +40,9 @@ hkdf = "0.12"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 chacha20poly1305 = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls-no-provider"] }
+# The app data dir before Tauri starts (crash guard): the same crate and major version Tauri
+# resolves `app_data_dir` with (its PathResolver needs an app, which the guard never has).
+dirs = "7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

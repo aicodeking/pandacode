@@ -2,6 +2,10 @@
 mod linux_fonts;
 
 fn main() {
+    // The crash guard (crash_guard.rs): no GUI, watches the app and relaunches it after a crash.
+    if pandacode_lib::handle_crash_guard() {
+        return;
+    }
     // A speech worker child (voice/local): engine only, no app, exits when its pipe closes.
     if pandacode_lib::handle_speech_worker() {
         return;

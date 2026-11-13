@@ -612,6 +612,10 @@ function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn =>
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
+// tests: `window.__previewInterrupted = ['session-2']` (set before load) starts those tasks Interrupted;
+// `__previewSetStatus(id, status)` changes one and announces it, as the native app does.
+for (const id of (window as any).__previewInterrupted ?? []) sessions = sessions.map(task => task.id === id ? { ...task, status: 'interrupted' } : task);
+(window as any).__previewSetStatus = (id: string, status: Session['status']) => { sessions = sessions.map(task => task.id === id ? { ...task, status } : task); emit('sessions-changed', null); };
 // Tests: how many listeners an event has now, e.g. to check a view stops listening when it should.
 (window as any).__previewListenerCount = (name: string) => listeners.get(name)?.size ?? 0;
 export function listen(name: string, callback: (event: any) => void): () => void { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(callback); return () => listeners.get(name)?.delete(callback); }
@@ -1474,6 +1478,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
+  if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
@@ -2129,6 +2134,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'send_message': {
       if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
       const s = session(args.sessionId), w = window as any; assertIdle(s);
+      // Tests: `__previewSendFails` sends are rejected before anything is saved.
+      if (w.__previewSendFails > 0) { w.__previewSendFails -= 1; throw new Error('The agent could not start.'); }
       if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
       if (w.__remoteSendHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSendRelease = () => { w.__remoteSendHold = false; resolve(); }; });
       let moodboardContext = '';

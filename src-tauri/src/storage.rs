@@ -157,6 +157,9 @@ pub struct MessagePage {
 pub struct Store {
     pub db: Connection,
     pub path: PathBuf,
+    /// Tasks this open marked `restart_interrupted` (running or waiting when the previous
+    /// process ended, and not stopped by the user). The crash notice reads it.
+    pub restart_interrupted: usize,
 }
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
@@ -241,6 +244,7 @@ impl Store {
         Ok(Self {
             db,
             path: path.into(),
+            restart_interrupted: 0,
         })
     }
 
@@ -633,6 +637,14 @@ impl Store {
             "\n\n[PandaCode was interrupted before this tool reported a result.]",
         )?;
         settle_unfinished_subagents(&recovery, None, "stopped")?;
+        // Archived tasks are left out: the page shows no Interrupted badge for them.
+        let restart_interrupted: i64 = recovery
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE status IN ('running','waiting') AND stop_requested=0 AND archived=0 AND (remote_device IS NULL OR id NOT IN (SELECT session_id FROM machine_threads))",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
         recovery
             .execute(
                 // Marked `restart_interrupted`: the restart, not the user, stopped them, so a
@@ -669,6 +681,7 @@ impl Store {
         let store = Self {
             db,
             path: path.to_path_buf(),
+            restart_interrupted: usize::try_from(restart_interrupted).unwrap_or(0),
         };
         crate::architect::profiles::initialize(&store)?;
         store.settle_archived()?;
@@ -1085,6 +1098,25 @@ impl Store {
     /// Whether a task is still an unsent draft with no saved history.
     pub fn is_empty_draft(&self, sid: &str) -> Result<bool> {
         self.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND draft=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1))", [sid], |r| r.get(0)).map_err(|e| e.to_string())
+    }
+
+    /// The ids among `ids` with no session row at all (drafts, archived tasks and architect
+    /// workers all have one), in the order given. One query: the ids go in as one JSON
+    /// parameter. Err when there are more than `MAX_MISSING_IDS` or one is too long.
+    pub fn missing_sessions(&self, ids: &[String]) -> Result<Vec<String>> {
+        if ids.len() > MAX_MISSING_IDS {
+            return Err(format!("At most {MAX_MISSING_IDS} task ids can be checked at once."));
+        }
+        if ids.iter().any(|id| id.chars().count() > MAX_MISSING_ID_CHARS) {
+            return Err(format!("A task id is longer than {MAX_MISSING_ID_CHARS} characters."));
+        }
+        let json = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+        let mut stmt = self
+            .db
+            .prepare_cached("SELECT value FROM json_each(?1) WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE id=json_each.value) ORDER BY key")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([json], |r| r.get(0)).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<String>>>().map_err(|e| e.to_string())
     }
 
     /// Removes drafts left from an earlier launch; none can be open yet.
@@ -2110,6 +2142,10 @@ fn handoff_from_provider(content: &str) -> Option<String> {
     (known(from) && known(to)).then(|| from.to_owned())
 }
 
+/// `missing_sessions` input limits (the `sessions_missing` IPC).
+pub const MAX_MISSING_IDS: usize = 2000;
+pub const MAX_MISSING_ID_CHARS: usize = 128;
+
 #[cfg(test)]
 #[path = "storage_sidebar_tests.rs"]
 mod sidebar_tests;
@@ -2124,6 +2160,24 @@ mod tests {
             .create_session(&project.id, "claude", "sonnet", "auto")
             .unwrap();
         (store, session)
+    }
+
+    #[test]
+    fn missing_sessions_lists_only_ids_with_no_row_at_all() {
+        let (store, task) = empty_session();
+        let draft = store.create_session(&task.project_id, "claude", "sonnet", "auto").unwrap();
+        store.mark_draft(&draft.id).unwrap();
+        let archived = store.create_session(&task.project_id, "claude", "sonnet", "auto").unwrap();
+        store.db.execute("UPDATE sessions SET archived=1 WHERE id=?1", [&archived.id]).unwrap();
+        let ids: Vec<String> = ["gone-1", &task.id, &draft.id, "x' OR 1=1 --", &archived.id, "gone-2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(store.missing_sessions(&ids).unwrap(), ["gone-1", "x' OR 1=1 --", "gone-2"]);
+        assert_eq!(store.missing_sessions(&[]).unwrap(), Vec::<String>::new());
+        let many: Vec<String> = (0..MAX_MISSING_IDS).map(|i| format!("id-{i}")).collect();
+        assert_eq!(store.missing_sessions(&many).unwrap().len(), MAX_MISSING_IDS);
+        let too_many: Vec<String> = (0..=MAX_MISSING_IDS).map(|i| format!("id-{i}")).collect();
+        assert!(store.missing_sessions(&too_many).is_err());
+        assert!(store.missing_sessions(&["é".repeat(MAX_MISSING_ID_CHARS)]).is_ok());
+        assert!(store.missing_sessions(&["a".repeat(MAX_MISSING_ID_CHARS + 1)]).is_err());
     }
 
     /// Launch lookups consider only rows whose stored path could name the folder.

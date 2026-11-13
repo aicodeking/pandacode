@@ -27,6 +27,7 @@ import type { AgentsDockPreferences } from './agents-dock';
 import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-sections';
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
+import { crashRestartSettingsHtml, mountCrashRestartSettings, type KeepDrafts } from './crash-restart-settings';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -61,6 +62,10 @@ interface SettingsOptions {
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
   embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed; harnessPrivacy: Embed };
+  /** Settings › General › Crash recovery: removes the saved composer drafts. */
+  clearDrafts?(): void;
+  /** Settings › General › Crash recovery: Keep unsent drafts. */
+  keepDrafts?: KeepDrafts;
   /** Leaves Settings for the workspace. */
   close(): void;
 }
@@ -143,7 +148,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'recommended': return '<div id="recommended-settings"></div>';
     case 'voice': return '<div id="voice-settings"></div>';
     case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
-      <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
+      <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div><h3 class="settings-heading">Crash recovery</h3>${crashRestartSettingsHtml()}${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
         ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
         ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
@@ -311,6 +316,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
+      cleanups.push(mountCrashRestartSettings(panel.querySelector<HTMLElement>('#crash-restart-settings')!, options.clearDrafts, options.keepDrafts));
     }
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));

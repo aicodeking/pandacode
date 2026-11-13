@@ -30,7 +30,8 @@ enum Command {
 /// `pandacode serve …`: true when the argument was handled; the process then serves until
 /// it is stopped (or exits after a settings command). Everything else is the desktop app.
 pub fn handle() -> bool {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // A crash guard relaunch adds its mark (crash_guard.rs); no command takes it.
+    let args: Vec<String> = std::env::args().skip(1).filter(|arg| !crate::crash_guard::is_restart_flag(arg)).collect();
     if args.first().map(String::as_str) != Some("serve") {
         return false;
     }
@@ -53,9 +54,14 @@ pub fn handle() -> bool {
 
 /// Builds the app with no window and runs it until an explicit exit. Never returns.
 fn serve(command: Command, import: Option<PathBuf>) -> ! {
-    let app = tauri::Builder::default()
+    let context = crate::app_context();
+    // Only a host is guarded; settings commands exit on their own.
+    let host = matches!(command, Command::Serve | Command::SignIn { .. });
+    let built = tauri::Builder::default()
         .setup(move |app| {
-            let dir = crate::setup_common(app)?;
+            // Tauri panics on a setup error, which the crash guard would take for a crash,
+            // relaunch into the same failure and pause.
+            let dir = crate::setup_common(app).unwrap_or_else(|error| startup_failed(&error));
             // No window on a server: close the one from tauri.conf.json right away; the
             // run loop keeps the process alive (see on_run_event). Users watch from their
             // devices, never from here.
@@ -66,10 +72,23 @@ fn serve(command: Command, import: Option<PathBuf>) -> ! {
             start(app.handle(), &dir, command, import);
             Ok(())
         })
-        .build(crate::app_context())
-        .expect("Failed to launch PandaCode");
+        .build(context);
+    let app = built.unwrap_or_else(|error| startup_failed(&error));
+    // After a successful build, before the run loop: setup and everything the host does run
+    // inside `run`, so nothing of the running host goes unguarded.
+    if host {
+        crate::crash_guard::start(crate::crash_guard::Mode::Serve);
+    }
     app.run(crate::on_run_event);
     std::process::exit(0)
+}
+
+/// A `serve` that cannot start says why and exits with status 1. It is a deliberate exit for
+/// the crash guard: a relaunch would only fail the same way.
+fn startup_failed(error: &dyn std::fmt::Display) -> ! {
+    eprintln!("pandacode serve could not start: {error}");
+    crate::crash_guard::notify_exit();
+    std::process::exit(1)
 }
 
 /// Per-command startup, run from setup.
@@ -283,7 +302,8 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
             let state = app.state::<AppState>();
             if let Ok(store) = state.store.lock() {
                 if let Err(lost) = message_queue::restore(&store, &entry) {
-                    eprintln!("serve: queued message lost after a failed launch: {lost}");
+                    // The id, never the text: after a crash restart this goes to serve-restart.log.
+                    eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
                 }
             }
             eprintln!("serve: couldn't send the next queued message: {error}");

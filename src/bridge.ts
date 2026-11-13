@@ -15,6 +15,8 @@ export async function subscribe(name: 'jev-run', callback: (event: import('./jev
 export async function subscribe(name: 'jev-frame', callback: (event: import('./jev-live').JevFrame) => void): Promise<() => void>;
 export async function subscribe(name: 'jev-install', callback: (event: { status: string; message: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'sessions-changed', callback: () => void): Promise<() => void>;
+/** A deliberate exit is committed (no payload); the page may not see pagehide. */
+export async function subscribe(name: 'app-quitting', callback: () => void): Promise<() => void>;
 export async function subscribe(name: 'queue-changed', callback: (event: { sessionId: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'schedules-changed', callback: (event: { sessionId: string | null }) => void): Promise<() => void>;
 export async function subscribe(name: 'bots-changed', callback: () => void): Promise<() => void>;

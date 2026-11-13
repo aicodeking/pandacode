@@ -3490,6 +3490,8 @@ test('a first visit keeps the old rows (inert, briefly) until the page or the lo
     await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match} if (window.__messageDelay) await new Promise(resolve => setTimeout(resolve, window.__messageDelay));`)) });
   });
   for (const [delay, target] of [[40, 'session-2'], [300, 'session-3']] as const) {
+    // Each launch starts on the newest thread, not the one this loop opened last time.
+    await page.evaluate(() => localStorage.removeItem('pandacode.openThread')).catch(() => undefined);
     await page.reload();
     await expect(page.locator('#transcript .message').first()).toBeVisible();
     const frames = await page.evaluate(({ delay, target }) => new Promise<Array<{ t: number; kind: string }>>(resolve => {

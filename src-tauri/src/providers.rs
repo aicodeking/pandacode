@@ -2967,6 +2967,10 @@ impl ProcessGroup {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .insert(pid);
+            // Stopped by the crash guard if the app dies before it can.
+            if let Err(error) = crate::crash_guard::child_started(pid) {
+                eprintln!("Agent process group {pid}: {error}");
+            }
         }
         Self(pid)
     }
@@ -2980,6 +2984,9 @@ impl Drop for ProcessGroup {
                 .remove(&pid)
             {
                 kill_group(pid);
+                if let Err(error) = crate::crash_guard::child_ended(pid) {
+                    eprintln!("Agent process group {pid}: {error}");
+                }
             }
         }
     }

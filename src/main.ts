@@ -107,6 +107,10 @@ import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFile
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
 import { mountUpdatePill, startAppUpdates } from './app-updates';
+import { heldBackOpened, showCrashRecovery, takeCrashRecovery, tasksChanged } from './crash-recovery';
+import { addToastClose, labelToastShortcut, wireToastKeys } from './toast-keys';
+import { keepToastClear } from './toast-clearance';
+import { NEW_TASK_DRAFT, PersistedDrafts, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
 import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
@@ -165,12 +169,12 @@ const state = {
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
   selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
-  attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
+  attachments: [] as string[], drafts: new PersistedDrafts(localStorage), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
   browserAttachments: new Map<string, BrowserAttachment[]>(),
   moodboardAttachments: new Map<string, { id: string; projectId: string; name: string }[]>(),
   generation: 0, hasOlder: false,
   sharedChannelId: '', sharedChannelDetail: null as SharedChannelDetail | null, sharedChannelRequest: 0,
-  sharedChannelDrafts: new Map<string, string>(), sharedChannelLimits: new Map<string, number>(), sharedChannelFromBottom: null as number | null, sharedChannelScrollTop: 0, sharedChannelAtBottom: true, sharedChannelPosting: new Set<string>(),
+  sharedChannelLimits: new Map<string, number>(), sharedChannelFromBottom: null as number | null, sharedChannelScrollTop: 0, sharedChannelAtBottom: true, sharedChannelPosting: new Set<string>(),
 };
 let renderFrame = 0;
 /** Shows the open thread's scene behind the conversation (set once the sky mounts; `renderTranscript` calls it). */
@@ -649,7 +653,7 @@ const pullView = createPullView({
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
   notify,
 });
-function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; }
+function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); }
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
@@ -1301,30 +1305,49 @@ function refreshModelLabels(): void {
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 /** The toast's Undo, while it shows; ⌘Z runs it too. */
 let toastUndo: (() => void) | undefined, toastGeneration = 0;
-/** A short notice; a function adds Undo, `{ label, run }` one other button that stays a little longer. */
-function notify(text: string, undo?: (() => void) | { label: string; run: () => void }): void {
+/** The thread boot held back (the stuck-thread rule); the crash notice names it. */
+let heldBackThread: Session | undefined, heldBackNotLast = false;
+/** Boot opened no thread by itself in case one caused the crash, and how the window's content died before this page, if it did. */
+let bootOpenedNothing = false, windowDeath: import('./crash-recovery-model').WindowDeath | undefined;
+/** `name`: an accessible name fuller than the label (it should start with it); `keep`: using it leaves the toast showing. */
+type ToastAction = { label: string; run: () => void; name?: string; keep?: boolean; quiet?: boolean };
+/** A short notice; a function adds Undo, `{ label, run }` one other button that stays a little longer,
+ * and a list adds the first as that button and the rest as quieter text buttons after it.
+ * `dismiss` adds a close button (Escape too, with focus in the toast) and runs when the user closes it.
+ * `quiet`: it comes back as it was, unannounced and without its entrance. */
+function notify(text: string, undo?: (() => void) | ToastAction | readonly ToastAction[], holdMs?: number, dismiss?: () => void, quiet = false): void {
   const toast = $('#toast'), generation = ++toastGeneration;
-  const action = typeof undo === 'function' ? undefined : undo;
+  const actions: readonly ToastAction[] = typeof undo === 'function' || !undo ? [] : Array.isArray(undo) ? undo : [undo as ToastAction];
+  const action = actions[0];
+  // `quiet`: shown again after another toast, already announced once.
+  if (quiet) toast.setAttribute('aria-live', 'off'); else toast.removeAttribute('aria-live');
   toast.textContent = text; toastUndo = typeof undo === 'function' ? undo : undefined;
   if (typeof undo === 'function') {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'toast-undo'; button.textContent = 'Undo'; button.setAttribute('aria-keyshortcuts', 'Meta+Z Control+Z');
     button.addEventListener('click', () => { if (toastUndo !== undo) return; toastUndo = undefined; void hideToast(toast); undo(); });
     toast.append(button);
-  } else if (action) {
-    const button = document.createElement('button');
-    button.type = 'button'; button.className = 'toast-action'; button.textContent = action.label;
-    button.addEventListener('click', () => { void hideToast(toast); action.run(); });
-    toast.append(button);
   }
-  showToast(toast);
-  hideToastLater(toast, generation, action ? 9000 : undo ? 5000 : 4500);
+  actions.forEach((item, index) => {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = index || item.quiet ? 'toast-secondary' : 'toast-action'; button.textContent = item.label;
+    if (item.name) button.setAttribute('aria-label', item.name);
+    button.addEventListener('click', () => { if (!item.keep) void hideToast(toast); item.run(); });
+    toast.append(button);
+  });
+  toast.classList.toggle('toast-dismissible', Boolean(dismiss));
+  if (dismiss) addToastClose(toast, () => { toastUndo = undefined; void hideToast(toast); dismiss(); });
+  labelToastShortcut(toast);
+  showToast(toast, quiet);
+  // Infinity: it stays until the user closes it or uses its action.
+  const delay = holdMs ?? (action ? 9000 : typeof undo === 'function' ? 5000 : 4500);
+  if (Number.isFinite(delay)) hideToastLater(toast, generation, delay);
 }
-/** The toast stays while the pointer rests on it, then leaves shortly after. */
+/** The toast stays while the pointer rests on it or a button in it has focus, then leaves shortly after. */
 function hideToastLater(toast: HTMLElement, generation: number, delay: number): void {
   window.setTimeout(() => {
     if (generation !== toastGeneration) return;
-    if (toast.matches(':hover')) { hideToastLater(toast, generation, 1200); return; }
+    if (toast.matches(':hover, :focus-within')) { hideToastLater(toast, generation, 1200); return; }
     toastUndo = undefined; void hideToast(toast);
   }, delay);
 }
@@ -1506,6 +1529,8 @@ function taskSignal(s: Session, now: number): { status: string; statusLabel: str
 }
 function renderNavigation(): void {
   queueMicrotask(() => tiles.refresh());
+  // The crash notice's agents sentence goes once no task is left Interrupted.
+  tasksChanged();
   // Preserve the native drag source while agent updates arrive in the background.
   if (sidebarDragging) return;
   const now = Date.now();
@@ -2813,7 +2838,7 @@ function renderComposer(): void {
     if (menu) { menu.hidden = false; menu.previousElementSibling?.setAttribute('aria-expanded', 'true'); }
     const prompt = document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt');
     const posting = state.sharedChannelPosting.has(state.sharedChannelId);
-    if (prompt) { prompt.value = state.sharedChannelDrafts.get(state.sharedChannelId) ?? ''; prompt.disabled = Boolean(channel?.archived) || !channel?.memberIds.length || posting; }
+    if (prompt) { prompt.value = state.drafts.get(channelDraftKey(state.sharedChannelId)) ?? ''; prompt.disabled = Boolean(channel?.archived) || !channel?.memberIds.length || posting; }
     const send = document.querySelector<HTMLButtonElement>('#shared-channel-composer button[type="submit"]');
     if (send) send.disabled = posting;
     return;
@@ -3392,6 +3417,12 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
   state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
+  // Marked until it has painted, however it is opened: one that takes the app down is held back at the next boot.
+  beginThreadRestore(localStorage, id);
+  // The thread boot kept closed is open now, by the crash notice's button or any other way.
+  // Any thread or New task open: "no thread was opened" is no longer true, and the notice says so.
+  const openedNothing = bootOpenedNothing; bootOpenedNothing = false;
+  if (heldBackThread?.id === id) { heldBackThread = undefined; heldBackOpened(); } else if (openedNothing) tasksChanged();
   const remembered = changingTask ? threadPages.get(id) : undefined;
   state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
   const generation = ++state.generation;
@@ -3409,6 +3440,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   let page: MessagePage, details: Session;
   try { [page, details] = await Promise.all([latestMessagePage(id), call<Session>('get_task', { sessionId: id }), loadTeam(id)]); }
   catch (error) {
+    // A failed load did not take the app down; a later thread's mark stays.
+    finishThreadRestore(localStorage, id);
     if (generation !== state.generation) return;
     // A failed thread load still owns the inspector cleared during the switch.
     run(refreshInspector());
@@ -3416,7 +3449,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
     if (state.messages !== requestedMessages) return;
     state.messagesError = errorText(error); renderTranscript(); renderComposer(); throw error;
   }
-  if (generation !== state.generation) return;
+  // Superseded before it rendered: its mark goes (a later thread's stays).
+  if (generation !== state.generation) { finishThreadRestore(localStorage, id); return; }
   fullTaskDescription = { id, value: details.taskDescription ?? '' };
   const loaded = state.sessions.find(task => task.id === id);
   // A send or completed turn can replace the transcript while this earlier
@@ -3439,15 +3473,19 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   if (changed) stickTranscript();
-  rememberThread(id);
+  // Its messages are rendered: once they have painted too, a crash (in the inspector refresh below,
+  // say) is not this thread's opening. Until then a transcript that kills the app while painting stays marked.
+  rememberThread(id); rememberOpenThread(localStorage, id, details.draft); finishThreadRestoreAfterPaint(localStorage, id);
   if (generation !== state.generation) return;
   await refreshInspector(); renderHeader();
 }
+/** Nothing selected; the next launch opens the newest thread of the current project, not the last one. */
+function clearOpenSession(): void { state.sessionId = ''; rememberOpenThread(localStorage, ''); }
 async function selectProject(id: string): Promise<void> {
   const first = listedSessions().find(s => s.projectId === id && !s.archived);
   if (first) { await selectSession(first.id); return; }
   leaveDraft(''); saveThreadPanel();
-  const generation = ++state.generation; activateProject(id, false); state.sessionId = ''; restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = [];
+  const generation = ++state.generation; activateProject(id, false); clearOpenSession(); restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = [];
   render(); if (generation !== state.generation) return; await refreshInspector();
 }
 /** Every worker change asks for a listing, so at most one runs and one waits. A waiter's listing starts after its call, so `await` still means "at least as new as this call". */
@@ -3469,6 +3507,8 @@ async function loadSessions(): Promise<void> {
   const listedIds = new Set(sessions.map(task => task.id));
   const drafts = state.sessions.filter(task => task.draft && !listedIds.has(task.id)).map(task => task.id === selectedId && details ? details : task);
   state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id));
+  // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
+  state.drafts.reclaimAll();
   scheduleLimitResumes();
   if (details && state.sessionId === selectedId && state.generation === generation && fullTaskDescription === previousDetails) fullTaskDescription = { id: selectedId, value: details.taskDescription ?? '' };
   const selected = session();
@@ -3506,7 +3546,7 @@ function removeDeletedSessions(ids: string[]): void {
   if (removed.has(state.sessionId)) {
     ++state.generation; ++overlayOpenRequest;
     closeMenus(); subagents.close(false); architectView?.close();
-    state.sessionId = ''; state.messages = []; state.messagesLoading = false; state.messagesError = '';
+    clearOpenSession(); state.messages = []; state.messagesLoading = false; state.messagesError = '';
     state.attachments = []; state.hasOlder = false; state.boardPanel = false;
     restoreThreadPanel(); renderInspector();
     render(); run(refreshInspector());
@@ -3514,7 +3554,11 @@ function removeDeletedSessions(ids: string[]): void {
 }
 async function removeProject(id: string): Promise<void> {
   await call('remove_project', { projectId: id });
+  // The listed threads the removal deleted (at most 500, no worker threads); drafts of the rest go
+  // at the next launch (`dropDeletedDrafts`).
   removeDeletedSessions(state.sessions.filter(s => s.projectId === id).map(s => s.id));
+  // Its unsent New task text goes with it.
+  state.drafts.delete(NEW_TASK_DRAFT + id);
   state.projects = await call<Project[]>('list_projects');
   if (state.projectFilter === id) setProjectFilter('');
   if (state.projectId === id) activateProject(userProjects()[0]?.id ?? '');
@@ -3534,7 +3578,7 @@ async function addProject(path: string): Promise<void> {
     notify(`Opened ${added.name}`); return;
   }
   leaveDraft(''); saveThreadPanel();
-  const generation = ++state.generation; activateProject(added.id, false); setProjectFilter(added.id); state.sessionId = ''; restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = []; state.hasOlder = false;
+  const generation = ++state.generation; activateProject(added.id, false); setProjectFilter(added.id); clearOpenSession(); restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = []; state.hasOlder = false;
   closeModal(); render(); if (generation !== state.generation) return; await refreshInspector();
   notify(`Opened ${added.name}`);
 }
@@ -3732,6 +3776,16 @@ function clearComposerDraft(s: Session): void {
   noteCommittedDraft(s, shown ? prompt.value : state.drafts.get(s.id) ?? '');
   if (shown) prompt.value = '';
   state.drafts.delete(s.id);
+}
+/** Settings' Clear saved drafts: every stored draft goes; text in an open composer (the thread's,
+ * a shared channel's) stays on screen and in memory, unstored until its next change. */
+function clearSavedDrafts(): void {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const shown = new Set<string>();
+  if (prompt?.dataset.sessionId && prompt.value) shown.add(prompt.dataset.sessionId);
+  if (state.sharedChannelId && document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt')?.value) shown.add(channelDraftKey(state.sharedChannelId));
+  state.drafts.clearStored(id => shown.has(id));
+  notify('Saved drafts cleared.');
 }
 /** Rejected sends come back before newer draft text, in written order (composer-restore.ts). */
 const committedDrafts = createCommittedDrafts();
@@ -3958,6 +4012,8 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
     const content = entry.text + files.join('') + attachments.contextFor(promptItems) + (context?.text ?? '');
     const sentAt = Date.now();
     task.lastPromptAt = sentAt; task.draft = false; pendingPromptActivity.set(task.id, sentAt);
+    // Published: text typed since the message was queued is the thread's own now, not its project's New task text.
+    state.drafts.reclaim(task.id);
     stream(task.id).lastPromptAt = sentAt; stream(task.id).startedAt = Math.min(stream(task.id).startedAt, sentAt); stream(task.id).status = 'Starting agent'; task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
     sent = sentPrompt(task, content, sentAt);
     if (task.id === state.sessionId) { state.messages = [...state.messages, sent]; render(); } else renderNavigation();
@@ -4225,8 +4281,13 @@ async function sendDraft(): Promise<void> {
   } catch (error) {
     pendingPromptActivity.delete(s.id); if (sent) dropMirrorPrompt(s.id, sent);
     state.streams.delete(s.id); s.status = 'idle';
-    // A rejected first prompt may not have been saved; follow native storage on whether the task is listed.
-    if (wasDraft) void call<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; renderNavigation(); }).catch(() => undefined);
+    // A rejected first prompt may not have been saved: it is a New task again until native storage
+    // says otherwise, so its restored text is kept under its project (an empty draft session is
+    // discarded at the next launch, and text under its id with it).
+    if (wasDraft) {
+      listed.draft = true; state.drafts.reclaim(s.id);
+      void call<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); renderNavigation(); }).catch(() => undefined);
+    }
     restoreComposerDraft(s, draft);
     if (promptItemsConsumed) attachments.restore(s.id, promptItems);
     if (moodboardItemsConsumed && moodboardItems.length) {
@@ -5920,6 +5981,8 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })), activeProject: () => project()?.id ?? '' },
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
+      clearDrafts: clearSavedDrafts,
+      keepDrafts: { get: () => state.drafts.keepsDrafts, set: on => state.drafts.setKeeping(on) },
       embed: {
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
@@ -5958,6 +6021,13 @@ async function showVoiceSettings(): Promise<void> {
     const host = document.querySelector<HTMLElement>('#settings-page:not([hidden]) #voice-settings');
     if (host) (await import('./voice-settings')).focusVoiceSetup(host);
   } finally { if (held && document.activeElement !== page) page.removeAttribute('tabindex'); }
+}
+/** The crash notice's Crash settings: Settings → General, scrolled to Crash recovery with its switch focused. */
+async function showCrashSettings(): Promise<void> {
+  await showSettings('general');
+  const group = document.querySelector<HTMLElement>('#settings-page:not([hidden]) #crash-restart-settings');
+  group?.scrollIntoView({ block: 'nearest' });
+  group?.querySelector<HTMLElement>('#crash-restart-enabled')?.focus({ preventScroll: true });
 }
 function closeSettings(): void {
   settingsView?.dispose(); settingsView = undefined;
@@ -6166,7 +6236,7 @@ async function showBotSettings(botId: string, tab?: import('./bots').Section): P
   try {
     const [{ mountBots }, providers] = await Promise.all([import('./bots'), state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers')]);
     if (!dialog.open || !host.isConnected) return;
-    botsView = mountBots(host, { ...botsOptions(providers), layout: 'settings', initialBot: botId, initialTab: tab, onDeleted: () => run((async () => { closeModal(); await reloadBotProjects(); await reloadSessions(); if (!session()) state.sessionId = ''; render(); })()) });
+    botsView = mountBots(host, { ...botsOptions(providers), layout: 'settings', initialBot: botId, initialTab: tab, onDeleted: () => run((async () => { closeModal(); await reloadBotProjects(); await reloadSessions(); if (!session()) clearOpenSession(); render(); })()) });
   } catch {
     if (dialog.open && host.isConnected) host.innerHTML = '<p role="alert">Unable to open bot settings. Close this window and try again.</p>';
   }
@@ -6175,6 +6245,8 @@ async function showBotSettings(botId: string, tab?: import('./bots').Section): P
  * conversations deliver queued messages natively, so the window never sends them twice. */
 let sidebarBots: import('./bots').Bot[] = [];
 let sidebarChannels: SharedChannelSummary[] = [];
+/** Kept channel drafts have been checked against a loaded channel list this launch. */
+let channelDraftsChecked = false;
 let botProjects = new Set<string>();
 let botProjectsLoad: Promise<void> | undefined;
 const botSwitches = new Map<string, BotActivity[]>();
@@ -6187,7 +6259,11 @@ function ensureBotProjects(): Promise<void> { return botProjectsLoad ??= reloadB
 async function reloadBotProjects(withProjects = true): Promise<void> {
   const [nextBots, nextChannels] = await Promise.all([
     call<import('./bots').Bot[]>('bots_list').catch(() => sidebarBots),
-    call<SharedChannelSummary[]>('bot_shared_channels').catch(() => sidebarChannels),
+    call<SharedChannelSummary[]>('bot_shared_channels').then(channels => {
+      // Kept composer text of channels deleted since; only from a list that loaded (a failure keeps the old one).
+      if (!channelDraftsChecked && Array.isArray(channels)) { channelDraftsChecked = true; dropRemovedChannelDrafts(state.drafts, channels.map(channel => channel.id)); }
+      return channels;
+    }).catch(() => sidebarChannels),
   ]);
   sidebarBots = nextBots;
   sidebarChannels = nextChannels;
@@ -6709,7 +6785,7 @@ async function refreshSharedChannel(channelId = state.sharedChannelId): Promise<
     state.sharedChannelAtBottom = history.scrollHeight - history.clientHeight - history.scrollTop < 32;
   }
   const prompt = document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt');
-  if (prompt && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, prompt.value);
+  if (prompt && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), prompt.value);
   try {
     const detail = await call<SharedChannelDetail>('bot_shared_channel_detail', { channelId, limit: state.sharedChannelLimits.get(channelId) ?? CHANNEL_PAGE });
     if (request !== state.sharedChannelRequest || channelId !== state.sharedChannelId) return;
@@ -6800,7 +6876,7 @@ async function deleteBot(bot: import('./bots').Bot): Promise<void> {
   setBotPinned(bot.id, false);
   notify(`${bot.name} deleted`);
   await reloadBotProjects(); await reloadSessions();
-  if (!session()) state.sessionId = '';
+  if (!session()) clearOpenSession();
   render();
 }
 function confirmBotDelete(name: string): Promise<boolean> {
@@ -7097,7 +7173,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'approval-allow-all': case 'approval-deny-all': { const sessionId = actionTask(element)?.id ?? state.sessionId; for (const id of [...state.streams.get(sessionId)?.approvals.keys() ?? []]) await respondApproval(sessionId, id, name === 'approval-allow-all'); break; }
     case 'approval-group': { const id = actionTask(element)?.id ?? state.sessionId; if (!approvalGroupsOpen.delete(id)) approvalGroupsOpen.add(id); renderApprovalBar(); btwPanel.refresh(); break; }
     case 'approval-details': { const key = (actionTask(element)?.id ?? state.sessionId) + element.dataset.request; if (!approvalDetails.delete(key)) approvalDetails.add(key); renderApprovalBar(); btwPanel.refresh(); break; }
-    case 'suggest': { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = element.dataset.text!; prompt.focus(); } break; }
+    case 'suggest': { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = element.dataset.text!; prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus(); } break; }
   }
 }
 mountExternalLinks(document, url => call('open_external_url', { url }), report);
@@ -7146,7 +7222,7 @@ document.addEventListener('submit', event => {
   if (form.id === 'shared-channel-composer' && state.sharedChannelId) {
     const channelId = state.sharedChannelId, text = String(new FormData(form).get('text') ?? '').trim();
     if (!text) return;
-    state.sharedChannelDrafts.delete(channelId);
+    state.drafts.delete(channelDraftKey(channelId));
     const channel = state.sharedChannelDetail;
     const recipients = (channel?.memberIds ?? []).filter(id => {
       const name = sidebarBots.find(bot => bot.id === id)?.name;
@@ -7156,7 +7232,7 @@ document.addEventListener('submit', event => {
     // A failed post goes back to its own channel's draft, unless something new was typed there.
     run(call('bot_shared_channel_post', { channelId, text, ...(recipients.length ? { recipients } : {}) }).then(() => { state.sharedChannelPosting.delete(channelId); return refreshSharedChannel(channelId); }).catch(error => {
       state.sharedChannelPosting.delete(channelId);
-      if (!state.sharedChannelDrafts.get(channelId)?.trim()) state.sharedChannelDrafts.set(channelId, text);
+      if (!state.drafts.get(channelDraftKey(channelId))?.trim()) state.drafts.set(channelDraftKey(channelId), text);
       notify(error instanceof Error ? error.message : String(error));
       if (channelId === state.sharedChannelId) renderComposer();
     }));
@@ -7188,7 +7264,7 @@ function resizePrompt(): void {
   if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
 }
 window.addEventListener('pandacode-ui-scale-change', resizePrompt);
-document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
+document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') { resizePrompt(); if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value); } if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
 document.addEventListener('scroll', event => {
   if (!state.sharedChannelId) return;
   const history = (event.target as Element | null)?.closest?.('.bc-history') as HTMLElement | null;
@@ -7280,7 +7356,11 @@ if (localStorage.getItem('pandacode.compact') === 'true') document.body.classLis
 // Material file icons arrive in a lazy chunk and have light-theme variants; markup is baked at render time.
 // A full render() here would close open menus mid-click; other icon spots pick the icons up on their next render.
 function refreshFileIcons(): void { if (state.inspector && state.inspectorTab === 'files' && !state.selectedFile) renderInspector(); }
+/** Read before anything else marks this page alive. */
+const windowDied = windowContentDied(localStorage);
 async function boot(): Promise<void> {
+  // Asked first: paused crash restarts skip reopening the last thread.
+  const crashRecovery = takeCrashRecovery();
   await subscribe('agent-event', onAgent);
   await subscribe('provider-models-changed', event => invalidateModels(event.provider));
   await subscribe('architect-event', onArchitect);
@@ -7374,6 +7454,10 @@ async function boot(): Promise<void> {
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
   [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
   projectsListed = true;
+  // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
+  void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
+  // New task text of projects removed some other way than this window's Remove (a failed list throws above).
+  if (Array.isArray(state.projects)) dropRemovedProjectDrafts(state.drafts, state.projects.map(project => project.id));
   run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
@@ -7383,11 +7467,27 @@ async function boot(): Promise<void> {
   scheduleLimitResumes();
   if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');
   const savedProject = localStorage.getItem('pandacode.project');
-  const recent = state.sessions.find(s => !s.archived);
-  activateProject(state.projects.find(p => p.id === savedProject)?.id ?? recent?.projectId ?? state.projects[0]?.id ?? '');
-  const first = state.sessions.find(s => !s.archived && s.projectId === state.projectId);
+  // The thread open at the last exit (clean or a crash) comes back; otherwise the newest one.
+  const recovery = await crashRecovery;
+  const { task: reopened, stuck, stuckNotLast, newTask: lastNewTask, fallback, windowDiedAgain } = threadToReopen(localStorage, state.sessions.filter(s => state.projects.some(p => p.id === s.projectId)), { crashed: Boolean(recovery), paused: recovery?.restartsPaused ?? false, windowDied });
+  windowDeath = windowDiedAgain ? windowDied ? 'again' : 'before' : windowDied ? 'reloaded' : undefined;
+  // A thread whose opening took the app down last time is not opened by itself again.
+  const candidates = state.sessions.filter(s => !s.archived && s.id !== stuck);
+  heldBackThread = stuck ? state.sessions.find(s => s.id === stuck && !s.archived) : undefined;
+  heldBackNotLast = Boolean(stuckNotLast);
+  const recent = candidates[0];
+  // A New task open at exit comes back with its kept text, even when boot holds threads back (it has
+  // no transcript to suspect); otherwise, after repeated crashes, nothing opens by itself.
+  const newTask = lastNewTask ? state.projects.find(p => p.id === savedProject)?.id : undefined;
+  bootOpenedNothing = !fallback && !newTask;
+  activateProject(reopened?.projectId ?? newTask ?? state.projects.find(p => p.id === savedProject)?.id ?? recent?.projectId ?? state.projects[0]?.id ?? '');
+  // A remembered New task whose project is gone (removed elsewhere) falls back like any launch.
+  const first = reopened ?? (fallback && !newTask ? candidates.find(s => s.projectId === state.projectId) : undefined);
+  if (newTask) run(createTask(newTask));
   // selectSession bumps the generation before its first await; a later bump means the user picked a task meanwhile.
   const selecting = first ? selectSession(first.id) : undefined, bootGeneration = state.generation;
+  showCrashNotice();
+  // openThread marks the thread until it has painted and clears the mark when it fails.
   if (selecting) await selecting; else { render(); await refreshInspector(); }
   run(fileIconsReady.then(refreshFileIcons));
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
@@ -7401,10 +7501,34 @@ const agentUpdates = initializeAgentUpdates({
   providersChanged: async () => { await discoverSettingsProviders(); refreshModelLabels(); slashPicker?.refresh(true); },
 });
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
+// A New task's text is kept per project, since its draft session does not outlive the launch.
+state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
+expireDraftsWhileRunning(state.drafts);
 renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
 run(bootPending);
+// After a crash restart, say so once the tasks are listed (boot calls it); a failed boot still gets the notice.
+function showCrashNotice(): void {
+  void showCrashRecovery({
+    notify, toast: $('#toast'), tasks: () => state.sessions, nothingOpened: () => bootOpenedNothing, openThread: id => run(selectSession(id)), openCrashSettings: () => run(showCrashSettings()), windowDied: () => windowDeath, hide: () => void hideToast($('#toast')),
+    // Asked each time the notice is written: a thread deleted or archived since is no longer offered.
+    heldBack: () => {
+      const id = heldBackThread?.id, thread = id && !deletedSessions.has(id) ? state.sessions.find(s => s.id === id && !s.archived) : undefined;
+      return thread && { id: thread.id, title: thread.title, notLast: heldBackNotLast };
+    },
+  });
+}
+// An orderly unload (reload, quit that reaches the page) is never a thread that took the app down.
+// WKWebView may not fire pagehide on Cmd+Q, so a committed quit's native `app-quitting` event does the same.
+const leave = () => leavePage(localStorage);
+window.addEventListener('pagehide', leave);
+void subscribe('app-quitting', leave).catch(error => console.warn('Could not listen for quitting:', error));
+// A page that outlives the native reload budget is stable: an earlier window death is forgotten.
+window.setTimeout(() => windowStable(localStorage), WINDOW_STABLE_AFTER);
+wireToastKeys($('#toast'));
+keepToastClear($('#toast'), $('#composer-area'));
+void bootPending.catch(() => undefined).then(showCrashNotice);
 // The diff engine (module, highlighter workers, themes) starts right after the first paint.
 preloadDiffsAfterPaint();
 if (!preview) initializeNativeAppearance();

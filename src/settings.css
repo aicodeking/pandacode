@@ -108,6 +108,9 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-page-root .settings-switch:checked{background:var(--ds-primary-bg);box-shadow:none}
 .settings-page-root .settings-switch:checked::before{background:var(--ds-primary-fg);box-shadow:none;translate:calc(var(--ds-toggle-w) - var(--ds-toggle-h)) 0}
 .settings-page-root .settings-switch:not(:disabled):active::before{scale:1.12 1}
+/* Not loaded yet (crash-restart-settings.ts): no knob, so it reads as neither on nor off. */
+.settings-page-root .settings-switch[aria-busy="true"]{opacity:.45;cursor:progress}
+.settings-page-root .settings-switch[aria-busy="true"]::before{opacity:0}
 .settings-page-root .settings-switch:disabled{opacity:.45;cursor:not-allowed}
 .settings-page-root .settings-switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 /* Interface size: a small segmented-looking cluster on the track tone. */
@@ -139,6 +142,10 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-provider-details{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 16px;padding:2px var(--ds-row-pad-x) 12px calc(var(--ds-row-pad-x) + 32px - var(--ds-card-pad));font-size:var(--ds-text-meta);line-height:1.55;color:var(--muted)}
 .settings-provider-details code{font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere;white-space:pre-wrap}
 .settings-provider-version{overflow-wrap:anywhere;white-space:pre-wrap}
+.settings-group-note{font-size:var(--ds-text-sub);letter-spacing:var(--ds-row-tracking);line-height:1.3;color:var(--muted)}
+/* Crash recovery: the kept-drafts note with Clear saved drafts beside it. */
+.crash-drafts{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.crash-drafts>.ds-btn{flex:none}
 .settings-preview-note{font-size:var(--ds-text-meta);color:var(--faint);margin:10px var(--ds-row-pad-x) 0}
 .settings-support{margin-top:12px}
 .support-details{padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 10px}
@@ -162,7 +169,7 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 @media(prefers-contrast:more){
   .settings-page-root :is(.settings-group,.colors-card,.schedules-activity)::before,.settings-page-root :is(:is(.settings-group,.colors-card,.schedules-activity),.settings-heading:has(+:is(.settings-group,.colors-card,.schedules-activity)),.settings-heading:has(+*>:is(.settings-group,.colors-card,.schedules-activity):first-child)){border-color:var(--border);box-shadow:none}
   .settings-page-root .settings-switch:not(:checked){box-shadow:inset 0 0 0 1px var(--text)}
-  .settings-page-root .setting-row>div>small,.settings-heading{color:var(--text)}
+  .settings-page-root .setting-row>div>small,.settings-group-note,.settings-heading{color:var(--text)}
   .settings-nav-list [aria-selected="true"]{outline:1px solid var(--text)}
 }
 @media(forced-colors:active){.settings-page-root .settings-switch{border:1px solid CanvasText}.settings-page-root .settings-switch::before{background:CanvasText}}
