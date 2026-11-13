@@ -1,26 +1,55 @@
 // Local-only native companion staging and qualification; never installs or activates packages.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, copyFileSync, writeFileSync, readFileSync, readdirSync, lstatSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export const trustedRuntime = Object.freeze({
+  nodeVersion: 'v26.1.0',
+  nodeSha256: '35ebb74da6acb56fdf570de64f1ae510d6d18ca09da494a3e1ac87edd32d263b',
+  licenseSha256: 'd94dd7496d4de9cd130f1eb6e661e43422483663fd48cf3a450d244b9cda6fdc',
+});
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+/** Local, build-time inputs only. No PATH lookup, download, install script or activation. */
+export function stageTrustedRuntime({ target = `${process.platform}-${process.arch}`, directory = resolve(root, 'src-tauri/target/extension-runtime'), binary = process.env.PANDACODE_EXTENSION_NODE || process.execPath, licensePath = process.env.PANDACODE_EXTENSION_NODE_LICENSE } = {}) {
+  if (!['win32-x64', 'windows-x86_64', 'x86_64-pc-windows-msvc'].includes(target)) return {};
+  if (!licensePath) throw new Error('Windows x64 packaging requires PANDACODE_EXTENSION_NODE_LICENSE: the complete local Node v26.1.0 upstream LICENSE. No runtime will be downloaded.');
+  const verified = (path, expected, max) => {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > max) throw new Error('Trusted runtime input must be a bounded regular file.');
+    const bytes = readFileSync(path);
+    if (hash(bytes) !== expected) throw new Error('Trusted runtime input SHA-256 mismatch. Use the pinned Node v26.1.0 Windows x64 executable and complete LICENSE.');
+    return bytes;
+  };
+  // Validate both inputs before creating or changing the packaging stage.
+  const license = verified(resolve(licensePath), trustedRuntime.licenseSha256, 1024 * 1024);
+  verified(resolve(binary), trustedRuntime.nodeSha256, 150 * 1024 * 1024);
+  mkdirSync(directory, { recursive: true });
+  if (lstatSync(directory).isSymbolicLink()) throw new Error('Refusing a linked runtime stage.');
+  for (const name of ['node.exe', 'LICENSE', 'manifest.json']) {
+    if (existsSync(resolve(directory, name)) && (!lstatSync(resolve(directory, name)).isFile() || lstatSync(resolve(directory, name)).isSymbolicLink())) throw new Error('Refusing a linked runtime resource.');
+  }
+  copyFileSync(resolve(binary), resolve(directory, 'node.exe'));
+  verified(resolve(directory, 'node.exe'), trustedRuntime.nodeSha256, 150 * 1024 * 1024);
+  writeFileSync(resolve(directory, 'LICENSE'), license);
+  writeFileSync(resolve(directory, 'manifest.json'), JSON.stringify({ schemaVersion: 1, target: 'windows-x64', ...trustedRuntime }, null, 2) + '\n');
+  return Object.fromEntries(['node.exe', 'LICENSE', 'manifest.json'].map(name => [resolve(directory, name), `extension-runtime/${name}`]));
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[2] === '--trusted-bundle') {
+  if (process.argv.length !== 3) throw new Error('--trusted-bundle takes local inputs through PANDACODE_EXTENSION_NODE / PANDACODE_EXTENSION_NODE_LICENSE.');
+  console.log(JSON.stringify({ bundle: { resources: stageTrustedRuntime() } }));
+  process.exit(0);
+}
 // New trusted-host staging is independent of (and never retries) the preserved LPAC experiment.
 if (process.argv[2] === '--trusted-stage') {
   const licensePath = process.argv[3];
   if (process.platform !== 'win32' || process.arch !== 'x64' || process.version !== 'v26.1.0' || !licensePath || process.argv.length !== 4) throw new Error('Usage: Node v26.1.0 Windows x64: --trusted-stage <local version-matched Node LICENSE>');
-  const license = readFileSync(resolve(licensePath));
-  // Node's complete upstream LICENSE includes all bundled dependency notices, not just the MIT header.
-  const expectedLicense = 'd94dd7496d4de9cd130f1eb6e661e43422483663fd48cf3a450d244b9cda6fdc';
-  const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-  if (hash(license) !== expectedLicense) throw new Error('Node v26.1.0 complete upstream LICENSE mismatch');
-  if (hash(readFileSync(process.execPath)) !== '35ebb74da6acb56fdf570de64f1ae510d6d18ca09da494a3e1ac87edd32d263b') throw new Error('Node v26.1.0 Windows x64 executable mismatch');
   const directory = resolve(root, '_work/00-tmp/extensibility-trusted-runtime');
-  mkdirSync(directory, { recursive: true });
-  copyFileSync(process.execPath, resolve(directory, 'node.exe'));
-  writeFileSync(resolve(directory, 'LICENSE'), license);
-  writeFileSync(resolve(directory, 'manifest.json'), JSON.stringify({ schemaVersion: 1, target: 'windows-x64', nodeVersion: process.version, nodeSha256: hash(readFileSync(resolve(directory, 'node.exe'))), licenseSha256: hash(license) }, null, 2) + '\n');
-  const resources = Object.fromEntries(['node.exe', 'LICENSE', 'manifest.json'].map(name => [resolve(directory, name), `extension-runtime/${name}`]));
+  const resources = stageTrustedRuntime({ directory, licensePath });
   writeFileSync(resolve(directory, 'tauri-runtime.conf.json'), JSON.stringify({ bundle: { resources } }, null, 2) + '\n');
   console.log(JSON.stringify({ stage: directory, bytes: readFileSync(resolve(directory, 'node.exe')).length, version: process.version, nativeQualification: false, releaseSupport: 'experimental, explicit local packaging only' }));
   process.exit(0);
@@ -72,4 +101,5 @@ if (args.includes('--stage-only')) {
   process.stdout.write('Staged test-owned unsigned binaries and dependency notices; no native qualification executed.\n');
 } else {
   process.stdout.write(command('cargo',['test','--offline','--locked','--manifest-path',manifest,'--features','native-probes',...args,'--','--nocapture','--test-threads=1'],env));
+}
 }

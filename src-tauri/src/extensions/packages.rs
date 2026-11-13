@@ -493,6 +493,7 @@ mod tests {
                 assert_eq!(checked["ok"], true); return json!({"ok":true,"value":null});
             }
             let reply = broker.runtime_call(&snapshot, &store, handle, params.clone());
+            if reply["ok"] == false { eprintln!("TRUSTED_API_FAILURE {}", reply["error"]["code"]); }
             if params["op"] == "subscribe" { assert_eq!(reply["ok"], true); println!("TRUSTED_READY {}", json!({"case":case,"subscriptions":broker.test_counts().1})); }
             reply
         }).await;

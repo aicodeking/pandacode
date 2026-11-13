@@ -73,12 +73,16 @@ pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<At
     let mut stdout = child.stdout.take().ok_or("HostUnavailable")?;
     let mut stderr = child.stderr.take().ok_or("HostUnavailable")?;
     let token = uuid::Uuid::new_v4().to_string();
+    #[cfg(all(test, feature = "extension-runtime-native-tests"))]
+    let mut last_message = "bootstrap";
     let exchange = async {
         write_frame(&mut stdin, &json!({"token":token,"source":source,"context":context}), 300000).await?;
         let mut dialogs = Vec::new();
         for expected in 1..=128 {
             let raw = read_frame(&mut stdout).await?;
             let message: Message = serde_json::from_value(raw).map_err(|_| "InvalidShape")?;
+            #[cfg(all(test, feature = "extension-runtime-native-tests"))]
+            { last_message = match message.method.as_str() { "context" => "context", "dialog" => "dialog", "storage" => "storage", "complete" => "complete", "failed" => "failed", _ => "unsupported" }; }
             if message.schema_version != 1 { return Err("IncompatibleApi"); }
             if message.token != token || message.id != expected { return Err("PermissionDenied"); }
             let reply = match message.method.as_str() {
@@ -110,6 +114,8 @@ pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<At
     let disposed: Result<()> = Ok(());
     let _ = child.start_kill();
     let reaped = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+    #[cfg(all(test, feature = "extension-runtime-native-tests"))]
+    eprintln!("TRUSTED_SUPERVISOR error={:?} last={last_message} terminated={disposed:?} reaped={reaped:?}", result.as_ref().err());
     if disposed.is_err() || !matches!(reaped, Ok(Ok(_))) { return Err("HostUnavailable"); }
     if cancel.load(Ordering::Acquire) { return Err("Cancelled"); }
     result
@@ -161,5 +167,13 @@ mod tests {
             let result = run(&runtime, source, Value::Null, Arc::new(AtomicBool::new(false)), |_, _| panic!("forged request reached adapter")).await;
             assert_eq!(result.unwrap_err(), expected);
         }
+    }
+    #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn packaging_resources_use_the_production_loader_without_checkout_fallback() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/extension-runtime");
+        let runtime = Runtime::packaged(&directory).expect("Stage the default packaging resources with --trusted-bundle before the native feature gate");
+        assert_eq!(runtime.binary, directory.join("node.exe"));
+        assert!(run(&runtime, "exports.activate=()=>{};", Value::Null, Arc::new(AtomicBool::new(false)), |_, _| panic!("No package API call expected")).await.unwrap().is_empty());
     }
 }

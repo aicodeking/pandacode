@@ -5,8 +5,12 @@ Authoring and selected-folder reload: [Trusted extension development and typed S
 ## Current trusted-host decision — Windows x64 only
 
 T24's **experimental Windows x64 local trusted-host slice is verified**: native trust,
-broker, faults, cancellation, OS/library access and preview continuity pass. The broader
-WebKit regression gate is now green after measured decorative-rendering fixes. This is
+broker, faults, cancellation, OS/library access and preview continuity passed in that slice.
+The M5 review's final 192-case cohort now passes in each browser after a measured startup
+scene-ordering repair. A historical native recovery failure remains unexplained and
+installed-target acceptance is still missing. The user accepted the implementation scope
+and residual historical recovery risk; installed/native-platform qualification is deferred
+outside the implementation run until explicitly requested. Neither is marked passed. This is
 **not installed Tauri/WebView2, signing, release or cross-platform acceptance**.
 
 The user-approved executable model is **explicitly trusted code under the normal OS
@@ -161,12 +165,29 @@ Local staging copies the already available exact executable plus a supplied loca
 verifies both pinned hashes, and produces a manifest plus explicit Tauri resource-map
 override under `_work/00-tmp/extensibility-trusted-runtime/`. It never downloads a runtime
 or modifies a global install. Runtime startup verifies the same hashes. Debug checkout
-builds can use that fixed stage. Release builds require explicitly packaged resources;
-default release configuration remains unstaged/unsupported. The override maps **only**
-node.exe, LICENSE and manifest.json, excluding probes, tests and local configuration paths.
+builds can use that fixed stage. Default `npm run package` / `package:fast` and
+`npm run release:build` now stage the pinned local runtime for Windows x64 under
+`src-tauri/target/extension-runtime` and pass its resource map to Tauri. Missing or
+mismatched inputs fail before Tauri; no runtime is downloaded by these commands.
+The release workflow prepares the exact Node version and complete notice at **build
+time only**; its remote execution has not been verified by this local review.
+Other targets remain declarative-only and receive no runtime resource map.
+The map includes **only** node.exe, LICENSE and manifest.json, excluding probes, tests
+and local configuration paths. The existing app notices remain in the merged Tauri config.
+Raw `tauri build` bypasses the project packaging wrapper: use the project commands or
+explicitly pass the verified resource override. Resource staging is not an installed-app
+demonstration and does not change the experimental support or executable-trust decision.
 No release, signing, installed-app update or external publication was performed.
 
 ```powershell
+# Build-only resource preparation; no app launch or installation.
+$env:PANDACODE_EXTENSION_NODE_LICENSE='<local-Node-v26.1.0-complete-LICENSE>'
+# Optional when the build's Node differs: exact local v26.1.0 Windows x64 node.exe.
+$env:PANDACODE_EXTENSION_NODE='<local-node.exe>'
+node scripts/extensions-runtime.mjs --trusted-bundle
+# npm run package, package:fast or release:build use the same staging automatically.
+# The native feature gate verifies both the default packaging stage and the separate
+# historical checkout stage used by broker/SDK fixtures:
 node scripts/extensions-runtime.mjs --trusted-stage <local-Node-v26.1.0-LICENSE>
 cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib extensions:: -- --nocapture
 # Native test cases use the actual app archive/trust/M4 adapters, not the old engine experiment.

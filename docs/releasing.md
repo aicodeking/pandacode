@@ -28,6 +28,20 @@ do not contain the version, so
 always serves the newest build. The Intel Mac build runs natively on
 `macos-15-intel` because `build.mjs` refuses to cross-build.
 
+## Extension runtime build resources
+
+Windows x64 packaging also includes the experimental trusted extension runtime using
+the same verified resource map as `npm run package` / `package:fast`. Local builds need
+`PANDACODE_EXTENSION_NODE_LICENSE` (the complete local Node v26.1.0 upstream LICENSE)
+and optionally `PANDACODE_EXTENSION_NODE` (the exact local Windows x64 executable;
+otherwise the running Node is checked). Both SHA-256 pins must match before Tauri runs.
+The release workflow selects that exact Node version and fetches its complete notice
+at build time; there is no activation-time download or global install. Other targets
+remain declarative-only. See [the runtime contract](extensions/runtime.md#packaging-licenses-alternatives-and-reproducibility).
+Bundling is not installed WebView2/host acceptance. The user accepted M5's implementation
+scope with installed/native-platform qualification deferred outside the implementation run
+until explicitly requested; stable/qualified platform support is not established.
+
 ## Automatic updates
 
 Installed copies update themselves from GitHub Releases with Tauri's updater

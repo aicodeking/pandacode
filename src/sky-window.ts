@@ -20,11 +20,15 @@ export interface SkyOptions {
   expose?: boolean;
   /** Preview only (`?scene=aurora`): every thread shows this scene. */
   pinnedScene?: string | null;
+  /** Paint the CSS fallback until the host has selected/rendered its initial task. */
+  deferWebGL?: boolean;
 }
 export interface SkyController {
   refresh(): void;
   /** The open thread (null: none, which shows the sky). A change crossfades to that thread's scene. */
   setThread(id: string | null): void;
+  /** Start deferred GPU work after the host's first usable paint; idempotent. */
+  startRendering(): void;
   dispose(): void;
 }
 const FADE_MS = 300;
@@ -111,6 +115,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   let scene: Scene = sceneById(options.pinnedScene) ?? sceneFor(null), hadThread = false, fading: Animation | null = null;
   let frame = 0, timer = 0, last = 0, frames = 0, disposed = false, shown = false, visible = true, focused = true;
   let expectedDelay = 0, slowPaints = 0, constrained = false, paintMs = 0, probeFrame = 0;
+  let renderingReady = !options.deferWebGL, startupFrame = 0;
   // Size from the ResizeObserver, so a paint never reads layout.
   let paneWidth = 0, paneHeight = 0;
   // The governor: recent paint times (GPU timer query where the driver has one, else the rAF interval past a 60 Hz frame).
@@ -329,10 +334,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   function refresh(): void {
     if (disposed) return;
     const want = options.wanted() && !lessTransparency.matches;
-    if (want !== shown) {
+    const starting = want && renderingReady && ctx === undefined;
+    if (want !== shown || starting) {
       shown = want;
       layer.hidden = !want;
-      if (want && ctx === undefined) ctx = context(canvas);
+      if (starting) ctx = context(canvas);
       if (want && !paneWidth) { paneWidth = layer.clientWidth; paneHeight = layer.clientHeight; }
       if (want) paint();
     }
@@ -423,9 +429,23 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   return {
     refresh,
     setThread,
+    startRendering(): void {
+      if (disposed || renderingReady || startupFrame) return;
+      // Two frames let the selected task paint before a non-parallel driver can
+      // block on LINK_STATUS. Do not compile the temporary no-task scene at boot.
+      startupFrame = requestAnimationFrame(() => {
+        startupFrame = requestAnimationFrame(() => {
+          startupFrame = 0;
+          if (disposed) return;
+          renderingReady = true;
+          refresh();
+        });
+      });
+    },
     dispose(): void {
       disposed = true;
       stop();
+      if (startupFrame) cancelAnimationFrame(startupFrame);
       if (idle) cancelIdleCallback(idle);
       window.clearTimeout(idleTimer);
       for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.removeEventListener(type, input, { capture: true });

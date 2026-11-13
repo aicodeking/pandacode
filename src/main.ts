@@ -1163,6 +1163,7 @@ mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () =>
 const wallpapers = mountWallpapers($('.workspace'), $('.main-pane'));
 const sky = mountSky($('.main-pane'), $('.workspace'), {
   wanted: () => !wallpapers.preferences.enabled,
+  deferWebGL: true,
   fixedMinutes: preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null,
   expose: preview,
   pinnedScene: preview ? new URLSearchParams(location.search).get('scene') : null,
@@ -7569,7 +7570,7 @@ const agentUpdates = initializeAgentUpdates({
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
-bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
+bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } sky.startRendering(); });
 run(bootPending);
 // The diff engine (module, highlighter workers, themes) starts right after the first paint.
 preloadDiffsAfterPaint();

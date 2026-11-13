@@ -27,7 +27,9 @@ jobs:
           New-Item -ItemType Directory -Force _work/00-tmp | Out-Null
           Invoke-WebRequest https://raw.githubusercontent.com/nodejs/node/v26.1.0/LICENSE -OutFile _work/00-tmp/extensibility-node-LICENSE
           node scripts/extensions-runtime.mjs --trusted-stage _work/00-tmp/extensibility-node-LICENSE
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib extensions:: -- --nocapture
+          $env:PANDACODE_EXTENSION_NODE_LICENSE=(Resolve-Path _work/00-tmp/extensibility-node-LICENSE).Path
+          node scripts/extensions-runtime.mjs --trusted-bundle
+      - run: 'cargo test --locked --manifest-path src-tauri/Cargo.toml --features extension-runtime-native-tests --lib extensions:: -- --nocapture'
       - name: Native fault, cancellation, ordinary-account library and recovery cases
         shell: pwsh
         run: |

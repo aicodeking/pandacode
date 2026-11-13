@@ -121,7 +121,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22', cache: npm }
+        with: { node-version: "${{ matrix.target == 'windows-x86_64' && '26.1.0' || '22' }}", cache: npm }
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           targets: ${{ matrix.triple }}
@@ -132,6 +132,15 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
       - run: npm ci
       - run: npm run test:release
+      - name: Prepare pinned trusted-runtime build input (Windows x64 only)
+        if: matrix.target == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          # Build-time upstream notice only. Staging verifies both complete LICENSE
+          # and setup-node's exact executable hash before Tauri can package them.
+          New-Item -ItemType Directory -Force src-tauri/target/extension-runtime-input | Out-Null
+          Invoke-WebRequest https://raw.githubusercontent.com/nodejs/node/v26.1.0/LICENSE -OutFile src-tauri/target/extension-runtime-input/LICENSE
+          "PANDACODE_EXTENSION_NODE_LICENSE=$((Resolve-Path src-tauri/target/extension-runtime-input/LICENSE).Path)" >> $env:GITHUB_ENV
       - name: Configure Apple signing keychain
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
         run: node scripts/release/ci-apple.mjs

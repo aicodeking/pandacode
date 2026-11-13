@@ -42,8 +42,8 @@ process.stdin.on('data', chunk => {
           return Object.freeze({ dispose: () => commands.delete(id) });
         } }),
         context: Object.freeze({
-          query: params => rpc('context', { ...params, op: 'query' }),
-          subscribe: params => rpc('context', { ...params, op: 'subscribe' }),
+          query: params => rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'query' }),
+          subscribe: params => rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'subscribe' }),
           events: params => rpc('context', { ...params, op: 'events' }),
           unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe' }),
         }),

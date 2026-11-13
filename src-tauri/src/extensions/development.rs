@@ -169,6 +169,46 @@ mod tests {
     }
     #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
     #[tokio::test]
+    async fn sdk_optional_page_limits_use_native_bounded_defaults() {
+        use crate::extensions::{context::ContextBroker, supervisor};
+        use std::sync::{Arc, atomic::AtomicBool};
+        let source = r#"exports.activate=async panda=>{
+            const page=await panda.context.query({resource:'projects'});
+            if(page.items[0]?.id!=='project-1') throw new Error('Wrong captured project');
+            await panda.context.query({resource:'projects',limit:1});
+            try { await panda.context.query({resource:'projects',limit:51}); throw new Error('Unbounded page'); }
+            catch(error) { if(error.message!=='LimitExceeded') throw error; }
+            const stream=await panda.context.subscribe({resource:'jobs',limit:undefined,requestId:'review-defaults'});
+            await panda.context.unsubscribe({subscription:stream.subscription});
+        };"#;
+        let disk = Storage::new(); let packages = disk.packages(false);
+        packages.install(&executable(source)).unwrap();
+        let id = "sample.project-summary";
+        let digest = packages.snapshot().packages[0].executable.as_ref().unwrap().digest.clone();
+        packages.trust(id, &digest, true).unwrap(); packages.enable(id, true).unwrap();
+        let snapshot = packages.snapshot(); let broker = ContextBroker::default();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        store.db.execute("INSERT INTO projects(id,name,path) VALUES ('project-1','orbit','/not-exposed')", []).unwrap();
+        let captured = broker.test_call(&snapshot, &store, json!({"op":"capture","id":"sample.project-summary/header","version":"1.0.0","context":{"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","projectId":"project-1","revision":1}}));
+        let handle = captured["value"]["handle"].as_str().unwrap();
+        for capability in ["projects.summary", "jobs.summary"] {
+            assert_eq!(broker.test_call(&snapshot, &store, json!({"op":"consent","handle":handle,"capability":capability,"allow":true}))["ok"], true);
+        }
+        let (_, _, context) = broker.runtime_binding(&snapshot, handle).unwrap();
+        let runtime = supervisor::Runtime::packaged(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).unwrap();
+        let mut calls = 0;
+        let result = supervisor::run(&runtime, source, context, Arc::new(AtomicBool::new(false)), |method, params| {
+            assert_eq!(method, "context");
+            if params["op"] == "query" || params["op"] == "subscribe" { assert_eq!(params["limit"], [10, 1, 51, 10][calls]); }
+            calls += 1;
+            broker.runtime_call(&snapshot, &store, handle, params)
+        }).await;
+        broker.runtime_release(handle);
+        assert_eq!(broker.test_counts(), (0, 0));
+        assert!(result.unwrap().is_empty()); assert_eq!(calls, 5);
+    }
+    #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
     async fn sdk_example_uses_real_supervised_broker_identically_in_both_modes() {
         use crate::extensions::{context::ContextBroker, supervisor};
         use std::sync::{Arc, atomic::AtomicBool};

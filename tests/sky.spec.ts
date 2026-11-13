@@ -10,6 +10,31 @@ const SCENE_IDS = readdirSync(sceneDir).filter(name => name.endsWith('.ts'))
 const sky = (page: Page) => page.locator('.thread-sky');
 const frames = (page: Page) => page.evaluate(() => (window as any).__sky.frames as number);
 
+for (const reduced of [false, true]) {
+  test(`the sky settles sustained startup pressure after the initial task is ready (${reduced ? 'reduced' : 'ordinary'} motion)`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
+    await page.addInitScript(() => {
+      localStorage.setItem('pandacode.wallpapers', 'false');
+      (window as any).__skyStartup = [];
+      const get = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (kind: string, ...args: any[]): any {
+        if (kind === 'webgl') {
+          const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+          (window as any).__skyStartup.push({ enabled: !!prompt && !prompt.disabled, task: prompt?.dataset.sessionId });
+        }
+        return (get as any).call(this, kind, ...args);
+      } as typeof get;
+    });
+    await page.goto('/?extensions-baseline&sky=12:00');
+    await expect(page.locator('#prompt')).toBeEnabled();
+    await expect.poll(() => page.evaluate(() => (window as any).__skyStartup)).toEqual([{ enabled: true, task: 'session-1' }]);
+    await expect(sky(page)).toHaveAttribute('data-gl');
+    await expect(sky(page)).toHaveAttribute('data-thread-scene', 'alpine');
+    await page.locator('#prompt').fill('Keep the first task ready');
+    await expect(page.locator('#prompt')).toHaveValue('Keep the first task ready');
+  });
+}
+
 async function open(page: Page, time = '12:00', theme: 'light' | 'dark' = 'light', scene = 'sky'): Promise<void> {
   await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
   await page.goto(`/?sky=${time}&scene=${scene}`);
