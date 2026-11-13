@@ -118,6 +118,12 @@ export class TerminalPanel {
   }
   private focus(): void { this.active()?.controller?.focus(); }
   private cancelClose(): void { ++this.epoch; this.dismiss?.(); this.dismiss = undefined; }
+  /** Placement/hide invalidates anchored consent, never the PTY or its running job. */
+  dismissTransient(): void {
+    const focused = document.activeElement?.closest('.terminal-close-popover');
+    this.cancelClose();
+    if (focused) document.querySelector<HTMLElement>('#terminal-toggle')?.focus({ preventScroll: true });
+  }
   async requestClose(anchor: HTMLElement, id = this.group()?.active): Promise<void> {
     const group = this.group(), tab = group?.tabs.find(tab => tab.id === id), key = this.key;
     if (!group || !tab || this.closing.has(tab.id)) return;

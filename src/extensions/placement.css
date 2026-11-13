@@ -1,0 +1,5 @@
+.extension-placement-dock:empty { display: none; }
+.extension-placement-dock { flex: 0 1 auto; min-height: 0; overflow: auto; border-top: 1px solid var(--ds-border); }
+.extension-placement-dock > .terminal-drawer { height: 260px; max-height: 50vh; }
+.extension-placement-dock > .composer-area { padding: 8px; }
+[data-placement-target][data-compatible] { outline: 1px solid var(--focus); }

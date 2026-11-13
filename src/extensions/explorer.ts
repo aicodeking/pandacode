@@ -2,6 +2,8 @@ import { escape } from '../dom';
 import { ui, invokeCoreCommand } from './catalog-host';
 import { extensionsSnapshot, onExtensionsChanged } from './manager';
 import { layout, layoutProject, orderedControls, layoutProposals } from './layout-host';
+import { placements, placementViews, placementContainers, dispatchPlacement, canPlace } from './placement-host';
+import { isImeKey } from '../dom';
 
 /** Read-only metadata plus explicit host user actions; no mutation authority is granted to packages. */
 export function mountSurfaceExplorer(host: HTMLElement): () => void {
@@ -9,6 +11,7 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
   let scope = 'global';
   let owner = '', location = '', cursor: string | undefined, next: string | null = null, error = '';
   let dragging = '';
+  let draggingView = '';
   const orderingGroups = () => {
     const items = []; let cursor: string | undefined;
     do { const page = ui.listItems({ limit: 100, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor ?? undefined; } while (cursor);
@@ -51,7 +54,12 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
       <button type="button" class="secondary-button" data-layout-reset-project ${!layoutProject() ? 'disabled' : ''}>Reset project layout</button>
       <button type="button" class="secondary-button" data-layout-reset-global>Reset global layout</button>
       <button type="button" class="secondary-button" data-layout-disable ${!layout.extensionLayoutsEnabled() ? 'disabled' : ''}>Disable extension layouts</button>
-      <h3>Control order</h3><p>Drag a row or use Alt+Up/Down (or the before/after buttons). Reordering stays within one owner group, including extension inspector tabs. Moving views between containers remains unsupported.</p>
+      <h3>View placement</h3><p>Move existing host views without restarting running work. Drag a view onto a compatible destination, or use its Move to buttons. Extension destinations are host-owned docks beside their inspector view, not extension DOM. Hide is presentation only; restore views here using the Settings keyboard shortcut. Escape still stops an agent when no terminal or transient surface owns it.</p>
+      <ul aria-label="View placement">${placementViews().map(view => `<li draggable="true" tabindex="0" data-placement-view="${escape(view.id)}" aria-label="Move ${escape(view.label)}"><strong>${escape(view.label)}</strong>${placementContainers().filter(container => canPlace(view.id, container.id)).map(container => `<button type="button" class="secondary-button" data-place-view="${escape(view.id)}" data-place-container="${escape(container.id)}">Move ${escape(view.label)} to ${escape(container.label)}</button>`).join('')}<button type="button" class="secondary-button" data-hide-view="${escape(view.id)}">${placements.read(layoutProject())[view.id]?.hidden ? 'Show' : 'Hide'} ${escape(view.label)}</button></li>`).join('')}</ul>
+      <ul aria-label="View destinations">${placementContainers().map(container => `<li tabindex="0" data-placement-target="${escape(container.id)}">${escape(container.label)}</li>`).join('')}</ul>
+      <button type="button" class="secondary-button" data-placement-restore>Restore built-in view placement</button>
+      ${placements.diagnostic() ? `<p role="status">${escape(placements.diagnostic())}</p>` : ''}
+      <h3>Control order</h3><p>Drag a row or use Alt+Up/Down (or the before/after buttons). Reordering stays within one owner group, including extension inspector tabs.</p>
       ${orderingGroups().map(group => `<ul aria-label="Order ${escape(group[0].owner)} ${escape(group[0].location)}">${group.map((item, index) => `<li draggable="true" tabindex="0" data-order-id="${escape(item.id)}" aria-label="Reorder ${escape(item.label)}"><strong>${escape(item.label)}</strong> · ${escape(item.owner)} <button type="button" class="secondary-button" data-order-step="before" data-order-item="${escape(item.id)}" ${index === 0 ? 'disabled' : ''}>Move ${escape(item.label)} before</button> <button type="button" class="secondary-button" data-order-step="after" data-order-item="${escape(item.id)}" ${index === group.length - 1 ? 'disabled' : ''}>Move ${escape(item.label)} after</button></li>`).join('')}</ul>`).join('')}
       <h3>Extension layout proposals</h3><p>Grant UI customization and select a proposal explicitly. No proposal applies on activation alone. User order overrides suggestions; disabling a selected extension restores defaults plus user preferences. Competing proposals never use activation order.</p>
       <ul aria-label="Layout proposals">${layoutProposals().map(proposal => {
@@ -74,6 +82,16 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
   const click = async (event: MouseEvent) => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button') : null;
     if (!button || button.disabled || !host.contains(button)) return;
+    if (button.dataset.placeView || button.dataset.hideView || button.hasAttribute('data-placement-restore')) {
+      try {
+        const project = scope === 'project' ? layoutProject() : undefined;
+        if (button.hasAttribute('data-placement-restore')) placements.restore(placementViews(), project);
+        else if (button.dataset.placeView) dispatchPlacement({ id: button.dataset.placeView, container: button.dataset.placeContainer }, project);
+        else { const id = button.dataset.hideView!; dispatchPlacement({ id, hidden: !placements.read(layoutProject())[id]?.hidden }, project); }
+        error = '';
+      } catch (failure) { error = String(failure); }
+      draw(); host.querySelector<HTMLElement>('[data-placement-restore]')?.focus(); return;
+    }
     if (button.dataset.orderItem) {
       const id = button.dataset.orderItem, side = button.dataset.orderStep as 'before' | 'after';
       const group = orderingGroups().find(group => group.some(item => item.id === id))!;
@@ -109,19 +127,31 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
   const cleanup = onExtensionsChanged(() => { cursor = undefined; draw(); });
   const row = (event: Event) => event.target instanceof Element ? event.target.closest<HTMLElement>('[data-order-id]') : null;
   const keydown = (event: KeyboardEvent) => {
+    if (isImeKey(event)) return;
     const element = row(event); if (!element || !event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
     const id = element.dataset.orderId!, group = orderingGroups().find(group => group.some(item => item.id === id))!;
     const side = event.key === 'ArrowUp' ? 'before' : 'after', target = group[group.findIndex(item => item.id === id) + (side === 'before' ? -1 : 1)];
     if (target) move(id, target.id, side);
   };
-  const dragstart = (event: DragEvent) => { const element = row(event); if (!element || event.defaultPrevented) return; dragging = element.dataset.orderId!; event.dataTransfer?.setData('text/plain', dragging); };
+  const dragstart = (event: DragEvent) => {
+    if (event.defaultPrevented) return;
+    const view = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-placement-view]') : null;
+    if (view) { draggingView = view.dataset.placementView!; host.querySelectorAll<HTMLElement>('[data-placement-target]').forEach(node => node.toggleAttribute('data-compatible', canPlace(draggingView, node.dataset.placementTarget!))); return; }
+    const element = row(event); if (!element) return; dragging = element.dataset.orderId!; event.dataTransfer?.setData('text/plain', dragging);
+  };
   const dragover = (event: DragEvent) => {
+    const destination = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-placement-target]')?.dataset.placementTarget : undefined;
+    if (draggingView && destination && canPlace(draggingView, destination)) { event.preventDefault(); return; }
     const target = row(event)?.dataset.orderId;
     if (target && target !== dragging && orderingGroups().some(group => group.some(item => item.id === dragging) && group.some(item => item.id === target))) event.preventDefault();
   };
-  const drop = (event: DragEvent) => { const element = row(event); if (!element || !dragging) return; event.preventDefault(); const box = element.getBoundingClientRect(); move(dragging, element.dataset.orderId!, event.clientY < box.y + box.height / 2 ? 'before' : 'after'); dragging = ''; };
-  const dragend = () => { dragging = ''; };
+  const drop = (event: DragEvent) => {
+    const destination = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-placement-target]')?.dataset.placementTarget : undefined;
+    if (draggingView && destination) { event.preventDefault(); try { dispatchPlacement({ id: draggingView, container: destination }, scope === 'project' ? layoutProject() : undefined); error = ''; } catch (failure) { error = String(failure); } draggingView = ''; draw(); host.querySelector<HTMLElement>('[data-placement-restore]')?.focus(); return; }
+    const element = row(event); if (!element || !dragging) return; event.preventDefault(); const box = element.getBoundingClientRect(); move(dragging, element.dataset.orderId!, event.clientY < box.y + box.height / 2 ? 'before' : 'after'); dragging = '';
+  };
+  const dragend = () => { dragging = ''; draggingView = ''; host.querySelectorAll('[data-compatible]').forEach(node => node.removeAttribute('data-compatible')); };
   host.addEventListener('change', change); host.addEventListener('click', click); host.addEventListener('keydown', keydown);
   host.addEventListener('dragstart', dragstart); host.addEventListener('dragover', dragover); host.addEventListener('drop', drop); host.addEventListener('dragend', dragend); draw();
   return () => { disposed = true; cleanup(); host.removeEventListener('change', change); host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); host.removeEventListener('dragstart', dragstart); host.removeEventListener('dragover', dragover); host.removeEventListener('drop', drop); host.removeEventListener('dragend', dragend); };

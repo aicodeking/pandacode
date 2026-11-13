@@ -586,6 +586,28 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     renderInspector(); return true;
   });
   registerLayoutContext(() => state.projectId ?? undefined);
+  const { registerPlacementHosts, placements } = await import('./extensions/placement-host');
+  const placementDock = document.createElement('div'); placementDock.className = 'extension-placement-dock'; $('#inspector').append(placementDock);
+  const baseDestinations = [
+    { id: 'panda.containers/main', label: 'Main', node: $('.main-pane'), accepts: ['host-view-v1'] },
+    { id: 'panda.containers/inspector', label: 'Inspector', node: placementDock, accepts: ['host-view-v1'] },
+  ];
+  const placementHost = registerPlacementHosts([
+    { id: 'panda.views/composer', label: 'Composer', node: $('#composer-area') },
+    { id: 'panda.views/terminal', label: 'Terminal', node: $('#terminal-drawer') },
+  ], baseDestinations, () => [...document.querySelectorAll<HTMLElement>('#inspector-toggle, #terminal-toggle, #view-menu')].find(node => node.checkVisibility() && !node.closest('[inert]')) ?? null);
+  // Destination views use host-owned sibling docks, never extension DOM or service ownership.
+  const syncPlacementDestinations = () => placementHost.setDestinations([...baseDestinations, ...extensionInspectorViews.map(entry => ({
+    id: entry.view.id, label: `${entry.view.title} (${entry.owner})`, node: placementDock, accepts: ['host-view-v1'],
+  }))]);
+  extensionContextListeners.add(() => placementHost.refresh());
+  placements.subscribe(() => {
+    closeMenus();
+    terminalPanel.dismissTransient();
+    if (Object.values(placements.read(state.projectId ?? undefined)).some(value => !value.hidden && value.container !== 'panda.containers/main')) {
+      inspectorSuppressed = false; state.inspector = true; renderInspector();
+    }
+  });
   // Do not apply saved overlays until native launch recovery policy has been read.
   let extensionsLayoutSafeMode = true;
   extensionSidebarHidden = () => !extensionsLayoutSafeMode && layout.isHidden('panda.sidebar', state.projectId ?? undefined);
@@ -638,6 +660,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     const focused = document.activeElement instanceof HTMLElement && $('#inspector').contains(document.activeElement) ? document.activeElement : undefined;
     const previous = lastInspectorResolution;
     extensionInspectorViews = registeredInspectorViews(extensionsSnapshot());
+    syncPlacementDestinations();
     if (isExtensionInspectorView(state.inspectorTab) || state.inspectorTab === previous && isExtensionInspectorView(inspectorTabs.selected)) {
       state.inspectorTab = resolveTabs(inspectorTabs, inspectorAvailable()).selected;
     }
@@ -651,6 +674,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   syncExtensionViews();
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
+    placementHost.refresh();
     if (extensionsLayoutSafeMode) document.querySelectorAll<HTMLElement>('[data-layout-hidden]').forEach(element => { element.removeAttribute('data-layout-hidden'); element.inert = false; });
     refreshLayout();
   };

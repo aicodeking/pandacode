@@ -202,7 +202,7 @@ for (const reversed of [false, true]) test.describe(`extensions layout: conflict
   expect(await footerOrder(page)).toEqual(explicit);
   await restored.getByRole('button', { name: 'Disable extension layouts', exact: true }).click();
   expect(await footerOrder(page)).toEqual(explicit);
-  await expect(restored.getByText(/Inspector and general view movement is unsupported/)).toBeVisible();
+   await expect(restored.getByRole('button', { name: 'Move Composer to Inspector', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back to the workspace' }).click();
   expect(await livePrompt!.evaluate(node => node === document.querySelector('#prompt'))).toBe(true);
   await expect(page.locator('#prompt')).toHaveValue('live recovery draft');
