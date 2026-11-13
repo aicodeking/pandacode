@@ -53,3 +53,15 @@ test('invalid or failed image reads keep the fallback and can be retried', async
   assert.equal(await cache.load('retry', async () => { throw Error('unavailable'); }), null);
   assert.equal(await cache.load('retry', async () => image), image);
 });
+
+test('eviction notifies mounted consumers after removing the payload, but never for visible entries', async () => {
+  const pinned = new Set(['sent:a']);
+  const evicted = [];
+  const cache = new ImageCache(bytes('sent:a'), () => pinned, key => { evicted.push(key); assert.equal(cache.get(key), undefined); });
+  await cache.load('sent:a', async () => image);
+  await cache.load('sent:b', async () => image);
+  assert.deepEqual(evicted, ['sent:b']);
+  pinned.clear();
+  await cache.load('sent:c', async () => image);
+  assert.deepEqual(evicted, ['sent:b', 'sent:a']);
+});

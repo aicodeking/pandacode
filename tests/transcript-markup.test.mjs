@@ -23,7 +23,8 @@ const PINNED = {
   'src/turn-card.ts': ['replyHtml', 'timeHtml'],
   'src/transcript-host.ts': ['lastHandoff', 'turnMessages', 'markupShared'],
 };
-const RECORDED = 'caf4fc0165d4850d';
+// userContent leaves image sources to the observer, so cached markup cannot retain evicted payloads.
+const RECORDED = '0475c8a9900db58c';
 
 /** A top-level function's text in `file`, from its declaration to the next top-level statement. */
 function functionText(file, name) {

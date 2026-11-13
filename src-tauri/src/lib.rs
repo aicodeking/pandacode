@@ -1925,6 +1925,7 @@ fn prepare_task_run_in_project(
     let assistant = agent.assistant.clone();
     let last_event = agent.last_event.clone();
     agents.insert(session_id.clone(), agent);
+    providers::retire_unrelated_warm_agents(&session_id, agents.len());
     Ok(PreparedRun {
         config,
         restore_stage: maintenance.then_some(session.task_stage),
@@ -1991,7 +1992,8 @@ fn prepare_cloud_attach(
         team: None,
         team_worker: agent.team_worker,
     };
-    agents.insert(session_id, agent);
+    agents.insert(session_id.clone(), agent);
+    providers::retire_unrelated_warm_agents(&session_id, agents.len());
     Ok(prepared)
 }
 

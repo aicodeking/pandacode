@@ -6,7 +6,7 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
 /** The thread's window: a procedural scene (src/scenes/: the sky, the aurora, …; WebGL fragment shader, CSS gradient
  * fallback) behind the conversation, picked per thread by `setThread` and crossfaded (~300 ms) on a switch.
  * Wind follows the open thread's run (`#transcript[data-running]`), the pointer parts the clouds, and it renders
- * only while visible: 8 fps until rest settles, 30 during the wind ramp, 60 while the pointer moves.
+ * only while visible: 8 fps until rest settles, 4 during steady runs, 30 during the wind ramp, 60 while the pointer moves.
  * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
@@ -30,7 +30,7 @@ export interface SkyController {
 const FADE_MS = 300;
 
 const css = (c: Rgb): string => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
-const IDLE_FPS = 8, WIND_FPS = 30, TILE_FPS = 2, SETTLE_MS = 8000, CLOCK_MS = 3 * 60_000;
+const IDLE_FPS = 8, RUN_FPS = 4, WIND_FPS = 30, TILE_FPS = 2, SETTLE_MS = 8000, CLOCK_MS = 3 * 60_000;
 /** Render scale (of device pixels) and the governor's budget: paint time averaged over SAMPLE frames above BUDGET_MS drops
  * to LOW_SCALE; it goes back up only after QUIET_MS of averages under half the budget. */
 const SCALE = .6, LOW_SCALE = .45, BUDGET_MS = 8, SAMPLE = 30, QUIET_MS = 60_000;
@@ -247,7 +247,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     return windVelocity !== 0 || settling;
   }
   let stirring = false;
-  /** Pointer motion uses rAF; wind ramps use 30 fps, steady runs 8 (tiles 2), and a quiet sky stops. */
+  /** Pointer motion uses rAF; wind ramps use 30 fps, steady runs 4 (tiles 2), and a quiet sky stops. */
   function tick(now: number, due = now): void {
     const onFrame = frame !== 0;
     frame = 0; timer = 0;
@@ -265,7 +265,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // Full frame rate only while the pointer stirs the clouds; the wind alone moves slowly enough for 30.
     if (busy && stirring) frame = requestAnimationFrame(tick);
     else {
-      const delay = 1000 / (busy ? WIND_FPS : options.tileRoot ? TILE_FPS : IDLE_FPS), due = performance.now() + delay;
+      const delay = 1000 / (busy ? WIND_FPS : options.tileRoot ? TILE_FPS : running() ? RUN_FPS : IDLE_FPS), due = performance.now() + delay;
       timer = window.setTimeout(() => tick(performance.now(), due), delay);
     }
   }

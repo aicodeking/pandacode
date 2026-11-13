@@ -23,7 +23,7 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, has_capacity as warm_has_capacity, prewarm as prewarm_agent, supported as warms};
+pub use warm::{retire_unrelated as retire_unrelated_warm_agents, discard as discard_warm_agent, epoch as warm_epoch, has_capacity as warm_has_capacity, prewarm as prewarm_agent, supported as warms};
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
@@ -992,21 +992,22 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout.bytes).trim().to_owned())
 }
 
-fn probe_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
+fn probe_key(path: &Path) -> (PathBuf, std::ffi::OsString) {
+    // Dispatching shims inspect argv[0], so their launch name is part of the identity.
+    (std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned()), path.file_name().unwrap_or_default().to_owned())
 }
 
-/// Resolve aliases before queuing work: GLM and MiMo commonly share Claude's CLI.
-fn probe_versions(paths: &[PathBuf], probe: impl Fn(&Path) -> Option<String> + Sync) -> HashMap<PathBuf, String> {
-    let paths: HashSet<_> = paths.iter().map(|path| probe_path(path)).collect();
+/// Equivalent aliases share a probe, but each probe executes its original launch path.
+fn probe_versions(paths: &[PathBuf], probe: impl Fn(&Path) -> Option<String> + Sync) -> HashMap<(PathBuf, std::ffi::OsString), String> {
+    let paths: HashMap<_, _> = paths.iter().map(|path| (probe_key(path), path)).collect();
     let pending = Mutex::new(paths.into_iter());
     let versions = Mutex::new(HashMap::new());
     std::thread::scope(|scope| {
         for _ in 0..4 {
             scope.spawn(|| loop {
-                let Some(path) = pending.lock().unwrap().next() else { break };
-                let version = probe(&path).unwrap_or_default();
-                versions.lock().unwrap().insert(path, version);
+                let Some((key, path)) = pending.lock().unwrap().next() else { break };
+                let version = probe(path).unwrap_or_default();
+                versions.lock().unwrap().insert(key, version);
             });
         }
     });
@@ -1049,7 +1050,7 @@ pub fn discover() -> Vec<ProviderInfo> {
     let versions = probe_versions(&paths, version);
     for provider in &mut providers {
         if provider.id != "antigravity" {
-            provider.version = provider.path.as_deref().and_then(|path| versions.get(&probe_path(Path::new(path)))).cloned().unwrap_or_default();
+            provider.version = provider.path.as_deref().and_then(|path| versions.get(&probe_key(Path::new(path)))).cloned().unwrap_or_default();
         }
     }
     providers
@@ -4273,7 +4274,8 @@ mod tests {
         for path in &paths {
             std::fs::write(path, "fixture").unwrap();
         }
-        let alias = dir.join("alias");
+        std::fs::create_dir_all(dir.join("aliases")).unwrap();
+        let alias = dir.join("aliases/cli-0");
         std::os::unix::fs::symlink(&paths[0], &alias).unwrap();
         paths.extend([alias, paths[0].clone()]);
         let calls = AtomicUsize::new(0);
@@ -4290,8 +4292,27 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 9);
         assert_eq!(versions.len(), 9);
         assert!((2..=4).contains(&peak.load(Ordering::SeqCst)));
-        assert_eq!(versions[&super::probe_path(&paths[0])], "cli-0");
+        assert_eq!(versions[&super::probe_key(&paths[0])], "cli-0");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_preserves_symlink_names_for_dispatching_shims() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("pandacode-probe-shims-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("shim");
+        std::fs::write(&shim, "#!/bin/sh\nprintf '%s 1.0\\n' \"${0##*/}\"\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let paths: Vec<_> = ["claude", "codex"].iter().map(|name| dir.join(name)).collect();
+        for path in &paths {
+            symlink(&shim, path).unwrap();
+        }
+        let versions = super::probe_versions(&paths, super::version);
+        let answers: Vec<_> = paths.iter().map(|path| versions[&super::probe_key(path)].clone()).collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(answers, ["claude 1.0", "codex 1.0"]);
     }
 
     #[cfg(unix)]

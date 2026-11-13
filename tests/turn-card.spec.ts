@@ -114,6 +114,49 @@ const liveEvent = (page: Page, event: Record<string, unknown>) => page.evaluate(
 }, event);
 const step = (id: string, status: string, output = '') => ({ kind: 'tool', tool: { id, name: 'Bash', status, input: `run ${id}`, output } });
 
+for (const theme of ['light', 'dark'] as const) {
+  test(`long streaming reply keeps full-height elements free of GPU effects (${theme})`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
+    await open(page);
+    const text = Array.from({ length: 500 }, (_, i) => `Paragraph ${i + 1}: A long streaming answer stays readable over the scene while more text arrives.`).join('\n\n');
+    await liveEvent(page, { kind: 'text', text });
+    const live = page.locator('#stream-region .turn-card.is-live');
+    await expect(live.locator('.live-text')).toContainText('Paragraph 500:');
+    await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'sky');
+    const alpha = await live.evaluate(card => {
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.fillStyle = getComputedStyle(card).backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+      return context.getImageData(0, 0, 1, 1).data[3];
+    });
+    expect(alpha).toBe(255);
+    const effects = await live.evaluate(card => [card, ...card.querySelectorAll('*')]
+      .filter(node => node.getBoundingClientRect().height > innerHeight)
+      .map(node => {
+        const style = getComputedStyle(node);
+        return { element: node.className, backdrop: style.backdropFilter || style.getPropertyValue('-webkit-backdrop-filter'), mask: style.maskImage || style.getPropertyValue('-webkit-mask-image') };
+      }));
+    expect(effects.length).toBeGreaterThan(0);
+    for (const effect of effects) {
+      expect(effect.backdrop, `${effect.element} backdrop`).toBe('none');
+      expect(effect.mask, `${effect.element} mask`).toBe('none');
+    }
+    const fade = await live.locator('.live-text').evaluate(node => {
+      const style = getComputedStyle(node, '::after');
+      return { height: parseFloat(style.height), line: parseFloat(getComputedStyle(node).lineHeight) };
+    });
+    expect(fade.height).toBeGreaterThan(0);
+    expect(fade.height).toBeLessThanOrEqual(fade.line + 1);
+    await page.emulateMedia({ contrast: 'more' });
+    expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
+    await page.emulateMedia({ contrast: 'no-preference', forcedColors: 'active' });
+    expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
+    await page.emulateMedia({ forcedColors: 'none', reducedMotion: 'reduce' });
+    await expect(live.locator('.live-text')).toHaveCSS('mask-image', 'none');
+    expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
+  });
+}
+
 test('the reply loads only until the first text, then keeps the latest text, even between steps', async ({ page }) => {
   await open(page);
   const live = page.locator('#stream-region .turn-card.is-live'), skeleton = live.locator('.turn-card-skeleton');

@@ -132,18 +132,22 @@ test('at rest the sky paints at a low frame rate, and reduced motion leaves one 
 });
 
 test('the governor drops the render scale under long paints and restores it after a quiet stretch', async ({ page }) => {
-  await open(page);
+  await freezeClock(page);
+  await host(page);
   const scale = () => page.evaluate(() => (window as any).__sky.scale as number);
   expect(await scale()).toBe(.6);
-  // The wind ramps at 30 fps, then uses 8 fps; the governor also samples those timer paints.
-  await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
+  // The wind ramps at 30 fps, then uses 4 fps; the governor also samples those timer paints.
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
   await page.evaluate(() => { (window as any).__sky.quietMs = 400; (window as any).__sky.forcePaintMs = 20; });
-  await expect.poll(scale, { timeout: 5000 }).toBe(.45);
+  await page.clock.runFor(8000);
+  expect(await scale()).toBe(.45);
   // Still slow: it stays down.
-  await page.waitForTimeout(1500);
+  await page.clock.runFor(1500);
   expect(await scale()).toBe(.45);
   await page.evaluate(() => { (window as any).__sky.forcePaintMs = 1; });
-  await expect.poll(scale, { timeout: 5000 }).toBe(.6);
+  // Two 30-frame sample windows at 4 fps clear any mixed slow/fast window, then recover.
+  await page.clock.runFor(16000);
+  expect(await scale()).toBe(.6);
 });
 
 test('the pointer over the sky stirs the clouds without taking clicks, focus or selection', async ({ page }) => {
@@ -318,7 +322,9 @@ test('a quiet sky settles, refreshes its clock slowly and wakes on input, theme,
   await expect(sky(page)).toHaveAttribute('data-wind', '1');
   const running = await frames(page);
   await page.clock.runFor(2000);
-  expect((await frames(page)) - running).toBeLessThanOrEqual(18);
+  const paints = (await frames(page)) - running;
+  expect(paints).toBeGreaterThanOrEqual(7);
+  expect(paints).toBeLessThanOrEqual(9);
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
 });
 

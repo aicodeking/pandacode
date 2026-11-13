@@ -30,12 +30,12 @@ interface Entry {
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
+  near: boolean; refresh: boolean; scroll?: { top: number; left: number };
   viewer?: DiffViewerController; slot?: HTMLElement; shown?: string;
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
 }
 
-const EAGER = 8;
 const REFETCH_GAP = 1_000;
 // Added to each diff's shadow root (by the viewer, also for hunk groups that mount later): long lines scroll with a visible bar; wrapped code may break anywhere (so indentation never
 // sits alone on a row), and hunk headers are one slim muted line.
@@ -111,9 +111,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   const observer = new IntersectionObserver(records => {
     for (const record of records) {
-      if (!record.isIntersecting) continue;
       const entry = entries.get((record.target as HTMLElement).dataset.path ?? '');
-      if (entry && entry.load === 'idle') void load(entry);
+      if (!entry) continue;
+      entry.near = record.isIntersecting;
+      if (entry.near) show(entry);
     }
   }, { root: body, rootMargin: '800px 0px' });
   const resizer = new ResizeObserver(() => scheduleFit());
@@ -216,6 +217,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function drop(entry: Entry): void {
+    const content = entry.slot?.querySelector<HTMLElement>('.diff-viewer-content');
+    if (content) entry.scroll = { top: content.scrollTop, left: content.scrollLeft };
     entry.viewer?.dispose();
     for (const old of entry.stale.splice(0)) old.viewer.dispose();
     entry.viewer = entry.slot = entry.shown = undefined;
@@ -251,7 +254,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     if (!quiet) entry.load = 'loading';
     try {
       const text = await deps.loadDiff(entry.path, entry.staged);
-      if (disposed || token !== entry.token) return;
+      if (disposed || entries.get(entry.path) !== entry || token !== entry.token) return;
       if (quiet && entry.load === 'loaded' && text === entry.raw) { mountViewer(entry); return; }
       entry.raw = text;
       const truncated = TRUNCATED.test(text);
@@ -271,11 +274,11 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   /** Mounts the patch, or swaps in a new viewer once it has rendered so the old one never flashes away. */
   function mountViewer(entry: Entry): void {
-    if (entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
+    if (entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
     const token = entry.token, raw = entry.raw;
     viewerModule ??= import('./diff-viewer');
     viewerModule.then(({ mountDiffViewer }) => {
-      if (disposed || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
+      if (disposed || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
       const slot = document.createElement('div');
       slot.className = 'cv-diff';
       if (entry.viewer && entry.slot) {
@@ -289,13 +292,18 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         if (disposed || entry.viewer !== viewer) return;
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
+        const content = slot.querySelector<HTMLElement>('.diff-viewer-content');
+        if (content && entry.scroll) { content.scrollTop = entry.scroll.top; content.scrollLeft = entry.scroll.left; }
       });
     }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
   }
 
   function refetch(): void {
     lastRefetch = Date.now();
-    for (const entry of entries.values()) if (entry.load === 'loaded' || entry.load === 'error') void load(entry, true);
+    for (const entry of entries.values()) if (entry.load === 'loaded' || entry.load === 'error') {
+      entry.refresh = true;
+      show(entry);
+    }
   }
   function scheduleRefetch(): void {
     const wait = lastRefetch + REFETCH_GAP - Date.now();
@@ -344,7 +352,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       let entry = entries.get(file.path);
       if (!entry) {
         const el = element(file.path);
-        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
+        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
         entries.set(file.path, entry);
         observer.observe(el);
         fresh.push(entry);
@@ -353,7 +361,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         entry.staged = staged;
         const wasLoaded = entry.load !== 'idle';
         reset(entry);
-        if (wasLoaded) void load(entry);
+        if (wasLoaded) show(entry);
       }
       const side = staged ? file.index : (file.index === '?' ? '?' : file.working);
       paint(entry, side);
@@ -362,15 +370,26 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       previous = entry.el;
     });
     order = wanted.map(w => w.file.path);
-    // The first few patches load right away; the rest load as they near the viewport.
-    for (const entry of fresh) if (order.indexOf(entry.path) < EAGER && entry.load === 'idle') void load(entry);
     if (fresh.length) scheduleFit();
+  }
+
+  /** Hidden panels and folded files keep patch text, but never start the diff engine. */
+  function show(entry: Entry): void {
+    if (!entry.near || collapsed.has(entry.path)) return;
+    if (entry.load === 'idle' || entry.refresh) {
+      entry.refresh = false;
+      void load(entry, entry.load === 'loaded');
+    } else mountViewer(entry);
   }
 
   function toggle(path: string, folded = !collapsed.has(path)): void {
     if (folded) collapsed.add(path); else collapsed.delete(path);
     const entry = entries.get(path);
-    if (entry) paint(entry, entry.code);
+    if (entry) {
+      paint(entry, entry.code);
+      if (folded) { drop(entry); entry.body.replaceChildren(); }
+      else show(entry);
+    }
   }
 
   async function run(task: Promise<void>, failure: string): Promise<void> {

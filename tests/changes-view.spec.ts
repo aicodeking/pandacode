@@ -67,15 +67,15 @@ test('stacks every changed file with totals, pills and inline diffs', async ({ p
   await page.screenshot({ path: 'test-results/changes-view.png', clip: { x: 0, y: 0, width: 470, height: 700 } });
 });
 
-test('loads the first eight eagerly and the rest near the viewport', async ({ page }) => {
+test('loads patches only as files near the viewport', async ({ page }) => {
   const files = Array.from({ length: 60 }, (_, i) => ({ path: `src/f${String(i).padStart(2, '0')}.ts`, index: ' ', working: 'M' }));
   const diffs = Object.fromEntries(files.map(f => [f.path, patch(f.path, 30, 0)]));
   await mount(page, files, diffs);
   await expect(page.locator('.cv-file')).toHaveCount(60);
-  await expect.poll(async () => (await loads(page)).length).toBeGreaterThanOrEqual(8);
+  await expect.poll(async () => (await loads(page)).length).toBeGreaterThan(0);
   const early = await loads(page);
   expect(early.length).toBeLessThan(60);
-  expect(early.slice(0, 8)).toEqual(files.slice(0, 8).map(f => `${f.path}:false`));
+  expect(early).toEqual(files.slice(0, early.length).map(f => `${f.path}:false`));
   await page.locator('.cv-file[data-path="src/f59.ts"]').scrollIntoViewIfNeeded();
   await expect.poll(async () => (await loads(page)).includes('src/f59.ts:false')).toBe(true);
 });
@@ -272,4 +272,103 @@ test('diff workers start on demand, survive mounted idle and restart after dispo
   await mountViewer();
   await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
   expect(await page.evaluate(() => (window as any).__diffWorkers.started)).toBe(4);
+});
+
+test('hidden Changes views do not fetch patches or start diff workers', async ({ page }) => {
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  await page.evaluate(() => { document.querySelector<HTMLElement>('#host')!.hidden = true; });
+  await page.evaluate(({ files, diffs }) => {
+    const h = (window as any).harness;
+    Object.assign(h.diffs, diffs); h.mount();
+    h.view.update({ branch: 'main', isRepo: true, files });
+  }, { files: FILES, diffs: DIFFS });
+  await page.waitForTimeout(200);
+  expect(await loads(page)).toEqual([]);
+  expect(await page.evaluate(() => performance.getEntriesByType('resource').some(e => /diff-viewer|worker\.js/.test(e.name)))).toBe(false);
+  await page.evaluate(() => { document.querySelector<HTMLElement>('#host')!.hidden = false; });
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(5, { timeout: 15_000 });
+});
+
+test('collapsed diffs dispose their viewers and reopen cached patches without fetching', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    (window as any).__stopped = 0;
+    window.Worker = class extends NativeWorker {
+      terminate() { (window as any).__stopped++; super.terminate(); }
+    };
+  });
+  await mount(page, FILES, DIFFS);
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(5, { timeout: 15_000 });
+  const before = await loads(page);
+  await page.clock.install();
+  await page.getByRole('button', { name: 'Collapse all', exact: true }).click();
+  await expect(page.locator('.diff-viewer')).toHaveCount(0);
+  await page.clock.fastForward(301_000);
+  await expect.poll(() => page.evaluate(() => (window as any).__stopped)).toBe(2);
+  await page.clock.resume();
+  await page.getByRole('button', { name: 'Expand all', exact: true }).click();
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(5, { timeout: 15_000 });
+  expect(await loads(page)).toEqual(before);
+});
+
+test('fallback viewers do not pin the diff engine', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    (window as any).__stopped = 0;
+    window.Worker = class extends NativeWorker {
+      terminate() { (window as any).__stopped++; super.terminate(); }
+    };
+  });
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  await page.evaluate(async patch => {
+    const modulePath = '/src/diff-viewer.ts';
+    const { mountDiffViewer } = await import(/* @vite-ignore */ modulePath);
+    const host = document.querySelector('#host');
+    const active = mountDiffViewer(host, { patch, path: 'a.ts' });
+    await active.ready;
+    for (const input of [{ patch: '', binary: true }, { patch, error: 'Unavailable' }, { patch: 'x'.repeat(2_000_001) }, { patch: 'malformed' }]) {
+      const fallback = document.createElement('div'); document.body.append(fallback);
+      await mountDiffViewer(fallback, input).ready;
+    }
+    (window as any).__active = active;
+  }, patch('a.ts', 2, 1));
+  await page.clock.install();
+  await page.evaluate(() => (window as any).__active.dispose());
+  await page.clock.fastForward(301_000);
+  await expect.poll(() => page.evaluate(() => (window as any).__stopped)).toBe(2);
+});
+
+test('folding during a pending patch load never mounts a hidden diff', async ({ page }) => {
+  const files = [{ path: 'a.ts', index: ' ', working: 'M' }];
+  await mount(page, files, { 'a.ts': patch('a.ts', 2, 1) }, { hold: true });
+  await expect.poll(async () => (await loads(page)).length).toBe(1);
+  await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+  await page.evaluate(async () => {
+    const h = (window as any).harness; h.pending.get('a.ts')();
+    await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+  });
+  await expect(page.locator('.cv-stat')).toHaveText('+2-1');
+  await expect(page.locator('.diff-viewer')).toHaveCount(0);
+  expect(await page.evaluate(() => performance.getEntriesByType('resource').some(e => /diff-viewer|worker\.js/.test(e.name)))).toBe(false);
+  await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  expect(await loads(page)).toEqual(['a.ts:false']);
+});
+
+test('collapsed files defer refresh until expanded and then show the current patch', async ({ page }) => {
+  await mount(page, [{ path: 'a.ts', index: ' ', working: 'M' }], { 'a.ts': patch('a.ts', 2, 1) });
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+  await page.evaluate(text => {
+    const h = (window as any).harness; h.diffs['a.ts'] = text;
+    h.view.update({ ...h.status }, undefined, { refetch: true });
+  }, patch('a.ts', 7, 1));
+  expect(await loads(page)).toEqual(['a.ts:false']);
+  await expect(page.locator('.diff-viewer')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+  await expect(page.locator('.cv-stat')).toHaveText('+7-1');
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  expect(await loads(page)).toEqual(['a.ts:false', 'a.ts:false']);
 });

@@ -5,10 +5,12 @@ export class ImageCache {
   private bytes = 0;
   private budget: number;
   private pinned: () => ReadonlySet<string>;
+  private evicted: (key: string) => void;
 
-  constructor(budget = 32 * 1024 * 1024, pinned: () => ReadonlySet<string> = () => new Set()) {
+  constructor(budget = 32 * 1024 * 1024, pinned: () => ReadonlySet<string> = () => new Set(), evicted: (key: string) => void = () => {}) {
     this.budget = budget;
     this.pinned = pinned;
+    this.evicted = evicted;
   }
 
   get(key: string): string | null | undefined {
@@ -42,6 +44,7 @@ export class ImageCache {
       if (pinned.has(key)) continue;
       this.entries.delete(key);
       this.bytes -= 2 * (key.length + (image?.length ?? 0));
+      this.evicted(key);
     }
   }
 }

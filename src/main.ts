@@ -500,7 +500,10 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
 async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
+  // Council can start from the first painted thread while CLI discovery is still running.
+  if (providerDiscovery) await providerDiscovery;
   const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, loadModels)]);
+  if (!catalog.length) throw new Error('No installed models are available. Open Settings to check your agents.');
   const limits = base ?? library?.lastSetup?.config;
   return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
 }
@@ -590,6 +593,18 @@ let sidebarDragging = false, orderingBusy = false;
 let projectsListed = false;
 /** Startup still running: a New task pressed now waits for it, or it would find no projects and boot would then select another thread over it. */
 let bootPending: Promise<void> | undefined;
+let providerDiscovery: Promise<void> | undefined;
+/** Keep startup waits visible without blocking thread navigation or cancelling a queued New task. */
+function syncStartupActions(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.sidebar-actions [data-action="new-task"], .sidebar-actions [data-action="new-chat"]')) {
+    const label = button.querySelector('span');
+    if (!label) continue;
+    button.dataset.readyLabel ??= label.textContent ?? '';
+    const text = bootPending ? 'Loading agents…' : button.dataset.readyLabel;
+    if (label.textContent !== text) label.textContent = text;
+    button.setAttribute('aria-busy', String(Boolean(bootPending)));
+  }
+}
 let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
 const collapsedSections = readCollapsed(localStorage, COLLAPSED_SECTIONS_KEY);
 /** Settled lists its newest rows first, then pages in more on request. */
@@ -1726,6 +1741,7 @@ function taskSignal(s: Session, now: number): { status: string; statusLabel: str
   return { status, statusLabel, word };
 }
 function renderNavigation(): void {
+  syncStartupActions();
   queueMicrotask(() => tiles.refresh());
   // The crash notice's agents sentence goes once no task is left Interrupted.
   tasksChanged();
@@ -2642,10 +2658,7 @@ function userContent(content: string, messageId: number): string {
   const { typed, blocks, wake } = contextBlocks(content);
   const items = parseAttachments(blocks);
   const thumbnails = new Map<string, string | null>();
-  for (const item of items) if (item.kind === 'image' && item.imageId) {
-    void loadSentImage(item.imageId);
-    thumbnails.set(item.imageId, imageCache.get('sent:' + item.imageId) ?? null);
-  }
+  // Sources are applied to mounted images only, so markup caches never retain data URLs.
   const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
   return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, thumbnails) + details;
 }
@@ -2656,14 +2669,48 @@ const imageCache = new ImageCache(32 * 1024 * 1024, () => new Set(
     const rect = (image.hidden ? image.parentElement! : image).getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
   }).map(image => 'sent:' + image.dataset.promptImage),
-));
-new MutationObserver(() => imageCache.trim()).observe(document.body, { childList: true, subtree: true });
+), key => {
+  if (!key.startsWith('sent:')) return;
+  turnInputs.bump();
+  for (const image of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(key.slice(5))}"]`)) {
+    // Keep the chip's geometry while releasing both its data URL and decoded pixels.
+    const rect = image.getBoundingClientRect();
+    if (rect.width && rect.height) { image.width = Math.round(rect.width); image.height = Math.round(rect.height); }
+    image.removeAttribute('src');
+  }
+});
+// Observe the chip: an image with no payload is hidden until its first successful load.
+const sentImageObserver = new IntersectionObserver(records => {
+  for (const record of records) if (record.isIntersecting) {
+    for (const image of record.target.querySelectorAll<HTMLImageElement>('img[data-prompt-image]')) {
+      if (!image.hasAttribute('src')) void loadSentImage(image.dataset.promptImage!);
+    }
+  }
+});
+new MutationObserver(records => {
+  for (const record of records) for (const removed of record.removedNodes) if (removed instanceof Element && !removed.isConnected) {
+    // IntersectionObserver holds targets strongly; detached transcript rows must be released.
+    for (const chip of [removed, ...removed.querySelectorAll('.prompt-chip-image')]) {
+      sentImageObserver.unobserve(chip);
+    }
+  }
+  for (const record of records) for (const added of record.addedNodes) if (added instanceof Element && added.isConnected) {
+    const images = added.matches('img[data-prompt-image]') ? [added] : added.querySelectorAll('img[data-prompt-image]');
+    for (const image of images) {
+      const target = image.parentElement!;
+      // A reused chip may contain a newly rendered img; request its current intersection again.
+      sentImageObserver.unobserve(target); sentImageObserver.observe(target);
+    }
+  }
+  imageCache.trim();
+}).observe(document.body, { childList: true, subtree: true });
 document.addEventListener('scroll', () => imageCache.trim(), { capture: true, passive: true });
 function loadSentImage(id: string): Promise<string | null> {
   const previous = imageCache.get('sent:' + id);
   return imageCache.load('sent:' + id, () => call<string | null>('prompt_image', { id })).then(url => {
-    if (url && url !== previous) turnInputs.bump();
-    if (url) for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(id)}"]`)) {
+    const retained = imageCache.get('sent:' + id) === url;
+    if (url && retained && url !== previous) turnInputs.bump();
+    if (url && retained) for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(id)}"]`)) {
       img.src = url; img.hidden = false;
       if (img.nextElementSibling?.matches('svg.icon')) img.nextElementSibling.remove();
     }
@@ -6313,7 +6360,9 @@ function createTask(projectId = state.projectId): Promise<void> {
   return run;
 }
 async function startTask(projectId: string): Promise<void> {
+  const generation = state.generation;
   if (bootPending) await bootPending.catch(() => undefined);
+  if (generation !== state.generation) return;
   if (creatingTask) return;
   const projects = state.projects.filter(p => !isChatProject(p));
   const active = projects.find(p => p.id === projectId)
@@ -6321,7 +6370,6 @@ async function startTask(projectId: string): Promise<void> {
   if (!active) { notify('Open a project to start a task.'); return; }
   closeModelPicker();
   closeProjectPicker();
-  const generation = state.generation;
   const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
     ?? state.providers.find(p => p.installed) ?? state.providers[0];
   if (!harness) { notify('Open Settings to check your installed agents.'); return; }
@@ -6344,9 +6392,10 @@ async function startTask(projectId: string): Promise<void> {
 /** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
  *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
 async function createChat(from?: Session): Promise<void> {
-  if (creatingTask) return;
-  closeModelPicker(); closeProjectPicker();
   const generation = state.generation;
+  if (bootPending) await bootPending.catch(() => undefined);
+  if (generation !== state.generation || creatingTask) return;
+  closeModelPicker(); closeProjectPicker();
   // A chat nobody has written in yet is reopened, as New task reopens its draft.
   const unused = from ? undefined : state.sessions.find(task => chatTask(task) && task.lastPromptAt == null && !task.resumeId && !task.archived && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
   if (unused) {
@@ -8287,13 +8336,13 @@ async function boot(): Promise<void> {
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
   // CLI version probes must not hold the task list, thread or composer behind discovery.
   const providerGeneration = settingsDiscoveryGeneration;
-  const providersReady = call<Provider[]>('list_providers').then(providers => {
+  const providersReady = providerDiscovery = call<Provider[]>('list_providers').then(providers => {
     if (providerGeneration !== settingsDiscoveryGeneration) return;
     state.providers = providers;
     render(); refreshModelLabels(); slashPicker?.refresh(true);
     if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
   });
-  run(providersReady);
+  run(providersReady.finally(() => { providerDiscovery = undefined; }));
   [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
   projectsListed = true;
   // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
@@ -8350,7 +8399,8 @@ state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id ===
 expireDraftsWhileRunning(state.drafts);
 renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
-bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
+bootPending = boot().finally(() => { bootPending = undefined; syncStartupActions(); if (!projectsListed) { projectsListed = true; render(); } });
+syncStartupActions();
 run(bootPending);
 // After a crash restart, say so once the tasks are listed (boot calls it); a failed boot still gets the notice.
 function showCrashNotice(): void {

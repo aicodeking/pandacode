@@ -3,13 +3,15 @@
 //! when everything on its command line and in its tool catalog still matches; otherwise it
 //! is discarded and the turn starts cold as before.
 use super::*;
-use std::sync::LazyLock;
+use std::sync::{atomic::{AtomicU64, Ordering}, LazyLock};
 
 /// A warm agent waits at most this long for its follow-up.
 const IDLE: Duration = Duration::from_secs(90);
 /// Each one holds an idle CLI process, so only the most recent tasks keep one.
 const LIMIT: usize = 1;
 static PREPARING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Invalidates preparation that was in flight when concurrent admission retired spares.
+static RETIREMENTS: AtomicU64 = AtomicU64::new(0);
 
 pub fn has_capacity(running: usize) -> bool {
     running < 2
@@ -128,6 +130,15 @@ pub fn discard(session_id: &str) {
     spares().remove(session_id);
 }
 
+/// Called under the agents lock after admission; a matching spare is still adoptable.
+pub fn retire_unrelated(session_id: &str, running: usize) {
+    if !has_capacity(running) {
+        let mut spares = spares();
+        RETIREMENTS.fetch_add(1, Ordering::SeqCst);
+        spares.retain(|task, _| task == session_id);
+    }
+}
+
 /// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
 /// placeholder server answers the agent's startup listing and is rebound on adoption.
 pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, can_start: impl Fn() -> bool) -> Result<(), String> {
@@ -140,6 +151,7 @@ pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashS
 }
 
 async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, can_start: impl Fn() -> bool) -> Result<(), String> {
+    let retirement = RETIREMENTS.load(Ordering::SeqCst);
     if !supported(&config) || !can_start() {
         return Ok(());
     }
@@ -196,19 +208,18 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     if !can_start() || epoch(&config.session_id) != launch {
         return Ok(());
     }
-    // Retire the old spare before spawning, so replacement never doubles the idle CLIs.
-    make_room(&mut spares());
-    let child = command.spawn().map_err(|e| format!("Could not start Claude Code: {e}"))?;
-    let group = ProcessGroup::register(child.id());
     let born = std::time::Instant::now();
     let session_id = config.session_id.clone();
     {
         let mut spares = spares();
-        // The next turn already started (a team review, a queued message): this spare would
-        // carry an outdated conversation. Dropping it kills its process.
-        if epoch(&session_id) != launch {
+        // Admission and publication share this lock, so no in-flight spare survives retirement.
+        if epoch(&session_id) != launch || RETIREMENTS.load(Ordering::SeqCst) != retirement {
             return Ok(());
         }
+        // Retire the old spare before spawning, so replacement never doubles the idle CLIs.
+        make_room(&mut spares);
+        let child = command.spawn().map_err(|e| format!("Could not start Claude Code: {e}"))?;
+        let group = ProcessGroup::register(child.id());
         spares.insert(session_id.clone(), Spare { key, child, group, server, born });
     }
     tokio::spawn(async move {
@@ -261,6 +272,53 @@ mod tests {
         assert!(spares.is_empty(), "no old CLI survives to overlap its replacement");
         let config = crate::providers::tests::config("claude");
         prewarm(config, vec![], HashSet::new(), 0, || has_capacity(2)).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admission_retires_unrelated_warm_process_trees_under_load() {
+        use tokio::io::AsyncBufReadExt;
+        let store = crate::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let owner = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let others: Vec<_> = (0..5).map(|_| store.create_session(&project.id, "claude", "sonnet", "ask").unwrap()).collect();
+        let state = crate::AppState {
+            store: Arc::new(Mutex::new(store)), agents: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Default::default(), shutdown: std::sync::atomic::AtomicU8::new(0),
+        };
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & echo $!; wait"]).stdout(Stdio::piped()).kill_on_drop(true).process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let descendant: i32 = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines().next_line().await.unwrap().unwrap().parse().unwrap();
+        spares().insert(owner.id.clone(), Spare {
+            key: "same".into(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(),
+        });
+        let mut waiting_after_admission = Vec::new();
+        for task in &others {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            crate::prepare_task_run(&state, task.id.clone(), Some("hello".into()), vec![], tx, Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
+            waiting_after_admission.push(waiting(&owner.id));
+        }
+        // Clean up even when the regression assertion fails.
+        discard(&owner.id);
+        let mut command = Command::new("sleep");
+        command.arg("30").kill_on_drop(true).process_group(0);
+        let child = command.spawn().unwrap();
+        let group = ProcessGroup::register(child.id());
+        spares().insert(owner.id.clone(), Spare { key: "same".into(), child, group, server: None, born: std::time::Instant::now() });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::prepare_task_run(&state, owner.id.clone(), Some("hello".into()), vec![], tx, Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
+        let adopted = take(&owner.id, "same");
+        assert!(adopted.is_some(), "the admitted task keeps its own spare under load");
+        drop(adopted);
+        assert_eq!(waiting_after_admission, [true, false, false, false, false]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (unsafe { libc::kill(pid as i32, 0) } == 0 || unsafe { libc::kill(descendant, 0) } == 0) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1, "the warm CLI is reaped");
+        assert_eq!(unsafe { libc::kill(descendant, 0) }, -1, "its descendant is retired too");
     }
 
     #[test]

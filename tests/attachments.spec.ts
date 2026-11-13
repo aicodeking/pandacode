@@ -344,3 +344,33 @@ test('attachments stay with their task while you switch tasks', async ({ page })
   await expect(chips(page)).toHaveCount(1);
   await expect(chips(page).first()).toContainText('orbit-design/');
 });
+
+test('sent image eviction clears offscreen sources and reloads them on intersection without shifting layout', async ({ page }) => {
+  // Use a small budget so real, valid PNG payloads exercise eviction without a huge fixture.
+  await page.route('**/src/main.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace('new ImageCache(32 * 1024 * 1024,', 'new ImageCache(1,') });
+  });
+  await probe(page, `if (command === 'prompt_image') return 'data:image/png;base64,${PNG}';`);
+  await prompt(page).fill(SENT);
+  await prompt(page).press('Enter');
+  const image = page.locator('img[data-prompt-image]').last();
+  await expect(image).toHaveAttribute('src', /^data:image/);
+  await expect.poll(() => image.evaluate(img => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  const size = await image.boundingBox();
+  const before = (await calls(page, 'prompt_image')).length;
+  await page.evaluate(() => {
+    const image = document.querySelector<HTMLImageElement>('img[data-prompt-image]')!;
+    const spacer = document.createElement('div'); spacer.style.height = '2000px';
+    image.closest('.user-message')!.before(spacer);
+    document.querySelector('#transcript')!.scrollTop = 0;
+    document.dispatchEvent(new Event('scroll'));
+  });
+  await expect(image).not.toHaveAttribute('src', /.+/);
+  const evictedSize = await image.boundingBox();
+  expect(evictedSize!.width).toBeCloseTo(size!.width, 0);
+  expect(evictedSize!.height).toBeCloseTo(size!.height, 0);
+  await image.scrollIntoViewIfNeeded();
+  await expect(image).toHaveAttribute('src', /^data:image/);
+  await expect.poll(async () => (await calls(page, 'prompt_image')).length).toBeGreaterThan(before);
+});

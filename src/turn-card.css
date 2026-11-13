@@ -75,9 +75,12 @@ html[data-theme="dark"] .turn-card-more{color:color-mix(in srgb,var(--accent) 70
 .turn-card-reply.is-live .turn-card-reply-content{min-height:66px}
 .turn-card-reply-content:has(>.live-message:not([hidden]))>.turn-card-skeleton,.turn-card[data-done] .turn-card-skeleton{display:none}
 .turn-card[data-done]>.turn-card-reply:not(:has(.live-message:not([hidden]))){display:none}
-/* Streaming: the newest line rests a little dim and comes up as the reply grows past it (no re-animation of older text). */
+/* Streaming: tint only the newest line. Masking .live-text itself promotes the entire growing reply to a
+ * composited layer; this pointer-transparent overlay stays one line high, even in a very long reply. */
 @media(prefers-reduced-motion:no-preference){
-  .turn-card:not([data-done])>.turn-card-reply .live-text{-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 1.6em),rgb(0 0 0 / .4));mask-image:linear-gradient(to bottom,#000 calc(100% - 1.6em),rgb(0 0 0 / .4))}
+  .turn-card:not([data-done])>.turn-card-reply .live-text{position:relative}
+  .turn-card:not([data-done])>.turn-card-reply .live-text::after{content:"";position:absolute;inset:auto 0 0;height:1.6em;pointer-events:none;
+    background:var(--bg);opacity:.6;-webkit-mask-image:linear-gradient(transparent,#000);mask-image:linear-gradient(transparent,#000)}
 }
 
 /* ---------- Errors and footer ---------- */
@@ -103,20 +106,18 @@ html .turn-changes.turn-card-foot{display:flex;flex-direction:row;align-items:ce
 .turn-card-foot>.turn-changes-run{flex:none;min-height:32px;margin-right:2px;border-radius:var(--ds-radius-control);background:transparent;color:var(--ds-success)}
 .turn-card-foot>.turn-changes-run:hover{background:var(--ds-row-hover)}
 
-/* ---------- Over a scene (sky or wallpaper): the card itself is a dense glass, not the text behind it ---------- */
-html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:color-mix(in srgb,var(--bg) 92%,transparent);
-  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25);text-shadow:none}
+/* ---------- Over a scene: solid cards keep the same inset surfaces without a reply-sized backdrop layer. ---------- */
+html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{--ds-card:color-mix(in srgb,var(--text) 3%,var(--bg));background:var(--ds-card);text-shadow:none}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .icon{filter:none}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card :is(.message,.turn-activity,.turn-activity-summary,.message-content){background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;text-shadow:none}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .turn-activity-summary:hover{background:var(--ds-row-hover)}
 
-@media(prefers-reduced-transparency:reduce){
-  html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
-}
 @media(prefers-contrast:more){
   .turn-card,.turn-card>.turn-card-reply{border-color:var(--border);box-shadow:none}
-  html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
   .turn-card-time{color:var(--muted)}
+}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more),(forced-colors:active){
+  .turn-card .live-text::after{content:none}
 }
 @media(forced-colors:active){.turn-card,.turn-card>.turn-card-reply{border:1px solid CanvasText}.turn-card-skeleton>i{background:GrayText}.turn-card-more{color:LinkText}
   /* System colours carry no fade: the clamped reply's last line and the streaming line stay at full ink. */

@@ -194,9 +194,7 @@ export function preloadDiffViewer(): Promise<unknown> {
 /** Read-only, bounded diff rendering. Replacing a viewer cancels its old mount. */
 export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): DiffViewerController {
   mountedViewers.get(host)?.dispose();
-  clearTimeout(engineIdleTimer);
-  activeViewers++;
-  let disposed = false;
+  let disposed = false, usesEngine = false;
   let renderers: { view: FileDiff; header: boolean; file: FileDiffMetadata }[] = [];
   let pool: WorkerPoolManager | undefined;
   let rerenderFrame = 0, primeFrame = 0, settleTimer = 0, scrolling = false, viewHeight = 0;
@@ -329,6 +327,8 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   function showFallback(message: string, showPatch = true): void {
     if (disposed) return;
     cleanRenderers();
+    if (usesEngine) { usesEngine = false; releaseEngine(); }
+    pool = undefined;
     resizeObserver?.disconnect();
     themeObserver?.disconnect();
     content.replaceChildren();
@@ -423,6 +423,9 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
       ? 'This patch was shortened when recorded. Showing the available plain text patch.'
       : 'Unable to format this diff. Showing the recorded patch.');
     try {
+      clearTimeout(engineIdleTimer);
+      activeViewers++;
+      usesEngine = true;
       const loaded = await preloadDiffViewer() as Engine;
       if (disposed) return;
       const { lib } = loaded;
@@ -532,13 +535,14 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     dispose() {
       if (disposed) return;
       disposed = true;
-      releaseEngine();
       listeners.abort();
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
       cancelAnimationFrame(resizeFrame);
       if (virtualizer) keepFirstScreen(true);
       cleanRenderers();
+      if (usesEngine) { usesEngine = false; releaseEngine(); }
+      pool = undefined;
       root.remove();
       if (mountedViewers.get(host) === controller) mountedViewers.delete(host);
     },
