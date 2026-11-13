@@ -123,7 +123,7 @@ export function takeAddSkillRequest(): AddSkillRequest | null {
 
 const HARNESS_NAMES: Readonly<Record<string, string>> = {
   claude: 'Claude Code', codex: 'Codex', kimi: 'Kimi Code', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity',
-  grok: 'Grok Build', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo Code',
+  grok: 'Grok Build', mimo: 'MiMo', alibaba: 'Alibaba', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo Code',
   omp: 'Oh My Pi', 'github-copilot': 'GitHub Copilot', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes',
 };
 export const harnessName = (id: string): string => HARNESS_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);

@@ -1,4 +1,6 @@
 import { reducedMotion, springEasing, type Spring } from './motion';
+import { isImeKey } from './dom';
+import { dismissPinnedTip } from './tooltip';
 
 /* The floating action dock (`#action-dock`): the workspace header's actions as one vertical glass
  * pill at the conversation's right edge, centred between the header and the composer (a row in the
@@ -400,6 +402,7 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
     clearTimeout(openTimer); clearTimeout(closeTimer);
     const inside = flyout.contains(document.activeElement) || (document.activeElement === document.body && focusedInside);
     pinned = false;
+    dismissPinnedTip(flyout);
     for (const source of sources()) if (source.isOpen) source.close(false);
     flyout.hidden = true; item.setAttribute('aria-expanded', 'false');
     if (inside && !item.hidden) item.focus({ preventScroll: true });
@@ -448,7 +451,9 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
   });
   // Before the panels' own Escape handlers, and only when no dialog or other menu is above it.
   addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || !isOpen() || event.defaultPrevented) return;
+    if (event.key !== 'Escape' || !isOpen() || event.defaultPrevented || isImeKey(event)) return;
+    // A pinned info tip inside the flyout takes the first Escape; the next one closes the flyout.
+    if (dismissPinnedTip()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if ([...document.querySelectorAll('dialog[open], .floating-menu:not([aria-hidden="true"])')].some(other => !flyout.contains(other))) return;
     event.preventDefault(); event.stopImmediatePropagation();
     const focused = pinned || flyout.contains(document.activeElement) || document.activeElement === item;

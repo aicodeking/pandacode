@@ -34,6 +34,7 @@ impl ModelSelection {
             "antigravity",
             "grok",
             "mimo",
+            "alibaba",
             "pi",
             "deepseek",
             "commandcode",

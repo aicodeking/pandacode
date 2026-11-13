@@ -404,7 +404,7 @@ fn known_provider(provider: &str) -> bool {
             | "glm"
             | "antigravity"
             | "grok"
-            | "mimo"
+            | "mimo" | "alibaba"
             | "pi"
             | "deepseek"
             | "commandcode" | "cline" | "kilo"

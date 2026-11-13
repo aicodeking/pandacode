@@ -520,7 +520,7 @@ fn inventory_honours_injected_claude_home_for_skills_and_plugins() {
     };
     let items = inventory(&f.0.join("home"), None, None, &Prefs::default(), &homes);
     let custom = items.iter().find(|s| s.name == "custom").unwrap();
-    for harness in ["claude", "glm", "mimo"] {
+    for harness in ["claude", "glm", "mimo", "alibaba"] {
         assert!(custom.agents.iter().any(|a| a.harness == harness
             && a.scope == "user"
             && a.path == "$CLAUDE_CONFIG_DIR/skills/custom"));

@@ -57,7 +57,7 @@ fn invocations(
             continue;
         }
         let key = match harness.as_str() {
-            "claude" | "glm" | "mimo" => "CLAUDE_CONFIG_DIR",
+            "claude" | "glm" | "mimo" | "alibaba" => "CLAUDE_CONFIG_DIR",
             // skills 1.7.6 treats OpenCode as universal, so XDG cannot redirect its
             // destination. Link its canonical installs to the exact account roots below.
             "devin" => "XDG_CONFIG_HOME",

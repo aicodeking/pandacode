@@ -481,19 +481,24 @@ fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandB
     {
         cmd.env(key, value);
     }
-    if matches!(context.provider, "claude" | "glm" | "mimo") {
+    if matches!(context.provider, "claude" | "glm" | "mimo" | "alibaba") {
         cmd.env_remove("CLAUDECODE");
     }
-    if matches!(context.provider, "glm" | "mimo") {
+    if matches!(context.provider, "glm" | "mimo" | "alibaba") {
         let (arguments, environment) = if context.provider == "glm" {
             (
                 crate::providers::glm_arguments(),
                 crate::providers::glm_environment()?,
             )
-        } else {
+        } else if context.provider == "mimo" {
             (
                 crate::providers::mimo_arguments()?,
                 crate::providers::mimo_environment()?,
+            )
+        } else {
+            (
+                crate::providers::alibaba_arguments(),
+                crate::providers::alibaba_environment()?,
             )
         };
         cmd.args(arguments);
@@ -502,6 +507,7 @@ fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandB
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ZAI_API_KEY",
             "MIMO_API_KEY",
+            "ALIBABA_TOKEN_PLAN_API_KEY",
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_USE_VERTEX",
             "CLAUDE_CODE_USE_FOUNDRY",
@@ -576,7 +582,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             }
         }
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "alibaba" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -616,7 +622,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
         args.push(
             match provider {
                 "codex" | "muse" => "resume",
-                "claude" | "glm" | "mimo" | "grok" | "devin" | "hermes" => "--resume",
+                "claude" | "glm" | "mimo" | "alibaba" | "grok" | "devin" | "hermes" => "--resume",
                 "cline" => "--id",
                 _ => "--session",
             }
@@ -647,7 +653,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 args.push("--approve-for-me".into());
             }
         }
-        "claude" | "glm" | "mimo" => {
+        "claude" | "glm" | "mimo" | "alibaba" => {
             let mode = match context.mode {
                 "plan" => "plan",
                 "full" => "bypassPermissions",
@@ -743,6 +749,8 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
         args.extend(["--model".into(), "glm-5.3".into()]);
     } else if provider == "mimo" {
         args.extend(["--model".into(), "mimo-v2.6-pro".into()]);
+    } else if provider == "alibaba" {
+        args.extend(["--model".into(), "qwen3.8-max".into()]);
     }
     if let Some(effort) = context.reasoning_effort {
         crate::providers::validate_reasoning_effort(provider, Some(effort))?;
@@ -751,7 +759,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 "--config".into(),
                 format!("model_reasoning_effort=\"{effort}\""),
             ]),
-            "claude" | "glm" | "mimo" => args.extend(["--effort".into(), effort.into()]),
+            "claude" | "glm" | "mimo" | "alibaba" => args.extend(["--effort".into(), effort.into()]),
             "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
             "pi" | "omp" | "cline" => args.extend(["--thinking".into(), effort.into()]),
             "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
@@ -1225,7 +1233,7 @@ mod tests {
     #[test]
     fn skill_manager_console_enforces_claude_family_and_uses_advisory_channels() {
         let disabled = BTreeSet::from(["writer:edit".into()]);
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             let context = HarnessContext {
                 session_id: "fixture",
                 provider,
@@ -1636,7 +1644,7 @@ mod tests {
         .unwrap();
         assert_eq!(mimo, ["--permission-mode", "acceptEdits", "--model", "mimo-v2.6-pro"]);
         // Approve for me is Claude Code's auto mode, as in task runs.
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             let review = harness_arguments(&HarnessContext { provider, mode: "review", ..context }).unwrap();
             assert!(review.windows(2).any(|args| args == ["--permission-mode", "auto"]), "{provider}");
         }

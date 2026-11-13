@@ -34,7 +34,7 @@ Full access maps to the following supported native mechanisms:
 | OpenCode | Process-local `permission: { "*": "allow" }` for the selected built-in agent and matching ACP approvals |
 | Antigravity | Accepts the offered ACP one-time tool permission; the server's own policy remains authoritative |
 | Devin CLI | Its ACP `bypass` session mode; a request that still arrives (organization policy) is answered `allow_once`, never a standing grant. Implementing a plan always asks |
-| ZCode | Its `yolo` session mode, set per run; a permission request that still arrives is answered with the offered `allow` response, never a standing grant |
+| ZCode | Its `yolo` session mode, set per run; a permission request that still arrives is answered with the offered one-time allow. A request that offers only a lasting allow (such as `allow_project`) is never answered automatically: it asks a person, and a team worker declines it with a plain deny |
 
 Antigravity has no universal ACP setting that can disable server-side sandboxing
 or managed restrictions. PandaCode does not invent one. Structured questions still

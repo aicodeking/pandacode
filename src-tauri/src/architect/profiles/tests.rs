@@ -149,6 +149,7 @@ fn new_user_tasks_default_to_full_without_overriding_requested_modes_or_saved_ta
             "antigravity",
             "grok",
             "mimo",
+            "alibaba",
             "pi",
             "deepseek",
             "cline",

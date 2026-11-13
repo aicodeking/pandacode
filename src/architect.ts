@@ -16,7 +16,7 @@ import { attachToolImages } from './tool-image-viewer';
 import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamConfig, type TeamSnapshot, type TeamWorker, type ModelSelection, type TeamLibrary, type TeamSetup } from './architect-types';
 import { resetTime } from './usage-limit';
 import { mountTeamProfiles } from './team-profiles';
-import { infoMark } from './tooltip';
+import { dismissPinnedTip, infoMark } from './tooltip';
 import { workerQueueReason } from './worker-scheduling';
 import { Subagents } from './subagents';
 import { WorkerList, approvalLabel, effortLabel, markScrollRegions, requestHtml, workerActive, workerState, workerWord } from './architect-worker-list';
@@ -253,6 +253,9 @@ const dismissAccess = (taskId: string): void => { try { sessionStorage.setItem(a
 const teamCut = (team: TeamSnapshot & { truncated?: boolean; workersTruncated?: boolean }) =>
   Boolean(team.truncated || team.workersTruncated || team.workers.some(worker => (worker as { filesTruncated?: boolean }).filesTruncated));
 
+/** The full-access note's detail: the tip of its leading info mark (hover, focus, or pinned by a click or tap) and
+ *  that mark's accessible description, so the note stays one line. */
+const ACCESS_EXCEPTION = "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.";
 /** The selected worker is painted per frame. Background workers keep bounded data only. */
 export class ArchitectView {
   readonly host = document.createElement('div');
@@ -380,11 +383,16 @@ export class ArchitectView {
     if (!this.team || this.panel) return;
     this.childAgents?.setTask('', false);
     const panel = document.createElement('section'); panel.className = 'architect-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Workers');
-    panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><span class="sr-only architect-panel-live" aria-live="polite"></span><div class="architect-panel-tally" hidden><span class="architect-panel-tally-text"></span><span class="sr-only architect-panel-tally-readable"></span><span class="architect-panel-tally-measure" aria-hidden="true" inert></span><span class="architect-progress" role="progressbar" aria-label="Workers done" aria-valuemin="0"><span class="architect-progress-fill"></span></span></div><p class="architect-panel-tally-hidden" id="architect-tally-hidden" hidden></p><p class="architect-panel-access" title="Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead." hidden><span class="architect-panel-access-icon" data-state-tone="worker-idle" aria-hidden="true">${icon('unlock')}</span><span class="architect-panel-access-text">Workers have full access; approvals are automatic.<span class="sr-only"> Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.</span></span><button type="button" class="icon-button architect-panel-access-dismiss" aria-label="Dismiss the full-access note" title="Dismiss">${icon('close')}</button></p><div class="architect-panel-scroll"><div class="council-slot"></div><div class="architect-worker-list" aria-label="Workers" aria-describedby="architect-workers-hint"></div><p class="architect-worker-keyhint" aria-hidden="true">→ details · Enter opens</p><span class="sr-only" id="architect-workers-hint">Up and down arrows move between workers; Home and End jump to the first and last. Right arrow shows details, left arrow hides them, Enter opens the transcript.</span><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div>`;
+    panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><span class="sr-only architect-panel-live" aria-live="polite"></span><div class="architect-panel-tally" hidden><span class="architect-panel-tally-text"></span><span class="sr-only architect-panel-tally-readable"></span><span class="architect-panel-tally-measure" aria-hidden="true" inert></span><span class="architect-progress" role="progressbar" aria-label="Workers done" aria-valuemin="0"><span class="architect-progress-fill"></span></span></div><p class="architect-panel-tally-hidden" id="architect-tally-hidden" hidden></p><p class="architect-panel-access" hidden>${infoMark(ACCESS_EXCEPTION, 'Deploy and scheduling exception', false, true)}<span class="architect-panel-access-text">Workers have full access; approvals are automatic.</span><button type="button" class="icon-button architect-panel-access-dismiss" aria-label="Dismiss the full-access note" title="Dismiss">${icon('close')}</button></p><div class="architect-panel-scroll"><div class="council-slot"></div><div class="architect-worker-list" aria-label="Workers" aria-describedby="architect-workers-hint"></div><p class="architect-worker-keyhint" aria-hidden="true"><span>↑↓ move</span> · <span>→ shows details</span> · <span>← hides</span> · <span>Enter opens</span></p><span class="sr-only" id="architect-workers-hint">Up and down arrows move between workers; Home and End jump to the first and last. Right arrow shows details, left arrow hides them, Enter opens the transcript.</span><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div>`;
     this.panel = panel; this.host.append(panel);
     // Tool rows in a worker's history name that worker's files: thumbnails are stamped with the worker shown when
     // they render, load near the viewport and open the viewer instead of toggling the row.
     this.releaseImages = attachToolImages(panel.querySelector<HTMLElement>('.architect-worker-detail')!, () => this.worker()?.sessionId ?? '');
+    // The transcript's sticky header covers the scroller's top: scroll padding of its height keeps a control focused
+    // there in view below it (WCAG 2.4.11).
+    const scroller = panel.querySelector<HTMLElement>('.architect-panel-scroll')!, meta = panel.querySelector<HTMLElement>('.architect-worker-meta')!;
+    const metaSize = new ResizeObserver(() => scroller.style.setProperty('--architect-meta-h', `${meta.offsetHeight}px`)); metaSize.observe(meta);
+    const releaseImages = this.releaseImages; this.releaseImages = () => { releaseImages(); metaSize.disconnect(); };
     const assist = document.createElement('button'); assist.type = 'button'; assist.className = 'architect-assist';
     assist.addEventListener('click', () => {
       const worker = this.worker(), target = worker?.sessionId ?? this.taskId;
@@ -408,7 +416,12 @@ export class ArchitectView {
     panel.querySelector('.architect-close')!.addEventListener('click', () => this.closeAndReturn());
     // The full-access note can be dismissed for this team (remembered for the session) to save a line.
     panel.querySelector('.architect-panel-access-dismiss')!.addEventListener('click', () => {
-      dismissAccess(this.taskId); this.paint(); panel.querySelector<HTMLElement>('.architect-close')!.focus();
+      dismissAccess(this.taskId); this.paint();
+      // Focus goes on to the worker list's Tab stop (its roving row, never a council row above it), else the list's
+      // first control, else Close.
+      const visible = (selector: string) => [...panel.querySelectorAll<HTMLElement>(selector)].find(element => element.offsetParent);
+      const next = visible('.architect-worker-list .architect-worker-row[tabindex="0"]') ?? visible('.architect-panel-scroll button');
+      (next ?? panel.querySelector<HTMLElement>('.architect-close')!).focus();
     });
     panel.querySelector('.architect-back')!.addEventListener('click', () => {
       const from = this.selected;
@@ -463,7 +476,7 @@ export class ArchitectView {
     const back = this.returnFocus, inside = Boolean(this.panel?.contains(document.activeElement));
     this.returnFocus = undefined;
     if (back?.isConnected && inside) queueMicrotask(() => { if (back.isConnected) back.focus({ preventScroll: true }); });
-    this.releaseImages?.(); this.releaseImages = undefined; this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.list?.dispose(); this.list = undefined; this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
+    this.releaseImages?.(); this.releaseImages = undefined; this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) { dismissPinnedTip(this.panel); hidePopover(this.panel); } this.panel = undefined; this.selected = ''; this.list?.dispose(); this.list = undefined; this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
   private async control(action: string): Promise<void> {
     if (this.busy || !this.team) return;
     this.busy = true; this.paint();
@@ -526,7 +539,7 @@ export class ArchitectView {
     // Worded without picker labels, which differ by harness (Codex calls Plan "Read only").
     // One line at the default 400px panel (the tooltip adds the deploy and scheduling exception).
     const accessLine = leadMode === 'plan' ? 'Workers can edit files, though this lead is read-only.'
-      : leadMode === 'ask' ? 'Workers have full access; you approve only this lead.' : 'Workers have full access; approvals are automatic.';
+      : leadMode === 'ask' ? 'Workers have full access; only the lead needs approval.' : 'Workers have full access; approvals are automatic.';
     const accessText = access.querySelector('.architect-panel-access-text')!.firstChild!;
     if (accessText.textContent !== accessLine) accessText.textContent = accessLine;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
@@ -548,7 +561,7 @@ export class ArchitectView {
       if (meta.dataset.head !== head) { meta.innerHTML = head; meta.dataset.head = head; }
       const queue = meta.querySelector<HTMLElement>('.architect-worker-queue')!, error = meta.querySelector<HTMLElement>('.architect-worker-error')!;
       if (queue.textContent !== (queueReason ?? '')) { queue.textContent = queueReason ?? ''; queue.dataset.tip = queueReason ?? ''; }
-      if (error.textContent !== (worker.error ?? '')) error.textContent = worker.error ?? '';
+      if (error.textContent !== (worker.error ?? '')) { error.textContent = worker.error ?? ''; error.title = worker.error ?? ''; }
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
       panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? 'Read only · no writes' : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : 'Write scope: shared checkout';
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;

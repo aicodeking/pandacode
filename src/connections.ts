@@ -22,7 +22,7 @@ interface EnvRow { name: string; value: string; secret: boolean; saved: boolean;
 
 export const emptyConnections = (): ConnectionSnapshot => ({ connections: [], tasks: {} });
 /** The folder variable each harness reads; others set theirs under Environment. */
-const CONFIG_DIR: Partial<Record<ProviderId, string>> = { claude: 'CLAUDE_CONFIG_DIR', glm: 'CLAUDE_CONFIG_DIR', mimo: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME', pi: 'PI_CODING_AGENT_DIR', opencode: 'OPENCODE_CONFIG_DIR', kilo: 'KILO_CONFIG_DIR' };
+const CONFIG_DIR: Partial<Record<ProviderId, string>> = { claude: 'CLAUDE_CONFIG_DIR', glm: 'CLAUDE_CONFIG_DIR', mimo: 'CLAUDE_CONFIG_DIR', alibaba: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME', pi: 'PI_CODING_AGENT_DIR', opencode: 'OPENCODE_CONFIG_DIR', kilo: 'KILO_CONFIG_DIR' };
 
 /** Harnesses whose accounts can form a pool (`account_pool.rs`). */
 const POOLED: ProviderId[] = ['claude', 'codex'];

@@ -47,6 +47,7 @@ mod devin;
 pub(crate) mod hermes;
 mod glm;
 mod mimo;
+mod alibaba;
 mod muse;
 mod deepseek;
 mod kimi_models;
@@ -97,7 +98,7 @@ const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 19] = [
+pub(crate) const PROVIDERS: [(&str, &str); 20] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -106,6 +107,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 19] = [
     ("antigravity", "Antigravity"),
     ("grok", "Grok Build"),
     ("mimo", "MiMo Token Plan"),
+    ("alibaba", "Alibaba Token Plan"),
     ("pi", "Pi"),
     ("deepseek", "DeepSeek"),
     ("commandcode", "Command Code"),
@@ -124,7 +126,7 @@ pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,Cron
 
 /// Never runs an agent-reviewed task under some other policy.
 fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
-    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
+    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo" | "alibaba") {
         return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
     }
     Ok(())
@@ -132,7 +134,7 @@ fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
 pub fn takes_system_instructions(provider: &str) -> bool {
-    matches!(provider, "claude" | "glm" | "mimo" | "pi" | "omp")
+    matches!(provider, "claude" | "glm" | "mimo" | "alibaba" | "pi" | "omp")
 }
 
 #[derive(Clone, Debug)]
@@ -645,6 +647,9 @@ pub struct ModelInfo {
     pub reasoning_efforts: Vec<ReasoningEffortInfo>,
     pub default_reasoning_effort: Option<String>,
     pub context_window: Option<u64>,
+    /// Faster service tiers beyond the standard speed (Codex `serviceTiers`, Claude fast mode).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub speed_tiers: Vec<ReasoningEffortInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -764,11 +769,11 @@ pub(crate) fn decline_text(session_id: &str, id: &str) -> String {
 pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result<(), String> {
     let valid = match (provider, effort) {
         (
-            "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
+            "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo" | "alibaba"
             | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes",
             None,
         ) => true,
-        ("claude" | "glm" | "mimo", Some(value)) => {
+        ("claude" | "glm" | "mimo" | "alibaba", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
@@ -816,6 +821,7 @@ impl ModelInfo {
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
             context_window: None,
+            speed_tiers: Vec::new(),
         }
     }
 }
@@ -839,7 +845,7 @@ pub(crate) fn provider_command(provider: &str, path: &Path) -> Result<Command, S
 
 fn executable_name(name: &str) -> &str {
     match name {
-        "glm" | "mimo" => "claude",
+        "glm" | "mimo" | "alibaba" => "claude",
         "antigravity" if cfg!(windows) => "agy_acp_server",
         "antigravity" => "agy_acp_server.par",
         "deepseek" => "dsh",
@@ -899,6 +905,14 @@ pub(crate) fn mimo_arguments() -> Result<Vec<String>, String> {
 
 pub(crate) fn mimo_environment() -> Result<Vec<(String, String)>, String> {
     mimo::environment()
+}
+
+pub(crate) fn alibaba_arguments() -> Vec<String> {
+    alibaba::arguments()
+}
+
+pub(crate) fn alibaba_environment() -> Result<Vec<(String, String)>, String> {
+    alibaba::environment()
 }
 
 pub(crate) fn mimo_endpoint_url(id: &str) -> Option<&'static str> {
@@ -1035,6 +1049,8 @@ pub fn discover() -> Vec<ProviderInfo> {
                 glm::models()
             } else if id == "mimo" {
                 mimo::models()
+            } else if id == "alibaba" {
+                alibaba::models()
             } else if id == "opencode" {
                 selected_opencode_models(
                     Vec::new(),
@@ -1085,6 +1101,7 @@ fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec
     let mut models = vec![ModelInfo::default_choice()];
     for id in selected {
         models.push(available.remove(id).unwrap_or_else(|| ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.clone(),
             name: id.clone(),
             description: "Saved OpenCode model".into(),
@@ -1182,6 +1199,7 @@ fn parse_opencode_v2_models(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
                 return Err(INVALID.to_owned());
             }
             Ok(ModelInfo {
+                speed_tiers: Vec::new(),
                 name: model_text(entry["name"].as_str(), &id, 160),
                 description: id.clone(),
                 // The API lists variants least to most, unlike v1's sorted keys.
@@ -1235,6 +1253,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "antigravity" => acp::models(&path).await,
         "grok" => acp::grok_models(&path).await,
         "mimo" => Ok(mimo::models()),
+        "alibaba" => Ok(alibaba::models()),
         "pi" | "omp" => pi::models(&path, provider).await,
         "deepseek" => deepseek::models(&path).await,
         "commandcode" => commandcode::models(&path).await,
@@ -1319,11 +1338,32 @@ fn parse_codex_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
                     default_reasoning_effort: default_effort,
                     // model/list does not report the effective window. Live usage does.
                     context_window: None,
+                    speed_tiers: codex_speed_tiers(&entry["serviceTiers"]),
                 });
             }
         }
     }
     Ok(models)
+}
+
+/// Every tier Codex reports, so new ones (Ultra Fast) appear without a release.
+fn codex_speed_tiers(tiers: &Value) -> Vec<ReasoningEffortInfo> {
+    let mut found: Vec<ReasoningEffortInfo> = Vec::new();
+    for tier in tiers.as_array().into_iter().flatten().take(8) {
+        let Some(id) = tier["id"].as_str().filter(|id| valid_service_tier(id)) else { continue };
+        if !found.iter().any(|known| known.id == id) {
+            found.push(ReasoningEffortInfo {
+                id: id.into(),
+                name: model_text(tier["name"].as_str(), id, 64),
+                description: model_text(tier["description"].as_str(), "", 500),
+            });
+        }
+    }
+    found
+}
+
+pub(crate) fn valid_service_tier(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
 }
 
 // SDK displayName can still be just "Sonnet". Format the provider's resolved
@@ -1387,6 +1427,12 @@ fn parse_claude_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
             continue;
         }
         let model = ModelInfo {
+            // Claude Code's catalog flags the models it can run in fast mode.
+            speed_tiers: if entry["supportsFastMode"] == true {
+                vec![ReasoningEffortInfo { id: "fast".into(), name: "Fast".into(), description: "Claude Code fast mode: faster output at a higher price.".into() }]
+            } else {
+                Vec::new()
+            },
             id: id.into(),
             name: claude_model_name(entry, id),
             description: model_text(entry["description"].as_str(), "", 1000),
@@ -3598,9 +3644,17 @@ fn configure_command_with_agents(
                 command.args(["--model", glm::DEFAULT_MODEL]);
             } else if config.provider == "mimo" {
                 command.args(["--model", mimo::DEFAULT_MODEL]);
+            } else if config.provider == "alibaba" {
+                command.args(["--model", alibaba::DEFAULT_MODEL]);
             }
             if let Some(effort) = &config.reasoning_effort {
                 command.args(["--effort", effort]);
+            }
+            // The Speed row stores Claude's fast mode as the task's service tier.
+            if config.provider == "claude"
+                && config.codex_settings.as_ref().is_some_and(|settings| settings["serviceTier"] == "fast")
+            {
+                command.args(["--settings", r#"{"fastMode":true}"#]);
             }
             if let Some(id) = &config.resume_id {
                 command.arg(format!("--resume={id}"));
@@ -3672,6 +3726,7 @@ async fn run_inner(
         "antigravity",
         "grok",
         "mimo",
+        "alibaba",
         "pi",
         "deepseek",
         "commandcode",
@@ -3775,6 +3830,8 @@ async fn run_inner(
         Some(glm::configure(&mut command)?)
     } else if config.provider == "mimo" {
         Some(mimo::configure(&mut command)?)
+    } else if config.provider == "alibaba" {
+        Some(alibaba::configure(&mut command)?)
     } else if config.provider == "deepseek" {
         deepseek::configure(&mut command)?
     } else if config.provider == "commandcode" {
@@ -3924,7 +3981,7 @@ async fn run_process_with_tools(
             (host.map(host_tools::HostTools::new).transpose()?, server)
         }
         (
-            "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
+            "claude" | "glm" | "mimo" | "alibaba" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
             | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
             Some(host),
         ) => (
@@ -3966,7 +4023,7 @@ async fn run_process_with_tools(
             end_lingering(&config.session_id).await;
             agent_temp = AgentTemp::redirect(&mut command);
         }
-        if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
+        if matches!(config.provider.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
             if let Some(server) = &mcp {
                 command.args(["--mcp-config", &server.claude_config().to_string()]);
             }
@@ -4311,6 +4368,7 @@ mod tests {
     #[test]
     fn opencode_choices_keep_only_saved_models_and_retain_unavailable_ids() {
         let model = super::ModelInfo {
+            speed_tiers: Vec::new(),
             id: "vendor/selected".into(),
             name: "Selected model".into(),
             description: "Provider metadata".into(),
@@ -4319,6 +4377,7 @@ mod tests {
             context_window: Some(200_000),
         };
         let unused = super::ModelInfo {
+            speed_tiers: Vec::new(),
             id: "vendor/not-selected".into(),
             ..model.clone()
         };
@@ -4548,7 +4607,7 @@ mod tests {
 
     #[test]
     fn approve_for_me_runs_only_where_the_harness_reviews_actions() {
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             assert!(review_supported(provider, "review").is_ok());
         }
         for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes"] {
@@ -4659,7 +4718,7 @@ mod tests {
 
     #[test]
     fn claude_preview_tools_never_inherit_the_metadata_permission_exemption() {
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             for mode in ["ask", "auto", "plan"] {
                 for name in ["pandacode_run_project", "pandacode_preview_file"] {
                     let name = format!("mcp__pandacode_architect__{name}");
@@ -4743,7 +4802,7 @@ mod tests {
     #[test]
     fn claude_title_permission_is_silent_only_for_the_registered_metadata_tool() {
         let title_name = format!("mcp__pandacode_architect__{}", crate::session_titles::TOOL);
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             for mode in ["ask", "auto", "plan"] {
                 for (registered, name) in [(true, title_name.as_str()), (false, title_name.as_str()), (true, "mcp__other__pandacode_title"), (true, "mcp__pandacode_architect__pandacode_open_browser")] {
                     let mut cfg = config(provider);
@@ -4916,7 +4975,7 @@ mod tests {
     #[test]
     fn skill_manager_claude_arbitrary_names_use_advisory_and_unrecoverable_prefs_block_skill_tools()
     {
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             let mut cfg = config(provider);
             let disabled = std::collections::BTreeSet::from(["Friendly 技能".into()]);
             crate::skill_manager::apply_instructions(&mut cfg, &disabled);
@@ -5058,7 +5117,7 @@ mod tests {
     #[test]
     fn skill_manager_claude_launch_has_one_merged_disallowed_tools_flag() {
         let disabled = std::collections::BTreeSet::from(["alpha".into(), "beta".into()]);
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             let mut command = Command::new("claude");
             configure_command_with_skills(&mut command, &config(provider), &disabled);
             let flags: Vec<_> = command
@@ -5693,6 +5752,41 @@ mod tests {
         assert_eq!(models[1].name, "Actual Model 2");
         assert_eq!(models[1].description, "Provider description");
         assert_eq!(models[2].name, "Legacy Model");
+    }
+
+    #[test]
+    fn model_catalogs_report_speed_tiers_from_the_harness() {
+        let models = parse_codex_models(&json!({"data":[
+            {"model":"fast","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed"},{"id":"ultrafast","name":"Ultra Fast"},{"id":"priority","name":"Dup"},{"id":""},{"id":"bad\nid"},{"name":"No id"}]},
+            {"model":"plain","serviceTiers":[]}
+        ]})).unwrap();
+        let tiers: Vec<_> = models[1].speed_tiers.iter().map(|tier| (tier.id.as_str(), tier.name.as_str(), tier.description.as_str())).collect();
+        assert_eq!(tiers, [("priority", "Fast", "1.5x speed"), ("ultrafast", "Ultra Fast", "")]);
+        assert!(models[2].speed_tiers.is_empty());
+        assert!(serde_json::to_value(&models[2]).unwrap().get("speedTiers").is_none());
+        assert_eq!(serde_json::to_value(&models[1]).unwrap()["speedTiers"][1]["id"], "ultrafast");
+        let many: Vec<_> = (0..20).map(|n| json!({"id":format!("t{n}")})).collect();
+        assert_eq!(parse_codex_models(&json!({"data":[{"model":"m","serviceTiers":many}]})).unwrap()[1].speed_tiers.len(), 8);
+
+        let claude = parse_claude_models(&json!({"models":[{"value":"opus","supportsFastMode":true},{"value":"haiku"}]})).unwrap();
+        assert_eq!(claude[1].speed_tiers.iter().map(|tier| tier.id.as_str()).collect::<Vec<_>>(), ["fast"]);
+        assert!(claude[2].speed_tiers.is_empty());
+    }
+
+    #[test]
+    fn claude_fast_mode_is_passed_as_a_flag_setting_only_when_chosen() {
+        let args = |provider: &str, settings: Option<Value>| {
+            let mut cfg = config(provider);
+            cfg.codex_settings = settings;
+            let mut command = Command::new("claude");
+            configure_command(&mut command, &cfg);
+            command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let fast = ["--settings".to_string(), r#"{"fastMode":true}"#.to_string()];
+        assert!(args("claude", Some(json!({"serviceTier":"fast"}))).windows(2).any(|pair| pair == fast));
+        for (provider, settings) in [("claude", None), ("claude", Some(json!({"serviceTier":null}))), ("glm", Some(json!({"serviceTier":"fast"})))] {
+            assert!(!args(provider, settings).iter().any(|arg| arg == "--settings"));
+        }
     }
 
     #[test]

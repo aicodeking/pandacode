@@ -126,6 +126,8 @@ import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
 import { createCouncil } from './council-panel';
 import { councilNotice } from './council';
+// No CSS of its own (architect.css arrives with ./architect): safe in the always-loaded bundle.
+import { workerActive } from './architect-worker-list';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
@@ -1296,7 +1298,7 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
+ function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', alibaba: 'Alibaba', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
 function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
 function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
@@ -1307,10 +1309,13 @@ function modelLabel(s?: Session, withEffort = true): string {
   const effort = withEffort && effortLabel(s);
   return effort ? `${name} · ${effort}` : name;
 }
-/** The trigger's effort word; none for a named team, whose workers set their own. */
+/** The trigger's effort word and a faster speed's name; none for a named team, whose workers set their own. */
 function effortLabel(s: Session): string {
-  if (!s.reasoningEffort || teams.get(s.id)?.config.rosterOnly) return '';
-  return selectedModel(s).reasoningEfforts?.find(effort => effort.id === s.reasoningEffort)?.name ?? s.reasoningEffort;
+  if (teams.get(s.id)?.config.rosterOnly) return '';
+  const model = selectedModel(s), tier = s.codexSettings?.serviceTier;
+  const effort = s.reasoningEffort ? model.reasoningEfforts?.find(effort => effort.id === s.reasoningEffort)?.name ?? s.reasoningEffort : '';
+  const speed = tier ? model.speedTiers?.find(speed => speed.id === tier)?.name ?? '' : '';
+  return [effort, speed].filter(Boolean).join(' · ');
 }
 /** The trigger's logo, or a named team's stacked roster. */
 function triggerLogo(s: Session): string {
@@ -3129,7 +3134,9 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   let narratedAt = -1;
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
-  const tools = current.tools.filter(tool => !tool.statusOnly), workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? null;
+  const tools = current.tools.filter(tool => !tool.statusOnly);
+  // The host sits after the region, or in the trace once a dispatch placed it there.
+  const workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? host.querySelector<HTMLElement>(':scope > #team-progress-host');
   const dispatch = workers ? tools.findIndex(tool => typeof tool.content !== 'string' && /dispatch_workers/.test(tool.content.name)) : -1;
   const toolRuns = (entries: LiveTool[]) => groupToolRuns(entries, tool => tool.commentary ? undefined : tool.key);
   const runs = dispatch < 0 ? toolRuns(tools) : [...toolRuns(tools.slice(0, dispatch + 1)), null, ...toolRuns(tools.slice(dispatch + 1))];
@@ -4362,7 +4369,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'plan': case 'fast': {
       if (action === 'fast' && argumentsText && !['on', 'off'].includes(argumentsText)) throw new Error('Use /fast, /fast on, or /fast off.');
       const settings = task.codexSettings;
-      const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : settings?.serviceTier === 'fast';
+      const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : Boolean(settings?.serviceTier);
       const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
       const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
       notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
@@ -5394,9 +5401,7 @@ function onAgent(event: AgentEvent): void {
       // panel's own definition (a worker not yet in any team snapshot counts as active).
       if (event.kind === 'approval' || event.kind === 'input_request') {
         const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
-        void import('./architect-worker-list').then(({ workerActive }) => {
-          if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
-        });
+        if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
       }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
     }).catch(report);
@@ -5545,7 +5550,10 @@ function onAgent(event: AgentEvent): void {
   // Tokens and tool snapshots do not change task navigation. Four busy agents
   // share one navigation frame only when a running/recency/approval state changes.
   if (firstEvent || becameActive || event.kind === 'approval' || event.kind === 'approval_cancelled' || event.kind === 'input_request' || event.kind === 'input_cancelled') {
-    if (firstEvent && event.sessionId === state.sessionId && !document.hidden) { renderHeader(); if (document.querySelector<HTMLTextAreaElement>('#prompt')?.disabled === false) renderComposer(); }
+    if (firstEvent && event.sessionId === state.sessionId && !document.hidden) { renderHeader();
+      // A prompt held only by the thread's load (its details land after its rows) still shows the run starting.
+      if (document.querySelector<HTMLTextAreaElement>('#prompt')?.disabled === false || threadLoading()) renderComposer();
+    }
     scheduleNavigation();
   }
   if (firstEvent && event.sessionId === state.sessionId && !wakeHolds.has(event.sessionId)) renderTranscript();
@@ -6187,7 +6195,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     },
-    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
+    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
@@ -6203,6 +6211,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           refreshModelLabels();
           syncOverlayContext({ projectId: updated.projectId, provider: updated.provider, model: updated.model || 'default', mode: updated.mode, reasoningEffort: updated.reasoningEffort ?? null });
         }
+      } finally { configuringSessions.delete(selected.id); }
+    },
+    // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
+    onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+      configuringSessions.add(selected.id);
+      try {
+        const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
+        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        if (inPanel) btwPanel.refresh();
+        else if (selected.id === state.sessionId) refreshModelLabels();
       } finally { configuringSessions.delete(selected.id); }
     },
     onSelect: async (providerId, model) => {

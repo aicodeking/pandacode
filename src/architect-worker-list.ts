@@ -52,7 +52,7 @@ const workerGlyphs: Record<string, string> = {
   alert: icon('alert'),
 };
 /** Each glyph's design-system tone, on the leading icon. Waiting is muted: only a worker that needs the user is `near`. */
-const glyphTones: Record<string, string> = { running: 'team', pending: 'worker-idle', completed: 'ready', failed: 'failed', idle: 'worker-idle', below: 'worker-idle', stopped: 'worker-idle', alert: 'near' };
+const glyphTones: Record<string, string> = { running: 'team', pending: 'worker-idle', completed: 'ready', failed: 'danger', idle: 'worker-idle', below: 'worker-idle', stopped: 'worker-idle', alert: 'near' };
 /** Who needs the reader first: asking, then failed, working, waiting or queued, stopped, and done last. */
 const workerRank = (worker: TeamWorker, state: string, asking: boolean): number =>
   worker.abandoned ? 6 : asking ? 0 : ({ failed: 1, running: 2, waiting: 3, parked: 3, queued: 3, paused: 4, stopped: 4, completed: 5 } as Record<string, number>)[state] ?? 4;
@@ -107,7 +107,7 @@ const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'pau
 /** Buckets folded into "+N more" first when the panel is narrow: needs you, failed, working and done keep their words. */
 const TALLY_MINOR = new Set(['queued', 'stopped', 'skipped', 'idle', 'paused', 'waiting']);
 /** Each bucket's glyph and tone in the tally: the same marks the rows lead with. */
-const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'failed'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
+const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'danger'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
 /** Then these, first-first, when even the compact line does not fit: "working" outlasts "done" (the progress bar
  *  already shows completion) and only "failed" outlasts "working". */
 const TALLY_DROP = ['done', 'working', 'failed'];

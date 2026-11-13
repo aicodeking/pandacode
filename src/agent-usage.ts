@@ -49,7 +49,7 @@ export function retryText(result: Pick<AgentUsage, 'retryAt' | 'autoRetryAt'> & 
   return automatic > Math.max(manual, now) ? `${refresh}; opening this panel checks on its own after ${clockLabel(automatic, now)}.` : `${refresh}.`;
 }
 const RANGES: [Range, string][] = [['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
-const shortNames: Partial<Record<ProviderId, string>> = { claude: 'Claude', glm: 'GLM', mimo: 'MiMo', kimi: 'Kimi', grok: 'Grok', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'Copilot', muse: 'Muse', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
+const shortNames: Partial<Record<ProviderId, string>> = { claude: 'Claude', glm: 'GLM', mimo: 'MiMo', alibaba: 'Alibaba', kimi: 'Kimi', grok: 'Grok', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'Copilot', muse: 'Muse', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
 type Tab = 'overview' | ProviderId;
 /** Harnesses whose accounts can be pooled; `account_pool_status` reads their login files for the email and plan. */
 const POOLED: ProviderId[] = ['claude', 'codex'];

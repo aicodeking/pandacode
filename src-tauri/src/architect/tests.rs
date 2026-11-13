@@ -5171,6 +5171,7 @@ fn effort_model(id: &str, levels: &[&str]) -> crate::providers::ModelInfo {
         reasoning_efforts: levels.iter().map(|l| crate::providers::ReasoningEffortInfo { id: l.to_string(), name: l.to_string(), description: String::new() }).collect(),
         default_reasoning_effort: None,
         context_window: None,
+        speed_tiers: Vec::new(),
     }
 }
 #[test]
@@ -5835,4 +5836,24 @@ fn leads_team_is_true_only_for_a_task_with_a_saved_team() {
     assert!(!leads_team(&store, "missing").unwrap());
     drop(store);
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_thread_without_a_team_cannot_dispatch_full_access_workers_mid_turn() {
+    // A bot turn that is not Full, or a remote turn without full access, runs a plain thread:
+    // the worker tools must not create a team or start workers for it.
+    let (state, sid) = state_fixture();
+    let plain = {
+        let store = state.store.lock().unwrap();
+        let project = store.session(&sid).unwrap().project_id;
+        store.create_session(&project, "codex", "default", "ask").unwrap().id
+    };
+    for generation in [0, 1] {
+        let refused = dispatch_state(&state, &plain, generation, "pandacode_dispatch_workers", json!({"assignments":[assignment("w","fast","src")]}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(refused, "Team unavailable.");
+    }
+    let store = state.store.lock().unwrap();
+    assert!(!leads_team(&store, &plain).unwrap(), "no team was created");
+    let workers: i64 = store.db.query_row("SELECT COUNT(*) FROM architect_workers WHERE parent_session_id=?1", [&plain], |r| r.get(0)).unwrap();
+    assert_eq!(workers, 0, "no worker was started");
 }

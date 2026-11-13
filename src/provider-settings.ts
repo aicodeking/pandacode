@@ -9,7 +9,7 @@ import { errorText } from './error-text';
 
 type ClaudeMode = 'inherit' | 'subscription';
 interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables: string[]; endpoint: string | null; savedLogin: 'signedIn' | 'notSignedIn' | 'otherCredentials' | 'unknown'; conflict: boolean; }
-const howProvidersWork = 'Each sign-in, key or plan here is used only by the agent it belongs to — the global environment variables are the one thing every harness gets. GLM Coding Plan and MiMo Token Plan run through your installed Claude Code, and you pick them in the model selector. Named connections are extra setups of one agent. PandaCode needs no provider of its own: titles come from the agent running the task, project checks run your own test command, and Jev uses its own keys. Codex, when installed, also lists integrations and imports Codex conversations.';
+const howProvidersWork = 'Each sign-in, key or plan here is used only by the agent it belongs to — the global environment variables are the one thing every harness gets. GLM Coding Plan, MiMo Token Plan and Alibaba Token Plan run through your installed Claude Code, and you pick them in the model selector. Named connections are extra setups of one agent. PandaCode needs no provider of its own: titles come from the agent running the task, project checks run your own test command, and Jev uses its own keys. Codex, when installed, also lists integrations and imports Codex conversations.';
 const claudeHelp = 'Use current environment preserves your existing Claude setup. Prefer saved Claude login removes inherited API credentials, endpoints, and model routing overrides from new Claude processes in PandaCode. Claude settings, credential helpers, profiles, and organization policies can still affect authentication. Check /status in Claude to confirm.';
 const refreshHelp = 'On by default. When PandaCode can’t read Claude usage — an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over — it runs your own Claude Code at most once every 15 minutes (claude -p /usage, a local command: no model call, nothing billed). This lets Claude Code refresh and save its own login if it needs to, as when you open it, and PandaCode shows the usage it prints. PandaCode never writes Claude Code credentials. Off: an expired login shows the last saved usage until you open Claude Code.';
 const globalEnvHelp = 'These variables are added to every agent harness PandaCode starts — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Each provider can leave the global set out in its own card, and provider sign-in and endpoint settings always win. Values are saved on this computer and never shown again.';
@@ -29,6 +29,8 @@ interface Configuration {
   commandcodeKeyFromEnvironment: boolean;
   mimoKeySaved: boolean;
   mimoKeyFromEnvironment: boolean;
+  alibabaKeySaved: boolean;
+  alibabaKeyFromEnvironment: boolean;
   mimoEndpoint: string | null;
   mimoEndpoints: { id: string; url: string; label: string }[];
   secureStorageAvailable: boolean;
@@ -42,6 +44,7 @@ interface Configuration {
 const keyed = {
   glm: { env: 'ZAI_API_KEY', save: 'provider_save_glm_key', remove: 'provider_remove_glm_key', saved: 'GLM key saved. Choose GLM Coding Plan in the model selector.', savedFlag: 'glmKeySaved', envFlag: 'glmKeyFromEnvironment' },
   mimo: { env: 'MIMO_API_KEY', save: 'provider_save_mimo_key', remove: 'provider_remove_mimo_key', saved: 'MiMo key saved. Choose MiMo Token Plan in the model selector.', savedFlag: 'mimoKeySaved', envFlag: 'mimoKeyFromEnvironment' },
+  alibaba: { env: 'ALIBABA_TOKEN_PLAN_API_KEY', save: 'provider_save_alibaba_key', remove: 'provider_remove_alibaba_key', saved: 'Alibaba Token Plan key saved. Choose Alibaba Token Plan in the model selector.', savedFlag: 'alibabaKeySaved', envFlag: 'alibabaKeyFromEnvironment' },
   deepseek: { env: 'DEEPSEEK_API_KEY', save: 'provider_save_deepseek_key', remove: 'provider_remove_deepseek_key', saved: 'DeepSeek key saved. Choose DeepSeek in the model selector.', savedFlag: 'deepseekKeySaved', envFlag: 'deepseekKeyFromEnvironment' },
   commandcode: { env: 'COMMAND_CODE_API_KEY', save: 'provider_save_commandcode_key', remove: 'provider_remove_commandcode_key', saved: 'Command Code key saved. Choose Command Code in the model selector.', savedFlag: 'commandcodeKeySaved', envFlag: 'commandcodeKeyFromEnvironment' },
 } as const;
@@ -105,6 +108,13 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       ${keyForm('mimo', 'MiMo API key')}
       <a href="https://platform.xiaomimimo.com/token-plan" target="_blank" rel="noopener noreferrer">Token Plan ${icon('forward')}</a>
       ${envDetails('mimo')}
+    </details>
+    <details class="connection-card"><summary><h3>${providerLogo('alibaba')}Alibaba Token Plan<small>Model Studio, via Claude Code</small></h3><span class="connection-state"></span>${icon('chevron')}</summary>
+      <p>Use your Model Studio Token Plan key (it starts with <code>sk-sp-</code>) with your installed Claude Code. A Coding Plan or pay-as-you-go key is rejected with 401.</p>
+      <small class="connection-endpoint-hint">https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic</small>
+      ${keyForm('alibaba', 'Alibaba Token Plan API key')}
+      <a href="https://www.alibabacloud.com/help/en/model-studio/claude-code-token-plan" target="_blank" rel="noopener noreferrer">Token Plan setup ${icon('forward')}</a>
+      ${envDetails('alibaba')}
     </details>
     <details class="connection-card"><summary><h3>${providerLogo('opencode')}OpenCode</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the accounts and models configured in OpenCode. Sign in once with <code>opencode auth login</code>.</p><p>Choose which OpenCode models appear in the model selector in Settings → Agents.</p><a href="https://opencode.ai/docs/" target="_blank" rel="noopener noreferrer">Install & sign in ${icon('forward')}</a>${pathForm('opencode', 'OpenCode executable', '/path/to/opencode')}${envDetails('opencode')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('antigravity')}Antigravity</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Connect the official Google Antigravity ACP server. Without it, PandaCode uses the <code>agy</code> CLI's <code>agy acp</code> server.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP server ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>

@@ -74,7 +74,7 @@ export interface SettingsView { show(section: SettingsSection): void; dispose():
 const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page))!;
 
 /** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
-const PLANS = new Set<ProviderId>(['glm', 'mimo']);
+const PLANS = new Set<ProviderId>(['glm', 'mimo', 'alibaba']);
 
 /** A row: title, its control, then the info mark named after it (after the control in Tab order); the help's
  * text stays in the DOM for screen readers. */

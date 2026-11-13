@@ -12,10 +12,12 @@ type ModelPickerOptions = {
   onTeamSelect?: (id: string) => Promise<void>;
   anchor: HTMLElement;
   providers: Provider[];
-  current: { provider: ProviderId; model: string; reasoningEffort?: string | null; contextUsage?: ContextUsage | null };
+  current: { provider: ProviderId; model: string; reasoningEffort?: string | null; serviceTier?: string | null; contextUsage?: ContextUsage | null };
   canSwitchProvider: boolean;
   onSelect: (provider: ProviderId, model: string) => Promise<void>;
   onEffortSelect?: (effort: string | null) => Promise<void>;
+  /** A speed tier from the model's `speedTiers`; null is the standard speed. */
+  onSpeedSelect?: (tier: string | null) => Promise<void>;
   loadModels?: (provider: ProviderId) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
   loadProviders?: () => Promise<Provider[]>;
@@ -47,10 +49,13 @@ let pickerCount = 0;
 /** A harness's catalog and availability. */
 type Group = { key: string; provider: Provider; name: string; locked: boolean; unavailable: boolean; failure: string };
 type Row = { group: Group; model: ProviderModel; custom?: boolean };
+/** The settings segments: reasoning effort and speed tier. */
+type Kind = 'effort' | 'speed';
+type Choice = { id: string; name: string; description: string };
 
 /** A transient picker with local state and listeners released on dismissal. */
 export function openModelPicker(options: ModelPickerOptions): () => void {
-  const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, loadModels, onClose } = options;
+  const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, onSpeedSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
   const teams = options.teams ?? [];
   const teamSelected = teams.some(team => team.selected);
@@ -79,8 +84,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   let listMarkup = '';
   let railMarkup = '';
   let settingsKey = '';
-  let pendingEffort: string | null | undefined;
-  let hoveredEffort: string | null | undefined;
+  let pendingChoice: { kind: Kind; id: string | null } | undefined;
+  let hoveredChoice: { kind: Kind; id: string | null } | undefined;
   let view = teamSelected ? 'teams' : `h:${current.provider}`;
 
   function restoreFocus(): void {
@@ -353,42 +358,58 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     return { provider, model: modelChoices(current.provider, provider?.models ?? [], current.model).find(model => model.id === current.model)! };
   }
 
+  /** A choice saved earlier that the catalog no longer lists still shows as chosen. */
+  function withSaved(choices: Choice[], chosen: string | null): Choice[] {
+    return chosen && !choices.some(choice => choice.id === chosen) ? [...choices, { id: chosen, name: chosen, description: '' }] : choices;
+  }
+  const saved = (kind: Kind) => (kind === 'effort' ? current.reasoningEffort : current.serviceTier) ?? null;
+  const chosenOf = (kind: Kind) => pendingChoice?.kind === kind ? pendingChoice.id : saved(kind);
+
+  function segmentRow(kind: Kind, label: string, choices: Choice[], modelDefault?: string | null): string {
+    return `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-${kind}">${label}</span><div class="model-menu-effort" data-kind="${kind}" role="radiogroup" aria-labelledby="${uid}-${kind}">${choices.map(choice => `<button type="button" role="radio" data-${kind}="${escape(choice.id)}" title="${escape(choice.description || choice.name)}"${choice.id && choice.id === modelDefault ? ' data-model-default=""' : ''}>${escape(choice.name)}</button>`).join('')}</div></div>`;
+  }
+
   function renderSettings(): void {
     const { provider, model } = currentModel();
-    const efforts = [...(model.reasoningEfforts ?? [])];
-    const chosen = pendingEffort !== undefined ? pendingEffort : current.reasoningEffort ?? null;
-    // A saved level the catalog no longer lists still shows as chosen.
-    if (chosen && !efforts.some(effort => effort.id === chosen)) efforts.push({ id: chosen, name: chosen, description: '' });
+    const efforts = withSaved(model.reasoningEfforts ?? [], chosenOf('effort'));
+    const tiers = model.speedTiers ?? [];
     const canSetEffort = Boolean(onEffortSelect && efforts.length);
-    settings.hidden = !canSetEffort && !teamSelected;
+    const canSetSpeed = Boolean(onSpeedSelect && tiers.length) && !teamSelected;
+    settings.hidden = !canSetEffort && !canSetSpeed && !teamSelected;
     const disabled = pending || !provider?.installed;
     const defaultEffort = efforts.find(effort => effort.id === model.defaultReasoningEffort);
-    const choices = [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts];
+    const choices: Record<Kind, Choice[]> = {
+      effort: [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts],
+      speed: [{ id: '', name: 'Standard', description: "The model's standard speed." }, ...withSaved(tiers, chosenOf('speed'))],
+    };
     const markup = teamSelected
       ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
-      : canSetEffort ? `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-effort">Effort</span><div class="model-menu-effort" role="radiogroup" aria-labelledby="${uid}-effort">${choices.map(effort => `<button type="button" role="radio" data-effort="${escape(effort.id)}" title="${escape(effort.description || effort.name)}"${effort.id && effort.id === model.defaultReasoningEffort ? ' data-model-default=""' : ''}>${escape(effort.name)}</button>`).join('')}</div></div><p class="model-menu-effort-hint"></p>` : '';
+      : canSetEffort || canSetSpeed ? `${canSetEffort ? segmentRow('effort', 'Effort', choices.effort, model.defaultReasoningEffort) : ''}${canSetSpeed ? segmentRow('speed', 'Speed', choices.speed) : ''}<p class="model-menu-effort-hint"></p>` : '';
     if (markup !== settingsKey) {
       const focused = settings.contains(document.activeElement);
       settings.innerHTML = markup;
       settingsKey = markup;
       if (focused) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
     }
-    const group = settings.querySelector<HTMLElement>('.model-menu-effort');
-    if (!group) return;
-    let selected: HTMLElement | null = null;
-    group.querySelectorAll<HTMLButtonElement>('[role="radio"]').forEach(button => {
-      const on = button.dataset.effort === (chosen ?? '');
-      if (on) selected = button;
-      button.setAttribute('aria-checked', String(on));
-      button.classList.toggle('selected', on);
-      button.tabIndex = on ? 0 : -1;
-      button.disabled = disabled;
+    settings.querySelectorAll<HTMLElement>('.model-menu-effort').forEach(group => {
+      const kind = group.dataset.kind as Kind;
+      let selected: HTMLElement | null = null;
+      group.querySelectorAll<HTMLButtonElement>('[role="radio"]').forEach(button => {
+        const on = button.dataset[kind] === (chosenOf(kind) ?? '');
+        if (on) selected = button;
+        button.setAttribute('aria-checked', String(on));
+        button.classList.toggle('selected', on);
+        button.tabIndex = on ? 0 : -1;
+        button.disabled = disabled;
+      });
+      group.setAttribute('aria-disabled', String(disabled));
+      trackSegment(group, selected);
     });
-    group.setAttribute('aria-disabled', String(disabled));
-    trackSegment(group, selected);
-    const shown = hoveredEffort !== undefined ? hoveredEffort : chosen;
-    const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint')!;
-    const text = choices.find(effort => effort.id === (shown ?? ''))?.description ?? '';
+    const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint');
+    if (!hint) return;
+    const kind: Kind = hoveredChoice?.kind ?? (canSetEffort ? 'effort' : 'speed');
+    const shown = hoveredChoice ? hoveredChoice.id : chosenOf(kind);
+    const text = choices[kind].find(choice => choice.id === (shown ?? ''))?.description ?? '';
     if (hint.textContent !== text) hint.textContent = text;
   }
 
@@ -399,26 +420,28 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     renderSettings();
   }
 
-  async function saveEffort(effort: string | null): Promise<void> {
+  async function saveChoice(kind: Kind, id: string | null): Promise<void> {
     const provider = providers.find(provider => provider.id === current.provider);
-    if (pending || closed || !onEffortSelect || !provider?.installed) return;
-    const supported = provider.models.find(model => model.id === current.model)?.reasoningEfforts ?? [];
-    if (effort !== null && !supported.some(choice => choice.id === effort)) {
-      if (effort === current.reasoningEffort) return;
-      error.textContent = 'This reasoning effort is no longer available. Choose another level.';
+    const callback = kind === 'effort' ? onEffortSelect : onSpeedSelect;
+    if (pending || closed || !callback || !provider?.installed) return;
+    const model = provider.models.find(model => model.id === current.model);
+    const supported = (kind === 'effort' ? model?.reasoningEfforts : model?.speedTiers) ?? [];
+    if (id !== null && !supported.some(choice => choice.id === id)) {
+      if (id === saved(kind)) return;
+      error.textContent = kind === 'effort' ? 'This reasoning effort is no longer available. Choose another level.' : 'This speed is no longer available. Choose another speed.';
       error.hidden = false;
       renderSettings();
       return;
     }
-    if (effort === (current.reasoningEffort ?? null)) { renderSettings(); return; }
+    if (id === saved(kind)) { renderSettings(); return; }
     const focused = settings.contains(document.activeElement);
     pending = true;
-    pendingEffort = effort;
+    pendingChoice = { kind, id };
     error.hidden = true;
     updateControls();
     try {
-      await onEffortSelect(effort);
-      current.reasoningEffort = effort;
+      await callback(id);
+      if (kind === 'effort') current.reasoningEffort = id; else current.serviceTier = id;
     } catch (reason) {
       if (closed) return;
       error.textContent = reason instanceof Error ? reason.message : String(reason);
@@ -426,12 +449,18 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     } finally {
       if (!closed) {
         pending = false;
-        pendingEffort = undefined;
+        pendingChoice = undefined;
         updateControls();
         // A disabled control loses focus during the save; leave deliberate navigation alone.
-        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
+        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>(`[data-kind="${kind}"] .selected`) ?? search).focus({ preventScroll: true });
       }
     }
+  }
+
+  /** The segment a radio belongs to and the choice it stands for. */
+  function radioChoice(radio: HTMLElement): { kind: Kind; id: string | null } {
+    const kind = radio.closest<HTMLElement>('[role="radiogroup"]')!.dataset.kind as Kind;
+    return { kind, id: radio.dataset[kind] || null };
   }
 
   // ----- Selection and events -----
@@ -473,9 +502,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     close();
   }
 
-  /** Tab cycles search → rail → effort inside the picker and never leaves it. */
+  /** Tab cycles search → rail → effort → speed inside the picker and never leaves it. */
   function cycleFocus(back: boolean): void {
-    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), settings.hidden ? null : settings.querySelector<HTMLElement>('.selected:not(:disabled)')].filter((stop): stop is HTMLElement => Boolean(stop));
+    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), ...(settings.hidden ? [] : settings.querySelectorAll<HTMLElement>('.selected:not(:disabled)'))].filter((stop): stop is HTMLElement => Boolean(stop));
     const index = stops.findIndex(stop => stop.contains(document.activeElement));
     stops[(index + (back ? -1 : 1) + stops.length) % stops.length].focus({ preventScroll: true });
   }
@@ -488,14 +517,14 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   });
   settings.addEventListener('click', event => {
     const radio = (event.target as Element).closest<HTMLButtonElement>('[role="radio"]');
-    if (radio && !radio.disabled) void saveEffort(radio.dataset.effort || null);
+    if (radio && !radio.disabled) { const { kind, id } = radioChoice(radio); void saveChoice(kind, id); }
   });
   settings.addEventListener('pointerover', event => {
     const radio = (event.target as Element).closest<HTMLElement>('[role="radio"]');
-    hoveredEffort = radio ? radio.dataset.effort || null : undefined;
+    hoveredChoice = radio ? radioChoice(radio) : undefined;
     renderSettings();
   });
-  settings.addEventListener('pointerleave', () => { hoveredEffort = undefined; renderSettings(); });
+  settings.addEventListener('pointerleave', () => { hoveredChoice = undefined; renderSettings(); });
   list.addEventListener('click', event => {
     const button = (event.target as Element).closest<HTMLButtonElement>('.model-menu-option');
     if (button) void select(button);
@@ -513,14 +542,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     if (target !== search && key.length === 1 && key !== ' ' && !event.metaKey && !event.ctrlKey && !event.altKey) { search.focus({ preventScroll: true }); return; }
     const radio = target.closest<HTMLButtonElement>('[role="radio"]');
     if (radio) {
-      const radios = [...settings.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+      const radios = [...radio.closest('[role="radiogroup"]')!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
       const index = radios.indexOf(radio);
       const next = key === 'ArrowRight' || key === 'ArrowDown' ? Math.min(radios.length - 1, index + 1) : key === 'ArrowLeft' || key === 'ArrowUp' ? Math.max(0, index - 1) : key === 'Home' ? 0 : key === 'End' ? radios.length - 1 : -1;
       if (next < 0) return;
       event.preventDefault();
       if (pending || radio.disabled) return;
       radios[next].focus({ preventScroll: true });
-      void saveEffort(radios[next].dataset.effort || null);
+      const { kind, id } = radioChoice(radios[next]);
+      void saveChoice(kind, id);
       return;
     }
     if (target.closest('[role="tab"]')) {

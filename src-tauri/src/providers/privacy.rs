@@ -48,6 +48,7 @@ const COVERAGE: &[Coverage] = &[
     Coverage { provider: "claude", name: "Claude Code", status: "off", detail: "Usage telemetry, error reports and surveys. Remote feature flags and remotely started sessions stop." },
     Coverage { provider: "glm", name: "GLM Coding Plan", status: "off", detail: "Same switches as Claude Code." },
     Coverage { provider: "mimo", name: "MiMo Token Plan", status: "off", detail: "Same switches as Claude Code." },
+    Coverage { provider: "alibaba", name: "Alibaba Token Plan", status: "off", detail: "Same switches as Claude Code." },
     Coverage { provider: "codex", name: "Codex", status: "off", detail: "Analytics and feedback uploads." },
     Coverage { provider: "kimi", name: "Kimi Code", status: "off", detail: "Usage telemetry and crash events." },
     Coverage { provider: "grok", name: "Grok Build", status: "off", detail: "Usage telemetry, crash reports and trace uploads." },
@@ -138,7 +139,7 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), COVERAGE.len());
-        for id in ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "omp", "github-copilot", "muse"] {
+        for id in ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "omp", "github-copilot", "muse"] {
             assert!(seen.contains(&id), "{id} has no privacy entry");
         }
         assert!(COVERAGE.iter().all(|c| ["off", "manual", "unknown"].contains(&c.status)));

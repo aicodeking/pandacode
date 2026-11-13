@@ -201,6 +201,26 @@ fn allow_team_turn(store: &Store, bot: &Bot, session_id: &str) -> Result<()> {
     if leads_team { Err(TEAM_NEEDS_FULL_BOT.into()) } else { Ok(()) }
 }
 
+/// Re-checks [`allow_team_turn`] under the lock that reads the team: a team saved since the early
+/// check must not start its full-access workers from a bot that is not Full. The store lock is not
+/// held through the launch, which awaits. Passing here means no team is saved, so the turn launches
+/// as a plain task; a team saved after this point is refused by that launch's own admission check
+/// (`architect::validate_admission`: "Start this task using its architect team controls.").
+pub(super) fn claim_turn(store: &Store, bot: &Bot, session_id: &str, text: &str) -> Result<(bool, Option<super::shared_channels::Running>)> {
+    // Both checks run before the promotion, so a refusal or an unreadable team leaves the bot
+    // message or channel assignment queued and only the remembered images need clearing.
+    let is_team = allow_team_turn(store, bot, session_id).and_then(|()| crate::architect::load(store, session_id));
+    let is_team = match is_team {
+        Ok(team) => team.is_some(),
+        Err(error) => {
+            super::failover::clear_images(session_id);
+            return Err(error);
+        }
+    };
+    // The bot message or channel assignment this turn carries is now the one running.
+    Ok((is_team, super::shared_channels::promote_taken(store, session_id, text)))
+}
+
 async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String, image_ids: Option<Vec<String>>, sender_id: &str, force_queue: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let image_ids = image_ids.unwrap_or_default();
@@ -221,12 +241,7 @@ async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, tex
     }
     super::failover::remember_images(session_id, &image_ids);
     super::failover::before_turn(app, bot, session_id);
-    let (is_team, request) = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        // The bot message or channel assignment this turn carries is now the one running.
-        let request = super::shared_channels::promote_taken(&store, session_id, &text);
-        (crate::architect::load(&store, session_id)?.is_some(), request)
-    };
+    let (is_team, request) = claim_turn(&*state.store.lock().map_err(|e| e.to_string())?, bot, session_id, &text)?;
     let launched = if is_team {
         crate::architect::architect_start_in_project(app.clone(), state, session_id.to_owned(), text, Some(image_ids), Some(bot.project_id.clone())).await
     } else {

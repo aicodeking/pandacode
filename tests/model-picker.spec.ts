@@ -429,3 +429,41 @@ test('a true harness switch clears a stale account binding after configuring the
   expect(await page.evaluate(() => (window as any).__accountSnapshot().tasks['session-1'])).toBeUndefined();
   expect(await accountCalls(page, 'connection_pool_set')).toEqual([]);
 });
+
+const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });
+
+async function pick(page: Page, query: string, name: string): Promise<void> {
+  await trigger(page).click();
+  await picker(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill(query);
+  await picker(page).getByRole('option', { name, exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+}
+
+test('the Speed row lists a model\'s tiers and saves the choice', async ({ page }) => {
+  // Claude Sonnet reports no fast mode.
+  await open(page, '/');
+  await expect(picker(page).getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
+  await expect(speed(page)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+
+  await pick(page, 'astra', 'Codex · GPT-6-Astra');
+  await trigger(page).click();
+  await expect(speed(page).getByRole('radio')).toHaveText(['Standard', 'Fast', 'Ultra Fast']);
+  await expect(speed(page).getByRole('radio', { name: 'Standard', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await speed(page).getByRole('radio', { name: 'Ultra Fast', exact: true }).click();
+  await expect(speed(page).getByRole('radio', { name: 'Ultra Fast', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect.poll(async () => (await task(page)).codexSettings?.serviceTier).toBe('ultrafast');
+  await expect(trigger(page).locator('.model-effort')).toHaveText('Ultra Fast');
+  // Arrow keys stay inside the Speed group and save.
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(async () => (await task(page)).codexSettings?.serviceTier).toBe('priority');
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+
+  // A Codex model without tiers has no Speed row.
+  await pick(page, 'sol', 'Codex · GPT-5.6-Sol');
+  await trigger(page).click();
+  await expect(picker(page).getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
+  await expect(speed(page)).toHaveCount(0);
+});

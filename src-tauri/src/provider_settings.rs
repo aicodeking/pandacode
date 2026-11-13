@@ -78,6 +78,11 @@ pub const MIMO_KEY: Credential = Credential {
     label: "MiMo",
     env: "MIMO_API_KEY",
 };
+pub const ALIBABA_KEY: Credential = Credential {
+    account: "alibaba-token-plan",
+    label: "Alibaba Token Plan",
+    env: "ALIBABA_TOKEN_PLAN_API_KEY",
+};
 pub const DEEPSEEK_KEY: Credential = Credential {
     account: "deepseek-api",
     label: "DeepSeek",
@@ -123,7 +128,7 @@ pub fn executable_override(provider: &str) -> Option<PathBuf> {
 /// GLM and MiMo run the Claude executable, so they follow Claude Code's saved location.
 fn saved_executable<'a>(settings: &'a Settings, provider: &str) -> Option<&'a String> {
     let paths = &settings.executable_paths;
-    paths.get(provider).or_else(|| if matches!(provider, "glm" | "mimo") { paths.get("claude") } else { None })
+    paths.get(provider).or_else(|| if matches!(provider, "glm" | "mimo" | "alibaba") { paths.get("claude") } else { None })
 }
 
 /// A POSIX-style environment variable name, shared with the named-connection editor.
@@ -252,6 +257,10 @@ pub(crate) fn glm_key_for_usage() -> Result<Option<String>> {
 
 pub fn mimo_key() -> Result<Option<String>> {
     stored_key(MIMO_KEY)
+}
+
+pub fn alibaba_key() -> Result<Option<String>> {
+    stored_key(ALIBABA_KEY)
 }
 
 pub fn deepseek_key() -> Result<Option<String>> {
@@ -423,6 +432,8 @@ pub struct Configuration {
     glm_key_from_environment: bool,
     mimo_key_saved: bool,
     mimo_key_from_environment: bool,
+    alibaba_key_saved: bool,
+    alibaba_key_from_environment: bool,
     deepseek_key_saved: bool,
     deepseek_key_from_environment: bool,
     commandcode_key_saved: bool,
@@ -462,20 +473,22 @@ fn configuration() -> Result<Configuration> {
         .map(|(id, _)| (id.to_string(), !global_environment_disabled.iter().any(|name| name == id)))
         .collect();
     #[cfg(target_os = "macos")]
-    let (glm_key_saved, mimo_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = (
+    let (glm_key_saved, mimo_key_saved, alibaba_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = (
         glm_key()?.is_some(),
         mimo_key()?.is_some(),
+        alibaba_key()?.is_some(),
         deepseek_key()?.is_some(),
         commandcode_key()?.is_some(),
         None,
     );
     #[cfg(not(target_os = "macos"))]
-    let (glm_key_saved, mimo_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = {
+    let (glm_key_saved, mimo_key_saved, alibaba_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = {
         let (glm, glm_error) = credential_status(glm_key());
         let (mimo, mimo_error) = credential_status(mimo_key());
+        let (alibaba, alibaba_error) = credential_status(alibaba_key());
         let (deepseek, deepseek_error) = credential_status(deepseek_key());
         let (commandcode, commandcode_error) = credential_status(commandcode_key());
-        (glm, mimo, deepseek, commandcode, glm_error.or(mimo_error).or(deepseek_error).or(commandcode_error))
+        (glm, mimo, alibaba, deepseek, commandcode, glm_error.or(mimo_error).or(alibaba_error).or(deepseek_error).or(commandcode_error))
     };
     let from_environment = |name: &str| std::env::var(name).is_ok_and(|key| validate_key(&key).is_ok());
     Ok(Configuration {
@@ -488,6 +501,8 @@ fn configuration() -> Result<Configuration> {
         glm_key_from_environment: from_environment(GLM_KEY.env),
         mimo_key_saved,
         mimo_key_from_environment: from_environment(MIMO_KEY.env),
+        alibaba_key_saved,
+        alibaba_key_from_environment: from_environment(ALIBABA_KEY.env),
         deepseek_key_saved,
         deepseek_key_from_environment: from_environment(DEEPSEEK_KEY.env),
         commandcode_key_saved,
@@ -603,7 +618,7 @@ pub async fn provider_set_executable(
 ) -> Result<Configuration> {
     // Claude's location is GLM's and MiMo's too (`saved_executable`).
     let affected: Vec<String> = if provider == "claude" {
-        ["claude", "glm", "mimo"].map(String::from).to_vec()
+        ["claude", "glm", "mimo", "alibaba"].map(String::from).to_vec()
     } else {
         vec![provider.clone()]
     };
@@ -985,6 +1000,24 @@ pub async fn provider_remove_mimo_key() -> Result<Configuration> {
     .await
 }
 #[tauri::command]
+pub async fn provider_save_alibaba_key(key: String) -> Result<Configuration> {
+    crate::blocking(move || {
+        save_key(ALIBABA_KEY, &key)?;
+        crate::agent_usage::invalidate("alibaba");
+        configuration()
+    })
+    .await
+}
+#[tauri::command]
+pub async fn provider_remove_alibaba_key() -> Result<Configuration> {
+    crate::blocking(|| {
+        remove_key(ALIBABA_KEY)?;
+        crate::agent_usage::invalidate("alibaba");
+        configuration()
+    })
+    .await
+}
+#[tauri::command]
 pub async fn provider_save_deepseek_key(key: String) -> Result<Configuration> {
     crate::blocking(move || {
         save_key(DEEPSEEK_KEY, &key)?;
@@ -1144,6 +1177,8 @@ mod tests {
             glm_key_from_environment: false,
             mimo_key_saved: false,
             mimo_key_from_environment: false,
+            alibaba_key_saved: false,
+            alibaba_key_from_environment: false,
             deepseek_key_saved: false,
             deepseek_key_from_environment: false,
             commandcode_key_saved: false,
@@ -1172,6 +1207,8 @@ mod tests {
             glm_key_from_environment: true,
             mimo_key_saved: true,
             mimo_key_from_environment: false,
+            alibaba_key_saved: false,
+            alibaba_key_from_environment: false,
             deepseek_key_saved: false,
             deepseek_key_from_environment: false,
             commandcode_key_saved: false,
@@ -1516,6 +1553,8 @@ mod tests {
             glm_key_from_environment: false,
             mimo_key_saved: false,
             mimo_key_from_environment: false,
+            alibaba_key_saved: false,
+            alibaba_key_from_environment: false,
             deepseek_key_saved: false,
             deepseek_key_from_environment: false,
             commandcode_key_saved: false,
@@ -1615,7 +1654,7 @@ mod tests {
     fn glm_and_mimo_follow_the_claude_location_and_nothing_else_does() {
         let mut settings = Settings::default();
         settings.executable_paths.insert("claude".into(), "/opt/claude".into());
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             assert_eq!(saved_executable(&settings, provider).unwrap(), "/opt/claude");
         }
         assert_eq!(saved_executable(&settings, "codex"), None);

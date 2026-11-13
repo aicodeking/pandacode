@@ -664,13 +664,27 @@ pub async fn schedule_create(app: tauri::AppHandle, state: State<'_, AppState>, 
 
 /// Creates a user's schedule, recording whether a remote device saved it (`remote_team_gate`).
 pub(crate) fn save_create(app: &tauri::AppHandle, state: &State<'_, AppState>, input: &ScheduleInput, remote: bool) -> Result<TaskSchedule> {
-    let schedule = {
-        let store = lock(state)?;
-        let schedule = create(&store, input, "user", None, crate::storage::now())?;
-        mark_saved_remotely(&store, &schedule.id, remote)?;
-        schedule
-    };
+    let schedule = create_marked(&*lock(state)?, input, remote, crate::storage::now())?;
     changed(app, Some(&schedule.session_id));
+    Ok(schedule)
+}
+
+/// A user's save and its `saved_remotely` mark in one transaction: a remote save never
+/// leaves an enabled schedule marked as saved on this computer.
+pub(crate) fn create_marked(store: &Store, input: &ScheduleInput, remote: bool, now: i64) -> Result<TaskSchedule> {
+    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let schedule = create(store, input, "user", None, now)?;
+    mark_saved_remotely(store, &schedule.id, remote)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(schedule)
+}
+
+/// [`create_marked`] for an edit.
+pub(crate) fn update_marked(store: &Store, schedule_id: &str, input: &ScheduleInput, remote: bool, now: i64) -> Result<TaskSchedule> {
+    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let schedule = update(store, schedule_id, input, now)?;
+    mark_saved_remotely(store, schedule_id, remote)?;
+    transaction.commit().map_err(|e| e.to_string())?;
     Ok(schedule)
 }
 
@@ -684,8 +698,7 @@ pub(crate) fn save_update(app: &tauri::AppHandle, state: &State<'_, AppState>, s
     let (before, schedule) = {
         let store = lock(state)?;
         let before = get(&store, schedule_id)?;
-        let schedule = update(&store, schedule_id, input, crate::storage::now())?;
-        mark_saved_remotely(&store, schedule_id, remote)?;
+        let schedule = update_marked(&store, schedule_id, input, remote, crate::storage::now())?;
         (before, schedule)
     };
     // Moving a schedule to another thread changes both threads' lists.

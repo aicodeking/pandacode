@@ -44,11 +44,13 @@ fn discovery_command(path: &Path, provider: &str) -> Result<Command, String> {
         // Project `.mcp.json` servers would start inside the task folder; none are needed.
         "--strict-mcp-config",
     ]);
-    if matches!(provider, "glm" | "mimo") {
+    if matches!(provider, "glm" | "mimo" | "alibaba") {
         let mut args = if provider == "glm" {
             crate::providers::glm_arguments()
-        } else {
+        } else if provider == "mimo" {
             crate::providers::mimo_arguments()?
+        } else {
+            crate::providers::alibaba_arguments()
         };
         let settings = discovery_settings(args.last().map(String::as_str));
         *args.last_mut().unwrap() = settings;
@@ -61,6 +63,7 @@ fn discovery_command(path: &Path, provider: &str) -> Result<Command, String> {
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ZAI_API_KEY",
             "MIMO_API_KEY",
+            "ALIBABA_TOKEN_PLAN_API_KEY",
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_USE_VERTEX",
             "CLAUDE_CODE_USE_FOUNDRY",

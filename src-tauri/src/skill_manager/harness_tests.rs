@@ -306,7 +306,7 @@ fn skill_manager_harness_payload_drops_deprecated_twins_and_notes_claude_console
         assert!(h.get("enforce").is_none(), "{id}");
         assert_eq!(
             h.get("consoleNote").and_then(|n| n.as_str()),
-            matches!(id, "claude" | "glm" | "mimo")
+            matches!(id, "claude" | "glm" | "mimo" | "alibaba")
                 .then_some("Typed /commands still run in the console"),
             "{id}"
         );
