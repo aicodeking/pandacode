@@ -2724,7 +2724,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
       result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
-    case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
+    case 'get_terminal_activity': result = new URLSearchParams(location.search).has('terminal-coverage') && (window as any).__previewTerminalActivity || { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;
     case 'get_run_script_preview': result = null; break;
     case 'get_terminal_preferences': result = {}; break;
@@ -2732,6 +2732,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'start_harness_terminal': case 'start_terminal': {
       if (command === 'start_harness_terminal') requireProviderConsole(session(args.sessionId).provider);
       const terminalId = 'preview-terminal-' + crypto.randomUUID(); result = terminalId;
+      if (new URLSearchParams(location.search).has('terminal-coverage')) {
+        ((window as any).__previewTerminalIds ??= []).push(terminalId);
+        (window as any).__previewTerminalEmit = (id: string, data: string, exit = false) => emit('terminal-event', { terminalId: id, data, exit });
+      }
       window.setTimeout(() => emit('terminal-event', { terminalId, data: '\x1b[38;5;108mPandaCode browser preview\x1b[0m\r\nA real PTY is available in the desktop app.\r\n\r\n$ ' }), 100); break;
     }
     case 'write_terminal': emit('terminal-event', { terminalId: args.terminalId, data: args.data === '\r' ? '\r\nPreview mode — no commands executed.\r\n$ ' : args.data }); break;

@@ -85,7 +85,7 @@ test.describe('terminal', () => {
     expect(await calls(page, 'close_terminal')).toHaveLength(0);
   });
 
-  test('warns before closing running work and lets users minimize, dismiss, or cancel instead', async ({ page }) => {
+  test('warns before closing running work and lets users minimize, dismiss, or cancel instead', async ({ page }, info) => {
     await open(page); await running(page);
     const close = drawer(page).getByRole('button', { name: 'Close terminal', exact: true });
     await close.click();
@@ -93,7 +93,7 @@ test.describe('terminal', () => {
     await expect(warning(page)).toContainText(/node/i);
     await expect(warning(page)).toContainText(/stop|kill|running/i);
     await warning(page).evaluate(async node => { await Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => {}))); });
-    await page.screenshot({ path: '/private/tmp/pandacode-terminal-warning.png' });
+    await page.screenshot({ path: info.outputPath('terminal-warning.png') });
     await warning(page).getByRole('button', { name: 'Minimize instead', exact: true }).click();
     await expect(warning(page)).toBeHidden();
     await expect(drawer(page)).toBeHidden();
@@ -113,14 +113,14 @@ test.describe('terminal', () => {
     expect(await calls(page, 'start_terminal')).toHaveLength(1);
   });
 
-  test('tabs retain separate processes and output and closing a busy tab only stops that tab', async ({ page }) => {
+  test('tabs retain separate processes and output and closing a busy tab only stops that tab', async ({ page }, info) => {
     await open(page);
     await drawer(page).getByRole('button', { name: 'New terminal', exact: true }).click();
     const tabs = drawer(page).getByRole('tablist', { name: 'Terminal tabs' });
     await expect(tabs.getByRole('tab')).toHaveCount(2);
     await expect(tabs.getByRole('tab', { name: 'Terminal 2', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(screen(page)).toContainText('Ready terminal-2');
-    await page.screenshot({ path: '/private/tmp/pandacode-terminal-tabs.png' });
+    await page.screenshot({ path: info.outputPath('terminal-tabs.png') });
     await page.evaluate(() => (window as any).__terminalEmit('terminal-event', { terminalId: 'terminal-1', data: '\r\nFirst tab stayed alive\r\n' }));
     await tabs.getByRole('tab', { name: 'Terminal 1', exact: true }).click();
     await expect(screen(page)).toContainText('First tab stayed alive');

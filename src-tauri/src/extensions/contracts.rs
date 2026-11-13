@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -488,6 +488,19 @@ mod tests {
         assert_eq!(super::validate_contract("browserPresentation", &raw)["ok"], false);
         let mut forged = action; forged["ipc"] = json!("raw");
         assert_eq!(super::validate_contract("browserAction", &forged)["ok"], false);
+    }
+    #[test]
+    fn terminal_component_state_and_action_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/terminal/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let props: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/terminal/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/terminal/action.json")).unwrap();
+        assert_eq!(super::validate_contract("terminalPresentation", &props)["ok"], true);
+        assert_eq!(super::validate_contract("terminalAction", &action)["ok"], true);
+        for field in ["pid", "command", "terminalId", "ipc"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("terminalAction", &forged)["ok"], false);
+        }
     }
     #[test]
     fn search_component_state_and_action_share_native_schema() {

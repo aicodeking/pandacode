@@ -1699,6 +1699,69 @@ mod tests {
 mod platform_tests {
     use super::*;
 
+    /// Real ConPTY + original registry operations, separate from preview DOM continuity.
+    #[cfg(windows)]
+    #[test]
+    fn windows_live_pty_registry_preserves_process_and_job_across_view_leases() {
+        use std::{sync::mpsc, time::Duration};
+        let pty = native_pty_system().openpty(size(80, 24)).unwrap();
+        let mut command = CommandBuilder::new(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into()));
+        command.args(["/D", "/Q"]);
+        let mut reader = pty.master.try_clone_reader().unwrap();
+        let writer = Arc::new(Mutex::new(pty.master.take_writer().unwrap()));
+        let mut child = pty.slave.spawn_command(command).unwrap();
+        let pid = child.process_id().unwrap();
+        let killer = child.clone_killer();
+        let job = crate::providers::windows_job::Job::attach(pid);
+        assert!(job.is_some(), "Test PTY must retain a real host-owned job");
+        drop(pty.slave);
+        let terms: Terminals = Arc::new(Mutex::new(HashMap::new()));
+        terms.lock().unwrap().insert("host-terminal".into(), Terminal { master: pty.master, writer, killer, shell_pid: Some(pid), shell_name: "cmd.exe".into(), _job: job, closed: Arc::new(AtomicBool::new(false)), harness_session: None, run_script: false });
+        let (send, receive) = mpsc::channel();
+        let response_writer = terms.lock().unwrap()["host-terminal"].writer.clone();
+        let output = std::thread::spawn(move || {
+            let mut bytes = [0; 4096];
+            let mut recent = String::new();
+            while let Ok(count) = reader.read(&mut bytes) {
+                if count == 0 { break; }
+                let text = String::from_utf8_lossy(&bytes[..count]).into_owned();
+                recent.push_str(&text);
+                // ConPTY's initial cursor-position handshake is normally answered by xterm.
+                if recent.contains("\x1b[6n") {
+                    let mut writer = response_writer.lock().unwrap();
+                    let _ = writer.write_all(b"\x1b[1;1R"); let _ = writer.flush();
+                    recent.clear();
+                } else if recent.len() > 8192 { recent.clear(); }
+                let _ = send.send(text); // Drain until EOF even if an assertion unwinds.
+            }
+        });
+        let read_until = |needle: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut text = String::new();
+            while !text.contains(needle) {
+                text.push_str(&receive.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).expect("Live PTY output deadline"));
+            }
+        };
+        write(&terms, "host-terminal", "echo FIRST-HOST-LEASE\r\n").unwrap();
+        read_until("FIRST-HOST-LEASE");
+        // UI hiding/moving/restoring is deliberately not a native terminal operation.
+        for (cols, rows) in [(100, 30), (60, 18), (80, 24)] {
+            resize(&terms, "host-terminal", cols, rows).unwrap();
+            let registry = terms.lock().unwrap();
+            assert_eq!(registry.len(), 1);
+            assert_eq!(registry["host-terminal"].shell_pid, Some(pid));
+            assert!(registry["host-terminal"]._job.is_some());
+            assert!(child.try_wait().unwrap().is_none());
+        }
+        write(&terms, "host-terminal", "echo RESTORED-HOST-LEASE\r\n").unwrap();
+        read_until("RESTORED-HOST-LEASE");
+        close(&terms, "host-terminal").unwrap();
+        child.wait().unwrap();
+        output.join().unwrap();
+        assert!(terms.lock().unwrap().is_empty());
+        assert!(write(&terms, "host-terminal", "forged").is_err());
+    }
+
     #[test]
     fn terminal_activity_parses_process_names_without_arguments_and_tracks_nested_jobs() {
         let snapshot = parse_unix_processes("  10 1 S+ /bin/zsh\n 12 10 S bash\n 13 12 S /Program Files/worker name\n 14 10 Z old-job\n 15 100 S unrelated\n").unwrap();

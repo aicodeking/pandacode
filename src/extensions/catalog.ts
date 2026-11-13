@@ -1,7 +1,7 @@
 /** Public JSON-only discovery. Definitions are logical locations, not selectors or DOM handles. */
 import { createDeclarativeActivation } from './activation.ts';
 import type { ExtensionSnapshot } from './manager';
-import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS, BROWSER_ACTION_SURFACES, BROWSER_CONTROLS } from './surfaces.ts';
+import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS, BROWSER_ACTION_SURFACES, BROWSER_CONTROLS, TERMINAL_ACTION_SURFACES, TERMINAL_CONTROLS } from './surfaces.ts';
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from './window-surfaces.ts';
 import { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } from './views-state.ts';
 import { INSPECTOR_VIEWS } from '../inspector-tabs.ts';
@@ -22,6 +22,7 @@ export class CatalogError extends Error {
 }
 
 const coreItems: ItemMetadata[] = [
+  ...Object.entries(TERMINAL_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(BROWSER_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(SEARCH_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(CHANGES_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
@@ -53,6 +54,9 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
+      { id: 'panda.terminal', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.terminal', label: 'Host Terminal presentation v1', supportedOperations: ['inspect', 'replace', 'move', 'hide', 'show'], supportedItemTypes: ['tabs-below'], windows: ['main'], available: true },
+      { id: 'panda.terminal.controls', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.terminal.controls', label: 'Terminal controls', supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true },
+      ...TERMINAL_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
       { id: 'panda.browser.controls', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.browser.controls', label: 'Browser controls', supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'input'], windows: ['main'], available: true },
       { id: 'panda.browser', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.browser', label: 'Host Browser presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['controls-below'], windows: ['main'], available: true },
       { id: 'panda.search.controls', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.search.controls', label: 'Search controls', supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true },

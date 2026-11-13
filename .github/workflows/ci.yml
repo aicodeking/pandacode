@@ -101,13 +101,19 @@ jobs:
       - name: Document presentation (WebKit preview)
         env: { PW_PORT: '1456' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-documents-coverage.spec.ts tests/extensions-diff-coverage.spec.ts tests/extensions-search-coverage.spec.ts tests/changes-view.spec.ts tests/document-viewer.spec.ts tests/office-viewer.spec.ts --workers=1
-      - name: Browser presentation (Chromium preview)
-        # Browser continuity is synthetic here; installed native guests are qualified separately.
+      - name: Browser and Terminal presentation (Chromium preview)
+        # Guest/PTY continuity is synthetic here; installed native windows are qualified separately.
         env: { PW_PORT: '1449', PW_PROD: '1' }
-        run: npx playwright test tests/extensions-browser-coverage.spec.ts --workers=1
-      - name: Browser presentation (WebKit preview)
+        run: npx playwright test tests/extensions-browser-coverage.spec.ts tests/extensions-terminal-coverage.spec.ts --workers=1
+      - name: Browser and Terminal presentation (WebKit preview)
         env: { PW_PORT: '1450', PW_PROD: '1' }
-        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-browser-coverage.spec.ts --workers=1
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-browser-coverage.spec.ts tests/extensions-terminal-coverage.spec.ts --workers=1
+      - name: Original terminal controllers (Chromium development preview)
+        env: { PW_PORT: '1457' }
+        run: npx playwright test tests/terminal.spec.ts --workers=1
+      - name: Original terminal controllers (WebKit development preview)
+        env: { PW_PORT: '1458' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/terminal.spec.ts --workers=1
       - name: Extension tools and API connections (Chromium preview)
         env: { PW_PORT: '1449', PW_PROD: '1' }
         run: npx playwright test tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts tests/extensions-services.spec.ts --workers=1

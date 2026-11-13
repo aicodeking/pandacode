@@ -12,7 +12,9 @@ const snapshot = { safeMode: false, packages: [{ manifest, enabled: true, icons:
 test('extensions view actions: the surface ledger names every catalog location and core action exactly', () => {
   const ledger = JSON.parse(readFileSync(new URL('./fixtures/extensions/surfaces.json', import.meta.url), 'utf8'));
   const catalog = createUiCatalog(() => ({ safeMode: false, packages: [], diagnostics: [] }));
-  assert.deepEqual(catalog.listSurfaces().items.map(item => item.id).sort(), [...ledger.catalog.surfaces].sort());
+  const surfaces = []; let surfaceCursor;
+  do { const page = catalog.listSurfaces({ limit: 50, ...(surfaceCursor ? { cursor: surfaceCursor } : {}) }); surfaces.push(...page.items); surfaceCursor = page.nextCursor; } while (surfaceCursor);
+  assert.deepEqual(surfaces.map(item => item.id).sort(), [...ledger.catalog.surfaces].sort());
   const items = []; let cursor;
   do { const page = catalog.listItems({ owner: 'panda.core', limit: 100, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor; } while (cursor);
   assert.deepEqual(items.map(item => item.id).sort(), [...ledger.catalog.coreItems].sort());

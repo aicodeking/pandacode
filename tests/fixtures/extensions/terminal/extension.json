@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.terminal",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "components": [{ "id": "sample.terminal/tabs", "title": "Tabs below", "slot": "panda.terminal", "contractVersion": 1, "presentation": "tabs-below", "capabilities": ["host-pty", "host-tabs", "original-actions"] }],
+    "commands": [{ "id": "sample.terminal/help", "title": "Terminal tools", "action": { "kind": "showMessage", "message": "Terminal PTY and launch policy remain host-owned." } }],
+    "menus": [
+      { "id": "sample.terminal/toolbar", "location": "panda.terminal.actions", "command": "sample.terminal/help" },
+      { "id": "sample.terminal/context", "location": "panda.terminal.context", "command": "sample.terminal/help" }
+    ],
+    "layouts": [{ "id": "sample.terminal/controls", "title": "Minimize before new", "location": "panda.terminal.controls", "rules": [{ "id": "panda.terminal.controls/minimize", "target": "panda.terminal.controls/new", "side": "before" }] }]
+  }
+}

@@ -1,10 +1,16 @@
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
+import { createTerminalPresentation, snapshotTerminal, type TerminalPresentation, type TerminalAdmission } from './extensions/terminal';
+import { applyTerminalPresentation, componentSelection, componentProviders } from './extensions/replacement';
+import { extensionsSnapshot, onExtensionsChanged } from './extensions/manager';
+import { applyControlOrder, applyControlVisibility, layout } from './extensions/layout-host';
+import { mountExtensionActions } from './extensions/header';
+import { openContextActions } from './extensions/context-actions';
 import { showPopover, hidePopover } from './popover-motion';
 import type { TerminalActivity, TerminalContext, TerminalController } from './terminal';
 import './terminal-panel.css';
 
 type Tab = { id: string; title: string; context: TerminalContext; label: string; host: HTMLElement; ready: Promise<void>; controller?: TerminalController; removed: boolean };
-type Group = { tabs: Tab[]; active?: string; open: boolean; sequence: number };
+type Group = { id: string; tabs: Tab[]; active?: string; open: boolean; sequence: number };
 
 /** PTYs belong to tasks, not to the currently visible drawer. Hidden tabs keep output. */
 export class TerminalPanel {
@@ -17,8 +23,31 @@ export class TerminalPanel {
   private dismiss?: () => void;
   private tabs: HTMLElement;
   private tabsMarkup = '';
-  constructor(private drawer: HTMLElement, private host: HTMLElement, private report: (error: unknown) => void) {
+  private readonly publicContext = crypto.randomUUID();
+  private revision = 0;
+  private pending = false;
+  private applied = new Set<string>();
+  private closeContext?: () => void;
+  constructor(private drawer: HTMLElement, private host: HTMLElement, private report: (error: unknown) => void, notify: (message: string) => void = report) {
     this.tabs = drawer.querySelector<HTMLElement>('[role="tablist"]')!;
+    const configure = () => { this.dismissTransient(); applyTerminalPresentation(drawer); this.paint(); };
+    onExtensionsChanged(configure); layout.subscribe(configure);
+    window.addEventListener('pandacode-components-change', configure);
+    window.addEventListener('pandacode:terminal-exit', () => { this.revision++; });
+    const actions = document.createElement('div'); actions.className = 'terminal-heading-actions';
+    this.tabs.parentElement!.append(actions);
+    mountExtensionActions(actions, 'panda.terminal.actions', () => this.actionContext(), notify);
+    const hasContext = () => !extensionsSnapshot().safeMode && extensionsSnapshot().packages.some(item => item.enabled && item.manifest.permissions?.includes('ui.contribute') && item.manifest.contributes.menus?.some(menu => menu.location === 'panda.terminal.context'));
+    const openContext = (point?: { x: number; y: number }, tabId = this.group()?.active) => {
+      this.closeContext?.(); const revision = this.revision;
+      if (!tabId || !this.group()?.tabs.some(tab => tab.id === tabId)) return;
+      const anchor = this.tabs.querySelector<HTMLElement>(`[role="tab"][data-tab="${CSS.escape(tabId)}"]`);
+      if (!anchor) return;
+      this.closeContext = openContextActions(anchor, 'panda.terminal.context', { ...this.actionContext(), objectId: tabId }, { title: 'Terminal', items: [], onSelect() {}, notify, point, isAlive: () => this.revision === revision && this.open && drawer.checkVisibility() });
+    };
+    this.tabs.addEventListener('contextmenu', event => { if (hasContext()) { event.preventDefault(); openContext({ x: event.clientX, y: event.clientY }, (event.target as Element).closest<HTMLElement>('[data-tab]')?.dataset.tab); } });
+    this.tabs.addEventListener('keydown', event => { if (!isImeKey(event) && hasContext() && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openContext(undefined, (event.target as Element).closest<HTMLElement>('[data-tab]')?.dataset.tab); } });
+    applyTerminalPresentation(drawer);
     drawer.addEventListener('click', event => {
       const target = (event.target as Element).closest<HTMLElement>('[data-terminal-action]');
       if (!target) return;
@@ -42,6 +71,32 @@ export class TerminalPanel {
   get open(): boolean { return Boolean(this.group()?.open && this.group()?.tabs.length); }
   private group(): Group | undefined { return this.groups.get(this.key); }
   private active(): Tab | undefined { const group = this.group(); return group?.tabs.find(tab => tab.id === group.active); }
+  private actionContext() { return { projectId: this.context?.projectId ?? '', sessionId: this.context?.sessionId ?? '', revision: this.revision, objectId: this.group()?.active ?? '' }; }
+  presentation(): TerminalPresentation {
+    const group = this.group();
+    return snapshotTerminal({ contractVersion: 1, context: this.publicContext, group: group?.id ?? this.publicContext, project: this.context?.projectId ?? '', session: this.context?.sessionId ?? '', revision: this.revision, selected: group?.active ?? '', focused: group?.tabs.find(tab => tab.host.contains(document.activeElement) || this.tabs.querySelector(`[data-tab="${CSS.escape(tab.id)}"]`) === document.activeElement)?.id ?? '', visible: this.open && this.drawer.checkVisibility(), busy: this.pending || this.closing.size > 0, tabs: (group?.tabs ?? []).map(tab => ({ id: tab.id, title: tab.title, ready: Boolean(tab.controller), exited: Boolean(tab.controller?.exited) })) });
+  }
+  private authority() {
+    const provider = componentSelection.resolve('panda.terminal', componentProviders());
+    const owner = extensionsSnapshot().packages.find(item => item.manifest.id === provider?.id.split('/')[0]);
+    return { owner: provider?.id ?? '', active: Boolean(provider && this.drawer.dataset.terminalProvider === provider.id), granted: Boolean(owner?.manifest.permissions?.includes('ui.contribute')) };
+  }
+  dispatch(input: unknown): TerminalAdmission {
+    const auth = this.authority();
+    const slot = createTerminalPresentation(this.presentation(), auth.owner, () => this.presentation(), () => this.authority(), action => {
+      this.revision++;
+      if (action.controlId === 'minimize') this.minimize();
+      else if (action.controlId === 'select') { this.cancelClose(); this.group()!.active = action.tab; this.paint(); this.focus(); }
+      else {
+        this.pending = true;
+        const close = this.tabs.querySelector<HTMLElement>(`[data-terminal-action="close"][data-tab="${CSS.escape(action.tab)}"]`);
+        const anchor = close?.checkVisibility() && !close.inert ? close : [...this.drawer.querySelectorAll<HTMLElement>('button')].find(node => node.checkVisibility() && !node.closest('[inert]')) ?? document.querySelector<HTMLElement>('#terminal-toggle')!;
+        const operation = action.controlId === 'new' ? this.add() : this.requestClose(anchor, action.tab);
+        void operation.catch(this.report).finally(() => { this.pending = false; this.revision++; });
+      }
+    }, this.applied);
+    const result = slot.dispatch(input); slot.dispose(); return result;
+  }
   select(context: TerminalContext | undefined, label: string): void {
     const key = context ? context.sessionId ?? `project:${context.projectId}` : '';
     this.context = context; this.label = label;
@@ -70,7 +125,7 @@ export class TerminalPanel {
     this.cancelClose();
     const key = this.key;
     let group = this.group();
-    if (!group) { group = { tabs: [], open: true, sequence: 0 }; this.groups.set(key, group); }
+    if (!group) { group = { id: crypto.randomUUID(), tabs: [], open: true, sequence: 0 }; this.groups.set(key, group); }
     // The native harness owns one session. Bring its existing console back instead
     // of spawning a competing CLI attached to the same conversation.
     const existing = runScript ? group.tabs.find(tab => tab.context.runScript) : harness && group.tabs.find(tab => tab.context.harness?.provider === harness.provider);
@@ -89,6 +144,7 @@ export class TerminalPanel {
       if (this.key === key && group.active === existing.id && group.open) existing.controller.focus();
       return;
     }
+    if (group.tabs.length >= 1000) throw new Error('Terminal tab limit reached.');
     const host = document.createElement('div'); host.className = 'terminal-tab-surface';
     const id = `terminal-tab-${crypto.randomUUID()}`;
     host.id = id; host.setAttribute('role', 'tabpanel'); host.setAttribute('aria-labelledby', `${id}-label`);
@@ -120,6 +176,7 @@ export class TerminalPanel {
   private cancelClose(): void { ++this.epoch; this.dismiss?.(); this.dismiss = undefined; }
   /** Placement/hide invalidates anchored consent, never the PTY or its running job. */
   dismissTransient(): void {
+    this.revision++; this.closeContext?.(); this.closeContext = undefined;
     const focused = document.activeElement?.closest('.terminal-close-popover');
     this.cancelClose();
     if (focused) document.querySelector<HTMLElement>('#terminal-toggle')?.focus({ preventScroll: true });
@@ -163,6 +220,7 @@ export class TerminalPanel {
     this.paint();
   }
   private paint(): void {
+    this.revision++;
     const group = this.group(), active = this.active();
     this.drawer.hidden = !this.open;
     for (const owner of this.groups.values()) for (const tab of owner.tabs) tab.host.hidden = owner !== group || tab !== active;
@@ -171,6 +229,12 @@ export class TerminalPanel {
     label.title = active?.host.dataset.terminalSettings ? `Appearance from ${active.host.dataset.terminalSettings}` : '';
     const markup = (group?.tabs ?? []).map(tab => `<div class="terminal-tab${tab === active ? ' selected' : ''}"><button role="tab" id="${tab.id}-label" aria-controls="${tab.id}" aria-selected="${tab === active}" tabindex="${tab === active ? 0 : -1}" data-terminal-action="select" data-tab="${tab.id}">${escape(tab.title)}</button><button class="icon-button" aria-label="Close ${escape(tab.title)}" data-terminal-action="close" data-tab="${tab.id}">${icon('close')}</button></div>`).join('');
     if (markup !== this.tabsMarkup) { this.cancelClose(); this.tabsMarkup = markup; this.tabs.innerHTML = markup; }
+    const bindings = [...this.drawer.querySelectorAll<HTMLElement>('[data-terminal-action]')].map(node => [`panda.terminal.controls/${node.dataset.terminalAction}`, node] as const);
+    applyControlVisibility(bindings, () => document.querySelector<HTMLElement>('#terminal-toggle'));
+    // Order only compatible siblings; per-tab select/close never reorder live PTY hosts.
+    const heading = this.drawer.querySelector('.terminal-heading-actions');
+    applyControlOrder('panda.terminal.controls', bindings.filter(([, node]) => node?.parentElement === heading));
+    for (const tab of this.tabs.children) applyControlOrder('panda.terminal.controls', bindings.filter(([, node]) => node?.parentElement === tab));
     const toggle = document.querySelector<HTMLElement>('#terminal-toggle');
     toggle?.setAttribute('aria-expanded', String(this.open)); toggle?.classList.toggle('active', this.open);
     toggle?.classList.toggle('has-terminals', Boolean(group?.tabs.length));

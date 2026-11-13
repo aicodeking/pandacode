@@ -5,6 +5,27 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Closed Terminal recipe changes only the original tab strip's visual order. */
+export function applyTerminalPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('[role="tablist"]') || !host.querySelector('#terminal-host')) throw Error('Incomplete Terminal host');
+}): void {
+  delete host.dataset.terminalProvider;
+  const strip = host.querySelector<HTMLElement>('[role="tablist"]')?.parentElement;
+  if (strip) strip.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-terminal-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.terminal', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.terminalPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Terminal replacement failed. Built-in terminal remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.terminalProvider = provider.id; if (strip) strip.style.order = '1'; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** Move only the original toolbar. Native guest geometry remains host-managed. */
 export function applyBrowserPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.browser-toolbar') || !host.querySelector('.browser-viewport')) throw Error('Incomplete Browser host');

@@ -717,7 +717,11 @@ publishSpringEasings();
 syncPulses();
 mountActionDock($('#action-dock'));
 installDialogMotion(document.querySelector<HTMLDialogElement>('#dialog')!);
-const terminalPanel = new TerminalPanel($('#terminal-drawer'), $('#terminal-host'), report);
+const terminalPanel = new TerminalPanel($('#terminal-drawer'), $('#terminal-host'), report, notify);
+if (preview && new URLSearchParams(location.search).has('terminal-coverage')) {
+  (window as any).__previewTerminal = () => terminalPanel.presentation();
+  (window as any).__previewTerminalAction = (action: unknown) => terminalPanel.dispatch(action);
+}
 const projectRunner = new ProjectRunner({
   context: () => project() ? workspaceContext() : undefined,
   start: requestId => terminalPanel.runScript(requestId),

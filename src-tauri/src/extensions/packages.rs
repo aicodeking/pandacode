@@ -1008,6 +1008,18 @@ mod tests {
         assert!(storage.packages(true).snapshot().safe_mode);
     }
     #[test]
+    fn terminal_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/terminal/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.terminal", true).unwrap();
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest["contributes"]["components"][0]["slot"], "panda.terminal");
+        packages.enable("sample.terminal", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        assert!(storage.packages(true).snapshot().safe_mode);
+    }
+    #[test]
     fn document_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/documents/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);
