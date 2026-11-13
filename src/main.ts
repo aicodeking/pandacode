@@ -680,6 +680,9 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       const dynamic = (providers: Provider[]) => JSON.stringify(providers.filter(provider => provider.id.includes('/')));
       // A declarative-only refresh must not remount the composer/close an open core picker.
       if (dynamic(providers) === dynamic(state.providers)) return;
+      // Catalogs belong to an activation/version, not just a persisted identity.
+      // Retire pending results as well as cached models on disable/update/recovery.
+      for (const id of modelCatalogs.keys()) if (id.includes('/')) modelCatalogs.delete(id);
       state.providers = providers; renderComposer();
     }));
   });
@@ -1586,7 +1589,14 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
 }
 function rememberedModel(id: ProviderId): string {
   const model = localStorage.getItem('pandacode.defaultModel.' + id) || localStorage.getItem('pandacode.model.' + id) || state.sessions.find(s => s.provider === id && s.model)?.model || 'default';
+  const catalog = provider(id);
+  if (catalog?.metadata && !catalog.models.some(entry => entry.id === model)) return catalog.models[0]?.id ?? model;
   return model.length <= 200 ? model : 'default';
+}
+/** Preserve built-in defaults; never invent Full access for an extension. */
+function initialProviderMode(id: ProviderId): Mode {
+  const metadata = provider(id)?.metadata;
+  return metadata ? metadata.modes.includes('full') ? 'full' : metadata.modes[0] : id.includes('/') ? 'ask' : 'full';
 }
 let openCodeSaved = false;
 /** Models by last use for long catalogs: OpenCode without a Settings selection, and Devin (about 110 models, most of them Fusion pairs). */
@@ -3370,7 +3380,7 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   else {
     const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
     if (!harness) throw new Error('Open Settings to check your installed agents.');
-    saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
+    saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: initialProviderMode(harness.id), title, description });
   }
   const index = state.sessions.findIndex(s => s.id === saved.id);
   if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved;
@@ -5794,7 +5804,7 @@ async function startTask(projectId: string): Promise<void> {
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
+    created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: initialProviderMode(harness.id), draft: true });
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
   if (generation !== state.generation) { renderNavigation(); return; }
@@ -5819,7 +5829,7 @@ async function createChat(from?: Session): Promise<void> {
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: initialProviderMode(harness.id) });
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);

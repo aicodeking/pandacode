@@ -257,6 +257,11 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").chain(items(contributions, "providers").iter()).map(|command| text(command, "id").to_owned()).collect();
         for provider in items(contributions, "providers") {
             if manifest.get("runtime").is_none() { return Err(fail("UnsupportedRuntime", &path, vec![])); }
+            let modes = strings(&provider["metadata"]["modes"]);
+            if modes.iter().collect::<BTreeSet<_>>().len() != modes.len() { return Err(fail("DuplicateId", &path, vec![])); }
+            if let Some(icon) = provider["metadata"]["icon"].as_str() {
+                if !icon.starts_with(&format!("{id}/")) || !items(contributions, "icons").iter().any(|entry| entry["id"] == icon) { return Err(fail("MissingReference", &path, vec![icon.into()])); }
+            }
             let mut models = BTreeSet::new();
             for model in items(provider, "models") {
                 let efforts = strings(&model["efforts"]);

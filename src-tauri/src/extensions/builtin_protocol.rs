@@ -231,6 +231,7 @@ mod tests {
                     id: id.into(), name: name.into(), installed,
                     path: installed.then(|| "/sample/cli".into()), version: "1.2.3".into(),
                     models: vec![ModelInfo::default_choice()],
+                    metadata: None,
                 };
                 assert_eq!(serde_json::to_value(probe(provider.id, provider.name)).unwrap(),
                     serde_json::to_value(provider.discover_with(probe)).unwrap());

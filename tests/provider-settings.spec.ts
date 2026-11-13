@@ -129,8 +129,9 @@ test('provider connections expose Kilo models, approval modes and executable set
   await expect(page.locator('#mode-picker-trigger')).toContainText('Plan mode');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Kilo Code', exact: false }) });
+  await card.locator(':scope > summary').click();
   await expect(card.locator('h3 .provider-logo[data-provider="kilo"]')).toBeVisible();
   const ompCard = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Oh My Pi', exact: false }) });
   await expect(ompCard.locator('h3 .provider-logo[data-provider="omp"]')).toBeVisible();
@@ -168,8 +169,9 @@ test('provider connections show Claude credential conflicts and let users prefer
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
   const card = page.locator('#claude-connection');
+  await card.locator(':scope > summary').click();
   await expect(card.getByRole('status')).toContainText('Environment API key');
   await expect(card).toContainText('https://gateway.example');
   await expect(card).toContainText('can override your saved Claude login');
@@ -201,9 +203,15 @@ async function delayedConnections(page: Page): Promise<void> {
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  // Exercise the actual cards/paths under test, not every unrelated harness.
+  // Opening all 19 cards consumed WebKit's entire unchanged 20-second budget.
+  for (const id of ['opencode', 'antigravity', 'claude']) {
+    const card = page.locator('.connection-card').filter({ has: page.locator(`[data-executable="${id}"]`) });
+    await card.locator(':scope > summary').click();
+    await card.locator('details.connection-path > summary').click();
+  }
   await expect(page.getByLabel('OpenCode executable', { exact: true })).toHaveCount(1);
-  for (const summary of await page.locator('#settings-panel-providers details:not(.connection-card)>summary').all()) await summary.click();
 }
 
 test('provider connections preserve other drafts and edits made during a save', async ({ page }) => {
@@ -257,7 +265,8 @@ test('provider connections are grouped in Providers and never accept secrets in 
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  for (const id of ['glm', 'opencode', 'antigravity', 'grok']) await page.locator('.connection-card').filter({ has: page.locator(`[data-use-global="${id}"]`) }).locator(':scope > summary').click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   const dialog = settings.getByRole('tabpanel', { name: 'Providers', exact: true });
   await expect(dialog.getByRole('heading', { name: 'Providers', exact: true })).toBeVisible();
@@ -406,8 +415,9 @@ test('GitHub Copilot CLI has CLI sign-in guidance, a path override, Default mode
   await expect(model.locator('.provider-logo[data-provider="github-copilot"]')).toBeVisible();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'GitHub Copilot CLI', exact: false }) });
+  await card.locator(':scope > summary').click();
   await expect(card).toContainText('copilot login');
   await expect(card.getByRole('link', { name: 'Install and sign in' })).toHaveAttribute('href', 'https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli');
   await card.locator('details.connection-path > summary').click();
@@ -517,8 +527,9 @@ test('settings organization supports Pi models and executable settings', async (
   await expect(picker.locator('.model-menu-option[data-provider="pi"]').filter({ hasText: 'Claude Sonnet 4.5' })).toContainText('200K');
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Pi', exact: true }) });
+  await card.locator(':scope > summary').click();
   await expect(card.getByRole('link', { name: 'Install Pi' })).toHaveAttribute('href', 'https://github.com/earendil-works/pi');
   await card.locator('details.connection-path > summary').click();
   await expect(card.getByLabel('Pi executable', { exact: true })).toBeVisible();
@@ -584,8 +595,9 @@ test('Cline has a sign-in card, four approval modes and thinking levels', async 
   await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Cline', exact: false }) });
+  await card.locator(':scope > summary').click();
   await expect(card).toContainText('cline auth');
   await expect(card.getByRole('link', { name: 'Cline CLI docs' })).toHaveAttribute('href', 'https://docs.cline.bot/usage/cli-overview');
   await expect(card.getByRole('link', { name: 'ACP details' })).toHaveAttribute('href', 'https://docs.cline.bot/usage/acp');

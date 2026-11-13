@@ -444,7 +444,7 @@ mod tests {
     const HARNESS_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/main.cjs");
     fn install_harness(packages: &Packages, manifest: &str, source: &str) {
         let id = serde_json::from_str::<Value>(manifest).unwrap()["id"].as_str().unwrap().to_owned();
-        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes())])).unwrap();
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes()), ("assets/mark.svg", include_bytes!("../../../tests/fixtures/extensions/fake-harness/assets/mark.svg"))])).unwrap();
         assert!(packages.enable(&id, true).unwrap_err().contains("ExecutableTrustRequired"));
         let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
         packages.trust(&id, &digest, true).unwrap(); packages.enable(&id, true).unwrap();

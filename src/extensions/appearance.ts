@@ -8,7 +8,11 @@ export function applyExtensionAppearance(snapshot: ExtensionSnapshot): void {
   if (themes.length > 1) snapshot.diagnostics.push('Appearance conflict: enable only one theme package. User palette retained.');
   setExtensionTheme(themes.length === 1 ? themes[0] : undefined);
   const candidates = new Map<string, string[]>();
-  for (const item of active) for (const icon of item.manifest.contributes.icons ?? []) if (icon.host && item.icons[icon.id]) candidates.set(icon.host, [...candidates.get(icon.host) ?? [], item.icons[icon.id]]);
+  for (const item of active) for (const icon of item.manifest.contributes.icons ?? []) if (item.icons[icon.id]) {
+    // Owned icon identities are usable by provider/menu consumers without replacing a core icon.
+    candidates.set(icon.id, [item.icons[icon.id]]);
+    if (icon.host) candidates.set(icon.host, [...candidates.get(icon.host) ?? [], item.icons[icon.id]]);
+  }
   setAppearanceIcons(new Map([...candidates].filter(([, values]) => values.length === 1).map(([name, values]) => [name, values[0]])));
   window.dispatchEvent(new Event('pandacode-icons-change'));
 }

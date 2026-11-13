@@ -1,5 +1,6 @@
 import type { ProviderId } from './types';
-import { escape } from './dom';
+import { escape, icon } from './dom';
+import { packageProvider } from './extensions/provider-state';
 import githubCopilotLogo from './assets/providers/github-copilot.svg?raw';
 import clineLogo from './assets/providers/cline.svg?raw';
 import devinLogo from './assets/providers/devin.svg?raw';
@@ -28,12 +29,14 @@ const logos: Partial<Record<ProviderId, string>> = {
 /** Decorative provider mark. The surrounding control supplies its accessible name. */
 export function providerLogo(id: ProviderId, cls = ''): string {
   const className = `provider-logo${cls ? ` ${escape(cls)}` : ''}`;
+  const metadata = packageProvider(id);
+  if (metadata?.metadata?.icon) return icon(metadata.metadata.icon, className);
   // Monochrome marks are inlined and drawn in the theme's text color.
   const inline = id === 'github-copilot' ? githubCopilotLogo : id === 'cline' ? clineLogo.replaceAll('#1C1C24', 'currentColor') : id === 'devin' ? devinLogo.replace('fill="black"', 'fill="currentColor"') : id === 'kilo' ? kiloLogo : id === 'zcode' ? zcodeLogo.replace('fill="black"', 'fill="currentColor"') : '';
   if (inline) {
     return inline.replace('<svg ', `<svg class="${className}" data-provider="${id}" aria-hidden="true" focusable="false" `);
   }
   const src = logos[id];
-  if (!src) return `<span class="${className} provider-logo-tile" data-provider="${id}" aria-hidden="true">${escape(id.charAt(0).toUpperCase())}</span>`;
+  if (!src) return `<span class="${className} provider-logo-tile" data-provider="${id}" aria-hidden="true">${escape((metadata?.name ?? id).charAt(0).toUpperCase())}</span>`;
   return `<img class="${className}" data-provider="${id}" src="${escape(src)}" width="20" height="20" alt="" aria-hidden="true" draggable="false">`;
 }

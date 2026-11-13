@@ -254,7 +254,10 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
           continue;
         }
         try {
-          result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force });
+          // Package providers expose context events, not vendor credential/quota readers.
+          result = provider.metadata
+            ? { provider: provider.id, status: 'unsupported', windows: [], checkedAt: Date.now(), stale: false, message: provider.metadata.usage.limitsReason }
+            : await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force });
           if (!result || result.provider !== provider.id || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
         } catch {
           result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: 'Could not read limits. Try Refresh.' };

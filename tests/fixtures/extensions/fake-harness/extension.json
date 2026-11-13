@@ -7,5 +7,8 @@
   "permissions": ["ui.contribute"],
   "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.fake-harness/recorded"] },
   "requiredContributions": ["providers"],
-  "contributes": { "providers": [{ "apiVersion": 1, "id": "sample.fake-harness/recorded", "name": "Recorded harness", "models": [{ "id": "recorded-model", "name": "Recorded model", "efforts": ["low", "medium"], "contextWindow": 32000 }] }] }
+  "contributes": {
+    "icons": [{ "id": "sample.fake-harness/mark", "asset": "assets/mark.svg" }],
+    "providers": [{ "apiVersion": 1, "id": "sample.fake-harness/recorded", "name": "Recorded harness", "metadata": { "modes": ["ask", "plan"], "authentication": "Offline fixture; no sign-in or API key required.", "readiness": { "state": "ready", "reason": "Ready offline through the trusted recorded adapter." }, "icon": "sample.fake-harness/mark", "usage": { "context": true, "limitsReason": "Recorded harness reports context tokens, not subscription limits. No account or network is used." } }, "models": [{ "id": "recorded-model", "name": "Recorded model", "efforts": ["low", "medium"], "contextWindow": 32000 }] }]
+  }
 }

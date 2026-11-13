@@ -170,6 +170,7 @@ function previewProviderConfiguration(): Record<string, unknown> {
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
     providers: [...providers, ...packageHarnesses(previewExtensionSnapshot())].map(provider => [provider.id, provider.name]),
+    extensionProviders: packageHarnesses(previewExtensionSnapshot()),
     glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }
@@ -1890,6 +1891,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'prompt_activity': result = sampleUsageLedger().rows.filter((_, i) => i % 3 === 0).map(row => [row[0], i2p(row[1]), 1 + (row[0] % 7)]); break;
     case 'agent_usage': {
       const provider = String(args.provider);
+      if (providerOwner(provider)) {
+        result = { provider, status: 'unsupported', checkedAt: Date.now(), stale: false, windows: [], message: packageHarnesses(previewExtensionSnapshot()).find(item => item.id === provider)?.metadata?.usage.limitsReason ?? PROVIDER_RECOVERY };
+        break;
+      }
       if (provider === 'deepseek') {
         result = { provider, status: 'ready', checkedAt: Date.now(), stale: false, plan: null, windows: [],
           source: 'Sample limits for the browser preview. No provider request was made.',

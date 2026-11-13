@@ -8,6 +8,8 @@ import type { ViewDefinition } from './views-state';
 import { applyExtensionAppearance, type ExtensionTheme } from './appearance';
 import type { ComponentProvider } from './component-slot';
 import type { ConnectionDescriptor } from './sdk';
+import { packageHarnesses } from './harnesses';
+import { setPackageProviders } from './provider-state';
 
 export type ExtensionMenuItem = { id: string; kind: 'command' | 'submenu' | 'separator' | 'checkbox' | 'radio'; title?: string; command?: string; icon?: string; checked?: boolean; group?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] };
 export type ExtensionAction = { kind: 'showMessage'; message: string } | { kind: 'showDialog'; dialog: DialogDefinition } | { kind: 'openView'; view: string } | { kind: 'showProjectContext' } | { kind: 'runCommand' };
@@ -54,6 +56,7 @@ function accept(value: ExtensionSnapshot): void {
   // discard focus/fields or cancel a newly opened transient a second time.
   if (JSON.stringify(snapshot) === previous) return;
   applyExtensionAppearance(snapshot);
+  setPackageProviders(packageHarnesses(snapshot));
   if (previousLifecycle !== lifecycle(snapshot)) generation++;
   listeners.forEach(listener => listener());
 }

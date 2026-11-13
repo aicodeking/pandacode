@@ -652,6 +652,9 @@ pub(crate) async fn agent_usage(
 }
 
 pub(crate) async fn query_usage(provider: String, refresh: bool) -> crate::Result<Usage> {
+    if crate::extensions::providers::extension_owner(&provider).is_some() {
+        return Ok(Usage::empty(&provider, "unsupported", &crate::providers::dynamic_adapter::limits_reason(&provider)));
+    }
     let slot = cache().get(provider.as_str()).ok_or("Unknown agent.")?;
     Ok(cached(slot, refresh, || provenance(&provider, None), || bounded(&provider, &[])).await)
 }

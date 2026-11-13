@@ -211,6 +211,10 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     const events = (manifest.runtime as ObjectValue | undefined)?.activationEvents as Json[] | undefined;
     for (const provider of (contributions.providers ?? []) as ObjectValue[]) {
       if (!manifest.runtime) error('UnsupportedRuntime', path, [id]);
+      const metadata = provider.metadata as ObjectValue | undefined;
+      const modes = metadata?.modes as Json[] | undefined;
+      if (modes && new Set(modes).size !== modes.length) error('DuplicateId', path, [id]);
+      if (metadata?.icon && (!String(metadata.icon).startsWith(`${id}/`) || !((contributions.icons ?? []) as ObjectValue[]).some(icon => icon.id === metadata.icon))) error('MissingReference', path, [String(metadata.icon)]);
       const models = provider.models as ObjectValue[];
       if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length)) error('DuplicateId', path, [id]);
     }

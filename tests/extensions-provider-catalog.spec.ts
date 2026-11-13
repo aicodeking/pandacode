@@ -1,0 +1,67 @@
+import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+const manifest = JSON.parse(readFileSync('tests/fixtures/extensions/fake-harness/extension.json', 'utf8'));
+const mark = readFileSync('tests/fixtures/extensions/fake-harness/assets/mark.svg', 'utf8');
+test('extensions provider catalog: model, effort, modes, brand, auth and unsupported limits use package metadata', async ({ page }) => {
+  await page.addInitScript(({ manifest, mark }) => localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: { 'sample.fake-harness/mark': mark }, executable: { digest: 'synthetic', trusted: true } }])), { manifest, mark });
+  await page.goto('/?extension-harness');
+  await expect(page.locator('#prompt')).toBeEnabled();
+  await page.locator('#model-picker-trigger').click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await picker.getByRole('tab', { name: 'Recorded harness', exact: true }).click();
+  await expect(picker.getByRole('option', { name: 'Recorded harness · Default', exact: true })).toHaveCount(0);
+  await expect(picker.locator('[data-host-icon="sample.fake-harness/mark"] path').first()).toHaveAttribute('d', 'M4 4h16v16H4zM8 8h8v8H8z');
+  await picker.getByRole('option', { name: 'Recorded harness · Recorded model', exact: true }).click();
+  await page.locator('#model-picker-trigger').click();
+  await picker.getByRole('radio', { name: 'medium', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await page.locator('#mode-picker-trigger').click();
+  const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  await expect(permissions).toContainText('Plan mode');
+  await expect(permissions).not.toContainText('Full access');
+  await page.keyboard.press('Escape');
+  const usage = await page.evaluate(() => (window as any).__extensionHarness.call('agent_usage', { provider: 'sample.fake-harness/recorded', refresh: false }));
+  expect(usage).toMatchObject({ status: 'unsupported', windows: [], message: manifest.contributes.providers[0].metadata.usage.limitsReason });
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await page.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('[data-extension-provider="sample.fake-harness/recorded"]');
+  await expect(card).toContainText('no sign-in or API key required');
+  await expect(card).toContainText('Ready offline');
+  await expect(card).toContainText('not subscription limits');
+  await expect(card.locator('input')).toHaveCount(0);
+});
+test('extensions provider catalog: unavailable and signed-out metadata gives a reason and refresh recovers', async ({ page }) => {
+  const unavailable = structuredClone(manifest);
+  unavailable.contributes.providers[0].metadata.readiness = { state: 'signedOut', reason: 'Sign in using the recorded extension, then refresh.' };
+  await page.addInitScript(manifest => localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: {}, executable: { digest: 'synthetic', trusted: true } }])), unavailable);
+  await page.goto('/?extension-harness'); await expect(page.locator('#prompt')).toBeEnabled();
+  await page.locator('#model-picker-trigger').click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await picker.getByRole('tab', { name: /Recorded harness/ }).click();
+  const option = picker.getByRole('option', { name: 'Recorded harness · Recorded model', exact: true });
+  await expect(option).toBeDisabled(); await expect(option).toHaveAttribute('title', /Sign in using/);
+  await page.keyboard.press('Escape');
+  await page.evaluate(async manifest => {
+    localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: {}, executable: { digest: 'synthetic', trusted: true } }]));
+    await (window as any).__extensionHarness.call('extensions_enable', { id: 'sample.fake-harness', enabled: true });
+  }, manifest);
+  await page.locator('#model-picker-trigger').click();
+  await picker.getByRole('tab', { name: 'Recorded harness', exact: true }).click();
+  await expect(option).toBeEnabled(); await option.click();
+  await expect(page.locator('[data-provider-recovery]')).toHaveCount(0);
+});
+test('extensions provider catalog: a new task uses an advertised model and supported mode', async ({ page }) => {
+  await page.addInitScript(manifest => {
+    localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: {}, executable: { digest: 'synthetic', trusted: true } }]));
+    localStorage.setItem('pandacode.defaultProvider', 'sample.fake-harness/recorded');
+  }, manifest);
+  await page.goto('/?extension-harness'); await expect(page.locator('#prompt')).toBeEnabled();
+  await page.getByRole('button', { name: /New task/ }).first().click();
+  await expect(page.locator('#model-picker-trigger')).toContainText('Recorded model');
+  await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('data-mode', 'ask');
+  await page.locator('#prompt').fill('Use the advertised defaults'); await page.locator('#prompt').press('Enter');
+  await expect(page.getByRole('region', { name: 'Approval needed', exact: true })).toBeVisible();
+  const sessions = await page.evaluate(() => (window as any).__extensionHarness.call('list_sessions', {}));
+  expect(sessions.some((session: any) => session.provider === 'sample.fake-harness/recorded' && session.model === 'recorded-model' && session.mode === 'ask')).toBe(true);
+});

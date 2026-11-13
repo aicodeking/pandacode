@@ -406,6 +406,7 @@ pub struct Configuration {
     /// Every known harness as (id, name). The settings page generates a card
     /// for each one its hand-written cards do not cover.
     providers: Vec<(String, String)>,
+    extension_providers: Vec<crate::providers::ProviderInfo>,
     /// Additive capability metadata; the legacy roster remains unchanged.
     provider_adapters: Vec<crate::extensions::providers::Descriptor>,
     glm_key_saved: bool,
@@ -472,6 +473,7 @@ fn configuration() -> Result<Configuration> {
         use_global_environment,
         providers: crate::providers::PROVIDERS.iter().map(|(id, name)| (id.to_string(), name.to_string())).chain(crate::providers::dynamic_adapter::discover().into_iter().map(|provider| (provider.id, provider.name))).collect(),
         provider_adapters: crate::extensions::providers::all().map(|provider| provider.descriptor()).collect(),
+        extension_providers: crate::providers::dynamic_adapter::discover(),
         glm_key_saved,
         glm_key_from_environment: from_environment(GLM_KEY.env),
         mimo_key_saved,
@@ -1099,6 +1101,7 @@ mod tests {
             use_global_environment: BTreeMap::new(),
             providers: Vec::new(),
             provider_adapters: Vec::new(),
+            extension_providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,
@@ -1127,6 +1130,7 @@ mod tests {
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
             providers: Vec::new(),
             provider_adapters: Vec::new(),
+            extension_providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: true,
             mimo_key_saved: true,
@@ -1441,6 +1445,7 @@ mod tests {
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
             providers: Vec::new(),
             provider_adapters: Vec::new(),
+            extension_providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,

@@ -4,7 +4,7 @@ import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { ConnectionSnapshot } from './connections';
-import type { ProviderId } from './types';
+import type { Provider, ProviderId } from './types';
 
 type ClaudeMode = 'inherit' | 'subscription';
 interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables: string[]; endpoint: string | null; savedLogin: 'signedIn' | 'notSignedIn' | 'otherCredentials' | 'unknown'; conflict: boolean; }
@@ -19,6 +19,7 @@ interface Configuration {
   environment?: Record<string, string[]>;
   useGlobalEnvironment?: Record<string, boolean>;
   providers?: [string, string][];
+  extensionProviders?: Provider[];
   glmKeySaved: boolean;
   glmKeyFromEnvironment: boolean;
   deepseekKeySaved: boolean;
@@ -174,8 +175,9 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       const extensions = (config.providers ?? []).filter(([id]) => id.includes('/'));
       for (const [id, name] of extensions) {
         const card = document.createElement('section'); card.className = 'connection-card'; card.dataset.extensionProvider = id;
-        const title = document.createElement('h4'); title.textContent = name;
-        const status = document.createElement('p'); status.textContent = 'Provided by a trusted extension. Manage availability and executable trust in Settings → Extensions. Core owns approvals, Stop and conversation history.';
+        const found = config.extensionProviders?.find(provider => provider.id === id);
+        const title = document.createElement('h4'); title.innerHTML = `${providerLogo(id as ProviderId)}${escape(name)}`;
+        const status = document.createElement('p'); status.textContent = ['Provided by a trusted extension. Manage availability and executable trust in Settings → Extensions. Core owns approvals, Stop and conversation history.', found?.metadata?.readiness.reason, found?.metadata?.authentication, found?.metadata?.usage.limitsReason].filter(Boolean).join(' ');
         card.append(title, status); feedback.before(card);
       }
     }

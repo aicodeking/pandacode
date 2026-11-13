@@ -1,4 +1,6 @@
 import type { Mode, ProviderId } from './types';
+import { providerOwner } from './extensions/provider-identity.ts';
+import { packageProvider, UNAVAILABLE_PROVIDER } from './extensions/provider-state.ts';
 
 export interface ApprovalMode { id: Mode; label: string; description: string; icon: string; disabled?: boolean; }
 
@@ -11,6 +13,13 @@ export const toned = (svg: string, tone: string): string => tone ? svg.replace('
 
 /** Labels describe the native policy for each harness, not a simulated approval layer. */
 export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMode[] {
+  if (providerOwner(provider)) {
+    const metadata = packageProvider(provider)?.metadata;
+    const labels: Record<Mode, string> = { ask: 'Standard', auto: 'Accept edits', review: 'Approve for me', plan: 'Plan mode', full: 'Full access' };
+    const modes: ApprovalMode[] = (metadata?.modes ?? []).map(id => ({ id, label: labels[id], icon: id === 'full' ? 'unlock' : 'shield', description: `Extension-defined ${labels[id]} policy. Core permission requests still require a response; executable trust is not an OS sandbox.` }));
+    if (current && !modes.some(mode => mode.id === current)) modes.push({ id: current, label: labels[current], icon: 'shield', disabled: true, description: metadata ? 'This extension does not support this permission mode. Choose a supported mode.' : UNAVAILABLE_PROVIDER });
+    return modes.length ? modes : [{ id: 'ask', label: 'Standard', icon: 'shield', disabled: true, description: UNAVAILABLE_PROVIDER }];
+  }
   // omp is a Pi fork driven through the same bridge, so it shares Pi's policy.
   const pi = provider === 'pi' || provider === 'omp' ? (provider === 'omp' ? 'omp' : 'Pi') : '';
   const standard: ApprovalMode = { id: 'ask', label: 'Standard', icon: 'shield', description: provider === 'codex'

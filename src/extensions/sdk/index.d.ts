@@ -4,7 +4,8 @@
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 export type Disposable = { dispose(): void };
 /** Manifest-owned executable provider, experimental; no raw AgentEvent or host-tool bridge. */
-export type ProviderDescriptor = { apiVersion: 1; id: string; name: string; models: { id: string; name: string; efforts: string[]; contextWindow?: number }[] };
+export type ProviderMetadata = { modes: ('ask' | 'auto' | 'plan' | 'full')[]; authentication: string; readiness: { state: 'ready' | 'signedOut' | 'unavailable'; reason: string }; icon?: string; usage: { context: boolean; limitsReason: string } };
+export type ProviderDescriptor = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; models: { id: string; name: string; efforts: string[]; contextWindow?: number }[] };
 export type ProviderRun = Readonly<{ apiVersion: 1; id: string; version: string; digest: string; model: string; effort: string | null; mode: 'ask' | 'auto' | 'plan' | 'full'; resumeId: string | null; prompt: string; instructions: string }>;
 export type ProviderInput = { kind: 'approval'; approved: boolean } | { kind: 'question'; response: Json } | { kind: 'steer'; id: string; text: string };
 export type ProviderEvent = { kind: 'text' | 'thinking'; text: string } | { kind: 'session'; id: string } | { kind: 'approval'; text: string } | { kind: 'question'; questions: Json } | { kind: 'usage'; usedTokens: number; contextWindow?: number } | { kind: 'tool'; tool: { id: string; name: string; status: 'running' | 'completed' | 'failed'; input: string; output: string; writePaths?: string[] } };

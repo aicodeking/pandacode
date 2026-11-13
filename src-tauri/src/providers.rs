@@ -525,6 +525,8 @@ pub struct ProviderInfo {
     pub path: Option<String>,
     pub version: String,
     pub models: Vec<ModelInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -824,7 +826,7 @@ mod inventory_tests {
     use super::*;
     #[test]
     fn observation_is_an_explicit_redacted_projection_not_cli_stdout() {
-        let mut info = ProviderInfo { id: "claude".into(), name: "Claude Code".into(), installed: true, path: Some("SECRET_PATH".into()), version: "SECRET_AUTH 2.1.3 (Claude Code)".into(), models: Vec::new() };
+        let mut info = ProviderInfo { id: "claude".into(), name: "Claude Code".into(), installed: true, path: Some("SECRET_PATH".into()), version: "SECRET_AUTH 2.1.3 (Claude Code)".into(), models: Vec::new(), metadata: None };
         let value = inventory_observation(&info); assert_eq!(value["version"], "2.1.3"); assert_eq!(value["installed"], "Installed"); assert!(!value.to_string().contains("SECRET"));
         info.version = "SECRET_TOKEN".into(); info.installed = false;
         let value = inventory_observation(&info); assert!(value["version"].is_null()); assert_eq!(value["installed"], "Absent");
@@ -842,6 +844,7 @@ fn discover_provider(id: &str, name: &str) -> ProviderInfo {
     ProviderInfo {
         id: id.into(),
         name: name.into(),
+        metadata: None,
         installed: path.is_some(),
         version: if id == "antigravity" {
             "ACP".into()

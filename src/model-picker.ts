@@ -142,9 +142,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** Uninstalled harnesses stay out of the picker unless the task already uses one. */
   function groups(): Group[] {
-    return providers.filter(provider => provider.installed || provider.id === current.provider).map(provider => {
+    return providers.filter(provider => provider.installed || provider.metadata || provider.id === current.provider).map(provider => {
       // A harness whose catalog failed is disabled; hovering it shows why.
-      const failure = catalogErrors.has(provider.id) ? catalogErrors.get(provider.id) || 'Could not load models.' : '';
+      const failure = catalogErrors.has(provider.id) ? catalogErrors.get(provider.id) || 'Could not load models.' : provider.metadata?.readiness.state !== 'ready' ? provider.metadata?.readiness.reason ?? '' : '';
       return {
         key: `h:${provider.id}`, provider, name: provider.name,
         locked: !canSwitchProvider && provider.id !== current.provider, unavailable: !provider.installed || Boolean(failure), failure,
@@ -161,7 +161,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const byId = new Map(all.map(model => [model.id, model]));
     const first = [...(provider === current.provider ? [current.model] : []), ...recent, ...storedRecent(provider)].filter(id => id !== 'default' && byId.has(id));
     const ids = [...new Set([...first, ...all.map(model => model.id).filter(id => id !== 'default')])].slice(0, RECENT_LIMIT);
-    return [byId.get('default')!, ...ids.map(id => byId.get(id)!)];
+    return [...(byId.has('default') ? [byId.get('default')!] : []), ...ids.map(id => byId.get(id)!)];
   }
 
   /** The current pick, then each harness's latest stored picks, newest harness first. */

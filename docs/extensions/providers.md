@@ -3,7 +3,7 @@
 ## Package providers (experimental)
 
 The `tests/fixtures/extensions/fake-harness` package is an offline, executable
-conformance example. ZIP its `extension.json` and `main.cjs`, install in Settings →
+conformance example. ZIP its `extension.json`, `main.cjs` and `assets/`, install in Settings →
 Extensions, explicitly review executable trust, then enable. The **Recorded harness**
 catalog appears in the existing model picker and provider settings. Select Recorded
 model, medium effort and Standard (native mode `ask`). No credentials/network are used.
@@ -22,6 +22,43 @@ exports.providers = {
   }
 };
 ```
+
+### Catalog and status metadata
+
+An optional `metadata` object on each provider supplies its consumer capabilities:
+
+```json
+{
+  "modes": ["ask", "plan"],
+  "authentication": "Sign in using this extension's own setup; no keys enter the webview.",
+  "readiness": { "state": "ready", "reason": "Ready through the trusted adapter." },
+  "icon": "publisher.extension/mark",
+  "usage": { "context": true, "limitsReason": "Context tokens are reported; account limits are not exposed." }
+}
+```
+
+Modes are unique core IDs (`ask`, `auto`, `plan`, `full`), never `review`; they describe
+the extension's policy, not OS confinement. Native admission rejects unsupported modes
+or non-ready states with a reason. `signedOut` and `unavailable` keep the catalog
+visible but disabled; refreshing after the registration changes recovers it. The
+owned icon must reference that package's `contributes.icons` entry. Icons use the
+same sanitized static SVG policy as other extension controls, never arbitrary URLs.
+
+The model picker lists only advertised package model IDs and their efforts. New
+tasks use an advertised model and supported mode; existing unsupported selections
+remain readable and explain how to change them. Settings → Providers shows the
+authentication/readiness/usage instructions, not a built-in executable or secret
+form. `list_providers` and `provider_configuration.extensionProviders` return this
+public metadata. Context usage events keep using the core task meter; there is no
+extension account-quota reader yet, so Usage returns `unsupported` with `limitsReason`
+rather than synthetic percentages or a failed built-in credential probe.
+
+Without metadata, v1 packages default to Standard only, extension-managed auth,
+ready status, a name-initial mark, no declared context reporting, and an explicit
+unsupported account-limits reason. Disable/safe mode retires presentation metadata
+and cached model results, not history. Built-in aliases, vendor-specific auth forms,
+brand assets, pools and quota readers deliberately retain their native branches;
+package providers never inherit those protocols or credentials.
 
 `run` is frozen and captures API/version/digest, provider ID, model, effort, mode,
 resumeId, prompt and instructions once. `core.emit` accepts only typed text,

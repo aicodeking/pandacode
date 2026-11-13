@@ -37,11 +37,57 @@ fn catalog(definition: &Value) -> Vec<ModelInfo> {
     }).collect()
 }
 pub(crate) fn discover() -> Vec<ProviderInfo> {
-    registrations().into_iter().map(|registration| ProviderInfo { id: registration.definition["id"].as_str().unwrap_or_default().into(), name: registration.definition["name"].as_str().unwrap_or_default().into(), installed: cfg!(all(target_os = "windows", target_arch = "x86_64")), path: None, version: registration.version, models: catalog(&registration.definition) }).collect()
+    registrations().into_iter().map(|registration| {
+        let metadata = metadata(&registration.definition);
+        ProviderInfo { id: registration.definition["id"].as_str().unwrap_or_default().into(), name: registration.definition["name"].as_str().unwrap_or_default().into(), installed: cfg!(all(target_os = "windows", target_arch = "x86_64")) && metadata["readiness"]["state"] == "ready", path: None, version: registration.version, models: catalog(&registration.definition), metadata: Some(metadata) }
+    }).collect()
+}
+fn metadata(definition: &Value) -> Value {
+    definition.get("metadata").cloned().unwrap_or_else(|| json!({"modes":["ask"],"authentication":"Authentication is managed by the trusted extension; no credentials are returned to PandaCode.","readiness":{"state":"ready","reason":"Ready through its trusted extension."},"usage":{"context":false,"limitsReason":"This extension does not expose account limits. Check its provider dashboard."}}))
+}
+pub(crate) fn limits_reason(id: &str) -> String {
+    resolve(id).map(|registration| metadata(&registration.definition)["usage"]["limitsReason"].as_str().unwrap_or("Account limits are not exposed by this extension.").to_owned()).unwrap_or_else(|reason| reason)
+}
+fn validate_mode(definition: &Value, mode: &str) -> Result<(), String> {
+    let metadata = metadata(definition);
+    if metadata["readiness"]["state"] != "ready" { return Err(metadata["readiness"]["reason"].as_str().unwrap_or("Provider unavailable").into()); }
+    if metadata["modes"].as_array().is_some_and(|modes| modes.iter().any(|id| id == mode)) { Ok(()) }
+    else { Err("UnsupportedCapability: this extension does not support this permission mode. Choose a supported mode.".into()) }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    #[test]
+    fn provider_metadata_modes_readiness_and_legacy_defaults() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/fake-harness/extension.json")).unwrap();
+        let mut definition = manifest["contributes"]["providers"][0].clone();
+        assert!(validate_mode(&definition, "ask").is_ok());
+        assert!(validate_mode(&definition, "plan").is_ok());
+        assert!(validate_mode(&definition, "full").unwrap_err().contains("UnsupportedCapability"));
+        definition["metadata"]["readiness"] = json!({"state":"signedOut","reason":"Sign in using this extension."});
+        assert_eq!(validate_mode(&definition, "ask").unwrap_err(), "Sign in using this extension.");
+        definition.as_object_mut().unwrap().remove("metadata");
+        assert!(validate_mode(&definition, "ask").is_ok());
+        assert!(validate_mode(&definition, "full").is_err());
+        assert!(metadata(&definition)["usage"]["limitsReason"].as_str().unwrap().contains("does not expose"));
+    }
+    #[test]
+    fn provider_metadata_rejects_foreign_icons_duplicate_modes_and_unknown_states() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/fake-harness/extension.json")).unwrap();
+        for (field, invalid) in [("modes", json!(["ask", "ask"])), ("modes", json!(["review"])), ("icon", json!("another.package/mark")), ("readiness", json!({"state":"unknown","reason":"Unavailable"}))] {
+            let mut invalid_manifest = manifest.clone();
+            invalid_manifest["contributes"]["providers"][0]["metadata"][field] = invalid;
+            assert_eq!(crate::extensions::contracts::validate_contract("packages", &json!([invalid_manifest]))["ok"], false);
+        }
+    }
 }
 pub(crate) fn models(id: &str) -> Result<Vec<ModelInfo>, String> { Ok(catalog(&resolve(id)?.definition)) }
 pub(crate) fn require_available(id: &str) -> Result<(), String> {
-    if crate::extensions::providers::extension_owner(id).is_some() { resolve(id).map(|_| ()) }
+    if crate::extensions::providers::extension_owner(id).is_some() { resolve(id).and_then(|registration| {
+        let metadata = metadata(&registration.definition);
+        if metadata["readiness"]["state"] == "ready" { Ok(()) } else { Err(metadata["readiness"]["reason"].as_str().unwrap_or("Provider unavailable").into()) }
+    }) }
     else { crate::extensions::providers::require_builtin_execution(id) }
 }
 pub(crate) fn validate_effort(id: &str, effort: Option<&str>) -> Result<(), String> {
@@ -145,7 +191,7 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
     if runtime.is_none() && cfg!(debug_assertions) { runtime = supervisor::Runtime::packaged(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).ok(); }
     let runtime = runtime.ok_or("UnsupportedRuntime: this target's trusted provider runtime is not qualified")?;
     if config.goal.is_some() || config.skill.is_some() || !config.images.is_empty() { return Err("UnsupportedCapability: goals, native skills or images".into()); }
-    if !crate::storage::valid_permission_mode(&config.mode) || config.mode == "review" { return Err("Unsupported provider permission mode".into()); }
+    validate_mode(&registration.definition, &config.mode)?;
     let models = catalog(&registration.definition);
     let model = models.iter().find(|model| model.id == config.model).ok_or("Unsupported provider model")?;
     if config.reasoning_effort.as_ref().is_some_and(|effort| !model.reasoning_efforts.iter().any(|entry| &entry.id == effort)) { return Err("Unsupported provider effort".into()); }

@@ -1,4 +1,5 @@
 import type { ContextUsage, ProviderId, ProviderModel } from './types';
+import { providerOwner } from './extensions/provider-identity.ts';
 
 /** Unknown IDs stay literal; never infer a version from a moving alias. */
 export function fallbackModel(provider: ProviderId, id = 'default'): ProviderModel {
@@ -12,11 +13,11 @@ export function fallbackModel(provider: ProviderId, id = 'default'): ProviderMod
 
 /** Harnesses that accept only the model IDs they advertise: no custom IDs. */
 export function advertisedModelsOnly(provider: ProviderId): boolean {
-  return provider === 'github-copilot' || provider === 'devin';
+  return Boolean(providerOwner(provider)) || provider === 'github-copilot' || provider === 'devin';
 }
 
 export function modelChoices(provider: ProviderId, catalog: ProviderModel[], current = ''): ProviderModel[] {
-  const models = new Map<string, ProviderModel>([['default', fallbackModel(provider)]]);
+  const models = new Map<string, ProviderModel>(providerOwner(provider) ? [] : [['default', fallbackModel(provider)]]);
   for (const model of catalog) if (model.id) models.set(model.id, model);
   if (current && !models.has(current)) models.set(current, fallbackModel(provider, current));
   return [...models.values()];
