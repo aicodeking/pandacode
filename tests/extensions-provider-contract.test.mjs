@@ -9,6 +9,20 @@ const { adapt, recording, recordedTransport, providers } = require('../examples/
 const manifest = JSON.parse(readFileSync('examples/extensions/acp-recorded/package/extension.json', 'utf8'));
 const parity = JSON.parse(readFileSync('tests/fixtures/extensions/builtin-provider-parity.json', 'utf8'));
 const run = { model: 'recorded', mode: 'ask', prompt: 'literal; $(not-a-shell)', instructions: 'Captured instructions' };
+test('fake harness: every advertised effort and mode completes through public inputs', async () => {
+  const fixture = JSON.parse(readFileSync('tests/fixtures/extensions/fake-harness/extension.json', 'utf8'));
+  const definition = fixture.contributes.providers[0];
+  const handler = require('../tests/fixtures/extensions/fake-harness/main.cjs').providers[definition.id];
+  for (const model of definition.models) for (const effort of model.efforts) for (const mode of definition.metadata.modes) {
+    const events = [], inputs = [{ kind: 'approval', approved: false }, { kind: 'question', response: { answers: { choice: ['Finish'] } } }];
+    await handler({ model: model.id, effort, mode, prompt: 'Public configuration conformance' }, {
+      async emit(event) { events.push(event); }, async nextInput() { return inputs.shift(); },
+    });
+    assert.equal(inputs.length, 0);
+    assert.equal(events.at(-1).text, 'Recorded conversation complete.');
+    assert.equal(events.filter(event => event.kind === 'session').length, 1);
+  }
+});
 function harness(approved = false, mutate = () => {}) {
   const events = [], requests = [], responses = [];
   const recorded = recordedTransport();
@@ -48,6 +62,20 @@ test('ACP example: all replay frames match existing native protocol characteriza
   assert.deepEqual(manifest.contributes.providers[0].metadata.modes, ['ask']);
   assert.equal(manifest.contributes.providers[0].metadata.teams, false);
   assert.equal(manifest.contributes.providers[0].metadata.usage.context, false);
+});
+test('provider catalogs: admitted model and effort IDs fit core storage and launcher byte limits', () => {
+  for (const [id, effort, valid] of [
+    ['m'.repeat(200), 'e'.repeat(40), true],
+    ['é'.repeat(100), 'medium', true],
+    ['m'.repeat(201), 'medium', false],
+    ['é'.repeat(101), 'medium', false],
+    ['recorded', 'e'.repeat(41), false],
+  ]) {
+    const candidate = structuredClone(manifest);
+    candidate.contributes.providers[0].models[0].id = id;
+    candidate.contributes.providers[0].models[0].efforts = [effort];
+    assert.equal(validateContract('packages', [candidate]).ok, valid, `model bytes=${Buffer.byteLength(id)}, effort=${effort.length}`);
+  }
 });
 for (const approved of [false, true]) for (const resumed of [false, true]) {
   test(`ACP example: ${resumed ? 'resume' : 'start'}, ${approved ? 'approve' : 'decline'} preserves protocol/core ownership`, async () => {

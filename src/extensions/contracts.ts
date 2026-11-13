@@ -218,6 +218,8 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (modes && new Set(modes).size !== modes.length) error('DuplicateId', path, [id]);
       if (metadata?.icon && (!String(metadata.icon).startsWith(`${id}/`) || !((contributions.icons ?? []) as ObjectValue[]).some(icon => icon.id === metadata.icon))) error('MissingReference', path, [String(metadata.icon)]);
       const models = provider.models as ObjectValue[];
+      // Core storage and launcher validate UTF-8 bytes, not schema character counts.
+      if (models.some(model => new TextEncoder().encode(String(model.id)).length > 200)) error('LimitExceeded', `${path}/contributes/providers/models`);
       if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length)) error('DuplicateId', path, [id]);
     }
     if (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id))) error('UnsupportedRuntime', path, [id]);

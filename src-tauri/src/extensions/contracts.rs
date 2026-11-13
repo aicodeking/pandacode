@@ -268,6 +268,8 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             let mut models = BTreeSet::new();
             for model in items(provider, "models") {
                 let efforts = strings(&model["efforts"]);
+                // Match core storage's byte bound even for multibyte model IDs.
+                if text(model, "id").len() > 200 { return Err(fail("LimitExceeded", &format!("{path}/contributes/providers/models"), vec![])); }
                 if !models.insert(text(model, "id")) || efforts.iter().collect::<BTreeSet<_>>().len() != efforts.len() { return Err(fail("DuplicateId", &path, vec![])); }
             }
         }
@@ -429,6 +431,22 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_catalog_ids_fit_core_storage_and_launcher_byte_limits() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../examples/extensions/acp-recorded/package/extension.json")).unwrap();
+        for (id, effort, valid) in [
+            ("m".repeat(200), "e".repeat(40), true),
+            ("é".repeat(100), "medium".into(), true),
+            ("m".repeat(201), "medium".into(), false),
+            ("é".repeat(101), "medium".into(), false),
+            ("recorded".into(), "e".repeat(41), false),
+        ] {
+            let mut candidate = manifest.clone();
+            candidate["contributes"]["providers"][0]["models"][0]["id"] = serde_json::json!(id);
+            candidate["contributes"]["providers"][0]["models"][0]["efforts"] = serde_json::json!([effort]);
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([candidate]))["ok"], valid, "model bytes={}, effort={}", id.len(), effort.len());
+        }
+    }
     #[test]
     fn component_slot_manifest_keeps_versions_dormant_and_rejects_code_and_foreign_owners() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/replacement/extension.json")).unwrap();

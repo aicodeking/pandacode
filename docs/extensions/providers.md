@@ -12,7 +12,13 @@ WebView2 interaction and other native-platform qualification are not claimed.
 
 Declare `contributes.providers` entries with `apiVersion: 1`, namespaced `id`, `name`
 and bounded `models` (`id`, `name`, `efforts`, optional `contextWindow`). Include each
-provider ID in `runtime.activationEvents`. Export `providers[id]` from `main.cjs`:
+provider ID in `runtime.activationEvents`.
+
+Model IDs are limited to 200 UTF-8 bytes and effort IDs to 40 ASCII characters,
+matching core storage and launcher limits. Package admission rejects oversized
+catalog entries rather than offering choices that cannot be saved.
+
+Export `providers[id]` from `main.cjs`:
 
 ```js
 exports.providers = {
@@ -285,7 +291,7 @@ The rules' old `src-tauri/src/acp.rs` reference resolves to the current
 | Logos / readiness (`extensions/provider-state.ts`, `provider-logos.ts`) | Owned sanitized SVG or initial mark; registry readiness disables unavailable/signed-out entries. Native brands remain built-in. | `extensions-provider-consumers.test.mjs`; `provider_metadata_rejects_foreign_icons_duplicate_modes_and_unknown_states` |
 | Usage / limits (`agent_usage.rs`, `extensions/dynamic_harness.rs`) | Core context event meter; account-quota probing explicitly unsupported with descriptor reason. Built-in quota/auth readers retained. | Consumer metadata tests; `dynamic_harness_core_owns_pending_completion_identity_and_cancellation`; real-package usage regression |
 | Skills roots / rules / config / matrix / CLI aliases / HARNESS_NAMES (`skill_manager/`, `skill-manager-model.ts`, `skills.rs`, `capabilities.rs`) | Registry bounded owned roots, advisory asked/none; presence-only config, no content. Dynamic install/config sync unsupported. Built-in roots/enforcement/CLI IDs unchanged. | `dynamic_discovery_*`; `skill_manager_matrix_fixture`; `extensions-provider-skills.test.mjs`; existing skills native regressions |
-| Remote serialization / headless / cloud placement | **Assigned to M9 (T48 onward)**: peer capability negotiation, unknown-provider fallback, remote grants/events and placement. M8 local package success is not remote execution qualification. Native CLI bridge serializers/setup remain compatibility code, not authority to execute package IDs remotely. | M9 must add its own old/new-peer and placement tests before remote support is advertised; no M8 remote pass claimed |
+| Remote serialization / headless / cloud placement | **Assigned to M9 (T49 onward)**: peer capability negotiation, unknown-provider fallback, remote grants/events and placement. M8 local package success is not remote execution qualification. Native CLI bridge serializers/setup remain compatibility code, not authority to execute package IDs remotely. | M9 must add its own old/new-peer and placement tests before remote support is advertised; no M8 remote pass claimed |
 
 `dynamic_harness_real_package_runs_start_resume_steer_approve_reject_and_stop`
 executes both the existing fake-harness matrix and the shipped ACP example's
