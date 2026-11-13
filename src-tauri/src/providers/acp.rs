@@ -2358,7 +2358,7 @@ mod tests {
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
         let mut c = Command::new("/usr/local/bin/agy");
         configure(&mut c, &config("antigravity"));
-        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp"]);
+        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp", "--process-per-session"]);
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));
