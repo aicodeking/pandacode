@@ -3,6 +3,15 @@
  */
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 export type Disposable = { dispose(): void };
+/** Closed declarative recipe; no executable renderer or document-content grant. */
+export interface DocumentComponent { readonly id: string; readonly title: string; readonly slot: 'panda.documents'; readonly contractVersion: 1; readonly presentation: 'viewer-first'; readonly capabilities: readonly ['host-tabs', 'host-viewer', 'original-actions'] }
+export interface DocumentPresentation {
+  readonly contractVersion: 1; readonly context: string; readonly revision: number;
+  readonly selected: string; readonly focused: string; readonly visible: boolean;
+  readonly tabs: readonly { readonly id: string; readonly documentId: string; readonly label: string; readonly controls: readonly { readonly id: string; readonly label: string; readonly enabled: boolean; readonly selected?: boolean }[] }[];
+}
+export interface DocumentAction { readonly contractVersion: 1; readonly context: string; readonly revision: number; readonly tabId: string; readonly documentId: string; readonly controlId: string }
+export type DocumentResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'InvalidArguments' | 'UnsupportedCapability' | 'StaleContext' | 'Revoked' };
 /** Manifest-owned executable provider, experimental; only role-scoped core team tools. */
 export type ProviderMetadata = { modes: ('ask' | 'auto' | 'plan' | 'full')[]; authentication: string; teams?: boolean; readiness: { state: 'ready' | 'signedOut' | 'unavailable'; reason: string }; icon?: string; usage: { context: boolean; limitsReason: string } };
 export type ProviderDiscoveryRoot = { kind: 'skills' | 'rules' | 'config'; scope: 'user' | 'project'; path: string };

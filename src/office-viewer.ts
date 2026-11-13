@@ -3,6 +3,7 @@
 import './office-viewer.css';
 import { escape } from './dom';
 import { checkUnzippedSize } from './zip-limit';
+import type { ViewerControlsChanged } from './extensions/document-controls';
 
 export type OfficeKind = 'pdf' | 'docx' | 'sheet' | 'image';
 /** Spreadsheets show this many rows per sheet; the rest are counted, not drawn. */
@@ -12,7 +13,7 @@ const SHEET_COLUMNS = 200;
 const PDF_PAGES = 5000;
 const CANVAS_PIXELS = 16_000_000;
 
-export async function renderOffice(host: HTMLElement, kind: OfficeKind, bytes: ArrayBuffer, path = ''): Promise<() => void> {
+export async function renderOffice(host: HTMLElement, kind: OfficeKind, bytes: ArrayBuffer, path = '', changed?: ViewerControlsChanged): Promise<() => void> {
   host.innerHTML = '<div class="office-viewer"><div class="inspector-empty" role="status">Opening…</div></div>';
   const viewer = host.firstElementChild as HTMLElement;
   // Web links open in the browser (mountExternalLinks); anything else must not navigate the app.
@@ -25,11 +26,12 @@ export async function renderOffice(host: HTMLElement, kind: OfficeKind, bytes: A
     const root = anchor.getRootNode() as ParentNode, id = CSS.escape(href.slice(1));
     if (href.startsWith('#') && id) root.querySelector(`[id="${id}"], [name="${id}"]`)?.scrollIntoView();
   });
-  if (kind === 'image') return renderImage(viewer, bytes, path);
+  changed?.([]);
+  if (kind === 'image') return renderImage(viewer, bytes, path, changed);
   if (kind !== 'pdf') checkUnzippedSize(bytes);
   if (kind === 'pdf') return renderPdf(viewer, bytes);
   if (kind === 'docx') return renderDocx(viewer, bytes);
-  return renderSheet(viewer, bytes);
+  return renderSheet(viewer, bytes, changed);
 }
 
 async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() => void> {
@@ -93,7 +95,7 @@ async function renderDocx(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =
   return () => {};
 }
 
-async function renderSheet(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() => void> {
+async function renderSheet(viewer: HTMLElement, bytes: ArrayBuffer, changed?: ViewerControlsChanged): Promise<() => void> {
   const { read, utils } = await import('xlsx');
   const book = read(new Uint8Array(bytes), { type: 'array', dense: true, cellDates: true, sheetRows: SHEET_ROWS + 1 });
   viewer.dataset.kind = 'sheet';
@@ -110,6 +112,7 @@ async function renderSheet(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() 
     const full = utils.decode_range(String(sheet['!fullref'] ?? sheet['!ref'] ?? 'A1'));
     const more = full.e.r - full.s.r + 1 > SHEET_ROWS || full.e.c - full.s.c + 1 > SHEET_COLUMNS ? `<span>Showing the first ${SHEET_ROWS.toLocaleString()} rows and ${SHEET_COLUMNS} columns.</span>` : '';
     viewer.innerHTML = `<div class="office-bar sheet-tabs" role="group" aria-label="Sheets">${tabs}${more}</div><div class="sheet-scroll"><table class="sheet-grid" aria-label="${escape(name)}"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+    changed?.([...viewer.querySelectorAll<HTMLElement>('[data-sheet]')].map(node => ({ id: `sheet-${node.dataset.sheet}`, label: node.textContent!, node, run: () => show(Number(node.dataset.sheet)) })));
   };
   viewer.addEventListener('click', event => {
     const button = (event.target as Element).closest<HTMLElement>('[data-sheet]');
@@ -122,7 +125,7 @@ async function renderSheet(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() 
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml' };
 
 /** An image fitted to the tab; clicking it switches between fitted and actual size. */
-async function renderImage(viewer: HTMLElement, bytes: ArrayBuffer, path: string): Promise<() => void> {
+async function renderImage(viewer: HTMLElement, bytes: ArrayBuffer, path: string, changed?: ViewerControlsChanged): Promise<() => void> {
   const type = IMAGE_TYPES[path.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
   // A data: URL because the app's CSP allows no blob: images; an SVG shown through <img> runs no scripts.
   const url = await new Promise<string>((resolve, reject) => {
@@ -137,9 +140,13 @@ async function renderImage(viewer: HTMLElement, bytes: ArrayBuffer, path: string
   viewer.dataset.kind = 'image';
   viewer.innerHTML = `<div class="office-bar sheet-tabs">${image.naturalWidth.toLocaleString()} × ${image.naturalHeight.toLocaleString()} px<button type="button" data-zoom aria-pressed="false">Actual size</button></div><div class="image-stage"></div>`;
   const zoom = viewer.querySelector<HTMLElement>('[data-zoom]')!;
-  const toggle = () => zoom.setAttribute('aria-pressed', String(viewer.toggleAttribute('data-actual')));
+  const toggle = () => {
+    zoom.setAttribute('aria-pressed', String(viewer.toggleAttribute('data-actual')));
+    changed?.([{ id: 'zoom', label: 'Actual size', node: zoom, run: toggle }]);
+  };
   image.title = 'Click to toggle actual size';
   image.addEventListener('click', toggle); zoom.addEventListener('click', toggle);
+  changed?.([{ id: 'zoom', label: 'Actual size', node: zoom, run: toggle }]);
   viewer.querySelector('.image-stage')!.append(image);
   return () => {};
 }

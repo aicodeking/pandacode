@@ -6,6 +6,7 @@ export const VIEW_ACTION_SURFACES = [
   'panda.inspector.search.toolbar', 'panda.inspector.search.context',
   'panda.sidebar.project.context', 'panda.sidebar.task.context',
 ] as const;
+export const DOCUMENT_ACTION_SURFACES = ['panda.documents.actions', 'panda.documents.context'] as const;
 export const THREAD_ACTION_SURFACES = [
   'panda.composer.actions', 'panda.composer.tray', 'panda.composer.attachments',
   'panda.thread.header', 'panda.thread.message.actions', 'panda.thread.trace.actions',
@@ -14,7 +15,7 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof VIEW_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
@@ -30,6 +31,7 @@ export function boundedContextActions<T extends { children?: T[] }>(core: T[], c
 }
 
 export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string])[]> = {
+  'panda.documents.context': [['select', 'Select document'], ['close', 'Close document'], ['attach', 'Attach'], ['copy', 'Copy file'], ['preview', 'Preview in browser']],
   'panda.inspector.files.context': [['open', 'Open file'], ['attach', 'Attach file']],
   'panda.inspector.changes.context': [['stage', 'Stage file'], ['unstage', 'Unstage file'], ['open', 'Open file'], ['copy', 'Copy path']],
   'panda.inspector.search.context': [['open', 'Open file']],

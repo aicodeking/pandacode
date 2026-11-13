@@ -984,6 +984,20 @@ mod tests {
         assert!(validate(&archive(&[("extension.json", &serde_json::to_vec(&invalid).unwrap())])).is_err());
     }
     #[test]
+    fn document_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/documents/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.documents", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert!(snapshot.packages[0].enabled);
+        assert_eq!(snapshot.packages[0].manifest["contributes"]["components"][0]["slot"], "panda.documents");
+        packages.enable("sample.documents", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
+    #[test]
     fn ordinary_zip_directory_entries_work_without_extraction() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.add_directory("assets/", zip::write::SimpleFileOptions::default()).unwrap();

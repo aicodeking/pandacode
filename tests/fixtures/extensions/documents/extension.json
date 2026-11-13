@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.documents",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "requiredContributions": ["components"],
+  "contributes": {
+    "commands": [{ "id": "sample.documents/info", "title": "Document tools", "action": { "kind": "showMessage", "message": "Document presentation uses original host handlers." } }],
+    "menus": [
+      { "id": "sample.documents/action", "location": "panda.documents.actions", "command": "sample.documents/info", "presentation": "button" },
+      { "id": "sample.documents/context", "location": "panda.documents.context", "command": "sample.documents/info" }
+    ],
+    "layouts": [{ "id": "sample.documents/order", "title": "Attach before copy", "location": "panda.documents.actions", "rules": [{ "id": "panda.documents.actions/attach", "target": "panda.documents.actions/copy", "side": "before" }] }],
+    "components": [{ "id": "sample.documents/viewer", "title": "Viewer first", "slot": "panda.documents", "contractVersion": 1, "presentation": "viewer-first", "capabilities": ["host-tabs", "host-viewer", "original-actions"] }]
+  }
+}

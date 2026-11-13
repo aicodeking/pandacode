@@ -14,6 +14,25 @@ export function selectComponent(slot: SlotId, id?: string): void {
   window.dispatchEvent(new Event('pandacode-components-change'));
 }
 const identity = (provider: ComponentProvider) => `${provider.id}:${extensionIdentity(provider.id.split('/')[0])}`;
+/** Attribute-only recipe: never rerender the host document or dispose a live viewer. */
+export function applyDocumentPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('#file-tabs') || !host.querySelector('#file-view')) throw new Error('Incomplete document host');
+}): void {
+  delete host.dataset.documentProvider;
+  const status = host.querySelector<HTMLElement>(':scope > [data-document-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.documents', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.documentPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Document replacement failed. Built-in viewer remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.documentProvider = provider.id; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** Declarative composer v1 reorders host-owned regions, never substitutes an editor or
  * dispatches an extension action. Recovery changes attributes only: native input/IME,
  * undo, grants, approvals, queue and submission remain exclusively core-owned. */

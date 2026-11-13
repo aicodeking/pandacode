@@ -1,4 +1,7 @@
 .component-replacement { display: flex; flex-direction: column; gap: var(--ds-row-pad-y, 4px); padding: var(--ds-row-pad-y, 4px); }
+/* Presentation only. The same viewer/worker and its reader selection stay mounted. */
+[data-document-provider] #file-view { display: flex; flex-direction: column; }
+[data-document-provider] #file-view > .file-view-header { order: 1; }
 .component-replacement button { text-align: start; overflow-wrap: anywhere; }
 .component-cards button { padding: 10px; }
 .component-replacement button[aria-current] { outline: 1px solid var(--focus); outline-offset: -1px; }

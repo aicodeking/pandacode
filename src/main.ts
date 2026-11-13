@@ -598,6 +598,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   const placementHost = registerPlacementHosts([
     { id: 'panda.views/composer', label: 'Composer', node: $('#composer-area') },
     { id: 'panda.views/terminal', label: 'Terminal', node: $('#terminal-drawer') },
+    { id: 'panda.views/documents', label: 'Documents', node: $('#file-panel'), home: 'panda.containers/inspector' },
   ], baseDestinations, () => [...document.querySelectorAll<HTMLElement>('#inspector-toggle, #terminal-toggle, #view-menu')].find(node => node.checkVisibility() && !node.closest('[inert]')) ?? null);
   // Destination views use host-owned sibling docks, never extension DOM or service ownership.
   const syncPlacementDestinations = () => placementHost.setDestinations([...baseDestinations, ...extensionInspectorViews.map(entry => ({
@@ -615,6 +616,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   let extensionsLayoutSafeMode = true;
   extensionSidebarHidden = () => !extensionsLayoutSafeMode && layout.isHidden('panda.sidebar', state.projectId ?? undefined);
   applyExtensionVisibility = () => {
+    const documentNavigation = [
+      ['panda.documents.navigation/open-files', document.querySelector<HTMLElement>('[data-action="tab-open-files"]')],
+      ['panda.documents.navigation/close-open-files', document.querySelector<HTMLElement>('.file-panel-tab [data-action="close-inspector-tab"]')],
+    ] as const;
+    applyControlOrder('panda.documents.navigation', documentNavigation, extensionsLayoutSafeMode);
+    if (!extensionsLayoutSafeMode) applyControlVisibility(documentNavigation, () => $('#inspector-toggle'));
     applyControlOrder('panda.workspace.header.actions', [
       ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')], ['panda.workspace.header.actions/view-menu', $('#view-menu')],
     ], extensionsLayoutSafeMode);

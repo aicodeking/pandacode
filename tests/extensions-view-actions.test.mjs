@@ -13,7 +13,9 @@ test('extensions view actions: the surface ledger names every catalog location a
   const ledger = JSON.parse(readFileSync(new URL('./fixtures/extensions/surfaces.json', import.meta.url), 'utf8'));
   const catalog = createUiCatalog(() => ({ safeMode: false, packages: [], diagnostics: [] }));
   assert.deepEqual(catalog.listSurfaces().items.map(item => item.id).sort(), [...ledger.catalog.surfaces].sort());
-  assert.deepEqual(catalog.listItems({ owner: 'panda.core' }).items.map(item => item.id).sort(), [...ledger.catalog.coreItems].sort());
+  const items = []; let cursor;
+  do { const page = catalog.listItems({ owner: 'panda.core', limit: 100, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor; } while (cursor);
+  assert.deepEqual(items.map(item => item.id).sort(), [...ledger.catalog.coreItems].sort());
 });
 
 test('extensions view actions: a valid maximum-size tree cannot displace core actions or overflow a context menu', () => {

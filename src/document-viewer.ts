@@ -1,6 +1,7 @@
 import { escape, markdown } from './dom';
 import { captureFileLinkContext, decorateFileLinks, workspaceImagePath } from './file-links';
 import { trackSegment } from './motion';
+import type { ViewerControlsChanged } from './extensions/document-controls';
 
 export type DocumentView = 'rendered' | 'raw';
 /** Reads a workspace image (path from the workspace root) as a data: URL. */
@@ -96,7 +97,7 @@ function toolbar(kind: Kind, view: DocumentView, wrap: boolean, content: string)
 }
 
 /** Renders a file into the inspector: prose as a reading column (Rendered | Raw), code with line numbers. */
-export function renderDocument(host: HTMLElement, path: string, content: string, image?: ImageLoader): void {
+export function renderDocument(host: HTMLElement, path: string, content: string, image?: ImageLoader, changed?: ViewerControlsChanged): void {
   const kind = kindOf(path);
   const view = kind === 'code' ? 'raw' : views.get(kind) ?? 'rendered';
   const wrap = wraps.get(kind) ?? kind !== 'code';
@@ -111,11 +112,15 @@ export function renderDocument(host: HTMLElement, path: string, content: string,
   else if (reader) void markdown(reader, content);
   const group = viewer.querySelector<HTMLElement>('.doc-view-switch');
   if (group) trackSegment(group, group.querySelector('[aria-pressed="true"]'));
+  const select = (target: HTMLElement) => {
+    if (target.dataset.docView) views.set(kind, target.dataset.docView as DocumentView);
+    else wraps.set(kind, !wrap);
+    renderDocument(host, path, content, image, changed);
+  };
+  changed?.([...viewer.querySelectorAll<HTMLElement>('[data-doc-view],[data-doc-wrap]')].map(node => ({ id: node.dataset.docView ?? 'wrap', label: node.textContent!, node, run: () => select(node) })));
   viewer.addEventListener('click', event => {
     const target = (event.target as Element).closest<HTMLElement>('[data-doc-view],[data-doc-wrap]');
     if (!target) return;
-    if (target.dataset.docView) views.set(kind, target.dataset.docView as DocumentView);
-    else wraps.set(kind, !wrap);
-    renderDocument(host, path, content, image);
+    select(target);
   });
 }

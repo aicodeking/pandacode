@@ -10,6 +10,11 @@ import { INSPECTOR_VIEWS } from '../src/inspector-tabs.ts';
 const sample = JSON.parse(readFileSync(new URL('./fixtures/extensions/sample-project-helper/extension.json', import.meta.url), 'utf8'));
 const empty = () => ({ safeMode: false, packages: [], diagnostics: [] });
 const installed = () => ({ safeMode: false, packages: [{ manifest: structuredClone(sample), enabled: true, icons: {} }], diagnostics: [] });
+function allItems(ui, query = {}) {
+  const items = []; let cursor;
+  do { const page = ui.listItems({ ...query, limit: 100, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor; } while (cursor);
+  return items;
+}
 function plain(value) {
   assert.ok(value === null || ['string', 'boolean', 'number'].includes(typeof value) || typeof value === 'object');
   if (value && typeof value === 'object') {
@@ -21,9 +26,9 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
-  const items = ui.listItems().items;
-  const expected = 9 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, 'panda.documents', 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', 'panda.documents.actions', 'panda.documents.context', ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
+  const items = allItems(ui);
+  const expected = 9 + 12 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
   assert.equal(items.length, expected); assert.equal(new Set(items.map(item => item.id)).size, expected);
   assert.deepEqual(items.filter(item => item.owner === sample.id).map(item => item.id), ['sample.project-helper/header', 'sample.project-helper/sidebar']);
   for (const item of [...items, ...surfaces]) {
@@ -37,7 +42,7 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
 });
 test('extensions catalog: pagination and exact filters are bounded, stable and detect changed catalogs', () => {
   let state = installed(); const ui = createUiCatalog(() => state);
-  const expected = ui.listItems().items.map(item => item.id), ids = [];
+  const expected = allItems(ui).map(item => item.id), ids = [];
   let cursor;
   do { const page = ui.listItems({ limit: 2, ...(cursor ? { cursor } : {}) }); ids.push(...page.items.map(item => item.id)); cursor = page.nextCursor; } while (cursor);
   assert.deepEqual(ids, expected);
@@ -48,7 +53,7 @@ test('extensions catalog: pagination and exact filters are bounded, stable and d
   state.packages[0].enabled = false;
   assert.throws(() => ui.listItems({ limit: 1, cursor: first.nextCursor }), { code: 'StaleContext' });
   state = installed();
-  assert.deepEqual(createUiCatalog(() => state).listItems().items.map(item => item.id), expected);
+  assert.deepEqual(allItems(createUiCatalog(() => state)).map(item => item.id), expected);
   for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { cursor: '' }, { cursor: '{}' }, { windowId: 1 }, { owner: 'x'.repeat(513) }, { raw: true }]) assert.throws(() => ui.listItems(query), { code: 'InvalidQuery' });
 });
 test('extensions catalog: unsupported windows remain discoverable and disable/safe mode recover core metadata', () => {
@@ -75,7 +80,7 @@ test('extensions catalog: more than one hundred contributions remain fully pagea
   const ui = createUiCatalog(() => state), first = ui.listItems({ limit: 100 });
   assert.equal(first.items.length, 100); assert.ok(first.nextCursor.length < 4096);
   const second = ui.listItems({ limit: 100, cursor: first.nextCursor });
-  const total = 128 + createUiCatalog(empty).listItems().items.length;
+  const total = 128 + allItems(createUiCatalog(empty)).length;
   assert.equal(second.items.length, total - 100); assert.equal(second.nextCursor, null);
   assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, total);
 });

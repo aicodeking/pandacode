@@ -1,5 +1,8 @@
 # Component presentation v1 (experimental)
 
+Document tabs and live viewers have their own [document presentation v1](documents.md)
+contract (`panda.documents`); `panda.files` below is the Files tree, not a document viewer.
+
 Install the `tests/fixtures/extensions/replacement` package as a local archive. In Settings →
 Extensions → Surface explorer choose **Project presentation** or **File presentation** explicitly.
 Enable alone does not replace anything. Competing providers never win by installation order.

@@ -53,6 +53,7 @@ config.testMatch.push('**/extensions-rich-views.spec.ts');
 config.testMatch.push('**/extensions-placement.spec.ts');
 config.testMatch.push('**/extensions-appearance.spec.ts');
 config.testMatch.push('**/extensions-replacement.spec.ts');
+config.testMatch.push('**/extensions-documents-coverage.spec.ts');
 config.testMatch.push('**/extensions-composer-conformance.spec.ts');
 config.testMatch.push('**/extensions-transcript-conformance.spec.ts');
 config.testMatch.push('**/extensions-provider-history.spec.ts');

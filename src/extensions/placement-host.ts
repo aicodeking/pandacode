@@ -13,11 +13,11 @@ export function dispatchPlacement(action: PlacementAction, project?: string) { p
 export function canPlace(id: string, container: string) {
   try { reducePlacement(placements.read(layoutProject()), { id, container }, views, containers); return true; } catch { return false; }
 }
-export function registerPlacementHosts(bindings: { id: string; label: string; node: HTMLElement }[], destinations: Container[], fallback: () => HTMLElement | null) {
+export function registerPlacementHosts(bindings: { id: string; label: string; node: HTMLElement; home?: string }[], destinations: Container[], fallback: () => HTMLElement | null) {
   containers = destinations;
   views = bindings.map(binding => {
     const anchor = document.createComment(`placement home: ${binding.id}`); binding.node.before(anchor);
-    return { ...binding, anchor, contract: 'host-view-v1', home: 'panda.containers/main' };
+    return { ...binding, anchor, contract: 'host-view-v1', home: binding.home ?? 'panda.containers/main' };
   });
   const refresh = () => {
     const state = placements.read(layoutProject()), safe = extensionsSnapshot().safeMode;

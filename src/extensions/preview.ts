@@ -23,6 +23,7 @@ import dataPanelManifest from '../../tests/fixtures/extensions/data-panel/extens
 import richViewManifest from '../../tests/fixtures/extensions/rich-view/extension.json';
 import appearanceManifest from '../../tests/fixtures/extensions/appearance/extension.json';
 import replacementManifest from '../../tests/fixtures/extensions/replacement/extension.json';
+import documentsManifest from '../../tests/fixtures/extensions/documents/extension.json';
 import composerManifest from '../../tests/fixtures/extensions/composer/extension.json';
 import transcriptManifest from '../../tests/fixtures/extensions/transcript/extension.json';
 import appearanceSvg from '../../tests/fixtures/extensions/appearance/assets/symbol.svg?raw';
@@ -152,6 +153,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
+    if (new URLSearchParams(location.search).has('documents-coverage')) {
+      if (snapshot.packages.some(item => item.manifest.id === documentsManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: documentsManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
     if (new URLSearchParams(location.search).has('extension-harness')) {
       if (snapshot.packages.some(item => item.manifest.id === harnessManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: harnessManifest as ExtensionPackage['manifest'], icons: {}, enabled: false, executable: { digest: 'recorded-harness-digest', trusted: false } });

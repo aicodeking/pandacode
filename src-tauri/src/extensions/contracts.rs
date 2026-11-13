@@ -387,10 +387,16 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
+        if kind == "documentPresentation" {
+            distinct(items(&value, "tabs"), "id", "$/tabs")?;
+            distinct(items(&value, "tabs"), "documentId", "$/tabs")?;
+            for tab in items(&value, "tabs") { distinct(items(tab, "controls"), "id", "$/tabs/controls")?; }
+            if !text(&value, "selected").is_empty() && !items(&value, "tabs").iter().any(|tab| tab["id"] == value["selected"]) { return Err(invalid("$/selected")); }
+        }
         if kind == "command" && value["definition"]["action"]["kind"] == "showDialog" { dialog_fields(&value["definition"]["action"]["dialog"], "$/definition/action/dialog")?; }
         if kind == "command" || kind == "contribution" {
             package_id(text(&value["owner"], "extensionId"), "$/owner/extensionId")?;
@@ -454,6 +460,23 @@ mod tests {
         let mut future = manifest.clone(); future["contributes"]["components"][0]["contractVersion"] = serde_json::json!(2);
         assert_eq!(super::validate_contract("packages", &serde_json::json!([future]))["ok"], true);
         for (field, value) in [("id", serde_json::json!("other.owner/foreign")), ("presentation", serde_json::json!("html")), ("render", serde_json::json!("code")), ("actions", serde_json::json!(["delete"]))] {
+            let mut invalid = manifest.clone(); invalid["contributes"]["components"][0][field] = value;
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false);
+        }
+    }
+    #[test]
+    fn document_component_and_action_locations_share_native_schema() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/documents/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([manifest]))["ok"], true);
+        let props = serde_json::json!({"contractVersion":1,"context":"main/A","revision":1,"tabs":[{"id":"tab","documentId":"doc","label":"Readme","controls":[{"id":"copy","label":"Copy","enabled":true}]}],"selected":"tab","focused":"doc","visible":true});
+        assert_eq!(super::validate_contract("documentPresentation", &props)["ok"], true);
+        let action = serde_json::json!({"contractVersion":1,"context":"main/A","revision":1,"tabId":"tab","documentId":"doc","controlId":"copy"});
+        assert_eq!(super::validate_contract("documentAction", &action)["ok"], true);
+        let mut forged = action.clone(); forged["ipc"] = serde_json::json!("raw");
+        assert_eq!(super::validate_contract("documentAction", &forged)["ok"], false);
+        let mut duplicate = props.clone(); duplicate["tabs"].as_array_mut().unwrap().push(props["tabs"][0].clone());
+        assert_eq!(super::validate_contract("documentPresentation", &duplicate)["ok"], false);
+        for (field, value) in [("id", serde_json::json!("other.owner/stolen")), ("presentation", serde_json::json!("html")), ("render", serde_json::json!("code"))] {
             let mut invalid = manifest.clone(); invalid["contributes"]["components"][0][field] = value;
             assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false);
         }

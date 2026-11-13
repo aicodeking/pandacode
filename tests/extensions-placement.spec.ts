@@ -69,6 +69,9 @@ test('extensions placement: E17 same running PTY, draft undo, attachments, queue
   await page.locator('#prompt').press('ControlOrMeta+z'); await expect(page.locator('#prompt')).not.toHaveValue('Live undo draft');
   await expect(page.locator('#attachments .prompt-chip')).toHaveCount(2); await expect(page.locator('.queue-text')).toHaveText('Queued follow-up');
   await page.locator('#terminal-host .xterm-helper-textarea').pressSequentially('echo alive');
+  // xterm delivers input asynchronously; keyboard completion is not transport completion.
+  // Keep the exact once-only payload assertion, waiting for the observable host call.
+  await expect.poll(() => page.evaluate(() => (window as any).__extensionsBaseline.calls.filter((call: any) => call.command === 'write_terminal').map((call: any) => call.args.data).join(''))).toBe('echo alive');
   const calls = await page.evaluate(() => (window as any).__extensionsBaseline.calls);
   expect(calls.filter((call: any) => call.command === 'start_terminal')).toHaveLength(1);
   expect(calls.filter((call: any) => call.command === 'send_message')).toHaveLength(1);
