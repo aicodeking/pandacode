@@ -47,6 +47,9 @@ enum Request {
     Connections { handle: String, request: Value },
     Services { handle: String, request: Value },
     RemoveOwnData { id: String, confirmation: String },
+    StageUpdate { id: String, path: String },
+    ReviewUpdate { id: String, digest: String },
+    RollbackUpdate { id: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
@@ -65,6 +68,11 @@ fn stop_presentation_work(app: &tauri::AppHandle, owner: Option<&str>) {
     app.state::<ExtensionRuntime>().stop(owner);
     if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(owner, None); }
 }
+/// Called after atomic selection/removal, outside the package lock. Never cancel
+/// core provider runs: their leases own the version barrier.
+pub(in crate::extensions) fn package_changed(app: &tauri::AppHandle, owner: &str) {
+    stop_presentation_work(app, Some(owner)); context::invalidate(app, Some(owner));
+}
 pub fn retry(app: &tauri::AppHandle, owner: &str) {
     if let Ok(mut quarantine) = app.state::<ExtensionRuntime>().quarantine.lock() { quarantine.retain(|(id, _)| id != owner); }
 }
@@ -76,6 +84,25 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
     if request.to_string().len() > limit { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
     match request {
+        Request::StageUpdate { id, path } => {
+            let result: Result<Value, String> = (|| { let packages = app.state::<ExtensionPackages>(); let packages = packages.0.lock().map_err(|_| "HostUnavailable".to_owned())?; packages.stage_update(&id, std::path::Path::new(&path))?; serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".into()) })();
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
+        }
+        Request::ReviewUpdate { id, digest } => {
+            let mut promoted = false;
+            let result: Result<Value, String> = (|| { let packages = app.state::<ExtensionPackages>(); let packages = packages.0.lock().map_err(|_| "HostUnavailable".to_owned())?; packages.review_update(&id, &digest)?; promoted = packages.pin_count(&id) == 0; serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".into()) })();
+            // Do not cancel provider runs: their lease is the drain barrier.
+            if result.is_ok() && promoted { package_changed(&app, &id); }
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
+        }
+        Request::RollbackUpdate { id } => {
+            let result: Result<Value, String> = (|| { let packages = app.state::<ExtensionPackages>(); let packages = packages.0.lock().map_err(|_| "HostUnavailable".to_owned())?; packages.rollback_update(&id, "Manual rollback: compatible package/state restored")?; serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".into()) })();
+            if result.is_ok() { stop(&app, Some(&id)); context::invalidate(&app, Some(&id)); }
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
+        }
         Request::Services { handle, request } => super::services::call(&app, &handle, request, true),
         Request::Connections { handle, request } => super::connections::call(&app, &handle, request, true),
         Request::Jobs { handle, request } => super::jobs::call(&app, &handle, request),
@@ -146,7 +173,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
                 let snapshot = packages.snapshot();
                 let (owner, version, captured) = app.state::<ContextBroker>().local_binding(&app, &snapshot, &handle)?;
-                let (digest, source) = packages.executable_source(&owner).map_err(|_| "PermissionDenied")?;
+                let (digest, source) = packages.executable_admission(&owner).map_err(|_| "PermissionDenied")?;
                 let state = app.state::<ExtensionRuntime>();
                 if state.quarantine.lock().map_err(|_| "HostUnavailable")?.contains(&(owner.clone(), digest.clone())) { return Err("HostUnavailable"); }
                 let mut active = state.active.lock().map_err(|_| "HostUnavailable")?;
@@ -214,6 +241,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
             if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(Some(&owner), Some(&handle)); }
             let state = app.state::<ExtensionRuntime>();
             if let Ok(packages) = app.state::<ExtensionPackages>().0.try_lock() {
+                let _ = packages.activation_finished(&owner, &digest, result.is_ok());
                 packages.development_log(&owner, if result.is_ok() { "Activation completed; owned process and subscriptions disposed." } else { "Activation failed/cancelled; package output redacted. Inspect broker grants and host diagnostics." });
             }
             state.finish(&request_id, owner, digest, &result);

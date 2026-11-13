@@ -33,6 +33,8 @@ import type { ExtensionPackage, ExtensionSnapshot, ExtensionMenuItem } from './m
 import { createDeclarativeActivation } from './activation';
 import { surfaceWindow } from './window-surfaces';
 import { createStoragePreview } from './storage-preview';
+import { createUpdatePreview } from './updates-preview';
+const previewUpdates = createUpdatePreview();
 export const previewPrivateStorage = createStoragePreview(localStorage);
 const key = 'pandacode.preview.extensions.v1';
 const windowLabel = location.pathname.endsWith('/agents-dock.html') ? 'agents-dock' : new URLSearchParams(location.search).get('view') === 'tray' ? 'tray' : new URLSearchParams(location.search).get('view') === 'launcher' ? 'launcher' : 'main';
@@ -48,6 +50,7 @@ function read(): ExtensionSnapshot {
     const text = localStorage.getItem(key) ?? '[]';
     if (text.length > 3 * 1024 * 1024) throw new Error('Limit');
     const packages: ExtensionPackage[] = JSON.parse(text);
+    previewUpdates.decorate(packages);
     for (const item of packages) item.storageGranted = previewPrivateStorage.granted(item.manifest.id, item.manifest.version);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
@@ -55,6 +58,8 @@ function read(): ExtensionSnapshot {
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export const previewExtensionSnapshot = read;
+export function previewProviderStarted(id: string): void { const snapshot = read(); previewUpdates.pin(snapshot.packages, id); localStorage.setItem(key, JSON.stringify(snapshot.packages)); }
+export function previewProviderFinished(id: string, notify: (name: string, value: unknown) => void): void { const snapshot = read(); if (snapshot.safeMode) return; previewUpdates.release(snapshot.packages, id); localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); }
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
   if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewServices.stop(String(args.id));
   if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') previewServices.stop();
@@ -93,6 +98,12 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
   if (command === 'extensions_runtime') {
     const request = args.request as { op: string; id: string; digest: string; allow: boolean; path?: string };
+    if (['stageUpdate', 'reviewUpdate', 'rollbackUpdate'].includes(request.op)) {
+      if (request.op === 'stageUpdate') previewUpdates.stage(snapshot.packages, request.id);
+      else if (request.op === 'reviewUpdate') previewUpdates.review(snapshot.packages, request.id, request.digest);
+      else previewUpdates.rollback(snapshot.packages, request.id);
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return { ok: true, value: read() };
+    }
     if (request.op === 'storageGrant') {
       previewPrivateStorage.grant(snapshot, request.id, request.allow);
       notify('extensions-changed', null); return { ok: true, value: read() };
@@ -154,7 +165,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (item) localStorage.setItem(`pandacode.preview.extension-private-pages.v1.${item.manifest.id}`, JSON.stringify((item.manifest.contributes.settings ?? []).map(page => page.id)));
     previewPrivateStorage.dispose(String(args.id));
     development = development.filter(dev => dev.id !== args.id);
-    snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
+    previewUpdates.uninstall(snapshot.packages, String(args.id));
   } else if (command === 'extensions_enable') {
     const item = snapshot.packages.find(item => item.manifest.id === args.id);
     if (!item) throw new Error('Extension not found.');

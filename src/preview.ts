@@ -9,7 +9,7 @@ import { parseProviderId, providerOwner, PROVIDER_RECOVERY } from './extensions/
 import { packageHarnesses } from './extensions/harnesses';
 import { packageDiscoveryHarnesses } from './extensions/provider-discovery';
 import { requireProviderConsole, CONSOLE_UNSUPPORTED, SLASH_UNSUPPORTED } from './extensions/provider-cli';
-import { previewExtensionSnapshot } from './extensions/preview';
+import { previewExtensionSnapshot, previewProviderStarted, previewProviderFinished } from './extensions/preview';
 import { createHarnessPreview } from './extensions/harness-preview';
 import { isPreviewableFile } from './file-links';
 import type { CommandPanel, GoalState } from './command-center';
@@ -728,7 +728,7 @@ function agent(event: AgentEvent) { emit('agent-event', event); }
 const harnessPreview = createHarnessPreview(event => {
   if (event.tool) (messages[event.sessionId] ??= []).push({ id: ++id, sessionId: event.sessionId, role: 'tool', content: encodeTool(event.tool), createdAt: Date.now() });
   agent(event);
-}, (id, content) => finish(id, content));
+}, (id, content) => { const owner = providerOwner(session(id).provider); if (owner) previewProviderFinished(owner, emit); finish(id, content); });
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
@@ -1648,9 +1648,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   }
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);
-    if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall' || command === 'extensions_safe_mode') {
+    if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_safe_mode') {
       for (const s of sessions.filter(s => providerOwner(s.provider) && ['running', 'waiting'].includes(s.status) && (command === 'extensions_safe_mode' || providerOwner(s.provider) === args.id))) {
-        harnessPreview.stop(s.id); s.status = 'idle'; agent({ sessionId: s.id, kind: 'done', text: 'Extension disabled' });
+        harnessPreview.stop(s.id); previewProviderFinished(providerOwner(s.provider)!, emit); s.status = 'idle'; agent({ sessionId: s.id, kind: 'done', text: 'Extension disabled' });
       }
     }
     if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') extensionContextBroker?.invalidate(args.id);
@@ -2376,7 +2376,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (new TextEncoder().encode(text).length > MESSAGE_LIMIT) throw new Error('Message and attached context must be under 16 MiB.');
       s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
       // Recorded runs still validate and persist the prompt; only automatic response events are held.
-      if (providerOwner(s.provider)) { harnessPreview.start(s); break; }
+      if (providerOwner(s.provider)) { previewProviderStarted(providerOwner(s.provider)!); harnessPreview.start(s); break; }
       if (new URLSearchParams(location.search).has('extensions-baseline') && w.__extensionsBaseline?.holdRun) break;
       if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
@@ -2404,6 +2404,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'stop_session': {
       harnessPreview.stop(args.sessionId);
+      { const task = sessions.find(task => task.id === args.sessionId); const owner = task && providerOwner(task.provider); if (owner && ['running', 'waiting'].includes(task!.status)) previewProviderFinished(owner, emit); }
       if (architect.isActive(args.sessionId)) { result = architect.control(args.sessionId, 'stop'); break; }
       const w = window as any;
       if (w.__stopHold) await new Promise<void>(resolve => { w.__stopRelease = () => { w.__stopHold = false; resolve(); }; });

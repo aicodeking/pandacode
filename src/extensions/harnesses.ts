@@ -8,7 +8,7 @@ export type HarnessContribution = { apiVersion: 1; id: string; name: string; met
 /** Catalog metadata only. The native host separately admits executable content. */
 export function packageHarnesses(snapshot: ExtensionSnapshot, placement: 'desktop' | 'workspace' = 'desktop'): Provider[] {
   if (snapshot.safeMode) return [];
-  return snapshot.packages.filter(item => item.enabled && item.executable?.trusted && (placement === 'desktop' || ['workspace', 'split'].includes(String(item.manifest.extensionKind)))).flatMap(item => {
+  return snapshot.packages.filter(item => item.enabled && !item.update?.draining && item.executable?.trusted && (placement === 'desktop' || ['workspace', 'split'].includes(String(item.manifest.extensionKind)))).flatMap(item => {
     const contributions = item.manifest.contributes as typeof item.manifest.contributes & { providers?: HarnessContribution[] };
     return (contributions.providers ?? []).map(provider => ({
       id: parseProviderId(provider.id)!, name: provider.name, installed: (provider.metadata?.readiness.state ?? 'ready') === 'ready', path: null, version: item.manifest.version,

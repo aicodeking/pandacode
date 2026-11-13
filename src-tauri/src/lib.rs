@@ -3971,6 +3971,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
+    extensions::packages::configure_notifications(app.handle().clone());
     providers::dynamic_adapter::configure(&app.state::<extensions::packages::ExtensionPackages>().0, app.path().resource_dir().ok().map(|path| path.join("extension-runtime")));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());

@@ -227,6 +227,9 @@ impl Conversation {
 
 pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::mpsc::UnboundedReceiver<RunInput>, host: Option<super::ToolHost>, harness: Arc<AtomicBool>) -> Result<(), String> {
     let registration = resolve(&config.provider)?;
+    let packages = HOST.get().and_then(|host| host.packages.upgrade()).ok_or("HostUnavailable")?;
+    let owner = crate::extensions::providers::extension_owner(&config.provider).ok_or("InvalidIdentity")?;
+    let pin = crate::extensions::packages::pin_provider(&packages, owner, &registration.digest)?;
     if host.as_ref().is_some_and(|host| host.tools.iter().any(|tool| tool["name"].as_str().is_some_and(crate::architect::team_tool))) { require_team_definition(&registration.definition)?; }
     let host = host.filter(|_| require_team_definition(&registration.definition).is_ok());
     let directory = HOST.get().and_then(|host| host.directory.clone());
@@ -247,7 +250,7 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
     }
     let mut lease = RunLease { key, cancel: cancel.clone(), pump: None };
     // Close disable/reload between source capture and registering the owned cancellation handle.
-    if resolve(&config.provider)?.digest != registration.digest { return Err("StaleContext".into()); }
+    if packages.lock().map_err(|_| "HostUnavailable")?.executable_source(owner)?.0 != registration.digest { return Err("StaleContext".into()); }
     let conversation = Arc::new(Conversation { sid: config.session_id.clone(), sink, pending: Mutex::default(), cancel: cancel.clone() });
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     let receiver = Arc::new(tokio::sync::Mutex::new(rx));
@@ -285,6 +288,9 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
     }).await.map_err(str::to_owned);
     pump.abort(); let _ = pump.await;
     let finished = conversation.finish();
+    drop(pin);
+    if let Ok(packages) = packages.lock() { let _ = packages.activation_finished(owner, &registration.digest, result.is_ok() && finished.is_ok()); }
+    crate::extensions::packages::updates_changed();
     if cancel.load(Ordering::Acquire) { return Ok(()); }
     result?; finished
 }

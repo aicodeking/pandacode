@@ -10,35 +10,39 @@ const MAX_FILE: u64 = 256 * 1024;
 const MAX_EXPANDED: u64 = 1024 * 1024;
 const MAX_FILES: usize = 64;
 const MAX_PACKAGES: usize = 64;
-const MAX_RECORD: u64 = 3 * 1024 * 1024;
+const MAX_RECORD: u64 = 9 * 1024 * 1024;
 type Result<T> = std::result::Result<T, String>;
 #[path = "development.rs"]
 mod development;
 #[path = "storage.rs"]
 mod storage;
+#[path = "updates.rs"]
+mod updates;
+pub(crate) use updates::pin as pin_provider;
+pub(crate) use updates::{configure_notifications, updates_changed};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[serde(default)] executable_trust: Option<String> }
+struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[serde(default)] executable_trust: Option<String>, #[serde(default)] lifecycle: updates::Lifecycle }
 #[derive(Clone, Serialize)]
 pub struct Executable { digest: String, trusted: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool, #[serde(skip)] pub(super) rich_assets: BTreeMap<String, super::rich_views::RichAssets> }
+pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool, #[serde(skip_serializing_if = "Option::is_none")] update: Option<updates::Status>, #[serde(skip)] pub(super) rich_assets: BTreeMap<String, super::rich_views::RichAssets> }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String>, development: Vec<DevelopmentStatus> }
 #[derive(Clone, Serialize)]
 pub(super) struct DevelopmentStatus { id: String, revision: u64, logs: Vec<String> }
 struct Development { path: PathBuf, record: Record, revision: u64, logs: Vec<String> }
-pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<BTreeMap<String, Development>>, streams: Mutex<BTreeMap<String, storage::Stream>> }
+pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<BTreeMap<String, Development>>, streams: Mutex<BTreeMap<String, storage::Stream>>, pins: Mutex<BTreeMap<String, usize>> }
 pub struct ExtensionPackages(pub std::sync::Arc<Mutex<Packages>>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
-    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false, rich_assets: BTreeMap::new() }], diagnostics: vec![], development: vec![] }
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false, update: None, rich_assets: BTreeMap::new() }], diagnostics: vec![], development: vec![] }
 }
 impl ExtensionPackages {
-    pub fn new(dir: &Path, safe: bool) -> Self { Self(std::sync::Arc::new(Mutex::new(Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() }))) }
+    pub fn new(dir: &Path, safe: bool) -> Self { let mut packages = Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default(), pins: Mutex::default() }; if !packages.recover_updates() { packages.safe = true; } Self(std::sync::Arc::new(Mutex::new(packages))) }
 }
 
 fn regular(path: &Path) -> Result<()> {
@@ -162,7 +166,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         rich_assets.insert(view["id"].as_str().unwrap().to_owned(), assets);
     }
     if files.values().any(|(name, _)| !allowed.contains(name)) { return Err("Undeclared package file; executable files and install hooks are unsupported.".into()); }
-    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false, rich_assets })
+    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false, update: None, rich_assets })
 }
 
 impl Packages {
@@ -171,7 +175,7 @@ impl Packages {
         self.provider_registrations_for(crate::headless::active())
     }
     pub(crate) fn provider_registrations_for(&self, workspace_only: bool) -> Vec<(Value, String, String, String)> {
-        self.snapshot().packages.into_iter().filter(|package| package.enabled && (!workspace_only || super::placement::workspace(&package.manifest)) && package.manifest["contributes"]["providers"].as_array().is_some_and(|providers| !providers.is_empty())).flat_map(|package| {
+        self.snapshot().packages.into_iter().filter(|package| package.enabled && !package.update.as_ref().is_some_and(|update| update.draining) && (!workspace_only || super::placement::workspace(&package.manifest)) && package.manifest["contributes"]["providers"].as_array().is_some_and(|providers| !providers.is_empty())).flat_map(|package| {
             let Some(owner) = package.manifest["id"].as_str() else { return vec![] };
             let Ok((digest, source)) = self.executable_source(owner) else { return vec![] };
             package.manifest["contributes"]["providers"].as_array().into_iter().flatten().map(|provider| (provider.clone(), package.manifest["version"].as_str().unwrap_or_default().to_owned(), digest.clone(), source.clone())).collect::<Vec<_>>()
@@ -194,6 +198,7 @@ impl Packages {
         Ok(directory.join(format!("{id}.json")))
     }
     fn settings_record(&self, id: &str) -> Result<Value> {
+        if let Some(state) = self.raw_record(id)?.and_then(|record| record.lifecycle.state) { return Ok(state); }
         let path = self.settings_path(id)?;
         if !path.exists() { return Ok(json!({})); }
         let value: Value = serde_json::from_slice(&read_bounded(&path, 128 * 1024)?).map_err(|_| "Corrupt extension settings.")?;
@@ -218,6 +223,12 @@ impl Packages {
     fn settings_write(&self, id: &str, record: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(&record).map_err(|_| "Cannot serialize settings.")?;
         if bytes.len() > 128 * 1024 { return Err("Extension settings limit exceeded.".into()); }
+        if let Some(mut installed) = self.raw_record(id)? { if installed.lifecycle.state.is_some() { installed.lifecycle.state = Some(record.clone()); return self.write(&self.root.join(format!("{id}.json")), &installed); } }
+        self.settings_write_legacy(id, record)
+    }
+    fn settings_write_legacy(&self, id: &str, record: &Value) -> Result<()> {
+        let bytes = serde_json::to_vec(record).map_err(|_| "Cannot serialize settings.")?;
+        if bytes.len() > 128 * 1024 { return Err("Extension settings limit exceeded.".into()); }
         let path = self.settings_path(id)?;
         let stage = path.with_extension("stage");
         // The manager mutex serializes writes; a stale stage is never silently overwritten.
@@ -240,7 +251,9 @@ impl Packages {
         if record.schema != 1 || format!("{:x}", Sha256::digest(&bytes)) != record.checksum { return Err("Extension checksum mismatch.".into()); }
         let mut package = validate(&bytes)?;
         if path.file_stem().and_then(|p| p.to_str()) != package.manifest["id"].as_str() { return Err("Extension record ownership mismatch.".into()); }
-        package.enabled = record.enabled;
+        package.enabled = record.enabled && !record.lifecycle.failed;
+        package.reason = record.lifecycle.reason.clone();
+        package.update = self.update_status(&record, &package.manifest)?;
         package.storage_granted = self.storage_is_granted(&package.manifest);
         if let Some(executable) = &mut package.executable {
             executable.trusted = record.executable_trust.as_ref() == Some(&record.checksum);
@@ -261,7 +274,7 @@ impl Packages {
         if let Err(error) = self.directory() { result.diagnostics.push(error); return result; }
         match std::fs::read_dir(&self.root) {
             Ok(entries) => {
-                let paths: Vec<_> = entries.take(MAX_PACKAGES + 1).filter_map(|e| e.ok().map(|e| e.path())).collect();
+                let paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|path| path.extension().is_some_and(|ext| ext == "json")).take(MAX_PACKAGES + 1).collect();
                 if paths.len() > MAX_PACKAGES { result.diagnostics.push("Installed package limit exceeded; activation bypassed.".into()); return result; }
                 for path in paths { match self.record(&path) {
                     Ok((_, package)) => {
@@ -277,7 +290,7 @@ impl Packages {
                         // A failed record remains manageable without trusting its contents.
                         if path.extension().and_then(|s| s.to_str()) == Some("json") {
                             if let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|id| safe_name(id)) {
-                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false, rich_assets: BTreeMap::new() });
+                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false, update: None, rich_assets: BTreeMap::new() });
                             }
                         }
                     }
@@ -293,9 +306,11 @@ impl Packages {
             dev.record = record.clone(); return Ok(());
         }
         let stage = self.root.join(format!("{}.stage", uuid::Uuid::new_v4()));
+        let bytes = serde_json::to_vec(record).map_err(|_| "Cannot serialize extension.")?;
+        if bytes.len() as u64 > MAX_RECORD { return Err("Extension record limit exceeded.".into()); }
         let result = (|| {
             let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&stage).map_err(|_| "Cannot stage extension.")?;
-            file.write_all(&serde_json::to_vec(record).map_err(|_| "Cannot serialize extension.")?).map_err(|_| "Cannot write extension.")?;
+            file.write_all(&bytes).map_err(|_| "Cannot write extension.")?;
             file.sync_all().map_err(|_| "Cannot flush extension.")?;
             std::fs::rename(&stage, path).map_err(|_| "Cannot promote extension.")
         })();
@@ -309,8 +324,8 @@ impl Packages {
         let path = self.root.join(format!("{}.json", package.manifest["id"].as_str().unwrap()));
         if self.development.lock().map_err(|_| "HostUnavailable")?.contains_key(package.manifest["id"].as_str().unwrap()) { return Err("Duplicate package ownership; selected for development.".into()); }
         if path.symlink_metadata().is_ok() { return Err("Duplicate package ownership; already installed.".into()); }
-        if std::fs::read_dir(&self.root).map_err(|_| "Cannot inspect extension storage.")?.count() >= MAX_PACKAGES { return Err("Installed package limit exceeded.".into()); }
-        self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false, executable_trust: None })
+        if std::fs::read_dir(&self.root).map_err(|_| "Cannot inspect extension storage.")?.filter_map(|entry| entry.ok()).filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json")).count() >= MAX_PACKAGES { return Err("Installed package limit exceeded.".into()); }
+        self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false, executable_trust: None, lifecycle: Default::default() })
     }
     fn enable(&self, id: &str, enabled: bool) -> Result<()> {
         if self.safe { return Err("Safe mode: activation is bypassed.".into()); }
@@ -318,12 +333,14 @@ impl Packages {
         self.directory()?;
         let path = self.root.join(format!("{id}.json"));
         let (mut record, package) = self.record(&path)?;
+        updates::prepare_enable(&mut record, enabled, package.executable.is_some());
         if enabled {
             if package.executable.as_ref().is_some_and(|executable| !executable.trusted) { return Err("ExecutableTrustRequired: review this version and executable content first.".into()); }
             let mut manifests: Vec<Value> = self.snapshot().packages.into_iter().filter(|p| p.enabled && p.manifest["id"] != id).map(|p| p.manifest).collect();
             manifests.push(package.manifest);
             let checked = super::contracts::validate_contract("packages", &json!(manifests));
             if checked["ok"] != true { return Err(format!("Activation rejected: {}", checked["error"]["code"])); }
+            self.validate_rollback_graph(&manifests)?;
         }
         record.enabled = enabled; self.write(&path, &record)
     }
@@ -338,7 +355,7 @@ impl Packages {
         self.write(&path, &record)
     }
     /// Revalidate the stored archive on every activation; no mutable extracted code path.
-    pub(super) fn executable_source(&self, id: &str) -> Result<(String, String)> {
+    pub(crate) fn executable_source(&self, id: &str) -> Result<(String, String)> {
         if self.safe || !safe_name(id) || id.contains('/') { return Err("PermissionDenied".into()); }
         let (record, package) = self.record(&self.root.join(format!("{id}.json")))?;
         if !package.enabled || !package.executable.is_some_and(|executable| executable.trusted) { return Err("PermissionDenied".into()); }
@@ -352,8 +369,10 @@ impl Packages {
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
         self.directory()?;
         let path = self.root.join(format!("{id}.json"));
+        if self.pin_count(id) > 0 { let (mut record, _) = self.record(&path)?; record.lifecycle.removing = true; return self.write(&path, &record); }
         if self.development.lock().map_err(|_| "HostUnavailable")?.remove(id).is_some() { return Ok(()); }
         regular(&path)?;
+        if let Ok(Some(record)) = self.raw_record(id) { if let Some(state) = record.lifecycle.state { self.settings_write_legacy(id, &state)?; } }
         // Only this installation record. Core storage and extension data are separate.
         std::fs::remove_file(path).map_err(|_| "Cannot uninstall extension.".into())
     }
@@ -400,7 +419,7 @@ pub fn extensions_enable(app: tauri::AppHandle, state: tauri::State<'_, Extensio
 }
 #[tauri::command]
 pub fn extensions_uninstall(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let snapshot = state.snapshot(); drop(state); super::runtime::stop(&app, Some(&id)); super::context::invalidate(&app, Some(&id)); super::windows::changed(&app); Ok(snapshot)
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let pinned = state.pin_count(&id) > 0; let snapshot = state.snapshot(); drop(state); if !pinned { super::runtime::stop(&app, Some(&id)); super::context::invalidate(&app, Some(&id)); } super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
 pub fn extensions_safe_mode(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {
@@ -418,7 +437,7 @@ mod tests {
             let path = std::env::temp_dir().join(format!("pandacode-extension-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap(); Self(path)
         }
-        pub(super) fn packages(&self, safe: bool) -> Packages { Packages { root: self.0.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default() } }
+        pub(super) fn packages(&self, safe: bool) -> Packages { let mut packages = Packages { root: self.0.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default(), pins: Mutex::default() }; if !packages.recover_updates() { packages.safe = true; } packages }
     }
     impl Drop for Storage { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
     pub(super) fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -531,13 +550,21 @@ mod tests {
                 let event = tokio::time::timeout(std::time::Duration::from_secs(15), output.recv()).await.unwrap().unwrap();
                 if event.kind == "approval" {
                     if owner == "sample.fake-harness" && resume && approved && !stop {
-                        // Until the update workflow exists, replacement is refused,
-                        // not promoted over a live pinned provider/session.
+                        // Installation still refuses duplicates. The explicit reviewed update
+                        // workflow drains the real supervised provider without cancelling it.
                         let changed = HARNESS_MANIFEST.replace("\"version\": \"1.0.0\"", "\"version\": \"1.0.1\"");
                         let replacement = archive(&[("extension.json", changed.as_bytes()), ("main.cjs", HARNESS_SOURCE.as_bytes()), ("assets/mark.svg", include_bytes!("../../../tests/fixtures/extensions/fake-harness/assets/mark.svg"))]);
                         let error = packages.0.lock().unwrap().install(&replacement).unwrap_err();
                         assert!(error.contains("already installed"), "{error}");
                         assert_eq!(providers::dynamic_adapter::discover().iter().find(|provider| provider.id == format!("{owner}/recorded")).unwrap().version, "1.0.0");
+                        let path = storage.0.join("reviewed-update.zip"); std::fs::write(&path, &replacement).unwrap();
+                        let state = packages.0.lock().unwrap(); state.stage_update(owner, &path).unwrap();
+                        let snapshot = serde_json::to_value(state.snapshot()).unwrap();
+                        let candidate = snapshot["packages"].as_array().unwrap().iter().find(|package| package["manifest"]["id"] == owner).unwrap();
+                        assert_eq!(candidate["update"]["pinned"], 1);
+                        state.review_update(owner, candidate["update"]["digest"].as_str().unwrap()).unwrap();
+                        assert_eq!(state.executable_source(owner).unwrap().1, HARNESS_SOURCE);
+                        assert_eq!(state.snapshot().packages.iter().find(|package| package.manifest["id"] == owner).unwrap().manifest["version"], "1.0.0");
                     }
                     input.send(RunInput::Approval { request_id: "forged".into(), approved: true }).unwrap();
                     if stop {
@@ -563,6 +590,7 @@ mod tests {
                 let done = event.kind == "done"; seen.push(event); if done { break; }
             }
             assert!(runner.await.unwrap().is_ok(), "{:?}", seen);
+            if owner == "sample.fake-harness" && resume && approved && !stop { assert_eq!(packages.0.lock().unwrap().snapshot().packages.iter().find(|package| package.manifest["id"] == owner).unwrap().manifest["version"], "1.0.1"); }
             assert!(seen.iter().all(|event| event.session_id == sid));
             assert!(seen.iter().any(|event| event.kind == "text" && event.text == prompt));
             assert!(output.try_recv().is_err()); assert_eq!(seen.iter().filter(|event| event.kind == "done").count(), 1);

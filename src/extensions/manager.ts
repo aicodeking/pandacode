@@ -14,7 +14,8 @@ import { setPackageProviders } from './provider-state';
 export type ExtensionMenuItem = { id: string; kind: 'command' | 'submenu' | 'separator' | 'checkbox' | 'radio'; title?: string; command?: string; icon?: string; checked?: boolean; group?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] };
 export type ExtensionAction = { kind: 'showMessage'; message: string } | { kind: 'showDialog'; dialog: DialogDefinition } | { kind: 'openView'; view: string } | { kind: 'showProjectContext' } | { kind: 'runCommand' };
 export type ExtensionTool = { id: string; command: string; executable: 'node'; arguments: { maxItems: number; maxLength: number }; cwd: 'project'; timeoutMs: number };
-export type ExtensionPackage = { storageGranted?: boolean; executable?: { digest: string; trusted: boolean } | null; manifest: { id: string; version: string; extensionKind?: 'ui' | 'workspace' | 'split'; dependencies?: Record<string, string>; permissions?: string[]; runtime?: { kind: 'node'; entrypoint: 'main.cjs'; activationEvents: string[] }; contributes: { services?: import('./sdk').ServiceDescriptor[]; connections?: ConnectionDescriptor[]; tools?: ExtensionTool[]; components?: ComponentProvider[]; themes?: ExtensionTheme[]; views?: ViewDefinition[]; settings?: SettingsPageDefinition[]; keybindings?: Keybinding[]; dialogExtras?: { id: string; dialog: 'colors' | 'wallpapers'; text: string }[]; layouts?: LayoutProposal[]; icons?: { id: string; asset: string; host?: string }[]; commands?: { id: string; title: string; action: ExtensionAction; enabled?: Json }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[]; presentation?: 'icon' | 'button' | 'status' | 'badge'; text?: string; badge?: string }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
+export type UpdateStatus = { version?: string | null; digest?: string | null; addedPermissions: string[]; executable: boolean; draining: boolean; pinned: number; rollback: boolean; reason: string };
+export type ExtensionPackage = { update?: UpdateStatus; storageGranted?: boolean; executable?: { digest: string; trusted: boolean } | null; manifest: { id: string; version: string; extensionKind?: 'ui' | 'workspace' | 'split'; dependencies?: Record<string, string>; permissions?: string[]; runtime?: { kind: 'node'; entrypoint: 'main.cjs'; activationEvents: string[] }; contributes: { services?: import('./sdk').ServiceDescriptor[]; connections?: ConnectionDescriptor[]; tools?: ExtensionTool[]; components?: ComponentProvider[]; themes?: ExtensionTheme[]; views?: ViewDefinition[]; settings?: SettingsPageDefinition[]; keybindings?: Keybinding[]; dialogExtras?: { id: string; dialog: 'colors' | 'wallpapers'; text: string }[]; layouts?: LayoutProposal[]; icons?: { id: string; asset: string; host?: string }[]; commands?: { id: string; title: string; action: ExtensionAction; enabled?: Json }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[]; presentation?: 'icon' | 'button' | 'status' | 'badge'; text?: string; badge?: string }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
 export type ExtensionSnapshot = { safeMode: boolean; packages: ExtensionPackage[]; diagnostics: string[]; development?: { id: string; revision: number; logs: string[] }[] };
 let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: [] };
 const listeners = new Set<() => void>();
@@ -96,6 +97,17 @@ export async function trustExecutable(id: string, digest: string, allow: boolean
   accept(reply.value);
 }
 export async function uninstallExtension(id: string): Promise<void> { accept(await call<ExtensionSnapshot>('extensions_uninstall', { id })); }
+async function updateRequest(request: Record<string, string>): Promise<void> {
+  const reply = await call<{ ok: true; value: ExtensionSnapshot } | { ok: false; error: { code: string } }>('extensions_runtime', { request });
+  if (!reply.ok) throw new Error(reply.error.code);
+  accept(reply.value);
+}
+export async function stageExtensionUpdate(id: string): Promise<void> {
+  const path = preview ? 'preview-update.zip' : await (await import('@tauri-apps/plugin-dialog')).open({ multiple: false, title: 'Stage a local extension update (review required)', filters: [{ name: 'PandaCode extension', extensions: ['zip'] }] });
+  if (typeof path === 'string') await updateRequest({ op: 'stageUpdate', id, path });
+}
+export async function reviewExtensionUpdate(id: string, digest: string): Promise<void> { await updateRequest({ op: 'reviewUpdate', id, digest }); }
+export async function rollbackExtensionUpdate(id: string): Promise<void> { await updateRequest({ op: 'rollbackUpdate', id }); }
 export async function grantExtensionStorage(id: string, allow: boolean): Promise<void> {
   const reply = await call<{ ok: true; value: ExtensionSnapshot } | { ok: false; error: { code: string } }>('extensions_runtime', { request: { op: 'storageGrant', id, allow } });
   if (!reply.ok) throw new Error(reply.error.code);

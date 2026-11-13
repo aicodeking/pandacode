@@ -1,4 +1,5 @@
 import { escape } from '../dom';
+import { stageExtensionUpdate, reviewExtensionUpdate, rollbackExtensionUpdate, loadExtensions } from './manager';
 import { extensionsSnapshot, onExtensionsChanged, installExtension, enableExtension, uninstallExtension, enterExtensionsSafeMode, trustExecutable, selectDevelopmentExtension, reloadDevelopmentExtension, grantExtensionStorage, removeExtensionOwnData } from './manager';
 import { EXECUTABLE_WARNING } from './executable';
 import { openExtensionDialog } from './dialogs';
@@ -35,6 +36,17 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       [...host.querySelectorAll<HTMLButtonElement>('[data-extension-uninstall]')].find(button => button.dataset.extensionId === item.manifest.id)?.after(node);
     }
     for (const item of snapshot.packages) {
+      const anchor = [...host.querySelectorAll<HTMLButtonElement>('[data-extension-uninstall]')].find(button => button.dataset.extensionId === item.manifest.id);
+      const action = (attribute: string, text: string, disabled = false) => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary-button'; button.dataset.extensionId = item.manifest.id; button.setAttribute(attribute, ''); button.textContent = `${text} ${item.manifest.id}`; button.disabled = pending || disabled; anchor?.after(button);
+      };
+      action('data-extension-update', 'Stage update', !!item.update?.digest || !!item.update?.draining);
+      if (item.update) {
+        const status = document.createElement('p'); status.setAttribute('role', 'status'); status.tabIndex = -1; status.textContent = `${item.manifest.id}: ${item.update.reason}. Pinned provider runs: ${item.update.pinned}.`;
+        anchor?.before(status);
+        if (item.update.digest && !item.update.draining) action('data-extension-review-update', 'Review staged update');
+        if (item.update.rollback || item.update.digest) action('data-extension-rollback', item.update.digest ? 'Discard staged update' : 'Roll back', item.update.pinned > 0);
+      }
       const node = document.createElement('button'); node.type = 'button'; node.className = 'secondary-button'; node.dataset.extensionId = item.manifest.id; node.dataset.extensionRemoveData = '';
       node.textContent = `Uninstall and remove private data ${item.manifest.id}`; node.disabled = pending;
       [...host.querySelectorAll<HTMLButtonElement>('[data-extension-uninstall]')].find(button => button.dataset.extensionId === item.manifest.id)?.after(node);
@@ -51,7 +63,21 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       else if (target.hasAttribute('data-extension-development')) await selectDevelopmentExtension();
       else if (target.hasAttribute('data-extension-safe')) await enterExtensionsSafeMode();
       else if (target.dataset.extensionId) {
-        if (target.hasAttribute('data-extension-storage')) await grantExtensionStorage(target.dataset.extensionId, target.dataset.extensionStorage === 'true');
+        if (target.hasAttribute('data-extension-update')) await stageExtensionUpdate(target.dataset.extensionId);
+        else if (target.hasAttribute('data-extension-rollback')) await rollbackExtensionUpdate(target.dataset.extensionId);
+        else if (target.hasAttribute('data-extension-review-update')) {
+          const item = extensionsSnapshot().packages.find(item => item.manifest.id === target.dataset.extensionId);
+          const update = item?.update;
+          if (!item || !update?.digest) throw new Error('StaleContext');
+          const transient = openExtensionDialog({ title: 'Review extension update', fields: [], confirmation: 'Activate this exact reviewed package when active provider runs finish?', confirmLabel: 'Approve reviewed update', successMessage: 'Update approved' }, { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.commands', revision: 1 }, 'panda.core', target);
+          closeTrust = transient.close;
+          const warning = document.createElement('p'); warning.textContent = `${item.manifest.id}: ${item.manifest.version} → ${update.version} · SHA-256 ${update.digest}. Added API permissions: ${update.addedPermissions.join(', ') || 'none'}. ${update.executable ? EXECUTABLE_WARNING : 'Declarative package; no native executable entrypoint.'}`;
+          document.querySelector('#dialog[aria-label="Review extension update — panda.core"] .dialog-heading')?.after(warning);
+          const result = await transient.result;
+          if (closeTrust === transient.close) closeTrust = undefined;
+          if (!disposed && result.kind === 'confirmed') await reviewExtensionUpdate(item.manifest.id, update.digest);
+        }
+        else if (target.hasAttribute('data-extension-storage')) await grantExtensionStorage(target.dataset.extensionId, target.dataset.extensionStorage === 'true');
         else if (target.hasAttribute('data-extension-reload')) await reloadDevelopmentExtension(target.dataset.extensionId);
         else if (target.hasAttribute('data-extension-trust')) {
           const item = extensionsSnapshot().packages.find(item => item.manifest.id === target.dataset.extensionId);
@@ -87,12 +113,12 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       pending = false; draw();
       if (!disposed) {
         const replacement = target.dataset.extensionId
-          ? [...host.querySelectorAll<HTMLButtonElement>('[data-extension-id]')].find(button => button.dataset.extensionId === target.dataset.extensionId && ['data-extension-remove-data', 'data-extension-trust', 'data-extension-storage', 'data-extension-uninstall', 'data-extension-reload', 'data-extension-enabled'].every(attribute => button.hasAttribute(attribute) === target.hasAttribute(attribute)))
+          ? [...host.querySelectorAll<HTMLButtonElement>('[data-extension-id]')].find(button => button.dataset.extensionId === target.dataset.extensionId && ['data-extension-update', 'data-extension-review-update', 'data-extension-rollback', 'data-extension-remove-data', 'data-extension-trust', 'data-extension-storage', 'data-extension-uninstall', 'data-extension-reload', 'data-extension-enabled'].every(attribute => button.hasAttribute(attribute) === target.hasAttribute(attribute)))
           : host.querySelector<HTMLButtonElement>(target.hasAttribute('data-extension-install') ? '[data-extension-install]' : target.hasAttribute('data-extension-development') ? '[data-extension-development]' : '[data-extension-safe]');
         (replacement && !replacement.disabled ? replacement : host.querySelector<HTMLElement>('[role="status"]') ?? host.querySelector<HTMLElement>('[data-extension-install]'))?.focus({ preventScroll: true });
       }
     }
   };
-  const cleanup = onExtensionsChanged(draw); host.addEventListener('click', click); draw();
+  const cleanup = onExtensionsChanged(draw); host.addEventListener('click', click); draw(); void loadExtensions();
   return () => { disposed = true; closeTrust?.(); cleanup(); cleanupExplorer?.(); cleanupShortcuts?.(); host.removeEventListener('click', click); host.replaceChildren(); };
 }
