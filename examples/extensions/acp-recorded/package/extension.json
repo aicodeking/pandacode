@@ -3,7 +3,7 @@
   "id": "sample.acp-recorded",
   "version": "1.0.0",
   "engines": { "pandacodeApi": "^1.0.0" },
-  "extensionKind": "ui",
+  "extensionKind": "workspace",
   "permissions": ["ui.contribute"],
   "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.acp-recorded/acp"] },
   "requiredContributions": ["providers"],

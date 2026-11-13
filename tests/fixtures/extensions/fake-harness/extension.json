@@ -3,7 +3,7 @@
   "id": "sample.fake-harness",
   "version": "1.0.0",
   "engines": { "pandacodeApi": "^1.0.0" },
-  "extensionKind": "ui",
+  "extensionKind": "workspace",
   "permissions": ["ui.contribute"],
   "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.fake-harness/recorded"] },
   "requiredContributions": ["providers"],

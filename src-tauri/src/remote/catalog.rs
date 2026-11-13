@@ -154,16 +154,15 @@ async fn fill(state: &super::Remote, key: Key, force: bool, gate: impl Fn(&Inner
 pub(crate) async fn providers(app: &tauri::AppHandle, device_id: Option<String>, force: bool) -> Result<Option<Value>> {
     let Some(device) = target(device_id, &remote(app).device_id()) else { return Ok(None) };
     super::valid_device_id(&device)?;
-    cached(app, (device, None), force, "providers.list", json!({"force": force})).await.map(Some)
+    cached(app, (device, None), force, "providers.list", json!({"force": force, "extensionApiVersion":1})).await.map(Some)
 }
 
 /// `list_provider_models` with a `deviceId`.
 pub(crate) async fn models(app: &tauri::AppHandle, device_id: Option<String>, provider: &str, force: bool) -> Result<Option<Value>> {
     let Some(device) = target(device_id, &remote(app).device_id()) else { return Ok(None) };
     super::valid_device_id(&device)?;
-    if !super::host::PROVIDERS.contains(&provider) {
-        return Err("Unknown provider.".into());
-    }
+    crate::extensions::providers::validate_identity(provider)?;
+    require_extension(app, &device, provider).await?;
     remote(app).lock().catalog.asked.insert((device.clone(), provider.to_owned()));
     cached(app, (device, Some(provider.into())), force, "providers.models", json!({"provider": provider, "force": force})).await.map(Some)
 }
@@ -178,7 +177,7 @@ pub(crate) fn warm(app: &tauri::AppHandle, device: &str) {
         tauri::async_runtime::spawn(async move {
             let (method, params) = match &key.1 {
                 Some(provider) => ("providers.models", json!({"provider": provider, "force": false})),
-                None => ("providers.list", json!({"force": false})),
+                None => ("providers.list", json!({"force": false, "extensionApiVersion":1})),
             };
             let call = client::call(&app, &key.0, method, params);
             let asked = fill(&remote(&app), key.clone(), false, super::orchestrate::links::may_warm, call).await;
@@ -192,6 +191,16 @@ pub(crate) fn warm(app: &tauri::AppHandle, device: &str) {
 /// Refuses a harness or model the host is known not to have.
 pub(crate) fn check(app: &tauri::AppHandle, device: &str, provider: &str, model: &str) -> Result<()> {
     remote(app).lock().catalog.check(device, &super::device_label(device), provider, model, Instant::now())
+}
+
+/// No mandatory handshake for legacy/core providers, and no stale positive cache for
+/// extension authority. A legacy peer's unknown-method error is an explicit fallback.
+pub(crate) async fn require_extension(app: &tauri::AppHandle, device: &str, provider: &str) -> Result<()> {
+    crate::extensions::providers::validate_identity(provider)?;
+    if crate::extensions::providers::extension_owner(provider).is_none() { return Ok(()); }
+    let reply = client::call(app, device, "extensions.capabilities", json!({"apiVersion":1})).await
+        .map_err(|error| format!("{} ({error})", crate::extensions::placement::UNSUPPORTED))?;
+    crate::extensions::placement::negotiate(&reply, device, provider)
 }
 
 /// [`check`] for a mirror's model change; ordinary tasks pass.

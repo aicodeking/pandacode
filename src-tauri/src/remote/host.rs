@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Listener, Manager};
 
-pub(crate) const METHODS: [&str; 33] = ["subscribe", "tasks.list", "projects.icons", "providers.list", "providers.models", "task.start", "task.startStatus", "task.cancelStart", "task.messages", "task.team", "task.workerMessages", "task.attachment", "task.workspaceImage", "task.send", "task.stop", "task.teamResume", "task.steer", "task.configure", "approval.respond", "input.respond", "task.pull", "task.pullDiff", "task.pullMerge", "task.pullDetect", "task.changes", "task.diff", "bots.list", "bot.thread", "bot.message", "bot.pause", "image.put", "batch", "pair.redeem"];
+pub(crate) const METHODS: [&str; 34] = ["subscribe", "tasks.list", "projects.icons", "providers.list", "providers.models", "task.start", "task.startStatus", "task.cancelStart", "task.messages", "task.team", "task.workerMessages", "task.attachment", "task.workspaceImage", "task.send", "task.stop", "task.teamResume", "task.steer", "task.configure", "approval.respond", "input.respond", "task.pull", "task.pullDiff", "task.pullMerge", "task.pullDetect", "task.changes", "task.diff", "bots.list", "bot.thread", "bot.message", "bot.pause", "image.put", "batch", "pair.redeem", "extensions.capabilities"];
 pub(crate) const OFF: &str = "Remote control is off on this computer";
 pub(crate) const MAX_TEXT: usize = 100 * 1024;
 const SUBSCRIPTION: Duration = Duration::from_secs(10 * 60);
@@ -134,7 +134,8 @@ pub(crate) enum Call {
     Subscribe { session_ids: Vec<String>, after: HashMap<String, u64>, epoch: Option<String>, replay: usize },
     TasksList { limit: usize },
     ProjectIcons { project_ids: Vec<String> },
-    Providers { force: bool },
+    Providers { force: bool, extensions: bool },
+    ExtensionCapabilities,
     Models { provider: String, force: bool },
     Start(start::Start),
     StartStatus { start_id: String },
@@ -174,6 +175,7 @@ impl Call {
             Self::TasksList { .. } => "tasks.list",
             Self::ProjectIcons { .. } => "projects.icons",
             Self::Providers { .. } => "providers.list",
+            Self::ExtensionCapabilities => "extensions.capabilities",
             Self::Models { .. } => "providers.models",
             Self::Start(_) => "task.start",
             Self::StartStatus { .. } => "task.startStatus",
@@ -216,6 +218,7 @@ pub(crate) fn is_read_only_method(method: &str) -> bool {
             | "projects.icons"
             | "providers.list"
             | "providers.models"
+            | "extensions.capabilities"
             | "task.startStatus"
             | "task.messages"
             | "task.team"
@@ -437,12 +440,14 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
         }
         "tasks.list" => Call::TasksList { limit: task_limit(params)? },
         "projects.icons" => Call::ProjectIcons { project_ids: project_icon_ids(params)? },
-        "providers.list" => Call::Providers { force: force_param(params)? },
+        "extensions.capabilities" => {
+            if params["apiVersion"] != 1 { return Err(crate::extensions::placement::UNSUPPORTED.into()); }
+            Call::ExtensionCapabilities
+        }
+        "providers.list" => Call::Providers { force: force_param(params)?, extensions: params["extensionApiVersion"] == 1 },
         "providers.models" => {
             let provider = name_param(params, "provider")?.ok_or("Missing provider.")?;
-            if !PROVIDERS.contains(&provider.as_str()) {
-                return Err("Unknown provider.".into());
-            }
+            crate::extensions::providers::validate_identity(&provider)?;
             Call::Models { provider, force: force_param(params)? }
         }
         "task.start" => Call::Start(start::parse(params)?),
@@ -626,6 +631,14 @@ async fn local_task(state: &AppState, session_id: &str) -> Result<crate::storage
         local_session_from(&store, &session_id)
     })
     .await
+}
+
+async fn workspace_task(state: &AppState, session_id: &str) -> Result<crate::storage::Session> {
+    let task = local_task(state, session_id).await?;
+    if crate::extensions::providers::extension_owner(&task.provider).is_some() {
+        crate::providers::dynamic_adapter::require_workspace(&task.provider)?;
+    }
+    Ok(task)
 }
 
 fn local_session_from(store: &crate::storage::Store, session_id: &str) -> Result<crate::storage::Session> {
@@ -1347,8 +1360,10 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             })
             .await
         }
-        Call::Providers { force } => {
+        Call::ExtensionCapabilities => Ok(crate::extensions::placement::capabilities(&remote(app).device_id(), crate::headless::active())),
+        Call::Providers { force, extensions } => {
             let mut providers = serde_json::to_value(crate::local_providers(force).await).map_err(|e| e.to_string())?;
+            legacy_catalog(&mut providers, extensions);
             fit_providers(&mut providers);
             Ok(providers)
         }
@@ -1421,7 +1436,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::PutImage(chunk) => images::put(app, from, chunk).await,
         Call::Send { session_id, text, image_ids } => {
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            allow_task_mode(&workspace_task(&state, &session_id).await?.mode, None, full_access)?;
             // Only images this caller just sent; they are now this task's.
             images::claim(app, from, &image_ids)?;
             // Like Enter in the composer: a running task queues the message.
@@ -1460,7 +1475,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::TeamResume { session_id } => {
             // Resuming starts agents again, so it follows the rule for prompts, not for Stop.
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            allow_task_mode(&workspace_task(&state, &session_id).await?.mode, None, full_access)?;
             let store = state.store.clone();
             let id = session_id.clone();
             crate::blocking(move || {
@@ -1472,7 +1487,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             Ok(json!({}))
         }
         Call::Steer { session_id, text } => {
-            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            allow_task_mode(&workspace_task(&state, &session_id).await?.mode, None, full_access)?;
             message_queue::steer_task(app.clone(), state, session_id, text).await
         }
         Call::Configure { session_id, model, effort, mode } => {
@@ -1609,6 +1624,7 @@ fn answered(app: &tauri::AppHandle, session_id: String, kind: &str, request_id: 
 /// first one's result, `task.startStatus` reports it and `task.cancelStart` stops it.
 struct HostStart {
     from: String,
+    binding: StdMutex<Option<[u8; 32]>>,
     /// Set by `task.cancelStart`; `start::run_cancellable` checks it between steps and stops the clone.
     cancel: Arc<start::Cancel>,
     result: tokio::sync::watch::Sender<Option<Result<Value>>>,
@@ -1629,7 +1645,7 @@ fn claim_start(starts: &mut HashMap<String, Arc<HostStart>>, id: &str, from: &st
     if starts.len() >= MAX_HOST_STARTS {
         return Err("This computer is busy. Try again in a moment.".into());
     }
-    let start = Arc::new(HostStart { from: from.to_owned(), cancel: Default::default(), result: tokio::sync::watch::channel(None).0, at: now });
+    let start = Arc::new(HostStart { from: from.to_owned(), binding: StdMutex::new(None), cancel: Default::default(), result: tokio::sync::watch::channel(None).0, at: now });
     starts.insert(id.to_owned(), start.clone());
     Ok((start, true))
 }
@@ -1637,18 +1653,43 @@ fn claim_start(starts: &mut HashMap<String, Arc<HostStart>>, id: &str, from: &st
 /// Runs a start once per `startId`. The start runs on its own, so a lost reply or a
 /// cancelled caller never stops it halfway; every caller waits for its one result.
 async fn start_once(app: &tauri::AppHandle, from: &str, request: start::Start) -> Result<Value> {
+    if crate::extensions::providers::extension_owner(&request.provider).is_some() && request.start_id.is_none() {
+        return Err("Extension remote starts require a stable startId.".into());
+    }
     let Some(id) = request.start_id.clone() else { return start::run(app, from, request).await };
+    let binding = operation_binding(&request);
     let (app, viewer) = (app.clone(), from.to_owned());
-    start_keyed(from, &id, move |cancel| async move { start::run_cancellable(&app, &viewer, request, cancel).await }).await
+    start_keyed_bound(from, &id, Some(binding), move |cancel| async move { start::run_cancellable(&app, &viewer, request, cancel).await }).await
 }
 
 /// [`start_once`] with what a start does handed in.
+#[cfg(test)]
 pub(super) async fn start_keyed<F, Run>(from: &str, id: &str, run: F) -> Result<Value>
+where F: FnOnce(Arc<start::Cancel>) -> Run + Send + 'static,
+    Run: std::future::Future<Output = Result<Value>> + Send + 'static,
+{
+    start_keyed_bound(from, id, None, run).await
+}
+
+fn operation_binding(request: &start::Start) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("{request:?}").as_bytes()).into()
+}
+
+async fn start_keyed_bound<F, Run>(from: &str, id: &str, binding: Option<[u8; 32]>, run: F) -> Result<Value>
 where
     F: FnOnce(Arc<start::Cancel>) -> Run + Send + 'static,
     Run: std::future::Future<Output = Result<Value>> + Send + 'static,
 {
-    let (entry, fresh) = claim_start(&mut host_starts().lock().unwrap_or_else(|e| e.into_inner()), id, from, Instant::now())?;
+    let (entry, fresh) = {
+        let mut starts = host_starts().lock().unwrap_or_else(|e| e.into_inner());
+        let (entry, fresh) = claim_start(&mut starts, id, from, Instant::now())?;
+        let mut captured = entry.binding.lock().unwrap_or_else(|e| e.into_inner());
+        if captured.is_some() && *captured != binding { return Err("Conflict: startId belongs to a different operation, project or provider.".into()); }
+        if captured.is_none() { *captured = binding; }
+        drop(captured);
+        (entry, fresh)
+    };
     let mut done = entry.result.subscribe();
     if fresh {
         let entry = entry.clone();
@@ -3004,6 +3045,13 @@ pub(crate) fn fit_list(list: &mut Vec<Value>, budget: usize) {
 }
 
 /// Trims the longest model lists until the provider list fits one reply.
+fn legacy_catalog(providers: &mut Value, extensions: bool) {
+    let workspace = if extensions { crate::providers::dynamic_adapter::discover_workspace().into_iter().map(|provider| provider.id).collect::<HashSet<_>>() } else { HashSet::new() };
+    if let Some(providers) = providers.as_array_mut() {
+        providers.retain(|provider| provider["id"].as_str().is_some_and(|id| PROVIDERS.contains(&id) || workspace.contains(id)));
+    }
+}
+
 pub(crate) fn fit_providers(providers: &mut Value) {
     while providers.to_string().len() > PAGE_BUDGET {
         let Some(models) = providers.as_array_mut().and_then(|list| list.iter_mut().filter_map(|p| p["models"].as_array_mut()).max_by_key(|models| models.len())).filter(|models| !models.is_empty()) else { return };
@@ -4111,14 +4159,41 @@ mod tests {
 
     #[test]
     fn provider_requests_are_validated() {
-        assert_eq!(parse(true, "providers.list", &json!({})), Ok(Call::Providers { force: false }));
-        assert_eq!(parse(true, "providers.list", &json!({"force": true})), Ok(Call::Providers { force: true }));
+        assert_eq!(parse(true, "extensions.capabilities", &json!({"apiVersion":1})), Ok(Call::ExtensionCapabilities));
+        assert!(parse(true, "extensions.capabilities", &json!({"apiVersion":2})).unwrap_err().contains("UnsupportedCapability"));
+        assert_eq!(parse(true, "providers.models", &json!({"provider":"sample.fake-harness/recorded"})), Ok(Call::Models { provider:"sample.fake-harness/recorded".into(), force:false }));
+        assert_eq!(parse(true, "providers.list", &json!({})), Ok(Call::Providers { force: false, extensions: false }));
+        assert_eq!(parse(true, "providers.list", &json!({"force": true})), Ok(Call::Providers { force: true, extensions: false }));
+        assert_eq!(parse(true, "providers.list", &json!({"extensionApiVersion":1})), Ok(Call::Providers { force: false, extensions: true }));
+        let mut catalog = json!([{"id":"codex"},{"id":"sample.fake-harness/recorded"}]);
+        legacy_catalog(&mut catalog, false);
+        assert_eq!(catalog, json!([{"id":"codex"}]));
         assert!(parse(true, "providers.list", &json!({"force": "yes"})).is_err());
         assert_eq!(parse(true, "providers.models", &json!({"provider": "codex", "force": null})), Ok(Call::Models { provider: "codex".into(), force: false }));
         assert_eq!(parse(true, "providers.models", &json!({"provider": "omp", "force": true})), Ok(Call::Models { provider: "omp".into(), force: true }));
         for bad in [json!({}), json!({"provider": "../bin/sh"}), json!({"provider": "gemini"}), json!({"provider": 3})] {
             assert!(parse(true, "providers.models", &bad).is_err(), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn extension_remote_retry_is_bound_to_captured_operation() {
+        use std::sync::atomic::AtomicUsize;
+        let id = uuid::Uuid::new_v4().to_string();
+        let params = json!({"startId":id,"projectId":"project-a","provider":"sample.fake-harness/recorded","model":"recorded-model","prompt":"Captured operation"});
+        let binding = operation_binding(&start::parse(&params).unwrap());
+        let mut retargeted = params.clone(); retargeted["projectId"] = json!("project-b");
+        let other_project = operation_binding(&start::parse(&retargeted).unwrap());
+        assert_ne!(binding, other_project);
+        retargeted = params.clone(); retargeted["provider"] = json!("sample.other/recorded");
+        assert_ne!(binding, operation_binding(&start::parse(&retargeted).unwrap()));
+        let jobs = Arc::new(AtomicUsize::new(0));
+        let run = || { let jobs = jobs.clone(); move |_| async move { jobs.fetch_add(1, Ordering::SeqCst); Ok(json!({"sessionId":"owned-project-task"})) } };
+        assert_eq!(start_keyed_bound("viewer", &id, Some(binding), run()).await.unwrap()["sessionId"], "owned-project-task");
+        assert_eq!(start_keyed_bound("viewer", &id, Some(binding), run()).await.unwrap()["sessionId"], "owned-project-task");
+        assert!(start_keyed_bound("viewer", &id, Some(other_project), run()).await.unwrap_err().contains("Conflict"));
+        assert!(start_keyed_bound("other-viewer", &id, Some(binding), run()).await.is_err());
+        assert_eq!(jobs.load(Ordering::SeqCst), 1);
     }
 
     #[test]

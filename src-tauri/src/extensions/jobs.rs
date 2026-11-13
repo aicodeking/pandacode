@@ -52,7 +52,7 @@ pub(super) fn call(app: &tauri::AppHandle, handle: &str, raw: Value) -> Value {
         let request: Request = serde_json::from_value(raw).map_err(|_| "InvalidShape")?;
         let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
         let snapshot = packages.snapshot();
-        let (owner, version, captured) = app.state::<ContextBroker>().runtime_binding(&snapshot, handle)?;
+        let (owner, version, captured) = app.state::<ContextBroker>().local_binding(app, &snapshot, handle)?;
         let project = captured["projectId"].as_str().filter(|id| !id.is_empty()).ok_or("PermissionDenied")?.to_owned();
         let manifest = &snapshot.packages.iter().find(|package| package.manifest["id"] == owner).ok_or("PermissionDenied")?.manifest;
         if !manifest["permissions"].as_array().is_some_and(|values| values.contains(&json!("tools.execute"))) { return Err("PermissionDenied"); }

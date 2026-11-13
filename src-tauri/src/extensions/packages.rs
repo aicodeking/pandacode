@@ -168,7 +168,10 @@ fn validate(bytes: &[u8]) -> Result<Package> {
 impl Packages {
     /// Revalidated, immutable executable ownership; neither discovery nor catalog executes code.
     pub(crate) fn provider_registrations(&self) -> Vec<(Value, String, String, String)> {
-        self.snapshot().packages.into_iter().filter(|package| package.enabled && package.manifest["contributes"]["providers"].as_array().is_some_and(|providers| !providers.is_empty())).flat_map(|package| {
+        self.provider_registrations_for(crate::headless::active())
+    }
+    pub(crate) fn provider_registrations_for(&self, workspace_only: bool) -> Vec<(Value, String, String, String)> {
+        self.snapshot().packages.into_iter().filter(|package| package.enabled && (!workspace_only || super::placement::workspace(&package.manifest)) && package.manifest["contributes"]["providers"].as_array().is_some_and(|providers| !providers.is_empty())).flat_map(|package| {
             let Some(owner) = package.manifest["id"].as_str() else { return vec![] };
             let Ok((digest, source)) = self.executable_source(owner) else { return vec![] };
             package.manifest["contributes"]["providers"].as_array().into_iter().flatten().map(|provider| (provider.clone(), package.manifest["version"].as_str().unwrap_or_default().to_owned(), digest.clone(), source.clone())).collect::<Vec<_>>()
@@ -465,6 +468,15 @@ mod tests {
         assert!(packages.enable(&id, true).unwrap_err().contains("ExecutableTrustRequired"));
         let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
         packages.trust(&id, &digest, true).unwrap(); packages.enable(&id, true).unwrap();
+    }
+    #[test]
+    fn ui_only_packages_never_register_workspace_execution_even_when_trusted() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        install_harness(&packages, &HARNESS_MANIFEST.replace("\"workspace\"", "\"ui\""), HARNESS_SOURCE);
+        assert!(packages.snapshot().packages[0].enabled);
+        assert_eq!(packages.provider_registrations_for(false).len(), 1, "legacy local UI provider remains usable on desktop");
+        assert!(packages.provider_registrations_for(true).is_empty(), "UI-only code never registers on headless or remote workspace hosts");
+        assert!(storage.packages(false).provider_registrations_for(true).is_empty());
     }
     #[test]
     fn dynamic_harness_packages_are_declared_trusted_revalidated_and_not_hardcoded() {

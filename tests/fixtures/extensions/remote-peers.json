@@ -1,0 +1,9 @@
+[
+  { "name": "legacy peer: core and history only", "peer": {}, "supported": false },
+  { "name": "new headless workspace peer", "peer": { "apiVersion": 1, "deviceId": "host-a", "headless": true, "placements": ["workspace"], "protocols": ["conversation.v1"], "providers": [{ "id": "sample.fake-harness/recorded", "apiVersion": 1, "version": "1.0.0" }] }, "supported": true },
+  { "name": "missing or revoked provider", "peer": { "apiVersion": 1, "deviceId": "host-a", "placements": ["workspace"], "protocols": ["conversation.v1"], "providers": [] }, "supported": false },
+  { "name": "wrong captured host", "peer": { "apiVersion": 1, "deviceId": "host-b", "placements": ["workspace"], "protocols": ["conversation.v1"], "providers": [{ "id": "sample.fake-harness/recorded", "apiVersion": 1 }] }, "supported": false },
+  { "name": "incompatible API", "peer": { "apiVersion": 2, "deviceId": "host-a", "placements": ["workspace"], "protocols": ["conversation.v1"], "providers": [{ "id": "sample.fake-harness/recorded", "apiVersion": 1 }] }, "supported": false },
+  { "name": "UI-only peer", "peer": { "apiVersion": 1, "deviceId": "host-a", "placements": ["ui"], "protocols": ["conversation.v1"], "providers": [{ "id": "sample.fake-harness/recorded", "apiVersion": 1 }] }, "supported": false },
+  { "name": "incompatible provider API", "peer": { "apiVersion": 1, "deviceId": "host-a", "placements": ["workspace"], "protocols": ["conversation.v1"], "providers": [{ "id": "sample.fake-harness/recorded", "apiVersion": 2 }] }, "supported": false }
+]

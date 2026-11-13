@@ -1728,6 +1728,7 @@ pub(crate) async fn commit(app: &tauri::AppHandle, mut request: Launch) -> Resul
             return Err(format!("{} does not allow remote control.", super::device_label(&device_id)));
         }
     }
+    super::catalog::require_extension(app, &device_id, &request.provider).await?;
     // An agent never saw the model picker: a cold cache is filled first, so an unavailable
     // model is refused here, not there.
     if request.parent.is_some() && request.model != "default" {
@@ -1771,7 +1772,10 @@ pub(super) fn commit_row(inner: &mut super::Inner, store: &Store, request: &mut 
     // The host echoes `startId` in its `task.progress` events (remote/start.rs), runs a
     // repeated start once, and reports or cancels it by this id. A machine thread's is its
     // own id, so a start a quit cut off is followed up again (`load_starts`).
-    let start_id = if request.parent.is_some() { Some(local.clone()) } else { request.start_id.clone().filter(|id| host::valid_id(id).is_ok()) };
+    let start_id = if request.parent.is_some() { Some(local.clone()) } else {
+        request.start_id.clone().filter(|id| host::valid_id(id).is_ok())
+            .or_else(|| crate::extensions::providers::extension_owner(&request.provider).map(|_| local.clone()))
+    };
     if let Some(start_id) = &start_id {
         inner.viewer.starts.insert(local.clone(), PendingStart { device: request.device.clone(), start_id: start_id.clone(), created, cancel: cancel.clone(), busy: true, cancelling: false });
     }

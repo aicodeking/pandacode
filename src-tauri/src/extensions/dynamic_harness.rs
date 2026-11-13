@@ -23,7 +23,10 @@ pub(crate) fn configure(packages: &Arc<Mutex<Packages>>, directory: Option<PathB
 #[derive(Clone)]
 struct Registration { definition: Value, version: String, digest: String, source: String }
 fn registrations() -> Vec<Registration> {
-    HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().map(|packages| packages.provider_registrations())).unwrap_or_default()
+    registrations_for(crate::headless::active())
+}
+fn registrations_for(workspace_only: bool) -> Vec<Registration> {
+    HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().map(|packages| if workspace_only { packages.provider_registrations_for(true) } else { packages.provider_registrations() })).unwrap_or_default()
         .into_iter().map(|(definition, version, digest, source)| Registration { definition, version, digest, source }).collect()
 }
 fn resolve(id: &str) -> Result<Registration, String> {
@@ -37,7 +40,11 @@ fn catalog(definition: &Value) -> Vec<ModelInfo> {
     }).collect()
 }
 pub(crate) fn discover() -> Vec<ProviderInfo> {
-    registrations().into_iter().map(|registration| {
+    discover_placement(crate::headless::active())
+}
+pub(crate) fn discover_workspace() -> Vec<ProviderInfo> { discover_placement(true) }
+fn discover_placement(workspace_only: bool) -> Vec<ProviderInfo> {
+    registrations_for(workspace_only).into_iter().map(|registration| {
         let metadata = metadata(&registration.definition);
         ProviderInfo { id: registration.definition["id"].as_str().unwrap_or_default().into(), name: registration.definition["name"].as_str().unwrap_or_default().into(), installed: cfg!(all(target_os = "windows", target_arch = "x86_64")) && metadata["readiness"]["state"] == "ready", path: None, version: registration.version, models: catalog(&registration.definition), metadata: Some(metadata) }
     }).collect()
@@ -93,6 +100,12 @@ pub(crate) fn require_available(id: &str) -> Result<(), String> {
         if metadata["readiness"]["state"] == "ready" { Ok(()) } else { Err(metadata["readiness"]["reason"].as_str().unwrap_or("Provider unavailable").into()) }
     }) }
     else { crate::extensions::providers::require_builtin_execution(id) }
+}
+pub(crate) fn require_workspace(id: &str) -> Result<(), String> {
+    if !registrations_for(true).iter().any(|registration| registration.definition["id"] == id) {
+        return Err(crate::extensions::placement::MISSING.into());
+    }
+    require_available(id)
 }
 fn require_team_definition(definition: &Value) -> Result<(), String> {
     if metadata(definition)["teams"] == true { Ok(()) }

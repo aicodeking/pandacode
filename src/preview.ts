@@ -1723,6 +1723,12 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return invoke<T>('workspace_image', args);
   }
   if (command === 'remote_start_task') {
+    if (String(args.provider).includes('/')) {
+      const { remoteProviderPlacement } = await import('./extensions/remote-placement');
+      const reason = remoteProviderPlacement((window as any).__extensionRemotePeer ?? {}, args.deviceId, args.provider);
+      if (reason) throw new Error(reason);
+      if (!args.startId) throw new Error('Extension remote starts require a stable startId.');
+    }
     // The task runs on the other computer; here it is an ordinary session that names it.
     const targets = await invokeRemote<{ deviceId: string; name: string; online: boolean }[]>('remote_targets', {}, emit);
     const target = targets.find(item => item.deviceId === args.deviceId && item.online);

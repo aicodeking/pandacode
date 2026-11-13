@@ -89,7 +89,7 @@ pub(super) fn call(app: &tauri::AppHandle, handle: &str, raw: Value, host_ui: bo
         caller_policy(&request, host_ui)?;
         let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
         let snapshot = packages.snapshot();
-        let (owner, version, captured) = app.state::<ContextBroker>().runtime_binding(&snapshot, handle)?;
+        let (owner, version, captured) = app.state::<ContextBroker>().local_binding(app, &snapshot, handle)?;
         let manifest = &snapshot.packages.iter().find(|package| package.manifest["id"] == owner).ok_or("PermissionDenied")?.manifest;
         let (connection, operation) = request.resource();
         let (descriptor, url) = self::operation(manifest, &captured["commandId"], connection, operation)?;

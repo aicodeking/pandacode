@@ -142,6 +142,32 @@ fn linked_session(viewer: &mut Viewer, local: &str, reply: crate::Result<Value>)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_extension_start_and_history_stay_on_captured_host_project() {
+    let (mut viewer, computer) = (viewer(), host_computer());
+    let mut request = Launch { device:"studio".into(), project_id:viewer.project.clone(), provider:"sample.fake-harness/recorded".into(), model:"recorded-model".into(), mode:Some("ask".into()), prompt:"Captured extension operation".into(), ..Default::default() };
+    let (local, _, id) = mirror::commit_row(&mut viewer.inner, &viewer.store, &mut request, &Arc::new(Notify::new())).unwrap();
+    let params = mirror::start_body(request, "orbit-labs/orbit", Some("main"), id.as_deref(), &[]);
+    assert_eq!(id.as_deref(), Some(local.as_str()), "extension operations always get stable retry identity");
+    let first = task_start(&computer, &params, None).await.unwrap().unwrap();
+    let repeated = task_start(&computer, &params, None).await.unwrap().unwrap();
+    assert_eq!(first, repeated);
+    assert_eq!(computer.tasks(), 1);
+    let (session, _) = linked_session(&mut viewer, &local, Ok(first));
+    let host_task = computer.store.lock().unwrap().session(&session).unwrap();
+    assert_eq!(host_task.project_id, computer.project);
+    assert_eq!(host_task.provider, "sample.fake-harness/recorded");
+    assert_ne!(host_task.project_id, viewer.project);
+    computer.run_ends(&session, "Provider result survives a disconnect.");
+    copy_messages(&viewer, &computer, &session, &local);
+    copy_messages(&viewer, &computer, &session, &local);
+    let history = viewer.store.messages(&local, None).unwrap();
+    assert_eq!(history.iter().filter(|message| message.content == "Provider result survives a disconnect.").count(), 1);
+    let binding = mirror::of(&viewer.store, &local).unwrap().unwrap();
+    assert_eq!((binding.device.as_str(), binding.session.as_str()), ("studio", session.as_str()));
+    assert!(viewer.store.workspace_root(&viewer.project, Some(&local)).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_launch_makes_the_host_task_and_its_end_wakes_the_parent() {
     let (mut viewer, computer) = (viewer(), host_computer());
     let (local, params) = launch(&mut viewer);

@@ -47,6 +47,13 @@ pub fn record_job(app: &tauri::AppHandle, id: &str, kind: &str, status: &str) {
     app.state::<ContextBroker>().record_job(id, kind, status);
 }
 impl ContextBroker {
+    pub(super) fn local_binding(&self, app: &tauri::AppHandle, snapshot: &Snapshot, handle: &str) -> Result<(String, String, Value), &'static str> {
+        let binding = self.runtime_binding(snapshot, handle)?;
+        let state = app.state::<crate::AppState>();
+        let store = state.store.try_lock().map_err(|_| "Timeout")?;
+        super::placement::local_context(&store, &binding.2)?;
+        Ok(binding)
+    }
     pub(super) fn storage_binding(&self, snapshot: &Snapshot, handle: &str) -> Result<(String, String, Value), &'static str> {
         let broker = self.broker.try_lock().map_err(|_| "Timeout")?;
         let invocation = broker.handles.get(handle).filter(|invocation| invocation.expires > Instant::now()).ok_or("StaleContext")?;
@@ -224,11 +231,8 @@ impl Broker {
         if Instant::now() >= deadline { return Err("Timeout"); }
         if let Request::Capture { id, version, context } = request {
             let manifest = owner(snapshot, &id, &version, &context)?;
-            // No forged project/task pair, even before consent. A projectless task is null context.
-            if let Some(session) = context["sessionId"].as_str() {
-                let actual: String = store.db.query_row("SELECT project_id FROM sessions WHERE id=?1", [session], |row| row.get(0)).optional().map_err(|_| "HostUnavailable")?.ok_or("NotFound")?;
-                if actual != project_id(&context) { return Err("PermissionDenied"); }
-            }
+            // No forged project/task pair or local execution against a mirror's history container.
+            super::placement::local_context(store, &context)?;
             if self.handles.len() >= MAX_HANDLES { return Err("LimitExceeded"); }
             let handle = uuid::Uuid::new_v4().to_string();
             let owner = manifest["id"].as_str().ok_or("PermissionDenied")?.to_owned();
@@ -240,6 +244,7 @@ impl Broker {
         if handle.len() > 64 { return Err("LimitExceeded"); }
         if matches!(request, Request::Release { .. }) { self.handles.remove(handle); self.subscriptions.retain(|_, subscription| &subscription.handle != handle); self.cancellations.lock().map_err(|_| "HostUnavailable")?.remove(handle); return Ok(Value::Null); }
         let invocation = self.handles.get(handle).ok_or("StaleContext")?.clone();
+        super::placement::local_context(store, &invocation.context)?;
         let manifest = owner(snapshot, &invocation.id, &invocation.version, &invocation.context)?;
         if manifest["id"] != invocation.owner { return Err("PermissionDenied"); }
         let key = |capability: &str| (invocation.owner.clone(), invocation.version.clone(), project_id(&invocation.context).to_owned(), capability.to_owned());
@@ -436,6 +441,26 @@ mod tests {
         assert_eq!(call(broker, snapshot, store, json!({"op":"consent","handle":handle,"capability":capability,"allow":allow}))["ok"], true);
     }
     fn query(handle: &str, resource: &str) -> Value { json!({"op":"query","handle":handle,"resource":resource,"limit":1}) }
+    #[test]
+    fn remote_mirror_context_never_reads_or_runs_against_viewer_project() {
+        let (mut broker, snapshot, store) = fixture();
+        store.db.execute("UPDATE sessions SET remote_device='host-a',remote_session='host-task' WHERE id='a1'", []).unwrap();
+        let context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","revision":1,"projectId":"A","sessionId":"a1"});
+        let result = call(&mut broker, &snapshot, &store, json!({"op":"capture","id":"sample.project-context/header","version":"1.0.0","context":context}));
+        assert_eq!(result["error"]["code"], "UnsupportedCapability");
+        assert!(broker.handles.is_empty());
+        assert!(broker.grants.is_empty());
+    }
+    #[test]
+    fn local_handle_cannot_survive_session_becoming_a_remote_mirror() {
+        let (mut broker, snapshot, store) = fixture();
+        let context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","revision":1,"projectId":"A","sessionId":"a1"});
+        let result = call(&mut broker, &snapshot, &store, json!({"op":"capture","id":"sample.project-context/header","version":"1.0.0","context":context}));
+        let handle = result["value"]["handle"].as_str().unwrap();
+        consent(&mut broker, &snapshot, &store, handle, "projects.summary", true);
+        store.db.execute("UPDATE sessions SET remote_device='host-a',remote_session='host-task' WHERE id='a1'", []).unwrap();
+        assert_eq!(call(&mut broker, &snapshot, &store, query(handle, "project"))["error"]["code"], "UnsupportedCapability");
+    }
     #[test]
     fn core_job_producer_never_waits_for_a_busy_extension_query() {
         let state = Arc::new(ContextBroker::default());

@@ -70,7 +70,7 @@ pub(super) fn call(app: &tauri::AppHandle, handle: &str, raw: Value, host_ui: bo
         let request: Request = serde_json::from_value(raw).map_err(|_| "InvalidShape")?;
         let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
         let snapshot = packages.snapshot();
-        let (owner, _, captured) = app.state::<ContextBroker>().runtime_binding(&snapshot, handle)?;
+        let (owner, _, captured) = app.state::<ContextBroker>().local_binding(app, &snapshot, handle)?;
         let consumer = &snapshot.packages.iter().find(|p| p.manifest["id"] == owner).ok_or("PermissionDenied")?.manifest;
         // Reuse dependency/version/cycle validation; unrelated packages are not involved.
         let runtime = app.state::<ExtensionRuntime>(); let registry = runtime.services.clone();

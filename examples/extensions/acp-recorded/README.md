@@ -35,11 +35,17 @@ Unsupported: authentication (the recording does not contact its advertised auth
 method), model/effort/mode switching beyond the one declared configuration,
 thinking/tool/usage updates, questions, live steering, team tools, images,
 filesystem/terminal reverse RPCs, native slash/skills, goals, client extensions,
-session/load history replay, and remote placement. Unsupported incoming operations
+session/load history replay. Unsupported incoming operations
 fail with a reason rather than fake success; no unsupported capability is advertised.
 Stop is core supervisor cancellation/reaping, **not** a claimed graceful ACP
 `session/cancel` exchange. Core's generic conversation API can deliver steering;
 this limited replay rejects it if received while awaiting permission.
+
+The package declares `workspace` placement. An opted-in Connect host must have its
+own explicitly installed, enabled and trusted copy and negotiate API 1 /
+`conversation.v1`. The viewer never installs the package or copies credentials.
+Headless hosts activate only workspace providers, not UI-only packages. Remote
+installation and installed cross-machine/platform qualification are not claimed.
 
 ## Offline versus live verification
 

@@ -291,7 +291,7 @@ The rules' old `src-tauri/src/acp.rs` reference resolves to the current
 | Logos / readiness (`extensions/provider-state.ts`, `provider-logos.ts`) | Owned sanitized SVG or initial mark; registry readiness disables unavailable/signed-out entries. Native brands remain built-in. | `extensions-provider-consumers.test.mjs`; `provider_metadata_rejects_foreign_icons_duplicate_modes_and_unknown_states` |
 | Usage / limits (`agent_usage.rs`, `extensions/dynamic_harness.rs`) | Core context event meter; account-quota probing explicitly unsupported with descriptor reason. Built-in quota/auth readers retained. | Consumer metadata tests; `dynamic_harness_core_owns_pending_completion_identity_and_cancellation`; real-package usage regression |
 | Skills roots / rules / config / matrix / CLI aliases / HARNESS_NAMES (`skill_manager/`, `skill-manager-model.ts`, `skills.rs`, `capabilities.rs`) | Registry bounded owned roots, advisory asked/none; presence-only config, no content. Dynamic install/config sync unsupported. Built-in roots/enforcement/CLI IDs unchanged. | `dynamic_discovery_*`; `skill_manager_matrix_fixture`; `extensions-provider-skills.test.mjs`; existing skills native regressions |
-| Remote serialization / headless / cloud placement | **Assigned to M9 (T49 onward)**: peer capability negotiation, unknown-provider fallback, remote grants/events and placement. M8 local package success is not remote execution qualification. Native CLI bridge serializers/setup remain compatibility code, not authority to execute package IDs remotely. | M9 must add its own old/new-peer and placement tests before remote support is advertised; no M8 remote pass claimed |
+| Remote serialization / headless / cloud placement | M9 adds optional API 1 / conversation.v1 peer negotiation and workspace-provider routing through existing captured-host task operations. Missing/legacy peers preserve history/core commands with explicit fallback. Cloud native CLI bridges remain unsupported for package IDs. | `remote_peer_fixture_matrix`, `extension_remote_retry_is_bound_to_captured_operation`, `extensions-remote.*`; not installed cross-machine qualification |
 
 `dynamic_harness_real_package_runs_start_resume_steer_approve_reject_and_stop`
 executes both the existing fake-harness matrix and the shipped ACP example's
@@ -321,4 +321,37 @@ registration. Rollback can select the unchanged core `Protocol` construction and
 native discovery/catalog entrypoints. Dynamic records remain readable and inactive
 after disable; their identity migration is not downgraded by rollback. Managed
 package runs are cancelled on disable/revocation; reviewed update/version lifecycle
-and remote negotiation remain M9 work.
+remains M9 work.
+
+## Remote and headless placement (experimental API 1)
+
+`extensionKind` is `ui`, `workspace` or `split`. Remote/headless provider packages
+must declare `workspace` or `split`; former experimental UI-only providers remain
+usable on their local desktop, but must be explicitly updated/reviewed before
+server execution. UI-only packages never register workspace providers or appear
+in the remote provider roster. Headless has no window-bound UI activation.
+
+On an explicitly requested remote provider operation, Connect asks the owning
+computer for `extensions.capabilities` (`apiVersion: 1`). The additive reply
+contains the host device ID, workspace placement, conversation protocol and bounded
+available provider IDs/versions. A legacy peer is Unsupported; an absent, disabled,
+untrusted or revoked package is MissingProvider. Core requests never require this
+handshake. History remains readable regardless of provider availability. No package
+source, environment, credential or installer is part of the protocol.
+
+Legacy catalog callers receive only built-in provider IDs; current viewers opt in
+with `extensionApiVersion: 1` on `providers.list`. Old hosts ignore that additive
+field. Missing extension presentation never changes stored identities or history.
+
+The advertisement is not authority: the host checks its own registry and device
+grant at execution and again after asynchronous checkout preparation. Starts use
+stable IDs, bound to their captured operation; an altered retry conflicts rather
+than switching project/provider. Existing bounded start-result retention is one
+hour; an unknown start after host restart/expiry is reconciled as unknown, never
+automatically relaunched by reconnect. Existing host event epochs, gap snapshots and
+message sync remain the only reconnect mechanism. Window-bound extension context
+APIs reject remote mirror sessions rather than using the viewer's local checkout;
+general remote tools/services are explicitly unsupported, not advertised. Local UI
+and local project operations retain their existing contracts. Windows x64 runtime
+support remains experimental; installed multi-machine/WebView and other target
+qualification are deferred, not passed by preview tests.

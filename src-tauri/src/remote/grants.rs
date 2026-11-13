@@ -25,9 +25,9 @@ const MAX_TRIES: u8 = 5;
 pub(crate) const REDEEM: &str = "pair.redeem";
 const INVALID_CODE: &str = "That pairing code is not valid or has expired.";
 
-const VIEW: [&str; 18] = [
+const VIEW: [&str; 19] = [
     "subscribe", "tasks.list", "task.messages", "task.changes", "task.diff", "task.attachment", "task.workspaceImage", "projects.icons", "providers.list", "providers.models",
-    "task.team", "task.workerMessages", "bots.list", "bot.thread", "task.startStatus", "task.pull", "task.pullDiff", "batch",
+    "task.team", "task.workerMessages", "bots.list", "bot.thread", "task.startStatus", "task.pull", "task.pullDiff", "batch", "extensions.capabilities",
 ];
 const CONTROL: [&str; 10] = ["task.send", "task.steer", "task.stop", "task.teamResume", "task.configure", "approval.respond", "input.respond", "image.put", "task.cancelStart", "task.pullDetect"];
 /// Needs `full`: starting work, merging, and acting as a bot. Anything not listed anywhere

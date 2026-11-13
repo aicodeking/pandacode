@@ -84,7 +84,7 @@
         "manifestVersion": { "const": 1 }, "id": { "$ref": "#/$defs/id" }, "version": { "$ref": "#/$defs/version" },
         "runtime": { "type": "object", "required": ["kind", "entrypoint", "activationEvents"], "additionalProperties": false, "properties": { "kind": { "const": "node" }, "entrypoint": { "const": "main.cjs" }, "activationEvents": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/id" } } } },
         "engines": { "type": "object", "required": ["pandacodeApi"], "properties": { "pandacodeApi": { "$ref": "#/$defs/text" } } },
-        "extensionKind": { "const": "ui" }, "permissions": { "$ref": "#/$defs/strings" }, "requiredCapabilities": { "$ref": "#/$defs/strings" }, "optionalCapabilities": { "$ref": "#/$defs/strings" }, "requiredContributions": { "$ref": "#/$defs/strings" },
+        "extensionKind": { "enum": ["ui", "workspace", "split"] }, "permissions": { "$ref": "#/$defs/strings" }, "requiredCapabilities": { "$ref": "#/$defs/strings" }, "optionalCapabilities": { "$ref": "#/$defs/strings" }, "requiredContributions": { "$ref": "#/$defs/strings" },
         "dependencies": { "type": "object", "maxProperties": 64, "additionalProperties": { "$ref": "#/$defs/text" } },
         "contributes": { "type": "object", "properties": {
           "services": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/service" } },

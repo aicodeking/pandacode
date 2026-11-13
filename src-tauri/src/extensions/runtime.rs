@@ -56,7 +56,7 @@ pub fn retry(app: &tauri::AppHandle, owner: &str) {
 
 #[tauri::command]
 pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHandle, request: Value) -> Value {
-    if window.label() != "main" { return context::failure("PermissionDenied"); }
+    if crate::headless::active() || window.label() != "main" { return context::failure("PermissionDenied"); }
     let limit = if request["op"] == "storage" { 36 * 1024 } else { 8192 };
     if request.to_string().len() > limit { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
@@ -130,7 +130,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
             let admitted = (|| {
                 let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
                 let snapshot = packages.snapshot();
-                let (owner, version, captured) = app.state::<ContextBroker>().runtime_binding(&snapshot, &handle)?;
+                let (owner, version, captured) = app.state::<ContextBroker>().local_binding(&app, &snapshot, &handle)?;
                 let (digest, source) = packages.executable_source(&owner).map_err(|_| "PermissionDenied")?;
                 let state = app.state::<ExtensionRuntime>();
                 if state.quarantine.lock().map_err(|_| "HostUnavailable")?.contains(&(owner.clone(), digest.clone())) { return Err("HostUnavailable"); }
@@ -155,7 +155,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                         let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
                         let snapshot = packages.snapshot();
                         let broker = app.state::<ContextBroker>();
-                        broker.runtime_binding(&snapshot, &handle)?;
+                        broker.local_binding(&app, &snapshot, &handle)?;
                         if packages.executable_source(&owner).map_err(|_| "PermissionDenied")?.0 != digest { return Err("StaleContext"); }
                         if method == "jobs" {
                             if !matches!(params["op"].as_str(), Some("start" | "poll" | "cancel")) { return Err("PermissionDenied"); }
@@ -187,7 +187,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
             let result = result.and_then(|dialogs| {
                 if cancel.load(Ordering::Acquire) { return Err("Cancelled"); }
                 let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
-                app.state::<ContextBroker>().runtime_binding(&packages.snapshot(), &handle)?;
+                app.state::<ContextBroker>().local_binding(&app, &packages.snapshot(), &handle)?;
                 if packages.executable_source(&owner).map_err(|_| "PermissionDenied")?.0 != digest { return Err("StaleContext"); }
                 Ok(dialogs)
             });

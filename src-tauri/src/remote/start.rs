@@ -573,6 +573,12 @@ fn not_installed(provider: &str, host: &str, installed: bool) -> Result<()> {
 /// folders the app searches; `providers::discover` would also run `--version` on all of them
 /// (2-4 s) just to read a list this check ignores.
 pub(crate) async fn require_installed(provider: &str) -> Result<()> {
+    crate::extensions::providers::validate_identity(provider)?;
+    if crate::extensions::providers::extension_owner(provider).is_some() {
+        if !cfg!(all(target_os = "windows", target_arch = "x86_64")) { return Err("UnsupportedRuntime: workspace extensions are experimental on Windows x64 only.".into()); }
+        return crate::providers::dynamic_adapter::require_workspace(provider)
+            .map_err(|_| crate::extensions::placement::MISSING.to_owned());
+    }
     let id = provider.to_owned();
     let installed = tauri::async_runtime::spawn_blocking(move || crate::providers::PROVIDERS.iter().any(|(known, _)| *known == id) && crate::providers::executable(&id).is_some()).await.map_err(|e| e.to_string())?;
     not_installed(provider, &super::config::device_name(), installed)
@@ -686,6 +692,17 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
     .map_err(|e| e.to_string())??;
     let root = PathBuf::from(&project.path);
     let made = Made(root.clone(), made);
+    // Clone/prepare can await for minutes. Revalidate host/device/package authority,
+    // not the viewer's earlier capability advertisement, before committing work.
+    require_installed(&start.provider).await?;
+    {
+        let remote = super::remote(app);
+        let inner = remote.lock();
+        super::host::gate(inner.settings.host_enabled)?;
+        if start.mode.as_deref() == Some("full") && !inner.settings.remote_full_access { return Err("Full access was revoked on this host.".into()); }
+    }
+    super::grants::check(app, from, "task.start")?;
+    check(cancel)?;
     // From here the task is made, so a cancel arriving now is answered "too late".
     cancel.commit()?;
     let state = app.state::<AppState>();
