@@ -81,11 +81,11 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
     }
 }
 
-/// The standalone server takes no subcommand; the `agy` CLI fallback serves ACP from `acp`.
+/// The `agy` CLI needs a worker per session to accept editor-configured HTTP MCP servers.
 pub(crate) fn antigravity_args(command: &mut Command) {
     let program = Path::new(command.as_std().get_program());
     if program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("agy")) {
-        command.arg("acp");
+        command.args(["acp", "--process-per-session"]);
     } else if cfg!(target_os = "linux") {
         command.arg("--uid=");
     }
@@ -1348,7 +1348,7 @@ mod tests {
             agy.push(r"C:\Program Files\Antigravity\agy.exe");
         }
         for program in agy {
-            assert_eq!(args(program), ["acp"], "{program}");
+            assert_eq!(args(program), ["acp", "--process-per-session"], "{program}");
         }
         let server: &[&str] = if cfg!(target_os = "linux") { &["--uid="] } else { &[] };
         for program in ["agy_acp_server.par", "agy_acp_server.exe", "/opt/agy_acp_server.par", "/opt/agy/server", "agy-wrapper"] {
