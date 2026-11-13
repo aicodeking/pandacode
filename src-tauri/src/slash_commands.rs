@@ -236,7 +236,7 @@ impl CommandCache {
             .get(&key)
             .map(|entry| entry.terminal_names.clone())
             .unwrap_or_default();
-        if matches!(key.0.as_str(), "claude" | "glm" | "mimo") {
+        if matches!(key.0.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
             if let Some(names) = explicit_terminals {
                 terminal_names = names
                     .iter()
@@ -362,7 +362,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "opencode"
             | "antigravity"
             | "grok"
-            | "mimo"
+            | "mimo" | "alibaba"
             | "pi"
             | "deepseek"
             | "commandcode" | "cline" | "kilo"
@@ -392,7 +392,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
         };
         let discovered = match provider {
             "claude" => claude::discover(cwd).await,
-            "glm" | "mimo" => claude::discover_for(provider, cwd).await,
+            "glm" | "mimo" | "alibaba" => claude::discover_for(provider, cwd).await,
             "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
                 acp::discover(provider, cwd).await
             }
@@ -428,7 +428,7 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
         return true;
     }
     let value = match provider {
-        "claude" | "glm" | "mimo" => claude::parse_runtime(data),
+        "claude" | "glm" | "mimo" | "alibaba" => claude::parse_runtime(data),
         "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => acp::parse_runtime(provider, data),
         "kimi" => kimi::parse_runtime(data),
         _ => None,
@@ -454,7 +454,7 @@ fn hashed_id(prefix: &str, name: &str, path: &str) -> String {
 }
 
 fn normalize(catalog: &mut Catalog, provider: &str) {
-    if matches!(provider, "glm" | "mimo") {
+    if matches!(provider, "glm" | "mimo" | "alibaba") {
         for command in &mut catalog.commands {
             if let Some(id) = command.id.strip_prefix("claude:") {
                 command.id = format!("{provider}:{id}");

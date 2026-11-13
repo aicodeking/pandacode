@@ -4666,6 +4666,8 @@ pub fn run() {
                 provider_settings::provider_remove_glm_key,
                 provider_settings::provider_save_mimo_key,
                 provider_settings::provider_remove_mimo_key,
+                provider_settings::provider_save_alibaba_key,
+                provider_settings::provider_remove_alibaba_key,
                 provider_settings::provider_save_deepseek_key,
                 provider_settings::provider_remove_deepseek_key,
                 provider_settings::provider_save_commandcode_key,

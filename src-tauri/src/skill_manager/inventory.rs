@@ -229,7 +229,7 @@ impl Scan {
                     (root, display, plugin, scope)
                 })
                 .collect();
-            if matches!(harness, "claude" | "glm" | "mimo") {
+            if matches!(harness, "claude" | "glm" | "mimo" | "alibaba") {
                 roots.extend(plugin_roots(harness, home, project, homes));
             }
             for (root, display, plugin, scope) in roots {

@@ -216,6 +216,7 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
             .filter(|level| efforts.iter().any(|effort| effort.id.as_str() == *level))
             .map(str::to_owned);
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             name: model_text(entry["label"].as_str(), &label, 160),
             description: model_text(entry["providerLabel"].as_str(), "", 200),
             id: label,

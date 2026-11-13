@@ -539,7 +539,7 @@ mod tests {
             let asked = crate::skill_manager::advisory_names(id, &disabled);
             match id {
                 // An all-skills deny: nothing to ask.
-                "claude" | "glm" | "mimo" | "opencode" => {
+                "claude" | "glm" | "mimo" | "alibaba" | "opencode" => {
                     assert_eq!(disabled, all, "{id}");
                     assert!(asked.is_empty(), "{id}");
                 }
@@ -671,7 +671,7 @@ mod behavior_tests {
             claude_disallowed("Monitor", &names),
             "Monitor,Skill(plugin:safe)"
         );
-        for harness in ["claude", "glm", "mimo"] {
+        for harness in ["claude", "glm", "mimo", "alibaba"] {
             let args = console_arguments(harness, &names);
             assert!(args
                 .iter()
@@ -715,7 +715,7 @@ mod behavior_tests {
             .keys()
             .cloned()
             .collect();
-        assert_eq!(overridden, ["claude", "glm", "mimo", "opencode"]);
+        assert_eq!(overridden, ["alibaba", "claude", "glm", "mimo", "opencode"]);
         // The deprecated twin is gone from the IPC.
         assert!(value.get("askOnly").is_none());
         let review = items.iter().find(|s| s.name == "review").unwrap();
@@ -746,7 +746,7 @@ mod behavior_tests {
             assert_eq!(config.prompt, "User text");
             assert_eq!(config.instructions, "System text");
         }
-        for harness in ["claude", "glm", "mimo", "opencode"] {
+        for harness in ["claude", "glm", "mimo", "alibaba", "opencode"] {
             assert_eq!(
                 advisory_names(harness, &names),
                 BTreeSet::from(["Friendly 技能".into()])

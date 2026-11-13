@@ -98,6 +98,7 @@ pub(super) fn parse_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
             .filter(|effort| efforts.iter().any(|option| option.id == *effort))
             .map(str::to_owned);
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             name: model_text(entry["displayLabel"].as_str(), id, 160),
             description: model_text(entry["description"].as_str(), "", 200),
             id: id.into(),

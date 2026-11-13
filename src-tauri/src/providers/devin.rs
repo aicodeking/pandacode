@@ -261,6 +261,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
 /// `thought_level` option (`Null` when it has none).
 pub(super) fn catalog(session: &Value, efforts: &HashMap<String, Value>) -> Vec<ModelInfo> {
     let mut models = vec![ModelInfo {
+        speed_tiers: Vec::new(),
         description: "Use the model set in Devin (agent.model, or your plan's default)".into(),
         ..ModelInfo::default_choice()
     }];
@@ -291,6 +292,7 @@ pub(super) fn catalog(session: &Value, efforts: &HashMap<String, Value>) -> Vec<
             .filter(|value| reasoning_efforts.iter().any(|effort| effort.id == *value))
             .map(str::to_owned);
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.into(),
             name: model_text(choice["name"].as_str(), id, 160),
             description: if choice["_meta"]["cognition.ai/supportsImages"] == false { "Text only".into() } else { String::new() },

@@ -41,6 +41,7 @@ pub(crate) const RELAY_SCRUB: &[&str] = &[
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ZAI_API_KEY",
     "MIMO_API_KEY",
+    "ALIBABA_TOKEN_PLAN_API_KEY",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -49,7 +50,7 @@ pub(crate) const RELAY_SCRUB: &[&str] = &[
 pub(crate) fn removed_environment(provider: &str) -> &'static [&'static str] {
     match provider {
         "claude" if crate::provider_settings::claude_connection_mode() == Mode::Subscription => OVERRIDES,
-        "glm" | "mimo" => RELAY_SCRUB,
+        "glm" | "mimo" | "alibaba" => RELAY_SCRUB,
         _ => &[],
     }
 }

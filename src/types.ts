@@ -1,4 +1,4 @@
-export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes';
+export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'alibaba' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes';
 export type Mode = 'ask' | 'auto' | 'review' | 'plan' | 'full';
 export type TaskStage = 'pending' | 'in_progress' | 'review' | 'completed';
 export interface Project { id: string; name: string; path: string; /** Increases with each project added (the native rowid); orders Projects: Added. */ addedOrder?: number; }
@@ -22,7 +22,7 @@ export interface TurnChangeDiff { path: string; oldPath?: string | null; patch: 
 export interface Message { coordinationKind?: 'worker_update' | 'worker_review' | 'continue' | 'worker_failed' | 'machine_threads' | (string & {}); id: number; sessionId: string; role: string; content: string; createdAt: number; turnDurationMs?: number | null; authorProvider?: ProviderId; turnChanges?: TurnChanges | null; }
 export interface MessagePage { messages: Message[]; hasOlder: boolean; }
 export interface ReasoningEffort { id: string; name: string; description: string; }
-export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null; }
+export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null; /** Faster service tiers than the standard speed. */ speedTiers?: ReasoningEffort[]; }
 export interface Provider { id: ProviderId; name: string; installed: boolean; path: string | null; version: string; models: ProviderModel[]; }
 export interface GitFile { path: string; index: string; working: string; }
 export interface GitStatus { branch: string; files: GitFile[]; isRepo: boolean; }

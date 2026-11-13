@@ -1294,7 +1294,7 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
+ function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', alibaba: 'Alibaba', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
 function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
 function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
@@ -1305,10 +1305,13 @@ function modelLabel(s?: Session, withEffort = true): string {
   const effort = withEffort && effortLabel(s);
   return effort ? `${name} · ${effort}` : name;
 }
-/** The trigger's effort word; none for a named team, whose workers set their own. */
+/** The trigger's effort word and a faster speed's name; none for a named team, whose workers set their own. */
 function effortLabel(s: Session): string {
-  if (!s.reasoningEffort || teams.get(s.id)?.config.rosterOnly) return '';
-  return selectedModel(s).reasoningEfforts?.find(effort => effort.id === s.reasoningEffort)?.name ?? s.reasoningEffort;
+  if (teams.get(s.id)?.config.rosterOnly) return '';
+  const model = selectedModel(s), tier = s.codexSettings?.serviceTier;
+  const effort = s.reasoningEffort ? model.reasoningEfforts?.find(effort => effort.id === s.reasoningEffort)?.name ?? s.reasoningEffort : '';
+  const speed = tier ? model.speedTiers?.find(speed => speed.id === tier)?.name ?? '' : '';
+  return [effort, speed].filter(Boolean).join(' · ');
 }
 /** The trigger's logo, or a named team's stacked roster. */
 function triggerLogo(s: Session): string {
@@ -4309,7 +4312,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'plan': case 'fast': {
       if (action === 'fast' && argumentsText && !['on', 'off'].includes(argumentsText)) throw new Error('Use /fast, /fast on, or /fast off.');
       const settings = task.codexSettings;
-      const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : settings?.serviceTier === 'fast';
+      const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : Boolean(settings?.serviceTier);
       const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
       const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
       notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
@@ -6118,7 +6121,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     },
-    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
+    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
@@ -6134,6 +6137,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           refreshModelLabels();
           syncOverlayContext({ projectId: updated.projectId, provider: updated.provider, model: updated.model || 'default', mode: updated.mode, reasoningEffort: updated.reasoningEffort ?? null });
         }
+      } finally { configuringSessions.delete(selected.id); }
+    },
+    // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
+    onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+      configuringSessions.add(selected.id);
+      try {
+        const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
+        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        if (inPanel) btwPanel.refresh();
+        else if (selected.id === state.sessionId) refreshModelLabels();
       } finally { configuringSessions.delete(selected.id); }
     },
     onSelect: async (providerId, model) => {

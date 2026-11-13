@@ -168,7 +168,7 @@ function previewProviderConfiguration(): Record<string, unknown> {
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
     providers: providers.map(provider => [provider.id, provider.name]),
-    glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
+    glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, alibabaKeySaved: false, alibabaKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }
 const traceRoot = '/Users/you/Projects/orbit';
@@ -224,6 +224,7 @@ const providers: Provider[] = [
   { id: 'antigravity', name: 'Antigravity', installed: false, path: null, version: '', models: [] },
   { id: 'grok', name: 'Grok Build', installed: true, path: '/sample/bin/grok', version: 'grok 1.0.40 (sample)', models: [] },
   { id: 'mimo', name: 'MiMo Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
+  { id: 'alibaba', name: 'Alibaba Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
   { id: 'pi', name: 'Pi', installed: true, path: '/sample/bin/pi', version: 'Sample provider', models: [] },
   { id: 'deepseek', name: 'DeepSeek', installed: true, path: '/sample/bin/dsh', version: 'Sample provider', models: [] },
   { id: 'commandcode', name: 'Command Code', installed: true, path: '/sample/bin/command-code', version: '1.87.1 (sample)', models: [] },
@@ -340,14 +341,20 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
     { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
   ],
+  // Mirrors providers::alibaba::models (first entries).
+  alibaba: [
+    { id: 'qwen3.8-max', name: 'Qwen3.8-Max', description: 'Qwen flagship. Availability depends on your plan.' },
+    { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', description: 'Fast Qwen model; used for background work. Availability depends on your plan.' },
+    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview; retires after November 25, 2026. Availability depends on your plan.' },
+  ],
   antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
   claude: [
     { id: 'sonnet', name: 'Claude Sonnet 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 200000 },
-    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000 },
+    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000, speedTiers: [{ id: 'fast', name: 'Fast', description: 'Claude Code fast mode: faster output at a higher price.' }] },
     { id: 'haiku', name: 'Claude Haiku 4.5', description: 'Sample Claude Code model metadata.', contextWindow: 200000 },
   ],
   codex: [
-    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000 },
+    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000, speedTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed' }, { id: 'ultrafast', name: 'Ultra Fast', description: 'Sample experimental tier.' }] },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })) },
   ],
   kimi: [{ id: 'kimi-code/k3', name: 'K3', description: 'Sample configured Kimi model.', reasoningEfforts: [{ id: 'on', name: 'On', description: 'Enable thinking.' }, { id: 'off', name: 'Off', description: 'Disable thinking.' }], contextWindow: 256000 }],
@@ -1610,9 +1617,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
-    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
+    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo', 'alibaba'].includes(provider.id)).map(provider => {
       const version = provider.version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
+      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo', 'alibaba'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
@@ -1765,7 +1772,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewMimoEndpoints.some(entry => entry.id === args.endpoint)) throw new Error('Choose one of the MiMo endpoints listed in Settings.');
       previewMimoEndpoint = args.endpoint;
       result = previewProviderConfiguration(); break;
-    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
+    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_save_alibaba_key': case 'provider_remove_alibaba_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
     case 'turn_change_summary': {
       session(args.sessionId);
       const summary = (messages[String(args.sessionId)] ?? []).find(m => m.turnChanges?.id === args.changeId)?.turnChanges;
@@ -1825,7 +1832,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'codex_command': result = commandPanel(codexTask(args.sessionId), args.request ?? {}); break;
     case 'codex_jobs': codexTask(args.sessionId); if (args.stopId) throw new Error('This sample task has no background jobs.'); result = { kind: 'jobs', jobs: [], notes: ['Browser preview · no commands are running.'] }; break;
     case 'set_task_preference': {
-      const task = codexTask(args.sessionId), request = args.request ?? {};
+      const request = args.request ?? {};
+      if (request.action === 'speed') {
+        // Mirrors native: the tier must be one the task's model lists.
+        const task = session(args.sessionId), tiers = catalogs[task.provider]?.find(model => model.id === task.model)?.speedTiers ?? [];
+        if (request.tier !== null && !tiers.some(tier => tier.id === request.tier)) throw new Error('This speed is not available for this model.');
+        task.codexSettings = { ...task.codexSettings, serviceTier: request.tier };
+        task.updatedAt = Date.now(); result = task; break;
+      }
+      const task = codexTask(args.sessionId);
       if (!['plan', 'fast'].includes(request.action) || typeof request.enabled !== 'boolean') throw new Error('Choose a valid task preference.');
       task.codexSettings ??= {};
       if (request.action === 'plan') task.codexSettings.collaborationMode = { mode: request.enabled ? 'plan' : 'default' };
@@ -1946,7 +1961,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (w.__remoteSteerHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSteerRelease = () => { w.__remoteSteerHold = false; resolve(); }; });
       // Claude-family, Codex, Pi, Muse and Devin take it live; others hold it for the next turn of the same run.
       const text = String(args.text).trim(), steerId = `steer-${++id}`;
-      const mode = ['claude', 'glm', 'mimo', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
+      const mode = ['claude', 'glm', 'mimo', 'alibaba', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
       const report = (status: string) => agent({ sessionId: s.id, kind: 'steer' as AgentEvent['kind'], text, data: { id: steerId, status, mode } });
       window.setTimeout(() => report('pending'));
       window.setTimeout(() => {

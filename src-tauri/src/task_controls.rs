@@ -229,6 +229,8 @@ pub(super) async fn codex_jobs(
 pub(super) enum TaskPreference {
     Plan { enabled: bool },
     Fast { enabled: bool },
+    /// A speed tier from the model's catalog; None is the standard speed.
+    Speed { tier: Option<String> },
 }
 #[tauri::command]
 pub(super) async fn set_task_preference(
@@ -247,6 +249,12 @@ pub(super) async fn set_task_preference(
     }
     if terminal::harness_running(&state.terminals, &session_id)? {
         return Err("Close this task's harness console before changing its settings here.".into());
+    }
+    if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
+        // Claude reads fast mode at launch, so the choice applies from the next turn.
+        let delta = json!({"serviceTier": claude_tier(request)?});
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        return save_preference(&store, &session_id, &delta);
     }
     let running = state
         .agents
@@ -268,9 +276,17 @@ pub(super) async fn set_task_preference(
         }
         TaskPreference::Fast { enabled } => {
             let tier = if enabled {
-                json!(command_operations::fast_service_tier(&cwd, &task.model).await?)
+                json!(command_operations::service_tier(&cwd, &task.model, "fast").await?)
             } else {
                 Value::Null
+            };
+            json!({"serviceTier":tier})
+        }
+        TaskPreference::Speed { tier } => {
+            let tier = match tier {
+                Some(tier) if !crate::providers::valid_service_tier(&tier) => return Err("Choose a valid speed.".into()),
+                Some(tier) => json!(command_operations::service_tier(&cwd, &task.model, &tier).await?),
+                None => Value::Null,
             };
             json!({"serviceTier":tier})
         }
@@ -286,15 +302,32 @@ pub(super) async fn set_task_preference(
     {
         return Err("The task's model changed. Open its settings again.".into());
     }
-    let settings = merge_preference(current.codex_settings, &delta)?;
+    save_preference(&store, &session_id, &delta)
+}
+
+fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {
+    let settings = merge_preference(store.session(sid)?.codex_settings, delta)?;
     store
         .db
         .execute(
             "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
-            rusqlite::params![session_id, settings.to_string()],
+            rusqlite::params![sid, settings.to_string()],
         )
         .map_err(|e| e.to_string())?;
-    store.session(&session_id)
+    store.session(sid)
+}
+
+/// Claude Code has one switch, fast mode, stored as the `fast` tier.
+fn claude_tier(request: TaskPreference) -> Result<Option<String>> {
+    let tier = match request {
+        TaskPreference::Fast { enabled } => enabled.then(|| "fast".to_string()),
+        TaskPreference::Speed { tier } => tier,
+        TaskPreference::Plan { .. } => return Err("Use the Codex harness for this command.".into()),
+    };
+    if tier.as_deref().is_some_and(|tier| tier != "fast") {
+        return Err("Claude Code offers only the standard and Fast speeds.".into());
+    }
+    Ok(tier)
 }
 
 // Per-task gates serialize acknowledgements and writes without blocking other
@@ -832,6 +865,19 @@ mod command_tests {
         assert_eq!(updated["collaborationMode"]["mode"], "plan");
         assert!(updated["serviceTier"].is_null());
         assert!(merge_preference(None, &json!({"approvalPolicy":"never"})).is_err());
+    }
+    #[test]
+    fn speed_preferences_parse_and_claude_accepts_only_fast() {
+        let parse = |value: Value| serde_json::from_value::<TaskPreference>(value);
+        assert!(matches!(parse(json!({"action":"speed","tier":"ultrafast"})), Ok(TaskPreference::Speed { tier: Some(tier) }) if tier == "ultrafast"));
+        assert!(matches!(parse(json!({"action":"speed","tier":null})), Ok(TaskPreference::Speed { tier: None })));
+        assert!(parse(json!({"action":"speed","tier":"fast","extra":1})).is_err());
+        assert_eq!(claude_tier(TaskPreference::Fast { enabled: true }).unwrap().as_deref(), Some("fast"));
+        assert_eq!(claude_tier(TaskPreference::Fast { enabled: false }).unwrap(), None);
+        assert_eq!(claude_tier(TaskPreference::Speed { tier: Some("fast".into()) }).unwrap().as_deref(), Some("fast"));
+        assert_eq!(claude_tier(TaskPreference::Speed { tier: None }).unwrap(), None);
+        assert!(claude_tier(TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
+        assert!(claude_tier(TaskPreference::Plan { enabled: true }).is_err());
     }
     #[test]
     fn imported_task_lookup_includes_history_outside_the_sidebar_limit() {

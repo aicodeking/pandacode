@@ -118,7 +118,7 @@ const card = (title: string, body: string, more = '') => `<section class="bs-car
 /** OpenBot-style permission levels over the harness modes; Plan only stays for bots that already use it. */
 const PERMISSIONS = [{ id: 'auto', label: 'Workspace only', hint: 'Edits files in its workspace without asking' }, { id: 'ask', label: 'Ask first', hint: 'Asks before edits and commands' }, { id: 'review', label: 'Approve for me', hint: 'A reviewer model approves safe steps and asks you about the rest' }, { id: 'full', label: 'Full access', hint: 'Runs anything without asking' }, { id: 'plan', label: 'Plan only', hint: 'Reads and plans, never changes anything' }];
 const permissionChoices = (provider: ProviderId, current: string) => PERMISSIONS.filter(item => (item.id !== 'plan' || current === 'plan')
-  && (item.id !== 'review' || ['claude', 'glm', 'mimo'].includes(provider))
+  && (item.id !== 'review' || ['claude', 'glm', 'mimo', 'alibaba'].includes(provider))
   && (item.id !== 'auto' || !['github-copilot', 'devin'].includes(provider)));
 const permissionOptions = (provider: ProviderId, current: string) => {
   const choices = permissionChoices(provider, current), chosen = choices.some(item => item.id === current) ? current : 'ask';
