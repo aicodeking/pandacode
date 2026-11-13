@@ -175,8 +175,8 @@ success across all jobs. Then run the existing artifact-only workflow:
 
 ```sh
 # Stop if remote main differs from the frozen release commit.
-test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit"
-gh workflow run release.yml --ref main -f publish=false
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit" &&
+  gh workflow run release.yml --ref main -f publish=false
 gh run list --workflow release.yml --event workflow_dispatch --commit "$release_commit" --limit 5
 # Set preflight_run to this dispatch's run ID; do not reuse an older run.
 gh run watch --exit-status "$preflight_run"
@@ -207,9 +207,9 @@ the new final commit. Once all gates pass, recheck remote `main` immediately
 before tagging the frozen commit (the tag workflow rebuilds and publishes):
 
 ```sh
-test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit"
-git tag "v$release_version" "$release_commit"
-git push origin "v$release_version"
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit" &&
+  git tag "v$release_version" "$release_commit" &&
+  git push origin "v$release_version"
 ```
 
 The workflow refuses a tag that does not match the version in
