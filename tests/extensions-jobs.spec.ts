@@ -61,6 +61,20 @@ test('extensions jobs: button, progress, cancel, Escape/focus and unrelated comp
   await expect(panel).toHaveCount(0); await expect(page.locator('#prompt')).toHaveValue('core draft preserved');
   await expect(page.getByRole('button', { name: 'Run local tests', exact: true })).toHaveCount(1);
 });
+test('extensions jobs: same-owner invocations cannot inherit grants or cancel each other and release stops only owned work', async ({ page }) => {
+  await seed(page);
+  const a = await capture(page), b = await capture(page);
+  await call(page, a, { op: 'grant', allow: true });
+  expect((await call(page, b, { op: 'start', args: [] })).error?.code).toBe('PermissionDenied');
+  const job = (await call(page, a, { op: 'start', args: ['wait'] })).value.job;
+  expect((await call(page, b, { op: 'cancel', job })).error?.code).toBe('PermissionDenied');
+  await call(page, b, { op: 'grant', allow: true });
+  const other = (await call(page, b, { op: 'start', args: ['wait'] })).value.job;
+  await page.evaluate(handle => (window as any).__extensionJobs.context({ op: 'release', handle }), a);
+  expect((await call(page, b, { op: 'poll', job: other })).value.state).toBe('running');
+  const fresh = await capture(page);
+  expect((await call(page, fresh, { op: 'start', args: [] })).error?.code).toBe('PermissionDenied');
+});
 test('extensions jobs: local package install requires separate executable trust before scoped tool consent', async ({ page }) => {
   await page.goto('/?extension-jobs'); await expect(page.locator('#prompt')).toBeEnabled();
   await page.getByRole('button', { name: 'Settings', exact: true }).click(); await page.getByRole('tab', { name: 'Extensions', exact: true }).click();

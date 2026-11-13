@@ -6,18 +6,19 @@ type Binding = { owner: string; version: string; id: string; context: Record<str
 export function createJobsPreview() {
   const grants = new Set<string>(), jobs = new Map<string, { scope: string; dto: OwnedJob; args: string[]; polls: number }>();
   const fail = (code: string): never => { throw new Error(code); };
-  function stop(owner?: string) {
-    for (const scope of grants) if (!owner || JSON.parse(scope)[0] === owner) grants.delete(scope);
-    for (const job of jobs.values()) if ((!owner || JSON.parse(job.scope)[0] === owner) && job.dto.state === 'running') { job.dto.state = 'cancelled'; job.dto.error = 'Cancelled'; }
+  function stop(owner?: string, handle?: string) {
+    const affected = (scope: string) => { const fields = JSON.parse(scope); return (!owner || fields[0] === owner) && (!handle || fields[5] === handle); };
+    for (const scope of grants) if (affected(scope)) grants.delete(scope);
+    for (const job of jobs.values()) if (affected(job.scope) && job.dto.state === 'running') { job.dto.state = 'cancelled'; job.dto.error = 'Cancelled'; }
   }
-  return { stop, call(snapshot: ExtensionSnapshot, binding: Binding | undefined, request: Record<string, unknown>) {
+  return { stop, call(snapshot: ExtensionSnapshot, binding: Binding | undefined, handle: string, request: Record<string, unknown>) {
     if (!binding || snapshot.safeMode) return fail('StaleContext');
     const pkg = snapshot.packages.find(item => item.manifest.id === binding.owner && item.enabled && item.executable?.trusted);
     if (!pkg || !pkg.manifest.permissions?.includes('tools.execute') || !binding.context.projectId) return fail('PermissionDenied');
     const command = pkg.manifest.contributes.commands?.find(command => command.id === binding.id) ?? pkg.manifest.contributes.commands?.find(command => command.id === pkg.manifest.contributes.menus?.find(menu => menu.id === binding.id)?.command);
     const tool = pkg.manifest.contributes.tools?.find(tool => tool.id === request.tool && tool.command === command?.id);
     if (!tool) return fail('PermissionDenied');
-    const scope = JSON.stringify([binding.owner, binding.version, pkg.executable?.digest, binding.context.projectId, tool.id]);
+    const scope = JSON.stringify([binding.owner, binding.version, pkg.executable?.digest, binding.context.projectId, tool.id, handle]);
     const keys: Record<string, string[]> = { grant: ['op', 'tool', 'allow'], start: ['op', 'tool', 'args'], poll: ['op', 'tool', 'job'], cancel: ['op', 'tool', 'job'] };
     if (typeof request.op !== 'string' || !keys[request.op] || Object.keys(request).sort().join() !== keys[request.op].sort().join()) return fail('InvalidShape');
     if (request.op === 'grant') {

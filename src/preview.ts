@@ -1586,22 +1586,22 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       fixture.addTasks = () => { const source = sessions[0]; for (let i = 0; i < 12; i++) sessions.push({ ...source, id: `context-page-${String(i).padStart(2, '0')}`, title: 'TRANSCRIPT_SENTINEL', status: 'pending' }); };
     }
     const reply = broker(args.request, previewExtensionSnapshot(), { ...inventoryData, projects, tasks: sessions });
-    if (reply.ok && args.request?.op === 'release') { previewPrivateStorage.dispose(undefined, args.request.handle); previewConnections.stop(undefined, args.request.handle); (await import('./extensions/preview')).previewServices.stop(undefined, args.request.handle); }
+    if (reply.ok && args.request?.op === 'release') { previewPrivateStorage.dispose(undefined, args.request.handle); previewConnections.stop(undefined, args.request.handle); const { previewServices, previewOwnedJobs } = await import('./extensions/preview'); previewServices.stop(undefined, args.request.handle); previewOwnedJobs.stop(undefined, args.request.handle); }
     return reply as T;
   }
-if (command === 'extensions_runtime' && args.request?.op === 'connections') {
+  if (command === 'extensions_runtime' && args.request?.op === 'connections') {
     const { previewExtensionSnapshot, previewConnections } = await import('./extensions/preview');
     const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
     try { return { ok: true, value: previewConnections.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
     catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
   }
-if (command === 'extensions_runtime' && args.request?.op === 'services') {
+  if (command === 'extensions_runtime' && args.request?.op === 'services') {
     const { previewExtensionSnapshot, previewServices } = await import('./extensions/preview');
     const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
     try { return { ok: true, value: previewServices.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
     catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
   }
-if (command === 'extensions_runtime' && args.request?.op === 'storage') {
+  if (command === 'extensions_runtime' && args.request?.op === 'storage') {
     const { previewExtensionSnapshot, previewPrivateStorage } = await import('./extensions/preview');
     const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
     try { return { ok: true, value: previewPrivateStorage.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
@@ -1610,7 +1610,7 @@ if (command === 'extensions_runtime' && args.request?.op === 'storage') {
   if (command === 'extensions_runtime' && args.request?.op === 'jobs') {
     const { previewExtensionSnapshot, previewOwnedJobs } = await import('./extensions/preview');
     const snapshot = previewExtensionSnapshot();
-    try { return { ok: true, value: previewOwnedJobs.call(snapshot, extensionContextBroker?.binding(snapshot, args.request.handle), args.request.request) } as T; }
+    try { return { ok: true, value: previewOwnedJobs.call(snapshot, extensionContextBroker?.binding(snapshot, args.request.handle), args.request.handle, args.request.request) } as T; }
     catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
   }
   if (command.startsWith('extensions_')) {

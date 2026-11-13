@@ -7,7 +7,7 @@ use tauri::Manager;
 
 type Result<T> = std::result::Result<T, &'static str>;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Scope { owner: String, version: String, digest: String, project: String, tool: String }
+struct Scope { owner: String, version: String, digest: String, project: String, tool: String, handle: String }
 struct Job { scope: Scope, cancel: Arc<AtomicBool>, state: &'static str, progress: Vec<Value>, result: Value, error: Option<&'static str> }
 #[derive(Default)]
 struct Registry { grants: BTreeMap<Scope, Authority>, jobs: BTreeMap<String, Job> }
@@ -18,9 +18,10 @@ pub struct ExtensionJobs(Arc<Mutex<Registry>>);
 enum Request { Grant { tool: String, allow: bool }, Start { tool: String, args: Vec<String> }, Poll { tool: String, job: String }, Cancel { tool: String, job: String } }
 impl Request { fn tool(&self) -> &str { match self { Self::Grant { tool, .. } | Self::Start { tool, .. } | Self::Poll { tool, .. } | Self::Cancel { tool, .. } => tool } } }
 impl Registry {
-    fn stop(&mut self, owner: Option<&str>) {
-        self.grants.retain(|scope, _| owner.is_some_and(|owner| scope.owner != owner));
-        for job in self.jobs.values().filter(|job| owner.is_none_or(|owner| job.scope.owner == owner)) { if job.state == "running" { job.cancel.store(true, Ordering::Release); } }
+    fn stop(&mut self, owner: Option<&str>, handle: Option<&str>) {
+        let affected = |scope: &Scope| owner.is_none_or(|owner| scope.owner == owner) && handle.is_none_or(|handle| scope.handle == handle);
+        self.grants.retain(|scope, _| !affected(scope));
+        for job in self.jobs.values().filter(|job| affected(&job.scope)) { if job.state == "running" { job.cancel.store(true, Ordering::Release); } }
     }
     fn owned(&mut self, scope: &Scope, id: &str) -> Result<&mut Job> {
         self.jobs.get_mut(id).filter(|job| &job.scope == scope).ok_or("PermissionDenied")
@@ -34,7 +35,7 @@ impl Registry {
         }
     }
 }
-impl ExtensionJobs { pub fn stop(&self, owner: Option<&str>) { if let Ok(mut state) = self.0.lock() { state.stop(owner); } } }
+impl ExtensionJobs { pub fn stop(&self, owner: Option<&str>, handle: Option<&str>) { if let Ok(mut state) = self.0.lock() { state.stop(owner, handle); } } }
 fn dto(id: &str, job: &Job) -> Value { json!({"schemaVersion":1,"job":id,"state":job.state,"progress":job.progress,"result":job.result,"error":job.error}) }
 fn arguments(tool: &Value, args: &[String]) -> Result<()> {
     if tool["executable"] != "node" || tool["cwd"] != "project" { return Err("UnsupportedCapability"); }
@@ -57,7 +58,7 @@ pub(super) fn call(app: &tauri::AppHandle, handle: &str, raw: Value) -> Value {
         if !manifest["permissions"].as_array().is_some_and(|values| values.contains(&json!("tools.execute"))) { return Err("PermissionDenied"); }
         let tool = manifest["contributes"]["tools"].as_array().and_then(|tools| tools.iter().find(|tool| tool["id"] == request.tool() && tool["command"] == captured["commandId"])).ok_or("PermissionDenied")?;
         let (digest, source) = packages.executable_source(&owner).map_err(|_| "PermissionDenied")?;
-        let scope = Scope { owner, version, digest, project, tool: request.tool().to_owned() };
+        let scope = Scope { owner, version, digest, project, tool: request.tool().to_owned(), handle: handle.into() };
         let jobs = app.state::<ExtensionJobs>(); let mut state = jobs.0.try_lock().map_err(|_| "Timeout")?;
         match request {
             Request::Grant { allow, .. } => {
@@ -118,7 +119,24 @@ async fn execute(registry: Arc<Mutex<Registry>>, id: String, runtime: supervisor
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn scope(owner: &str, project: &str) -> Scope { Scope { owner: owner.into(), project: project.into(), version: "1".into(), digest: "digest".into(), tool: "test".into() } }
+    #[test]
+    fn job_authority_is_invocation_scoped() {
+        let a = scope("sample.tool", "A");
+        let mut b = a.clone(); b.handle = "another-invocation".into();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut registry = Registry::default();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        registry.grants.insert(a.clone(), Authority::grant(root).unwrap());
+        assert!(!registry.grants.contains_key(&b));
+        registry.grants.insert(b.clone(), Authority::grant(root).unwrap());
+        registry.jobs.insert("owned".into(), Job { scope: a.clone(), cancel: cancel.clone(), state: "running", progress: vec![], result: Value::Null, error: None });
+        assert!(registry.owned(&b, "owned").is_err());
+        registry.stop(None, Some(&b.handle)); assert!(!cancel.load(Ordering::Acquire));
+        assert!(registry.grants.contains_key(&a)); assert!(!registry.grants.contains_key(&b));
+        registry.stop(None, Some(&a.handle)); assert!(cancel.load(Ordering::Acquire));
+        assert!(registry.grants.is_empty());
+    }
+    fn scope(owner: &str, project: &str) -> Scope { Scope { owner: owner.into(), project: project.into(), version: "1".into(), digest: "digest".into(), tool: "test".into(), handle: "invocation".into() } }
     #[test]
     fn forged_pid_cross_owner_project_and_terminal_races_are_rejected() {
         let mut registry = Registry::default(); let a = scope("a", "A"); let cancel = Arc::new(AtomicBool::new(false));
@@ -126,8 +144,8 @@ mod tests {
         let unrelated = Arc::new(AtomicBool::new(false));
         registry.jobs.insert("unrelated".into(), Job { scope: scope("core.agent", "A"), cancel: unrelated.clone(), state: "running", progress: vec![], result: Value::Null, error: None });
         for (scope, id) in [(scope("b", "A"), "opaque"), (scope("a", "B"), "opaque"), (a.clone(), "1234")] { assert!(registry.owned(&scope, id).is_err()); }
-        registry.stop(Some("b")); assert!(!cancel.load(Ordering::Acquire));
-        registry.stop(Some("a")); registry.settle("opaque", Ok(vec![])); registry.settle("opaque", Err("Timeout"));
+        registry.stop(Some("b"), None); assert!(!cancel.load(Ordering::Acquire));
+        registry.stop(Some("a"), None); registry.settle("opaque", Ok(vec![])); registry.settle("opaque", Err("Timeout"));
         assert!(!unrelated.load(Ordering::Acquire)); assert_eq!(registry.jobs["unrelated"].state, "running");
         let job = registry.owned(&a, "opaque").unwrap(); assert_eq!(job.state, "cancelled"); assert_eq!(job.error, Some("Cancelled")); assert!(job.result.is_null());
     }

@@ -378,7 +378,7 @@ pub async fn extensions_context(window: tauri::WebviewWindow, app: tauri::AppHan
             state.reconcile_job_gap(&mut broker);
             let release = (request["op"] == "release").then(|| request["handle"].as_str().map(str::to_owned)).flatten();
             let result = broker.execute_guarded("main", &snapshot, &store, request, deadline, cancellation);
-            if result.is_ok() { if let Some(handle) = release { packages.storage_dispose(None, Some(&handle)); app.state::<super::connections::ExtensionConnections>().stop(None, Some(&handle)); if let Ok(mut services) = app.state::<super::runtime::ExtensionRuntime>().services.lock() { services.stop(None, Some(&handle)); } } }
+            if result.is_ok() { if let Some(handle) = release { packages.storage_dispose(None, Some(&handle)); app.state::<super::jobs::ExtensionJobs>().stop(None, Some(&handle)); app.state::<super::connections::ExtensionConnections>().stop(None, Some(&handle)); if let Ok(mut services) = app.state::<super::runtime::ExtensionRuntime>().services.lock() { services.stop(None, Some(&handle)); } } }
             result
         })();
         if delivery.is_some_and(|(token, generation)| token.load(Ordering::Acquire) != generation) { failure("Cancelled") }

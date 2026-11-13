@@ -45,7 +45,7 @@ fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
     if let Ok(mut services) = app.state::<ExtensionRuntime>().services.lock() { services.stop(owner, None); }
     app.state::<super::connections::ExtensionConnections>().stop(owner, None);
-    app.state::<super::jobs::ExtensionJobs>().stop(owner);
+    app.state::<super::jobs::ExtensionJobs>().stop(owner, None);
     app.state::<ExtensionRuntime>().stop(owner);
     if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(owner, None); }
 }
@@ -191,6 +191,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 Ok(dialogs)
             });
             app.state::<ContextBroker>().runtime_release(&handle);
+            app.state::<super::jobs::ExtensionJobs>().stop(Some(&owner), Some(&handle));
             if let Ok(mut services) = app.state::<ExtensionRuntime>().services.lock() { services.stop(Some(&owner), Some(&handle)); }
             app.state::<super::connections::ExtensionConnections>().stop(Some(&owner), Some(&handle));
             if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(Some(&owner), Some(&handle)); }
