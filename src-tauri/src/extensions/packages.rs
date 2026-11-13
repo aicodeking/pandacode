@@ -695,6 +695,31 @@ mod tests {
         assert!(validate(&archive(&[("extension.json", manifest.as_slice())])).is_err());
     }
     #[test]
+    fn component_replacement_archive_install_competition_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/replacement/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.replacement", true).unwrap();
+        let mut competitor: Value = serde_json::from_slice(manifest).unwrap();
+        competitor["id"] = json!("other.cards");
+        competitor["contributes"]["components"][0]["id"] = json!("other.cards/projects");
+        competitor["contributes"]["components"][1]["id"] = json!("other.cards/files");
+        packages.install(&archive(&[("extension.json", &serde_json::to_vec(&competitor).unwrap())])).unwrap();
+        packages.enable("other.cards", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert_eq!(snapshot.packages.iter().filter(|package| package.enabled).count(), 2);
+        assert!(snapshot.packages.iter().all(|package| package.manifest["contributes"]["components"].as_array().unwrap().len() == 2));
+        packages.enable("sample.replacement", false).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert!(!snapshot.packages.iter().find(|package| package.manifest["id"] == "sample.replacement").unwrap().enabled);
+        assert!(snapshot.packages.iter().find(|package| package.manifest["id"] == "other.cards").unwrap().enabled);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        let mut invalid: Value = serde_json::from_slice(manifest).unwrap();
+        invalid["contributes"]["components"][0]["actions"] = json!(["delete"]);
+        assert!(validate(&archive(&[("extension.json", &serde_json::to_vec(&invalid).unwrap())])).is_err());
+    }
+    #[test]
     fn ordinary_zip_directory_entries_work_without_extraction() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.add_directory("assets/", zip::write::SimpleFileOptions::default()).unwrap();

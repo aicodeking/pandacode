@@ -1,0 +1,4 @@
+.component-replacement { display: flex; flex-direction: column; gap: var(--ds-row-pad-y, 4px); padding: var(--ds-row-pad-y, 4px); }
+.component-replacement button { text-align: start; overflow-wrap: anywhere; }
+.component-cards button { padding: 10px; }
+.component-replacement button[aria-current] { outline: 1px solid var(--focus); outline-offset: -1px; }

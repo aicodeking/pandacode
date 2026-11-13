@@ -4,6 +4,8 @@ import { extensionsSnapshot, onExtensionsChanged } from './manager';
 import { layout, layoutProject, orderedControls, layoutProposals } from './layout-host';
 import { placements, placementViews, placementContainers, dispatchPlacement, canPlace } from './placement-host';
 import { isImeKey } from '../dom';
+import { componentProviders, componentSelection, selectComponent } from './replacement';
+import type { SlotId } from './component-slot';
 
 /** Read-only metadata plus explicit host user actions; no mutation authority is granted to packages. */
 export function mountSurfaceExplorer(host: HTMLElement): () => void {
@@ -54,6 +56,8 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
       <button type="button" class="secondary-button" data-layout-reset-project ${!layoutProject() ? 'disabled' : ''}>Reset project layout</button>
       <button type="button" class="secondary-button" data-layout-reset-global>Reset global layout</button>
       <button type="button" class="secondary-button" data-layout-disable ${!layout.extensionLayoutsEnabled() ? 'disabled' : ''}>Disable extension layouts</button>
+      <h3>Component presentation</h3><p>Only your explicitly selected provider mounts. Conflicts never select a winner automatically. Built-in recovery retains core tasks and drafts.</p>
+      ${(['panda.projects', 'panda.files'] as SlotId[]).map(slot => `<label>${slot === 'panda.projects' ? 'Project presentation' : 'File presentation'} <select aria-label="${slot === 'panda.projects' ? 'Project presentation' : 'File presentation'}" data-component-select="${slot}"><option value="">Built-in</option>${componentProviders().filter(provider => provider.slot === slot).map(provider => `<option value="${escape(provider.id)}" ${componentSelection.selected(slot) === provider.id ? 'selected' : ''} ${provider.contractVersion !== 1 ? 'disabled' : ''}>${escape(provider.title)} — ${escape(provider.id)}${provider.contractVersion !== 1 ? ' (incompatible version)' : ''}</option>`).join('')}</select></label>`).join('')}
       <h3>View placement</h3><p>Move existing host views without restarting running work. Drag a view onto a compatible destination, or use its Move to buttons. Extension destinations are host-owned docks beside their inspector view, not extension DOM. Hide is presentation only; restore views here using the Settings keyboard shortcut. Escape still stops an agent when no terminal or transient surface owns it.</p>
       <ul aria-label="View placement">${placementViews().map(view => `<li draggable="true" tabindex="0" data-placement-view="${escape(view.id)}" aria-label="Move ${escape(view.label)}"><strong>${escape(view.label)}</strong>${placementContainers().filter(container => canPlace(view.id, container.id)).map(container => `<button type="button" class="secondary-button" data-place-view="${escape(view.id)}" data-place-container="${escape(container.id)}">Move ${escape(view.label)} to ${escape(container.label)}</button>`).join('')}<button type="button" class="secondary-button" data-hide-view="${escape(view.id)}">${placements.read(layoutProject())[view.id]?.hidden ? 'Show' : 'Hide'} ${escape(view.label)}</button></li>`).join('')}</ul>
       <ul aria-label="View destinations">${placementContainers().map(container => `<li tabindex="0" data-placement-target="${escape(container.id)}">${escape(container.label)}</li>`).join('')}</ul>
@@ -72,6 +76,7 @@ export function mountSurfaceExplorer(host: HTMLElement): () => void {
   };
   const change = (event: Event) => {
     const target = event.target as HTMLSelectElement;
+    if (target.dataset.componentSelect) { try { selectComponent(target.dataset.componentSelect as SlotId, target.value || undefined); error = ''; } catch (failure) { error = String(failure); } draw(); host.querySelector<HTMLElement>(`[data-component-select="${target.dataset.componentSelect}"]`)?.focus(); return; }
     if (target.hasAttribute('data-layout-scope')) { scope = target.value; draw(); host.querySelector<HTMLElement>('[data-layout-scope]')?.focus(); return; }
     if (target.hasAttribute('data-catalog-owner')) owner = target.value;
     else if (target.hasAttribute('data-catalog-location')) location = target.value;

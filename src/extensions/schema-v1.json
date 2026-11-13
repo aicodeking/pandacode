@@ -76,6 +76,7 @@
           "menus": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/contributionDefinition" } },
           "icons": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/icon" } },
           "themes": { "type": "array", "maxItems": 1, "items": { "$ref": "#/$defs/theme" } },
+          "components": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/componentProvider" } },
           "views": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/view" } },
           "layouts": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/layout" } },
           "settings": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/settingsPage" } },
@@ -86,6 +87,7 @@
     },
     "settingsPage": { "type": "object", "required": ["id", "title", "fields"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/id" }, "title": { "$ref": "#/$defs/text" }, "fields": { "type": "array", "maxItems": 24, "items": { "$ref": "#/$defs/dialogField" } } } },
     "keybinding": { "type": "object", "required": ["id", "command", "key"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/id" }, "command": { "$ref": "#/$defs/id" }, "key": { "type": "string", "maxLength": 32, "pattern": "^Mod[+](Shift[+])?(Alt[+])?Key[A-Z]$" } } },
+    "componentProvider": { "type": "object", "required": ["id", "title", "slot", "contractVersion", "presentation"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/id" }, "title": { "$ref": "#/$defs/text" }, "slot": { "enum": ["panda.projects", "panda.files"] }, "contractVersion": { "type": "integer", "minimum": 1, "maximum": 1000 }, "presentation": { "enum": ["cards", "list"] } } },
     "dialogExtra": { "type": "object", "required": ["id", "dialog", "text"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/id" }, "dialog": { "enum": ["colors", "wallpapers"] }, "text": { "$ref": "#/$defs/text" } } }
   }
 }

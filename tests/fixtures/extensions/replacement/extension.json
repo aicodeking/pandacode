@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.replacement",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "requiredContributions": ["components"],
+  "contributes": {
+    "components": [
+      { "id": "sample.replacement/projects", "title": "Project cards", "slot": "panda.projects", "contractVersion": 1, "presentation": "cards" },
+      { "id": "sample.replacement/files", "title": "Compact files", "slot": "panda.files", "contractVersion": 1, "presentation": "list" }
+    ]
+  }
+}

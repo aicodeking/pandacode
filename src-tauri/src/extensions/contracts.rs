@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 9] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes"];
+const CONTRIBUTIONS: [&str; 10] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -393,6 +393,17 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn component_slot_manifest_keeps_versions_dormant_and_rejects_code_and_foreign_owners() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/replacement/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([manifest]))["ok"], true);
+        let mut future = manifest.clone(); future["contributes"]["components"][0]["contractVersion"] = serde_json::json!(2);
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([future]))["ok"], true);
+        for (field, value) in [("id", serde_json::json!("other.owner/foreign")), ("presentation", serde_json::json!("html")), ("render", serde_json::json!("code")), ("actions", serde_json::json!(["delete"]))] {
+            let mut invalid = manifest.clone(); invalid["contributes"]["components"][0][field] = value;
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false);
+        }
+    }
     #[test]
     fn settings_and_shortcuts_share_namespaces_and_protected_dialog_policy() {
         let sample: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/settings-laboratory/extension.json")).unwrap();

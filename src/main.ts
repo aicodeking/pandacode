@@ -73,6 +73,8 @@ import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-tra
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
+import { renderComponent } from './extensions/replacement';
+import type { SlotProps, SlotObject } from './extensions/component-slot';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
@@ -665,9 +667,11 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       state.inspectorTab = resolveTabs(inspectorTabs, inspectorAvailable()).selected;
     }
     renderInspector();
-    if (focused && (!focused.isConnected || !focused.checkVisibility())) document.querySelector<HTMLElement>('.inspector-tabs [role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+    if (focused && (!focused.isConnected || !focused.checkVisibility()) && (document.activeElement === document.body || document.activeElement === focused)) document.querySelector<HTMLElement>('.inspector-tabs [role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
   }
   onExtensionsChanged(syncExtensionViews);
+  onExtensionsChanged(() => renderNavigation());
+  window.addEventListener('pandacode-components-change', () => { renderNavigation(); renderInspector(); });
   onExtensionsChanged(() => { if (document.querySelector('#dialog.command-dialog[open]')) renderCommands(document.querySelector<HTMLInputElement>('#command-query')?.value ?? ''); });
   (await import('./extensions/windows')).mountNativeExtensionPresentation(notify);
   await loadExtensions();
@@ -1671,10 +1675,33 @@ function taskSignal(s: Session, now: number): { status: string; statusLabel: str
   const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
   return { status, statusLabel, word };
 }
+let projectComponentDispose: (() => void) | undefined;
+let fileComponentDispose: (() => void) | undefined;
+function projectSlotProps(): SlotProps {
+  return { contractVersion: 1, slot: 'panda.projects', context: 'main', revision: state.generation,
+    objects: state.projects.filter(p => !botProjects.has(p.id)).map(p => ({ id: p.id, label: p.name, revision: state.generation })),
+    state: { selected: state.projectId, focused: document.activeElement instanceof HTMLElement ? document.activeElement.dataset.componentObject ?? '' : '', loading: false, offline: false, visible: true } };
+}
+function fileSlotProps(): SlotProps {
+  const objects: SlotObject[] = [];
+  const add = (files: FileEntry[], depth: number) => { for (const file of files) { const expanded = state.openFolders.has(file.path); objects.push({ id: file.path, label: file.name, revision: state.generation, directory: file.isDir, expanded, depth }); if (file.isDir && expanded) add(state.folderFiles.get(file.path) ?? [], depth + 1); } };
+  add(state.files, 0);
+  return { contractVersion: 1, slot: 'panda.files', context: workspaceKey(), revision: state.generation, objects,
+    state: { selected: fileTabs.active, focused: document.activeElement instanceof HTMLElement ? document.activeElement.dataset.componentObject ?? '' : '', loading: state.inspectorLoading, offline: Boolean(state.filesError), visible: state.inspector && !inspectorSuppressed && state.inspectorTab === 'files' } };
+}
 function renderNavigation(): void {
   queueMicrotask(() => tiles.refresh());
   // Preserve the native drag source while agent updates arrive in the background.
   if (sidebarDragging) return;
+  const filter = $('#project-filter');
+  let cards = document.querySelector<HTMLElement>('#project-components');
+  if (!cards) { cards = document.createElement('div'); cards.id = 'project-components'; filter.parentElement!.after(cards); }
+  const focusedProject = cards.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.componentObject : undefined;
+  projectComponentDispose?.();
+  projectComponentDispose = renderComponent(cards, projectSlotProps(), projectSlotProps, action => run(selectProject(action.id)));
+  cards.hidden = !projectComponentDispose; filter.hidden = Boolean(projectComponentDispose);
+  if (!projectComponentDispose) cards.replaceChildren();
+  if (focusedProject) { if (projectComponentDispose) cards.querySelector<HTMLElement>(`[data-component-object="${CSS.escape(focusedProject)}"]`)?.focus(); else filter.focus(); }
   const now = Date.now();
   const filterLabel = $('#project-filter').querySelector('[data-filter-label]')!;
   const filtered = state.projects.find(p => p.id === state.projectFilter);
@@ -5288,6 +5315,8 @@ let inspectorArmed = false;
 const armInspector = () => { inspectorArmed = true; removeEventListener('pointerdown', armInspector, true); removeEventListener('keydown', armInspector, true); };
 addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
 function renderInspector(): void {
+  const componentFocused = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('[data-component-provider]') && document.activeElement.dataset.componentObject : undefined;
+  fileComponentDispose?.(); fileComponentDispose = undefined;
   const available = inspectorAvailable();
   const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
   if (state.inspectorTab === 'pull' && !pullTask) {
@@ -5378,9 +5407,13 @@ function renderInspector(): void {
     return;
   }
   if (state.inspectorTab === 'files') {
+    const context = workspaceContext();
+    fileComponentDispose = renderComponent(target, fileSlotProps(), fileSlotProps, action => { if (action.kind === 'toggle') run(toggleFolder(action.id)); else if (isPreviewableFile(action.id) && !OPENS_IN_TAB.test(action.id)) run(previewFile(action.id, context)); else run(openFile(action.id, 'file', false, context)); });
+    if (fileComponentDispose) { if (componentFocused) target.querySelector<HTMLElement>(`[data-component-object="${CSS.escape(componentFocused)}"]`)?.focus(); return; }
     // Morphed once the tree is up, so a folder's chevron survives to turn.
     const tree = `<div class="file-folder-path"><span>${escape(project()?.name)}</span>${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`;
     if (target.querySelector(':scope>.file-list')) morph(target, tree); else target.innerHTML = tree;
+    if (componentFocused) (target.querySelector<HTMLElement>(`[data-path="${CSS.escape(componentFocused)}"]`) ?? target.querySelector<HTMLElement>('button'))?.focus();
     return;
   }
   if (state.jj?.isRepo && !state.jj.colocated) {

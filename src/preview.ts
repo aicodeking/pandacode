@@ -654,6 +654,7 @@ if (new URLSearchParams(location.search).has('data-panel') || new URLSearchParam
   (window as any).__previewAppearanceModules = async () => ({ ...(await import('./extensions/rich-views')), ...(await import('./extensions/appearance-state')), ...(await import('./extensions/appearance')), ...(await import('./extensions/contracts')), ...(await import('./palette')), ...(await import('./file-icons')) });
   (window as any).__previewRefreshExtensions = async () => (await import('./extensions/manager')).loadExtensions();
 }
+if (new URLSearchParams(location.search).has('replacement')) (window as any).__previewReplacementModules = () => import('./extensions/replacement');
 (window as any).__previewExtensionDialogTransport = async () => {
   const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
   (window as any).__extensionDialogTransport = transport;
