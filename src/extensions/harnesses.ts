@@ -2,8 +2,9 @@ import type { Provider } from '../types';
 import { parseProviderId } from './provider-identity.ts';
 import type { ExtensionSnapshot } from './manager';
 import { defaultProviderMetadata, type ProviderMetadata } from './provider-state.ts';
+import type { DiscoveryRoot } from './provider-discovery.ts';
 
-export type HarnessContribution = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; models: { id: string; name: string; efforts: string[]; contextWindow?: number }[] };
+export type HarnessContribution = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; discovery?: DiscoveryRoot[]; models: { id: string; name: string; efforts: string[]; contextWindow?: number }[] };
 /** Catalog metadata only. The native host separately admits executable content. */
 export function packageHarnesses(snapshot: ExtensionSnapshot): Provider[] {
   if (snapshot.safeMode) return [];

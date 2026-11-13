@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
+#[path = "discovery.rs"]
+pub(crate) mod discovery;
 
 #[derive(Default)]
 pub(crate) struct Homes {
+    pub dynamic: Vec<serde_json::Value>,
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
     pub xdg_config: Option<PathBuf>,
@@ -58,6 +61,7 @@ impl Homes {
     /// Every configured home without probing for executables: enough to find skill folders.
     pub(crate) fn for_scan() -> Self {
         let mut homes = Self::from_env();
+        homes.dynamic = crate::providers::dynamic_adapter::discovery_definitions();
         for (id, _) in crate::providers::PROVIDERS {
             for (key, value) in crate::provider_settings::environment(id) {
                 homes.add_environment(id, &key, PathBuf::from(value));
@@ -120,6 +124,10 @@ pub(crate) fn skill_roots(
     project: Option<&Path>,
     homes: &Homes,
 ) -> Vec<(PathBuf, String)> {
+    if crate::extensions::providers::extension_owner(harness).is_some() {
+        return homes.dynamic.iter().find(|definition| definition["id"] == harness)
+            .map(|definition| discovery::roots(definition, "skills", home, project)).unwrap_or_default();
+    }
     let mut roots = Vec::new();
     let mut ancestors = Vec::new();
     match harness {

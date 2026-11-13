@@ -2,6 +2,7 @@
  * Browser preview of the skill manager (src-tauri/src/skill_manager.rs): skills across Claude Code,
  * Codex and OpenCode, two projects with their own skills, and a pretend `skills` CLI. */
 import type { LibraryAdd, ManagedSkill, Uninstalled, PreviewSkill, SkillAgent, SkillEnforcement, SkillHarness, SkillInventory, SkillModes, SkillPreview } from './skill-manager-model';
+import { INSTALL_UNSUPPORTED } from './extensions/provider-discovery.ts';
 
 /** Like the model's isLocalSource (kept apart so Node's tests load this file without a bundler): an absolute folder. */
 const isLocalSource = (source: string): boolean => /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(source.trim());
@@ -211,7 +212,7 @@ function memoryLibrary(): PreviewBotLibrary {
   };
 }
 
-export function createPreviewSkillManager(options: { prefsError?: string; prefsLost?: boolean; prefsWarning?: string; linksWarning?: string; installError?: string; findings?: SkillInventory['findings']; harnesses?: SkillHarness[]; notShown?: number; skills?: Fixture[]; quarantined?: string[]; quarantinedCopies?: string[]; missing?: string[]; missingInProjects?: Readonly<Record<string, readonly string[]>>; library?: PreviewBotLibrary; bots?: string[]; undoLimit?: number } = {}) {
+export function createPreviewSkillManager(options: { dynamicHarnesses?: () => SkillHarness[]; prefsError?: string; prefsLost?: boolean; prefsWarning?: string; linksWarning?: string; installError?: string; findings?: SkillInventory['findings']; harnesses?: SkillHarness[]; notShown?: number; skills?: Fixture[]; quarantined?: string[]; quarantinedCopies?: string[]; missing?: string[]; missingInProjects?: Readonly<Record<string, readonly string[]>>; library?: PreviewBotLibrary; bots?: string[]; undoLimit?: number } = {}) {
   const library = options.library ?? memoryLibrary();
   const quarantinedNames = new Set(options.quarantined ?? []);
   const base = options.skills ?? BASE;
@@ -255,7 +256,7 @@ export function createPreviewSkillManager(options: { prefsError?: string; prefsL
       return { ...clean, quarantinedCopy: true, agents: [...row.agents, ...copy.agents.map(agent => ({ ...agent, quarantined: true as const }))], ...(copy.flags ? { flags: copy.flags } : {}) };
     });
     return {
-      projectId: projectId ?? null, harnesses: options.harnesses ?? HARNESSES,
+      projectId: projectId ?? null, harnesses: [...(options.harnesses ?? HARNESSES), ...(options.dynamicHarnesses?.() ?? [])],
       skills: rows.sort((a, b) => a.name.localeCompare(b.name)),
       ...(prefsError ? { prefsError } : {}), ...(prefsError && denyAll ? { prefsLost: true } : {}), ...(options.prefsWarning ? { prefsWarning: options.prefsWarning } : {}),
       ...(options.linksWarning ? { linksWarning: options.linksWarning } : {}), ...(options.notShown ? { notShown: options.notShown } : {}),
@@ -362,6 +363,7 @@ export function createPreviewSkillManager(options: { prefsError?: string; prefsL
       return { imported, findings, failures };
     },
     async add(args: { source: string; skills: string[]; harnesses: string[]; projectId?: string }): Promise<SkillInventory> {
+      if (args.harnesses.some(id => id.includes('/'))) fail(INSTALL_UNSUPPORTED);
       await wait();
       if (!args.harnesses.length) throw new Error('Choose at least one agent to install skills for.');
       args.skills.forEach(validateName);

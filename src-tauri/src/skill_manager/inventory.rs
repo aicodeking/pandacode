@@ -93,14 +93,14 @@ struct Found {
 
 #[derive(Default)]
 struct Scan {
-    roots: BTreeMap<PathBuf, Vec<Found>>,
+    roots: BTreeMap<(PathBuf, bool), Vec<Found>>,
     not_shown: usize,
 }
 impl Scan {
-    fn root(&mut self, root: &Path) -> &[Found] {
+    fn root(&mut self, root: &Path, strict: bool) -> &[Found] {
         let key = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let not_shown = &mut self.not_shown;
-        self.roots.entry(key.clone()).or_insert_with(|| {
+        self.roots.entry((key.clone(), strict)).or_insert_with(|| {
             #[cfg(test)]
             if key.exists() {
                 ROOT_READS.with(|reads| *reads.borrow_mut().entry(key).or_default() += 1);
@@ -110,6 +110,7 @@ impl Scan {
             let mut visited = BTreeSet::new();
             let mut count = 0;
             while let Some((dir, depth)) = pending.pop() {
+                if strict && !roots::discovery::unlinked(&dir) { continue; }
                 if count >= 4096 {
                     *not_shown += pending.len() + 1;
                     break;
@@ -149,6 +150,7 @@ impl Scan {
                         });
                         continue;
                     }
+                    if strict && fs::symlink_metadata(dir.join("SKILL.md")).is_ok() && !roots::discovery::unlinked(&dir.join("SKILL.md")) { continue; }
                     if let Some(text) = skill_text(&dir.join("SKILL.md")) {
                         let (name, description) = metadata::frontmatter(&text);
                         found.push(Found {
@@ -207,7 +209,9 @@ impl Scan {
         let project_sources = project
             .map(|p| sources(&p.join("skills-lock.json")))
             .unwrap_or_default();
-        for (harness, _) in crate::providers::PROVIDERS {
+        let ids: Vec<_> = crate::providers::PROVIDERS.iter().map(|(id, _)| *id)
+            .chain(homes.dynamic.iter().filter_map(|definition| definition["id"].as_str())).collect();
+        for harness in ids {
             let plugins = if harness == "codex" {
                 roots::codex_plugins(home, homes)
             } else {
@@ -237,7 +241,7 @@ impl Scan {
                     continue;
                 }
                 let real_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-                for found in self.root(&root) {
+                for found in self.root(&root, crate::extensions::providers::extension_owner(harness).is_some()) {
                     let name = plugin
                         .as_ref()
                         .map(|p| format!("{p}:{}", found.name))

@@ -9,6 +9,11 @@
   "requiredContributions": ["providers"],
   "contributes": {
     "icons": [{ "id": "sample.fake-harness/mark", "asset": "assets/mark.svg" }],
-    "providers": [{ "apiVersion": 1, "id": "sample.fake-harness/recorded", "name": "Recorded harness", "metadata": { "teams": true, "modes": ["ask", "plan"], "authentication": "Offline fixture; no sign-in or API key required.", "readiness": { "state": "ready", "reason": "Ready offline through the trusted recorded adapter." }, "icon": "sample.fake-harness/mark", "usage": { "context": true, "limitsReason": "Recorded harness reports context tokens, not subscription limits. No account or network is used." } }, "models": [{ "id": "recorded-model", "name": "Recorded model", "efforts": ["low", "medium"], "contextWindow": 32000 }] }]
+    "providers": [{ "apiVersion": 1, "id": "sample.fake-harness/recorded", "name": "Recorded harness", "metadata": { "teams": true, "modes": ["ask", "plan"], "authentication": "Offline fixture; no sign-in or API key required.", "readiness": { "state": "ready", "reason": "Ready offline through the trusted recorded adapter." }, "icon": "sample.fake-harness/mark", "usage": { "context": true, "limitsReason": "Recorded harness reports context tokens, not subscription limits. No account or network is used." } }, "discovery": [
+      { "kind": "skills", "scope": "user", "path": ".panda-harnesses/sample.fake-harness/recorded/skills" },
+      { "kind": "skills", "scope": "project", "path": ".panda-harnesses/sample.fake-harness/recorded/skills" },
+      { "kind": "rules", "scope": "project", "path": ".panda-harnesses/sample.fake-harness/recorded/rules" },
+      { "kind": "config", "scope": "user", "path": ".panda-harnesses/sample.fake-harness/recorded/settings.json" }
+    ], "models": [{ "id": "recorded-model", "name": "Recorded model", "efforts": ["low", "medium"], "contextWindow": 32000 }] }]
   }
 }

@@ -155,6 +155,8 @@ impl ManagedSkill {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Harness {
+    #[serde(flatten)]
+    discovery: BTreeMap<String, serde_json::Value>,
     id: String,
     installed: bool,
     enforcement: Mode,
@@ -679,6 +681,7 @@ fn harnesses(homes: &Homes) -> Vec<Harness> {
     crate::providers::PROVIDERS
         .iter()
         .map(|(id, _)| Harness {
+            discovery: BTreeMap::new(),
             id: (*id).into(),
             installed: homes
                 .installed
@@ -690,6 +693,13 @@ fn harnesses(homes: &Homes) -> Vec<Harness> {
             installable: cli::agent_id(id).is_some(),
             install_as: cli::agent_id(id),
         })
+        .chain(homes.dynamic.iter().map(|definition| Harness {
+            id: definition["id"].as_str().unwrap_or_default().into(),
+            installed: cfg!(all(target_os = "windows", target_arch = "x86_64")) && definition["metadata"]["readiness"]["state"].as_str().unwrap_or("ready") == "ready",
+            enforcement: Mode::Asked, console_enforcement: Mode::None, console_note: None,
+            installable: false, install_as: None,
+            discovery: roots::discovery::summary(definition).as_object().unwrap().iter().map(|(k,v)| (k.clone(),v.clone())).collect(),
+        }))
         .collect()
 }
 

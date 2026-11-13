@@ -2,6 +2,7 @@
 import schemaDocument from './schema-v1.json' with { type: 'json' };
 import { proposalOrder, OrderingCycle, type Placement } from './ordering.ts';
 import { contrast, parseHex } from '../color.ts';
+import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -210,6 +211,7 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     const executable = [...((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id), ...((contributions.providers ?? []) as ObjectValue[]).map(provider => provider.id)];
     const events = (manifest.runtime as ObjectValue | undefined)?.activationEvents as Json[] | undefined;
     for (const provider of (contributions.providers ?? []) as ObjectValue[]) {
+      if (!validDiscoveryRoots(String(provider.id), (provider.discovery ?? []) as DiscoveryRoot[])) error('PermissionDenied', `${path}/contributes/providers/discovery`, [String(provider.id)]);
       if (!manifest.runtime) error('UnsupportedRuntime', path, [id]);
       const metadata = provider.metadata as ObjectValue | undefined;
       const modes = metadata?.modes as Json[] | undefined;

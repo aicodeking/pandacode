@@ -128,6 +128,37 @@ extension package, executable-extension trust, a dynamic provider ID, or an
 extension host. Existing IDs, saved sessions, connections and native commands
 remain valid. This is an **expand** migration, not a new external-provider SDK.
 
+### Skill/rule/config discovery (experimental)
+
+A provider may declare up to six `discovery` roots, each with `kind` (`skills`,
+`rules`, `config`), `scope` (`user`, `project`) and `path`. Each scope/kind pair
+is unique. The only accepted path is `.panda-harnesses/<provider-id>/skills`,
+`rules`, or (for config) `settings.json`. For example:
+
+```json
+{ "kind": "skills", "scope": "project", "path": ".panda-harnesses/sample.fake-harness/recorded/skills" }
+```
+
+Paths are relative to the user's home or captured project. No environment expansion,
+absolute/foreign paths, traversal, symlinks or Windows junctions are admitted.
+Skills use bounded SKILL.md discovery; rule/config roots expose **presence only**,
+never config content or arbitrary directory names. The preview simulates presence;
+native inventories require the declared root to exist. PandaCode creates no roots
+and never writes the extension's installed agent configuration automatically.
+
+Skills reports task enforcement as **asked**, console enforcement as **none**:
+an extension cannot declare that it blocks skills. The pinned skills CLI has no
+reviewed dynamic agent adapter, so install and config sync are unsupported with
+reasons (also shown in Add skill). Existing built-in CLI IDs and enforcement roots
+are unchanged. Disable/trust revocation/safe mode remove future discovery descriptors;
+cached switch inventories include the active descriptor set in their cache key.
+
+These declarations do not grant the package filesystem access through the public
+API. `harnesses.inventory` returns summaries, not config files. Exact project
+metadata/read consent still rejects hidden/auth/config resources, including these
+hidden discovery paths. This policy does not confine trusted native code's independent
+OS access, and inventory link checks are not a hostile concurrent-filesystem sandbox.
+
 ## Design and ownership
 
 `src-tauri/src/extensions/providers.rs` defines the additive, versioned built-in

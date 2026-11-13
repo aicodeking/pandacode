@@ -7,6 +7,7 @@ import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { parseProviderId, providerOwner, PROVIDER_RECOVERY } from './extensions/provider-identity';
 import { packageHarnesses } from './extensions/harnesses';
+import { packageDiscoveryHarnesses } from './extensions/provider-discovery';
 import { requireProviderConsole, CONSOLE_UNSUPPORTED, SLASH_UNSUPPORTED } from './extensions/provider-cli';
 import { previewExtensionSnapshot } from './extensions/preview';
 import { createHarnessPreview } from './extensions/harness-preview';
@@ -502,7 +503,7 @@ const previewGithub = (() => {
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
-const previewSkillManager = createPreviewSkillManager({ library: previewSkills });
+const previewSkillManager = createPreviewSkillManager({ library: previewSkills, dynamicHarnesses: () => packageDiscoveryHarnesses(previewExtensionSnapshot()) });
 const previewCloud = createPreviewCloud();
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
@@ -1791,7 +1792,18 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     else if (args.action !== 'open') throw new Error('Unknown cloud action.');
     return null as T;
   }
-  if (command === 'capabilities_inventory' || command === 'cache_alignment') return previewCapabilities(command) as T;
+  if (command === 'capabilities_inventory') {
+    const inventory = previewCapabilities(command) as import('./capabilities-panel').CapabilityInventory;
+    const dynamic = packageDiscoveryHarnesses(previewExtensionSnapshot()).filter(provider => provider.installed);
+    inventory.harnesses.push(...dynamic.map(provider => ({ id: provider.id, name: provider.name! })));
+    // Synthetic presence only: preview never reads local roots or config content.
+    inventory.entries.push(...dynamic.flatMap(provider => (provider.discovery ?? []).map(root => ({ harness: provider.id,
+      kind: `${root.kind} discovery`, name: `${root.scope === 'user' ? '~/' : ''}${root.path}`, state: 'discovered', source: 'Extension-declared root (synthetic preview)', command: null }))));
+    inventory.matrix = Array.from(new Map(inventory.entries.map(entry => [`${entry.kind}\0${entry.name}`, { kind: entry.kind, name: entry.name }])).values()).map(row => ({ ...row,
+      states: inventory.harnesses.map(harness => ({ harness: harness.id, state: inventory.entries.find(entry => entry.harness === harness.id && entry.kind === row.kind && entry.name === row.name)?.state ?? 'missing' })) }));
+    return inventory as T;
+  }
+  if (command === 'cache_alignment') return previewCapabilities(command) as T;
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {

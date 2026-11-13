@@ -256,6 +256,9 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         } }
         let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").chain(items(contributions, "providers").iter()).map(|command| text(command, "id").to_owned()).collect();
         for provider in items(contributions, "providers") {
+            if !crate::skill_manager::roots::discovery::valid_roots(text(provider, "id"), &provider["discovery"]) {
+                return Err(fail("PermissionDenied", &format!("{path}/contributes/providers/discovery"), vec![text(provider, "id").into()]));
+            }
             if manifest.get("runtime").is_none() { return Err(fail("UnsupportedRuntime", &path, vec![])); }
             let modes = strings(&provider["metadata"]["modes"]);
             if modes.iter().collect::<BTreeSet<_>>().len() != modes.len() { return Err(fail("DuplicateId", &path, vec![])); }

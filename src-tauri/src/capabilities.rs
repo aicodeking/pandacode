@@ -444,6 +444,15 @@ fn scan_harness_configs(
     homes: &Homes,
 ) -> Vec<CapabilityEntry> {
     let mut entries = Vec::new();
+    if let Some(definition) = homes.dynamic.iter().find(|definition| definition["id"] == harness) {
+        for kind in ["skills", "rules", "config"] {
+            for (_, display) in crate::skill_manager::roots::discovery::roots(definition, kind, home, project) {
+                entries.push(CapabilityEntry { harness: harness.into(), kind: format!("{kind} discovery"),
+                    name: display, state: "discovered".into(), source: "Extension-declared root (metadata only)".into(), command: None });
+            }
+        }
+        return entries;
+    }
     match harness {
         "claude" | "glm" | "mimo" => {
             if let Some(value) = read_json(&home.join(".claude.json")) {
@@ -703,6 +712,27 @@ fn cache_tokens(cache: &Value, agent: &str, resume_id: Option<&str>) -> Option<O
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dynamic_discovery_capability_matrix_uses_present_roots_not_config_contents() {
+        let base = fixture_home("dynamic-discovery");
+        let manifest: Value = serde_json::from_str(include_str!("../../tests/fixtures/extensions/fake-harness/extension.json")).unwrap();
+        let definition = manifest["contributes"]["providers"][0].clone();
+        let home = base.join("home"); let project = base.join("project");
+        let prefix = ".panda-harnesses/sample.fake-harness/recorded";
+        for base in [&home, &project] { fs::create_dir_all(base.join(prefix).join("skills")).unwrap(); }
+        fs::create_dir_all(project.join(prefix).join("rules")).unwrap();
+        fs::write(home.join(prefix).join("settings.json"), "SECRET_AUTH_CONTENT").unwrap();
+        let homes = Homes { dynamic: vec![definition], ..Homes::default() };
+        let entries = scan_harness_configs("sample.fake-harness/recorded", &home, Some(&project), &homes);
+        assert_eq!(entries.len(), 4);
+        assert!(!serde_json::to_string(&entries).unwrap().contains("SECRET"));
+        let matrix = alignment_matrix(&[Harness { id: "sample.fake-harness/recorded".into(), name: "Recorded harness".into() }], &entries);
+        assert_eq!(matrix.len(), 4);
+        assert!(matrix.iter().all(|row| row.states[0].state == "discovered"));
+        assert_eq!(scan_harness_configs("sample.fake-harness/absent", &home, Some(&project), &homes).len(), 0);
+        fs::remove_dir_all(base).unwrap();
+    }
 
     fn fixture_home(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

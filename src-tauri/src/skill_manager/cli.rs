@@ -180,6 +180,9 @@ pub(super) fn add_args(
     }
     let mut agents = Vec::new();
     for harness in harnesses {
+        if crate::extensions::providers::extension_owner(harness).is_some() {
+            return Err(roots::discovery::INSTALL_REASON.into());
+        }
         let agent = agent_id(harness)
             .ok_or_else(|| format!("The skills CLI does not support the {harness} harness."))?;
         if !agents.contains(&agent) {

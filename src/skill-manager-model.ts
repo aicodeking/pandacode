@@ -23,6 +23,8 @@ export type SkillModes = { enforcement: SkillEnforcement; consoleEnforcement: Sk
  * Per-skill `enforcementOverrides` replace both for that skill; see `modesOf`. `consoleNote`: an optional caveat
  * about the harness's consoles (Claude-family: typed /commands still run), shown in a row's details. */
 export type SkillHarness = {
+  name?: string; discovery?: import('./extensions/provider-discovery').DiscoveryRoot[];
+  installReason?: string; syncable?: boolean; syncReason?: string;
   id: string; installed: boolean; enforcement: SkillEnforcement; consoleEnforcement: SkillEnforcement; consoleNote?: string;
   installable: boolean; installAs?: string;
 };
@@ -119,12 +121,14 @@ export function takeAddSkillRequest(): AddSkillRequest | null {
   return pending;
 }
 
+import { packageProvider } from './extensions/provider-state.ts';
+import { parseProviderId } from './extensions/provider-identity.ts';
 const HARNESS_NAMES: Readonly<Record<string, string>> = {
   claude: 'Claude Code', codex: 'Codex', kimi: 'Kimi Code', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity',
   grok: 'Grok Build', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo Code',
   omp: 'Oh My Pi', 'github-copilot': 'GitHub Copilot', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes',
 };
-export const harnessName = (id: string): string => HARNESS_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+export const harnessName = (id: string): string => HARNESS_NAMES[id] ?? (parseProviderId(id) ? packageProvider(parseProviderId(id)!)?.name : undefined) ?? id.charAt(0).toUpperCase() + id.slice(1);
 export const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 /** A readable message from whatever the IPC layer rejected with. */

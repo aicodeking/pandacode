@@ -42,6 +42,10 @@ pub(crate) fn discover() -> Vec<ProviderInfo> {
         ProviderInfo { id: registration.definition["id"].as_str().unwrap_or_default().into(), name: registration.definition["name"].as_str().unwrap_or_default().into(), installed: cfg!(all(target_os = "windows", target_arch = "x86_64")) && metadata["readiness"]["state"] == "ready", path: None, version: registration.version, models: catalog(&registration.definition), metadata: Some(metadata) }
     }).collect()
 }
+/// Validated active descriptors only; no config contents, paths from CLI output or probing.
+pub(crate) fn discovery_definitions() -> Vec<Value> {
+    registrations().into_iter().map(|registration| registration.definition).collect()
+}
 fn metadata(definition: &Value) -> Value {
     definition.get("metadata").cloned().unwrap_or_else(|| json!({"modes":["ask"],"authentication":"Authentication is managed by the trusted extension; no credentials are returned to PandaCode.","readiness":{"state":"ready","reason":"Ready through its trusted extension."},"usage":{"context":false,"limitsReason":"This extension does not expose account limits. Check its provider dashboard."}}))
 }

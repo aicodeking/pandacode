@@ -75,7 +75,8 @@ function agentsHtml(harnesses: readonly SkillHarness[], chosen: ReadonlySet<stri
     const group = targets.filter(h => h.installAs === id), installed = group.some(h => h.installed);
     return checkbox('agent', id, escape(listText(group.map(h => harnessName(h.id)))), chosen ? chosen.has(id) : installed, installed ? '' : ` <small class="skill-add-missing">${group.length > 1 ? 'apps missing' : APP_MISSING}</small>`);
   }).join('');
-  return `<fieldset class="skill-add-group skill-add-inline" data-add-agents><legend>Agents</legend>${rows || '<span class="skill-add-hint">No supported agents found.</span>'}</fieldset>`;
+  const unsupported = harnesses.filter(h => !h.installable && h.installReason).map(h => `<p class="skill-add-hint">${escape(h.name ?? harnessName(h.id))}: ${escape(h.installReason!)} ${escape(h.syncReason ?? '')}</p>`).join('');
+  return `<fieldset class="skill-add-group skill-add-inline" data-add-agents><legend>Agents</legend>${rows || '<span class="skill-add-hint">No supported agents found.</span>'}${unsupported}</fieldset>`;
 }
 
 function shellHtml(): string {

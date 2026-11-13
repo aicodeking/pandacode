@@ -33,6 +33,7 @@ pub(super) fn key(
             &homes.projects,
             &homes.worktrees,
             &homes.configured,
+            &homes.dynamic,
             [
                 &homes.claude,
                 &homes.codex,
