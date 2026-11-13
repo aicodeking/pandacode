@@ -5,3 +5,8 @@
 /* Keep every host region, including approvals and Stop, reachable. No editor clone. */
 #composer.component-toolbar-first { display: flex; flex-direction: column; }
 #composer.component-toolbar-first > .composer-tray { order: -1; border-bottom: 1px solid var(--ds-border); }
+/* Inset ink only: no layout/scroll geometry changes or hidden host actions. */
+#transcript.component-timeline .turn-card { box-shadow: inset 3px 0 0 var(--ds-border-strong); }
+#transcript.component-timeline .turn-activity { outline: 1px solid var(--ds-border); outline-offset: -1px; }
+.transcript-presentation-status { position: absolute; z-index: 2; top: var(--header-height); right: var(--space-2); max-width: 32em; padding: var(--space-2); background: var(--ds-card); color: var(--text); border: 1px solid var(--ds-border); }
+.transcript-presentation-status[hidden] { display: none; }

@@ -13,7 +13,7 @@ const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
 const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components'];
-const capabilities = ['ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read'];
+const capabilities = ['ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {

@@ -656,6 +656,29 @@ if (new URLSearchParams(location.search).has('data-panel') || new URLSearchParam
 }
 if (new URLSearchParams(location.search).has('replacement')) (window as any).__previewReplacementModules = () => import('./extensions/replacement');
 if (new URLSearchParams(location.search).has('composer-conformance')) (window as any).__previewComposerModules = async () => ({ ...await import('./extensions/component-slot'), ...await import('./extensions/manager') });
+if (new URLSearchParams(location.search).has('transcript-conformance')) (window as any).__previewTranscriptModules = async () => ({ ...await import('./extensions/component-slot'), ...await import('./extensions/manager'), ...await import('./extensions/contracts') });
+if (new URLSearchParams(location.search).has('transcript-conformance')) {
+  for (let turn = 0; turn < 12; turn++) for (const role of ['user', 'assistant'] as const) messages['session-1'].push({ id: ++id, sessionId: 'session-1', role, content: `Recorded history ${turn}: ${role === 'user' ? 'Review this change.' : 'The change preserves the task history and reading position.'}`, createdAt: now - 20000 + turn });
+  // Recorded normalized frames, with the same persistence-before-done ordering as
+  // the native host. This is a test transport, not a package content API.
+  let body = '';
+  (window as any).__previewTranscriptFrame = (event: AgentEvent) => {
+    if (event.kind === 'text') body += event.text;
+    if (event.kind === 'usage') session(event.sessionId).contextUsage = event.data as Session['contextUsage'];
+    if (event.kind === 'tool' && event.tool) {
+      const rows = messages[event.sessionId] ??= [];
+      const prior = rows.find(row => row.role === 'tool' && row.content.includes(event.tool!.id));
+      if (prior) prior.content = encodeTool(event.tool);
+      else rows.push({ id: ++id, sessionId: event.sessionId, role: 'tool', content: encodeTool(event.tool), createdAt: Date.now() });
+    }
+    if (event.kind === 'done') {
+      (messages[event.sessionId] ??= []).push({ id: ++id, sessionId: event.sessionId, role: 'assistant', content: body, createdAt: Date.now() });
+      body = ''; const task = session(event.sessionId); task.status = 'idle'; task.lastResponseAt = Date.now();
+    }
+    agent(event);
+  };
+  (window as any).__previewTranscriptState = () => structuredClone({ task: session('session-1'), messages: messages['session-1'] });
+}
 (window as any).__previewExtensionDialogTransport = async () => {
   const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
   (window as any).__extensionDialogTransport = transport;

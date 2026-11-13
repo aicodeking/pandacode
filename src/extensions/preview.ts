@@ -14,6 +14,7 @@ import richViewManifest from '../../tests/fixtures/extensions/rich-view/extensio
 import appearanceManifest from '../../tests/fixtures/extensions/appearance/extension.json';
 import replacementManifest from '../../tests/fixtures/extensions/replacement/extension.json';
 import composerManifest from '../../tests/fixtures/extensions/composer/extension.json';
+import transcriptManifest from '../../tests/fixtures/extensions/transcript/extension.json';
 import appearanceSvg from '../../tests/fixtures/extensions/appearance/assets/symbol.svg?raw';
 import windowSvg from '../../tests/fixtures/extensions/window-laboratory/assets/info.svg?raw';
 import { validSettingsValues } from './settings-state';
@@ -121,7 +122,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
-    const selected = new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
+    const selected = new URLSearchParams(location.search).has('transcript-conformance') ? transcriptManifest : new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
     snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...(selected === executableManifest ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
   } else if (command === 'extensions_uninstall') {

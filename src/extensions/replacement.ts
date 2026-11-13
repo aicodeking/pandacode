@@ -30,6 +30,32 @@ export function applyComposerPresentation(host: HTMLElement, qualify = () => {
     host.dataset.componentProvider = provider.id;
   } catch { faults.add(identity(provider)); }
 }
+/** Closed transcript recipe: no cloned history, content delivery, action proxy or
+ * extra event subscription. Failure/revocation never touches host reading state. */
+export function applyTranscriptPresentation(host: HTMLElement, qualify = () => {
+  if (host.id !== 'transcript') throw new Error('Unsupported transcript host');
+}): void {
+  delete host.dataset.componentProvider;
+  host.classList.remove('component-timeline');
+  const status = host.parentElement?.querySelector<HTMLElement>(':scope > [data-transcript-presentation-status]');
+  if (status) { status.hidden = true; status.textContent = ''; }
+  const provider = componentSelection.resolve('panda.transcript', componentProviders());
+  if (!provider) return;
+  const owner = extensionsSnapshot().packages.find(item => item.manifest.id === provider.id.split('/')[0]);
+  const missing = ['tasks.transcript.read', 'tasks.tools.read'].filter(permission => !owner?.manifest.permissions?.includes(permission));
+  const unavailable = (message: string) => {
+    if (!host.parentElement) return;
+    const notice = status ?? document.createElement('p');
+    notice.dataset.transcriptPresentationStatus = '';
+    notice.className = 'transcript-presentation-status';
+    notice.setAttribute('role', 'status'); notice.hidden = false; notice.textContent = message;
+    if (!notice.parentElement) host.before(notice);
+  };
+  if (missing.length) { unavailable(`Unsupported replacement — content redacted (${missing.join(', ')} not granted). Built-in transcript remains active.`); return; }
+  if (faults.has(identity(provider))) { unavailable('Transcript replacement failed. Built-in transcript remains active.'); return; }
+  try { qualify(); host.classList.add('component-timeline'); host.dataset.componentProvider = provider.id; }
+  catch { faults.add(identity(provider)); unavailable('Transcript replacement failed. Built-in transcript remains active.'); }
+}
 /** Host-only fault boundary. The optional painter supports controlled conformance faults. */
 export function renderComponent(host: HTMLElement, props: SlotProps, current: () => SlotProps, dispatch: (action: SlotAction) => void, paint = componentHtml): (() => void) | undefined {
   const provider = componentSelection.resolve(props.slot, componentProviders());

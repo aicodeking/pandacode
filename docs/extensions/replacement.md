@@ -48,4 +48,27 @@ quarantined until package change or restart. The same conformance scenarios run
 against Built-in and the installed alternate package, with typing/streaming recovery.
 
 This remains declarative support, not an executable component SDK or arbitrary
-composer/transcript renderer. Browser evidence is not installed native/platform qualification.
+composer renderer. Browser evidence is not installed native/platform qualification.
+
+## Transcript and trace presentation v1 (experimental)
+
+Install `tests/fixtures/extensions/transcript` and explicitly select **Transcript
+presentation → Timeline transcript**. `panda.transcript` accepts only `timeline`
+and all capabilities: `streaming`, `tool-output`, `questions`, `approvals`,
+`team-progress`, `usage`, `stop-resume`, `host-history`. This is a closed host
+recipe, not an executable renderer or a content-read endpoint. It decorates the
+existing normalized host turn/trace nodes without replacing them or parsing CLI
+output. Every core action, message ID, selection, follow/scroll intent, stream
+and completion handler stays in the host, including questions/approval bars and
+the composer Stop/continue workflow. Recipe changes never subscribe to events.
+
+`ui.contribute` authorizes registration only. Separate `tasks.transcript.read`
+and `tasks.tools.read` permissions are required to apply this content-bearing
+recipe. Missing either shows an explicit unsupported/content-redacted status;
+the complete built-in remains active so required actions are not hidden. No
+content or DOM handle is sent to package code even with both permissions.
+These supported-API permissions do not sandbox independently trusted executable
+code's ordinary OS access. Disable/uninstall, safe mode, Built-in and controlled
+host rendering failure immediately restore the undecorated host transcript.
+Failure quarantine is scoped to provider identity. Native/platform interactive
+qualification remains deferred; automated browser conformance is not that proof.

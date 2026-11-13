@@ -73,7 +73,7 @@ import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-tra
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
-import { renderComponent, applyComposerPresentation } from './extensions/replacement';
+import { renderComponent, applyComposerPresentation, applyTranscriptPresentation } from './extensions/replacement';
 import type { SlotProps, SlotObject } from './extensions/component-slot';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -673,7 +673,9 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   onExtensionsChanged(() => renderNavigation());
   const syncComposerPresentation = () => { const host = document.querySelector<HTMLElement>('#composer'); if (host) applyComposerPresentation(host); };
   onExtensionsChanged(syncComposerPresentation);
-  window.addEventListener('pandacode-components-change', () => { renderNavigation(); renderInspector(); syncComposerPresentation(); });
+  const syncTranscriptPresentation = () => applyTranscriptPresentation($('#transcript'));
+  onExtensionsChanged(syncTranscriptPresentation);
+  window.addEventListener('pandacode-components-change', () => { renderNavigation(); renderInspector(); syncComposerPresentation(); syncTranscriptPresentation(); });
   onExtensionsChanged(() => { if (document.querySelector('#dialog.command-dialog[open]')) renderCommands(document.querySelector<HTMLInputElement>('#command-query')?.value ?? ''); });
   (await import('./extensions/windows')).mountNativeExtensionPresentation(notify);
   await loadExtensions();

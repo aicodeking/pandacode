@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.transcript",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "tasks.transcript.read", "tasks.tools.read"],
+  "requiredContributions": ["components"],
+  "contributes": { "components": [{
+    "id": "sample.transcript/timeline", "title": "Timeline transcript", "slot": "panda.transcript",
+    "contractVersion": 1, "presentation": "timeline",
+    "capabilities": ["streaming", "tool-output", "questions", "approvals", "team-progress", "usage", "stop-resume", "host-history"]
+  }] }
+}
