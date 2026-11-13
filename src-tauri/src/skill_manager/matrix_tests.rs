@@ -24,7 +24,7 @@ fn skill_manager_table_is_the_one_source_for_harness_and_skill_modes() {
     use Mode::*;
     for (id, _) in crate::providers::PROVIDERS {
         let expected = match id {
-            "claude" | "glm" | "mimo" | "codex" | "opencode" => (Blocked, Blocked),
+            "claude" | "glm" | "mimo" | "alibaba" | "codex" | "opencode" => (Blocked, Blocked),
             "pi" | "omp" | "grok" | "muse" | "hermes" => (Asked, Asked),
             _ => (Asked, None),
         };
@@ -43,6 +43,7 @@ fn skill_manager_table_is_the_one_source_for_harness_and_skill_modes() {
     assert_eq!(friendly.get("claude"), Some(&asked));
     assert_eq!(friendly.get("glm"), Some(&asked));
     assert_eq!(friendly.get("mimo"), Some(&asked));
+    assert_eq!(friendly.get("alibaba"), Some(&asked));
     // OpenCode consoles have no reminder channel: not 'asked'.
     assert_eq!(
         friendly.get("opencode"),
@@ -51,7 +52,7 @@ fn skill_manager_table_is_the_one_source_for_harness_and_skill_modes() {
             console_enforcement: None,
         })
     );
-    assert_eq!(friendly.len(), 4);
+    assert_eq!(friendly.len(), 5);
     assert!(overrides("review").is_empty());
     assert!(overrides("bad`name").is_empty());
 }
@@ -146,7 +147,7 @@ fn skill_manager_typed_command_guard_never_refuses_a_command_that_is_not_an_inst
 fn skill_manager_claude_family_refuses_an_unprefixed_plugin_skill_when_it_is_unambiguous() {
     let disabled = BTreeSet::from(["plugin:tool".into()]);
     let one = || BTreeSet::from(["plugin:tool".into(), "other".into()]);
-    for id in ["claude", "glm", "mimo"] {
+    for id in ["claude", "glm", "mimo", "alibaba"] {
         assert_eq!(
             check_prompt(id, "/tool now", &disabled, one).unwrap_err(),
             "plugin:tool is switched off in Settings → Tools → Skills.",
@@ -342,7 +343,7 @@ fn skill_manager_cline_console_reports_none_because_system_replaces_the_prompt()
 #[test]
 fn skill_manager_claude_family_consoles_note_that_typed_commands_still_run() {
     for (id, _) in crate::providers::PROVIDERS {
-        let expected = matches!(id, "claude" | "glm" | "mimo")
+        let expected = matches!(id, "claude" | "glm" | "mimo" | "alibaba")
             .then_some("Typed /commands still run in the console");
         assert_eq!(console_note(id), expected, "{id}");
     }

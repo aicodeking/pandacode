@@ -445,7 +445,7 @@ fn scan_harness_configs(
 ) -> Vec<CapabilityEntry> {
     let mut entries = Vec::new();
     match harness {
-        "claude" | "glm" | "mimo" => {
+        "claude" | "glm" | "mimo" | "alibaba" => {
             if let Some(value) = read_json(&home.join(".claude.json")) {
                 entries.extend(parse_mcp_json(
                     harness,

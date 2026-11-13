@@ -161,7 +161,7 @@ use crate::providers::PROVIDERS;
 const UPDATABLE: [&str; 6] = ["claude", "codex", "kimi", "opencode", "grok", "cline"];
 
 fn family(provider: &str) -> &str {
-    if matches!(provider, "glm" | "mimo") {
+    if matches!(provider, "glm" | "mimo" | "alibaba") {
         "claude"
     } else {
         provider

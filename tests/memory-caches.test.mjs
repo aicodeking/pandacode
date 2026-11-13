@@ -138,3 +138,28 @@ test('elapsed clock stops for hidden or empty lists and catches up immediately o
   assert.equal(disconnected, true);
   assert.equal(listeners.size, 0);
 });
+
+
+test('detached thread rows reuse ordinary windows and evict by count, markup size and widened history', () => {
+  const { leftRowsCache } = load('transcript-view');
+  const node = { parentNode: null, contains: other => other === node };
+  const entry = (html, trimmed = new Map()) => ({ rows: [{ html, nodes: [node] }], trimmed, keys: ['1'] });
+  const cache = leftRowsCache(2, 10, 3);
+  const ordinary = entry('abc');
+  cache.keep('first', ordinary);
+  assert.equal(cache.holds(node), true);
+  assert.equal(cache.take('first'), ordinary, 'a normal return reuses the same DOM');
+  assert.equal(cache.take('first'), undefined, 'a return consumes the entry');
+  for (const id of ['first', 'second', 'third']) cache.keep(id, entry('abc'));
+  assert.equal(cache.take('first'), undefined, 'oldest thread leaves the count budget');
+  cache.keep('big', entry('abcdefghij'));
+  assert.equal(cache.take('second'), undefined, 'old markup leaves the size budget');
+  assert.ok(cache.take('big'));
+  cache.keep('oversized', entry('abcdefghijk'));
+  assert.equal(cache.take('oversized'), undefined, 'one oversized transcript is not retained');
+  cache.keep('wide', entry('', new Map([['a', {}], ['b', {}], ['c', {}]])));
+  assert.equal(cache.take('wide'), undefined, 'trimmed reader state also counts toward the row budget');
+  const attached = { parentNode: {} };
+  cache.keep('attached', { rows: [{ html: '', nodes: [attached] }], trimmed: new Map(), keys: ['1'] });
+  assert.equal(cache.take('attached'), undefined, 'nodes already adopted elsewhere are not reused');
+});

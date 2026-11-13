@@ -502,6 +502,10 @@ impl Context {
         HttpResponse::json(json!({"jsonrpc":"2.0","id":id,"result":result}))
     }
     async fn authorize(&self, name: &str, args: &Value) -> Result<(), String> {
+        // A team worker never gets an always-ask tool, however the harness words the prompt.
+        if let Some(reason) = crate::providers::worker_tool_refusal(&self.session_id, name) {
+            return Err(reason);
+        }
         if !self.host.approval_tools.contains(name) {
             return Ok(());
         }
@@ -528,15 +532,20 @@ impl Context {
             session_id: self.session_id.clone(),
             kind: "approval".into(),
             text: format!("Allow {name}?\n{}", preview_json(args, TOOL_INPUT_LIMIT)),
-            request_id: Some(id),
+            request_id: Some(id.clone()),
             data: None,
             tool: None,
         });
         let wait = crate::remote::orchestrate::approval_wait(name).unwrap_or(Duration::from_secs(300));
         match tokio::time::timeout(wait, receive).await {
-            Ok(Ok(true)) => Ok(()),
-            Ok(Ok(false)) => Err("Declined by the user".into()),
-            _ => Err("App approval expired or was cancelled".into()),
+            Ok(Ok(false)) => Err(crate::providers::decline_text(&self.session_id, &id)),
+            outcome => {
+                crate::providers::take_decline_reason(&self.session_id, &id);
+                match outcome {
+                    Ok(Ok(true)) => Ok(()),
+                    _ => Err("App approval expired or was cancelled".into()),
+                }
+            }
         }
     }
     fn activity(&self, id: &str, name: &str, status: &str, input: &str, output: &str) {
@@ -817,6 +826,41 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn a_team_worker_decline_reaches_the_tool_result_and_a_user_decline_is_unchanged() {
+        let reason = "Declined: team workers cannot run pandacode_delegate; ask your lead to run it or decide, then continue with the rest of your work.";
+        for worker in [false, true] {
+            let mut protected = host();
+            protected.approval_tools.insert("pandacode_delegate".into());
+            let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| {
+                let _ = sender.send(event);
+            }), "ask")
+            .await
+            .unwrap();
+            let request = request(&server, call(json!(1), json!({})), "");
+            let answer = async {
+                let pending = loop {
+                    let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
+                    if event.kind == "approval" {
+                        break event.request_id.unwrap();
+                    }
+                };
+                if worker {
+                    crate::providers::set_decline_reason("task", &pending, reason);
+                }
+                assert!(server.approve(&pending, false));
+            };
+            let ((_, result), ()) = tokio::join!(request, answer);
+            let text = result["result"].to_string();
+            assert_eq!(result["result"]["isError"], true);
+            if worker {
+                assert!(text.contains(reason) && !text.contains(crate::providers::USER_DECLINE), "{text}");
+            } else {
+                assert!(text.contains(crate::providers::USER_DECLINE) && !text.contains("team workers"), "{text}");
+            }
+        }
+    }
+    #[tokio::test]
     async fn protected_mcp_tools_never_execute_in_plan_and_full_mode_needs_no_prompt() {
         for mode in ["plan", "full"] {
             let count = Arc::new(AtomicUsize::new(0));
@@ -959,6 +1003,27 @@ mod tests {
         let ((_, result), ()) = tokio::join!(request, answer);
         assert_eq!(result["result"]["isError"], true);
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn a_team_workers_always_ask_tool_is_refused_at_the_host_before_any_prompt() {
+        let session = format!("mcp-worker-{}", uuid::Uuid::new_v4());
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let server = Server::start_with_approvals(host(), session.clone(), Arc::new(move |event| {
+            let _ = sender.send(event);
+        }), "full")
+        .await
+        .unwrap();
+        crate::providers::mark_worker_run(&session, "run", true);
+        let refused = server.current().authorize("pandacode_schedule_message", &json!({})).await;
+        crate::providers::clear_worker_run(&session, "run");
+        let reason = refused.unwrap_err();
+        assert!(reason.contains("team workers cannot run pandacode_schedule_message") && reason.contains("ask your lead"), "{reason}");
+        assert!(events.try_recv().is_err(), "no approval was asked");
+        // Other tools and non-workers are unaffected by the host check.
+        assert!(crate::providers::worker_tool_refusal(&session, "pandacode_schedule_message").is_none());
+        crate::providers::mark_worker_run(&session, "run", true);
+        assert!(crate::providers::worker_tool_refusal(&session, "pandacode_delegate").is_none());
+        crate::providers::clear_worker_run(&session, "run");
     }
     #[tokio::test]
     async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {

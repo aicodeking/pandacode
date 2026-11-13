@@ -29,11 +29,14 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
     // Resolve before writing so a missing worktree never becomes a main-folder
     // task. Team workers may also fork, but receive no team execution identity.
     store.workspace_root(&source.project_id, Some(source_id))?;
+    // A worker's full access never carries into the user's own chat: a fork of a worker's
+    // transcript takes its lead's mode.
+    let mode = crate::architect::fork_mode(store, &source);
     let target = store.create_session(
         &source.project_id,
         &source.provider,
         &source.model,
-        &source.mode,
+        &mode,
     )?;
     let title: String = format!(
         "{} (fork)",

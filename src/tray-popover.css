@@ -62,6 +62,15 @@ html[data-theme=dark] .provider-logo[data-provider=omp]{border-radius:3px;box-sh
 .tray-pill{padding:2px 8px;border-radius:999px;font-size:var(--text-sm);font-weight:var(--weight-medium);color:var(--tray-warn);background:color-mix(in srgb,var(--tray-warn) 16%,transparent)}
 .tray-result{display:grid;color:var(--tray-success)}.tray-result.failed{color:var(--tray-danger)}.tray-result .icon{width:var(--icon-sm);height:var(--icon-sm);stroke-width:var(--icon-stroke-xs)}
 .tray-quiet{margin:0;padding:14px;border:1px solid var(--tray-border);border-radius:var(--tray-radius-inner);background:var(--tray-inner);font-size:var(--text-md);color:var(--tray-muted)}.tray-empty{text-align:center;border-radius:var(--tray-radius-card);background:var(--tray-card);box-shadow:var(--tray-shadow-card)}
+/* A failed click: one stable live region above the list (filled only when the text changes), the shared error look. */
+.tray-alert{flex:none;display:flex;align-items:center;gap:8px;min-height:34px;margin:0 0 8px;padding:3px 3px 3px 10px;border:1px solid var(--tray-border);border-radius:var(--tray-radius-inner);background:var(--tray-inner);font-size:var(--text-md);line-height:1.4}
+.tray-alert-icon{flex:none;display:grid;color:var(--tray-danger)}
+.tray-alert-text{flex:1;min-width:0;padding:3px 0;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
+/* Empty it stays rendered (a live region some assistive tech skips under display:none) but takes no room. */
+.tray-alert [hidden]{display:none}
+.tray-alert:not(.is-open){min-height:0;margin:0;padding:0;border:0;overflow:hidden}
+@media(prefers-contrast:more){.tray-alert{border-color:var(--tray-text)}.tray-alert-icon{color:var(--tray-text)}}
+@media(forced-colors:active){.tray-alert{border-color:CanvasText;color:CanvasText}.tray-alert-icon{color:CanvasText}.tray-alert .tray-icon-button{color:ButtonText}}
 /* Plan usage: an inner card holding each harness as a block of thin 4px meters. */
 .tray-usage{padding:8px 10px;border:solid var(--tray-border);border-width:0 1px;background:var(--tray-inner)}
 .tray-plan h2+.tray-usage{border-top-width:1px;border-top-left-radius:var(--tray-radius-inner);border-top-right-radius:var(--tray-radius-inner);padding-top:10px}
@@ -69,6 +78,7 @@ html[data-theme=dark] .provider-logo[data-provider=omp]{border-radius:3px;box-sh
 .tray-usage-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:1rem;font-weight:var(--weight-medium)}
 .tray-chip{padding:0 6px;border:1px solid var(--tray-border);border-radius:6px;font:var(--weight-medium) var(--text-sm)/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tray-muted);background:var(--tray-fill)}
 .tray-stale{font-size:var(--text-md);color:var(--tray-warn);font-weight:400}
+.tray-state{margin:2px 0 0;font-size:var(--text-md);color:var(--tray-warn)}
 .tray-window{--bar:var(--tray-text);display:grid;grid-template-columns:56px 1fr 36px;align-items:center;column-gap:10px;padding:3px 0 3px 28px;font-size:var(--text-md)}
 .tray-window[data-tone=high]{--bar:var(--tray-warn)}.tray-window[data-tone=exhausted]{--bar:var(--tray-danger)}
 .tray-window-label{color:var(--tray-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

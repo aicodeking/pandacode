@@ -12,10 +12,19 @@ export interface TerminalContext {
   harness?: { provider: import('./types').ProviderId; command?: string };
   runScript?: boolean;
   runRequestId?: string;
+  /** Attach to a running shell another device opened (PandaConnect) instead of starting one. */
+  attachTerminalId?: string;
 }
+
+/** A page of `read_terminal_output` (terminal.rs `OutputChunk`). */
+interface OutputChunk { data: string; next: number; dropped: number; exited: boolean; exitCode?: number }
+type LiveEvent = { terminalId: string; data: string; exit?: boolean; offset?: number };
+/** Pages read while attaching; the log holds 256 KiB, read in 64 KiB pages. */
+const MAX_REPLAY_PAGES = 16;
 
 export interface TerminalActivity { running: boolean; processNames: string[]; uncertain: boolean }
 export interface TerminalController {
+  readonly terminalId: string;
   readonly exited: boolean;
   dispose(): Promise<void>;
   activity(): Promise<TerminalActivity>;
@@ -74,7 +83,10 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
   // Each pending PTY owns its startup output. A busy existing tab must not
   // consume another tab's queue before start_terminal returns that tab's ID.
   const early = new Map<string, { terminalId: string; data: string; exit: boolean }>();
-  const handle = (event: { terminalId: string; data: string; exit?: boolean }) => {
+  // While attaching, live events wait here until the recorded output is replayed.
+  let replaying: LiveEvent[] | undefined = context.attachTerminalId ? [] : undefined;
+  const handle = (event: LiveEvent) => {
+    if (replaying) { if (event.terminalId === context.attachTerminalId) replaying.push(event); return; }
     if (!terminalId) {
       const previous = early.get(event.terminalId);
       early.set(event.terminalId, { terminalId: event.terminalId, data: ((previous?.data ?? '') + event.data).slice(-65536), exit: Boolean(previous?.exit || event.exit) });
@@ -92,8 +104,17 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     unlisten = await subscribe('terminal-event', handle);
   } catch (error) { terminal.dispose(); frame.remove(); throw error; }
   try {
-    const { harness, runScript, runRequestId, ...workspace } = context;
-    terminalId = await call<string>(runScript ? 'start_run_script_terminal' : harness ? 'start_harness_terminal' : 'start_terminal', { ...workspace, ...(runRequestId ? { requestId: runRequestId } : {}), cols: terminal.cols, rows: terminal.rows });
+    const { harness, runScript, runRequestId, attachTerminalId, ...workspace } = context;
+    if (attachTerminalId) {
+      const replayed = await replayOutput(attachTerminalId);
+      terminalId = attachTerminalId;
+      terminal.write(replayed.data); hasOutput = replayed.data.length > 0;
+      const live = replaying ?? []; replaying = undefined;
+      for (const event of live) if (event.offset === undefined || event.offset > replayed.next) handle(event);
+      if (replayed.exited && !exited) handle({ terminalId, data: '', exit: true });
+    } else {
+      terminalId = await call<string>(runScript ? 'start_run_script_terminal' : harness ? 'start_harness_terminal' : 'start_terminal', { ...workspace, ...(runRequestId ? { requestId: runRequestId } : {}), cols: terminal.cols, rows: terminal.rows });
+    }
   } catch (error) { unlisten(); terminal.dispose(); frame.remove(); throw error; }
   const pending = early.get(terminalId); early.clear(); if (pending) handle(pending);
   if (insertButton) insertButton.addEventListener('click', () => {
@@ -123,7 +144,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
   observer.observe(surface);
   const focus = () => { if (!disposed && surface.clientWidth && surface.clientHeight) { resize(); terminal.focus(); } };
   focus();
-  return { get exited() { return exited; }, focus, offerCommand: value => {
+  return { terminalId, get exited() { return exited; }, focus, offerCommand: value => {
     validateCommand(value);
     if (!insertButton || !value) return;
     ++commandRevision; command = value; inserted = false; insertButton.hidden = false;
@@ -134,6 +155,17 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     if (disposed) return; disposed = true;
     window.removeEventListener('pandacode-theme-change', refreshTheme); window.removeEventListener('pandacode-palette-change', refreshTheme); window.removeEventListener('pandacode-ui-scale-change', refreshSize); observer.disconnect(); cancelAnimationFrame(resizeFrame); input.dispose(); unlisten(); terminal.dispose(); frame.remove(); await call('close_terminal', { terminalId });
   } };
+}
+
+/** The recorded output of a running terminal, read up to its current end. */
+async function replayOutput(terminalId: string): Promise<{ data: string; next: number; exited: boolean }> {
+  let data = '', next = 0, exited = false;
+  for (let page = 0; page < MAX_REPLAY_PAGES; page++) {
+    const chunk = await call<OutputChunk>('read_terminal_output', { terminalId, after: next });
+    data += chunk.data; next = chunk.next; exited = chunk.exited;
+    if (!chunk.data) break;
+  }
+  return { data, next, exited };
 }
 
 function terminalTheme() {

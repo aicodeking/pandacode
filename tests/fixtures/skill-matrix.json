@@ -7,6 +7,7 @@
   "antigravity": {"consoleEnforcement":"none","enforcement":"asked","installAs":"antigravity"},
   "grok": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"grok"},
   "mimo": {"consoleEnforcement":"blocked","consoleNote":"Typed /commands still run in the console","enforcement":"blocked","installAs":"claude-code"},
+  "alibaba": {"consoleEnforcement":"blocked","consoleNote":"Typed /commands still run in the console","enforcement":"blocked","installAs":"claude-code"},
   "pi": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"pi"},
   "deepseek": {"consoleEnforcement":"none","enforcement":"asked","installAs":"universal"},
   "commandcode": {"consoleEnforcement":"none","enforcement":"asked","installAs":"command-code"},

@@ -2,7 +2,7 @@ import type { Mode, ProviderId } from './types';
 
 export interface ApprovalMode { id: Mode; label: string; description: string; icon: string; disabled?: boolean; }
 
-const CLAUDE_FAMILY: ProviderId[] = ['claude', 'glm', 'mimo'];
+const CLAUDE_FAMILY: ProviderId[] = ['claude', 'glm', 'mimo', 'alibaba'];
 
 /** A mode's state tone (`--ds-tone-*`); Standard stays neutral. Harness labels differ, the risk class does not. */
 export const MODE_TONES: Record<Mode, string> = { ask: '', auto: 'edit', review: 'edit', plan: 'plan', full: 'full' };
@@ -76,7 +76,7 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Work freely inside the sandbox. Muse asks only to leave it.' }
     : provider === 'deepseek'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
-    : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo', 'zcode', 'hermes'].includes(provider)
+    : ['claude', 'glm', 'mimo', 'alibaba', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo', 'zcode', 'hermes'].includes(provider)
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Allow file edits automatically. Other actions may still ask you.' }
     : provider === 'kimi'
     ? { id: 'auto', label: 'Ask when needed', icon: 'spark', description: 'Allow routine tools automatically. Ask you about sensitive actions.' }

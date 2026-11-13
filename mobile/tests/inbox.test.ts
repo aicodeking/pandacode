@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TaskSummary } from '../src/connect/types.ts';
-import { activeSnoozes, approvalSummary, botOf, botRows, elapsedLabel, filterBots, filterRows, glanceOf, inboxSections, pendingApproval, SETTLED_MS, stalledFor, STALL_MS, tomorrowMorning, type InboxInput } from '../src/store/inbox.ts';
+import { activeSnoozes, approvalSummary, isSettledTask, offersSettle, offersUnarchive, restoreTask, botOf, botRows, elapsedLabel, filterBots, filterRows, glanceOf, inboxItems, inboxSections, pendingApproval, reopenTask, settleTask, SETTLED_MS, stalledFor, STALL_MS, tomorrowMorning, type InboxInput } from '../src/store/inbox.ts';
 import { idleLive } from '../src/store/reduce.ts';
 
 const NOW = 1_800_000_000_000;
@@ -156,4 +156,106 @@ test('the approval confirm shows the words and the command, within reason', () =
   assert.equal(approvalSummary({ text: 'Run `npm i` in **web**?' }), 'Run npm i in web?');
   assert.equal(approvalSummary({ text: '' }), 'The agent asks to continue.');
   assert.ok(approvalSummary({ text: 'x'.repeat(1000) }).length <= 401);
+});
+
+test('settled tasks go under Archived until something needs a look', () => {
+  const inbox = inboxSections(input([
+    task('done', { stage: 'completed' }),
+    task('legacy', { archived: true }),
+    task('pinnedDone', { stage: 'completed', pinned: true }),
+    task('failedDone', { stage: 'completed', status: 'failed' }),
+    task('runningDone', { stage: 'completed', status: 'running' }),
+    task('open', { stage: 'in_progress' }),
+  ]));
+  const all = [...inbox.running, ...inbox.needs, ...inbox.recent, ...inbox.settled, ...inbox.snoozed];
+  assert.deepEqual(ids(all).sort(), ['failedDone', 'open', 'pinnedDone', 'runningDone']);
+  assert.deepEqual(ids(inbox.archived).sort(), ['done', 'legacy']);
+  assert.equal(isSettledTask({ stage: 'completed' }), true);
+  assert.equal(isSettledTask({ archived: true }), true);
+  assert.equal(isSettledTask({ stage: 'todo' }), false);
+  assert.equal(isSettledTask({}), false);
+});
+
+test('Archived folds last, newest first, and a snooze or phone pin does not pull a settled task out', () => {
+  const inbox = inboxSections(input([
+    task('older', { stage: 'completed', updatedAt: NOW - 90_000 }),
+    task('newer', { stage: 'completed', updatedAt: NOW - 10_000 }),
+    task('snoozedDone', { stage: 'completed', updatedAt: NOW - 50_000 }),
+    task('phonePinned', { stage: 'completed' }),
+    task('live'),
+  ], { snoozed: { 'mac/snoozedDone': NOW + 1000 }, pins: { 'mac/phonePinned': true } }));
+  assert.deepEqual(ids(inbox.archived), ['newer', 'snoozedDone', 'older']);
+  assert.deepEqual(ids(inbox.recent), ['phonePinned', 'live']);
+  assert.deepEqual(inbox.snoozed, []);
+  const folded = inboxItems(inbox, [], {});
+  assert.deepEqual(folded.slice(-1), [{ type: 'head', key: 'h/archived', section: 'archived', count: 3, open: false, computer: undefined }]);
+  const opened = inboxItems(inbox, [], { archived: true });
+  assert.deepEqual(opened.filter(i => i.type === 'row' && i.section === 'archived').map(i => i.key), ['mac/newer', 'mac/snoozedDone', 'mac/older']);
+  // A search opens every section, Archived included.
+  assert.ok(inboxItems(inbox, [], 'all').some(i => i.type === 'row' && i.section === 'archived'));
+});
+
+test('settleTask and reopenTask move a thread into and out of Archived before the next list', () => {
+  const listed = task('t');
+  const lists = { mac: { tasks: [listed], projects: [] } };
+  const settled = settleTask(lists, 'mac', listed);
+  assert.deepEqual(ids(inboxSections(input([], { tasks: settled })).archived), ['t']);
+  assert.equal(lists.mac.tasks[0].stage, undefined, 'the old lists are left alone');
+  // Dropped from the lists meanwhile (archived on this phone): put back, settled.
+  const readded = settleTask({ mac: { tasks: [], projects: [] } }, 'mac', listed);
+  assert.deepEqual(readded.mac?.tasks.map(t => [t.sessionId, t.stage]), [['t', 'completed']]);
+  const reopened = reopenTask(settled, 'mac', 't');
+  const back = inboxSections(input([], { tasks: reopened }));
+  assert.deepEqual(ids(back.archived), []);
+  assert.deepEqual(ids(back.recent), ['t']);
+  assert.equal(reopened.mac?.tasks[0].stage, 'review');
+  // Nothing listed for the computer, or the thread gone: the same object.
+  assert.equal(reopenTask(lists, 'pc', 't'), lists);
+  assert.equal(reopenTask(lists, 'mac', 'gone'), lists);
+});
+
+test('reopenTask can put back the stage the thread had before Archive', () => {
+  const lists = { mac: { tasks: [task('t', { stage: 'completed' })], projects: [] } };
+  assert.equal(reopenTask(lists, 'mac', 't', 'in_progress').mac?.tasks[0].stage, 'in_progress');
+});
+
+test('restoreTask puts back only the refused task: its stage and archived flag, or the task at its old place', () => {
+  const before = task('b', { stage: 'in_progress', archived: false, title: 'Before' });
+  // Still listed (settled meanwhile) with a newer title: only stage and archived roll back.
+  const listed = { mac: { tasks: [task('a', { title: 'News' }), { ...before, stage: 'completed', archived: true, title: 'Renamed' }], projects: [] } };
+  const patched = restoreTask(listed, 'mac', before, 1);
+  assert.deepEqual(patched.mac?.tasks.map(t => [t.sessionId, t.title, t.stage, t.archived]), [['a', 'News', undefined, undefined], ['b', 'Renamed', 'in_progress', false]]);
+  assert.equal(listed.mac.tasks[1].stage, 'completed', 'the old lists are left alone');
+  // Dropped by the archive: back at its index (clamped), other tasks untouched.
+  const dropped = { mac: { tasks: [task('a'), task('c')], projects: [] } };
+  assert.deepEqual(restoreTask(dropped, 'mac', before, 1).mac?.tasks.map(t => t.sessionId), ['a', 'b', 'c']);
+  assert.deepEqual(restoreTask(dropped, 'mac', before, 9).mac?.tasks.map(t => t.sessionId), ['a', 'c', 'b']);
+  assert.equal(restoreTask(dropped, 'pc', before, 0), dropped);
+});
+
+test('offersUnarchive is the one Unarchive rule: a settled task while Archive would be offered', () => {
+  assert.equal(offersUnarchive({ task: undefined }), false);
+  assert.equal(offersUnarchive({ task: { stage: 'review' } }), false);
+  assert.equal(offersUnarchive({ task: { stage: 'completed' } }), true);
+  assert.equal(offersUnarchive({ task: { archived: true }, badge: null }), true);
+  assert.equal(offersUnarchive({ task: { stage: 'completed' }, badge: 'failed' }), true, 'header and row agree on a failed settled task');
+  assert.equal(offersUnarchive({ task: { stage: 'completed' }, status: 'failed' }), true);
+  assert.equal(offersUnarchive({ task: { stage: 'completed' }, status: 'running' }), false);
+  assert.equal(offersUnarchive({ task: { archived: true }, badge: 'approval' }), false);
+});
+
+test('Archive and Delete are offered only when the run neither works nor waits on you', () => {
+  for (const status of ['running', 'waiting']) assert.equal(offersSettle({ status }), false, status);
+  for (const badge of ['working', 'approval', 'question'] as const) assert.equal(offersSettle({ badge }), false, badge);
+  for (const status of ['idle', 'failed', 'stopped', 'interrupted', undefined, null]) assert.equal(offersSettle({ status }), true, String(status));
+  for (const badge of ['failed', 'stopped', 'limited', null, undefined] as const) assert.equal(offersSettle({ badge }), true, String(badge));
+  // A busy signal from either side wins.
+  assert.equal(offersSettle({ status: 'idle', badge: 'approval' }), false);
+  assert.equal(offersSettle({ status: 'running', badge: null }), false);
+  // Badges from real rows: a pending question keeps them hidden, a failure shows them.
+  const inbox = inboxSections(input([
+    task('q', { status: 'waiting', pending: [{ kind: 'input_request', requestId: 'r', text: '?' }] }),
+    task('f', { status: 'failed' }),
+  ]));
+  assert.deepEqual(inbox.needs.map(r => [r.task.sessionId, offersSettle({ badge: r.badge })]), [['q', false], ['f', true]]);
 });

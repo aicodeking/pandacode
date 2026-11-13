@@ -76,6 +76,14 @@
       ],
       "expo-secure-store",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "PandaCode uses the photos you pick as attachments to messages and in moodboards on your computer.",
+          "cameraPermission": "PandaCode uses the camera for photos you attach to messages and add to moodboards on your computer.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-widgets",
         {
           "bundleIdentifier": "com.aicodeking.pandacode.LiveActivity",

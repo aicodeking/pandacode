@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { deleteAccountState } from "./account-delete.ts";
 import { type Bucket, fullBucket, take } from "./bucket.ts";
 import { type Env, fail, json } from "./env.ts";
-import { type DeviceView, errorFrame, forwardFrame, parseClientFrame, presenceFrame, undeliverableFrame } from "./frames.ts";
+import { type DeviceView, errorFrame, forwardFrame, parseClientFrame, presenceFrame, scanSendTarget, undeliverableFrame } from "./frames.ts";
 import { MAX_DEVICES, MAX_PUSH_TOKENS_PER_DEVICE, RATE_LIMITED_PARSE_CHARS } from "./limits.ts";
 import { hostChanged, isStale, keyChanged, tokenCurrent } from "./policy.ts";
 import { deliverPush, parseNotifyBody, parsePushRegistration, shouldNotify, type NotifyBody } from "./push.ts";
@@ -216,8 +216,13 @@ export class Account extends DurableObject<Env> {
     this.buckets.set(att.device, spent.bucket);
     ws.serializeAttachment({ device: att.device, joinedAt: att.joinedAt, ...spent.bucket } satisfies Attachment);
 
-    // Parsed before the bucket check so a small rate-limited send can still name its `to` and `ref`; a large one is not parsed at all.
-    if (!spent.ok && (typeof message !== "string" || message.length > RATE_LIMITED_PARSE_CHARS)) return this.send(ws, errorFrame("rate limit exceeded"));
+    // A rate-limited send must still name its `to` and `ref` so the sender's call fails at once instead of
+    // timing out: a small frame is parsed, a large one only has its ends scanned (bounded work).
+    if (!spent.ok && typeof message !== "string") return this.send(ws, errorFrame("rate limit exceeded"));
+    if (!spent.ok && message.length > RATE_LIMITED_PARSE_CHARS) {
+      const target = scanSendTarget(message as string);
+      return this.send(ws, target ? undeliverableFrame(target.to, "rate", target.ref) : errorFrame("rate limit exceeded"));
+    }
     const frame = parseClientFrame(message);
     if (!spent.ok) {
       return this.send(ws, frame.kind === "send" ? undeliverableFrame(frame.to, "rate", frame.ref) : errorFrame("rate limit exceeded"));

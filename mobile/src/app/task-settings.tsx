@@ -4,7 +4,9 @@ import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState, type ComponentRef, type ReactNode } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Animated, { ReduceMotion, useAnimatedStyle, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
+import { useHostAllows } from '../connect/api/capabilities.ts';
 import { connect } from '../connect/client.ts';
+import { AccessNote } from '../ui/AccessNote.tsx';
 import type { TaskSummary } from '../connect/types.ts';
 import { useConnect } from '../store/index.ts';
 import { Choice } from '../ui/Choice.tsx';
@@ -52,7 +54,9 @@ function Form({ deviceId, sessionId, task, focus }: { deviceId: string; sessionI
   const options = useModelOptions(deviceId, settings.provider);
   const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
   const scrolled = useRef(false);
+  const allowed = useHostAllows(deviceId, 'task.configure');
   const configure = async (change: Partial<Settings>) => {
+    if (!allowed) return;
     const before = settings;
     setSettings(s => ({ ...s, ...change }));
     haptic('selection');
@@ -74,6 +78,7 @@ function Form({ deviceId, sessionId, task, focus }: { deviceId: string; sessionI
   const spotlit = focus === 'effort' && !efforts.length ? 'model' : focus;
   return (
     <ScrollView ref={scroll} style={styles.scroll} contentContainerStyle={[styles.page, { paddingTop: top }]} bounces={false}>
+      <AccessNote device={deviceId} methods={['task.configure']} />
       <Banner visible={!!options.error} tone="danger" title="Couldn't load the agents and models" body={options.error ?? undefined} action={{ label: 'Retry', onPress: options.retry }} />
       <Group title="Model">
         <Row leading={<HarnessLogo id={settings.provider} size={20} />} title="Agent"

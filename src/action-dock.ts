@@ -1,4 +1,6 @@
 import { reducedMotion, springEasing, type Spring } from './motion';
+import { isImeKey } from './dom';
+import { dismissPinnedTip } from './tooltip';
 
 /* The floating action dock (`#action-dock`): the workspace header's actions as one vertical glass
  * pill at the conversation's right edge, centred between the header and the composer (a row in the
@@ -271,6 +273,7 @@ function placement(dock: HTMLElement, ready: () => void) {
 export function mountActionDock(dock: HTMLElement): void {
   let entered = false;
   const tip = tooltip(dock), pill = indicator(dock), place = placement(dock, () => { if (!entered) { entered = true; enterDock(dock); } });
+  let roveFrame = 0;
   const takeTitle = (item: HTMLElement) => { if (item.title) { item.dataset.dockTip = item.title; item.removeAttribute('title'); } };
   for (const item of buttons(dock)) takeTitle(item);
   // Panel toggles say whether their panel is on; a disclosure (aria-expanded) or popup trigger already says it its own way.
@@ -302,7 +305,9 @@ export function mountActionDock(dock: HTMLElement): void {
         else track(item, item.animate([{ opacity: 1, scale: 1, offset: 0 }], { duration: 150, easing: 'ease-out', pseudoElement: '::before' }), '::before');
       }
     }
-    if (structure) { rove(dock); place(); }
+    // The tab stop reads layout (dockItems): with focus elsewhere it waits for the next frame, past a thread switch's own
+    // layout, rather than force one in the task that changed the items.
+    if (structure) { if (dock.contains(document.activeElement)) { cancelAnimationFrame(roveFrame); roveFrame = 0; rove(dock); } else roveFrame ||= requestAnimationFrame(() => { roveFrame = 0; rove(dock); }); place(); }
   }).observe(dock, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class', 'title'], attributeOldValue: true });
 
   let keyboard = false;
@@ -397,6 +402,7 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
     clearTimeout(openTimer); clearTimeout(closeTimer);
     const inside = flyout.contains(document.activeElement) || (document.activeElement === document.body && focusedInside);
     pinned = false;
+    dismissPinnedTip(flyout);
     for (const source of sources()) if (source.isOpen) source.close(false);
     flyout.hidden = true; item.setAttribute('aria-expanded', 'false');
     if (inside && !item.hidden) item.focus({ preventScroll: true });
@@ -445,7 +451,9 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
   });
   // Before the panels' own Escape handlers, and only when no dialog or other menu is above it.
   addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || !isOpen() || event.defaultPrevented) return;
+    if (event.key !== 'Escape' || !isOpen() || event.defaultPrevented || isImeKey(event)) return;
+    // A pinned info tip inside the flyout takes the first Escape; the next one closes the flyout.
+    if (dismissPinnedTip()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if ([...document.querySelectorAll('dialog[open], .floating-menu:not([aria-hidden="true"])')].some(other => !flyout.contains(other))) return;
     event.preventDefault(); event.stopImmediatePropagation();
     const focused = pinned || flyout.contains(document.activeElement) || document.activeElement === item;

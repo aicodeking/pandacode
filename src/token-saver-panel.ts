@@ -5,6 +5,7 @@ import { hidePopover, showPopover } from './popover-motion';
 import { tokenCount } from './model-catalog';
 import { LEVELS, PACKS, contextFor, defaults, estimate, setDefaults, suggestion, threadSaver, updateThread, type PackId } from './token-saver';
 import type { TaskTokenUsage } from './types';
+import { errorText } from './error-text';
 
 /* The composer's Saver control and its panel: per-thread token-saving packs. */
 
@@ -12,6 +13,7 @@ type Tools = { rtk: boolean; rtkVersion: string; rtkInstall: string };
 export type TokenSaverHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   /** The thread's saver changed; the composer redraws its button. */
   changed(sessionId: string): void;
   /** The thread's context reading, when it is the open thread; null otherwise. */
@@ -179,7 +181,7 @@ export function createTokenSaver(host: TokenSaverHost) {
         host.notify(tools.rtk ? `RTK ${tools.rtkVersion} installed and on` : 'RTK is still not available');
       } catch (error) {
         installing = false;
-        host.notify(error instanceof Error ? error.message : String(error));
+        (host.notifyError ?? host.notify)(errorText(error));
       }
       if (panelSession === sessionId) render(sessionId);
     };

@@ -186,6 +186,57 @@ seconds after startup, unless their task is archived or still inside a usage lim
 limit-resume send ends a run, which then delivers the queue). Cloud runs keep going on
 their machines through server restarts.
 
+Unless systemd runs it as a service, `serve` starts the crash guard (once the app is built,
+before its run loop): after a crash it restarts as a plain
+`serve`, appends all its output (including its startup line about the crash, which ends with the
+absolute path of the `crash-reports` folder and so names your home folder, the status line
+with your Connect GitHub login, and error messages, which can name threads and contain
+project and file paths) to
+`serve-restart.log` in the app data folder, and writes a
+local report to `crash-reports/`. The log is owner-only on macOS and Linux (on Windows it gets
+the permissions of the profile folder it is in) and moves to `serve-restart.log.1`
+past 1 MB: the restarted host checks its size every 30 seconds on macOS and Linux, so it
+can pass 1 MB by what it writes in 30 seconds, and opens it again if another process deleted
+it (on Windows the size is checked only when a restart begins). The guard's own few lines go
+to `crash-guard.log` beside it (moved to `crash-guard.log.1` past 1 MB when a guard starts).
+Either log (and its `.1`), once last written more than 90 days ago (or dated more than a day
+ahead), is deleted the next time `serve` (or the desktop app) starts, or within about a day
+while one keeps running, but never by the process whose output it is: a restarted host's
+own `serve-restart.log` is deleted by a later start. Crash reports older than 90 days go the
+same way (also when the guard is off). Its crash history and notice live in `crash-guard-serve.json`, apart from the desktop
+app's `crash-guard.json`, so the two never take each other's notice. On start after a crash it prints one line with the crash time in UTC, such as "PandaCode
+crashed at 2026-11-12 14:32:05 UTC and restarted. Details: <path>" (never the cause).
+`<path>` is that crash's report in the crash-reports folder when the notice names one, otherwise
+the folder. Every line ends with ". Details: <path>". When it was not restarted it says "PandaCode
+crashed at <time> and didn't restart: automatic restarts are off (turn them on in the desktop
+app's Settings, or in crash-restart.json in the data folder)" (the switch was off), "…and didn't
+restart: the restart failed" (starting the restart failed), or "…and didn't restart" for any
+other reason, and "PandaCode kept crashing, last at <time>, and didn't restart; automatic
+restarts resume by <time>" when restarts were paused (crash time plus 10 minutes; "automatic
+restarts are on again" once that time is reached). A `serve` you start by hand during the guard's 1.5-second wait before its restart takes that
+notice at startup and prints the "didn't restart" line, and the guard then starts no second host. A queued message
+lost after a failed launch is logged by id, never its text. A `serve` started under
+`xvfb-run` restarts as `xvfb-run -a … serve` on a fresh display; if there is no `xvfb-run` in
+`/usr/bin` or `/bin` (`PATH` is not searched) the guard stays off and says why. A `serve` that cannot start prints
+"pandacode serve could not start: <error>" and exits with status 1; it is not restarted.
+A restarted host gets its own guard only once its app is built: one that dies before that
+is not restarted again, and the next start prints the "didn't restart" line (when it
+exits within 2 seconds the guard also logs it). The "restarted" line is printed only
+by the host the guard relaunched, once it has taken the notice.
+When systemd runs `serve` as a service there is no guard and the unit's `Restart=` setting
+decides; `serve` logs "Crash guard is off: systemd runs this serve as a service, and
+restarts are left to its Restart= setting." It counts as a service when `INVOCATION_ID` is
+set and either `JOURNAL_STREAM` names its own stdout or stderr or its parent process is
+`systemd` (the parent rule only for a `serve` started without `--crash-restart`). A host the
+guard restarted runs without `INVOCATION_ID` and `JOURNAL_STREAM`, so it is never taken for
+the service and keeps its guard. A `serve` typed into a terminal that itself runs under systemd inherits
+`INVOCATION_ID` but still gets a guard; so does a service that runs `serve` through a
+wrapper script with its output sent away from the journal. Running as process 1 (a container
+without an init) there is no guard either, since nothing outlives it: use the container
+runtime's restart policy. Set `PANDACODE_NO_CRASH_GUARD=1` to turn
+it off.
+See [crash recovery](crash-recovery.md).
+
 ## Maintenance checklist
 
 Anything the frontend does after a run, on a timer, or on boot with real effects needs a

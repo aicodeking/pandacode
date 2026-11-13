@@ -3,7 +3,7 @@
 import { LIBRARY_DIR } from './preview-skill-manager';
 import type { SkillActivation, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
 
-const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse', 'devin', 'zcode', 'hermes']);
+const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse', 'devin', 'zcode', 'hermes']);
 const FILES = ['claude', 'codex'];
 const PROJECT_ROOT = '/Users/you/Projects/orbit';
 

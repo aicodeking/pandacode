@@ -1,3 +1,4 @@
+import { subscribe } from './bridge';
 import { escape, icon } from './dom';
 import { showPopover, hidePopover } from './popover-motion';
 import type { TerminalActivity, TerminalContext, TerminalController } from './terminal';
@@ -5,6 +6,9 @@ import './terminal-panel.css';
 
 type Tab = { id: string; title: string; context: TerminalContext; label: string; host: HTMLElement; ready: Promise<void>; controller?: TerminalController; removed: boolean };
 type Group = { tabs: Tab[]; active?: string; open: boolean; sequence: number };
+/** lib.rs `start_terminal` announces every shell, including ones a phone opens over PandaConnect. */
+type TerminalOpened = { terminalId: string; projectId: string; sessionId?: string | null };
+const listen = subscribe as unknown as (name: 'terminal-opened', callback: (event: TerminalOpened) => void) => Promise<() => void>;
 
 /** PTYs belong to tasks, not to the currently visible drawer. Hidden tabs keep output. */
 export class TerminalPanel {
@@ -17,8 +21,12 @@ export class TerminalPanel {
   private dismiss?: () => void;
   private tabs: HTMLElement;
   private tabsMarkup = '';
+  /** Starts in flight here: their `terminal-opened` arrives before their ID does. */
+  private starting = 0;
+  private opened: TerminalOpened[] = [];
   constructor(private drawer: HTMLElement, private host: HTMLElement, private report: (error: unknown) => void) {
     this.tabs = drawer.querySelector<HTMLElement>('[role="tablist"]')!;
+    void listen('terminal-opened', event => { this.opened.push(event); this.adoptOpened(); }).catch(report);
     drawer.addEventListener('click', event => {
       const target = (event.target as Element).closest<HTMLElement>('[data-terminal-action]');
       if (!target) return;
@@ -45,6 +53,7 @@ export class TerminalPanel {
   select(context: TerminalContext | undefined, label: string): void {
     const key = context ? context.sessionId ?? `project:${context.projectId}` : '';
     this.context = context; this.label = label;
+    for (const tab of this.groups.get(key)?.tabs ?? []) tab.label ||= label;
     if (key === this.key) return;
     this.cancelClose(); this.key = key; this.paint();
   }
@@ -97,6 +106,7 @@ export class TerminalPanel {
       context: { ...this.context, ...(harness ? { harness } : {}), ...(runScript ? { runScript: true, runRequestId: requestId } : {}) }, host, removed: false, ready: Promise.resolve() };
     group.tabs.push(tab); group.active = id; group.open = true; this.paint();
     const owner = group;
+    ++this.starting;
     tab.ready = (async () => {
       try {
         const { mountTerminal } = await import('./terminal');
@@ -112,9 +122,50 @@ export class TerminalPanel {
         if (runScript) throw error;
         // A delayed startup failure in another task must not replace this pane.
         if (this.key === key) this.report(error);
-      }
+      } finally { --this.starting; this.adoptOpened(); }
     })();
     await tab.ready;
+  }
+  /** Shows shells opened elsewhere (a phone) as tabs in their task, replaying their output. */
+  private adoptOpened(): void {
+    if (this.starting) return;
+    const owned = new Set<string>();
+    for (const group of this.groups.values()) for (const tab of group.tabs) {
+      const id = tab.controller?.terminalId ?? tab.context.attachTerminalId;
+      if (id) owned.add(id);
+    }
+    const opened = this.opened; this.opened = [];
+    for (const event of opened) if (!owned.has(event.terminalId)) { owned.add(event.terminalId); this.attach(event); }
+  }
+  private attach(event: TerminalOpened): void {
+    const key = event.sessionId ?? `project:${event.projectId}`;
+    let group = this.groups.get(key);
+    if (!group) { group = { tabs: [], open: false, sequence: 0 }; this.groups.set(key, group); }
+    const host = document.createElement('div'); host.className = 'terminal-tab-surface';
+    const id = `terminal-tab-${crypto.randomUUID()}`;
+    host.id = id; host.setAttribute('role', 'tabpanel'); host.setAttribute('aria-labelledby', `${id}-label`);
+    host.textContent = 'Connecting to terminal…'; this.host.append(host);
+    const context: TerminalContext = { projectId: event.projectId, ...(event.sessionId ? { sessionId: event.sessionId } : {}), attachTerminalId: event.terminalId };
+    const tab: Tab = { id, title: `Terminal ${++group.sequence} (phone)`, label: key === this.key ? this.label : '', context, host, removed: false, ready: Promise.resolve() };
+    // Never steal the drawer: the tab waits in its task, shown when the user opens terminals.
+    group.tabs.push(tab); group.active ??= id; this.paint();
+    const owner = group;
+    tab.ready = (async () => {
+      try {
+        const { mountTerminal } = await import('./terminal');
+        if (tab.removed) return;
+        host.replaceChildren();
+        const controller = await mountTerminal(host, context, this.report);
+        if (tab.removed) { await controller.dispose(); return; }
+        tab.controller = controller;
+        if (this.key === key) this.paint();
+      } catch (error) {
+        // Usually the shell closed before it could be shown. The phone opened it, so
+        // a dialog here would be noise; log it instead.
+        if (!tab.removed) await this.remove(owner, tab);
+        console.warn('Could not show a terminal opened from another device.', error);
+      }
+    })();
   }
   private focus(): void { this.active()?.controller?.focus(); }
   private cancelClose(): void { ++this.epoch; this.dismiss?.(); this.dismiss = undefined; }
@@ -161,7 +212,7 @@ export class TerminalPanel {
     this.drawer.hidden = !this.open;
     for (const owner of this.groups.values()) for (const tab of owner.tabs) tab.host.hidden = owner !== group || tab !== active;
     const label = this.drawer.querySelector<HTMLElement>('#terminal-project')!;
-    label.textContent = active?.label ?? this.label;
+    label.textContent = active?.label || this.label;
     label.title = active?.host.dataset.terminalSettings ? `Appearance from ${active.host.dataset.terminalSettings}` : '';
     const markup = (group?.tabs ?? []).map(tab => `<div class="terminal-tab${tab === active ? ' selected' : ''}"><button role="tab" id="${tab.id}-label" aria-controls="${tab.id}" aria-selected="${tab === active}" tabindex="${tab === active ? 0 : -1}" data-terminal-action="select" data-tab="${tab.id}">${escape(tab.title)}</button><button class="icon-button" aria-label="Close ${escape(tab.title)}" data-terminal-action="close" data-tab="${tab.id}">${icon('close')}</button></div>`).join('');
     if (markup !== this.tabsMarkup) { this.cancelClose(); this.tabsMarkup = markup; this.tabs.innerHTML = markup; }

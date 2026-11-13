@@ -1,5 +1,6 @@
 import './thread-tiles.css';
 import { escape, icon } from './dom';
+import { ROWS_MARGIN } from './transcript-rows';
 import { MAX_TILES, tileAt, tileRects, tilesThatFit, type TileRect } from './tile-layout';
 
 /** Up to six threads tiled in the thread area (`.work-area`). The focused tile is the real thread: the one
@@ -22,6 +23,8 @@ export interface TileHost {
   draw(id: string, rows: HTMLElement, scroller: HTMLElement): void;
   /** Releases the read-only page when its tile leaves the layout. */
   drop(id: string): void;
+  /** The reader neared the top of a view: draws more of its older turns, holding their place. */
+  more(id: string, rows: HTMLElement, scroller: HTMLElement): void;
   /** The thread's scene, in its tile. */
   scene(tile: HTMLElement, id: string): { setThread(id: string | null): void; refresh(): void; dispose(): void };
   notify(text: string): void;
@@ -84,7 +87,7 @@ export function mountThreadTiles(host: TileHost) {
     });
     quiet.observe(scroller, { childList: true });
     tile.resize.observe(scroller);
-    scroller.addEventListener('scroll', () => { tile.stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48; }, { passive: true });
+    scroller.addEventListener('scroll', () => { tile.stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48; if (!tile.stick && scroller.scrollTop < ROWS_MARGIN) host.more(id, rows, scroller); }, { passive: true });
     el.addEventListener('click', event => {
       const target = event.target as Element;
       event.stopPropagation();

@@ -5,9 +5,16 @@ mod account_sign_in;
 mod agent_tools;
 mod agents_dock;
 mod agent_usage;
+mod agent_usage_claude;
+mod agent_usage_claude_env;
+mod agent_usage_claude_limits;
+mod agent_usage_claude_remote;
+mod agent_usage_claude_store;
 mod agent_updates;
 mod agent_usage_providers;
 mod memory;
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod app_updates;
 mod appearance;
 mod architect;
@@ -18,6 +25,7 @@ mod child_env;
 mod checks;
 mod code_search;
 mod connections;
+mod crash_guard;
 mod command_operations;
 mod context_recovery;
 mod conversation_fork;
@@ -39,6 +47,8 @@ mod cloud_agents;
 mod capabilities;
 mod vsix_themes;
 mod token_saver;
+mod tool_images;
+mod tool_images_auth;
 mod task_usage;
 mod skill_manager;
 mod skills;
@@ -76,14 +86,19 @@ mod turn_changes;
 mod usage_keychain;
 mod usage_ledger;
 mod workspace;
+mod worker_approvals;
+mod run_requests;
+use run_requests::{lock_agents, record_request_event, run_end, settle_account_switch, show_settled_stop};
 mod jj;
 mod tray;
 mod headless;
+mod quit_guard;
 mod headless_bots;
 
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
+pub use crash_guard::handle as handle_crash_guard;
 pub use voice::local::handle_speech_worker;
 
 use providers::{AgentEvent, RunConfig, RunInput};
@@ -114,6 +129,8 @@ struct RunningAgent {
     last_event: Arc<std::sync::atomic::AtomicI64>,
     /// A maintenance command on a team's lead: Stop ends this run and leaves the team alone.
     team_maintenance: bool,
+    /// A team worker's launch: only its stops are kept for the team's settle (`worker_approvals`).
+    team_worker: bool,
 }
 impl RunningAgent {
     fn new(input: UnboundedSender<RunInput>, stopped: Arc<AtomicBool>) -> Self {
@@ -122,6 +139,7 @@ impl RunningAgent {
             stopped,
             run_id: uuid::Uuid::new_v4().to_string(),
             team_maintenance: false,
+            team_worker: false,
             approvals: Arc::new(Mutex::new(HashSet::new())),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             started_at_ms: storage::now(),
@@ -186,6 +204,11 @@ impl RunningAgent {
     ) -> std::result::Result<(), tokio::sync::mpsc::error::SendError<RunInput>> {
         if matches!(input, RunInput::Stop) {
             self.stopped.store(true, Ordering::SeqCst);
+            // A user's or team's stop of a worker launch (the automatic worker stop sends on the
+            // input directly). Other agents never settle through the team, so they keep nothing.
+            if self.team_worker {
+                worker_approvals::stopped_by_owner(&self.run_id);
+            }
         } else {
             // An answered approval or question restarts the silence clock.
             self.last_event.store(storage::now(), Ordering::SeqCst);
@@ -205,12 +228,26 @@ fn save_approval(
     save_approval_with_pending(store, approvals, None, run_id, activity)
 }
 
+/// The pending-request save with the task status following it (tests use it directly).
+#[cfg(test)]
 fn save_approval_with_pending(
     store: &Mutex<Store>,
     approvals: &Mutex<HashSet<String>>,
     pending_requests: Option<&Mutex<HashMap<String, AgentEvent>>>,
     run_id: &str,
     activity: &mut AgentEvent,
+) -> Result<()> {
+    save_pending_request(store, approvals, pending_requests, run_id, activity, true)
+}
+
+/// `write_status`: whether the task's running/waiting status follows the pending list.
+fn save_pending_request(
+    store: &Mutex<Store>,
+    approvals: &Mutex<HashSet<String>>,
+    pending_requests: Option<&Mutex<HashMap<String, AgentEvent>>>,
+    run_id: &str,
+    activity: &mut AgentEvent,
+    write_status: bool,
 ) -> Result<()> {
     let request_id = activity
         .request_id
@@ -221,6 +258,9 @@ fn save_approval_with_pending(
     let mut approvals = approvals.lock().map_err(|error| error.to_string())?;
     let mut pending_requests = pending_requests.map(|requests| requests.lock().map_err(|error| error.to_string())).transpose()?;
     update_pending_request(&mut approvals, pending_requests.as_deref_mut(), &request_id, activity);
+    if !write_status {
+        return Ok(());
+    }
     store.lock().map_err(|error| error.to_string())?.status(
         &activity.session_id,
         if approvals.is_empty() {
@@ -229,6 +269,49 @@ fn save_approval_with_pending(
             "waiting"
         },
     )
+}
+
+/// What a run keeps outside its registry entry: its `worker_approvals` run state, its decline
+/// reasons and (for a team worker) its launch prompt. Dropped before the run settles (an early
+/// return, a cloud run left re-attachable at shutdown, a panic), it forgets all three, so no
+/// path out of the run task can leak them.
+struct RunLeftovers {
+    run_id: String,
+    session_id: String,
+    settled: bool,
+}
+
+impl RunLeftovers {
+    /// The run settles: `settle_run` takes its run state and the team's `completed` its launch
+    /// prompt; no decline reason can be claimed once the run has ended.
+    fn settle(&mut self, stopped: bool) -> worker_approvals::Settled {
+        self.settled = true;
+        let settled = worker_approvals::settle_run(&self.run_id, stopped);
+        providers::forget_decline_reasons(&self.session_id);
+        providers::clear_worker_run(&self.session_id, &self.run_id);
+        settled
+    }
+}
+
+impl Drop for RunLeftovers {
+    fn drop(&mut self) {
+        if !self.settled {
+            worker_approvals::forget_run(&self.run_id);
+            architect::forget_launch(&self.session_id);
+            providers::forget_decline_reasons(&self.session_id);
+            providers::clear_worker_run(&self.session_id, &self.run_id);
+        }
+    }
+}
+
+/// Whether a run is a team worker's: its team admission says so when there is one, otherwise
+/// (a re-attached cloud run) the session's own worker row does. The run's agent and its sink
+/// both use this one answer, so a worker's requests never wait on a person on any launch path.
+fn worker_launch(store: &Store, team: Option<&architect::Admission>, session_id: &str) -> Result<bool> {
+    match team {
+        Some(_) => Ok(worker_approvals::is_worker_launch(team, session_id)),
+        None => Ok(architect::parent_of(store, session_id)?.is_some()),
+    }
 }
 
 fn update_pending_request(
@@ -259,33 +342,8 @@ fn remove_pending_request(
 }
 
 #[cfg(test)]
-mod pending_request_tests {
-    use super::*;
-
-    #[test]
-    fn remote_pending_request_payloads_are_added_and_cancelled_with_the_approval_id() {
-        let request_id = "run-id:provider-id";
-        let mut approvals = HashSet::new();
-        let mut pending = HashMap::new();
-        let request = AgentEvent {
-            session_id: "task-id".into(),
-            kind: "input_request".into(),
-            text: "Choose one".into(),
-            request_id: Some(request_id.into()),
-            data: Some(serde_json::json!({"questions": [{"question": "Which?"}]})),
-            tool: None,
-        };
-        update_pending_request(&mut approvals, Some(&mut pending), request_id, &request);
-        assert!(approvals.contains(request_id));
-        assert_eq!(pending.get(request_id).unwrap().text, "Choose one");
-        assert_eq!(pending.get(request_id).unwrap().data, request.data);
-
-        let cancelled = AgentEvent { kind: "input_cancelled".into(), ..request };
-        update_pending_request(&mut approvals, Some(&mut pending), request_id, &cancelled);
-        assert!(!approvals.contains(request_id));
-        assert!(!pending.contains_key(request_id));
-    }
-}
+#[path = "lib_tests/pending_requests.rs"]
+mod pending_request_tests;
 
 #[cfg(test)]
 mod concurrent_task_tests;
@@ -367,6 +425,36 @@ mod task_agent_tests {
         assert_eq!(switch.kind, "note");
         assert_eq!(switch.text, body);
         assert_eq!(switch.data.unwrap()["accountPool"]["connectionId"], "b");
+    }
+
+    #[test]
+    fn dismiss_error_event_carries_its_saved_row_id() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let assistant = Mutex::new(String::new());
+        let mut first = event(&task.id, "error", "boom");
+        save_agent_activity(&store, &assistant, &mut first, None).unwrap();
+        let mut repeat = event(&task.id, "error", "boom");
+        repeat.data = Some(serde_json::json!({"code": 7}));
+        save_agent_activity(&store, &assistant, &mut repeat, None).unwrap();
+        let mut odd = event(&task.id, "error", "boom");
+        odd.data = Some(serde_json::json!("opaque"));
+        save_agent_activity(&store, &assistant, &mut odd, None).unwrap();
+        let ids: Vec<i64> = store.message_page(&task.id, None).unwrap().messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(first.data.unwrap()["messageId"], ids[0]);
+        let repeat = repeat.data.unwrap();
+        assert_eq!((repeat["messageId"].as_i64(), repeat["code"].as_i64()), (Some(ids[1]), Some(7)));
+        assert_eq!(odd.data, Some(serde_json::json!("opaque")));
+        // Only error events get an id; a failed write leaves the event without one.
+        let mut note = event(&task.id, "note", "fine");
+        save_agent_activity(&store, &assistant, &mut note, None).unwrap();
+        assert!(note.data.is_none());
+        store.db.execute_batch("CREATE TRIGGER reject_error BEFORE INSERT ON messages WHEN NEW.role='error' BEGIN SELECT RAISE(ABORT,'nope'); END;").unwrap();
+        let mut unsaved = event(&task.id, "error", "boom");
+        assert!(save_agent_activity(&store, &assistant, &mut unsaved, None).is_err());
+        assert!(unsaved.data.is_none());
     }
 
     #[test]
@@ -699,7 +787,7 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
 }
 #[tauri::command]
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     for session_id in agents.keys() {
         if store.session(session_id)?.project_id == project_id {
@@ -745,9 +833,14 @@ async fn relink_project(state: State<'_, AppState>, project_id: String, path: St
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
     listed_sessions(&state)
 }
+/// The ids among `ids` with no task row at all (launch restore drops their saved drafts).
+#[tauri::command]
+async fn sessions_missing(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<String>> {
+    state.store.lock().map_err(|e| e.to_string())?.missing_sessions(&ids)
+}
 /// Tasks as the sidebar shows them, with stale running states settled.
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(store
         .sessions()?
@@ -778,6 +871,11 @@ async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_
     Ok(task)
 }
 #[tauri::command]
+async fn dismiss_error_messages(state: State<'_, AppState>, session_id: String, ids: Vec<i64>) -> Result<usize> {
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.dismiss_error_messages(&session_id, &ids)).await
+}
+#[tauri::command]
 async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, session_ids: Vec<String>) -> Result<Vec<Session>> {
     let store = state.store.clone();
     let tasks = blocking(move || store.lock().map_err(|e| e.to_string())?.reorder_sessions(&session_ids)).await?;
@@ -786,7 +884,7 @@ async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, ses
 }
 #[tauri::command]
 async fn get_task(state: State<'_, AppState>, session_id: String) -> Result<Session> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(reconcile_inactive_task(
         &store,
@@ -809,6 +907,8 @@ async fn configure_window_appearance(
     )
     .await
 }
+// Each argument is a field of the `create_session` IPC call.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_session(
     state: State<'_, AppState>,
@@ -817,16 +917,19 @@ async fn create_session(
     model: String,
     mode: Option<String>,
     draft: Option<bool>,
+    team: Option<bool>,
+    main_session_id: Option<String>,
 ) -> Result<Session> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let task = architect::profiles::create_user_task(
-        &store,
-        &project_id,
-        &provider,
-        &model,
-        mode.as_deref(),
-        None,
-    )?;
+    // A /btw side thread names its main thread, so a team worker's full access stays out of it.
+    let mode = architect::side_thread_mode(&store, main_session_id.as_deref(), mode)?;
+    // `team: false` (a /btw side thread) skips the saved default team.
+    let create = if team.unwrap_or(true) {
+        architect::profiles::create_user_task
+    } else {
+        architect::profiles::create_task_without_team
+    };
+    let task = create(&store, &project_id, &provider, &model, mode.as_deref(), None)?;
     if draft.unwrap_or(false) {
         store.mark_draft(&task.id)
     } else {
@@ -877,7 +980,7 @@ async fn update_task_details(
     title: String,
     description: String,
 ) -> Result<Session> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before editing its task details.".into());
     }
@@ -895,7 +998,7 @@ async fn set_task_stage(
     stage: String,
 ) -> Result<Session> {
     let task = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         if agents.contains_key(&session_id) {
             return Err("Stop the agent before changing its task stage.".into());
         }
@@ -922,7 +1025,7 @@ async fn configure_session(
         remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
@@ -943,7 +1046,7 @@ async fn set_reasoning_effort(
     remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"effort": reasoning_effort})).await?;
     // Match send/configure's lock order so a send cannot capture the old
     // configuration halfway through a settings change.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
@@ -980,7 +1083,7 @@ async fn update_session(
             return task_controls::rename_task(&state, &session_id, title).await;
         }
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its model or permissions.".into());
     }
@@ -1028,7 +1131,7 @@ async fn get_subagent(
 }
 
 fn live_subagents(state: &AppState, session_id: &str) -> Result<Option<Arc<Mutex<subagent_state::SubagentState>>>> {
-    Ok(state.agents.lock().map_err(|error| error.to_string())?.get(session_id).map(|agent| agent.subagents.clone()))
+    Ok(lock_agents(&state.agents).map_err(|error| error.to_string())?.get(session_id).map(|agent| agent.subagents.clone()))
 }
 
 /// A task's children as list rows. Live snapshots are read after the store, so stale disk data
@@ -1036,7 +1139,7 @@ fn live_subagents(state: &AppState, session_id: &str) -> Result<Option<Arc<Mutex
 fn task_subagents(state: &AppState, session_id: &str) -> Result<Vec<subagent_state::SubagentRow>> {
     let live = {
         // Held only when no run owns the task, so none can start while its children are settled.
-        let agents = state.agents.lock().map_err(|error| error.to_string())?;
+        let agents = lock_agents(&state.agents).map_err(|error| error.to_string())?;
         let live = agents.get(session_id).map(|agent| agent.subagents.clone());
         if live.is_none() {
             let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -1148,6 +1251,18 @@ fn bounded_tail(text: &mut String, limit: usize) {
             i += 1;
         }
         text.drain(..i);
+    }
+}
+
+/// Adds `messageId` to an event's data object (kept when it has other fields); data that is
+/// not an object is left alone, so the event simply has no id.
+fn attach_message_id(activity: &mut AgentEvent, id: i64) {
+    match activity.data.as_mut() {
+        None => activity.data = Some(serde_json::json!({ "messageId": id })),
+        Some(serde_json::Value::Object(data)) => {
+            data.insert("messageId".into(), id.into());
+        }
+        Some(_) => {}
     }
 }
 
@@ -1286,7 +1401,14 @@ fn save_agent_activity(
                 .and_then(|content| db.tool_message(&activity.session_id, &tool.id, &content))
             } else {
                 bounded_tail(&mut activity.text, 8192);
-                db.message(&activity.session_id, &activity.kind, &activity.text)
+                db.insert_message(&activity.session_id, &activity.kind, &activity.text)
+                    .map(|id| {
+                        // The window dismisses a live error by its saved row (dismiss_error_messages);
+                        // an error never saved carries no id.
+                        if activity.kind == "error" {
+                            attach_message_id(activity, id);
+                        }
+                    })
             };
             // Keep recording tool/error activity if a response write fails,
             // while still surfacing that persistence error to the turn owner.
@@ -1578,6 +1700,8 @@ struct PreparedRun {
     assistant: Arc<Mutex<String>>,
     last_event: Arc<std::sync::atomic::AtomicI64>,
     team: Option<architect::Admission>,
+    /// A team worker's run (`worker_launch`): its requests are resolved, never surfaced.
+    team_worker: bool,
 }
 
 #[cfg(test)]
@@ -1609,7 +1733,7 @@ fn prepare_task_run_in_project(
     stopped: Arc<AtomicBool>,
     admission: RunAdmission<'_>,
 ) -> Result<PreparedRun> {
-    let mut agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let mut agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     agent_updates::ensure_not_installing()?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
@@ -1787,9 +1911,13 @@ fn prepare_task_run_in_project(
         goal: admission.goal,
         codex_settings: session.codex_settings,
     };
-    architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
+    // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
+    let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
+    architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
     let mut agent = RunningAgent::new(tx, stopped.clone());
     agent.team_maintenance = team_maintenance;
+    agent.team_worker = team_worker;
+    let agent_is_worker = agent.team_worker;
     let run_id = agent.run_id.clone();
     let pending_approvals = agent.approvals.clone();
     let pending_requests = agent.pending_requests.clone();
@@ -1810,6 +1938,7 @@ fn prepare_task_run_in_project(
         assistant,
         last_event,
         team: admission.team,
+        team_worker: agent_is_worker,
     })
 }
 
@@ -1844,7 +1973,9 @@ fn prepare_cloud_attach(
         goal: None,
         codex_settings: session.codex_settings,
     };
-    let agent = RunningAgent::new(tx, stopped);
+    let mut agent = RunningAgent::new(tx, stopped);
+    // A re-attached run has no team admission: whether it is a worker's comes from the store.
+    agent.team_worker = worker_launch(store, None, &session_id)?;
     let prepared = PreparedRun {
         config,
         restore_stage: None,
@@ -1858,6 +1989,7 @@ fn prepare_cloud_attach(
         assistant: agent.assistant.clone(),
         last_event: agent.last_event.clone(),
         team: None,
+        team_worker: agent.team_worker,
     };
     agents.insert(session_id, agent);
     Ok(prepared)
@@ -2087,6 +2219,8 @@ async fn launch_operation_admitted(
         })
         .collect::<Result<Vec<_>>>()?;
     let (tx, rx) = unbounded_channel();
+    // The run's own input, for a team worker request that must stop this run and no other.
+    let own_input = tx.downgrade();
     let stopped = Arc::new(AtomicBool::new(false));
     let PreparedRun {
         mut config,
@@ -2101,6 +2235,7 @@ async fn launch_operation_admitted(
         assistant,
         last_event,
         team,
+        team_worker,
     } = prepare_task_run_in_project(
         &state,
         session_id.clone(),
@@ -2158,8 +2293,7 @@ async fn launch_operation_admitted(
         config.prompt.push_str(&title.instruction());
     }
     if restore_stage.is_none() {
-        let worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
+        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
         if providers::takes_system_instructions(&config.provider) {
             // Cached with the system prompt: paid once, then read at a tenth of the price.
             config.instructions = instructions;
@@ -2202,12 +2336,24 @@ async fn launch_operation_admitted(
         let assistant_sink = assistant.clone();
         let store_sink = store.clone();
         let app_sink = app.clone();
-        let pending_requests_sink = pending_requests.clone();
         let subagents_sink = subagents.clone();
         let goal_reply_sink = goal_reply.clone();
         let goal_agents_sink = agents.clone();
         let native_turn_sink = Mutex::new(String::new());
         let team_sink = team.clone();
+        // The run's own ID for its end, after the sink takes `run_id`.
+        let settle_id = run_id.clone();
+        // Whatever ends this task before the run settles forgets what was kept for the run.
+        let mut leftovers = RunLeftovers { run_id: run_id.clone(), session_id: session_id.clone(), settled: false };
+        // PandaCode's tool hosts refuse a worker's always-ask tools by this mark.
+        providers::mark_worker_run(&session_id, &run_id, team_worker);
+        let own_run = worker_approvals::Run {
+            id: run_id.clone(),
+            input: own_input.clone(),
+            stopped: stopped.clone(),
+            approvals: pending_approvals.clone(),
+            requests: pending_requests.clone(),
+        };
         let coalescer = Arc::new(Mutex::new(providers::Coalescer::default()));
         let coalescer_sink = coalescer.clone();
         let sink: providers::Sink = Arc::new(move |mut e: AgentEvent| {
@@ -2256,6 +2402,21 @@ async fn launch_operation_admitted(
                     }
                 });
             }
+            if e.kind == providers::ACCOUNT_SWITCHED {
+                // Any run: the old account's requests can no longer be answered, so their cards go.
+                let cancelled = settle_account_switch(&store_sink, &own_run, &e.session_id);
+                if !cancelled.is_empty() {
+                    for event in cancelled {
+                        emit_coalesced(&app_sink, &coalescer_sink, event);
+                    }
+                    tray::refresh(&app_sink);
+                }
+                return;
+            }
+            if e.kind == providers::UNANSWERED_APPROVAL {
+                worker_approvals::stop_unanswered(team_worker, &own_run, &e);
+                return;
+            }
             if e.kind == "text" {
                 if let Ok(mut text) = assistant_sink.lock() {
                     text.push_str(&e.text);
@@ -2271,10 +2432,12 @@ async fn launch_operation_admitted(
                     e.kind.as_str(),
                     "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
                 ) {
-                    let saved = save_approval_with_pending(&store_sink, &pending_approvals, Some(&pending_requests_sink), &run_id, &mut e);
+                    // Locks `agents`: this sink is never called with that lock held (see its doc).
+                    let saved = record_request_event(&store_sink, &own_run, team_worker, &goal_agents_sink, &mut e);
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {
-                            bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
+                            let lasting_only = e.data.as_ref().is_some_and(|data| data[providers::LASTING_ONLY] == true);
+                            bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text, lasting_only);
                         }
                         tray::refresh(&app_sink);
                     }
@@ -2292,7 +2455,7 @@ async fn launch_operation_admitted(
                         *slot = Some(error);
                     }
                     if matches!(e.kind.as_str(), "goal" | "goal_input") {
-                        if let Ok(registry) = goal_agents_sink.lock() {
+                        if let Ok(registry) = lock_agents(&goal_agents_sink) {
                             if let Some(agent) = registry.get(&e.session_id) {
                                 let _ = agent.send(RunInput::Stop);
                             }
@@ -2386,6 +2549,8 @@ async fn launch_operation_admitted(
         // The harness and model this run used, for model health.
         let ran = (config.provider.clone(), config.model.clone());
         let reached_harness = Arc::new(AtomicBool::new(false));
+        // Set by the run's own loop when it takes a stop (`providers::stop_taken`).
+        let loop_took_stop = Arc::new(AtomicBool::new(false));
         let result = if stopped.load(Ordering::SeqCst) {
             Ok(())
         } else if team_tools_missing {
@@ -2394,14 +2559,15 @@ async fn launch_operation_admitted(
                     .into(),
             )
         } else {
-            providers::run_with_tools(config, sink, rx, host, reached_harness.clone()).await
+            providers::run_with_tools_reporting(config, sink, rx, host, reached_harness.clone(), loop_took_stop.clone()).await
         };
         flush_coalesced(&app, &coalescer);
         if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             // The remote run continues; the next launch re-attaches to it.
-            if let Ok(mut registry) = agents.lock() {
+            if let Ok(mut registry) = lock_agents(&agents) {
                 registry.remove(&session_id);
             }
+            // This run's own entries, whichever run the registry held, go with `leftovers`.
             return;
         }
         if let Ok(mut slot) = goal_reply.lock() {
@@ -2446,7 +2612,7 @@ async fn launch_operation_admitted(
             }
             let unfinished = store.lock().ok().and_then(|db| cloud_agents::load(&db, &session_id).ok().flatten()).is_some_and(|cloud| cloud.active());
             if unfinished && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
-                if let Ok(mut registry) = agents.lock() {
+                if let Ok(mut registry) = lock_agents(&agents) {
                     registry.remove(&session_id);
                 }
                 return;
@@ -2454,8 +2620,22 @@ async fn launch_operation_admitted(
         }
         // Match the registry -> store lock order used for Start and Stop. Stop
         // cannot arrive between the final stage decision and registry removal.
-        let mut registry = agents.lock().ok();
-        let was_stopped = stopped.load(Ordering::SeqCst);
+        let mut registry = lock_agents(&agents).ok();
+        // A team worker stopped for a request it could not resolve fails with that reason, unless
+        // its harness finished the turn first. Settled by this run's own ID, registered or not, so
+        // nothing kept for it outlives the run.
+        if loop_took_stop.load(Ordering::SeqCst) {
+            worker_approvals::stop_taken(&settle_id);
+        }
+        let mut settled = leftovers.settle(stopped.load(Ordering::SeqCst));
+        // The team stopped this worker itself (without a stop through its agent, or before the
+        // automatic one): every client then reads it as stopped, as the team does.
+        if settled.reason.is_some() && store.lock().ok().is_some_and(|db| architect::stopped_by_team(&db, team.as_ref(), &session_id)) {
+            settled = worker_approvals::Settled { stopped: true, ..Default::default() };
+        }
+        let (unresolved, was_stopped) = (settled.reason.clone(), settled.stopped);
+        // The automatic stop's notes and error appear only now that it is confirmed.
+        show_settled_stop(&app, &store, settled);
         // Provider completion revokes callbacks too; a delayed collaboration/MCP
         // request must not write into the next run while the team remains active.
         stopped.store(true, Ordering::SeqCst);
@@ -2463,12 +2643,21 @@ async fn launch_operation_admitted(
         // Only the harness's own outcome counts for model health (Settings → Model routing): a stop
         // says nothing, and PandaCode's own failures before the harness (validation, attachments,
         // connections, team tools) are not the model's.
+        // A worker PandaCode stopped for an unresolvable request is not the model's failure either.
         let provider_error = match &result {
-            Err(error) if !was_stopped && reached_harness.load(Ordering::SeqCst) => Some(error.to_string()),
+            Err(error) if !was_stopped && unresolved.is_none() && reached_harness.load(Ordering::SeqCst) => Some(error.to_string()),
             _ => None,
         };
+        // Decided once here and handed to the team (`RunEnd::Harness`), so both agree.
+        let mut effort_relaunch = false;
         if let Some(error) = &provider_error {
-            model_health::record_failure(&ran.0, &ran.1, error);
+            // A reasoning effort a worker's harness refused at startup says nothing about the
+            // model: the team relaunches the worker without it.
+            let counts = store.lock().map_or(true, |db| architect::counts_against_model(&db, team.as_ref(), &session_id, error));
+            effort_relaunch = !counts;
+            if counts {
+                model_health::record_failure(&ran.0, &ran.1, error);
+            }
         } else if successful {
             model_health::record_success(&ran.0, &ran.1);
         }
@@ -2533,10 +2722,12 @@ async fn launch_operation_admitted(
                     }
                 }
             }
+            // A worker stopped for a request it could not resolve is saved as failed, as every
+            // other client shows it (`run_end`), not as interrupted.
             if let Err(error) = db.finish_task_operation(
                 &session_id,
                 successful,
-                was_stopped,
+                run_end(successful, was_stopped, unresolved.is_some()).0,
                 restore_stage.as_deref(),
             ) {
                 successful = false;
@@ -2594,17 +2785,11 @@ async fn launch_operation_admitted(
                 memory::release_soon();
             }
         }
-        let done = if was_stopped {
-            "Turn stopped"
-        } else if successful {
-            "Turn complete"
-        } else {
-            "Turn failed"
-        };
+        let (ended_stopped, done) = run_end(successful, was_stopped, unresolved.is_some());
         // Before `done`, so the window's tray_seen for the open task lands after it.
-        tray::finished(&app, &session_id, was_stopped, successful);
+        tray::finished(&app, &session_id, ended_stopped, successful);
         let _ = app.emit("agent-event", event(&session_id, "done", done));
-        remote::run_finished(&app, &session_id, successful, was_stopped, done);
+        remote::run_finished(&app, &session_id, successful, ended_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).
         let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
         // Settled machine threads wake this task now that it is idle.
@@ -2638,7 +2823,12 @@ async fn launch_operation_admitted(
         // Read before the team scheduler can start this task's next turn.
         let launch = providers::warm_epoch(&session_id);
         if let Some(registry) = registry.as_ref() {
-            architect::completed(&app, &session_id, team.as_ref(), successful, was_stopped, provider_error.as_deref(), registry);
+            let end = match (&unresolved, &provider_error) {
+                (Some(reason), _) => architect::RunEnd::Unresolved(reason),
+                (None, Some(error)) => architect::RunEnd::Harness { error: error.as_str(), effort_relaunch: Some(effort_relaunch) },
+                (None, None) => architect::RunEnd::Clean,
+            };
+            architect::completed(&app, &session_id, team.as_ref(), successful, was_stopped && unresolved.is_none(), end, registry);
         }
         drop(registry);
         // Start the next turn's agent now, so a follow-up skips the CLI's own startup.
@@ -2675,7 +2865,7 @@ async fn launch_operation_admitted(
     Ok(())
 }
 fn runs_team_maintenance(state: &AppState, session_id: &str) -> Result<bool> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     Ok(agents.get(session_id).is_some_and(|agent| agent.team_maintenance))
 }
 #[tauri::command]
@@ -2724,7 +2914,7 @@ async fn respond_approval(
     if remote::route(&app, &state, &session_id, "approval.respond", serde_json::json!({"requestId": request_id, "approve": approved})).await?.is_some() {
         return Ok(());
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let tx = agents
         .get(&session_id)
         .ok_or("This agent is no longer running.")?;
@@ -2779,7 +2969,7 @@ async fn respond_user_input(
         return Ok(());
     }
     let reply = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let agent = agents
             .get(&session_id)
             .ok_or("This agent is no longer running.")?;
@@ -2808,7 +2998,7 @@ async fn respond_user_input(
         .map_err(|_| "The agent did not acknowledge the answer. Try again.".to_owned())?
         .map_err(|_| "The agent stopped before accepting the answer.".to_owned())?;
     accepted?;
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if let Some(agent) = agents.get(&session_id) {
         let mut approvals = agent.approvals.lock().map_err(|e| e.to_string())?;
         let mut pending_requests = agent.pending_requests.lock().map_err(|e| e.to_string())?;
@@ -3006,7 +3196,7 @@ async fn git_status(
     session_id: Option<String>,
 ) -> Result<workspace::GitStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_status(&root)).await
+    blocking(move || workspace::git_status(&root, workspace::Trust::Desktop)).await
 }
 #[tauri::command]
 async fn git_diff(
@@ -3017,7 +3207,7 @@ async fn git_diff(
     staged: Option<bool>,
 ) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_diff(&root, path, staged.unwrap_or(false))).await
+    blocking(move || workspace::git_diff(&root, path, staged.unwrap_or(false), workspace::Trust::Desktop)).await
 }
 #[tauri::command]
 async fn git_stage(
@@ -3027,8 +3217,12 @@ async fn git_stage(
     paths: Vec<String>,
     staged: bool,
 ) -> Result<()> {
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_stage(&root, paths, staged)).await
+    stage_files(&state, &project_id, session_id.as_deref(), paths, staged, workspace::Trust::Desktop).await
+}
+/// `git_stage`, and the phone's `git.stage` with its [`workspace::Trust`].
+pub(crate) async fn stage_files(state: &AppState, project_id: &str, session_id: Option<&str>, paths: Vec<String>, staged: bool, trust: workspace::Trust) -> Result<()> {
+    let root = state.root(project_id, session_id)?;
+    blocking(move || workspace::git_stage(&root, paths, staged, trust)).await
 }
 #[tauri::command]
 async fn git_commit(
@@ -3038,7 +3232,7 @@ async fn git_commit(
     message: String,
 ) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_commit(&root, message)).await
+    blocking(move || workspace::git_commit(&root, message, workspace::Trust::Desktop)).await
 }
 fn create_worktree_task(
     store: &Arc<Mutex<Store>>,
@@ -3113,7 +3307,7 @@ async fn attach_worktree(
     base: Option<String>,
     existing: Option<bool>,
 ) -> Result<Session> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before moving this task into a worktree.".into());
     }
     let store = state.store.clone();
@@ -3152,25 +3346,33 @@ fn worktree_paths(store: &Arc<Mutex<Store>>, session_id: &str) -> Result<(PathBu
 
 #[tauri::command]
 async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeStatus> {
+    task_worktree_status(&state, session_id, workspace::Trust::Desktop).await
+}
+
+/// `worktree_status`, and the phone's `worktree.status` with its [`workspace::Trust`].
+pub(crate) async fn task_worktree_status(state: &AppState, session_id: String, trust: workspace::Trust) -> Result<workspace::WorktreeStatus> {
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::worktree_status(&main, &path, branch.as_deref())
+        workspace::worktree_status(&main, &path, branch.as_deref(), trust)
     })
     .await
 }
 
 #[tauri::command]
 async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Wait for the agent to finish before merging its worktree.".into());
     }
     let store = state.store.clone();
-    blocking(move || {
-        let (main, path, _) = worktree_paths(&store, &session_id)?;
-        workspace::merge_worktree(&main, &path)
-    })
-    .await
+    blocking(move || merge_task_worktree(&store, &session_id, workspace::Trust::Desktop)).await
+}
+
+/// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
+/// phone's `worktree.merge` with its [`workspace::Trust`]). Blocking.
+pub(crate) fn merge_task_worktree(store: &Arc<Mutex<Store>>, session_id: &str, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
+    let (main, path, _) = worktree_paths(store, session_id)?;
+    workspace::merge_worktree(&main, &path, trust)
 }
 
 #[tauri::command]
@@ -3179,13 +3381,18 @@ async fn remove_worktree(
     session_id: String,
     delete_branch: Option<bool>,
 ) -> Result<workspace::WorktreeRemoval> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    remove_task_worktree(&state, session_id, delete_branch.unwrap_or(false), workspace::Trust::Desktop).await
+}
+
+/// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
+pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before removing its worktree.".into());
     }
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     // A lingering agent's working directory would block the removal on Windows.
     providers::end_lingering_in(&path).await;
-    let removed = blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await;
+    let removed = blocking(move || workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)).await;
     skill_manager::projects_changed();
     removed
 }
@@ -3208,8 +3415,13 @@ async fn git_branches(
     project_id: String,
     session_id: Option<String>,
 ) -> Result<workspace::BranchList> {
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_branches(&root)).await
+    task_branches(&state, &project_id, session_id.as_deref(), workspace::Trust::Desktop).await
+}
+
+/// `git_branches`, and the phone's `git.branches` (and `pull.create`'s base) with its [`workspace::Trust`].
+pub(crate) async fn task_branches(state: &AppState, project_id: &str, session_id: Option<&str>, trust: workspace::Trust) -> Result<workspace::BranchList> {
+    let root = state.root(project_id, session_id)?;
+    blocking(move || workspace::git_branches(&root, trust)).await
 }
 
 /// Check out another local branch in the task's own checkout; worktree tasks keep their branch.
@@ -3220,14 +3432,19 @@ async fn git_switch_branch(
     session_id: Option<String>,
     branch: String,
 ) -> Result<workspace::BranchList> {
-    if let Some(id) = session_id.as_deref() {
+    switch_branch(&state, &project_id, session_id.as_deref(), branch, workspace::Trust::Desktop).await
+}
+
+/// `git_switch_branch`, and the phone's `git.switchBranch` with its [`workspace::Trust`].
+pub(crate) async fn switch_branch(state: &AppState, project_id: &str, session_id: Option<&str>, branch: String, trust: workspace::Trust) -> Result<workspace::BranchList> {
+    if let Some(id) = session_id {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         if store.session(id)?.worktree_path.is_some() {
             return Err("This task works in its own worktree; its branch stays as it is.".into());
         }
     }
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_switch(&root, &branch)).await
+    let root = state.root(project_id, session_id)?;
+    blocking(move || workspace::git_switch(&root, &branch, trust)).await
 }
 
 #[tauri::command]
@@ -3237,7 +3454,7 @@ async fn git_push(
     session_id: Option<String>,
 ) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_push(&root)).await
+    blocking(move || workspace::git_push(&root, workspace::Trust::Desktop)).await
 }
 
 /// Images from the picker, a drop or a paste join the same PNG registry as browser
@@ -3419,7 +3636,7 @@ async fn set_task_link(
         .set_task_link(&session_id, &kind, link.as_ref())
 }
 
-/// Push the task's branch and open a pull request for it, linking the result.
+/// Push the task's branch and open a pull request (a draft with `draft`) for it, linking the result.
 #[tauri::command]
 async fn github_create_pull_request(
     state: State<'_, AppState>,
@@ -3427,6 +3644,7 @@ async fn github_create_pull_request(
     title: String,
     body: String,
     base: String,
+    draft: Option<bool>,
 ) -> Result<Session> {
     let root = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -3435,22 +3653,31 @@ async fn github_create_pull_request(
     };
     let store = state.store.clone();
     blocking(move || {
-        let status = workspace::git_status(&root)?;
-        if !status.is_repo {
-            return Err("Open a Git repository to create a pull request.".into());
-        }
-        if !status.files.is_empty() {
-            return Err("Commit or stash your changes before opening a pull request. The Changes tab can commit them.".into());
-        }
-        if status.branch.is_empty() || status.branch == base {
-            return Err(format!("Create a branch other than {base} before opening a pull request."));
-        }
-        workspace::git_push(&root)?;
-        let pull = github::create_pull_request(&root, &title, &body, &base, &status.branch)?;
-        let link = storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 };
+        let link = push_and_open_pull(&root, &title, &body, &base, draft.unwrap_or(false), workspace::Trust::Desktop)?;
         store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
     })
     .await
+}
+
+/// Pushes a clean checkout on a branch other than `base` (its hooks as `trust` says) and opens a
+/// pull request for it: `github_create_pull_request`, and the phone's `pull.create`. Blocking.
+pub(crate) fn push_and_open_pull(root: &std::path::Path, title: &str, body: &str, base: &str, draft: bool, trust: workspace::Trust) -> Result<storage::TaskLink> {
+    // Before the status below: for an untrusted phone, a status refresh may already run the
+    // checkout's filters (docs/remote-access.md, Round-6 gates).
+    workspace::refuse_untrusted_programs(root, trust)?;
+    let status = workspace::git_status(root, trust)?;
+    if !status.is_repo {
+        return Err("Open a Git repository to create a pull request.".into());
+    }
+    if !status.files.is_empty() {
+        return Err("Commit or stash your changes before opening a pull request. The Changes tab can commit them.".into());
+    }
+    if status.branch.is_empty() || status.branch == base {
+        return Err(format!("Create a branch other than {base} before opening a pull request."));
+    }
+    workspace::git_push(root, trust)?;
+    let pull = github::create_pull_request_as(root, title, body, base, &status.branch, draft, trust)?;
+    Ok(storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 })
 }
 /// The task's checkout and its linked pull request number.
 fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
@@ -3516,7 +3743,7 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
             Err(error) if error.is_empty() => return Ok(None),
             Err(error) => return Err(error),
         };
-        let branch = workspace::git_status(&root).map(|status| status.branch).unwrap_or_default();
+        let branch = workspace::git_status(&root, workspace::Trust::Desktop).map(|status| status.branch).unwrap_or_default();
         let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else { return Ok(None) };
         let store = store.lock().map_err(|e| e.to_string())?;
         if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
@@ -3623,6 +3850,33 @@ async fn workspace_image(
     };
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::image_data_url(&root, &path)).await
+}
+
+/// An image an agent viewed in this task (a Read of `/tmp/shot.png`, Codex
+/// `imageView`, Kimi `Reading media: <path>`, a relative progress snapshot).
+/// Served only when one of the session's tool records names the path in an
+/// image-bearing place; a relative path must stay inside the task's checkout.
+/// See `tool_images` and `tool_images_auth`.
+#[tauri::command]
+async fn tool_image(state: State<'_, AppState>, session_id: String, path: String, max_edge: Option<u32>) -> Result<String> {
+    let store = state.store.clone();
+    blocking(move || {
+        tool_images_auth::ensure_on_this_machine(&store, &session_id)?;
+        let key = path.trim().to_owned();
+        let root = || {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            let project_id = store.session(&session_id)?.project_id;
+            store.workspace_root(&project_id, Some(&session_id))
+        };
+        tool_images::load_sized(
+            &path,
+            root,
+            |spellings| tool_images_auth::session_viewed(&store, &session_id, &key, spellings),
+            tool_images::TOOL_IMAGE_LIMIT,
+            max_edge,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3765,7 +4019,7 @@ async fn start_run_script_terminal(
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
-        let _admission = state.agents.lock().map_err(|_| "Agent state is unavailable.")?;
+        let _admission = lock_agents(&state.agents).map_err(|_| "Agent state is unavailable.")?;
         agent_updates::ensure_not_installing()?;
         if request_id.is_some_and(|id| !agent_tools::agent_ui_request_active(app.state(), id)) {
             return Err("Run request was cancelled before the script could start.".into());
@@ -3787,7 +4041,9 @@ async fn start_terminal(
     }
     let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
-    blocking(move || {
+    let start_app = app.clone();
+    let terminal_id = blocking(move || {
+        let app = start_app;
         let state = app.state::<AppState>();
         let _admission = state
             .agents
@@ -3796,7 +4052,30 @@ async fn start_terminal(
         agent_updates::ensure_not_installing()?;
         terminal::start(app.clone(), terms, &root, cols, rows)
     })
-    .await
+    .await?;
+    // terminal.list on a phone groups shells by task; the webview adopts the ones it did not
+    // open itself (a phone's terminal.open comes through here too).
+    if let Some(session_id) = &session_id {
+        terminal::tag_output(&terminal_id, session_id);
+    }
+    let _ = app.emit(
+        "terminal-opened",
+        TerminalOpened { terminal_id: &terminal_id, project_id: &project_id, session_id: session_id.as_deref() },
+    );
+    Ok(terminal_id)
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOpened<'a> {
+    terminal_id: &'a str,
+    project_id: &'a str,
+    session_id: Option<&'a str>,
+}
+/// One page of a terminal's recorded output, for a webview tab attaching to a running shell.
+const TERMINAL_REPLAY_PAGE: usize = 64 * 1024;
+#[tauri::command]
+async fn read_terminal_output(terminal_id: String, after: u64) -> Result<terminal::OutputChunk> {
+    terminal::read_output(&terminal_id, after, TERMINAL_REPLAY_PAGE)
 }
 #[tauri::command]
 async fn write_terminal(
@@ -3843,7 +4122,7 @@ struct Metrics {
 }
 #[tauri::command]
 async fn get_metrics(state: State<'_, AppState>) -> Result<Metrics> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?.len();
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?.len();
     let terms = state.terminals.lock().map_err(|e| e.to_string())?.len();
     let db = state.store.lock().map_err(|e| e.to_string())?.path.clone();
     blocking(move || {
@@ -3966,6 +4245,12 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Tauri gives WebKitGTK this folder as the webview's data directory (local storage holds
+    // unsent drafts); elsewhere the webview keeps its data in a folder of its own.
+    #[cfg(target_os = "linux")]
+    if let Ok(webview_data) = app.path().app_local_data_dir() {
+        crash_guard::narrow_webview_data(&webview_data);
+    }
     secret_store::setup(&dir);
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
@@ -3979,6 +4264,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     // Retain the database filename and bundle identifier so upgrades reuse existing data.
     let store = Store::open(&dir.join("kingcode.sqlite3"))?;
+    crash_guard::store_opened(store.restart_interrupted);
     if let Err(error) = store.discard_empty_drafts() {
         eprintln!("Could not clear unsent new tasks: {error}");
     }
@@ -4004,9 +4290,21 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Sent (no payload) to the main webview once a deliberate exit is committed, before shutdown.
+const APP_QUITTING_EVENT: &str = "app-quitting";
+
 /// Run-loop events shared by the desktop and serve: an exit request stops local agents
 /// (cloud runs keep going on their machines) within a deadline, then the process exits.
 fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    // After a crash the relaunch comes to the front only if PandaCode was in front.
+    // A closed window may never send its blur.
+    if let tauri::RunEvent::WindowEvent { label, event: window_event, .. } = &event {
+        match window_event {
+            tauri::WindowEvent::Focused(focused) => crash_guard::window_focused(label, *focused),
+            tauri::WindowEvent::Destroyed => crash_guard::window_focused(label, false),
+            _ => {}
+        }
+    }
     // A Dock click: other PandaCode windows can be up while the main one is hidden, so always show it.
     #[cfg(target_os = "macos")]
     if matches!(event, tauri::RunEvent::Reopen { .. }) {
@@ -4023,16 +4321,31 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         if state.shutdown.load(Ordering::SeqCst) == 2 {
             return;
         }
+        // Cloud runs keep going on their machines; their bridges are killed below.
+        let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
+        let local = lock_agents(&state.agents).map(|a| a.keys().filter(|id| !cloud.contains(*id)).count()).unwrap_or(0);
+        let shutting_down = state.shutdown.load(Ordering::SeqCst) != 0;
+        if quit_guard::should_confirm_quit(local, headless::active(), quit_guard::confirmed(), shutting_down, code == Some(tauri::RESTART_EXIT_CODE)) {
+            api.prevent_exit();
+            quit_guard::ask(app, local);
+            return;
+        }
         api.prevent_exit();
         if state.shutdown.swap(1, Ordering::SeqCst) == 1 {
             return;
         }
+        // Quitting (or restarting to update) from here on: a crash now is not relaunched.
+        crash_guard::notify_exit();
+        // Tell the page before it goes: WKWebView may not fire `pagehide` on Cmd+Q, and the
+        // page clears its window-death note on this. Fire and forget, never awaited. Quit,
+        // update restarts and the webview dialog's Restart (`request_restart`) all pass here.
+        if let Err(error) = app.emit_to("main", APP_QUITTING_EVENT, ()) {
+            eprintln!("Could not tell the window PandaCode is quitting: {error}");
+        }
         if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         jev::shutdown();
         app.state::<file_preview::FilePreviews>().shutdown();
-        // Cloud runs keep going on their machines; their bridges are killed below.
-        let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
-        if let Ok(agents) = state.agents.lock() {
+        if let Ok(agents) = lock_agents(&state.agents) {
             for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
                 let _ = tx.send(RunInput::Stop);
             }
@@ -4045,7 +4358,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         tauri::async_runtime::spawn(async move {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
             while tokio::time::Instant::now() < deadline {
-                if agents.lock().map(|a| a.keys().all(|id| cloud.contains(id))).unwrap_or(true) {
+                if lock_agents(&agents).map(|a| a.keys().all(|id| cloud.contains(id))).unwrap_or(true) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4053,7 +4366,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             providers::shutdown_all();
             // Let pending pipe EOFs finish persistence after a forced cleanup.
             for _ in 0..20 {
-                if agents.lock().map(|a| a.is_empty()).unwrap_or(true) {
+                if lock_agents(&agents).map(|a| a.is_empty()).unwrap_or(true) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4065,6 +4378,13 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             handle.exit(0);
         });
     } else if matches!(event, tauri::RunEvent::Exit) {
+        crash_guard::notify_exit();
+        // The Dock's Quit and logout end here without ExitRequested; the page may not get it.
+        if app.try_state::<AppState>().is_some_and(|state| state.shutdown.load(Ordering::SeqCst) == 0) {
+            if let Err(error) = app.emit_to("main", APP_QUITTING_EVENT, ()) {
+                eprintln!("Could not tell the window PandaCode is quitting: {error}");
+            }
+        }
         if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         app.state::<file_preview::FilePreviews>().shutdown();
         // VMs PandaCode started release their memory when it quits.
@@ -4095,7 +4415,17 @@ pub fn run() {
     if std::env::args().skip(1).any(|arg| arg == "--local-sign") {
         std::process::exit(local_signing::cli());
     }
-    let app = tauri::Builder::default()
+    let context = app_context();
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    // A dead WKWebView content process leaves a blank window: reload it, within a limit.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.on_web_content_process_terminate(crash_guard::on_web_content_process_terminate);
+        // Cmd+Q quits through `app.exit(0)`, so it passes ExitRequested like the menu bar Quit.
+        builder = builder.menu(app_menu::build).on_menu_event(app_menu::on_menu_event);
+    }
+    let app = builder
         // First, as its docs require: a second launch focuses this window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             tray::show(app)
@@ -4105,16 +4435,25 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Here, not before the builder: plugin setup runs first, so a duplicate launch has
+            // already handed off to the running instance and exited without a guard of its own.
+            crash_guard::start(crash_guard::Mode::Desktop);
             // Covers DMG installs and earlier failures; only ad hoc bundles change, on disk only.
             std::thread::spawn(|| {
                 if let Err(error) = local_signing::sign_running_app() {
                     eprintln!("Local signing failed: {error}");
                 }
             });
-            let dir = setup_common(app)?;
-            app.manage(voice::Voice::new(dir.clone()));
-            agents_dock::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
-            overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
+            // A failure here is not a crash: say why and exit, never a relaunch into it.
+            let ready = (|| -> Result<()> {
+                let dir = setup_common(app)?;
+                app.manage(voice::Voice::new(dir.clone()));
+                agents_dock::setup(app.handle(), &dir)?;
+                overlay::setup(app.handle(), &dir).map_err(|error| error.to_string())
+            })();
+            if let Err(error) = ready {
+                crash_guard::desktop_startup_failed(&error);
+            }
             vm::watch_idle(app.handle().clone());
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("Menu bar item is unavailable: {error}");
@@ -4152,10 +4491,14 @@ pub fn run() {
                     overlay::overlay_open_task,
                     task_controls::fork_session_at_message,
                     task_controls::get_message_content,
+                    // Deletes only role='error' rows of the given session: reads nothing new.
+                    dismiss_error_messages,
                     list_providers,
                     list_provider_models,
                     search_files,
                     open_external_url,
+                    // Thumbnails in the launcher thread's tool rows.
+                    tool_image,
                 ];
                 return handler(invoke);
             }
@@ -4225,6 +4568,12 @@ pub fn run() {
                 model_health::model_health_list,
                 model_health::model_health_clear,
                 local_sign_app,
+                crash_guard::commands::crash_recovery_take,
+                crash_guard::commands::crash_recovery_shown,
+                crash_guard::commands::crash_restart_enabled,
+                crash_guard::commands::set_crash_restart_enabled,
+                crash_guard::commands::crash_report_reveal,
+                sessions_missing,
                 app_updates::app_update_install_supported,
                 agent_updates::check_agent_updates,
                 agent_updates::update_agent,
@@ -4299,6 +4648,7 @@ pub fn run() {
                 account_sign_in::account_sign_in_code,
                 account_sign_in::account_sign_in_cancel,
                 agent_usage::agent_usage,
+                agent_usage::agent_usage_asking_claude,
                 tray::tray_seen,
                 usage_ledger::usage_ledger,
                 capabilities::capabilities_inventory,
@@ -4311,6 +4661,7 @@ pub fn run() {
                 message_queue::queue_add,
                 message_queue::queue_update,
                 message_queue::queue_remove,
+                message_queue::queue_take_steered,
                 message_queue::queue_reorder,
                 message_queue::queue_take,
                 message_queue::queue_restore,
@@ -4369,6 +4720,7 @@ pub fn run() {
                 conversation_import::list_importable_conversations,
                 conversation_import::import_conversations,
                 provider_settings::provider_set_claude_connection_mode,
+                provider_settings::provider_set_claude_cli_refresh,
                 providers::privacy::harness_privacy,
                 providers::privacy::harness_privacy_set,
                 providers::claude_auth::provider_claude_status,
@@ -4384,6 +4736,8 @@ pub fn run() {
                 provider_settings::provider_remove_glm_key,
                 provider_settings::provider_save_mimo_key,
                 provider_settings::provider_remove_mimo_key,
+                provider_settings::provider_save_alibaba_key,
+                provider_settings::provider_remove_alibaba_key,
                 provider_settings::provider_save_deepseek_key,
                 provider_settings::provider_remove_deepseek_key,
                 provider_settings::provider_save_commandcode_key,
@@ -4418,6 +4772,7 @@ pub fn run() {
                 relink_project,
                 list_sessions,
                 pin_session,
+                dismiss_error_messages,
                 reorder_sessions,
                 get_task,
                 configure_window_appearance,
@@ -4572,6 +4927,7 @@ pub fn run() {
                 progress::progress_thumb,
                 progress::progress_clear,
                 workspace_image,
+                tool_image,
                 resolve_workspace_files,
                 prepare_file_preview,
                 get_run_script,
@@ -4583,6 +4939,7 @@ pub fn run() {
                 resize_terminal,
                 close_terminal,
                 get_terminal_activity,
+                read_terminal_output,
                 get_terminal_preferences,
                 get_metrics,
                 list_local_servers,
@@ -4609,7 +4966,7 @@ pub fn run() {
             ];
             handler(invoke)
         })
-        .build(app_context())
+        .build(context)
         .expect("Failed to launch PandaCode");
     app.run(on_run_event);
 }

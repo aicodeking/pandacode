@@ -14,6 +14,14 @@ test('a notarized build does not ask for the workaround', () => {
   assert.doesNotMatch(notes, /xattr/);
   assert.doesNotMatch(notes, /Open Anyway/);
   assert.match(notes, /signed and notarized/);
+  assert.match(notes, /usual confirmation for apps downloaded from the internet, with no extra steps/);
+  assert.doesNotMatch(notes, /without a warning/);
+});
+
+test('the section ends with one newline and no trailing blank line', () => {
+  for (const notes of [installNotes(), installNotes({ signed: true })]) {
+    assert.ok(notes.endsWith('.\n') && !notes.endsWith('\n\n'));
+  }
 });
 
 test('both builds offer the terminal install, which signs locally on macOS', () => {

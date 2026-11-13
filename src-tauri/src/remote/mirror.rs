@@ -216,6 +216,14 @@ impl Viewer {
         true
     }
 
+    /// Whether an agent event shows that an earlier one of its task never reached this viewer:
+    /// newer hosts name the task's previous event (`prev`), and this viewer's position is
+    /// behind it. A task this viewer has no position in yet (or an older host) never is.
+    fn missed_before(&self, device: &str, event: &Value) -> bool {
+        let (Some(prev), Some(session)) = (event["prev"].as_u64(), event["sessionId"].as_str()) else { return false };
+        self.seqs.get(&(device.to_owned(), session.to_owned())).is_some_and(|seen| prev > *seen)
+    }
+
     fn advance(&mut self, device: &str, session: &str, seq: u64) {
         let last = self.seqs.entry((device.to_owned(), session.to_owned())).or_default();
         if seq > *last {
@@ -349,16 +357,41 @@ pub(crate) fn events(app: &tauri::AppHandle, from: &str, data: &Value) {
 /// Shows a host's entries (live or replayed) under their local ids, each once and in
 /// order: one at or before the newest `seq` already seen is dropped, and live entries wait
 /// while a subscribe to their host is in flight. Run ends end the turn where they fall.
+/// An entry that shows an earlier one never arrived (`prev`) is dropped with the rest of its
+/// task's, and the host is asked again from this viewer's position, as after `lagged`.
 fn apply(app: &tauri::AppHandle, from: &str, epoch: Option<&str>, list: &[Value], live: bool) {
-    let list: Vec<Value> = {
+    let (list, gapped): (Vec<Value>, bool) = {
         let state = remote(app);
         let mut inner = state.lock();
         if live && inner.viewer.keep(from, epoch, list) {
             return;
         }
         inner.viewer.epoch(from, epoch);
-        list.iter().filter(|event| inner.viewer.fresh(from, event)).cloned().collect()
+        let mut gapped: HashSet<String> = HashSet::new();
+        let list = list
+            .iter()
+            .filter(|event| {
+                let session = event["sessionId"].as_str().unwrap_or_default();
+                if gapped.contains(session) {
+                    return false;
+                }
+                if inner.viewer.missed_before(from, event) {
+                    gapped.insert(session.to_owned());
+                    return false;
+                }
+                inner.viewer.fresh(from, event)
+            })
+            .cloned()
+            .collect();
+        if !gapped.is_empty() {
+            inner.viewer.hold(from);
+        }
+        (list, !gapped.is_empty())
     };
+    if gapped {
+        super::diagnostics::record("viewer.gap", super::device_label(from));
+        subscribe_soon(app);
+    }
     let mut rest = list.as_slice();
     while !rest.is_empty() {
         let split = rest.iter().position(|entry| entry["kind"] == RUN_END).unwrap_or(rest.len());
@@ -401,9 +434,7 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
         events.iter().for_each(|event| inner.viewer.card(event));
     }
     for mut event in events {
-        if let Some(event) = event.as_object_mut() {
-            event.remove("seq");
-        }
+        local_event(&mut event);
         let _ = app.emit("agent-event", event);
     }
     if changed {
@@ -1988,9 +2019,32 @@ fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
     Ok((id, created))
 }
 
+/// A host event as this window sees it: no relay `seq` or `prev`, and no error `messageId`, which names a
+/// row in the host's database (this window would dismiss a row of its own copy by it).
+fn local_event(event: &mut Value) {
+    let Some(object) = event.as_object_mut() else { return };
+    object.remove("seq");
+    object.remove("prev");
+    if object.get("kind").and_then(Value::as_str) == Some("error") {
+        if let Some(data) = object.get_mut("data").and_then(Value::as_object_mut) {
+            data.remove("messageId");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dismiss_error_ids_from_the_host_do_not_reach_this_window() {
+        let mut error = json!({"seq": 4, "sessionId": "s", "kind": "error", "text": "boom", "data": {"messageId": 12, "code": 1}});
+        super::local_event(&mut error);
+        assert_eq!(error, json!({"sessionId": "s", "kind": "error", "text": "boom", "data": {"code": 1}}));
+        let mut changes = json!({"seq": 5, "kind": "turn_changes", "data": {"messageId": 3}});
+        super::local_event(&mut changes);
+        assert_eq!(changes, json!({"kind": "turn_changes", "data": {"messageId": 3}}));
+    }
 
     fn store() -> (Store, String) {
         let store = Store::open(Path::new(":memory:")).unwrap();
@@ -2296,6 +2350,26 @@ mod tests {
         assert_eq!(reconcile("interrupted", "error"), Reconcile::Set("error".into()));
         assert_eq!(reconcile("interrupted", "interrupted"), Reconcile::Same);
         assert_eq!(reconcile("idle", "error"), Reconcile::Same);
+    }
+
+    #[test]
+    fn an_event_whose_prev_was_never_seen_is_a_gap() {
+        let mut viewer = Viewer::default();
+        let event = |session: &str, seq: u64, prev: Option<u64>| {
+            let mut event = json!({"sessionId": session, "kind": "text", "text": "x", "seq": seq});
+            if let Some(prev) = prev {
+                event["prev"] = json!(prev);
+            }
+            event
+        };
+        viewer.epoch("host", Some("e1"));
+        assert!(!viewer.missed_before("host", &event("h1", 5, Some(3))), "no position yet");
+        viewer.advance("host", "h1", 5);
+        assert!(!viewer.missed_before("host", &event("h1", 7, Some(5))), "follows the last one seen");
+        assert!(!viewer.missed_before("host", &event("h1", 7, Some(2))), "a run end or another task came between");
+        assert!(viewer.missed_before("host", &event("h1", 9, Some(7))), "seq 7 never arrived");
+        assert!(!viewer.missed_before("host", &event("h1", 9, None)), "an older host sends no prev");
+        assert!(!viewer.missed_before("other", &event("h1", 9, Some(7))), "per host");
     }
 
     #[test]

@@ -141,3 +141,11 @@ fn deleting_an_idle_model_never_cancels_a_request_for_another_model() {
         assert_eq!(busy.join().unwrap(), Err(Failure::TimedOut));
     });
 }
+
+#[test]
+fn engine_crash_message_keeps_its_quoted_lead_and_suggests_a_service() {
+    let message = Failure::Died.message();
+    // Release notes and docs quote this lead verbatim.
+    assert!(message.starts_with("The local speech engine stopped unexpectedly."), "{message}");
+    assert!(message.contains("Retry") && message.contains("speech service"), "{message}");
+}

@@ -1,4 +1,5 @@
-// Every other device on the account: a card each, opening the inbox filtered to that computer.
+// Every other device on the account: a card each, opening that computer's hub (computer/[device].tsx),
+// where 'Tasks on this computer' still opens the inbox filtered to it.
 import { router } from 'expo-router';
 import type { SFSymbol } from 'expo-symbols';
 import { memo, useCallback, useState, type ComponentProps } from 'react';
@@ -11,6 +12,7 @@ import { useDevices, useStatus, type DeviceRow } from '../../../store/index.ts';
 import { useColors } from '../../../ui/theme.ts';
 import { Banner, crossFadeIn, EmptyState, geometry, Group, Row, StatusDot, type, useMotion, useScrollEdge, useStagger } from '../../../ui/ds/index.ts';
 import { Icon } from '../../../ui/Icon.tsx';
+import { ConnectionLine } from '../../../ui/ConnectionQuality.tsx';
 import { InboxSkeleton, ROW_PRESS_DELAY_MS } from '../../../ui/InboxCard.tsx';
 import { ago } from '../../../ui/status.tsx';
 import { useInbox } from '../../../ui/useInbox.ts';
@@ -44,8 +46,8 @@ const DeviceCard = memo(function DeviceCard({ device, summary, entering }: { dev
   const state = device.online ? 'Online' : seen && seen !== 'now' ? `Last seen ${seen} ago` : 'Offline';
   const subtitle = `${platformName(device.platform)} · ${state}`;
   const label = [device.name, subtitle, summary].filter(Boolean).join(', ');
-  // Offline hosts still filter: the inbox keeps their cached tasks.
-  const open = () => router.navigate({ pathname: '/inbox', params: { computer: device.id } });
+  // Offline hosts open too: the hub shows their status and the inbox keeps their cached tasks.
+  const open = () => router.push({ pathname: '/computer/[device]', params: { device: device.id } });
   return (
     <Animated.View entering={entering} style={styles.card}>
       {/* One row says nothing with a second card round it: a single card, with the hint as its note. */}
@@ -56,7 +58,7 @@ const DeviceCard = memo(function DeviceCard({ device, summary, entering }: { dev
         </View>
       )}>
         <Row title={device.name} subtitle={subtitle} leading={<DeviceGlyph device={device} />} trailing={summary || undefined} chevron={device.host}
-          onPress={device.host ? open : undefined} unstable_pressDelay={ROW_PRESS_DELAY_MS} accessibilityLabel={label} accessibilityHint="Shows this computer's tasks in the inbox" />
+          onPress={device.host ? open : undefined} unstable_pressDelay={ROW_PRESS_DELAY_MS} accessibilityLabel={label} accessibilityHint="Opens this computer: its tasks, projects and tools" />
       </Group>
     </Animated.View>
   );
@@ -89,7 +91,12 @@ export default function Computers() {
       renderItem={({ item, index }) => <DeviceCard device={item} summary={computerSummary(inbox, item.id)} entering={stagger(index) ?? crossFadeIn} />}
       itemLayoutAnimation={layout}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
-      ListHeaderComponent={<Banner visible={!connected} title="Connecting…" icon={{ ios: 'wifi.exclamationmark', android: 'wifi_off' }} style={styles.banner} />}
+      ListHeaderComponent={(
+        <>
+          <Banner visible={!connected} title="Connecting…" icon={{ ios: 'wifi.exclamationmark', android: 'wifi_off' }} style={styles.banner} />
+          <View style={styles.banner}><ConnectionLine /></View>
+        </>
+      )}
       // Presence lists this phone too: no rows at all means it hasn't arrived.
       ListEmptyComponent={!all.length ? <InboxSkeleton rows={2} /> : (
         <EmptyState icon={{ ios: 'desktopcomputer', android: 'computer' }} title="No computers yet" body="No other devices on this account yet. Sign in to PandaCode Connect on your computer." style={styles.empty} />
@@ -105,7 +112,7 @@ const styles = StyleSheet.create({
   glyph: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center' },
   dot: { position: 'absolute', top: -1, right: -3, padding: 1.5, borderRadius: 6 },
   offline: { width: 7, height: 7, borderRadius: 3.5 },
-  note: { flexDirection: 'row', gap: 8, paddingHorizontal: 12 },
+  note: { flexDirection: 'row', gap: 8, paddingHorizontal: geometry.rowInset },
   noteText: { flex: 1 },
-  empty: { marginTop: 40 },
+  empty: { marginTop: geometry.emptyTop },
 });

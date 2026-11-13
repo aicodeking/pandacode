@@ -9,6 +9,7 @@ import { enterView, reducedMotion, type Spring } from './motion';
 import { showPopover, hidePopover } from './popover-motion';
 import { infoMark } from './tooltip';
 import type { RemoteDevice, RemoteHost } from './remote-types';
+import { errorText } from './error-text';
 
 export type Access = 'read' | 'ask' | 'full';
 export interface OrchestrationLink { deviceId: string; name: string; platform: string; online: boolean; access: Access; departed?: boolean }
@@ -20,6 +21,7 @@ export interface OrchestrationHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   listen(name: string, callback: (event: any) => void): Promise<() => void>;
   notify(text: string, action?: { label: string; run: () => void }): void;
+  notifyError?(text: string): void;
   modal(title: string, body: string, cls?: string): HTMLDialogElement;
   closeModal(): void;
   openSession(id: string): void;
@@ -68,7 +70,7 @@ let panel: HTMLElement | undefined, panelTask = '', lastTask = '', agentsSignal 
 const ROW_SPRING: Spring = { response: 0.2 };
 const arrive = (element: HTMLElement, distance: number) => { if (!reducedMotion()) enterView(element, distance, ROW_SPRING); };
 
-const message = (e: unknown) => e instanceof Error ? e.message : String(e);
+const message = (e: unknown) => errorText(e);
 const live = (child: MachineChild) => RUNNING.has(child.status) || NEEDS_YOU.has(child.status);
 /** A live thread whose computer is unreachable: nobody can say it is working, or that it stopped. */
 const away = (child: MachineChild) => Boolean(child.hostOffline) && live(child);
@@ -428,7 +430,7 @@ function onClick(event: MouseEvent): void {
   const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(':is(#machine-orchestration, .machine-threads, .lineage-panel) [data-mo]');
   if (!target || !host) return;
   const h = host, action = target.dataset.mo, request = pending.find(item => item.requestId === target.dataset.request);
-  const fail = (e: unknown) => h.notify(message(e));
+  const fail = (e: unknown) => (h.notifyError ?? h.notify)(message(e));
   const toggle = (key: string) => { if (!expanded.delete(key)) expanded.add(key); render(); decorateTranscript(); };
   if (action === 'decline' && request) void h.call('orchestration_link_respond', { requestId: request.requestId }).then(() => settle(request.requestId), fail);
   else if (action === 'link' && request) void openLinkDialog({ request });

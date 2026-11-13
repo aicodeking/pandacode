@@ -99,3 +99,33 @@ html:not([data-ready]) *,html:not([data-ready]) *::before,html:not([data-ready])
 .launcher-project select:focus-visible{outline:none}
 .launcher-project:has(select:focus-visible){outline:2px solid var(--focus);outline-offset:1px}
 .launcher-project::after{content:"";position:absolute;right:7px;top:50%;width:var(--icon-xs);height:var(--icon-xs);translate:0 -50%;background:currentColor;pointer-events:none;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.65' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.65' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center/contain no-repeat}
+
+/* Error rows (overlay-thread.ts): one calm card per distinct error, like .error-row in the main window. */
+.launcher-thread-errors{display:flex;flex-direction:column;gap:6px;white-space:normal;color:var(--launcher-text)}.launcher-thread-errors:empty{display:none}
+.launcher-thread-note{margin:0;color:var(--launcher-muted);white-space:pre-wrap}
+.launcher-error-row{display:flex;align-items:center;gap:8px;padding:3px 3px 3px 10px;min-height:34px;flex-wrap:wrap;border:1px solid var(--launcher-border);border-radius:var(--radius-sm);background:var(--launcher-inner);color:var(--launcher-text);font-size:var(--text-sm);line-height:1.4;white-space:normal}
+.launcher-error-icon{flex:none;display:grid;width:16px;height:16px}.launcher-error-icon>.icon{width:16px;height:16px}
+.launcher-error-icon[data-state-tone=danger]{color:var(--danger)}
+.launcher-error-summary{flex:1;min-width:0;padding:3px 0;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
+.launcher-error-count{flex:none;padding:0 7px;border:1px solid var(--launcher-border);border-radius:999px;color:var(--launcher-muted);font-size:var(--text-xs);font-variant-numeric:tabular-nums;line-height:1.6}
+.launcher-error-dismiss,.launcher-error-toggle{flex:none;display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border-radius:var(--radius-sm);color:var(--launcher-muted);transition:background-color var(--launcher-ease-out) ease-out,color var(--launcher-ease-out) ease-out}
+.launcher-error-dismiss:hover,.launcher-error-toggle:hover{transition-duration:var(--launcher-ease-in)}
+.launcher-error-dismiss>.icon,.launcher-error-toggle>.icon{width:15px;height:15px}
+.launcher-error-toggle>.icon{transition:rotate var(--launcher-ease-in) ease-out}.launcher-error-toggle[aria-expanded=true]>.icon{rotate:90deg}
+.launcher-error-dismiss:hover,.launcher-error-toggle:hover{background:var(--launcher-soft);color:var(--launcher-text)}
+.launcher-error-dismiss:focus-visible,.launcher-error-toggle:focus-visible,.launcher-error-dismiss-all:focus-visible,.launcher-thread-undo button:focus-visible{outline:2px solid var(--launcher-accent);outline-offset:1px}
+.launcher-error-detail{flex:0 0 calc(100% - 31px);min-width:0;max-height:200px;margin:0 7px 7px 24px;padding:8px 10px;overflow:auto;border:1px solid var(--launcher-border);border-radius:var(--radius-sm);background:var(--launcher-soft);color:var(--launcher-text);font:var(--text-xs)/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text;scrollbar-width:thin}
+.launcher-error-detail[hidden]{display:none}
+.launcher-error-detail:focus-visible{outline:2px solid var(--launcher-accent);outline-offset:2px}
+.launcher-thread-undo{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px;padding:3px 3px 3px 10px;border:1px solid var(--launcher-border);border-radius:var(--radius-sm);background:var(--launcher-inner);color:var(--launcher-text);font-size:var(--text-sm)}
+.launcher-thread-undo[hidden]{display:none}
+.launcher-error-all{display:flex;justify-content:flex-end}
+.launcher-error-dismiss-all{min-height:28px;padding:0 10px;border-radius:var(--radius-sm);color:var(--launcher-muted);font-size:var(--text-xs);transition:background-color var(--launcher-ease-out) ease-out,color var(--launcher-ease-out) ease-out}
+.launcher-error-dismiss-all:hover{background:var(--launcher-soft);color:var(--launcher-text);transition-duration:var(--launcher-ease-in)}
+.launcher-error-dismiss-all:active{scale:var(--press)}
+.launcher-thread-undo button{min-height:28px;padding:0 10px;border-radius:var(--radius-sm);color:var(--launcher-text);font-weight:var(--weight-medium);text-decoration:underline;text-underline-offset:2px;transition:background-color var(--launcher-ease-out) ease-out}
+.launcher-thread-undo button:hover{background:var(--launcher-hover);transition-duration:var(--launcher-ease-in)}
+.launcher-thread-undo button:active{scale:var(--press)}
+@media(prefers-contrast:more){.launcher-error-row,.launcher-error-count,.launcher-error-detail,.launcher-thread-undo{border-color:var(--launcher-text)}.launcher-error-dismiss,.launcher-error-toggle,.launcher-error-dismiss-all,.launcher-error-count,.launcher-error-detail,.launcher-thread-undo button{color:var(--launcher-text)}}
+@media(forced-colors:active){.launcher-error-row,.launcher-error-count,.launcher-error-detail,.launcher-thread-undo{border:1px solid CanvasText}.launcher-error-icon{color:CanvasText}.launcher-error-dismiss,.launcher-error-toggle,.launcher-error-dismiss-all,.launcher-thread-undo button{color:ButtonText}}
+@media(prefers-reduced-motion:reduce){.launcher-thread-undo button,.launcher-error-dismiss-all,.launcher-error-dismiss,.launcher-error-toggle,.launcher-error-toggle>.icon{transition:none}}

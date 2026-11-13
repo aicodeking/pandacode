@@ -7,12 +7,10 @@
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
 use crate::github::{json, names, run_gh, state_of, text, TIMEOUT};
-use crate::workspace::{checked, run_process};
 
 const LIST_LIMIT: &str = "50";
 const CLONE_TIMEOUT: Duration = Duration::from_secs(600);
@@ -401,11 +399,254 @@ pub fn run_details(repo: &str, id: i64) -> Result<RunDetails, String> {
 }
 
 /// The GitHub repository behind a local project, from its `origin` remote.
+///
+/// Round 17: read straight from the repository's config file, never by running `git`, so a
+/// phone's call (`projects.list`, `github.*`, starts) cannot reach anything the checkout's
+/// config could make Git do, and needs no `Trust` (docs/remote-access.md, Round 17).
 pub fn project_repo(root: &Path) -> Option<String> {
-    let mut command = Command::new("git");
-    command.current_dir(root).args(["config", "--get", "remote.origin.url"]);
-    let output = checked(run_process(command, "Git", 4 * 1024, Duration::from_secs(5)).ok()?).ok()?;
-    repo_from_remote(&String::from_utf8_lossy(&output.bytes))
+    let path = git_common_dir(root)?.join("config");
+    repo_from_remote(&origin_url(&read_bounded(&path)?)?)
+}
+
+/// The repository `gh` itself acts on in the checkout at (or above) `root`, so a phone's pull
+/// requests and GitHub lists match the desktop's `gh` in a fork checkout (Round 22): the remote
+/// marked `gh-resolved` (`gh repo set-default`), then `upstream`, then `origin`. Like
+/// [`project_repo`] it only reads the config file and runs nothing.
+pub fn base_repo(root: &Path) -> Option<String> {
+    base_of(&remotes(&checkout_config(root)?))
+}
+
+/// Every GitHub repository the checkout's remotes name, [`base_repo`]'s first, without
+/// repeats; read like [`base_repo`]. `task.pullDetect` accepts pull request links in any of them.
+pub fn github_remotes(root: &Path) -> Vec<String> {
+    let Some(config) = checkout_config(root) else { return Vec::new() };
+    let remotes = remotes(&config);
+    let mut repos: Vec<String> = base_of(&remotes).into_iter().collect();
+    for repo in remotes.iter().filter_map(|remote| remote.url.as_deref().and_then(repo_from_remote)) {
+        if !repos.contains(&repo) {
+            repos.push(repo);
+        }
+    }
+    repos
+}
+
+/// The GitHub repository `workspace::git_push` pushes the branch to: the `origin` remote, else
+/// the first remote by name (`git remote` lists them sorted). Read like [`base_repo`]; a phone's
+/// `pull.create` names the head as `<owner>:<branch>` when it differs from the base (Round 23).
+pub fn push_repo(root: &Path) -> Option<String> {
+    push_of(&remotes(&checkout_config(root)?))
+}
+
+/// Round 24: Git pushes to the remote's last `pushurl` when it has one, so the head owner comes
+/// from it before `url`.
+fn push_of(remotes: &[Remote]) -> Option<String> {
+    let remote = remotes.iter().find(|remote| remote.name == "origin").or_else(|| remotes.iter().min_by(|a, b| a.name.cmp(&b.name)))?;
+    remote.push_url.as_deref().or(remote.url.as_deref()).and_then(repo_from_remote)
+}
+
+/// The name of the remote [`base_repo`] resolved, so its `refs/remotes/<name>/HEAD` names the
+/// default branch of the repository a pull request opens in (Round 24). A `gh-resolved`
+/// `owner/name` maps to the remote whose URL names that repository; None when none does.
+pub fn base_remote(root: &Path) -> Option<String> {
+    let remotes = remotes(&checkout_config(root)?);
+    let repo = base_of(&remotes)?;
+    let url_repo = |remote: &&Remote| remote.url.as_deref().and_then(repo_from_remote);
+    let same = |remote: &&Remote| url_repo(remote).is_some_and(|found| found.eq_ignore_ascii_case(&repo));
+    remotes.iter().find(|remote| remote.resolved.is_some() && same(remote))
+        .or_else(|| ["upstream", "origin"].iter().find_map(|name| remotes.iter().find(|remote| remote.name == *name && same(remote))))
+        .or_else(|| remotes.iter().find(same))
+        .map(|remote| remote.name.clone())
+}
+
+fn checkout_config(root: &Path) -> Option<String> {
+    read_bounded(&git_common_dir(root)?.join("config"))
+}
+
+/// One `[remote "<name>"]` of a Git config: its last `url`, `pushurl` and `gh-resolved` values.
+#[derive(Debug, Default, PartialEq)]
+struct Remote {
+    name: String,
+    url: Option<String>,
+    push_url: Option<String>,
+    resolved: Option<String>,
+}
+
+/// `gh`'s choice among `remotes`: a `gh-resolved` remote (`base` means its own URL's
+/// repository, any other value names `owner/name` or `github.com/owner/name`), then
+/// `upstream`, then `origin`; only GitHub repositories count.
+fn base_of(remotes: &[Remote]) -> Option<String> {
+    let url_repo = |remote: &Remote| remote.url.as_deref().and_then(repo_from_remote);
+    let resolved = remotes.iter().find_map(|remote| {
+        let value = remote.resolved.as_deref()?.trim();
+        if value.is_empty() {
+            return None;
+        }
+        if value == "base" {
+            return url_repo(remote);
+        }
+        valid_repo(value.strip_prefix("github.com/").unwrap_or(value)).ok()
+    });
+    resolved.or_else(|| ["upstream", "origin"].iter().find_map(|name| remotes.iter().find(|remote| remote.name == *name).and_then(url_repo)))
+}
+
+/// The remotes of a Git config file's text, in order of first appearance, read as
+/// [`origin_url`] reads `origin` (no includes; the last value of a key wins).
+fn remotes(config: &str) -> Vec<Remote> {
+    let mut remotes: Vec<Remote> = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut lines = config.lines();
+    while let Some(raw) = lines.next() {
+        let mut line = raw.trim_start();
+        if let Some(header) = line.strip_prefix('[') {
+            let Some((header, rest)) = header.split_once(']') else { continue };
+            current = section_remote(header.trim()).map(|name| match remotes.iter().position(|remote| remote.name == name) {
+                Some(at) => at,
+                None => {
+                    remotes.push(Remote { name, ..Remote::default() });
+                    remotes.len() - 1
+                }
+            });
+            line = rest.trim_start();
+            if line.is_empty() || line.starts_with(['#', ';']) {
+                continue;
+            }
+        }
+        let Some(at) = current else { continue };
+        let Some((name, _)) = line.split_once('=') else { continue };
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("url") {
+            remotes[at].url = key_value(line, "url", &mut lines);
+        } else if name.eq_ignore_ascii_case("pushurl") {
+            remotes[at].push_url = key_value(line, "pushurl", &mut lines);
+        } else if name.eq_ignore_ascii_case("gh-resolved") {
+            remotes[at].resolved = key_value(line, "gh-resolved", &mut lines);
+        }
+    }
+    remotes
+}
+
+/// The remote a section header names: `remote "<name>"` (exact subsection) or the old
+/// lowercased `remote.<name>` form.
+fn section_remote(header: &str) -> Option<String> {
+    if let Some((name, sub)) = header.split_once(char::is_whitespace) {
+        let sub = sub.trim();
+        return (name.eq_ignore_ascii_case("remote") && sub.len() >= 2 && sub.starts_with('"') && sub.ends_with('"')).then(|| unescape_sub(&sub[1..sub.len() - 1]));
+    }
+    let (name, sub) = header.split_once('.')?;
+    (name.eq_ignore_ascii_case("remote") && !sub.is_empty()).then(|| sub.to_ascii_lowercase())
+}
+
+/// Largest Git config or `.git` file [`project_repo`] reads.
+const CONFIG_LIMIT: u64 = 256 * 1024;
+
+/// A small text file, read without following a symlink at its last component; `None` when
+/// missing, a symlink, not a file or over [`CONFIG_LIMIT`].
+fn read_bounded(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > CONFIG_LIMIT {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(path).ok()?.take(CONFIG_LIMIT).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The Git directory holding the shared config for the checkout at (or above) `root`, as Git
+/// finds it: a `.git` folder, or a `.git` file's `gitdir:` (a linked worktree's own folder,
+/// whose `commondir` names the main one).
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.ancestors().map(|dir| dir.join(".git")).find(|dot_git| std::fs::symlink_metadata(dot_git).is_ok())?;
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = read_bounded(&dot_git)?;
+    let target = pointer.lines().find_map(|line| line.strip_prefix("gitdir:")).map(str::trim).filter(|t| !t.is_empty())?;
+    let git_dir = dot_git.parent()?.join(target);
+    match read_bounded(&git_dir.join("commondir")) {
+        Some(common) if !common.trim().is_empty() => Some(git_dir.join(common.trim())),
+        _ => Some(git_dir),
+    }
+}
+
+/// `remote.origin.url` from a Git config file's text, the last value winning as with
+/// `git config --get`: section names and keys match case-insensitively, the subsection exactly
+/// (`[remote "origin"]`), or lowercased in the old `[remote.origin]` form. Round 20: `[include]`
+/// and `[includeIf]` files are never read, so the checkout's config cannot point the phone's
+/// lookup at another file on this computer.
+fn origin_url(config: &str) -> Option<String> {
+    let mut url = None;
+    let mut origin = false;
+    let mut lines = config.lines();
+    while let Some(raw) = lines.next() {
+        let mut line = raw.trim_start();
+        if let Some(header) = line.strip_prefix('[') {
+            let Some((header, rest)) = header.split_once(']') else { continue };
+            origin = section_is_origin(header.trim());
+            line = rest.trim_start();
+            if line.is_empty() || line.starts_with(['#', ';']) {
+                continue;
+            }
+        }
+        if !origin {
+            continue;
+        }
+        if let Some(value) = key_value(line, "url", &mut lines) {
+            url = Some(value);
+        }
+    }
+    url
+}
+
+fn section_is_origin(header: &str) -> bool {
+    if let Some((name, sub)) = header.split_once(char::is_whitespace) {
+        let sub = sub.trim();
+        return name.eq_ignore_ascii_case("remote") && sub.len() >= 2 && sub.starts_with('"') && sub.ends_with('"') && unescape_sub(&sub[1..sub.len() - 1]) == "origin";
+    }
+    header.eq_ignore_ascii_case("remote.origin")
+}
+
+fn unescape_sub(sub: &str) -> String {
+    let mut out = String::new();
+    let mut chars = sub.chars();
+    while let Some(c) = chars.next() {
+        out.push(if c == '\\' { chars.next().unwrap_or('\\') } else { c });
+    }
+    out
+}
+
+/// The value of a `<key> = ...` line (continuations joined), `None` for any other key.
+fn key_value<'a>(line: &str, key: &str, rest: &mut impl Iterator<Item = &'a str>) -> Option<String> {
+    let (name, value) = line.split_once('=')?;
+    if !name.trim().eq_ignore_ascii_case(key) {
+        return None;
+    }
+    let mut value = value.to_string();
+    while value.ends_with('\\') && !value.ends_with("\\\\") {
+        value.pop();
+        value.push_str(rest.next().unwrap_or_default());
+    }
+    Some(config_value(&value))
+}
+
+/// A config value as Git reads it: quotes removed, `\\`, `\"`, `\n`, `\t` escapes, a comment
+/// (`#`/`;` outside quotes) dropped, outer whitespace trimmed.
+fn config_value(raw: &str) -> String {
+    let (mut out, mut quoted, mut chars) = (String::new(), false, raw.trim().chars());
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '#' | ';' if !quoted => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => {}
+            },
+            _ => out.push(c),
+        }
+    }
+    out.trim().to_string()
 }
 
 /// Where a clone of `repo` lands inside `parent`, refusing anything that already exists.
@@ -557,4 +798,136 @@ mod tests {
         assert!(clone_destination(Path::new("relative"), "orbit-labs/meadow").is_err());
         std::fs::remove_dir_all(parent).unwrap();
     }
+
+    #[test]
+    fn origin_url_reads_git_config_syntax_like_git() {
+        let config = "[core]\n\turl = https://github.com/no/core\n[remote \"upstream\"]\n\turl = https://github.com/no/upstream\n[Remote \"origin\"]\n\tURL = \"git@github.com:orbit-labs/meadow.git\" ; comment\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\turl = https://github.com/no/branch\n";
+        assert_eq!(origin_url(config).as_deref(), Some("git@github.com:orbit-labs/meadow.git"));
+        assert_eq!(origin_url("[remote \"origin\"]\n url = https://github.com/a/one\n url = https://github.com/a/two\n").as_deref(), Some("https://github.com/a/two"));
+        assert_eq!(origin_url("[remote.origin]\nurl=https://github.com/a/old # c\n").as_deref(), Some("https://github.com/a/old"));
+        assert_eq!(origin_url("[remote \"Origin\"]\nurl = https://github.com/a/b\n"), None, "subsections are case-sensitive");
+        assert_eq!(origin_url("[remote \"origin\"] url = https://github.com/a/inline\n").as_deref(), Some("https://github.com/a/inline"));
+        assert_eq!(origin_url("[remote \"origin\"]\nurl = https://github.com/a/\\\nsplit\n").as_deref(), Some("https://github.com/a/split"));
+        assert_eq!(origin_url("[remote \"origin\"]\nfetch = x\n"), None);
+    }
+
+    /// Round 22: the base repository follows `gh`: a `gh-resolved` remote, then `upstream`,
+    /// then `origin`.
+    #[test]
+    fn push_repo_is_origin_then_the_first_remote_by_name() {
+        let fork = "[remote \"upstream\"]\n\turl = https://github.com/up/stream.git\n[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n";
+        assert_eq!(push_of(&remotes(fork)).as_deref(), Some("me/fork"));
+        let named = "[remote \"zed\"]\n\turl = https://github.com/z/z\n[remote \"alpha\"]\n\turl = https://github.com/a/a\n";
+        assert_eq!(push_of(&remotes(named)).as_deref(), Some("a/a"), "git remote sorts names");
+        assert_eq!(push_of(&remotes("[remote \"origin\"]\n\turl = https://gitlab.com/x/y\n")), None);
+        assert_eq!(push_of(&remotes("")), None);
+    }
+
+    /// Round 24: the head owner comes from the last `pushurl` when the remote has one.
+    #[test]
+    fn push_repo_prefers_the_push_url() {
+        let split = "[remote \"origin\"]\n\turl = https://github.com/up/stream.git\n\tpushurl = git@github.com:me/old.git\n\tPushURL = git@github.com:me/fork.git\n";
+        assert_eq!(push_of(&remotes(split)).as_deref(), Some("me/fork"), "the last pushurl wins");
+        assert_eq!(remotes(split)[0].url.as_deref(), Some("https://github.com/up/stream.git"), "url is kept apart");
+        let plain = "[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n";
+        assert_eq!(push_of(&remotes(plain)).as_deref(), Some("me/fork"), "url without a pushurl");
+        let elsewhere = "[remote \"origin\"]\n\turl = https://github.com/me/fork\n\tpushurl = https://gitlab.com/me/fork\n";
+        assert_eq!(push_of(&remotes(elsewhere)), None, "a pushurl off GitHub names no head owner");
+    }
+
+    /// Round 24: the remote whose HEAD names a pull request's default base.
+    #[test]
+    fn base_remote_names_the_remote_base_repo_resolved() {
+        let base = std::env::temp_dir().join(format!("pandacode-hub-remote-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        let fork = "[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n[remote \"upstream\"]\n\turl = https://github.com/up/stream.git\n";
+        std::fs::write(base.join(".git/config"), fork).unwrap();
+        assert_eq!(base_remote(&base).as_deref(), Some("upstream"));
+        std::fs::write(base.join(".git/config"), format!("{fork}[remote \"origin\"]\n\tgh-resolved = base\n")).unwrap();
+        assert_eq!(base_remote(&base).as_deref(), Some("origin"));
+        std::fs::write(base.join(".git/config"), "[remote \"mine\"]\n\turl = https://github.com/me/fork\n\tgh-resolved = up/stream\n[remote \"theirs\"]\n\turl = https://github.com/Up/Stream\n").unwrap();
+        assert_eq!(base_remote(&base).as_deref(), Some("theirs"), "a gh-resolved owner/name maps to its remote");
+        std::fs::write(base.join(".git/config"), "[remote \"mine\"]\n\turl = https://github.com/me/fork\n\tgh-resolved = other/repo\n").unwrap();
+        assert_eq!(base_remote(&base), None, "no remote names that repository");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn base_repo_follows_gh_resolved_then_upstream_then_origin() {
+        let fork = "[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n[remote \"upstream\"]\n\turl = https://github.com/up/stream.git\n";
+        assert_eq!(base_of(&remotes(fork)).as_deref(), Some("up/stream"), "upstream before origin");
+        assert_eq!(base_of(&remotes("[remote \"origin\"]\n\turl = git@github.com:me/fork.git\n")).as_deref(), Some("me/fork"));
+        let resolved = format!("{fork}[remote \"origin\"]\n\tgh-resolved = base\n");
+        assert_eq!(base_of(&remotes(&resolved)).as_deref(), Some("me/fork"), "gh repo set-default wins");
+        let named = "[remote \"mine\"]\n\turl = https://github.com/me/fork\n\tgh-resolved = other/repo\n[remote \"upstream\"]\n\turl = https://github.com/up/stream\n";
+        assert_eq!(base_of(&remotes(named)).as_deref(), Some("other/repo"), "a gh-resolved owner/name");
+        let hosted = "[remote.mine]\n\turl = https://github.com/me/fork\n\tGH-Resolved = github.com/other/hosted\n";
+        assert_eq!(base_of(&remotes(hosted)).as_deref(), Some("other/hosted"));
+        let not_github = "[remote \"upstream\"]\n\turl = https://gitlab.com/up/stream\n\tgh-resolved = base\n[remote \"origin\"]\n\turl = https://github.com/me/fork\n";
+        assert_eq!(base_of(&remotes(not_github)).as_deref(), Some("me/fork"), "only GitHub remotes count");
+        assert_eq!(base_of(&remotes("[remote \"Upstream\"]\n\turl = https://github.com/up/stream\n")), None, "names match exactly");
+        assert_eq!(base_of(&remotes("[core]\n\tgh-resolved = base\n\turl = https://github.com/no/core\n")), None);
+        let base = std::env::temp_dir().join(format!("pandacode-hub-base-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        std::fs::write(base.join(".git/config"), format!("{fork}[remote \"backup\"]\n\turl = https://github.com/me/backup\n[remote \"gitlab\"]\n\turl = https://gitlab.com/x/y\n")).unwrap();
+        assert_eq!(base_repo(&base).as_deref(), Some("up/stream"));
+        assert_eq!(project_repo(&base).as_deref(), Some("me/fork"), "project_repo still names origin");
+        assert_eq!(github_remotes(&base), ["up/stream", "me/fork", "me/backup"]);
+        std::fs::write(base.join(".git/config"), resolved).unwrap();
+        assert_eq!(base_repo(&base).as_deref(), Some("me/fork"));
+        assert_eq!(github_remotes(&base), ["me/fork", "up/stream"]);
+        assert_eq!(base_repo(&base.join("missing")), base_repo(&base), "found from inside the checkout");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn project_repo_reads_checkouts_and_linked_worktrees_without_git() {
+        let base = std::env::temp_dir().join(format!("pandacode-hub-repo-{}", uuid::Uuid::new_v4().simple()));
+        let main = base.join("main");
+        std::fs::create_dir_all(main.join(".git/worktrees/feature")).unwrap();
+        std::fs::create_dir_all(main.join("packages/app")).unwrap();
+        std::fs::write(main.join(".git/config"), "[remote \"origin\"]\n\turl = https://github.com/orbit-labs/meadow.git\n").unwrap();
+        assert_eq!(project_repo(&main).as_deref(), Some("orbit-labs/meadow"));
+        assert_eq!(project_repo(&main.join("packages/app")).as_deref(), Some("orbit-labs/meadow"), "a project inside the checkout");
+        let linked = base.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(linked.join(".git"), format!("gitdir: {}\n", main.join(".git/worktrees/feature").display())).unwrap();
+        std::fs::write(main.join(".git/worktrees/feature/commondir"), "../..\n").unwrap();
+        assert_eq!(project_repo(&linked).as_deref(), Some("orbit-labs/meadow"));
+        // Round 20: `[include]` / `[includeIf]` files are never read.
+        let included = base.join("included");
+        std::fs::create_dir_all(included.join(".git")).unwrap();
+        std::fs::write(included.join("more.conf"), "[remote \"origin\"]\n\turl = git@github.com:orbit-labs/included.git\n").unwrap();
+        std::fs::write(included.join(".git/config"), "[remote \"origin\"]\n\turl = https://github.com/orbit-labs/before\n[include]\n\tpath = ../more.conf\n[includeIf \"gitdir:/\"]\n\tpath = ../more.conf\n").unwrap();
+        assert_eq!(project_repo(&included).as_deref(), Some("orbit-labs/before"), "includes are not followed");
+        std::fs::write(included.join(".git/config"), "[include]\n\tpath = ../more.conf\n").unwrap();
+        assert_eq!(project_repo(&included), None, "an origin only in an included file is not found");
+        #[cfg(unix)]
+        {
+            let elsewhere = base.join("elsewhere-config");
+            std::fs::write(&elsewhere, "[remote \"origin\"]\n\turl = https://github.com/someone/else\n").unwrap();
+            std::fs::remove_file(main.join(".git/config")).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, main.join(".git/config")).unwrap();
+            assert_eq!(project_repo(&main), None, "a symlinked config is not followed");
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Round 17: `project_repo` is called from PandaConnect (`remote/`) without a `Trust`, so
+    /// it must never run Git (or anything): this module spawns only `gh`.
+    #[test]
+    fn project_repo_never_runs_a_program() {
+        let source = include_str!("github_hub.rs");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        for forbidden in ["Command::new", "run_process(", "workspace::run_git", "git_inspect("] {
+            assert!(!code.contains(forbidden), "github_hub.rs calls {forbidden}");
+        }
+        for function in ["pub fn project_repo(", "pub fn base_repo(", "pub fn github_remotes(", "fn checkout_config("] {
+            let body = &code[code.find(function).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            assert!(!body.contains("run_gh"), "{function} runs nothing");
+        }
+        assert!(!code.contains("include_path") && !code.contains("INCLUDE_DEPTH"), "Round 20: includes are not followed");
+    }
+
 }

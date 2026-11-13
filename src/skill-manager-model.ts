@@ -1,6 +1,8 @@
 /* Skill manager: the IPC contract (src-tauri/src/skill_manager.rs) and pure helpers over it.
  * Nothing here touches the DOM, so the page and the Add skill dialog share it. */
 
+import { errorText as sharedErrorText } from './error-text.ts';
+
 /** `quarantined`: a location of a row's quarantined copy (see `quarantinedCopy`); it loads nowhere. */
 export type SkillAgent = { harness: string; scope: 'user' | 'project'; path: string; projectId?: string; quarantined?: true };
 /** `quarantined`: flagged by the safety check and moved aside until restored (`skill_manager_restore`); the row has
@@ -121,19 +123,14 @@ export function takeAddSkillRequest(): AddSkillRequest | null {
 
 const HARNESS_NAMES: Readonly<Record<string, string>> = {
   claude: 'Claude Code', codex: 'Codex', kimi: 'Kimi Code', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity',
-  grok: 'Grok Build', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo Code',
+  grok: 'Grok Build', mimo: 'MiMo', alibaba: 'Alibaba', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo Code',
   omp: 'Oh My Pi', 'github-copilot': 'GitHub Copilot', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes',
 };
 export const harnessName = (id: string): string => HARNESS_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
 export const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 /** A readable message from whatever the IPC layer rejected with. */
-export function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') return (error as { message: string }).message;
-  return 'Something went wrong. Try again.';
-}
+export const errorText = (error: unknown): string => sharedErrorText(error, 'Something went wrong. Try again.');
 
 /** Off for the scope being viewed: PandaCode-wide always counts; a project adds its own list. */
 export const isOff = (skill: ManagedSkill, projectId: string): boolean => skill.offInPandaCode || (!!projectId && skill.offInProject);

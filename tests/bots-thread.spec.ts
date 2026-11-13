@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { exposePreviewMessages, pairs, setThread } from './transcript-fixtures';
 
 /* A bot's conversation (src/bot-thread.ts): chat bubbles, hover actions (copy, reply, react),
  * the working indicator, a steps row per finished turn and the empty state. */
@@ -72,6 +73,7 @@ async function installFailoverPreview(page: Page): Promise<void> {
     replaceCase(/case ["']bot_failover_decide["']:[\s\S]*?break;\s*}/, `case "bot_failover_decide": {
       const fixture = window.__botFailoverFixture;
       fixture.calls.push({ command, args: structuredClone(args) });
+      if (fixture.fail) throw new Error(fixture.fail);
       fixture.ask = null;
       result = null;
       break;
@@ -148,6 +150,47 @@ test.describe('bot conversation', () => {
     await expect.poll(() => page.evaluate(() => (window as any).__botFailoverFixture.calls)).toEqual([{ command: 'bot_failover_decide', args: { sessionId: expect.any(String), action: 'wait', always: false } }]);
   });
 
+  test('a failed decision on a held message shows the error card, alert on its text only, and Dismiss removes it', async ({ page }) => {
+    await installFailoverPreview(page);
+    await openSample(page, 'Ledger');
+    const botId = await sidebar(page).getByRole('button', { name: /^Chat with Ledger/ }).getAttribute('data-bot');
+    // The held message arrives as the backend sends it (`bot-failover`): no real turn and no reload needed.
+    const sessionId = await page.locator('#prompt').getAttribute('data-session-id');
+    expect(sessionId).toBeTruthy();
+    await expect.poll(() => page.evaluate(() => (window as any).__botHasListener('bot-failover'))).toBe(true);
+    await page.evaluate(({ botId, sessionId }) => {
+      const fixture = (window as any).__botFailoverFixture;
+      fixture.botId = botId; fixture.fail = 'This message is no longer on hold.';
+      fixture.ask = { botId, sessionId, cause: 'limit', provider: 'claude', model: 'opus', target: { provider: 'codex', model: 'gpt-5' }, resetsAt: null };
+      (window as any).__botEmit('bot-failover', fixture.ask);
+    }, { botId, sessionId });
+    const card = page.locator('#composer-area .bot-failover');
+    await expect(card).toBeVisible();
+    await card.getByRole('button', { name: 'Dismiss' }).click();
+    // The same error card as a thread's: leading danger icon, the text announced, the card itself not an alert.
+    const error = page.locator('#bot-failover-bar .bot-failover-error');
+    await expect(error).toHaveClass(/message-error/);
+    await expect(error).toHaveClass(/error-row/);
+    await expect(error.locator('.error-row-head > .error-row-icon[data-state-tone="danger"]')).toHaveCount(1);
+    await expect(error.locator('.error-row-summary')).toHaveText('This message is no longer on hold.');
+    await expect(error.locator('[role="alert"]')).toHaveCount(1);
+    await expect(error.locator('.error-row-summary')).toHaveAttribute('role', 'alert');
+    await expect(error).not.toHaveAttribute('role', /.+/);
+    // The held message is still offered, so the reader can try again.
+    await expect(card).toBeVisible();
+    // A composer rebuild redraws the bar, but the same error is announced only the first time it shows.
+    await error.evaluate(node => { (node as any).__old = true; });
+    await page.evaluate(() => (window as any).__previewEmit('queue-changed', { sessionId: document.querySelector<HTMLTextAreaElement>('#prompt')!.dataset.sessionId }));
+    await expect.poll(() => error.evaluate(node => Boolean((node as any).__old))).toBe(false);
+    await expect(error.locator('.error-row-summary')).toHaveText('This message is no longer on hold.');
+    await expect(error.locator('[role="alert"]')).toHaveCount(0);
+    await error.getByRole('button', { name: 'Dismiss error', exact: true }).click();
+    await expect(error).toHaveCount(0);
+    await expect(card).toBeVisible();
+    // Focus continues from the hold card, not from <body>.
+    await expect(card.getByRole('button').first()).toBeFocused();
+  });
+
   test('messages are bubbles with a day separator and the bot as author', async ({ page }) => {
     // The folded bot brief must never reach the sidebar's one-line preview.
     await page.addInitScript(() => {
@@ -193,6 +236,26 @@ test.describe('bot conversation', () => {
     await expect(pill).toBeVisible();
     await pill.click();
     await expect(pill).toHaveCount(0);
+  });
+
+  test('a long conversation draws whole: a return to the bottom trims nothing and no turn cards appear', async ({ page }) => {
+    await exposePreviewMessages(page);
+    await openSample(page, 'Ledger');
+    const id = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+    await setThread(page, id, pairs(50, id));
+    await sidebar(page).getByRole('button', { name: /^Chat with Scout/ }).click();
+    await expect(page.locator('#breadcrumb .bot-crumb')).toContainText('Scout');
+    await sidebar(page).getByRole('button', { name: /^Chat with Ledger/ }).click();
+    const first = transcript(page).getByText('Message 000', { exact: true });
+    await expect(first).toHaveCount(1);
+    await transcript(page).evaluate(node => { node.scrollTop = node.scrollHeight; });
+    // Past the trim's settle.
+    await page.waitForTimeout(900);
+    await expect(first).toHaveCount(1);
+    await transcript(page).evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
+    await page.waitForTimeout(300);
+    await expect(first).toHaveCount(1);
+    await expect(transcript(page).locator('.turn-card')).toHaveCount(0);
   });
 
   test('a finished turn folds its work into one steps row above the answer', async ({ page }) => {
@@ -243,7 +306,8 @@ test.describe('bot conversation', () => {
     await page.locator('#prompt').press('ControlOrMeta+Enter');
     const bubble = transcript(page).locator('.user-message .message-content').filter({ hasText: /^one$/ });
     await expect(bubble).toBeVisible();
-    expect((await bubble.boundingBox())!.height).toBeLessThan(56);
+    // Polled: the turn can redraw between finding the bubble and measuring it.
+    await expect.poll(async () => (await bubble.boundingBox())?.height ?? Infinity).toBeLessThan(56);
     await expect(page.locator('#stream-region')).toContainText('Got it, I will fold that in.');
     await expect(page.locator('#toast')).not.toContainText('not running');
   });

@@ -21,7 +21,7 @@ export const MATRIX: Readonly<Record<string, MatrixRow>> = SKILL_MATRIX as Recor
  * and can't tell its console. Every other harness treats all switchable names alike. */
 const NON_IDENTIFIER: Readonly<Record<string, SkillModes>> = {
   claude: { enforcement: 'asked', consoleEnforcement: 'asked' }, glm: { enforcement: 'asked', consoleEnforcement: 'asked' },
-  mimo: { enforcement: 'asked', consoleEnforcement: 'asked' }, opencode: { enforcement: 'asked', consoleEnforcement: 'none' },
+  mimo: { enforcement: 'asked', consoleEnforcement: 'asked' }, alibaba: { enforcement: 'asked', consoleEnforcement: 'asked' }, opencode: { enforcement: 'asked', consoleEnforcement: 'none' },
 };
 /** A harness's modes for a skill whose name is (`identifier`) or isn't made only of ASCII letters, digits and `-_.:`. */
 function modes(id: string, identifier: boolean): SkillModes {

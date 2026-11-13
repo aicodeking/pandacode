@@ -84,7 +84,7 @@ impl Homes {
             return;
         }
         match (harness, key) {
-            ("claude" | "glm" | "mimo", "CLAUDE_CONFIG_DIR")
+            ("claude" | "glm" | "mimo" | "alibaba", "CLAUDE_CONFIG_DIR")
             | ("codex", "CODEX_HOME")
             | ("opencode", "OPENCODE_CONFIG_DIR")
             | ("pi", "PI_CODING_AGENT_DIR")
@@ -123,7 +123,7 @@ pub(crate) fn skill_roots(
     let mut roots = Vec::new();
     let mut ancestors = Vec::new();
     match harness {
-        "claude" | "glm" | "mimo" => {
+        "claude" | "glm" | "mimo" | "alibaba" => {
             roots.push(if let Some(dir) = &homes.claude {
                 (dir.join("skills"), "$CLAUDE_CONFIG_DIR/skills")
             } else {

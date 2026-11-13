@@ -8,7 +8,9 @@ import type { SectionId } from '../store/inbox.ts';
 import { useColors } from './theme.ts';
 import { AnimatedNumber, Banner, Chevron, Chip, crossFadeIn, crossFadeOut, EXIT_MS, geometry, PressScale, Skeleton, springs, type } from './ds/index.ts';
 
-const TITLES: Record<SectionId, string> = { bots: 'Bots', running: 'Running', needs: 'Needs you', recent: 'Recent', unsent: 'Unsent', snoozed: 'Snoozed', settled: 'Settled' };
+/** A head's id: an inbox section, or the conversation search's hits under them (SearchResults.tsx). */
+export type HeadId = SectionId | 'conversations';
+const TITLES: Record<HeadId, string> = { conversations: 'In conversations', bots: 'Bots', running: 'Running', needs: 'Needs you', recent: 'Recent', unsent: 'Unsent', snoozed: 'Snoozed', settled: 'Settled', archived: 'Archived' };
 const RETRY = 'Retry';
 /** Rows wait this long to light up, so starting a scroll doesn't flinch them. */
 export const ROW_PRESS_DELAY_MS = 90;
@@ -114,7 +116,7 @@ function Count({ value, color }: { value: number; color: string }) {
 }
 
 /** A section's head: the top of its outer card, or all of it while folded. `open` undefined: doesn't fold. */
-export function SectionHead({ section, count, open, computer, onToggle, entering }: { section: SectionId; count: number; open?: boolean; computer?: string; onToggle?: () => void; entering?: Entering }) {
+export function SectionHead({ section, count, open, computer, onToggle, entering }: { section: HeadId; count: number; open?: boolean; computer?: string; onToggle?: () => void; entering?: Entering }) {
   const colors = useColors();
   const closed = open === false;
   const rounding = useSharedValue(closed ? 1 : 0);

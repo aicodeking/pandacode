@@ -73,6 +73,15 @@ pub struct TurnChangeDiff {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+/// The `error` of a turn diff whose file was hard-linked when captured: its content is never
+/// stored (a hard link carries neither a secret name nor a symlink), and `turn.diff` refuses it.
+pub(crate) const HARD_LINKED_ERROR: &str = "This file is hard-linked elsewhere, so PandaCode didn't keep its diff.";
+impl TurnChangeDiff {
+    /// Whether the file was hard-linked at capture ([`HARD_LINKED_ERROR`]).
+    pub(crate) fn hard_linked(&self) -> bool {
+        self.error.as_deref() == Some(HARD_LINKED_ERROR)
+    }
+}
 pub struct Captured {
     pub summary: TurnChanges,
     pub details: Vec<TurnChangeDiff>,
@@ -85,6 +94,8 @@ struct Entry {
     blob: Option<PathBuf>,
     binary: bool,
     truncated: bool,
+    /// A regular file with more than one hard link: hashed to notice a change, never stored.
+    linked: bool,
 }
 struct Snapshot {
     directory: Option<PathBuf>,
@@ -1023,7 +1034,8 @@ fn scan_paths(
             Ok((bytes, metadata, symlink)) => {
                 let truncated =
                     bytes.len() > budget || (!symlink && bytes.len() as u64 != metadata.len());
-                let blob = (!truncated).then(|| dir.join(result.entries.len().to_string()));
+                let linked = !symlink && hard_linked(&metadata);
+                let blob = (!truncated && !linked).then(|| dir.join(result.entries.len().to_string()));
                 let hash = (!truncated).then(|| Sha256::digest(&bytes).into());
                 let mut entry = Entry {
                     len: if symlink {
@@ -1034,8 +1046,9 @@ fn scan_paths(
                     mode: if symlink { 0o120000 } else { 0o100644 },
                     hash,
                     blob: blob.clone(),
-                    binary: bytes.contains(&0) || std::str::from_utf8(&bytes).is_err(),
+                    binary: !linked && (bytes.contains(&0) || std::str::from_utf8(&bytes).is_err()),
                     truncated,
+                    linked,
                 };
                 #[cfg(unix)]
                 {
@@ -1067,6 +1080,19 @@ fn scan_paths(
         }
     }
     result
+}
+/// Whether an opened regular file has another hard link (Unix; Windows never reports one).
+fn hard_linked(metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.is_file() && metadata.nlink() > 1
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        false
+    }
 }
 fn entry_equal(a: &Entry, b: &Entry) -> bool {
     a.mode == b.mode
@@ -1182,7 +1208,8 @@ fn compare(before: &Snapshot, after: &Snapshot, concurrent: bool) -> Captured {
     let mut left = TURN_BYTES;
     let deadline = Instant::now() + Duration::from_millis(1500);
     for (path, old_path, status, old, new) in changes {
-        let binary = old.is_some_and(|e| e.binary) || new.is_some_and(|e| e.binary);
+        let linked = old.is_some_and(|e| e.linked) || new.is_some_and(|e| e.linked);
+        let binary = !linked && (old.is_some_and(|e| e.binary) || new.is_some_and(|e| e.binary));
         let timed_out = Instant::now() > deadline;
         let unavailable = timed_out
             || old.is_some_and(|e| e.blob.is_none())
@@ -1196,7 +1223,11 @@ fn compare(before: &Snapshot, after: &Snapshot, concurrent: bool) -> Captured {
             error: None,
         };
         let (mut additions, mut deletions) = (None, None);
-        if binary {
+        if linked {
+            // No patch, mode lines or counts: nothing from the file reaches storage.
+            detail.truncated = true;
+            detail.error = Some(HARD_LINKED_ERROR.into());
+        } else if binary {
             detail.error = Some("Binary content changed. A text diff is unavailable.".into());
         } else if unavailable {
             detail.error = Some(
@@ -1243,7 +1274,7 @@ fn compare(before: &Snapshot, after: &Snapshot, concurrent: bool) -> Captured {
                 }
             }
         }
-        if old.zip(new).is_some_and(|(a, b)| a.mode != b.mode) {
+        if !linked && old.zip(new).is_some_and(|(a, b)| a.mode != b.mode) {
             let mode = format!(
                 "old mode {:06o}\nnew mode {:06o}\n",
                 old.unwrap().mode,

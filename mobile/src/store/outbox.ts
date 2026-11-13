@@ -1,10 +1,12 @@
 // The outbox: messages that could not reach their computer (offline, or the phone off the
 // relay) wait here, persisted, and are sent in order once the computer answers again.
 // Pure (tested in node); src/store/local.ts holds and persists the list.
-import { NOT_CONNECTED, OFFLINE } from '../connect/rpc.ts';
-import type { OutboxEntry } from './inbox.ts';
+import { maybeRan, NOT_CONNECTED, OFFLINE } from '../connect/rpc.ts';
+import { parseImages, type SendImage } from './attach.ts';
+import type { OutboxEntry as InboxEntry } from './inbox.ts';
 
-export type { OutboxEntry };
+/** An unsent message; `images` are local file uris (never bytes), uploaded again when it sends. */
+export interface OutboxEntry extends InboxEntry { images?: SendImage[] }
 
 /**
  * Errors where the message surely never reached the host: refused before sending, or
@@ -15,7 +17,15 @@ export const isUnsent = (error: unknown) => error instanceof Error && (error.mes
 
 export interface FlushDeps {
   online: (deviceId: string) => boolean;
+  /** Sends with the entry's `id` as its `sendId`, so a host that dedupes (hello feature
+   * `sendId`) runs a repeated entry once. */
   send: (entry: OutboxEntry) => Promise<unknown>;
+  /** Whether the computer dedupes by `sendId`: then a lost reply leaves the entry queued (no
+   * error) and the next flush sends it again, safely. Without it such an entry is reported.
+   * Only for a `send` that throws lost replies: the app's (`connect.sendMessage`) already
+   * retries under the same `sendId` and resolves `{unconfirmed}` instead, so it counts as sent
+   * and this never applies there. */
+  idempotent?: (deviceId: string) => boolean;
 }
 
 export interface FlushResult { sent: string[]; failed: Record<string, string> }
@@ -37,7 +47,7 @@ export async function flush(entries: readonly OutboxEntry[], deps: FlushDeps): P
       await deps.send(entry);
       result.sent.push(entry.id);
     } catch (error) {
-      if (isUnsent(error)) stoppedHosts.add(entry.deviceId);
+      if (isUnsent(error) || (maybeRan(error) && deps.idempotent?.(entry.deviceId))) stoppedHosts.add(entry.deviceId);
       else {
         result.failed[entry.id] = error instanceof Error ? error.message : 'Could not send.';
         heldTasks.add(task);
@@ -56,8 +66,14 @@ export function parseOutbox(raw: string | null): OutboxEntry[] {
   try {
     const value = JSON.parse(raw ?? '[]');
     if (!Array.isArray(value)) return [];
-    return value.filter((e): e is OutboxEntry =>
-      e && typeof e.id === 'string' && typeof e.deviceId === 'string' && typeof e.sessionId === 'string' && typeof e.text === 'string' && typeof e.createdAt === 'number');
+    return value.flatMap((e): OutboxEntry[] => {
+      if (!(e && typeof e.id === 'string' && typeof e.deviceId === 'string' && typeof e.sessionId === 'string' && typeof e.text === 'string' && typeof e.createdAt === 'number')) return [];
+      // Malformed images drop the entry: sending its words without them would be a different message.
+      const images = parseImages(e.images);
+      if (images === null) return [];
+      const { images: _raw, ...rest } = e as OutboxEntry;
+      return [images?.length ? { ...rest, images } : rest];
+    });
   } catch {
     return [];
   }

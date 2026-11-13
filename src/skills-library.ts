@@ -5,7 +5,8 @@
  * agents…' opens it on the library's copy as a local folder. Bot library skills are read-only here; copies activated by
  * older builds stay where they are and show in Skills as installed skills. */
 import './skills-library.css';
-import { escape } from './dom';
+import { escape, icon } from './dom';
+import { errorText } from './error-text';
 import { infoMark } from './tooltip';
 import { harnessName, requestAddSkill, SKILLS_CHANGED_EVENT, type SkillInventory } from './skill-manager-model';
 
@@ -34,7 +35,7 @@ export type SkillsLibraryHost = {
 export const FINDING_LABELS: Record<SkillFinding['rule'], string> = { secret: 'Secret-shaped value', approvals: 'Turns off approvals or the sandbox', 'pipe-to-shell': 'Download piped into a shell' };
 const STATUS_LABELS: Record<SkillCell['status'], string> = { active: 'Active', outdated: 'Older version', drifted: 'Edited on disk', missing: 'Missing on disk', prompt: 'Via prompt', off: '—' };
 const listText = (items: readonly string[]) => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const message = (error: unknown) => errorText(error);
 /** The page's one line about what is on it (rules; the bot library, read-only, when it has skills) and where skills
  * are added and switched: Skills, the one place for both. */
 const introText = (hasLibrary: boolean) =>
@@ -179,7 +180,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
           ? '<input name="path" aria-label="File path" placeholder="/path/to/rule.md" spellcheck="false" autocomplete="off">'
           : '<div class="skills-import-row"><input name="repo" aria-label="Repository" placeholder="owner/name" spellcheck="false" autocomplete="off"><input name="repoPath" aria-label="Path in repository" placeholder="rules/no-force-push.md" spellcheck="false" autocomplete="off"><input name="ref" aria-label="Branch, tag or commit" placeholder="Default branch" spellcheck="false" autocomplete="off"></div>'}
         <div class="skills-import-row skills-import-actions"><p class="skills-message" role="status">${escape(busy ? 'Working…' : note)}</p><button type="submit" class="secondary-button" ${busy ? 'disabled' : ''}>Import</button></div>
-        <p class="skills-error" role="alert" ${error ? '' : 'hidden'}>${escape(error)}</p>
+        ${error ? `<div class="message-error error-row skills-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary skills-error" role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-dismiss-error aria-label="Dismiss error">${icon('close')}</button></div></div>` : ''}
       </form>
     </div>
     <h3 class="settings-heading">Rules</h3>
@@ -250,6 +251,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     // Settings' own handler then opens the Skills page (data-section), which opens Add skill on the source given.
     const add = (event.target as HTMLElement).closest<HTMLElement>('[data-add-skill]');
     if (add) { requestAddSkill(add.dataset.addSkill ?? ''); return; }
+    if ((event.target as HTMLElement).closest('[data-dismiss-error]')) { error = ''; draw(); host.querySelector<HTMLElement>('.skills-import [type=submit]')?.focus(); return; }
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
     if (!button) return;
     const id = button.closest<HTMLElement>('.skills-item')?.dataset.id;

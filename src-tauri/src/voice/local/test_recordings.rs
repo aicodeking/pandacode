@@ -373,9 +373,11 @@ pub async fn voice_local_test_model(
 }
 
 #[tauri::command]
-pub async fn voice_mic_devices(window: tauri::WebviewWindow) -> Result<Vec<capture::MicDevice>> {
+pub async fn voice_mic_devices(window: tauri::WebviewWindow, voice: tauri::State<'_, Voice>) -> Result<Vec<capture::MicDevice>> {
     authorized(&window)?;
-    crate::blocking(|| Ok(capture::devices())).await
+    // The saved microphone stays listed on Linux even when it is a raw ALSA id.
+    let saved = voice.preferences().ok().and_then(|p| p.device_name);
+    crate::blocking(move || Ok(capture::devices(saved.as_deref()))).await
 }
 
 #[tauri::command]

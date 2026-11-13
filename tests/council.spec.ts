@@ -26,6 +26,10 @@ async function open(page: Page, url = '/', refuse: Record<string, string> = {}, 
   });
   await page.goto(url);
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeVisible({ timeout: 30_000 });
+  // The thread's composer is drawn at once, then again when its first page of messages arrives (renderTranscript then
+  // renderComposer, in one task). A click spanning that redraw presses the old Council button and releases on the new one,
+  // so no click reaches either; the transcript's messages mean the second draw is done.
+  await expect(page.locator('#transcript .message').first()).toBeVisible({ timeout: 30_000 });
 }
 const calls = (page: Page) => page.evaluate(() => (window as any).__councilCalls ?? []);
 const strip = (page: Page) => page.locator('#composer .council-strip');

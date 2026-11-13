@@ -36,6 +36,19 @@ struct Settings {
     /// Settings → Agents → Turn off agent telemetry (`providers/privacy.rs`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     telemetry_off: bool,
+    /// Settings → Providers → Claude Code → "Let PandaCode ask Claude Code for
+    /// usage when it can’t read it" turned off (it is on by default): a usage
+    /// check then never runs Claude Code.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    claude_cli_refresh_off: bool,
+    /// Switches earlier builds stored, when PandaCode renewed logins itself.
+    /// Read so those files still load; ignored and never written again.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    claude_usage_renew: bool,
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    claude_usage_renew_off: bool,
 }
 struct Runtime {
     path: PathBuf,
@@ -64,6 +77,11 @@ pub const MIMO_KEY: Credential = Credential {
     account: "mimo-token-plan",
     label: "MiMo",
     env: "MIMO_API_KEY",
+};
+pub const ALIBABA_KEY: Credential = Credential {
+    account: "alibaba-token-plan",
+    label: "Alibaba Token Plan",
+    env: "ALIBABA_TOKEN_PLAN_API_KEY",
 };
 pub const DEEPSEEK_KEY: Credential = Credential {
     account: "deepseek-api",
@@ -110,7 +128,7 @@ pub fn executable_override(provider: &str) -> Option<PathBuf> {
 /// GLM and MiMo run the Claude executable, so they follow Claude Code's saved location.
 fn saved_executable<'a>(settings: &'a Settings, provider: &str) -> Option<&'a String> {
     let paths = &settings.executable_paths;
-    paths.get(provider).or_else(|| if matches!(provider, "glm" | "mimo") { paths.get("claude") } else { None })
+    paths.get(provider).or_else(|| if matches!(provider, "glm" | "mimo" | "alibaba") { paths.get("claude") } else { None })
 }
 
 /// A POSIX-style environment variable name, shared with the named-connection editor.
@@ -239,6 +257,10 @@ pub(crate) fn glm_key_for_usage() -> Result<Option<String>> {
 
 pub fn mimo_key() -> Result<Option<String>> {
     stored_key(MIMO_KEY)
+}
+
+pub fn alibaba_key() -> Result<Option<String>> {
+    stored_key(ALIBABA_KEY)
 }
 
 pub fn deepseek_key() -> Result<Option<String>> {
@@ -410,6 +432,8 @@ pub struct Configuration {
     glm_key_from_environment: bool,
     mimo_key_saved: bool,
     mimo_key_from_environment: bool,
+    alibaba_key_saved: bool,
+    alibaba_key_from_environment: bool,
     deepseek_key_saved: bool,
     deepseek_key_from_environment: bool,
     commandcode_key_saved: bool,
@@ -418,12 +442,13 @@ pub struct Configuration {
     /// The clusters the app knows; the UI offers exactly these.
     mimo_endpoints: Vec<MimoEndpoint>,
     claude_connection_mode: crate::providers::claude_auth::Mode,
+    claude_cli_refresh: bool,
     secure_storage_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_storage_error: Option<String>,
 }
 fn configuration() -> Result<Configuration> {
-    let (paths, mimo_endpoint, claude_connection_mode, environment, global_environment, global_environment_disabled) = {
+    let (paths, mimo_endpoint, claude_connection_mode, claude_cli_refresh, environment, global_environment, global_environment_disabled) = {
         let runtime = CONFIG
             .get()
             .ok_or("Provider settings are not initialized.")?
@@ -433,6 +458,7 @@ fn configuration() -> Result<Configuration> {
             runtime.settings.executable_paths.clone(),
             runtime.settings.mimo_endpoint.clone(),
             runtime.settings.claude_connection_mode,
+            !runtime.settings.claude_cli_refresh_off,
             runtime.settings.environment.clone(),
             runtime.settings.global_environment.keys().cloned().collect(),
             runtime.settings.global_environment_disabled.clone(),
@@ -447,20 +473,22 @@ fn configuration() -> Result<Configuration> {
         .map(|(id, _)| (id.to_string(), !global_environment_disabled.iter().any(|name| name == id)))
         .collect();
     #[cfg(target_os = "macos")]
-    let (glm_key_saved, mimo_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = (
+    let (glm_key_saved, mimo_key_saved, alibaba_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = (
         glm_key()?.is_some(),
         mimo_key()?.is_some(),
+        alibaba_key()?.is_some(),
         deepseek_key()?.is_some(),
         commandcode_key()?.is_some(),
         None,
     );
     #[cfg(not(target_os = "macos"))]
-    let (glm_key_saved, mimo_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = {
+    let (glm_key_saved, mimo_key_saved, alibaba_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = {
         let (glm, glm_error) = credential_status(glm_key());
         let (mimo, mimo_error) = credential_status(mimo_key());
+        let (alibaba, alibaba_error) = credential_status(alibaba_key());
         let (deepseek, deepseek_error) = credential_status(deepseek_key());
         let (commandcode, commandcode_error) = credential_status(commandcode_key());
-        (glm, mimo, deepseek, commandcode, glm_error.or(mimo_error).or(deepseek_error).or(commandcode_error))
+        (glm, mimo, alibaba, deepseek, commandcode, glm_error.or(mimo_error).or(alibaba_error).or(deepseek_error).or(commandcode_error))
     };
     let from_environment = |name: &str| std::env::var(name).is_ok_and(|key| validate_key(&key).is_ok());
     Ok(Configuration {
@@ -473,6 +501,8 @@ fn configuration() -> Result<Configuration> {
         glm_key_from_environment: from_environment(GLM_KEY.env),
         mimo_key_saved,
         mimo_key_from_environment: from_environment(MIMO_KEY.env),
+        alibaba_key_saved,
+        alibaba_key_from_environment: from_environment(ALIBABA_KEY.env),
         deepseek_key_saved,
         deepseek_key_from_environment: from_environment(DEEPSEEK_KEY.env),
         commandcode_key_saved,
@@ -480,6 +510,7 @@ fn configuration() -> Result<Configuration> {
         mimo_endpoint,
         mimo_endpoints: mimo_endpoints(),
         claude_connection_mode,
+        claude_cli_refresh,
         secure_storage_available: cfg!(any(
             target_os = "macos",
             target_os = "linux",
@@ -587,7 +618,7 @@ pub async fn provider_set_executable(
 ) -> Result<Configuration> {
     // Claude's location is GLM's and MiMo's too (`saved_executable`).
     let affected: Vec<String> = if provider == "claude" {
-        ["claude", "glm", "mimo"].map(String::from).to_vec()
+        ["claude", "glm", "mimo", "alibaba"].map(String::from).to_vec()
     } else {
         vec![provider.clone()]
     };
@@ -969,6 +1000,24 @@ pub async fn provider_remove_mimo_key() -> Result<Configuration> {
     .await
 }
 #[tauri::command]
+pub async fn provider_save_alibaba_key(key: String) -> Result<Configuration> {
+    crate::blocking(move || {
+        save_key(ALIBABA_KEY, &key)?;
+        crate::agent_usage::invalidate("alibaba");
+        configuration()
+    })
+    .await
+}
+#[tauri::command]
+pub async fn provider_remove_alibaba_key() -> Result<Configuration> {
+    crate::blocking(|| {
+        remove_key(ALIBABA_KEY)?;
+        crate::agent_usage::invalidate("alibaba");
+        configuration()
+    })
+    .await
+}
+#[tauri::command]
 pub async fn provider_save_deepseek_key(key: String) -> Result<Configuration> {
     crate::blocking(move || {
         save_key(DEEPSEEK_KEY, &key)?;
@@ -1015,6 +1064,28 @@ pub(crate) fn claude_connection_mode() -> crate::providers::claude_auth::Mode {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.claude_connection_mode)).unwrap_or_default()
 }
 
+/// Whether a usage check may run Claude Code to refresh an expired login (on by default).
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn claude_cli_refresh() -> bool {
+    CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| !runtime.settings.claude_cli_refresh_off)).unwrap_or(true)
+}
+
+/// Settings → Providers → Claude Code → Let PandaCode ask Claude Code for usage when it can’t read it.
+#[tauri::command]
+pub async fn provider_set_claude_cli_refresh(enabled: bool) -> Result<Configuration> {
+    crate::blocking(move || {
+        let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
+            .lock().map_err(|e| e.to_string())?;
+        let next = Settings { claude_cli_refresh_off: !enabled, ..runtime.settings.clone() };
+        persist(&mut runtime, next)?;
+        drop(runtime);
+        // The default setup and every named connection: their readings were
+        // made under the old setting.
+        crate::agent_usage::invalidate_all("claude");
+        configuration()
+    }).await
+}
+
 pub(crate) fn telemetry_off() -> bool {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.telemetry_off)).unwrap_or(false)
 }
@@ -1039,17 +1110,24 @@ pub async fn provider_set_claude_connection_mode(
     let result = crate::blocking(move || {
         let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
             .lock().map_err(|e| e.to_string())?;
-        let mut next = runtime.settings.clone();
-        next.claude_connection_mode = mode;
-        persist(&mut runtime, next)?;
+        set_claude_connection_mode(&mut runtime, mode)?;
         drop(runtime);
-        crate::slash_commands::invalidate_provider("claude");
-        crate::agent_usage::invalidate("claude");
         configuration()
     }).await?;
     let _ = app.emit("provider-models-changed", serde_json::json!({"provider":"claude"}));
     Ok(result)
 }
+/// Saves the Claude connection mode and drops what was worked out under the
+/// old one: slash commands, and every Claude usage reading (named connections
+/// too), since which credentials count changed.
+fn set_claude_connection_mode(runtime: &mut Runtime, mode: crate::providers::claude_auth::Mode) -> Result<()> {
+    let next = Settings { claude_connection_mode: mode, ..runtime.settings.clone() };
+    persist(runtime, next)?;
+    crate::slash_commands::invalidate_provider("claude");
+    crate::agent_usage::invalidate_all("claude");
+    Ok(())
+}
+
 /// Choose the MiMo cluster shown on the Token Plan page, or pay-as-you-go.
 #[tauri::command]
 pub async fn provider_set_mimo_endpoint(
@@ -1099,6 +1177,8 @@ mod tests {
             glm_key_from_environment: false,
             mimo_key_saved: false,
             mimo_key_from_environment: false,
+            alibaba_key_saved: false,
+            alibaba_key_from_environment: false,
             deepseek_key_saved: false,
             deepseek_key_from_environment: false,
             commandcode_key_saved: false,
@@ -1106,6 +1186,7 @@ mod tests {
             mimo_endpoint: None,
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
+            claude_cli_refresh: true,
             secure_storage_available: true,
             credential_storage_error,
         };
@@ -1126,6 +1207,8 @@ mod tests {
             glm_key_from_environment: true,
             mimo_key_saved: true,
             mimo_key_from_environment: false,
+            alibaba_key_saved: false,
+            alibaba_key_from_environment: false,
             deepseek_key_saved: false,
             deepseek_key_from_environment: false,
             commandcode_key_saved: false,
@@ -1133,6 +1216,7 @@ mod tests {
             mimo_endpoint: Some("token-plan-sgp".into()),
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
+            claude_cli_refresh: true,
             secure_storage_available: true,
             credential_storage_error,
         };
@@ -1221,6 +1305,36 @@ mod tests {
             serde_json::json!({"executablePaths":{},"apiKey":"secret"})
         )
         .is_err());
+    }
+    #[test]
+    fn running_claude_code_to_refresh_is_on_until_turned_off_and_old_renewal_switches_are_ignored() {
+        assert!(!Settings::default().claude_cli_refresh_off, "on by default");
+        // Files from builds where PandaCode renewed logins itself still load; those switches are ignored.
+        for old in [r#"{"executablePaths":{},"claudeUsageRenewOff":true}"#, r#"{"executablePaths":{},"claudeUsageRenew":true}"#] {
+            let settings: Settings = serde_json::from_str(old).unwrap();
+            assert!(!settings.claude_cli_refresh_off, "{old}");
+        }
+        let directory = std::env::temp_dir().join(format!("pandacode-claude-cli-refresh-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime { path: directory.join("provider-settings.json"), settings: Settings::default() };
+        persist(&mut runtime, Settings { claude_cli_refresh_off: true, claude_usage_renew: true, ..Settings::default() }).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert_eq!(saved["claudeCliRefreshOff"], true);
+        assert!(saved.get("claudeUsageRenew").is_none() && saved.get("claudeUsageRenewOff").is_none(), "old switches never written");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn switching_the_claude_connection_mode_clears_every_claude_usage_reading() {
+        let directory = std::env::temp_dir().join(format!("pandacode-claude-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime { path: directory.join("provider-settings.json"), settings: Settings::default() };
+        let (default, named) = crate::agent_usage::generations("claude", "claude-mode-test#1");
+        set_claude_connection_mode(&mut runtime, crate::providers::claude_auth::Mode::Subscription).unwrap();
+        let (default_after, named_after) = crate::agent_usage::generations("claude", "claude-mode-test#1");
+        assert!(default_after > default && named_after > named, "the default and every connection reading are dropped");
+        assert!(matches!(runtime.settings.claude_connection_mode, crate::providers::claude_auth::Mode::Subscription));
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn telemetry_switch_survives_reload_and_keeps_other_settings() {
@@ -1439,6 +1553,8 @@ mod tests {
             glm_key_from_environment: false,
             mimo_key_saved: false,
             mimo_key_from_environment: false,
+            alibaba_key_saved: false,
+            alibaba_key_from_environment: false,
             deepseek_key_saved: false,
             deepseek_key_from_environment: false,
             commandcode_key_saved: false,
@@ -1446,6 +1562,7 @@ mod tests {
             mimo_endpoint: None,
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
+            claude_cli_refresh: true,
             secure_storage_available: true,
             credential_storage_error: None,
         };
@@ -1537,7 +1654,7 @@ mod tests {
     fn glm_and_mimo_follow_the_claude_location_and_nothing_else_does() {
         let mut settings = Settings::default();
         settings.executable_paths.insert("claude".into(), "/opt/claude".into());
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             assert_eq!(saved_executable(&settings, provider).unwrap(), "/opt/claude");
         }
         assert_eq!(saved_executable(&settings, "codex"), None);

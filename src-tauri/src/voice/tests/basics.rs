@@ -100,3 +100,12 @@ fn voice_probe_recording_reports_live_levels_until_stop_or_cap() {
     capture::record(&pcm, &failed, &stopped, Duration::from_millis(120), &meter);
     assert!(levels.lock().unwrap().iter().skip(1).all(|l| *l == 0.0));
 }
+
+#[test]
+fn automatic_stop_messages_name_the_shown_button() {
+    // The card's button reads Transcribe recording until a transcription was attempted.
+    for message in [capture::MIC_STOPPED, capture::LIMIT_REACHED] {
+        assert!(message.contains("Transcribe recording"), "{message}");
+        assert!(!message.contains("Retry"), "{message}");
+    }
+}

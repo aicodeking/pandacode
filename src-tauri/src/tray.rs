@@ -252,6 +252,10 @@ pub(crate) struct TraySnapshot {
     finished: Vec<TrayTask>,
     usage: Vec<Usage>,
     checking: bool,
+    /// PandaCode is running Claude Code for the global Claude setup's check:
+    /// its row says "Asking Claude Code…".
+    #[serde(rename = "askingClaude")]
+    asking_claude: bool,
 }
 
 #[tauri::command]
@@ -292,6 +296,7 @@ fn snapshot(sessions: &[Session], projects: &HashMap<String, String>, unseen: &B
             .collect(),
         usage,
         checking: CHECKING.load(Ordering::SeqCst) > 0,
+        asking_claude: crate::agent_usage_claude::asking_for(""),
     }
 }
 
@@ -338,6 +343,50 @@ pub(crate) fn tray_resize(app: AppHandle, height: f64) {
     }
 }
 
+/// Whether a result gets a row in the popover: any with windows; for Claude
+/// also one without (a rate limit, an expired login…), so its row shows the
+/// state instead of silently disappearing, but a "no login" result only when
+/// Claude Code is installed (a Codex-only setup gets no permanent "Sign-in
+/// needed" row). Other agents without limits (not set up) stay out.
+fn shown_in_popover(provider: &str, usage: &crate::agent_usage::Usage, claude_installed: bool) -> bool {
+    if !usage.windows.is_empty() {
+        return true;
+    }
+    // A setup that isn't the subscription (an API key, say) has no limits
+    // here: the panel explains it, the menu bar leaves it out.
+    let not_subscription = usage.action == Some("apiConnection");
+    provider == "claude" && usage.status != "unsupported" && !not_subscription && (claude_installed || usage.status != "signedOut")
+}
+
+/// While a Claude check runs, the popover is told twice a second, so its
+/// Claude row can say "Asking Claude Code…" once PandaCode runs it; a row
+/// with nothing yet shows the saved reading meanwhile (`show_saved`).
+fn asking_ticker(app: AppHandle) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        let mut was = false;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let asking = crate::agent_usage_claude::asking_for("");
+            if show_saved(crate::agent_usage_claude::saved_for("").await) || asking != was {
+                was = asking;
+                let _ = app.emit_to(LABEL, "tray-changed", ());
+            }
+        }
+    })
+}
+
+/// Puts the saved Claude reading (stale) in the popover while its check runs,
+/// unless the row already shows something; whether it did.
+fn show_saved(saved: Option<Usage>) -> bool {
+    let Some(saved) = saved.filter(|saved| !saved.windows.is_empty()) else { return false };
+    let mut all = lock(&USAGE);
+    if all.contains_key("claude") {
+        return false;
+    }
+    all.insert("claude".into(), saved);
+    true
+}
+
 /// Claude and Codex, plus every agent a task has used. Each result updates the popover.
 fn refresh_usage(app: &AppHandle, refresh_now: bool) {
     let mut providers: BTreeSet<String> = ["claude", "codex"].map(String::from).into();
@@ -353,12 +402,20 @@ fn refresh_usage(app: &AppHandle, refresh_now: bool) {
     for provider in providers {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Ok(usage) = crate::agent_usage::query_usage(provider.clone(), refresh_now).await {
+            let ticker = (provider == "claude").then(|| asking_ticker(app.clone()));
+            let queried = crate::agent_usage::query_usage(provider.clone(), refresh_now).await;
+            if let Some(ticker) = ticker {
+                ticker.abort();
+            }
+            if let Ok(usage) = queried {
+                // Looked up off the async threads, before taking the lock (it touches the disk).
+                let installed = provider == "claude"
+                    && tokio::task::spawn_blocking(|| crate::providers::executable("claude").is_some()).await.unwrap_or(false);
                 let mut all = lock(&USAGE);
-                if usage.windows.is_empty() {
-                    all.remove(&provider);
-                } else {
+                if shown_in_popover(&provider, &usage, installed) {
                     all.insert(provider, usage);
+                } else {
+                    all.remove(&provider);
                 }
             }
             CHECKING.fetch_sub(1, Ordering::SeqCst);
@@ -370,6 +427,38 @@ fn refresh_usage(app: &AppHandle, refresh_now: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_claude_result_without_windows_keeps_its_row_with_its_state() {
+        use crate::agent_usage::Usage;
+        let mut limited = Usage::empty("claude", "error", "Claude's usage service is rate limited.");
+        limited.action = Some("rateLimited");
+        assert!(shown_in_popover("claude", &limited, false), "a login exists: its state shows");
+        let no_login = Usage::empty("claude", "signedOut", "Sign in.");
+        assert!(shown_in_popover("claude", &no_login, true), "Claude Code installed: sign-in needed shows");
+        assert!(!shown_in_popover("claude", &no_login, false), "not installed and no login: no row");
+        assert!(!shown_in_popover("kimi", &Usage::empty("kimi", "unavailable", "Not set up."), true), "others without limits stay out");
+        assert!(!shown_in_popover("claude", &Usage::empty("claude", "unsupported", ""), true));
+        let api_key = Usage { action: Some("apiConnection"), ..Usage::empty("claude", "unavailable", "Claude is launched with ANTHROPIC_API_KEY set.") };
+        assert!(!shown_in_popover("claude", &api_key, true), "not your subscription: panel only");
+    }
+
+    #[test]
+    fn while_claude_is_checked_the_saved_reading_fills_an_empty_row_only() {
+        lock(&USAGE).remove("claude");
+        let mut saved = Usage::empty("claude", "ready", "");
+        saved.stale = true;
+        assert!(!show_saved(Some(saved.clone())), "no windows: nothing to show");
+        saved.windows.push(crate::agent_usage::UsageWindow::new("Weekly", 21.0, None));
+        assert!(!show_saved(None));
+        assert!(show_saved(Some(saved.clone())), "an empty row shows it");
+        assert!(lock(&USAGE)["claude"].stale);
+        let fresh = Usage::empty("claude", "ready", "");
+        lock(&USAGE).insert("claude".into(), fresh);
+        assert!(!show_saved(Some(saved)), "a row with a result keeps it");
+        assert!(!lock(&USAGE)["claude"].stale);
+        lock(&USAGE).remove("claude");
+    }
 
     #[test]
     fn tray_position_centers_under_icon_and_clamps() {

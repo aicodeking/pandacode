@@ -4,6 +4,7 @@
  * this view never reads them back. */
 import './cloud-settings.css';
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 import { infoMark } from './tooltip';
 
 export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean };
@@ -88,6 +89,8 @@ type InstaboxImages = { images: { value: string; label: string }[]; selected: st
 const IMAGE_HELP = 'New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.';
 const CLAUDE_TOKEN_HELP = 'Run `claude setup-token` and paste the long-lived token it prints. Without one, PandaCode copies this computer’s Claude Code login to the machine before each run.';
 const INHERIT_HELP = 'When on, cloud agents this provider runs also get the environment variables saved for the harness in Settings → Agents → Providers — a proxy the cloud machine can reach, for example. Off by default: nothing is sent to this cloud. Variables that point at this computer (a localhost HTTP_PROXY) are refused when a task starts, because a cloud machine cannot reach them.';
+
+const failure = (error: unknown) => errorText(error, 'The request failed. Try again.');
 
 export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost): () => void {
   const ids = Object.keys(PROVIDERS) as CloudConnection['provider'][];
@@ -196,7 +199,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   async function loadImages(): Promise<void> {
     imagesLoading = true; imagesError = ''; renderImages();
     try { images = await options.call<InstaboxImages>('cloud_instabox_images'); }
-    catch (error) { images = null; imagesError = `Could not load machine images: ${error instanceof Error ? error.message : String(error)}`; }
+    catch (error) { images = null; imagesError = `Could not load machine images: ${failure(error)}`; }
     finally { imagesLoading = false; if (!disposed) renderImages(); }
   }
   function syncImages(): void {
@@ -213,8 +216,13 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       status.textContent = `Saved. New machines start from ${images.images.find(image => image.value === images!.selected)?.label ?? images.selected}.`;
     } catch (error) {
       status.hidden = true;
-      imagesError = error instanceof Error ? error.message : String(error);
+      imagesError = failure(error);
     } finally { imageSaving = false; if (!disposed) renderImages(); }
+  }
+  /** The row status line under a provider card; a failure is drawn in the error colour until the next status replaces it. */
+  function rowStatus(root: HTMLElement, text: string, failed = false): void {
+    const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
+    line.hidden = !text; line.textContent = text; line.classList.toggle('cloud-error', failed);
   }
   function say(root: HTMLElement, kind: 'progress' | 'error', text: string): void {
     const line = root.querySelector<HTMLElement>(`.cloud-${kind}`)!;
@@ -233,14 +241,13 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       form.reset(); form.hidden = true;
       say(root, 'progress', '');
     } catch (error) {
-      if (!disposed) { say(root, 'progress', ''); say(root, 'error', error instanceof Error ? error.message : String(error)); }
+      if (!disposed) { say(root, 'progress', ''); say(root, 'error', failure(error)); }
     } finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
   async function setupSandboxes(root: HTMLElement): Promise<void> {
-    const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
-    busy = 'cloudflare'; line.hidden = false; line.textContent = 'Preparing the sandbox Worker…'; render();
-    try { connections = await options.call<CloudConnection[]>('cloud_setup_sandboxes'); line.textContent = 'Sandboxes are ready.'; }
-    catch (error) { line.textContent = error instanceof Error ? error.message : String(error); line.classList.add('cloud-error'); }
+    busy = 'cloudflare'; rowStatus(root, 'Preparing the sandbox Worker…'); render();
+    try { connections = await options.call<CloudConnection[]>('cloud_setup_sandboxes'); rowStatus(root, 'Sandboxes are ready.'); }
+    catch (error) { rowStatus(root, failure(error), true); }
     finally { busy = ''; if (!disposed) render(); }
   }
   async function saveClaudeToken(form: HTMLFormElement): Promise<void> {
@@ -248,12 +255,12 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     say(root, 'progress', ''); say(root, 'error', '');
     if (!token) { say(root, 'error', 'Paste the token from claude setup-token.'); return; }
     try { await options.call('cloud_agent_set_claude_token', { token }); if (!disposed) { form.reset(); say(root, 'progress', 'Saved. Cloud agents sign in to Claude with this token.'); } }
-    catch (error) { if (!disposed) say(root, 'error', error instanceof Error ? error.message : String(error)); }
+    catch (error) { if (!disposed) say(root, 'error', failure(error)); }
   }
   async function disconnect(id: CloudConnection['provider']): Promise<void> {
     busy = id; render();
     try { connections = await options.call<CloudConnection[]>('cloud_disconnect', { provider: id }); }
-    catch (error) { say(section(id), 'error', error instanceof Error ? error.message : String(error)); }
+    catch (error) { say(section(id), 'error', failure(error)); }
     finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
 
@@ -284,6 +291,8 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const id = root.dataset.provider as CloudConnection['provider'];
       if (busy) { target.checked = !target.checked; return; }
       const inherit = target.checked;
+      // A failure from an earlier toggle must not outlive the next attempt.
+      rowStatus(root, '');
       // Optimistic: render() must not read the checkbox back to the old state mid-save.
       const previous = connections;
       connections = connections.map(connection => connection.provider === id ? { ...connection, inheritEnvironment: inherit } : connection);
@@ -295,9 +304,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         connections = previous; target.checked = !inherit;
         // The connect form's own error line is hidden while connected, so the
         // visible row status carries the failure.
-        const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
-        line.hidden = false; line.classList.add('cloud-error');
-        line.textContent = error instanceof Error ? error.message : String(error);
+        rowStatus(root, failure(error), true);
       }).finally(() => { busy = ''; if (!disposed) render(); });
       return;
     }

@@ -1025,7 +1025,10 @@ instead of silently running in a different one.
 Accept edits → `edit`, Full access → `yolo`. Permission requests arrive as
 `interaction/requestPermission` reverse requests with ready-made response objects;
 PandaCode answers with the offered `allow`/`deny` response, never inventing a
-standing grant. Sessions use deferred persistence, so captures and failed starts
+standing grant. In Full access, a request that offers a one-time allow is answered
+with it automatically; one that offers only a lasting allow (such as `allow_project`)
+asks a person instead, and a team worker declines it with a plain deny (no offered
+deny option is needed). Sessions use deferred persistence, so captures and failed starts
 leave nothing in the user's ZCode history; `session/resume` keeps a task's session
 across turns.
 
@@ -1306,3 +1309,23 @@ and settings (`app.pandacode.cloud`) and bot channel tokens (`app.pandacode.bots
   GLM read uses the file, else the noninteractive helper (`usage_keychain.rs`).
 - **Linux:** the Secret Service. **Windows:** Credential Manager. Neither prompts after an
   update.
+
+## Alibaba Token Plan
+
+Alibaba Cloud Model Studio's Token Plan runs the same way as MiMo: the installed
+Claude Code, pointed at the plan's Anthropic-compatible endpoint
+`https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic` with the plan's
+own key (`sk-sp-…`), sent as `ANTHROPIC_AUTH_TOKEN` (documented at
+https://www.alibabacloud.com/help/en/model-studio/claude-code-token-plan). The plan is
+sold in Singapore only, so there is no endpoint choice. Keys and base URLs of Token
+Plan, Coding Plan and pay-as-you-go are isolated: a Coding Plan or `sk-` key gets 401,
+which the missing-key error and the Settings card both say.
+
+The key lives in the secure store (`alibaba-token-plan`) or comes from
+`ALIBABA_TOKEN_PLAN_API_KEY`, which is scrubbed from the child with the other relay keys.
+Isolation is MiMo's: `--setting-sources ""`, the endpoint and model slots in `--settings`.
+Every Claude Code slot must name a plan model or requests fail, so main and Opus are
+`qwen3.8-max` and Sonnet and Haiku `qwen3.8-flash` (the documented mapping). The picker
+lists the text models from the Personal Edition overview's "Supported models"
+(Qwen 3.6–4 preview, `auto`, DeepSeek V4, GLM 5.2/5.3), read on 2026-11-12;
+`qwen4-max-preview` retires after November 25, 2026. Cloud machines do not run it yet.

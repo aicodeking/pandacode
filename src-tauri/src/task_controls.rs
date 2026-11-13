@@ -105,7 +105,7 @@ pub(super) async fn task_goal(
         // An agent may have started or the selected harness may have changed
         // while the independent metadata process was reading its snapshot.
         let running = {
-            let agents = state.agents.lock().map_err(|error| error.to_string())?;
+            let agents = crate::run_requests::lock_agents(&state.agents).map_err(|error| error.to_string())?;
             let store = state.store.lock().map_err(|error| error.to_string())?;
             let current = store.session(&session_id)?;
             if current.provider != "codex" || current.resume_id.as_deref() != Some(remote) {
@@ -165,7 +165,7 @@ pub(super) async fn codex_command(
 ) -> Result<Value> {
     let (_, cwd) = context(&state, &session_id)?;
     if matches!(request, command_operations::Request::Logout)
-        && !state.agents.lock().map_err(|e| e.to_string())?.is_empty()
+        && !crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.is_empty()
     {
         return Err("Stop running tasks before signing out.".into());
     }
@@ -229,6 +229,8 @@ pub(super) async fn codex_jobs(
 pub(super) enum TaskPreference {
     Plan { enabled: bool },
     Fast { enabled: bool },
+    /// A speed tier from the model's catalog; None is the standard speed.
+    Speed { tier: Option<String> },
 }
 #[tauri::command]
 pub(super) async fn set_task_preference(
@@ -247,6 +249,12 @@ pub(super) async fn set_task_preference(
     }
     if terminal::harness_running(&state.terminals, &session_id)? {
         return Err("Close this task's harness console before changing its settings here.".into());
+    }
+    if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
+        // Claude reads fast mode at launch, so the choice applies from the next turn.
+        let delta = json!({"serviceTier": claude_tier(request)?});
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        return save_preference(&store, &session_id, &delta);
     }
     let running = state
         .agents
@@ -268,9 +276,17 @@ pub(super) async fn set_task_preference(
         }
         TaskPreference::Fast { enabled } => {
             let tier = if enabled {
-                json!(command_operations::fast_service_tier(&cwd, &task.model).await?)
+                json!(command_operations::service_tier(&cwd, &task.model, "fast").await?)
             } else {
                 Value::Null
+            };
+            json!({"serviceTier":tier})
+        }
+        TaskPreference::Speed { tier } => {
+            let tier = match tier {
+                Some(tier) if !crate::providers::valid_service_tier(&tier) => return Err("Choose a valid speed.".into()),
+                Some(tier) => json!(command_operations::service_tier(&cwd, &task.model, &tier).await?),
+                None => Value::Null,
             };
             json!({"serviceTier":tier})
         }
@@ -286,15 +302,32 @@ pub(super) async fn set_task_preference(
     {
         return Err("The task's model changed. Open its settings again.".into());
     }
-    let settings = merge_preference(current.codex_settings, &delta)?;
+    save_preference(&store, &session_id, &delta)
+}
+
+fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {
+    let settings = merge_preference(store.session(sid)?.codex_settings, delta)?;
     store
         .db
         .execute(
             "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
-            rusqlite::params![session_id, settings.to_string()],
+            rusqlite::params![sid, settings.to_string()],
         )
         .map_err(|e| e.to_string())?;
-    store.session(&session_id)
+    store.session(sid)
+}
+
+/// Claude Code has one switch, fast mode, stored as the `fast` tier.
+fn claude_tier(request: TaskPreference) -> Result<Option<String>> {
+    let tier = match request {
+        TaskPreference::Fast { enabled } => enabled.then(|| "fast".to_string()),
+        TaskPreference::Speed { tier } => tier,
+        TaskPreference::Plan { .. } => return Err("Use the Codex harness for this command.".into()),
+    };
+    if tier.as_deref().is_some_and(|tier| tier != "fast") {
+        return Err("Claude Code offers only the standard and Fast speeds.".into());
+    }
+    Ok(tier)
 }
 
 // Per-task gates serialize acknowledgements and writes without blocking other
@@ -338,7 +371,7 @@ struct TaskLease {
 }
 impl TaskLease {
     fn acquire(state: &AppState, sid: &str) -> Result<Self> {
-        let mut agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let mut agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         crate::agent_updates::ensure_not_installing()?;
         if state.shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
@@ -366,7 +399,7 @@ impl TaskLease {
 }
 impl Drop for TaskLease {
     fn drop(&mut self) {
-        if let Ok(mut agents) = self.agents.lock() {
+        if let Ok(mut agents) = crate::run_requests::lock_agents(&self.agents) {
             if agents
                 .get(&self.sid)
                 .is_some_and(|a| a.run_id == self.run_id)
@@ -419,8 +452,15 @@ pub(super) async fn fork_codex_task(
     session_id: String,
     remote_id: Option<String>,
 ) -> Result<Session> {
-    let _lease = TaskLease::acquire(&state, &session_id)?;
-    let (source, cwd) = context(&state, &session_id)?;
+    fork_codex(&state, session_id, remote_id).await
+}
+
+/// `/fork`: the task lease refuses a team worker's session, and so does this explicitly, so a
+/// worker's full access can never reach a task the user then runs.
+async fn fork_codex(state: &AppState, session_id: String, remote_id: Option<String>) -> Result<Session> {
+    let _lease = TaskLease::acquire(state, &session_id)?;
+    crate::architect::refuse_worker(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)?;
+    let (source, cwd) = context(state, &session_id)?;
     let adopting = remote_id.is_some();
     if !adopting {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -458,11 +498,13 @@ pub(super) async fn fork_codex_task(
         .db
         .unchecked_transaction()
         .map_err(|e| e.to_string())?;
+    // Never a worker's full access (refused above in any case): a worker's fork takes its lead's mode.
+    let mode = crate::architect::fork_mode(&store, &source);
     let task = store.create_session(
         &source.project_id,
         "codex",
         fork.model.as_deref().unwrap_or(&source.model),
-        &source.mode,
+        &mode,
     )?;
     store.db.execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task.id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
     for (role, content) in history {
@@ -622,18 +664,9 @@ pub(super) async fn start_harness_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<String> {
-    let lease = TaskLease::acquire(&state, &session_id)?;
+    let (lease, task, cwd) = console_task(&state, &session_id)?;
     let store = state.store.clone();
     let terms = state.terminals.clone();
-    let (task, cwd) = {
-        let db = store.lock().map_err(|error| error.to_string())?;
-        let task = db.session(&session_id)?;
-        if crate::context_recovery::pending(&db, &task)? {
-            return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
-        }
-        let cwd = db.workspace_root(&task.project_id, Some(&session_id))?;
-        (task, cwd)
-    };
     if task.provider == "codex" {
         if let Some(remote) = task.resume_id.as_deref() {
             // A native CLI can change the persisted goal while PandaCode is idle.
@@ -647,7 +680,7 @@ pub(super) async fn start_harness_terminal(
         }
     }
     blocking(move || {
-        let active = lease.agents.lock().map_err(|error| error.to_string())?;
+        let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
         }
@@ -686,7 +719,23 @@ pub(super) async fn start_harness_terminal(
     .await
 }
 
+/// The console's opening checks. A team worker's session is refused (by the task lease and
+/// explicitly here): its console would run the harness in the worker's full access.
+fn console_task(state: &AppState, session_id: &str) -> Result<(TaskLease, Session, PathBuf)> {
+    let lease = TaskLease::acquire(state, session_id)?;
+    let db = state.store.lock().map_err(|error| error.to_string())?;
+    crate::architect::refuse_worker(&db, session_id)?;
+    let task = db.session(session_id)?;
+    if crate::context_recovery::pending(&db, &task)? {
+        return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
+    }
+    let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
+    Ok((lease, task, cwd))
+}
+
 fn verify_console_task(store: &Store, expected: &Session) -> Result<Session> {
+    // Checked again right before the console starts.
+    crate::architect::refuse_worker(store, &expected.id)?;
     let current = store.session(&expected.id)?;
     if current.provider != expected.provider
         || current.resume_id != expected.resume_id
@@ -720,6 +769,49 @@ mod command_tests {
             shutdown: AtomicU8::new(0),
         }
     }
+    /// A team with one worker session in full access under an "ask" lead.
+    fn worker_state() -> (AppState, String, String) {
+        let state = state();
+        let (lead, worker) = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let lead = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            let worker = store.create_session(&project.id, "codex", "default", "full").unwrap();
+            store.resume(&worker.id, &uuid::Uuid::new_v4().to_string()).unwrap();
+            store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'w1',?2)", rusqlite::params![lead.id, worker.id]).unwrap();
+            (lead.id, worker.id)
+        };
+        (state, lead, worker)
+    }
+
+    #[test]
+    fn the_task_lease_both_fork_and_console_take_first_refuses_a_worker() {
+        let (state, _lead, worker) = worker_state();
+        let error = TaskLease::acquire(&state, &worker).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+    }
+
+    #[test]
+    fn a_worker_session_gets_no_console() {
+        let (state, _lead, worker) = worker_state();
+        let error = console_task(&state, &worker).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+        // Checked again right before the console starts.
+        let store = state.store.lock().unwrap();
+        let session = store.session(&worker).unwrap();
+        let error = verify_console_task(&store, &session).err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_worker_session_cannot_be_forked_into_a_users_task() {
+        let (state, _lead, worker) = worker_state();
+        let error = fork_codex(&state, worker.clone(), None).await.err().unwrap();
+        assert!(error.contains("managed by its architect"), "{error}");
+        let tasks: i64 = state.store.lock().unwrap().db.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        assert_eq!(tasks, 2, "no new task was created");
+    }
+
     #[test]
     fn console_uses_refreshed_goal_and_rejects_changes_to_its_native_session() {
         let store = Store::open(Path::new(":memory:")).unwrap();
@@ -773,6 +865,19 @@ mod command_tests {
         assert_eq!(updated["collaborationMode"]["mode"], "plan");
         assert!(updated["serviceTier"].is_null());
         assert!(merge_preference(None, &json!({"approvalPolicy":"never"})).is_err());
+    }
+    #[test]
+    fn speed_preferences_parse_and_claude_accepts_only_fast() {
+        let parse = |value: Value| serde_json::from_value::<TaskPreference>(value);
+        assert!(matches!(parse(json!({"action":"speed","tier":"ultrafast"})), Ok(TaskPreference::Speed { tier: Some(tier) }) if tier == "ultrafast"));
+        assert!(matches!(parse(json!({"action":"speed","tier":null})), Ok(TaskPreference::Speed { tier: None })));
+        assert!(parse(json!({"action":"speed","tier":"fast","extra":1})).is_err());
+        assert_eq!(claude_tier(TaskPreference::Fast { enabled: true }).unwrap().as_deref(), Some("fast"));
+        assert_eq!(claude_tier(TaskPreference::Fast { enabled: false }).unwrap(), None);
+        assert_eq!(claude_tier(TaskPreference::Speed { tier: Some("fast".into()) }).unwrap().as_deref(), Some("fast"));
+        assert_eq!(claude_tier(TaskPreference::Speed { tier: None }).unwrap(), None);
+        assert!(claude_tier(TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
+        assert!(claude_tier(TaskPreference::Plan { enabled: true }).is_err());
     }
     #[test]
     fn imported_task_lookup_includes_history_outside_the_sidebar_limit() {
