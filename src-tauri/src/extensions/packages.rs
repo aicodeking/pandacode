@@ -520,6 +520,7 @@ mod tests {
             if !stop { assert!(seen.iter().any(|event| event.kind == "text" && event.text == if approved { "Approved. " } else { "Rejected. " })); }
             if stop && resume && approved { packages.0.lock().unwrap().enable(owner, true).unwrap(); }
         } } } }
+        crate::architect::tests::dynamic_package_team_fixture(&storage.0).await;
         packages.0.lock().unwrap().enable("sample.fake-harness", false).unwrap();
         assert!(providers::dynamic_adapter::require_available("sample.fake-harness/recorded").is_err());
         assert_eq!(providers::dynamic_adapter::discover().len(), 1);

@@ -3,6 +3,7 @@ import { renderTurnChanges, captureChangeCards, restoreChangeCards } from './tur
 import { call } from './bridge';
 import { escape, icon, markdown, morph } from './dom';
 import { providerLogo } from './provider-logos';
+import { providerSupportsTeams } from './extensions/provider-state';
 import { fallbackModel } from './model-catalog';
 import { openModelPicker } from './model-picker';
 import { showPopover, hidePopover } from './popover-motion';
@@ -142,7 +143,8 @@ export function openArchitectSetup(anchor: HTMLElement, load: () => Promise<Setu
 
 /** Setup stays local until applied. Model and effort changes retain the form and pickers. */
 export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): SetupController {
-  const { task, team, library, providers } = options;
+  const { task, team, library } = options;
+  const providers = options.providers.filter(providerSupportsTeams);
   const workerProvider = providers.find(p => p.id === 'kimi' && p.installed) ?? providers.find(p => p.installed) ?? providers[0];
   // Automatic and named agent teams have no fixed profiles to edit here; start from a fresh setup.
   const source = team?.pendingSetup?.config ?? team?.config ?? library.lastSetup?.config;

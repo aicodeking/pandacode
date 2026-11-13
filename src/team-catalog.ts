@@ -1,6 +1,7 @@
 /* The model lists behind an automatic team and Settings → Model routing. */
 import type { WorkerProfile } from './architect-types';
 import type { ProviderId, ProviderModel } from './types';
+import { providerSupportsTeams, type ProviderMetadata } from './extensions/provider-state.ts';
 
 /** Native validation counts UTF-8 bytes, so a long CJK name must be cut by bytes, not UTF-16 units. */
 export function clipBytes(text: string, max: number): string {
@@ -131,9 +132,9 @@ export function dupModelNames(models: readonly { name: string }[]): Set<string> 
 }
 
 /** Installed harnesses with their discovered models (falling back to the built-in list), limited by `teamModels`. */
-export async function installedCatalog(providers: readonly { id: ProviderId; name: string; installed: boolean; models: ProviderModel[] }[], loadModels: (id: ProviderId) => Promise<ProviderModel[]>) {
+export async function installedCatalog(providers: readonly { id: ProviderId; name: string; installed: boolean; models: ProviderModel[]; metadata?: ProviderMetadata }[], loadModels: (id: ProviderId) => Promise<ProviderModel[]>) {
   // ZCode has no team-tools bridge yet; native architect::HARNESSES excludes it.
-  const installed = providers.filter(p => p.installed && p.id !== 'zcode');
+  const installed = providers.filter(p => p.installed && providerSupportsTeams(p));
   const loaded = await Promise.allSettled(installed.map(p => loadModels(p.id)));
   return buildTeamCatalog(installed.map((p, i) => ({ id: p.id, name: p.name, models: teamModels(p.id, loaded[i].status === 'fulfilled' ? loaded[i].value : p.models).models })));
 }

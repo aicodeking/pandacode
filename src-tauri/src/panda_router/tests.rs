@@ -270,6 +270,16 @@ fn unrated_and_duplicate_pool_entries() {
 }
 
 #[test]
+fn package_model_alias_is_scoring_data_never_a_builtin_execution_fallback() {
+    let pool = vec![PoolModel { provider: "sample.fake-harness/recorded".into(), model: "claude-opus-5.5".into(), name: "Opus".into() }];
+    let route = Router::heuristic().route("Review a change", &TaskContext::default(), &pool, &Preferences::default(), &[], &Tiers::new()).unwrap();
+    let pick = route.pick.unwrap();
+    assert_eq!(pick.provider, "sample.fake-harness/recorded");
+    assert_eq!(pick.model, "claude-opus-5.5");
+    assert_eq!(pick.card_id, "claude-opus-5.5");
+}
+
+#[test]
 fn heuristic_profiles_match_python() {
     let fx = fixture();
     for (n, task) in fx.tasks.iter().enumerate() {

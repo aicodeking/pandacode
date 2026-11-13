@@ -101,7 +101,7 @@ impl Exclusions {
             return Err("Exclude at most 64 providers and 1000 models.".into());
         }
         for provider in self.providers.iter().chain(self.models.iter().map(|m| &m.provider)) {
-            if !crate::architect::HARNESSES.contains(&provider.as_str()) {
+            if !crate::architect::team_provider_identity(provider) {
                 return Err(format!("Unknown harness {provider:?}."));
             }
         }
@@ -127,8 +127,8 @@ fn read_exclusions(path: &Path) -> Exclusions {
         .and_then(|bytes| serde_json::from_slice::<Exclusions>(&bytes).ok())
         // Drop entries this version no longer accepts (a removed harness) rather than the whole file.
         .map(|mut e| {
-            e.providers.retain(|p| crate::architect::HARNESSES.contains(&p.as_str()));
-            e.models.retain(|m| crate::architect::HARNESSES.contains(&m.provider.as_str()) && !m.model.is_empty() && m.model.len() <= 200 && !m.model.contains('\0'));
+            e.providers.retain(|p| crate::architect::team_provider_identity(p));
+            e.models.retain(|m| crate::architect::team_provider_identity(&m.provider) && !m.model.is_empty() && m.model.len() <= 200 && !m.model.contains('\0'));
             e.providers.truncate(64);
             e.models.truncate(MAX_POOL);
             e
@@ -841,9 +841,7 @@ pub(crate) fn validate_pool(pool: &[PoolEntry]) -> Result<(), String> {
         return Err(format!("Route over at most {MAX_POOL} models."));
     }
     for entry in pool {
-        if !crate::architect::HARNESSES.contains(&entry.provider.as_str()) {
-            return Err(format!("Unknown harness {:?}.", entry.provider));
-        }
+        crate::architect::require_team_provider(&entry.provider)?;
         if entry.model.is_empty() || entry.model.len() > 200 || entry.name.len() > 200 || format!("{}{}", entry.model, entry.name).contains('\0') {
             return Err("Model IDs and names must be 1–200 bytes.".into());
         }

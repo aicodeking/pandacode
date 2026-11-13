@@ -114,10 +114,10 @@ jobs:
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-appearance.spec.ts --workers=1
       - name: Package harness lifecycle (Chromium preview)
         env: { PW_PORT: '1453', PW_PROD: '1' }
-        run: npx playwright test tests/extensions-harness.spec.ts tests/extensions-provider-catalog.spec.ts --workers=1
+        run: npx playwright test tests/extensions-harness.spec.ts tests/extensions-provider-catalog.spec.ts tests/extensions-provider-teams.spec.ts --workers=1
       - name: Package harness lifecycle (WebKit preview)
         env: { PW_PORT: '1454', PW_PROD: '1' }
-        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-harness.spec.ts tests/extensions-provider-catalog.spec.ts --workers=1
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-harness.spec.ts tests/extensions-provider-catalog.spec.ts tests/extensions-provider-teams.spec.ts --workers=1
 
   rust:
     name: Rust check and tests (Linux)

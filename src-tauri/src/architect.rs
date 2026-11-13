@@ -130,6 +130,22 @@ pub(crate) const HARNESSES: [&str; 18] = [
     "hermes",
 ];
 
+/// Persisted identities are independent of availability; new team work is not.
+pub(crate) fn require_team_provider(provider: &str) -> Result<()> {
+    if crate::extensions::providers::extension_owner(provider).is_some() {
+        crate::providers::dynamic_adapter::require_teams(provider)
+    } else if HARNESSES.contains(&provider) { Ok(()) }
+    else { Err(format!("Unknown harness {provider:?}, or unsupported team tools.")) }
+}
+pub(crate) fn team_provider_identity(provider: &str) -> bool {
+    HARNESSES.contains(&provider) || crate::extensions::providers::extension_owner(provider).is_some()
+}
+fn team_harness_names() -> String {
+    let mut names: Vec<String> = HARNESSES.iter().map(|id| (*id).into()).collect();
+    names.extend(crate::providers::dynamic_adapter::discover().into_iter().filter(|p| require_team_provider(&p.id).is_ok()).map(|p| p.id));
+    names.join(", ")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerProfile {
@@ -492,12 +508,12 @@ fn validate_profiles(profiles: &[WorkerProfile]) -> Result<()> {
     for worker in profiles {
         if !valid_id(&worker.id)
             || !ids.insert(&worker.id)
-            || !HARNESSES.contains(&worker.provider.as_str())
         {
             return Err(
                 "Worker profiles need unique IDs and an installed harness type.".into(),
             );
         }
+        require_team_provider(&worker.provider)?;
         text(&worker.name, "Worker name")?;
         if worker.model.len() > 200 || worker.model.contains('\0') {
             return Err("Model ID must be under 200 bytes.".into());
@@ -772,9 +788,9 @@ fn rules(store: &Store, team: &TeamSnapshot, sid: &str) -> Result<(String, Strin
             let own = if note.is_empty() && team.config.workers.iter().any(|p| p.provider == lead.provider && p.model == lead.model) { ", or omit it to use your own model" } else { "" };
             format!("You lead {} with your own model ({} via {}). Use only these models for workers, never any other.{note} To pick one, set profileId to one of these entries{own}. Team: {}.", team.config.name.as_deref().map_or_else(|| "this agent team".to_string(), |name| format!("the {name} team")), lead.model, lead.provider, profiles)
         } else if team.config.auto && !note.is_empty() {
-            format!("You lead this team with your own model ({} via {}).{note} To pick a model, set profileId to a roster entry, or provider and model (provider is one of {}). Installed model roster: {}.", lead.model, lead.provider, HARNESSES.join(", "), profiles)
+            format!("You lead this team with your own model ({} via {}).{note} To pick a model, set profileId to a roster entry, or provider and model (provider is one of {}). Installed model roster: {}.", lead.model, lead.provider, team_harness_names(), profiles)
         } else if team.config.auto {
-            format!("You lead this team with your own model ({} via {}). Choose each worker's model yourself: if the user's request names models or harnesses to orchestrate with (for example \"use Sonnet workers\" or \"have Codex review\"), use those; otherwise pick the best fit per assignment, such as a strong model for hard implementation and a faster or cheaper one for simple edits, tests, or review. In each assignment either set profileId to a roster entry, or set provider and model directly (provider is one of {}); omit all three to use your own model. Installed model roster: {}.", lead.model, lead.provider, HARNESSES.join(", "), profiles)
+            format!("You lead this team with your own model ({} via {}). Choose each worker's model yourself: if the user's request names models or harnesses to orchestrate with (for example \"use Sonnet workers\" or \"have Codex review\"), use those; otherwise pick the best fit per assignment, such as a strong model for hard implementation and a faster or cheaper one for simple edits, tests, or review. In each assignment either set profileId to a roster entry, or set provider and model directly (provider is one of {}); omit all three to use your own model. Installed model roster: {}.", lead.model, lead.provider, team_harness_names(), profiles)
         } else if !note.is_empty() {
             format!("Worker profiles are reusable: several assignments may use the same profile, and profile count does not limit parallel workers.{note} Available profiles: {}.", profiles)
         } else {
@@ -1710,9 +1726,7 @@ fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) 
         }
         _ => return Err("Set provider and model together, or omit both to use your own model.".into()),
     };
-    if !HARNESSES.contains(&provider.as_str()) {
-        return Err(format!("Unknown harness {provider:?}. Use one of: {}.", HARNESSES.join(", ")));
-    }
+    require_team_provider(&provider)?;
     if model.is_empty() || model.len() > 200 || model.contains('\0') {
         return Err("Model ID must be 1–200 bytes.".into());
     }
@@ -3340,4 +3354,4 @@ fn completed_with_agents(
     }
 }
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

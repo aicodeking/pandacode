@@ -9,6 +9,7 @@
     "providerMetadata": { "type": "object", "additionalProperties": false, "required": ["modes", "authentication", "readiness", "usage"], "properties": {
       "modes": { "type": "array", "minItems": 1, "maxItems": 4, "items": { "enum": ["ask", "auto", "plan", "full"] } },
       "authentication": { "$ref": "#/$defs/text" },
+      "teams": { "type": "boolean" },
       "icon": { "$ref": "#/$defs/id" },
       "readiness": { "type": "object", "additionalProperties": false, "required": ["state", "reason"], "properties": { "state": { "enum": ["ready", "signedOut", "unavailable"] }, "reason": { "$ref": "#/$defs/text" } } },
       "usage": { "type": "object", "additionalProperties": false, "required": ["context", "limitsReason"], "properties": { "context": { "type": "boolean" }, "limitsReason": { "$ref": "#/$defs/text" } } }

@@ -387,6 +387,9 @@ test.describe('architect teams', () => {
   });
 
   test('starts a configured team once and pauses, resumes and stops its hidden workers', async ({ page }) => {
+    // This is a scheduler/control test, not a motion test. Keep virtual-clock
+    // advances from spending the wall-clock budget repainting decorative springs.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.clock.install();
     await installArchitect(page);
     await saveDefaultTeam(page);
@@ -557,7 +560,7 @@ test.describe('architect teams', () => {
     await expect(transcript(page).locator('.team-progress-slot')).toHaveCount(1);
     await expect(live.locator('.team-progress-worker[data-worker-id="build"]')).toBeAttached();
     // The earlier rows come first, outside the host paintLiveActivity manages; the time carries on from their total.
-    expect(await live.locator('.turn-activity-body').evaluate(body => [...body.children].map(child => child.className).slice(0, 2))).toEqual(['live-earlier', 'live-tools']);
+    expect(await live.locator('.turn-activity-body').evaluate(body => [...body.children].filter(child => child.matches('.live-earlier,.live-tools')).map(child => child.className))).toEqual(['live-earlier', 'live-tools']);
     await expect(live.locator('.live-tools [data-tool-key="tool:review-diff"]')).toBeAttached();
     await expect(live.locator('.turn-activity-label')).toContainText('Ran');
     await expect(live.locator('.turn-card-time')).toHaveText(/^[5-9]s$/);

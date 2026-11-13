@@ -90,6 +90,30 @@ pub(crate) fn require_available(id: &str) -> Result<(), String> {
     }) }
     else { crate::extensions::providers::require_builtin_execution(id) }
 }
+fn require_team_definition(definition: &Value) -> Result<(), String> {
+    if metadata(definition)["teams"] == true { Ok(()) }
+    else { Err("UnsupportedCapability: this extension provider does not support team tools".into()) }
+}
+pub(crate) fn require_teams(id: &str) -> Result<(), String> {
+    require_available(id)?;
+    require_team_definition(&resolve(id)?.definition)
+}
+
+/// Only core's role-scoped team tools are callable. Never expose arbitrary app tools
+/// or bypass a ToolHost approval requirement through a package-asserted capability.
+fn team_catalog(host: &super::ToolHost) -> Vec<Value> {
+    host.tools.iter().filter(|tool| tool["type"] == "function" && tool["name"].as_str().is_some_and(|name| crate::architect::team_tool(name) && !host.approval_tools.contains(name))).cloned().collect()
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TeamCall { name: String, arguments: Value }
+async fn team_call(host: Option<&super::ToolHost>, params: Value) -> Result<Value, String> {
+    if params.to_string().len() > 32768 { return Err("LimitExceeded".into()); }
+    let call: TeamCall = serde_json::from_value(params).map_err(|_| "InvalidShape")?;
+    let host = host.ok_or("UnsupportedCapability: team tools")?;
+    if !call.arguments.is_object() || !team_catalog(host).iter().any(|tool| tool["name"] == call.name) { return Err("UnsupportedCapability: team tool".into()); }
+    (host.handler)(call.name, call.arguments).await
+}
 pub(crate) fn validate_effort(id: &str, effort: Option<&str>) -> Result<(), String> {
     if effort.is_none() || models(id)?.iter().any(|model| model.reasoning_efforts.iter().any(|entry| Some(entry.id.as_str()) == effort)) { Ok(()) }
     else { Err("Unsupported provider effort".into()) }
@@ -184,8 +208,10 @@ impl Conversation {
     }
 }
 
-pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::mpsc::UnboundedReceiver<RunInput>) -> Result<(), String> {
+pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::mpsc::UnboundedReceiver<RunInput>, host: Option<super::ToolHost>, harness: Arc<AtomicBool>) -> Result<(), String> {
     let registration = resolve(&config.provider)?;
+    if host.as_ref().is_some_and(|host| host.tools.iter().any(|tool| tool["name"].as_str().is_some_and(crate::architect::team_tool))) { require_team_definition(&registration.definition)?; }
+    let host = host.filter(|_| require_team_definition(&registration.definition).is_ok());
     let directory = HOST.get().and_then(|host| host.directory.clone());
     let mut runtime = directory.as_deref().and_then(|directory| supervisor::Runtime::packaged(directory).ok());
     if runtime.is_none() && cfg!(debug_assertions) { runtime = supervisor::Runtime::packaged(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).ok(); }
@@ -217,13 +243,15 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
         }
     });
     lease.pump = Some(pump.abort_handle());
-    let context = json!({"provider":{"apiVersion":1,"id":config.provider,"version":registration.version,"digest":registration.digest,"model":config.model,"effort":config.reasoning_effort,"mode":config.mode,"resumeId":config.resume_id,"prompt":config.prompt,"instructions":config.instructions}});
+    let context = json!({"provider":{"apiVersion":1,"id":config.provider,"version":registration.version,"digest":registration.digest,"model":config.model,"effort":config.reasoning_effort,"mode":config.mode,"resumeId":config.resume_id,"prompt":config.prompt,"instructions":config.instructions,"teamTools":host.as_ref().map(team_catalog).unwrap_or_default()}});
     let handler = conversation.clone();
+    harness.store(true, Ordering::SeqCst);
     let result = supervisor::run_owned_async(&runtime, &registration.source, context, cancel.clone(), &config.cwd, Duration::from_secs(3600), move |method, params| {
-        let conversation = handler.clone(); let receiver = receiver.clone();
+        let conversation = handler.clone(); let receiver = receiver.clone(); let host = host.clone();
         async move {
             let result = match method.as_str() {
                 "providerEvent" => conversation.event(params),
+                "providerTeamTool" if !conversation.cancel.load(Ordering::Acquire) => team_call(host.as_ref(), params).await,
                 "providerInput" if params.is_null() => {
                     let mut receiver = receiver.lock().await;
                     loop {
@@ -247,6 +275,25 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn team_capability_is_opt_in_and_core_catalog_and_approval_rules_are_not_bypassable() {
+        for definition in [json!({}), json!({"metadata":{"teams":false}})] { assert!(require_team_definition(&definition).unwrap_err().contains("UnsupportedCapability")); }
+        assert!(require_team_definition(&json!({"metadata":{"teams":true}})).is_ok());
+        let calls = Arc::new(Mutex::new(Vec::new())); let captured = calls.clone();
+        let host = super::super::ToolHost { tools: vec![
+            json!({"type":"function","name":"pandacode_list_workers"}),
+            json!({"type":"function","name":"pandacode_cancel_worker"}),
+            json!({"type":"function","name":"pandacode_open_browser"})],
+            approval_tools: ["pandacode_cancel_worker".into()].into(),
+            handler: Arc::new(move |name, _| { captured.lock().unwrap().push(name); Box::pin(async { Ok(json!({"workers":[]})) }) }) };
+        assert_eq!(team_catalog(&host).len(), 1);
+        assert_eq!(team_call(Some(&host), json!({"name":"pandacode_list_workers","arguments":{}})).await.unwrap(), json!({"workers":[]}));
+        for request in [json!({"name":"pandacode_cancel_worker","arguments":{}}), json!({"name":"pandacode_open_browser","arguments":{}}), json!({"name":"pandacode_list_workers","arguments":{},"approved":true}), json!({"name":"pandacode_list_workers","arguments":null})] { assert!(team_call(Some(&host), request).await.is_err()); }
+        assert!(team_call(None, json!({"name":"pandacode_list_workers","arguments":{}})).await.is_err());
+        assert_eq!(*calls.lock().unwrap(), vec!["pandacode_list_workers"]);
+        assert!(crate::architect::require_team_provider("sample.missing/recorded").unwrap_err().contains("History is preserved"));
+        assert!(crate::architect::require_team_provider("zcode").is_err());
+    }
     #[test]
     fn dynamic_harness_core_owns_pending_completion_identity_and_cancellation() {
         let events = Arc::new(Mutex::new(Vec::new())); let captured = events.clone();

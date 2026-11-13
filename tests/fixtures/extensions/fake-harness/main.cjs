@@ -4,6 +4,15 @@ exports.providers = {
     if (run.model !== 'recorded-model' || run.effort !== 'medium' || run.mode !== 'ask') throw new Error('Configuration mismatch');
     await core.emit({ kind: 'session', id: run.resumeId || 'recorded-conversation' });
     await core.emit({ kind: 'text', text: run.resumeId ? 'Resumed recorded harness. ' : 'Started recorded harness. ' });
+    if (run.prompt === 'Recorded team prompt') {
+      if (!run.teamTools.some(tool => tool.name === 'pandacode_dispatch_workers')) throw new Error('Missing team catalog');
+      const dispatch = await core.teamTool('pandacode_dispatch_workers', { assignments: [{ key: 'recorded-worker', profileId: 'recorded', name: 'Recorded worker', prompt: 'Review the fixture without changing files.', files: [], readOnly: true }] });
+      const workerId = dispatch.workerIds[0];
+      await core.teamTool('pandacode_list_workers', {});
+      await core.teamTool('pandacode_cancel_worker', { workerId, reason: 'User requested fixture cancellation.' });
+      try { await core.teamTool('pandacode_open_browser', {}); throw new Error('Unexpected host authority'); }
+      catch (error) { if (!error.message.includes('UnsupportedCapability')) throw error; }
+    }
     const tool = { id: 'recorded-read', name: 'Read', status: 'running', input: 'fixture.txt', output: '' };
     await core.emit({ kind: 'tool', tool });
     await core.emit({ kind: 'tool', tool: { ...tool, status: 'completed', output: 'Recorded file content' } });

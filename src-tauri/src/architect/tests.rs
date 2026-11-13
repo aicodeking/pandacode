@@ -1,4 +1,50 @@
 use super::*;
+/// Runs inside the package fixture's single registry lifetime (no competing global host).
+#[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+pub(crate) async fn dynamic_package_team_fixture(cwd: &std::path::Path) {
+    let provider = "sample.fake-harness/recorded";
+    let (state, sid) = auto_state();
+    let state = Arc::new(state);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers = vec![WorkerProfile { id: "recorded".into(), name: "Recorded worker".into(), provider: provider.into(), model: "recorded-model".into(), reasoning_effort: Some("medium".into()) }];
+        team.config.catalog = team.config.workers.clone();
+        team.config.max_parallel = 1;
+        team.config.validate().unwrap();
+        profiles::ModelSelection { provider: provider.into(), model: "recorded-model".into(), reasoning_effort: Some("medium".into()) }.validate().unwrap();
+        save(&store, &mut team).unwrap();
+        let (pool, _, _) = routing::route_request(&team.config, &[], json!({"tasks":[{"text":"Review fixture","failed":[{"provider":provider,"model":"recorded-model"}]}]})).unwrap();
+        assert_eq!(pool[0].provider, provider);
+    }
+    let captured = state.clone(); let parent = sid.clone();
+    let host = ToolHost { tools: catalog(), approval_tools: HashSet::new(), handler: Arc::new(move |name, args| {
+        let state = captured.clone(); let sid = parent.clone();
+        Box::pin(async move { call(&state, &sid, &name, args) })
+    }) };
+    let config = crate::providers::RunConfig { session_id: sid.clone(), provider: provider.into(), model: "recorded-model".into(), reasoning_effort: Some("medium".into()), mode: "ask".into(), cwd: cwd.into(), resume_id: Some("recorded-conversation".into()), prompt: "Recorded team prompt".into(), instructions: "Captured team instructions".into(), skill: None, goal: None, codex_settings: None, images: vec![] };
+    let (input, rx) = crate::unbounded_channel();
+    let (tx, mut output) = crate::unbounded_channel();
+    let run = tokio::spawn(crate::providers::run_with_tools(config, Arc::new(move |event| { tx.send(event).unwrap(); }), rx, Some(host), Arc::new(AtomicBool::new(false))));
+    let mut seen = Vec::new();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(15), output.recv()).await.unwrap().unwrap();
+        if event.kind == "approval" { input.send(RunInput::Approval { request_id: event.request_id.clone().unwrap(), approved: false }).unwrap(); }
+        if event.kind == "input_request" { input.send(RunInput::UserInput { request_id: event.request_id.clone().unwrap(), response: json!({"answers":{"choice":["Finish"]}}), reply: None }).unwrap(); }
+        let done = event.kind == "done"; seen.push(event); if done { break; }
+    }
+    assert!(run.await.unwrap().is_ok(), "{seen:?}");
+    assert!(seen.iter().any(|e| e.kind == "text" && e.text == "Rejected. "));
+    let store = state.store.lock().unwrap();
+    let saved = load(&store, &sid).unwrap().unwrap();
+    assert_eq!(saved.config.max_parallel, 1);
+    assert_eq!(saved.workers.len(), 1);
+    assert_eq!(saved.workers[0].status, "stopped");
+    let task = store.session(&saved.workers[0].session_id).unwrap();
+    assert_eq!(task.provider, provider);
+    assert_eq!(task.model, "recorded-model");
+    assert!(store.session(&sid).is_ok());
+}
 #[path = "council_tests.rs"]
 mod council_tests;
 fn coordinate(

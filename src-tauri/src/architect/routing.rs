@@ -9,7 +9,7 @@ use tauri::Manager;
 
 use rusqlite::{params, OptionalExtension};
 
-use super::{active, load, text, Assignment, TeamConfig, TeamSnapshot, WorkerProfile, HARNESSES, PAGE_BYTES};
+use super::{active, load, text, Assignment, TeamConfig, TeamSnapshot, WorkerProfile, PAGE_BYTES};
 use crate::model_routing::{self, Job};
 use crate::model_health;
 use crate::panda_router::{Mode, PoolModel, Route, Routed, TaskContext};
@@ -45,7 +45,7 @@ pub(super) const MAX_ATTEMPTS: usize = 3;
 /// (`catalog`), else the roster.
 pub(super) fn pool(config: &TeamConfig) -> Vec<PoolModel> {
     let source = if config.roster_only || config.catalog.is_empty() { &config.workers } else { &config.catalog };
-    model_routing::pool_from(source.iter().filter(|p| model_routing::allowed(&p.provider, &p.model)).map(|p| (p.provider.as_str(), p.model.as_str(), p.name.as_str())))
+    model_routing::pool_from(source.iter().filter(|p| super::require_team_provider(&p.provider).is_ok() && model_routing::allowed(&p.provider, &p.model)).map(|p| (p.provider.as_str(), p.model.as_str(), p.name.as_str())))
 }
 
 /// Rated models in the pool that are not paused after failures.
@@ -400,7 +400,7 @@ pub(super) fn route_request(config: &TeamConfig, langs: &[String], args: Value) 
     let mut jobs = Vec::new();
     for task in args.tasks {
         text(&task.text, "Task text")?;
-        if task.failed.iter().any(|f| !HARNESSES.contains(&f.provider.as_str()) || f.model.len() > 200) {
+        if task.failed.iter().any(|f| crate::extensions::providers::validate_identity(&f.provider).is_err() || f.model.len() > 200) {
             return Err("Failed models need a known harness and a model ID under 200 bytes.".into());
         }
         let failed = task

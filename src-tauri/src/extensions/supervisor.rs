@@ -99,7 +99,7 @@ where F: FnMut(String, Value) -> Fut, Fut: std::future::Future<Output = Value> {
             let reply = match message.method.as_str() {
                 "failed" if message.params.is_null() => return Err("HostUnavailable"),
                 "complete" if message.params.is_null() => return Ok(dialogs),
-                "providerEvent" | "providerInput" if provider => dispatch(message.method.clone(), message.params.clone()).await,
+                "providerEvent" | "providerInput" | "providerTeamTool" if provider => dispatch(message.method.clone(), message.params.clone()).await,
                 "context" | "dialog" | "storage" | "jobs" | "connections" | "services" | "serviceEvent" | "serviceResult" | "jobProgress" | "jobResult" if !provider => dispatch(message.method.clone(), message.params.clone()).await,
                 _ => return Err("UnsupportedCapability"),
             };

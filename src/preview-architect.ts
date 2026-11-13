@@ -3,6 +3,7 @@ import type { AgentEvent, Message, MessagePage, ProviderId, ProviderModel, Sessi
 import { workerQueueReason } from './worker-scheduling.ts';
 import { formatScore } from './council.ts';
 import type { CouncilStatus } from './architect-types';
+import { packageProvider, providerSupportsTeams, UNAVAILABLE_PROVIDER } from './extensions/provider-state.ts';
 
 interface PreviewHost {
   parent(id: unknown): Session;
@@ -33,8 +34,13 @@ export function createPreviewArchitect(host: PreviewHost) {
     return Number(value);
   }
   function validateSelection(selection: ModelSelection): ModelSelection {
-    if (!selection || !['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'hermes'].includes(selection.provider) || typeof selection.model !== 'string' || selection.model.length > 200) throw new Error('Choose a valid architect harness and model.');
-    const models = host.models(selection.provider);
+    if (!selection || typeof selection.model !== 'string' || selection.model.length > 200) throw new Error('Choose a valid architect harness and model.');
+    if (selection.provider.includes('/')) {
+      const provider = packageProvider(selection.provider);
+      if (!provider?.installed) throw new Error(UNAVAILABLE_PROVIDER);
+      if (!providerSupportsTeams(provider)) throw new Error('UnsupportedCapability: this extension provider does not support team tools');
+    } else if (!['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'hermes'].includes(selection.provider)) throw new Error('Choose a valid architect harness and model.');
+    const models = packageProvider(selection.provider)?.models ?? host.models(selection.provider);
     const model = selection.model ? models.find(model => model.id === selection.model) : models[0];
     if (selection.reasoningEffort != null && (typeof selection.reasoningEffort !== 'string' || selection.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === selection.reasoningEffort))) throw new Error('This architect model does not support that reasoning effort.');
     return { provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort ?? null };
@@ -64,8 +70,8 @@ export function createPreviewArchitect(host: PreviewHost) {
       if (!profile || typeof profile.id !== 'string' || !profile.id.trim() || profile.id.length > 100 || ids.has(profile.id)) throw new Error('Worker profile IDs must be unique.');
       ids.add(profile.id);
       if (typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 80) throw new Error('Worker names must be 1–80 characters.');
-      if (!['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'hermes'].includes(profile.provider) || typeof profile.model !== 'string' || profile.model.length > 200) throw new Error('Choose a valid worker harness and model.');
-      const models = host.models(profile.provider);
+      validateSelection(profile);
+      const models = packageProvider(profile.provider)?.models ?? host.models(profile.provider);
       const model = profile.model ? models.find(model => model.id === profile.model) : models[0];
       if (profile.reasoningEffort != null && (typeof profile.reasoningEffort !== 'string' || profile.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === profile.reasoningEffort))) throw new Error('This worker model does not support that reasoning effort.');
       return { id: profile.id, name: profile.name.trim(), provider: profile.provider, model: profile.model, reasoningEffort: profile.reasoningEffort ?? null };

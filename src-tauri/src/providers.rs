@@ -3236,7 +3236,7 @@ pub async fn run_with_tools(
 ) -> Result<(), String> {
     // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
     if crate::extensions::providers::extension_owner(&config.provider).is_some() {
-        let result = dynamic_adapter::run(config.clone(), sink.clone(), input).await;
+        let result = dynamic_adapter::run(config.clone(), sink.clone(), input, host, harness).await;
         let event = |kind: &str, text: String| AgentEvent { session_id: config.session_id.clone(), kind: kind.into(), text, request_id: None, data: None, tool: None };
         if let Err(error) = &result { sink(event("error", error.clone())); }
         sink(event("done", if result.is_ok() { "Finished" } else { "Failed" }.into()));

@@ -10,6 +10,8 @@ const config = defineConfig(base, {
   use: { browserName: 'webkit', launchOptions: {} },
 });
 config.testMatch = [...config.testMatch as string[], '**/extensions-provider-catalog.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-provider-teams.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions teams`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions provider catalog`);
 
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime|extensions trust|inspector strip|the inspector opens|the . menu lists|tabs select|the open tabs|opening a view|the strip is|the sky settles sustained`);

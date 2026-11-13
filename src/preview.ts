@@ -2389,7 +2389,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const stopped = session(args.sessionId); stopped.status = 'idle'; if (stopped.goalState?.status === 'active') { stopped.goalState.status = 'paused'; emitGoal(stopped); } syncMirror(args.sessionId); agent({ sessionId: args.sessionId, kind: 'done', text: 'Stopped' }); break;
     }
     case 'respond_approval': case 'respond_user_input':
-      if (providerOwner(session(args.sessionId).provider)) harnessPreview.respond(args.sessionId, args.requestId, command === 'respond_approval' ? args.approved : undefined, args.response);
+      // Synthetic legacy worker events have no entry in the main session roster.
+      // Only the real package preview needs a registered session for its response.
+      if (sessions.some(task => task.id === args.sessionId && providerOwner(task.provider))) harnessPreview.respond(args.sessionId, args.requestId, command === 'respond_approval' ? args.approved : undefined, args.response);
       break;
     case 'git_status': result = checkoutGit(args.sessionId); break;
     case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;

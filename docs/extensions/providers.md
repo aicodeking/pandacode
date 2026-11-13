@@ -23,6 +23,31 @@ exports.providers = {
 };
 ```
 
+### Teams and routing (experimental)
+
+Set `metadata.teams: true` only when the adapter can use `run.teamTools` and
+`await core.teamTool(name, arguments)` to coordinate through the supplied catalog.
+Omitted/false explicitly refuses team admission; it never selects a built-in instead.
+The catalog is captured for this run's role: leads, direct workers and sub-workers
+receive their existing core scopes. Calls still pass through core team generation,
+role, arguments, coordination and cancellation checks. No arbitrary app/native tools
+or approval-required tools are exposed by this bridge; unsupported calls fail with
+`UnsupportedCapability`. Conversation approvals/questions use `emit`/`nextInput` as
+before. A registration is not authority to create or auto-start a team: the user's
+existing team selection, limits, pause/resume/stop and named rosters remain in charge.
+
+Routing accepts ready opted-in package providers in user-supplied team/model pools.
+Card aliases, benchmark data and built-in default-model deduplication only affect
+scoring: the chosen provider/model identity is retained, never rewritten to a card's
+built-in harness. Unrated models still need the existing user tier policy. Exclusions
+retain validated dynamic identities even after uninstall. Active code/version/digest
+is captured by the existing run lease; disable cancels owned work, not saved history.
+
+Built-in rules retained: ZCode lacks a team-tool transport; Codex alone resets native
+context when its persisted tool catalog changes. Other built-ins use their existing
+MCP/ACP transport. The router's embedded harness aliases and benchmark cards are
+scoring metadata, not an execution roster. Native regression suites cover these rules.
+
 ### Catalog and status metadata
 
 An optional `metadata` object on each provider supplies its consumer capabilities:

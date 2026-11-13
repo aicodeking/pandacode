@@ -2722,7 +2722,9 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   let narratedAt = -1;
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
-  const tools = current.tools.filter(tool => !tool.statusOnly), workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? null;
+  // After the first dispatch the host lives inside this region. Retain that same
+  // node on later tool updates instead of dropping its worker rows as stale tools.
+  const tools = current.tools.filter(tool => !tool.statusOnly), workers = region.querySelector<HTMLElement>('#team-progress-host') ?? region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? null;
   const dispatch = workers ? tools.findIndex(tool => typeof tool.content !== 'string' && /dispatch_workers/.test(tool.content.name)) : -1;
   const toolRuns = (entries: LiveTool[]) => groupToolRuns(entries, tool => tool.commentary ? undefined : tool.key);
   const runs = dispatch < 0 ? toolRuns(tools) : [...toolRuns(tools.slice(0, dispatch + 1)), null, ...toolRuns(tools.slice(dispatch + 1))];

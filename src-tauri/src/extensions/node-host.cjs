@@ -64,6 +64,7 @@ process.stdin.on('data', chunk => {
           await handler(invocation.provider, Object.freeze({
             emit: event => rpc('providerEvent', event),
             nextInput: () => rpc('providerInput', null),
+            teamTool: (name, arguments_) => rpc('providerTeamTool', { name, arguments: arguments_ }),
           }));
           await rpc('complete', null);
           return;

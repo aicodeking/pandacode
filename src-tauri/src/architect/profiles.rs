@@ -24,29 +24,9 @@ impl ModelSelection {
             reasoning_effort: session.reasoning_effort.clone(),
         }
     }
-    fn validate(&self) -> Result<()> {
-        if ![
-            "claude",
-            "codex",
-            "kimi",
-            "opencode",
-            "glm",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
-            "devin",
-            "hermes",
-        ]
-        .contains(&self.provider.as_str())
-            || self.model.len() > 200
+    pub(super) fn validate(&self) -> Result<()> {
+        super::require_team_provider(&self.provider)?;
+        if self.model.len() > 200
             || self.model.contains('\0')
         {
             return Err("Choose a supported harness and a model ID under 200 bytes.".into());
