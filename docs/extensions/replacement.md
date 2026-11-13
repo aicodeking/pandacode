@@ -22,5 +22,30 @@ expansion/file tabs remain core-owned. Built-in recovery never rewrites drafts, 
 task selection. A rendering exception quarantines that provider identity until its package changes
 or the app restarts. Preferences retain dormant IDs across disable/uninstall; selecting Built-in
 clears the preference. Persistence schema is `{schemaVersion:1,selected:{[slot]:providerId}}`.
-This is presentation-only declarative support, not an executable component SDK or a composer/
-transcript replacement. Browser evidence is not installed native/platform qualification.
+## Composer presentation v1 (experimental)
+
+The `tests/fixtures/extensions/composer` package offers `panda.composer` with the
+`toolbar-first` presentation. Install and enable it, then explicitly choose **Composer
+presentation** in the Surface explorer. It places the existing model/mode/tools tray
+above the input; all host controls remain available, including voice, attachments,
+queue/steering, approvals, Send and Stop. Styles load with the host on first render.
+
+Design decision: use a closed declarative presentation recipe rather than a second
+editor, arbitrary renderer callbacks or an executable composer service. Cloning or
+serializing the editor loses browser-native IME/undo state; duplicating send handlers
+risks double submission and approval/grant bypass. This recipe changes only host CSS
+and attributes. The input, listeners, focus/selection, attachment store, queue and
+business handlers remain host-owned. No DOM reference or draft/credential payload is
+returned to package code, and this slot introduces no task-control or approval API.
+
+Version 1 requires all capabilities: `host-input`, `attachments`, `model-mode`,
+`queue-steer`, `send-stop`, `approvals`. Missing/unknown capabilities, unsupported
+presentation or slot versions disable selection with a reason. These declarations
+select a tested host recipe, not permission grants or self-certified custom editors.
+Disable, safe mode, Built-in selection and a host presentation failure remove the
+recipe without rendering or replacing the editor. A failed provider identity stays
+quarantined until package change or restart. The same conformance scenarios run
+against Built-in and the installed alternate package, with typing/streaming recovery.
+
+This remains declarative support, not an executable component SDK or arbitrary
+composer/transcript renderer. Browser evidence is not installed native/platform qualification.

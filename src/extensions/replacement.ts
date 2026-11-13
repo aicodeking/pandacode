@@ -14,6 +14,22 @@ export function selectComponent(slot: SlotId, id?: string): void {
   window.dispatchEvent(new Event('pandacode-components-change'));
 }
 const identity = (provider: ComponentProvider) => `${provider.id}:${extensionIdentity(provider.id.split('/')[0])}`;
+/** Declarative composer v1 reorders host-owned regions, never substitutes an editor or
+ * dispatches an extension action. Recovery changes attributes only: native input/IME,
+ * undo, grants, approvals, queue and submission remain exclusively core-owned. */
+export function applyComposerPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('#prompt') || !host.querySelector('.composer-tray')) throw new Error('Incomplete host composer');
+}): void {
+  delete host.dataset.componentProvider;
+  host.classList.remove('component-toolbar-first');
+  const provider = componentSelection.resolve('panda.composer', componentProviders());
+  if (!provider || faults.has(identity(provider))) return;
+  try {
+    qualify();
+    host.classList.add('component-toolbar-first');
+    host.dataset.componentProvider = provider.id;
+  } catch { faults.add(identity(provider)); }
+}
 /** Host-only fault boundary. The optional painter supports controlled conformance faults. */
 export function renderComponent(host: HTMLElement, props: SlotProps, current: () => SlotProps, dispatch: (action: SlotAction) => void, paint = componentHtml): (() => void) | undefined {
   const provider = componentSelection.resolve(props.slot, componentProviders());

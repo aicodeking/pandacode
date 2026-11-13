@@ -1,12 +1,21 @@
 /** ComponentSlot v1: JSON-only presentation; core objects and operations stay in the host. */
-export type SlotId = 'panda.projects' | 'panda.files';
-export type ComponentProvider = { id: string; title: string; slot: SlotId; contractVersion: number; presentation: 'cards' | 'list' };
+export type SlotId = 'panda.projects' | 'panda.files' | 'panda.composer';
+export type ComponentProvider = { id: string; title: string; slot: SlotId; contractVersion: number; presentation: 'cards' | 'list' | 'toolbar-first'; capabilities?: string[] };
+export const COMPOSER_CAPABILITIES = ['host-input', 'attachments', 'model-mode', 'queue-steer', 'send-stop', 'approvals'] as const;
+export function componentIncompatibility(provider: ComponentProvider): string | undefined {
+  if (provider.contractVersion !== 1) return 'Incompatible slot version';
+  if (provider.slot === 'panda.composer') {
+    if (provider.presentation !== 'toolbar-first') return 'Unsupported composer presentation';
+    if (COMPOSER_CAPABILITIES.some(capability => !provider.capabilities?.includes(capability))) return 'Missing required composer capabilities';
+    if (provider.capabilities?.some(capability => !COMPOSER_CAPABILITIES.includes(capability as typeof COMPOSER_CAPABILITIES[number]))) return 'Unsupported composer capability';
+  } else if (!['cards', 'list'].includes(provider.presentation)) return 'Unsupported list presentation';
+}
 export type SlotObject = { id: string; label: string; revision: number; directory?: boolean; expanded?: boolean; depth?: number };
 export type SlotProps = { contractVersion: 1; slot: SlotId; context: string; revision: number; objects: readonly SlotObject[]; state: { selected: string; focused: string; loading: boolean; offline: boolean; visible: boolean } };
 export type SlotAction = { contractVersion: 1; kind: 'select' | 'open' | 'toggle'; id: string; objectRevision: number; revision: number; context: string };
 export type ComponentSlot<TProps, TActions, TState> = { props: TProps; dispatch(action: TActions): boolean; state: TState; dispose(): void };
 export const REPLACEMENT_KEY = 'pandacode.components.v1';
-const slots: SlotId[] = ['panda.projects', 'panda.files'];
+const slots: SlotId[] = ['panda.projects', 'panda.files', 'panda.composer'];
 export function createComponentSelection(storage: Pick<Storage, 'getItem' | 'setItem'>) {
   const read = (): Partial<Record<SlotId, string>> => {
     try { const raw = storage.getItem(REPLACEMENT_KEY); if (!raw || raw.length > 8192) return {}; const value = JSON.parse(raw); if (value.schemaVersion !== 1 || !value.selected || Array.isArray(value.selected)) return {}; return Object.fromEntries(slots.filter(slot => typeof value.selected[slot] === 'string' && value.selected[slot].length < 256).map(slot => [slot, value.selected[slot]])); } catch { return {}; }
@@ -14,11 +23,12 @@ export function createComponentSelection(storage: Pick<Storage, 'getItem' | 'set
   return {
     selected: (slot: SlotId) => read()[slot],
     select(slot: SlotId, id: string | undefined, providers: ComponentProvider[]) {
-      if (!slots.includes(slot) || id !== undefined && !providers.some(provider => provider.id === id && provider.slot === slot && provider.contractVersion === 1)) throw new Error('Unsupported component provider');
+      const provider = providers.find(provider => provider.id === id && provider.slot === slot);
+      if (!slots.includes(slot) || id !== undefined && (!provider || componentIncompatibility(provider))) throw new Error(provider ? componentIncompatibility(provider) : 'Unsupported component provider');
       const selected = read(); if (id) selected[slot] = id; else delete selected[slot];
       storage.setItem(REPLACEMENT_KEY, JSON.stringify({ schemaVersion: 1, selected }));
     },
-    resolve(slot: SlotId, providers: ComponentProvider[]) { return providers.find(provider => provider.slot === slot && provider.id === read()[slot] && provider.contractVersion === 1); },
+    resolve(slot: SlotId, providers: ComponentProvider[]) { return providers.find(provider => provider.slot === slot && provider.id === read()[slot] && !componentIncompatibility(provider)); },
   };
 }
 function freeze<T>(value: T): T { if (value && typeof value === 'object') { Object.freeze(value); for (const child of Object.values(value)) freeze(child); } return value; }
@@ -26,6 +36,8 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 const text = (value: unknown): value is string => typeof value === 'string' && value.length <= 4096;
 const revision = (value: unknown): boolean => Number.isSafeInteger(value) && Number(value) >= 0;
 export function validSlotProps(value: unknown): value is SlotProps {
+  // Composer uses a closed host recipe, never the list-object dispatch protocol.
+  if (record(value) && value.slot === 'panda.composer') return false;
   if (!record(value) || Object.keys(value).sort().join(',') !== 'context,contractVersion,objects,revision,slot,state' || value.contractVersion !== 1 || !slots.includes(value.slot as SlotId) || !text(value.context) || !revision(value.revision) || !Array.isArray(value.objects) || value.objects.length > 10000 || !record(value.state)) return false;
   const state = value.state;
   if (Object.keys(state).sort().join(',') !== 'focused,loading,offline,selected,visible' || !text(state.selected) || !text(state.focused) || ['loading', 'offline', 'visible'].some(key => typeof state[key] !== 'boolean')) return false;

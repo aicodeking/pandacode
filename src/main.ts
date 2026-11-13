@@ -73,7 +73,7 @@ import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-tra
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
-import { renderComponent } from './extensions/replacement';
+import { renderComponent, applyComposerPresentation } from './extensions/replacement';
 import type { SlotProps, SlotObject } from './extensions/component-slot';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -671,7 +671,9 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   }
   onExtensionsChanged(syncExtensionViews);
   onExtensionsChanged(() => renderNavigation());
-  window.addEventListener('pandacode-components-change', () => { renderNavigation(); renderInspector(); });
+  const syncComposerPresentation = () => { const host = document.querySelector<HTMLElement>('#composer'); if (host) applyComposerPresentation(host); };
+  onExtensionsChanged(syncComposerPresentation);
+  window.addEventListener('pandacode-components-change', () => { renderNavigation(); renderInspector(); syncComposerPresentation(); });
   onExtensionsChanged(() => { if (document.querySelector('#dialog.command-dialog[open]')) renderCommands(document.querySelector<HTMLInputElement>('#command-query')?.value ?? ''); });
   (await import('./extensions/windows')).mountNativeExtensionPresentation(notify);
   await loadExtensions();
@@ -3118,6 +3120,7 @@ function renderComposer(): void {
   }
   syncRemoteConnection();
   renderedRemoteKey = remoteComposerKey(s);
+  applyComposerPresentation($('#composer'));
 }
 /** Steer with nothing typed stays pressable (it focuses the prompt) but says it has nothing to send. */
 function syncSteerAvailability(): void {

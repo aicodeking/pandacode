@@ -2,3 +2,6 @@
 .component-replacement button { text-align: start; overflow-wrap: anywhere; }
 .component-cards button { padding: 10px; }
 .component-replacement button[aria-current] { outline: 1px solid var(--focus); outline-offset: -1px; }
+/* Keep every host region, including approvals and Stop, reachable. No editor clone. */
+#composer.component-toolbar-first { display: flex; flex-direction: column; }
+#composer.component-toolbar-first > .composer-tray { order: -1; border-bottom: 1px solid var(--ds-border); }

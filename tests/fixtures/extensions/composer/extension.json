@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.composer",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "requiredContributions": ["components"],
+  "contributes": {
+    "components": [{
+      "id": "sample.composer/toolbar",
+      "title": "Toolbar-first composer",
+      "slot": "panda.composer",
+      "contractVersion": 1,
+      "presentation": "toolbar-first",
+      "capabilities": ["host-input", "attachments", "model-mode", "queue-steer", "send-stop", "approvals"]
+    }]
+  }
+}
