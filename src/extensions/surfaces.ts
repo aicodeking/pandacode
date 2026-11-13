@@ -8,6 +8,9 @@ export const VIEW_ACTION_SURFACES = [
 ] as const;
 export const DOCUMENT_ACTION_SURFACES = ['panda.documents.actions', 'panda.documents.context'] as const;
 export const CHANGES_ACTION_SURFACES = ['panda.changes.actions'] as const;
+export const SEARCH_CONTROLS = {
+  'panda.search.controls': [['query', 'Search query'], ['match-case', 'Match case'], ['whole-word', 'Match whole word'], ['regex', 'Use regular expression']],
+} as const;
 export const CHANGES_CONTROLS = {
   'panda.changes.controls': [['scope', 'Change scope'], ['fold-all', 'Collapse all'], ['menu', 'Changes menu'], ['commit-message', 'Commit message'], ['commit', 'Commit'], ['retry', 'Retry Changes']],
   'panda.changes.file': [['toggle', 'Collapse file'], ['copy', 'Copy path'], ['file-menu', 'File actions'], ['retry-file', 'Retry diff']],

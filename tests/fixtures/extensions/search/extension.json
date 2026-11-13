@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.search",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.files.metadata"],
+  "contributes": {
+    "components": [{ "id": "sample.search/results", "title": "Results first", "slot": "panda.search", "contractVersion": 1, "presentation": "results-first", "capabilities": ["host-query", "host-results", "original-actions"] }],
+    "commands": [{ "id": "sample.search/help", "title": "Search tools", "action": { "kind": "showMessage", "message": "Search results use the original host query and document handlers." } }],
+    "menus": [
+      { "id": "sample.search/toolbar", "location": "panda.inspector.search.toolbar", "command": "sample.search/help" },
+      { "id": "sample.search/context", "location": "panda.inspector.search.context", "command": "sample.search/help" }
+    ],
+    "layouts": [{ "id": "sample.search/options", "title": "Regex before case", "location": "panda.search.controls", "rules": [{ "id": "panda.search.controls/regex", "target": "panda.search.controls/match-case", "side": "before" }] }]
+  }
+}

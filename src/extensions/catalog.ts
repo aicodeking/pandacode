@@ -1,7 +1,7 @@
 /** Public JSON-only discovery. Definitions are logical locations, not selectors or DOM handles. */
 import { createDeclarativeActivation } from './activation.ts';
 import type { ExtensionSnapshot } from './manager';
-import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS } from './surfaces.ts';
+import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS } from './surfaces.ts';
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from './window-surfaces.ts';
 import { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } from './views-state.ts';
 import { INSPECTOR_VIEWS } from '../inspector-tabs.ts';
@@ -22,6 +22,7 @@ export class CatalogError extends Error {
 }
 
 const coreItems: ItemMetadata[] = [
+  ...Object.entries(SEARCH_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(CHANGES_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...([['open-files', 'Open files'], ['close-open-files', 'Close open files']] as const).map(([id, label]): ItemMetadata => ({ id: `panda.documents.navigation/${id}`, owner: 'panda.core', type: 'button', location: 'panda.documents.navigation', label, supportedOperations: ['inspect'], available: true })),
   ...Object.entries({ 'panda.documents.tabs': [['select', 'Select document'], ['close', 'Close document']], 'panda.documents.actions': [['attach', 'Attach'], ['copy', 'Copy file'], ['preview', 'Preview in browser']], 'panda.documents.viewer': [['rendered', 'Rendered'], ['raw', 'Raw'], ['wrap', 'Wrap'], ['sheet', 'Sheet selection'], ['zoom', 'Actual size']] }).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
@@ -51,6 +52,8 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
+      { id: 'panda.search.controls', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.search.controls', label: 'Search controls', supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true },
+      { id: 'panda.search', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.search', label: 'Host Search presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['results-first'], windows: ['main'], available: true },
       ...Object.keys(CHANGES_CONTROLS).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
       { id: 'panda.changes', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.changes', label: 'Host Changes presentation v1', supportedOperations: ['inspect', 'replace'], supportedItemTypes: ['commit-first'], windows: ['main'], available: true },
       ...['panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer'].map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),

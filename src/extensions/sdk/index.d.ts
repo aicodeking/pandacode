@@ -149,3 +149,9 @@ export interface PrivateStorage {
    * Only next-version, explicitly rollback-compatible transformations are supported. */
   migrate(options: { scope: StorageScope; revision: number; fromVersion: number; toVersion: number; rollbackCompatible: true; values: Readonly<Record<string, Json>> }): Promise<{ readonly schemaVersion: 1; readonly revision: number }>;
 }
+/** Closed Search recipe; no package query execution or matching source text delivery. */
+export interface SearchComponent { readonly id: string; readonly title: string; readonly slot: 'panda.search'; readonly contractVersion: 1; readonly presentation: 'results-first'; readonly capabilities: readonly ['host-query', 'host-results', 'original-actions'] }
+export interface SearchResult { readonly id: string; readonly path: string; readonly line: number; readonly collapsed: boolean }
+export interface SearchPresentation { readonly contractVersion: 1; readonly context: string; readonly project: string; readonly revision: number; readonly query: string; readonly matchCase: boolean; readonly wholeWord: boolean; readonly regex: boolean; readonly loading: boolean; readonly error: boolean; readonly visible: boolean; readonly selected: string; readonly results: readonly SearchResult[]; readonly next: string; readonly truncated: boolean }
+export interface SearchAction { readonly contractVersion: 1; readonly context: string; readonly project: string; readonly revision: number; readonly query: string; readonly resultId: string; readonly controlId: 'query' | 'submit' | 'matchCase' | 'wholeWord' | 'regex' | 'open' | 'collapse'; readonly value: string; readonly requestId: string }
+export type SearchAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' };

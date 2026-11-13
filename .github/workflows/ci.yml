@@ -97,10 +97,10 @@ jobs:
       # Document byte fixtures are served from tests/fixtures by Vite development mode.
       - name: Document presentation (Chromium preview)
         env: { PW_PORT: '1455' }
-        run: npx playwright test tests/extensions-documents-coverage.spec.ts tests/extensions-diff-coverage.spec.ts tests/changes-view.spec.ts tests/document-viewer.spec.ts tests/office-viewer.spec.ts --workers=1
+        run: npx playwright test tests/extensions-documents-coverage.spec.ts tests/extensions-diff-coverage.spec.ts tests/extensions-search-coverage.spec.ts tests/changes-view.spec.ts tests/document-viewer.spec.ts tests/office-viewer.spec.ts --workers=1
       - name: Document presentation (WebKit preview)
         env: { PW_PORT: '1456' }
-        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-documents-coverage.spec.ts tests/extensions-diff-coverage.spec.ts tests/changes-view.spec.ts tests/document-viewer.spec.ts tests/office-viewer.spec.ts --workers=1
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-documents-coverage.spec.ts tests/extensions-diff-coverage.spec.ts tests/extensions-search-coverage.spec.ts tests/changes-view.spec.ts tests/document-viewer.spec.ts tests/office-viewer.spec.ts --workers=1
       - name: Extension tools and API connections (Chromium preview)
         env: { PW_PORT: '1449', PW_PROD: '1' }
         run: npx playwright test tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts tests/extensions-services.spec.ts --workers=1

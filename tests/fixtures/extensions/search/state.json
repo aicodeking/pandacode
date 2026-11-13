@@ -1,0 +1,1 @@
+{"contractVersion":1,"context":"search-A","project":"project-A/task-A","revision":3,"query":"search","matchCase":false,"wholeWord":false,"regex":false,"loading":false,"error":false,"visible":true,"selected":"result-A","results":[{"id":"result-A","path":"src/search.ts","line":12,"collapsed":false}],"next":"","truncated":false}

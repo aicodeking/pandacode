@@ -26,9 +26,9 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, 'panda.documents', 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', 'panda.documents.actions', 'panda.documents.context', 'panda.changes', 'panda.changes.actions', ...Object.keys(CHANGES_CONTROLS), ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, 'panda.search', 'panda.search.controls', 'panda.documents', 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', 'panda.documents.actions', 'panda.documents.context', 'panda.changes', 'panda.changes.actions', ...Object.keys(CHANGES_CONTROLS), ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
   const items = allItems(ui);
-  const expected = 9 + 12 + Object.values(CHANGES_CONTROLS).reduce((count, controls) => count + controls.length, 0) + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
+  const expected = 4 + 9 + 12 + Object.values(CHANGES_CONTROLS).reduce((count, controls) => count + controls.length, 0) + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
   assert.equal(items.length, expected); assert.equal(new Set(items.map(item => item.id)).size, expected);
   assert.deepEqual(items.filter(item => item.owner === sample.id).map(item => item.id), ['sample.project-helper/header', 'sample.project-helper/sidebar']);
   for (const item of [...items, ...surfaces]) {

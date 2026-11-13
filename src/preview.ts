@@ -2640,6 +2640,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'search_text': {
+      if (new URLSearchParams(location.search).has('search-coverage') && args.query === 'paged-fixture') {
+        result = { files: Array.from({ length: 130 }, (_, index) => ({ path: `src/result-${index}.ts`, matches: [{ line: 1, text: 'Synthetic bounded page fixture', ranges: [[0, 9]] }] })), truncated: false }; break;
+      }
       // Sample source stands in for every script; Markdown files read as the sample README.
       const query = String(args.query ?? '');
       let pattern: RegExp;

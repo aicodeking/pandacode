@@ -809,6 +809,11 @@ const searchPanel = createSearchPanel({
   open: path => run(openFile(path, 'file')),
   contextMenu: (anchor, path, point) => run(showInspectorFileActions(anchor, path, 'search', point)),
 });
+if (preview && new URLSearchParams(location.search).has('search-coverage')) {
+  (window as any).__previewSearch = () => searchPanel.presentation();
+  (window as any).__previewSearchAction = (action: import('./extensions/search').SearchAction) => searchPanel.dispatch(action);
+  (window as any).__previewSearchPage = (cursor?: string) => searchPanel.page(cursor);
+}
 $('#inspector-content').addEventListener('contextmenu', event => {
   if (state.inspectorTab !== 'files') return;
   const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');

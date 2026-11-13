@@ -15,7 +15,7 @@ export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits']
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
 const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers'];
 const capabilities = ['services.call', 'connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
-const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction'];
+const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction', 'searchPresentation', 'searchAction'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
   detail: ContractError;
@@ -323,6 +323,7 @@ export function validateContract(kind: string, value: unknown): Validation {
     const result = kind === 'packages' ? manifests(value, diagnostics) : publicShapes.includes(kind) ? shape(value, definitions[kind], '$', diagnostics) : error('InvalidShape', '$');
     if (kind === 'dialog') dialogFields(result as ObjectValue, '$');
     if (kind === 'selectOptions') distinct(result as ObjectValue[], 'value', '$');
+    if (kind === 'searchPresentation') distinct((result as ObjectValue).results as ObjectValue[], 'id', '$/results');
     if (kind === 'changesPresentation') {
       const props = result as ObjectValue, files = props.files as ObjectValue[];
       distinct(files, 'id', '$/files'); distinct(files, 'diffId', '$/files');

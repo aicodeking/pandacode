@@ -5,6 +5,27 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Compatible region order only; original input/results and business handlers stay alive. */
+export function applySearchPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.search-form') || !host.querySelector('.search-results')) throw Error('Incomplete Search host');
+}): void {
+  delete host.dataset.searchProvider;
+  const results = host.querySelector<HTMLElement>('.search-results');
+  if (results) results.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-search-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.search', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.searchPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Search replacement failed. Built-in search remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.searchProvider = provider.id; if (results) results.style.order = '-1'; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** Closed Changes recipe: move only the original commit form's visual order. */
 export function applyChangesPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.cv-header') || !host.querySelector('.cv-commit')) throw Error('Incomplete Changes host');

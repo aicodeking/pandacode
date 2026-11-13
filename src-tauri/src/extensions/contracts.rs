@@ -387,10 +387,11 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
+        if kind == "searchPresentation" { distinct(items(&value, "results"), "id", "$/results")?; }
         if kind == "changesPresentation" {
             distinct(items(&value, "files"), "id", "$/files")?;
             distinct(items(&value, "files"), "diffId", "$/files")?;
@@ -474,6 +475,19 @@ mod tests {
             let mut invalid = manifest.clone(); invalid["contributes"]["components"][0][field] = value;
             assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false);
         }
+    }
+    #[test]
+    fn search_component_state_and_action_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/search/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let props: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/search/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/search/action.json")).unwrap();
+        assert_eq!(super::validate_contract("searchPresentation", &props)["ok"], true);
+        assert_eq!(super::validate_contract("searchAction", &action)["ok"], true);
+        let mut duplicate = props.clone(); duplicate["results"].as_array_mut().unwrap().push(props["results"][0].clone());
+        assert_eq!(super::validate_contract("searchPresentation", &duplicate)["ok"], false);
+        let mut forged = action; forged["ipc"] = json!("raw");
+        assert_eq!(super::validate_contract("searchAction", &forged)["ok"], false);
     }
     #[test]
     fn changes_component_state_and_action_share_native_schema() {
