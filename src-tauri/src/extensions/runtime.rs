@@ -36,10 +36,12 @@ enum Request {
     DevelopmentReload { id: String },
     StorageGrant { id: String, allow: bool },
     Storage { handle: String, request: Value },
+    Jobs { handle: String, request: Value },
     RemoveOwnData { id: String, confirmation: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
+    app.state::<super::jobs::ExtensionJobs>().stop(owner);
     app.state::<ExtensionRuntime>().stop(owner);
     if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(owner, None); }
 }
@@ -54,6 +56,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
     if request.to_string().len() > limit { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
     match request {
+        Request::Jobs { handle, request } => super::jobs::call(&app, &handle, request),
         Request::StorageGrant { id, allow } => {
             let result = (|| {
                 let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
@@ -147,6 +150,11 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                         let broker = app.state::<ContextBroker>();
                         broker.runtime_binding(&snapshot, &handle)?;
                         if packages.executable_source(&owner).map_err(|_| "PermissionDenied")?.0 != digest { return Err("StaleContext"); }
+                        if method == "jobs" {
+                            if !matches!(params["op"].as_str(), Some("start" | "poll" | "cancel")) { return Err("PermissionDenied"); }
+                            drop(packages);
+                            return Ok(super::jobs::call(&app, &handle, params));
+                        }
                         if method == "storage" {
                             return Ok(match packages.storage_call(&owner, &version, captured_project.as_deref(), &handle, params) { Ok(value) => ok(value), Err(code) => context::failure(&code) });
                         }

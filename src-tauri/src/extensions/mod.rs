@@ -7,4 +7,5 @@ pub mod context;
 mod inventory;
 mod project_reads;
 pub mod runtime;
+pub mod jobs;
 mod supervisor;

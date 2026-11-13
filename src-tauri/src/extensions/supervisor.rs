@@ -58,9 +58,13 @@ async fn write_frame(writer: &mut (impl AsyncWrite + Unpin), value: &Value, max:
 
 /// No package code is supplied before Windows assigns the app bootstrap to its owned job.
 pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<AtomicBool>, mut dispatch: impl FnMut(&str, Value) -> Value) -> Result<Vec<Value>> {
+    run_owned(runtime, source, context, cancel, &runtime.directory, DEADLINE, &mut dispatch).await
+}
+
+pub async fn run_owned(runtime: &Runtime, source: &str, context: Value, cancel: Arc<AtomicBool>, cwd: &Path, deadline: Duration, mut dispatch: impl FnMut(&str, Value) -> Value) -> Result<Vec<Value>> {
     if cancel.load(Ordering::Acquire) { return Err("Cancelled"); }
     let mut command = tokio::process::Command::new(&runtime.binary);
-    command.args(["--max-old-space-size=64", "--input-type=commonjs", "--eval", BOOTSTRAP]).current_dir(&runtime.directory)
+    command.args(["--max-old-space-size=64", "--input-type=commonjs", "--eval", BOOTSTRAP]).current_dir(cwd)
         .env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     // Keep only OS bootstrap variables, never app credentials, NODE_OPTIONS or arbitrary parent env.
     for name in ["SystemRoot", "WINDIR", "TEMP", "TMP"] { if let Some(value) = std::env::var_os(name) { command.env(name, value); } }
@@ -88,7 +92,7 @@ pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<At
             let reply = match message.method.as_str() {
                 "failed" if message.params.is_null() => return Err("HostUnavailable"),
                 "complete" if message.params.is_null() => return Ok(dialogs),
-                "context" | "dialog" | "storage" => dispatch(&message.method, message.params.clone()),
+                "context" | "dialog" | "storage" | "jobs" | "jobProgress" | "jobResult" => dispatch(&message.method, message.params.clone()),
                 _ => return Err("UnsupportedCapability"),
             };
             if message.method == "dialog" && reply["ok"] == true {
@@ -105,7 +109,7 @@ pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<At
         value = exchange => value,
         () = cancelled => Err("Cancelled"),
         () = noise => Err("LimitExceeded"),
-        () = tokio::time::sleep(DEADLINE) => Err("Timeout"),
+        () = tokio::time::sleep(deadline) => Err("Timeout"),
     };
     // Always terminate/reap even after success; package timers/owned helpers cannot outlive this call.
     #[cfg(windows)]

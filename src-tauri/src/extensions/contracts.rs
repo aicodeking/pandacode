@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 10] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components"];
+const CONTRIBUTIONS: [&str; 11] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -236,16 +236,16 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         if !matches(text(&manifest["engines"], "pandacodeApi"), "1.0.0", &format!("{path}/engines/pandacodeApi"))? { return Err(fail("IncompatibleApi", &format!("{path}/engines/pandacodeApi"), vec![id])); }
         for key in ["permissions", "requiredCapabilities"] {
             for capability in strings(&manifest[key]) {
-                if !["ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
+                if !["tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
             }
         }
         let optional = strings(&manifest["optionalCapabilities"]);
         for (i, capability) in optional.iter().enumerate() {
-            if !["ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) {
+            if !["tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) {
                 diagnostics.push(json!({"code":"UnknownOptionalCapability", "path":format!("{path}/optionalCapabilities/{i}")}));
             }
         }
-        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| ["ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&v.as_str())).collect::<Vec<_>>()); }
+        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| ["tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&v.as_str())).collect::<Vec<_>>()); }
         for kind in strings(&manifest["requiredContributions"]) {
             if !CONTRIBUTIONS.contains(&kind.as_str()) { return Err(fail("UnsupportedContribution", &format!("{path}/requiredContributions"), vec![kind])); }
         }
@@ -258,6 +258,10 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         let events = strings(&manifest["runtime"]["activationEvents"]);
         if manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id)) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
         let mut owned = BTreeSet::new();
+        let mut tool_commands = BTreeSet::new();
+        for tool in items(contributions, "tools") {
+            if !executable.contains(&text(tool, "command").to_owned()) || !strings(&manifest["permissions"]).contains(&"tools.execute".to_owned()) || !tool_commands.insert(text(tool, "command")) { return Err(fail("PermissionDenied", &path, vec![])); }
+        }
         for kind in CONTRIBUTIONS {
             for item in items(contributions, kind) {
                 let item_id = text(item, "id");

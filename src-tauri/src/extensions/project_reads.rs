@@ -85,6 +85,12 @@ impl Opened {
     }
 }
 impl Authority {
+    pub(super) fn directory(&self, current: &Path) -> Result<Directory> {
+        if fs::canonicalize(current).map_err(io)? != self.root { return Err("StaleContext"); }
+        let opened = Opened::open(&self.root, None)?;
+        if identity(opened.file())? != self.identity { return Err("StaleContext"); }
+        Ok(Directory { path: self.root.clone(), _opened: opened })
+    }
     pub fn grant(root: &Path) -> Result<Self> {
         let root = fs::canonicalize(root).map_err(io)?;
         if root.components().any(|part| matches!(part.as_os_str().to_str().map(str::to_ascii_lowercase).as_deref(), Some(".git" | ".ssh" | ".aws" | ".azure" | ".gnupg" | ".kube" | ".codex" | ".claude" | ".opencode"))) { return Err("PermissionDenied"); }
@@ -117,6 +123,7 @@ impl Authority {
         Ok(opened)
     }
 }
+pub(super) struct Directory { pub path: PathBuf, _opened: Opened }
 fn check(deadline: Instant, cancelled: &impl Fn() -> bool) -> Result<()> {
     if cancelled() { Err("Cancelled") } else if Instant::now() >= deadline { Err("Timeout") } else { Ok(()) }
 }

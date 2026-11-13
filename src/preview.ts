@@ -631,6 +631,12 @@ if (new URLSearchParams(location.search).has('extension-development')) {
   // Deterministic synthetic native notification while another owner's transient is open.
   (window as any).__previewDevelopmentReload = async (id: string) => (await import('./extensions/manager')).reloadDevelopmentExtension(id);
 }
+if (new URLSearchParams(location.search).has('extension-jobs')) {
+  (window as any).__extensionJobs = {
+    context: (request: Record<string, unknown>) => invoke('extensions_context', { request }),
+    call: (handle: string, request: Record<string, unknown>) => invoke('extensions_runtime', { request: { op: 'jobs', handle, request } }),
+  };
+}
 if (new URLSearchParams(location.search).has('extension-storage')) {
   // Synthetic host transport only; package identity still comes from a captured declaration.
   const adapters = new Map<string, Awaited<ReturnType<typeof import('./extensions/storage').captureExtensionStorage>>>();
@@ -1575,6 +1581,12 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
     try { return { ok: true, value: previewPrivateStorage.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
     catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'StorageUnavailable', path: '$', ids: [] } } as T; }
+  }
+  if (command === 'extensions_runtime' && args.request?.op === 'jobs') {
+    const { previewExtensionSnapshot, previewOwnedJobs } = await import('./extensions/preview');
+    const snapshot = previewExtensionSnapshot();
+    try { return { ok: true, value: previewOwnedJobs.call(snapshot, extensionContextBroker?.binding(snapshot, args.request.handle), args.request.request) } as T; }
+    catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
   }
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);

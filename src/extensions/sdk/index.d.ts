@@ -40,6 +40,12 @@ export interface DialogDefinition {
 }
 export interface PandaCode {
   readonly apiVersion: '1.0.0';
+  /** Manifest-declared tool, captured project and host-UI authorization only; no PID/cwd/executable input. */
+  readonly jobs: {
+    start(options: { tool: string; args: readonly string[] }): Promise<OwnedJob>;
+    poll(options: { tool: string; job: string }): Promise<OwnedJob>;
+    cancel(options: { tool: string; job: string }): Promise<OwnedJob>;
+  };
   /** Supported API isolation only. Trusted native code can independently access user files.
    * Requires declared storage.private and explicit persisted user consent for this version.
    * All subscriptions end with activation, disable, trust/grant revocation or uninstall. */
@@ -62,6 +68,15 @@ export interface PandaCode {
   };
 }
 export type Activate = (panda: PandaCode, context: InvocationContext) => void | Promise<void>;
+export interface OwnedJob { readonly schemaVersion: 1; readonly job: string; readonly state: 'running' | 'completed' | 'cancelled' | 'timeout' | 'failed'; readonly progress: readonly Json[]; readonly result: Json; readonly error: string | null }
+/** Export `tools` from main.cjs, keyed by the fully qualified manifest tool ID.
+ * The packaged Node adapter calls the handler with literal args, in captured project cwd.
+ * Up to 32 progress messages (512 bytes each), one result (8192 bytes), deadline <= 30 s. */
+export type ToolHandler = (args: readonly string[], job: { progress(value: Json): Promise<null> }) => Json | Promise<Json>;
+export interface ToolDescriptor {
+  readonly id: string; readonly command: string; readonly executable: 'node'; readonly cwd: 'project';
+  readonly arguments: { readonly maxItems: number; readonly maxLength: number }; readonly timeoutMs: number;
+}
 export type StorageScope = 'global' | 'project';
 export interface StorageSnapshot { readonly schemaVersion: 1; readonly dataVersion: number; readonly revision: number; readonly values: Readonly<Record<string, Json>> }
 export interface StorageStream {

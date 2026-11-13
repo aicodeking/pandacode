@@ -3971,6 +3971,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
+    app.manage(extensions::jobs::ExtensionJobs::default());
     app.manage(extensions::rich_views::RichViews::default());
     secret_store::setup(&dir);
     providers::sweep_cline_mcp_settings(&dir);

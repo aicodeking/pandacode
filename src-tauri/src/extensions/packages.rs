@@ -491,6 +491,30 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     /// Uses the application's actual archive/trust/capture/grant/DTO adapters and supervisor.
+    #[test]
+    fn test_runner_archive_requires_executable_trust_and_validates_tool_schema() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/test-runner/extension.json");
+        let source = include_str!("../../../tests/fixtures/extensions/test-runner/main.cjs");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        let bundle = archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes())]);
+        packages.install(&bundle).unwrap();
+        assert!(packages.executable_source("sample.test-runner").is_err());
+        assert!(packages.enable("sample.test-runner", true).is_err());
+        let digest = packages.snapshot().packages[0].executable.as_ref().unwrap().digest.clone();
+        packages.trust("sample.test-runner", &digest, true).unwrap();
+        packages.enable("sample.test-runner", true).unwrap();
+        assert_eq!(packages.executable_source("sample.test-runner").unwrap().1, source);
+        let manifest: Value = serde_json::from_str(manifest).unwrap();
+        for (key, value) in [("executable", json!("cmd.exe")), ("cwd", json!("../other")), ("timeoutMs", json!(30001)), ("arguments", json!({"maxItems":33,"maxLength":1024}))] {
+            let mut invalid = manifest.clone(); invalid["contributes"]["tools"][0][key] = value;
+            assert_eq!(super::super::contracts::validate_contract("packages", &json!([invalid]))["ok"], false);
+        }
+        let mut invalid = manifest.clone(); invalid["permissions"] = json!(["ui.contribute"]);
+        assert_eq!(super::super::contracts::validate_contract("packages", &json!([invalid]))["error"]["code"], "PermissionDenied");
+        packages.trust("sample.test-runner", &digest, false).unwrap();
+        assert!(packages.executable_source("sample.test-runner").is_err());
+    }
+    /// Uses the application's actual archive/trust/capture/grant/DTO adapters and supervisor.
     /// Also runnable by browser fixtures as a native process; no test entrypoint ships in the app.
     #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
     #[tokio::test]

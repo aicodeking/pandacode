@@ -8,6 +8,9 @@ import settingsManifest from '../../tests/fixtures/extensions/settings-laborator
 import windowManifest from '../../tests/fixtures/extensions/window-laboratory/extension.json';
 import contextManifest from '../../tests/fixtures/extensions/project-context/extension.json';
 import executableManifest from '../../tests/fixtures/extensions/project-summary/extension.json';
+import toolManifest from '../../tests/fixtures/extensions/test-runner/extension.json';
+import { createJobsPreview } from './jobs-preview';
+export const previewOwnedJobs = createJobsPreview();
 import developmentManifest from '../../examples/extensions/project-summary/package/extension.json';
 import dataPanelManifest from '../../tests/fixtures/extensions/data-panel/extension.json';
 import richViewManifest from '../../tests/fixtures/extensions/rich-view/extension.json';
@@ -46,6 +49,9 @@ function read(): ExtensionSnapshot {
 }
 export const previewExtensionSnapshot = read;
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
+  if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewOwnedJobs.stop(String(args.id));
+  if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') previewOwnedJobs.stop();
+  if (command === 'extensions_runtime' && (args.request as { op?: string; allow?: boolean })?.op === 'trust' && (args.request as { allow?: boolean }).allow === false) previewOwnedJobs.stop((args.request as { id: string }).id);
   const label = windowLabel;
   if (label === 'main' && command.startsWith('extensions_window_')) throw new Error('PermissionDenied');
   if (label !== 'main' && !['extensions_window_snapshot', 'extensions_window_action', 'extensions_window_recover'].includes(command)) throw new Error('PermissionDenied');
@@ -122,9 +128,9 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
-    const selected = new URLSearchParams(location.search).has('transcript-conformance') ? transcriptManifest : new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
+    const selected = new URLSearchParams(location.search).has('extension-jobs') ? toolManifest : new URLSearchParams(location.search).has('transcript-conformance') ? transcriptManifest : new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
-    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...(selected === executableManifest ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
+    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...([executableManifest, toolManifest].includes(selected as typeof executableManifest) ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
   } else if (command === 'extensions_uninstall') {
     const item = snapshot.packages.find(item => item.manifest.id === args.id);
     if (item) localStorage.setItem(`pandacode.preview.extension-private-pages.v1.${item.manifest.id}`, JSON.stringify((item.manifest.contributes.settings ?? []).map(page => page.id)));

@@ -1,7 +1,8 @@
 /** Host-owned executable command UI. No source, runtime path or raw bridge reaches package code. */
 import { call } from '../bridge';
 import { isImeKey } from '../dom';
-import { onExtensionChanged } from './manager';
+import { onExtensionChanged, extensionsSnapshot, type ExtensionMenuItem } from './manager';
+import { openToolCommand } from './jobs';
 import { openExtensionDialog } from './dialogs';
 import type { DialogDefinition } from './dialog-state';
 import type { ContextReply } from './context-state';
@@ -10,6 +11,12 @@ import type { Json } from './contracts';
 export const EXECUTABLE_WARNING = 'This is trusted executable code under your normal OS account. It can read and write user-accessible files, access credentials available to your account, use the network, and start programs. PandaCode API grants are not an OS sandbox and do not constrain independent OS calls. No automatic elevation. Revoking trust stops future managed activation and owned work where possible; it cannot undo prior effects or contain deliberately hostile trusted code.';
 
 export function openExecutableCommand(id: string, version: string, context: Record<string, Json>, trigger: HTMLElement, notify: (message: string) => void, onClose?: () => void): () => void {
+  const contributes = extensionsSnapshot().packages.find(item => item.manifest.id === id.split('/')[0])?.manifest.contributes;
+  const leafCommand = (items: ExtensionMenuItem[]): string | undefined => { for (const item of items) { if (item.id === id) return item.command; const nested = item.items && leafCommand(item.items); if (nested) return nested; } };
+  const menu = contributes?.menus?.find(menu => menu.id === id);
+  const commandId = menu?.command ?? contributes?.menus?.flatMap(menu => menu.items ?? []).map(item => leafCommand([item])).find(Boolean) ?? id;
+  const tool = contributes?.tools?.find(tool => tool.command === commandId);
+  if (tool) return openToolCommand(id, version, context, tool, trigger, onClose);
   if (document.querySelector('[data-executable-command]')) return () => {};
   const captured = structuredClone(context), requestId = crypto.randomUUID();
   const panel = document.createElement('section'); panel.className = 'extension-context-inspector ds-card'; panel.dataset.executableCommand = id;

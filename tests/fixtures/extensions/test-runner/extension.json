@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.test-runner",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "tools.execute"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.test-runner/run"] },
+  "contributes": {
+    "commands": [{ "id": "sample.test-runner/run", "title": "Run local tests", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.test-runner/button", "location": "panda.workspace.header.actions", "command": "sample.test-runner/run", "presentation": "button", "text": "Run local tests" }],
+    "tools": [{ "id": "sample.test-runner/test", "command": "sample.test-runner/run", "executable": "node", "arguments": { "maxItems": 1, "maxLength": 1024 }, "cwd": "project", "timeoutMs": 3000 }]
+  }
+}

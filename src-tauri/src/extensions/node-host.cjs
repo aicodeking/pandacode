@@ -48,6 +48,7 @@ process.stdin.on('data', chunk => {
           unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe' }),
         }),
         ui: Object.freeze({ showDialog: dialog => rpc('dialog', dialog) }),
+        jobs: Object.freeze(Object.fromEntries(['start', 'poll', 'cancel'].map(op => [op, options => rpc('jobs', { ...options, op })]))),
         // Scope can only be global or this invocation's captured project. No owner/path input.
         storage: Object.freeze(Object.fromEntries(['get', 'set', 'remove', 'snapshot', 'subscribe', 'events', 'unsubscribe', 'migrate'].map(op => [op, options => rpc('storage', { ...options, op })]))),
       });
@@ -55,6 +56,14 @@ process.stdin.on('data', chunk => {
         const module = new Module(join(process.cwd(), 'extension.cjs'));
         module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
         module._compile(init.source, module.filename);
+        if (invocation?.job) {
+          const handler = module.exports.tools?.[invocation.job.tool];
+          if (typeof handler !== 'function') throw new Error('Missing tool');
+          const result = await handler(invocation.job.args, Object.freeze({ progress: value => rpc('jobProgress', value) }));
+          await rpc('jobResult', result ?? null);
+          await rpc('complete', null);
+          return;
+        }
         if (typeof module.exports.activate !== 'function') throw new Error('Missing activate');
         await module.exports.activate(panda, invocation);
         const handler = commands.get(invocation?.commandId);
