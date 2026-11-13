@@ -46,9 +46,13 @@ The browser attack checks cover parent DOM, raw bridge absence in the browser fr
 top navigation, eval and remote script/image/fetch attempts; they do not establish those
 unrun native conditions or network confinement for a trusted executable extension.
 
-The child exposes only `pandaView.onDidInitialize(callback) -> dispose`. Initialization
+The child exposes `pandaView.onDidInitialize(callback) -> dispose` and
+`pandaView.onDidChangeTheme(callback) -> dispose`. Initialization
 contains immutable, versioned presentation data (`owner`, `version`, `viewId`, host-created
-`windowId`, `title`, `text`) and a versioned `dark | light` theme DTO. It contains no project,
+`windowId`, `title`, `text`) and a versioned `dark | light` theme DTO. Browser characterization
+also supplies a frozen, allowlisted public token snapshot and sequenced read-only theme
+updates; native token/update parity is not qualified or enabled. Each subscription family
+is bounded to 16 callbacks and disposed with the child. It contains no project,
 credential, filesystem or task data. Additional core DTO grants need separate future API
 adapters; package messages never dispatch arbitrary native commands.
 
