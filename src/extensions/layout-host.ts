@@ -43,7 +43,7 @@ export function applyControlVisibility(bindings: ReadonlyArray<readonly [string,
   let moveFocus = false;
   for (const [id, element] of bindings) {
     if (!element) continue;
-    const hidden = layout.isHidden(id, layoutProject());
+    const hidden = !extensionsSnapshot().safeMode && layout.isHidden(id, layoutProject());
     if (hidden && element.contains(document.activeElement)) moveFocus = true;
     element.toggleAttribute('data-layout-hidden', hidden); element.inert = hidden;
   }

@@ -1,5 +1,21 @@
 {
   "schemaVersion": 1,
+  "contentAudit": {
+    "task": "extensibility-content-261113-w6oo/T53F",
+    "status": "implemented-experimental",
+    "originalTask": "extensibility-trusted-261112-wmo7/T53 (historical failed record preserved)",
+    "operations": ["action", "control", "context", "hide", "show", "reorder", "compatible-move", "selected-recipe", "restore"],
+    "rows": [
+      { "ids": ["panda.inspector.files"], "contract": "panda.files + panda.inspector.files.toolbar/context", "context": "Captured checkout/task/file or folder and revision", "move": "Compatible file-list recipe only, not arbitrary tree docking", "replacement": "Explicit list recipe; original open/toggle handlers", "evidence": ["tests/extensions-replacement.spec.ts", "tests/extensions-view-actions.spec.ts"] },
+      { "ids": ["panda.inspector.open-files", "panda.content.file-tabs", "panda.content.document"], "contract": "panda.documents", "details": "documentCoverage", "evidence": ["tests/extensions-documents-coverage.spec.ts", "tests/extensions-content-coverage.spec.ts"] },
+      { "ids": ["panda.inspector.changes", "panda.content.diff", "panda.inventory.changes-view.fold-all", "panda.inventory.changes-view.retry", "panda.inventory.changes-view.retry-file", "panda.inventory.changes-view.scope", "panda.inventory.changes-view.toggle"], "contract": "panda.changes", "details": "diffCoverage", "evidence": ["tests/extensions-diff-coverage.spec.ts", "tests/extensions-content-coverage.spec.ts"] },
+      { "ids": ["panda.inspector.search"], "contract": "panda.search + panda.inspector.search.toolbar/context", "details": "searchCoverage", "evidence": ["tests/extensions-search-coverage.spec.ts", "tests/extensions-content-coverage.spec.ts"] },
+      { "ids": ["panda.inspector.browser", "panda.content.browser", "panda.inventory.browser.back", "panda.inventory.browser.forward", "panda.inventory.browser.home", "panda.inventory.browser.pick", "panda.inventory.browser.refresh-ports", "panda.inventory.browser.reload", "panda.inventory.browser.watch-jev"], "contract": "panda.browser", "details": "browserCoverage", "evidence": ["tests/extensions-browser-coverage.spec.ts", "tests/extensions-content-coverage.spec.ts"] },
+      { "ids": ["panda.content.terminal", "panda.inventory.terminal-panel.close", "panda.inventory.terminal-panel.select"], "contract": "panda.terminal + panda.views/terminal", "details": "terminalCoverage", "evidence": ["tests/extensions-terminal-coverage.spec.ts", "tests/extensions-content-coverage.spec.ts"] }
+    ],
+    "integration": "Installed declarative packages use shared catalogs/commands/icons/nested menus/dialogs/selects/components. Same live reader, search input/query, synthetic guest and terminal survive recovery without duplicate operations; safe mode must not reapply hidden-control overlays after later refreshes.",
+    "qualification": "Native schema/archive/policy and actual local Windows ConPTY registry evidence are separate from preview continuity. Installed Windows/Linux/WSL and other device qualification remain deferred/unavailable, never passed. Other M10 surface families remain outside this audit."
+  },
   "terminalCoverage": {
     "panda.inventory.terminal-panel.select": { "adapter": "panda.terminal.controls/select", "evidence": ["tests/extensions-terminal-coverage.spec.ts: captured actions and keyboard", "tests/terminal.spec.ts: tabs retain separate processes"] },
     "panda.inventory.terminal-panel.close": { "adapter": "panda.terminal.controls/close", "evidence": ["tests/extensions-terminal-coverage.spec.ts: close approval", "tests/terminal.spec.ts: delayed close and uncertain activity"] },
@@ -61,7 +77,7 @@
     "context": "Window-bound host UI; each surface advertises its actual label and native limitations; responsive relocation preserves logical IDs; no DOM or IPC metadata",
     "operations": ["inspect", "hide", "show", "reorder"],
     "tests": ["tests/extensions-catalog.test.mjs", "tests/extensions-catalog.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts", "tests/extensions-view-actions.test.mjs", "tests/extensions-view-actions.spec.ts"],
-    "scope": "Read-only discovery for 63 core items, public host UI commands, host user visibility/order for 54 core actions and contributed actions/inspector views, and selected ui.customize control-layout proposals; sidebar visibility; document recipe and compatible host-node placement use explicit host-user adapters, never catalog-granted package invocation permission"
+    "scope": "Bounded cursor-paged discovery of the exact coreItems and surfaces above, public host UI commands, host user visibility/order for eligible core controls and contributed actions/inspector views, and selected ui.customize control-layout proposals; sidebar visibility; content recipes and compatible host-node placement use explicit host-user adapters, never catalog-granted package invocation permission"
   },
   "implementedAdapters": [
     { "id": "panda.terminal", "owner": "src/terminal-panel.ts + src/extensions/terminal.ts", "operations": ["contribute", "hide", "show", "reorder", "move", "replace", "restore"], "scope": "Explicit selected tabs-below v1 closed recipe, captured panel/group/project/session/revision and opaque tab handles. Original new/select/close/minimize handlers and running-process consent remain core-owned; no PTY content, write, shell/PID or ownership API. Compatible movement reuses T30 placement with original nodes.", "tests": ["tests/extensions-terminal-coverage.spec.ts", "tests/extensions-terminal.test.mjs", "tests/terminal.spec.ts", "src-tauri/src/terminal.rs", "src-tauri/src/extensions/contracts.rs", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "experimental; real local Windows ConPTY registry/job tests and browser synthetic controller continuity are separate evidence, not installed native drag/window qualification; installed/device checks deferred" },
