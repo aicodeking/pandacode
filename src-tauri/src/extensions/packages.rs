@@ -514,6 +514,22 @@ mod tests {
         packages.trust("sample.test-runner", &digest, false).unwrap();
         assert!(packages.executable_source("sample.test-runner").is_err());
     }
+    #[test]
+    fn fake_service_archive_requires_trust_and_preserves_only_nonsecret_connection_descriptors() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/fake-service/extension.json");
+        let source = include_str!("../../../tests/fixtures/extensions/fake-service/main.cjs");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("main.cjs", source.as_bytes())])).unwrap();
+        assert!(packages.enable("sample.fake-service", true).is_err());
+        let digest = packages.snapshot().packages[0].executable.as_ref().unwrap().digest.clone();
+        packages.trust("sample.fake-service", &digest, true).unwrap(); packages.enable("sample.fake-service", true).unwrap();
+        assert_eq!(packages.executable_source("sample.fake-service").unwrap().1, source);
+        let snapshot = packages.snapshot();
+        assert_eq!(snapshot.packages[0].manifest["contributes"]["connections"][0]["authentication"], "bearer");
+        assert!(snapshot.packages[0].manifest["contributes"]["connections"][0].get("secret").is_none());
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest, snapshot.packages[0].manifest);
+        packages.trust("sample.fake-service", &digest, false).unwrap(); assert!(packages.executable_source("sample.fake-service").is_err());
+    }
     /// Uses the application's actual archive/trust/capture/grant/DTO adapters and supervisor.
     /// Also runnable by browser fixtures as a native process; no test entrypoint ships in the app.
     #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]

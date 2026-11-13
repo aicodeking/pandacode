@@ -92,7 +92,7 @@ pub async fn run_owned(runtime: &Runtime, source: &str, context: Value, cancel: 
             let reply = match message.method.as_str() {
                 "failed" if message.params.is_null() => return Err("HostUnavailable"),
                 "complete" if message.params.is_null() => return Ok(dialogs),
-                "context" | "dialog" | "storage" | "jobs" | "jobProgress" | "jobResult" => dispatch(&message.method, message.params.clone()),
+                "context" | "dialog" | "storage" | "jobs" | "connections" | "jobProgress" | "jobResult" => dispatch(&message.method, message.params.clone()),
                 _ => return Err("UnsupportedCapability"),
             };
             if message.method == "dialog" && reply["ok"] == true {

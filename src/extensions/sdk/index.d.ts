@@ -40,6 +40,14 @@ export interface DialogDefinition {
 }
 export interface PandaCode {
   readonly apiVersion: '1.0.0';
+  /** Invocation-scoped opaque API; credentials are entered only in host UI. No raw HTTP
+   * strings/headers are returned. This does not constrain trusted code's independent OS access. */
+  readonly connections: {
+    status(options: ConnectionResource): Promise<ConnectionStatus>;
+    start(options: ConnectionResource & { credential: string }): Promise<ConnectionRequest>;
+    poll(options: ConnectionResource & { request: string }): Promise<ConnectionRequest>;
+    cancel(options: ConnectionResource & { request: string }): Promise<ConnectionRequest>;
+  };
   /** Manifest-declared tool, captured project and host-UI authorization only; no PID/cwd/executable input. */
   readonly jobs: {
     start(options: { tool: string; args: readonly string[] }): Promise<OwnedJob>;
@@ -68,6 +76,18 @@ export interface PandaCode {
   };
 }
 export type Activate = (panda: PandaCode, context: InvocationContext) => void | Promise<void>;
+export interface ConnectionResource { readonly connection: string; readonly operation: string }
+export interface ConnectionStatus { readonly schemaVersion: 1; readonly state: 'connected' | 'disconnected'; readonly credential: string | null }
+export interface ConnectionRequest { readonly schemaVersion: 1; readonly request: string; readonly state: 'running' | 'completed' | 'failed'; readonly response: { readonly schemaVersion: 1; readonly accepted: boolean; readonly count: number } | null; readonly error: string | null }
+/** Initial adapter: exact GET URL, HTTPS (numeric loopback HTTP allowed), no redirects,
+ * no query/userinfo/fragment, Bearer only; 32 KiB response, 100–30,000 ms deadline.
+ * json-summary projects only boolean accepted and integer count (0..1,000,000).
+ * Unknown authentication schemes fail with UnsupportedCapability, never a raw-key fallback. */
+export interface ConnectionDescriptor {
+  readonly id: string; readonly command: string; readonly title: string; readonly authentication: string;
+  readonly adapter: 'json-summary'; readonly timeoutMs: number;
+  readonly operations: readonly { readonly id: string; readonly method: 'GET'; readonly url: string }[];
+}
 export interface OwnedJob { readonly schemaVersion: 1; readonly job: string; readonly state: 'running' | 'completed' | 'cancelled' | 'timeout' | 'failed'; readonly progress: readonly Json[]; readonly result: Json; readonly error: string | null }
 /** Export `tools` from main.cjs, keyed by the fully qualified manifest tool ID.
  * The packaged Node adapter calls the handler with literal args, in captured project cwd.

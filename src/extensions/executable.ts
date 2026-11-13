@@ -3,6 +3,7 @@ import { call } from '../bridge';
 import { isImeKey } from '../dom';
 import { onExtensionChanged, extensionsSnapshot, type ExtensionMenuItem } from './manager';
 import { openToolCommand } from './jobs';
+import { openConnectionCommand } from './connections';
 import { openExtensionDialog } from './dialogs';
 import type { DialogDefinition } from './dialog-state';
 import type { ContextReply } from './context-state';
@@ -16,6 +17,8 @@ export function openExecutableCommand(id: string, version: string, context: Reco
   const menu = contributes?.menus?.find(menu => menu.id === id);
   const commandId = menu?.command ?? contributes?.menus?.flatMap(menu => menu.items ?? []).map(item => leafCommand([item])).find(Boolean) ?? id;
   const tool = contributes?.tools?.find(tool => tool.command === commandId);
+  const connection = contributes?.connections?.find(connection => connection.command === commandId);
+  if (connection) return openConnectionCommand(id, version, context, connection, trigger, onClose);
   if (tool) return openToolCommand(id, version, context, tool, trigger, onClose);
   if (document.querySelector('[data-executable-command]')) return () => {};
   const captured = structuredClone(context), requestId = crypto.randomUUID();

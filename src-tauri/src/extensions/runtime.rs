@@ -37,10 +37,12 @@ enum Request {
     StorageGrant { id: String, allow: bool },
     Storage { handle: String, request: Value },
     Jobs { handle: String, request: Value },
+    Connections { handle: String, request: Value },
     RemoveOwnData { id: String, confirmation: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
+    app.state::<super::connections::ExtensionConnections>().stop(owner, None);
     app.state::<super::jobs::ExtensionJobs>().stop(owner);
     app.state::<ExtensionRuntime>().stop(owner);
     if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(owner, None); }
@@ -56,6 +58,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
     if request.to_string().len() > limit { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
     match request {
+        Request::Connections { handle, request } => super::connections::call(&app, &handle, request, true),
         Request::Jobs { handle, request } => super::jobs::call(&app, &handle, request),
         Request::StorageGrant { id, allow } => {
             let result = (|| {
@@ -155,6 +158,10 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                             drop(packages);
                             return Ok(super::jobs::call(&app, &handle, params));
                         }
+                        if method == "connections" {
+                            drop(packages);
+                            return Ok(super::connections::call(&app, &handle, params, false));
+                        }
                         if method == "storage" {
                             return Ok(match packages.storage_call(&owner, &version, captured_project.as_deref(), &handle, params) { Ok(value) => ok(value), Err(code) => context::failure(&code) });
                         }
@@ -177,6 +184,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 Ok(dialogs)
             });
             app.state::<ContextBroker>().runtime_release(&handle);
+            app.state::<super::connections::ExtensionConnections>().stop(Some(&owner), Some(&handle));
             if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(Some(&owner), Some(&handle)); }
             let state = app.state::<ExtensionRuntime>();
             if let Ok(packages) = app.state::<ExtensionPackages>().0.try_lock() {

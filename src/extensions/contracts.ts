@@ -12,8 +12,8 @@ export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | 
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools'];
-const capabilities = ['tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections'];
+const capabilities = ['connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
@@ -225,6 +225,17 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (!fullMatch('^assets/[a-zA-Z0-9_./-]+[.](svg|png|webp)$', asset) || asset.split('/').some(part => !part || part === '.' || part === '..')) error('UnsafeAsset', `${path}/contributes/icons`, [icon.id as string]);
     }
     const toolCommands = new Set<Json>();
+    for (const connection of (contributions.connections ?? []) as ObjectValue[]) {
+      reference('commands', connection.command, 'connections');
+      if (!executable.includes(connection.command) || !(manifest.permissions as string[]).includes('connections.request') || toolCommands.has(connection.command)) error('PermissionDenied', `${path}/contributes/connections`);
+      toolCommands.add(connection.command);
+      const operations = connection.operations as ObjectValue[];
+      if (new Set(operations.map(operation => operation.id)).size !== operations.length) error('DuplicateId', `${path}/contributes/connections`);
+      for (const operation of operations) {
+        let url: URL; try { url = new URL(String(operation.url)); } catch { error('PermissionDenied', `${path}/contributes/connections`); }
+        if (!(url!.protocol === 'https:' || url!.protocol === 'http:' && url!.hostname === '127.0.0.1') || url!.username || url!.password || url!.search || url!.hash) error('PermissionDenied', `${path}/contributes/connections`);
+      }
+    }
     for (const tool of (contributions.tools ?? []) as ObjectValue[]) {
       reference('commands', tool.command, 'tools');
       if (!executable.includes(tool.command) || !(manifest.permissions as string[]).includes('tools.execute') || toolCommands.has(tool.command)) error('PermissionDenied', `${path}/contributes/tools`);

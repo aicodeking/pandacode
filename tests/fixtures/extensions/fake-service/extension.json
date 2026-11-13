@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.fake-service",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "connections.request"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.fake-service/request"] },
+  "contributes": {
+    "commands": [{ "id": "sample.fake-service/request", "title": "Open fake service", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.fake-service/button", "location": "panda.workspace.header.actions", "command": "sample.fake-service/request", "presentation": "button", "text": "Fake service" }],
+    "connections": [{ "id": "sample.fake-service/api", "command": "sample.fake-service/request", "title": "Fake HTTP service", "authentication": "bearer", "adapter": "json-summary", "timeoutMs": 1000, "operations": [
+      { "id": "summary", "method": "GET", "url": "http://127.0.0.1:19473/summary" },
+      { "id": "wait", "method": "GET", "url": "http://127.0.0.1:19473/wait" },
+      { "id": "redirect", "method": "GET", "url": "http://127.0.0.1:19473/redirect" },
+      { "id": "large", "method": "GET", "url": "http://127.0.0.1:19473/large" },
+      { "id": "failure", "method": "GET", "url": "http://127.0.0.1:19473/failure" }
+    ] }]
+  }
+}

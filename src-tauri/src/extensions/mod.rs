@@ -8,4 +8,5 @@ mod inventory;
 mod project_reads;
 pub mod runtime;
 pub mod jobs;
+pub mod connections;
 mod supervisor;

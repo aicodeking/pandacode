@@ -49,6 +49,7 @@ process.stdin.on('data', chunk => {
         }),
         ui: Object.freeze({ showDialog: dialog => rpc('dialog', dialog) }),
         jobs: Object.freeze(Object.fromEntries(['start', 'poll', 'cancel'].map(op => [op, options => rpc('jobs', { ...options, op })]))),
+        connections: Object.freeze(Object.fromEntries(['status', 'start', 'poll', 'cancel'].map(op => [op, options => rpc('connections', { ...options, op })]))),
         // Scope can only be global or this invocation's captured project. No owner/path input.
         storage: Object.freeze(Object.fromEntries(['get', 'set', 'remove', 'snapshot', 'subscribe', 'events', 'unsubscribe', 'migrate'].map(op => [op, options => rpc('storage', { ...options, op })]))),
       });
