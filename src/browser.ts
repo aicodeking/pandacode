@@ -1,12 +1,19 @@
 import './browser.css';
 import { call, preview, subscribe } from './bridge';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { mountJevLive, type JevLiveView } from './jev-live';
 import { pageZoom } from './ui-size';
 import type { BrowserAttachment, BrowserBounds, BrowserElement, BrowserScreenshot, BrowserStatus, LocalServer } from './types';
+import { createBrowserPresentation, snapshotBrowser, type BrowserPresentation, type BrowserAdmission } from './extensions/browser';
+import { applyBrowserPresentation, componentProviders, componentSelection } from './extensions/replacement';
+import { extensionsSnapshot, onExtensionsChanged } from './extensions/manager';
+import { applyControlOrder, applyControlVisibility, layout } from './extensions/layout-host';
+import { BROWSER_CONTROLS } from './extensions/surfaces';
+import { mountExtensionActions } from './extensions/header';
+import { openContextActions } from './extensions/context-actions';
 
-export interface BrowserPanel { close(): Promise<void>; refresh(): void; navigate(url: string): Promise<BrowserStatus>; watchJev(runId: string): Promise<void>; }
-type Options = { task(): string | undefined; session(): string | undefined; navigated?(url: string): void; attach(taskId: string, attachment: BrowserAttachment): void; close(): void; test?(url?: string, anchor?: HTMLElement): void; };
+export interface BrowserPanel { close(): Promise<void>; refresh(): void; navigate(url: string): Promise<BrowserStatus>; watchJev(runId: string): Promise<void>; presentation(): BrowserPresentation; dispatch(action: unknown): BrowserAdmission; }
+type Options = { project?: string; task(): string | undefined; session(): string | undefined; navigated?(url: string): void; attach(taskId: string, attachment: BrowserAttachment): void; close(): void; test?(url?: string, anchor?: HTMLElement): void; };
 // Tauri 2 packs a Linux child webview into the window's GtkBox below the app
 // instead of placing it at the given bounds (set_bounds is a no-op there), so
 // the guest lands in a bottom pane and window resizes fight over the split.
@@ -32,6 +39,8 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   let pickTask: string | undefined, servers: LocalServer[] = [], lastBounds = '';
   let watching = false, jevAvailable = false, live: JevLiveView | undefined;
   let operations = Promise.resolve();
+  const context = crypto.randomUUID(), guest = crypto.randomUUID(), project = options.project || 'none', session = options.session() || 'none', applied = new Set<string>();
+  let revision = 0, picked = { tag: '', text: '' };
   const enqueue = <T>(work: () => Promise<T>): Promise<T> => {
     const next = operations.then(work); operations = next.then(() => {}, () => {}); return next;
   };
@@ -40,7 +49,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     ${tool('back', 'Go back', 'back')}${tool('forward', 'Go forward', 'forward')}${tool('reload', 'Reload page', 'refresh')}
     <form class="browser-address"><span>${icon('globe')}</span><input aria-label="Browser URL" placeholder="Enter URL or localhost port" autocomplete="off" spellcheck="false" inputmode="url"><button type="submit" aria-label="Open URL">${icon('arrow')}</button></form>
     ${tool('pick', 'Attach an element', 'select')}${tool('capture', 'Attach screenshot', 'camera')}${options.test ? tool('test', 'Test with Jev', 'spark') : ''}${tool('close', 'Close browser', 'close')}
-  </div><div class="browser-location"><button type="button" data-browser-action="home">${icon('server')}Local servers</button><span class="browser-page-title"></span><button type="button" class="browser-watch-jev" data-browser-action="watch-jev" hidden>${icon('spark')}Watch Jev</button></div>
+   </div><div class="browser-location" tabindex="0" role="group" aria-label="Browser page actions"><button type="button" data-browser-action="home">${icon('server')}Local servers</button><span class="browser-page-title"></span><button type="button" class="browser-watch-jev" data-browser-action="watch-jev" hidden>${icon('spark')}Watch Jev</button></div>
   <div class="browser-notice" role="status" hidden></div><div class="browser-viewport"><section class="browser-home"><div class="browser-home-heading"><h2>Local servers</h2>${tool('refresh-ports', 'Refresh local servers', 'refresh')}</div><div class="browser-servers" aria-label="Local servers"></div><p class="browser-home-hint">Open a server, or enter any website above.</p></section><div class="browser-guest-placeholder" hidden></div></div>`;
   const query = <T extends HTMLElement = HTMLElement>(selector: string) => host.querySelector<T>(selector)!;
   const address = query<HTMLInputElement>('.browser-address input'), viewport = query('.browser-viewport');
@@ -54,6 +63,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   function fail(error: unknown): void { if (!disposed) tell(error instanceof Error ? error.message : String(error)); }
   function updateControls(): void {
     if (disposed) return;
+    revision++;
     button('back').disabled = watching || home || !status.canGoBack || busy;
     button('forward').disabled = watching || home || !status.canGoForward || busy;
     button('reload').disabled = watching || home || busy;
@@ -92,7 +102,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   }
   function syncBounds(force = false): void {
     if (disposed || home) return;
-    const rect = bounds(), visible = !watching && !obscured(rect) && rect.width > 1 && rect.height > 1;
+    const rect = bounds(), visible = host.checkVisibility() && !watching && !obscured(rect) && rect.width > 1 && rect.height > 1;
     const key = JSON.stringify({ ...rect, visible });
     if (!force && key === lastBounds) return;
     // Remember attempted geometry even on failure: rendering its notice must
@@ -120,6 +130,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   }
   async function navigate(input: string): Promise<void> {
     const url = normalizeUrl(input);
+    picked = { tag: '', text: '' };
     if (!embedsGuest(navigator.platform, preview)) { await call('open_external_url', { url }); if (!disposed) { address.value = ''; tell(LINUX_NOTICE); } return; }
     options.navigated?.(url);
     live?.leave();
@@ -142,16 +153,18 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   }
   function attachElement(element: BrowserElement): void {
     if (disposed || !pickTask) return;
+    // Only explicitly picked, non-sensitive plain text is eligible. Never expose HTML/selectors.
+    picked = /^(input|textarea|select|option|iframe|script)$/i.test(element.tag) ? { tag: '', text: '' } : { tag: element.tag.slice(0, 64), text: element.text.slice(0, 512) };
     const task = pickTask; pickTask = undefined; status.picking = false; updateControls();
     try { options.attach(task, { ...element, kind: 'element', id: crypto.randomUUID() }); tell('Element attached to your message.'); }
     catch (error) { fail(error); }
   }
   const unlisten = await Promise.all([
-    subscribe('browser-state', next => { if (disposed || home && !busy) return; status = next; if (status.url) options.navigated?.(status.url); updateControls(); scheduleBounds(); }),
+    subscribe('browser-state', next => { if (disposed || home && !busy) return; if (next.url !== status.url) picked = { tag: '', text: '' }; status = next; if (status.url) options.navigated?.(status.url); updateControls(); scheduleBounds(); }),
     subscribe('browser-element', attachElement),
   ]);
   const liveHost = document.createElement('section'); viewport.append(liveHost);
-  live = await mountJevLive(liveHost, { session: options.session, failed: fail, returned() { button('watch-jev').focus({ preventScroll: true }); }, changed(next, available) {
+  live = await mountJevLive(liveHost, { session: options.session, visible: () => host.checkVisibility(), failed: fail, returned() { button('watch-jev').focus({ preventScroll: true }); }, changed(next, available) {
     if (disposed) return;
     watching = next; jevAvailable = available;
     if (watching && status.picking) {
@@ -185,6 +198,56 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     // identical geometry must not keep a hidden guest hidden after a task switch.
     syncBounds(true);
   }
+  function presentation(): BrowserPresentation {
+    let url = ''; try { const safe = new URL(status.url); safe.username = ''; safe.password = ''; safe.search = ''; safe.hash = ''; url = safe.href.slice(0, 8192); } catch { /* Home has no URL. */ }
+    return snapshotBrowser({ contractVersion: 1, context, guest, project, session, revision, url, home, loading: status.loading, busy, watching, visible: !disposed && host.checkVisibility() && !obscured(bounds()), embedded: embedsGuest(navigator.platform, preview), canGoBack: status.canGoBack, canGoForward: status.canGoForward, picking: status.picking, picked });
+  }
+  function authority() {
+    const provider = componentSelection.resolve('panda.browser', componentProviders());
+    const owner = extensionsSnapshot().packages.find(item => item.manifest.id === provider?.id.split('/')[0]);
+    return { owner: provider?.id ?? '', active: !disposed && Boolean(provider && host.dataset.browserProvider === provider.id), granted: Boolean(owner?.manifest.permissions?.includes('ui.contribute')) };
+  }
+  function dispatch(input: unknown): BrowserAdmission {
+    const auth = authority();
+    const slot = createBrowserPresentation(presentation(), auth.owner, presentation, authority, action => {
+      revision++; picked = { tag: '', text: '' };
+      void (action.controlId === 'navigate' ? navigate(action.value) : act(action.controlId)).catch(fail);
+    }, applied);
+    // Validate URLs before admission, without reading accessors in untrusted input.
+    if (input && typeof input === 'object' && Object.getOwnPropertyDescriptor(input, 'controlId')?.value === 'navigate') {
+      const value = Object.getOwnPropertyDescriptor(input, 'value')?.value;
+      try { if (typeof value !== 'string') throw Error(); normalizeUrl(value); } catch { slot.dispose(); return { ok: false, reason: 'InvalidArguments' }; }
+    }
+    const action = input as { controlId?: string };
+    if (auth.active && action && ['pick', 'capture'].includes(Object.getOwnPropertyDescriptor(action, 'controlId')?.value) && !options.task()) { slot.dispose(); return { ok: false, reason: 'UnsupportedCapability' }; }
+    if (auth.active && action && (Object.getOwnPropertyDescriptor(action, 'controlId')?.value === 'test' && !options.test || Object.getOwnPropertyDescriptor(action, 'controlId')?.value === 'watch-jev' && !jevAvailable)) { slot.dispose(); return { ok: false, reason: 'UnsupportedCapability' }; }
+    const result = slot.dispatch(input); slot.dispose(); return result;
+  }
+  function configure(): void {
+    if (disposed) return;
+    revision++;
+    applyBrowserPresentation(host);
+    const bindings = BROWSER_CONTROLS['panda.browser.controls'].map(([id]) => [`panda.browser.controls/${id}`, id === 'address' ? query('.browser-address') : host.querySelector<HTMLElement>(`[data-browser-action="${id}"]`)] as const);
+    applyControlVisibility(bindings, () => [...host.querySelectorAll<HTMLElement>('input,button')].find(node => !node.closest('[inert]') && node.checkVisibility()) ?? document.querySelector('#prompt'));
+    applyControlOrder('panda.browser.controls', bindings);
+    syncBounds(true);
+  }
+  const stopExtensions = onExtensionsChanged(configure), stopLayout = layout.subscribe(configure);
+  window.addEventListener('pandacode-components-change', configure);
+  const actionContext = () => ({ projectId: project, sessionId: session, revision });
+  const stopActions = mountExtensionActions(query('.browser-toolbar'), 'panda.browser.actions', actionContext, tell);
+  let closeContext: (() => void) | undefined;
+  const hasContextActions = () => !extensionsSnapshot().safeMode && extensionsSnapshot().packages.some(item => item.enabled && item.manifest.permissions?.includes('ui.contribute') && item.manifest.contributes.menus?.some(menu => menu.location === 'panda.browser.context'));
+  function openBrowserContext(point?: { x: number; y: number }): void {
+    closeContext?.();
+    const captured = revision;
+    closeContext = openContextActions(query('.browser-location'), 'panda.browser.context', actionContext(), { title: 'Browser', items: [], onSelect() {}, notify: tell, point, isAlive: () => !disposed && revision === captured && host.checkVisibility() });
+  }
+  function contextMenu(event: MouseEvent): void {
+    if (!hasContextActions() || !(event.target instanceof Element) || !event.target.closest('.browser-location')) return;
+    event.preventDefault(); openBrowserContext({ x: event.clientX, y: event.clientY });
+  }
+  host.addEventListener('contextmenu', contextMenu);
   function click(event: MouseEvent): void {
     const target = (event.target as Element).closest<HTMLElement>('[data-browser-action],[data-server-url]');
     if (target) { event.preventDefault(); event.stopPropagation(); if (target instanceof HTMLButtonElement && target.disabled) return; void (target.dataset.serverUrl ? navigate(target.dataset.serverUrl) : act(target.dataset.browserAction!, target)).catch(fail); }
@@ -196,6 +259,8 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   }
   function submit(event: SubmitEvent): void { if (event.target === query('.browser-address')) { event.preventDefault(); event.stopPropagation(); void navigate(address.value).catch(fail); } }
   function keydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && isImeKey(event)) { event.preventDefault(); return; }
+    if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && event.target instanceof Element && event.target.closest('.browser-location') && !isImeKey(event) && hasContextActions()) { event.preventDefault(); event.stopPropagation(); openBrowserContext(); return; }
     if (event.key === 'Escape' && status.picking) { event.preventDefault(); event.stopPropagation(); pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); }
   }
   host.addEventListener('click', click); host.addEventListener('submit', submit); host.addEventListener('keydown', keydown);
@@ -227,8 +292,9 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   document.addEventListener('visibilitychange', restoreVisibility);
   address.disabled = false;
   host.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = false; });
-  updateControls(); void refreshServers(); if (!watching) address.focus();
+  updateControls(); configure(); void refreshServers(); if (!watching && host.checkVisibility()) address.focus();
   return {
+    presentation, dispatch,
     async navigate(url) {
       if (disposed) throw new Error('Browser is closed.');
       await navigate(url);
@@ -237,9 +303,11 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
       return status;
     },
     async watchJev(runId) { if (disposed) throw new Error('Browser is closed.'); await live?.watch(runId); },
-    refresh() { live?.refresh(); if (pickTask && pickTask !== options.task()) { pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); } updateControls(); scheduleBounds(); },
+    refresh() { live?.refresh(); if (pickTask && pickTask !== options.task()) { pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); } updateControls(); syncBounds(true); },
     async close() {
       disposed = true; ++request; clearTimeout(frame); resize.disconnect(); menus.clear(); overlays.disconnect();
+      stopExtensions(); stopLayout(); stopActions(); closeContext?.();
+      host.removeEventListener('contextmenu', contextMenu); window.removeEventListener('pandacode-components-change', configure);
       // Hide promptly even when a navigation operation has not returned yet.
       const hiding = call('browser_bounds', { bounds: bounds(), visible: false }).catch(() => {});
       unlisten.forEach(stop => stop()); window.removeEventListener('resize', scheduleBounds);

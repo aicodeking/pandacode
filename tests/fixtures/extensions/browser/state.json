@@ -1,0 +1,6 @@
+{
+  "contractVersion": 1, "context": "mount-1", "guest": "guest-1", "project": "project-1", "session": "session-1", "revision": 1,
+  "url": "http://localhost:3000/", "home": false, "loading": false, "busy": false, "watching": false,
+  "visible": true, "embedded": true, "canGoBack": true, "canGoForward": false, "picking": false,
+  "picked": { "tag": "button", "text": "Try the interaction" }
+}

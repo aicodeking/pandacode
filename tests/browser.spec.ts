@@ -412,7 +412,7 @@ test.describe('browser workspace', () => {
     expect(after).toEqual(before);
   });
 
-  test('closes the native guest when leaving the browser and hides it behind modal dialogs and Settings', async ({ page }) => {
+  test('hides and restores the same native guest when leaving the browser and behind modal dialogs and Settings', async ({ page }) => {
     await openBrowser(page);
     await navigate(page, 'localhost:3000');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -433,7 +433,12 @@ test.describe('browser workspace', () => {
     await openInspectorTab(page, 'Files');
     await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await expect(browserPanel(page)).toBeHidden();
-    await expect.poll(async () => (await commandCalls(page, 'browser_close')).length).toBe(closes + 1);
+    await expect.poll(async () => (await commandCalls(page, 'browser_bounds')).at(-1)?.args.visible).toBe(false);
+    expect((await commandCalls(page, 'browser_close')).length).toBe(closes);
+    const opens = (await commandCalls(page, 'browser_open')).length;
+    await page.getByRole('tab', { name: 'Browser', exact: true }).click();
+    await expect.poll(async () => (await commandCalls(page, 'browser_bounds')).at(-1)?.args.visible).toBe(true);
+    expect((await commandCalls(page, 'browser_open')).length).toBe(opens);
   });
 
   test('restores the guest when a dismissed menu remains in the DOM during a suspended fade', async ({ page }) => {

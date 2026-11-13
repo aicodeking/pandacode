@@ -260,6 +260,7 @@ test('renews the live lease while visible and cleans it up when the browser clos
   await installProbe(page); await openBrowser(page);
   await emit(page, 'jev-run', report());
   await expect(live(page)).toBeVisible();
+  const originalFrame = await live(page).locator('.jev-live-screen img').elementHandle(), lists = await calls(page, 'jev_list_runs');
   const renewals = async () => (await calls(page, 'jev_watch_run')).filter(call => call.args.runId === 'run-1' && call.args.watching).length;
   await expect.poll(renewals, { timeout: 7_500 }).toBeGreaterThanOrEqual(2);
   await page.getByRole('button', { name: 'Close browser', exact: true }).click();
@@ -269,6 +270,11 @@ test('renews the live lease while visible and cleans it up when the browser clos
   await page.waitForTimeout(5_200);
   expect(await renewals()).toBe(afterClose);
   expect(await calls(page, 'jev_cancel')).toHaveLength(0);
+  await page.getByRole('button', { name: 'Open browser', exact: true }).click();
+  await expect(live(page)).toBeVisible();
+  await expect.poll(renewals).toBeGreaterThan(afterClose);
+  expect(await originalFrame!.evaluate(node => node === document.querySelector('.jev-live-screen img'))).toBe(true);
+  expect(await calls(page, 'jev_list_runs')).toEqual(lists);
 });
 
 test('pauses the watch and ignores frames while the window is hidden, then resumes', async ({ page }) => {

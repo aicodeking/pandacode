@@ -13,7 +13,7 @@ export interface JevLiveView {
   leave(): void;
   close(): Promise<void>;
 }
-type Options = { session(): string | undefined; changed(watching: boolean, available: boolean): void; returned(): void; failed?(error: unknown): void };
+type Options = { session(): string | undefined; visible?(): boolean; changed(watching: boolean, available: boolean): void; returned(): void; failed?(error: unknown): void };
 const active = (report?: JevReport) => report?.status === 'starting' || report?.status === 'running';
 const statuses: Record<JevReport['status'], string> = { starting: 'Starting browser', running: 'Testing', done: 'Finished', blocked: 'Blocked', failed: 'Test failed', cancelled: 'Cancelled', limit: 'Limit reached' };
 const duration = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms % 60_000 / 1000)}s`;
@@ -67,7 +67,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     }).finally(() => { if (watching) renewals.delete(target); });
   }
   function syncLease() {
-    const report = current(), wanted = !disposed && !document.hidden && session === options.session() && active(report) ? report : undefined;
+    const report = current(), wanted = !disposed && !document.hidden && options.visible?.() !== false && session === options.session() && active(report) ? report : undefined;
     if (lease?.runId === wanted?.id && lease?.sessionId === wanted?.sessionId) return;
     clearInterval(leaseTimer); leaseTimer = 0;
     if (lease) commandLease(lease, false);
@@ -149,7 +149,9 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     } catch (error) { if (alive(ticket, task) && selected === report.id) tell(errorText(error)); }
   }
   function refresh() {
-    if (disposed || session === options.session()) return;
+    if (disposed) return;
+    // A retained Browser host can hide without changing its task or live selection.
+    if (session === options.session()) { syncLease(); return; }
     session = options.session(); ++revision; selected = undefined; stopping = undefined; finalRead = undefined;
     reports.clear(); eventVersions.clear(); resetFrame(); tell(''); render();
     if (!session) { listPending = undefined; return; }
@@ -173,14 +175,14 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     if (selected) { render(); void readFinal(); } else autoWatch();
   }
   function receiveFrame(frame: JevFrame) {
-    if (disposed || document.hidden || session !== options.session() || frame.sessionId !== session || frame.runId !== selected || !active(current())
+    if (disposed || document.hidden || options.visible?.() === false || session !== options.session() || frame.sessionId !== session || frame.runId !== selected || !active(current())
       || !Number.isSafeInteger(frame.sequence) || frame.sequence <= sequence || !validImage(frame.dataUrl, true)
       || !Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width < 1 || frame.height < 1 || frame.width > 4096 || frame.height > 4096) return;
     sequence = frame.sequence; pendingFrame = frame;
     if (!frameTimer) frameTimer = window.setTimeout(() => {
       frameTimer = 0;
       const next = pendingFrame; pendingFrame = undefined;
-      if (!next || disposed || document.hidden || session !== options.session() || selected !== next.runId || !active(current())) return;
+      if (!next || disposed || document.hidden || options.visible?.() === false || session !== options.session() || selected !== next.runId || !active(current())) return;
       setImage(next.dataUrl); lastPaint = performance.now();
     }, Math.max(0, 500 - (performance.now() - lastPaint)));
   }

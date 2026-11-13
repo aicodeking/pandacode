@@ -47,6 +47,7 @@ config.testMatch = [...config.testMatch as string[], '**/extensions-replacement.
 config.testMatch = [...config.testMatch as string[], '**/extensions-documents-coverage.spec.ts'];
 config.testMatch = [...config.testMatch as string[], '**/extensions-diff-coverage.spec.ts'];
 config.testMatch = [...config.testMatch as string[], '**/extensions-search-coverage.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-browser-coverage.spec.ts'];
 config.testMatch = [...config.testMatch as string[], '**/search-panel.spec.ts', '**/inspector-tabs.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|search:|search lists matching|toggles reach the backend|the panel opens on Changes|the tab strip runs|inspector strip attaches|the inspector opens on a single|menu lists closed views|tabs select on click|the open tabs and the selected|opening a view from elsewhere|the strip is one tablist`);
 config.testMatch = [...config.testMatch as string[], '**/changes-view.spec.ts'];

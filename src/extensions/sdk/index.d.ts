@@ -149,6 +149,11 @@ export interface PrivateStorage {
    * Only next-version, explicitly rollback-compatible transformations are supported. */
   migrate(options: { scope: StorageScope; revision: number; fromVersion: number; toVersion: number; rollbackCompatible: true; values: Readonly<Record<string, Json>> }): Promise<{ readonly schemaVersion: 1; readonly revision: number }>;
 }
+/** Closed Browser recipe; no package guest, DOM, raw IPC or content ownership. */
+export interface BrowserComponent { readonly id: string; readonly title: string; readonly slot: 'panda.browser'; readonly contractVersion: 1; readonly presentation: 'controls-below'; readonly capabilities: readonly ['host-guest', 'host-bounds', 'original-actions'] }
+export interface BrowserPresentation { readonly contractVersion: 1; readonly context: string; readonly guest: string; readonly project: string; readonly session: string; readonly revision: number; readonly url: string; readonly home: boolean; readonly loading: boolean; readonly busy: boolean; readonly watching: boolean; readonly visible: boolean; readonly embedded: boolean; readonly canGoBack: boolean; readonly canGoForward: boolean; readonly picking: boolean; readonly picked: Readonly<{ tag: string; text: string }> }
+export interface BrowserAction { readonly contractVersion: 1; readonly context: string; readonly guest: string; readonly project: string; readonly session: string; readonly revision: number; readonly controlId: 'navigate' | 'back' | 'forward' | 'reload' | 'pick' | 'capture' | 'test' | 'close' | 'home' | 'watch-jev' | 'refresh-ports'; readonly value: string; readonly requestId: string }
+export type BrowserAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
 /** Closed Search recipe; no package query execution or matching source text delivery. */
 export interface SearchComponent { readonly id: string; readonly title: string; readonly slot: 'panda.search'; readonly contractVersion: 1; readonly presentation: 'results-first'; readonly capabilities: readonly ['host-query', 'host-results', 'original-actions'] }
 export interface SearchResult { readonly id: string; readonly path: string; readonly line: number; readonly collapsed: boolean }

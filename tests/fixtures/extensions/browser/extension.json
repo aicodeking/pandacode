@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.browser",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "components": [{ "id": "sample.browser/controls", "title": "Controls below", "slot": "panda.browser", "contractVersion": 1, "presentation": "controls-below", "capabilities": ["host-guest", "host-bounds", "original-actions"] }],
+    "commands": [{ "id": "sample.browser/help", "title": "Browser tools", "action": { "kind": "showMessage", "message": "Browser navigation and guest remain host-owned." } }],
+    "menus": [
+      { "id": "sample.browser/toolbar", "location": "panda.browser.actions", "command": "sample.browser/help" },
+      { "id": "sample.browser/context", "location": "panda.browser.context", "command": "sample.browser/help" }
+    ],
+    "layouts": [{ "id": "sample.browser/navigation", "title": "Reload before back", "location": "panda.browser.controls", "rules": [{ "id": "panda.browser.controls/reload", "target": "panda.browser.controls/back", "side": "before" }] }]
+  }
+}

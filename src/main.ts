@@ -814,6 +814,10 @@ if (preview && new URLSearchParams(location.search).has('search-coverage')) {
   (window as any).__previewSearchAction = (action: import('./extensions/search').SearchAction) => searchPanel.dispatch(action);
   (window as any).__previewSearchPage = (cursor?: string) => searchPanel.page(cursor);
 }
+if (preview && new URLSearchParams(location.search).has('browser-coverage')) {
+  (window as any).__previewBrowser = () => browserPanel?.presentation();
+  (window as any).__previewBrowserAction = (action: unknown) => browserPanel?.dispatch(action);
+}
 $('#inspector-content').addEventListener('contextmenu', event => {
   if (state.inspectorTab !== 'files') return;
   const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');
@@ -5110,7 +5114,8 @@ function syncBrowserPanel(): void {
   $('#browser-panel').hidden = !wanted;
   $('#inspector-content').hidden = wanted;
   $('#inspector-refresh').hidden = wanted;
-  if (browserWanted === wanted && browserOwner === ownerKey) { browserPanel?.refresh(); return; }
+  // Hide is not close: retain the same guest and host controls across inspector views.
+  if (browserOwner === ownerKey && (browserPanel || !wanted || browserWanted)) { browserWanted = wanted; browserPanel?.refresh(); return; }
   browserWanted = wanted; browserOwner = ownerKey;
   const revision = ++browserRevision;
   const previous = browserPanel; browserPanel = undefined;
@@ -5122,14 +5127,15 @@ function syncBrowserPanel(): void {
   $('#browser-panel').replaceChildren();
   browserLifecycle = browserLifecycle.catch(report).then(async () => {
     await closing;
-    if (!browserWanted || revision !== browserRevision) return;
+    if (revision !== browserRevision || !wanted) return;
     const { mountBrowser } = await import('./browser');
-    if (!browserWanted || revision !== browserRevision) return;
+    if (revision !== browserRevision) return;
     // A superseded mount may still be awaiting subscriptions. Its detached host
     // must stay intact until that mount returns and can dispose itself.
     const mount = document.createElement('div'); mount.className = 'browser-panel browser-instance';
     $('#browser-panel').append(mount);
     const panel = await mountBrowser(mount, {
+      project: state.projectId || undefined,
       task: () => state.sessionId === owner && session() && !isRunning() && !state.messagesLoading ? owner : undefined,
       session: () => owner || undefined,
       navigated: url => { if (revision === browserRevision && state.sessionId === owner) state.browserUrl = url; },
@@ -5137,8 +5143,9 @@ function syncBrowserPanel(): void {
       test: (url, anchor) => run(openJevTests(url, anchor)),
       close: () => { state.inspector = false; renderInspector(); },
     });
-    if (!browserWanted || revision !== browserRevision) { await panel.close(); return; }
+    if (revision !== browserRevision) { await panel.close(); return; }
     browserPanel = panel;
+    panel.refresh();
     if (state.browserUrl) await panel.navigate(state.browserUrl);
   });
   run(browserLifecycle);

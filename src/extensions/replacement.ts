@@ -5,6 +5,27 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Move only the original toolbar. Native guest geometry remains host-managed. */
+export function applyBrowserPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.browser-toolbar') || !host.querySelector('.browser-viewport')) throw Error('Incomplete Browser host');
+}): void {
+  delete host.dataset.browserProvider;
+  const toolbar = host.querySelector<HTMLElement>('.browser-toolbar');
+  if (toolbar) toolbar.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-browser-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.browser', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.browserPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Browser replacement failed. Built-in browser remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.browserProvider = provider.id; if (toolbar) toolbar.style.order = '1'; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** Compatible region order only; original input/results and business handlers stay alive. */
 export function applySearchPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.search-form') || !host.querySelector('.search-results')) throw Error('Incomplete Search host');

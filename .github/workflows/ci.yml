@@ -101,6 +101,13 @@ jobs:
       - name: Document presentation (WebKit preview)
         env: { PW_PORT: '1456' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-documents-coverage.spec.ts tests/extensions-diff-coverage.spec.ts tests/extensions-search-coverage.spec.ts tests/changes-view.spec.ts tests/document-viewer.spec.ts tests/office-viewer.spec.ts --workers=1
+      - name: Browser presentation (Chromium preview)
+        # Browser continuity is synthetic here; installed native guests are qualified separately.
+        env: { PW_PORT: '1449', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-browser-coverage.spec.ts --workers=1
+      - name: Browser presentation (WebKit preview)
+        env: { PW_PORT: '1450', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-browser-coverage.spec.ts --workers=1
       - name: Extension tools and API connections (Chromium preview)
         env: { PW_PORT: '1449', PW_PROD: '1' }
         run: npx playwright test tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts tests/extensions-services.spec.ts --workers=1

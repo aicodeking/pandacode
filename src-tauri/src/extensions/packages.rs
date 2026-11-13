@@ -996,6 +996,18 @@ mod tests {
         assert!(storage.packages(true).snapshot().safe_mode);
     }
     #[test]
+    fn browser_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/browser/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.browser", true).unwrap();
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest["contributes"]["components"][0]["slot"], "panda.browser");
+        packages.enable("sample.browser", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        assert!(storage.packages(true).snapshot().safe_mode);
+    }
+    #[test]
     fn document_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/documents/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);
