@@ -18,6 +18,8 @@ use tokio::{
 };
 
 mod attachments;
+#[path = "extensions/builtin_protocol.rs"]
+mod builtin_adapter;
 mod goals;
 mod host_inputs;
 mod host_tools;
@@ -824,41 +826,46 @@ mod inventory_tests {
     }
 }
 pub fn discover() -> Vec<ProviderInfo> {
-    let found: Vec<_> = PROVIDERS.into_iter()
-    .map(|(id, name)| {
-        let path = executable(id);
-        ProviderInfo {
-            id: id.into(),
-            name: name.into(),
-            installed: path.is_some(),
-            version: if id == "antigravity" {
-                "ACP".into()
-            } else {
-                path.as_deref().and_then(version).unwrap_or_default()
-            },
-            path: path.map(|p| p.to_string_lossy().into_owned()),
-            models: if id == "glm" {
-                glm::models()
-            } else if id == "mimo" {
-                mimo::models()
-            } else if id == "opencode" {
-                selected_opencode_models(
-                    Vec::new(),
-                    &crate::provider_settings::opencode_model_ids().unwrap_or_default(),
-                )
-            } else {
-                vec![ModelInfo::default_choice()]
-            },
-        }
-    })
-    .collect();
+    let found: Vec<_> = crate::extensions::providers::all().map(|provider| provider.discover_with(discover_provider)).collect();
     if let Ok(mut inventory) = INVENTORY.lock() { *inventory = found.iter().map(inventory_observation).collect(); }
     found
+}
+
+fn discover_provider(id: &str, name: &str) -> ProviderInfo {
+    let path = executable(id);
+    ProviderInfo {
+        id: id.into(),
+        name: name.into(),
+        installed: path.is_some(),
+        version: if id == "antigravity" {
+            "ACP".into()
+        } else {
+            path.as_deref().and_then(version).unwrap_or_default()
+        },
+        path: path.map(|p| p.to_string_lossy().into_owned()),
+        models: if id == "glm" {
+            glm::models()
+        } else if id == "mimo" {
+            mimo::models()
+        } else if id == "opencode" {
+            selected_opencode_models(
+                Vec::new(),
+                &crate::provider_settings::opencode_model_ids().unwrap_or_default(),
+            )
+        } else {
+            vec![ModelInfo::default_choice()]
+        },
+    }
 }
 
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
 /// create an empty session to advertise their scoped model options.
 pub async fn list_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
+    let adapter = crate::extensions::providers::BuiltinProvider::get(provider)?;
+    adapter.models_with(list_models_builtin).await
+}
+
+async fn list_models_builtin(provider: &str) -> Result<Vec<ModelInfo>, String> {
     if provider == "opencode" {
         // A saved Settings selection narrows the picker; without one, list the
         // whole catalog like every other harness.
@@ -3745,7 +3752,7 @@ async fn run_process_with_tools(
     let mut stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
     let mut stderr_task = StderrReader(tokio::spawn(read_stderr(stderr)));
-    let mut protocol = Protocol::new(config);
+    let mut protocol = builtin_adapter::Session::new(config)?;
     if crate::cloud_agents::transport::is_cloud(&protocol.config.session_id) {
         protocol.claude_over_cloud();
     }
@@ -3785,7 +3792,7 @@ async fn run_process_with_tools(
                         Some(RunInput::Steer{id,text,reply})=>{let step=protocol.steer(id,text,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
                         Some(RunInput::Approval{request_id,approved})=>{if !mcp.as_ref().is_some_and(|server|server.approve(&request_id,approved)) {let step=protocol.approval_step(&request_id,approved); apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;}},
                         Some(RunInput::UserInput{request_id,response,reply})=>{
-                            match if protocol.config.provider=="muse" {protocol.muse_user_input(&request_id,response)} else {protocol.user_input(&request_id,response)} {
+                            match protocol.question(&request_id,response) {
                                 Ok(step)=>{let result=apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await.map(|_|());if let Some(reply)=reply {let _=reply.send(result.clone());}result?;},
                                 Err(error)=>{if let Some(reply)=reply {let _=reply.send(Err(error));}},
                             }

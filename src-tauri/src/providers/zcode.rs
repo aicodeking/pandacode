@@ -190,7 +190,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
-fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
+pub(super) fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
     let entries = snapshot["settings"]["model"]["available"]
         .as_array()
         .filter(|v| v.len() <= MODEL_CATALOG_LIMIT)

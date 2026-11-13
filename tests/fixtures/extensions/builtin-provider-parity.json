@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "provenance": "Anonymized frame shapes retained by providers.rs and providers/{acp,pi,muse,zcode}.rs recorded-protocol tests. Shared ACP frames intentionally exercise each built-in's own dispatch, not a claim of live CLI qualification.",
+  "providers": {
+    "claude":"claude", "glm":"claude", "mimo":"claude", "codex":"codex", "kimi":"kimi",
+    "opencode":"acp", "antigravity":"acp", "grok":"acp", "deepseek":"acp", "commandcode":"acp",
+    "cline":"acp", "kilo":"acp", "github-copilot":"acp", "devin":"acp", "hermes":"acp",
+    "pi":"pi", "omp":"pi", "muse":"muse", "zcode":"zcode"
+  },
+  "sessionModes": {"opencode":"build", "cline":"act", "kilo":"code", "devin":"accept-edits"},
+  "sessionOverrides": {
+    "github-copilot": {"sessionId":"saved","configOptions":[
+      {"type":"select","id":"mode","category":"mode","currentValue":"https://agentclientprotocol.com/protocol/session-modes#agent","options":[{"value":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"value":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},
+      {"type":"select","id":"allow_all","category":"permissions","currentValue":"off","options":[{"value":"on"},{"value":"off"}]}
+    ]}
+  },
+  "catalogs": {
+    "claude": {"models":[{"value":"sonnet","displayName":"Sonnet","description":"Sonnet","supportsEffort":true,"supportedEffortLevels":["low","medium","high"]}]},
+    "codex": {"data":[{"id":"gpt-5","model":"gpt-5","displayName":"GPT-5","supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high"}]},
+    "kimi": {"models":{"k3":{"model":"kimi-k3","displayName":"Kimi K3","maxContextSize":262144,"capabilities":["thinking"],"supportEfforts":["low","high","max"],"defaultEffort":"high"}}},
+    "opencode": {"data":[{"id":"flint-40b-free","modelID":"flint-40b-free","providerID":"opencode","type":"chat","name":"Flint 40B Free","variants":[{"id":"low","settings":{"reasoningEffort":"low"}},{"id":"high","settings":{"reasoningEffort":"high"}}],"enabled":true,"limit":{"context":262144,"output":65536}}]},
+    "acp": {"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"vendor/a","options":[{"value":"vendor/a","name":"Model A"},{"value":"vendor/b","name":"Model B"}]},{"id":"effort","category":"effort","type":"select","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]},
+    "grok": {"models":{"currentModelId":"grok-code-fast-1","availableModels":[{"modelId":"grok-code-fast-1","name":"Grok Code Fast 1"}]}},
+    "pi": {"models":[{"provider":"anthropic","id":"claude-sonnet","name":"Sonnet","reasoning":true,"contextWindow":200000}]},
+    "muse": {"models":[{"modelId":"muse-spark-1.3","displayLabel":"Muse Spark 1.3","variants":["low","high"],"defaultReasoningEffort":"low","contextLimit":256000}]},
+    "zcode": {"settings":{"model":{"available":[{"label":"zcproxy/GLM-5.3","providerLabel":"OmniRouter","contextWindow":200000,"reasoning":{"levels":[{"value":"low"},{"value":"high"},{"value":"max"}],"defaultLevel":"max"}}]}}}
+  },
+  "frames": {
+    "claude": [
+      {"type":"control_response","response":{"request_id":"pandacode-init","subtype":"success","response":{}}},
+      {"type":"system","subtype":"init","session_id":"saved"},
+      {"type":"assistant","message":{"id":"msg","content":[{"type":"text","text":"Hello"}]}},
+      {"type":"control_request","request_id":"permission","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}},
+      {"type":"result","subtype":"success","result":"Hello","session_id":"saved"}
+    ],
+    "codex": [
+      {"id":1,"result":{}},
+      {"id":10000,"result":{"goal":null}},
+      {"id":2,"result":{"thread":{"id":"saved"}}},
+      {"id":3,"result":{"turn":{"id":"turn"}}},
+      {"method":"item/agentMessage/delta","params":{"threadId":"saved","turnId":"turn","itemId":"msg","delta":"Hello"}},
+      {"id":44,"method":"item/commandExecution/requestApproval","params":{"threadId":"saved","turnId":"turn","itemId":"tool","command":"pwd"}},
+      {"id":45,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"color","header":"Color","question":"Which color?","options":[{"label":"Red","description":"Red"}]}]}},
+      {"method":"turn/completed","params":{"threadId":"saved","turn":{"id":"turn","status":"completed"}}}
+    ],
+    "kimi": [
+      {"id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}}}}},
+      {"id":2,"result":{"sessionId":"saved","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"}]}}},
+      {"id":4,"result":{}},
+      {"method":"session/update","params":{"sessionId":"saved","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello"}}}},
+      {"id":44,"method":"session/request_permission","params":{"sessionId":"saved","toolCall":{"toolCallId":"tool","title":"pwd","kind":"execute"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]}},
+      {"id":3,"result":{"stopReason":"end_turn"}}
+    ],
+    "acp": [
+      {"id":1,"result":{"protocolVersion":1,"authMethods":[{"id":"cached_token","name":"Cached"}],"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}}}}},
+      {"id":7,"result":{}},
+      {"id":2,"result":{"sessionId":"saved","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"accept-edits","name":"Accept edits"}]}}},
+      {"id":4,"result":{}},
+      {"id":8,"result":{}},
+      {"method":"session/update","params":{"sessionId":"saved","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello"}}}},
+      {"id":44,"method":"session/request_permission","params":{"sessionId":"saved","toolCall":{"toolCallId":"tool","title":"pwd","kind":"execute"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]}},
+      {"id":3,"result":{"stopReason":"end_turn"}}
+    ],
+    "pi": [
+      {"type":"extension_ui_request","method":"setStatus","statusKey":"pandacode-bridge","statusText":"ready"},
+      {"type":"response","command":"get_state","id":"pandacode-init","success":true,"data":{"sessionId":"01a15ba3-9096-76db-bd69-35168c0ecfa9","thinkingLevel":"medium"}},
+      {"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}},
+      {"type":"extension_ui_request","id":"permission","method":"confirm","title":"Allow bash?","message":"pwd"},
+      {"type":"agent_end","messages":[]}
+    ],
+    "muse": [
+      {"id":1,"result":{"serverInfo":{"name":"muse","version":"1.4.12"},"schema":{"version":1},"grantedCapabilities":["sessionMcp"],"sessionDurability":"durable"}},
+      {"id":2,"result":{"session":{"sessionId":"saved","workspaceRoot":"/sample","providerId":"meta","modelId":"muse-spark-1.3","status":"idle"}}},
+      {"id":3,"result":{"commandId":"c","status":"accepted","applyOutcome":"completed"}},
+      {"id":6,"result":{"commandId":"turn","status":"accepted","turnId":"turn","startedNewTurn":true,"disposition":"started"}},
+      {"method":"item/completed","params":{"sessionId":"saved","item":{"itemId":"msg","kind":"reasoning","turnId":"turn","status":"completed","text":"Hello"}}},
+      {"id":44,"method":"approval/request","params":{"sessionId":"saved","approvalId":"permission","turnId":"turn","toolName":"bash","subject":{"kind":"shell","command":"pwd"},"currentRequirementId":{"approvalId":"permission","sourceIndex":0},"availableChoices":[{"choiceId":"allow_once","decision":"approved","scope":"once"},{"choiceId":"abort","decision":"abort","scope":"once"}]}},
+      {"id":45,"method":"userInput/request","params":{"sessionId":"saved","userInputId":"question","turnId":"turn","questions":[{"id":"color","header":"Color","question":"Which color?","selection":{"mode":"single"},"options":[{"label":"Red"},{"label":"Blue"}]}]}},
+      {"method":"turn/completed","params":{"sessionId":"saved","turnId":"turn","terminal":"completed"}}
+    ],
+    "zcode": [
+      {"id":1,"result":{"protocol":{"name":"ZCode Protocol","version":1},"session":{"sessionId":"saved","mode":"build","model":{"providerId":"omnirouter","modelId":"zcproxy/GLM-5.3"}},"settings":{"mode":{"current":"build"},"model":{"available":[]}},"messages":[]}},
+      {"id":4,"result":{"eventSeq":0,"events":[]}},
+      {"method":"session/event","params":{"type":"model.streaming","sessionId":"saved","turnId":"turn","seq":1,"payload":{"assistantMessageId":"msg","delta":"Hello","kind":"text_delta"}}},
+      {"id":"permission","method":"interaction/requestPermission","params":{"requestId":"permission","sessionId":"saved","toolCallId":"tool","toolName":"Bash","reason":"risk","riskLevel":"high","input":{"command":"pwd"},"options":[{"optionId":"allow_once","kind":"allow_once","response":{"decision":"allow"}},{"optionId":"deny_once","kind":"deny_once","response":{"decision":"deny"}}]}},
+      {"id":"question","method":"interaction/requestUserInput","params":{"requestId":"question"}},
+      {"method":"session/event","params":{"type":"turn.completed","sessionId":"saved","turnId":"turn","seq":2,"payload":{"resultType":"success","inputId":"pandacode-1"}}}
+    ]
+  }
+}

@@ -51,7 +51,7 @@ fn valid(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 200 && !value.chars().any(char::is_control)
 }
 
-fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
+pub(super) fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
     if bytes.len() > OUTPUT_LIMIT {
         return Err("Kimi model catalog exceeded its output limit".into());
     }
