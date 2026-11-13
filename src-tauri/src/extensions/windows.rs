@@ -105,7 +105,8 @@ pub fn changed(app: &tauri::AppHandle) {
 /// A destroyed compact window owns no workspace services or global package registrations.
 pub fn window_closed(app: &tauri::AppHandle, label: &str) {
     super::rich_views::window_closed(app, label);
-    if label == "main" { super::runtime::stop(app, None); super::context::invalidate(app, None); }
+    // Presentation loss is not package revocation: core-owned provider tasks must survive.
+    if label == "main" { super::runtime::presentation_closed(app); }
     if AUXILIARY.contains(&label) { let _ = app.emit_to("main", "extensions-origin-closed", json!({"windowId":label})); }
 }
 pub fn recover(app: &tauri::AppHandle) -> Result<(), String> {

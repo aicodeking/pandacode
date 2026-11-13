@@ -7,8 +7,15 @@ use tauri::Manager;
 
 struct Active { owner: String, cancel: Arc<AtomicBool> }
 #[derive(Default)]
-pub struct ExtensionRuntime { active: Mutex<BTreeMap<String, Active>>, quarantine: Mutex<BTreeSet<(String, String)>>, cancelled: Mutex<VecDeque<String>>, pub(super) services: Arc<Mutex<super::services::Registry>> }
+pub struct ExtensionRuntime { active: Mutex<BTreeMap<String, Active>>, admitted: Mutex<BTreeSet<String>>, quarantine: Mutex<BTreeSet<(String, String)>>, cancelled: Mutex<VecDeque<String>>, pub(super) services: Arc<Mutex<super::services::Registry>> }
 impl ExtensionRuntime {
+    fn admit_once(&self, request_id: &str) -> Result<(), &'static str> {
+        let mut admitted = self.admitted.lock().map_err(|_| "HostUnavailable")?;
+        if admitted.contains(request_id) { return Err("Conflict"); }
+        // Never evict an executed request and silently make its retry executable again.
+        if admitted.len() >= 4096 { return Err("LimitExceeded"); }
+        admitted.insert(request_id.to_owned()); Ok(())
+    }
     fn cancel(&self, request_id: String) {
         // Same lock order as admission: cancel-before-start cannot be lost between capture and spawn.
         if let Ok(active) = self.active.lock() {
@@ -44,6 +51,14 @@ enum Request {
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
     crate::providers::dynamic_adapter::stop(owner);
+    stop_presentation_work(app, owner);
+}
+/// Window-bound resources are presentation-owned; workspace provider tasks are not.
+pub fn presentation_closed(app: &tauri::AppHandle) {
+    stop_presentation_work(app, None);
+    context::invalidate(app, None);
+}
+fn stop_presentation_work(app: &tauri::AppHandle, owner: Option<&str>) {
     if let Ok(mut services) = app.state::<ExtensionRuntime>().services.lock() { services.stop(owner, None); }
     app.state::<super::connections::ExtensionConnections>().stop(owner, None);
     app.state::<super::jobs::ExtensionJobs>().stop(owner, None);
@@ -137,6 +152,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 let mut active = state.active.lock().map_err(|_| "HostUnavailable")?;
                 if state.cancelled.lock().map_err(|_| "HostUnavailable")?.contains(&request_id) { return Err("Cancelled"); }
                 if active.len() >= 8 || active.contains_key(&request_id) || active.values().any(|entry| entry.owner == owner) { return Err("Conflict"); }
+                state.admit_once(&request_id)?;
                 let cancel = Arc::new(AtomicBool::new(false));
                 active.insert(request_id.clone(), Active { owner: owner.clone(), cancel: cancel.clone() });
                 packages.development_log(&owner, "Activation admitted: trusted content, captured context and supervised budget.");
@@ -223,6 +239,19 @@ fn reason_for(os: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completed_requests_cannot_execute_again_or_be_evicted() {
+        use super::*;
+        let state = ExtensionRuntime::default();
+        assert_eq!(state.admit_once("first"), Ok(()));
+        state.finish::<()>("first", "sample.a".into(), "digest".into(), &Ok(()));
+        assert_eq!(state.admit_once("first"), Err("Conflict"));
+        state.stop(None);
+        assert_eq!(state.admit_once("first"), Err("Conflict"));
+        for n in 1..4096 { assert_eq!(state.admit_once(&format!("request-{n}")), Ok(())); }
+        assert_eq!(state.admit_once("new"), Err("LimitExceeded"));
+        assert_eq!(state.admit_once("first"), Err("Conflict"));
+    }
     #[test]
     fn quarantine_cancellation_and_stopping_are_owned_not_core_global() {
         use super::*;

@@ -1,0 +1,9 @@
+{
+  "task": { "sessionId": "extension-task", "title": "Workspace extension task", "status": "running", "projectId": "project", "projectName": "Workspace", "provider": "unknown.publisher/new-harness", "model": "model-v2", "effort": null, "mode": "default", "pinned": false, "updatedAt": 1000, "lastPromptAt": 1000, "extensionMetadata": { "apiVersion": 99, "displayName": "Future harness", "desktopHtml": "<script>throw new Error('must not execute')</script>" } },
+  "messages": [{ "id": 1, "role": "assistant", "content": "Core history remains readable", "createdAt": 1000, "turnDurationMs": null }],
+  "events": [
+    { "sessionId": "extension-task", "kind": "text", "text": "Core output" },
+    { "sessionId": "extension-task", "kind": "extension.desktopHtml", "text": "", "data": { "html": "<h1>Desktop only</h1>", "version": 99 } },
+    { "sessionId": "extension-task", "kind": "status", "text": "Working on the host" }
+  ]
+}

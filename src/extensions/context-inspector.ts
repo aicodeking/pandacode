@@ -72,12 +72,14 @@ export function openProjectContext(id: string, version: string, context: Record<
   const disposeReads = projectReadControls(client, panel);
   const close = () => {
     if (ended) return; ended = true; pending++; stopStream(); disposeReads(); client.dispose(); unsubscribe(); panel.remove();
+    window.removeEventListener('pagehide', close);
     if (panel.contains(document.activeElement) || document.activeElement === document.body) {
       const target = trigger.isConnected && trigger.checkVisibility() ? trigger : document.querySelector<HTMLElement>('#prompt:not([disabled])'); target?.focus({ preventScroll: true });
     }
     onClose?.();
   };
   const unsubscribe = onExtensionChanged(id.split('/')[0], close);
+  window.addEventListener('pagehide', close, { once: true });
   panel.querySelector('button')!.addEventListener('click', close);
   panel.addEventListener('keydown', event => { if (event.key === 'Escape' && !isImeKey(event)) { event.stopPropagation(); close(); } });
   document.body.append(panel); panel.querySelector('button')!.focus(); void query();

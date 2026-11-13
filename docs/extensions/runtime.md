@@ -2,6 +2,33 @@
 
 Authoring and selected-folder reload: [Trusted extension development and typed SDK](development.md).
 
+## Window and retry ownership (API 1)
+
+Global package definitions and core workspace provider tasks are not owned by a
+presentation. Destroying the main presentation cancels its UI invocations and
+window-bound tools/connections/services, but does not revoke the package or stop
+core dynamic provider tasks. Compact windows dispose only their presentation.
+Captured read-only context handles and cursors are independent: releasing one
+observer does not cancel a workspace job or another observer. Pagehide releases
+the context inspector's listeners and handle. Existing native window labels remain
+the authority; payload window IDs do not create a new eligible/privileged window.
+
+Executable `activate` requests are not replay-safe commands. An admitted UUID may
+execute at most once per host launch, even after success/failure/cancellation; a
+retry is rejected (`Conflict`, or `StaleContext` for a released handle), never
+automatically rerun. Changed inputs with the same UUID are rejected too. Admission
+retains at most 4096 UUIDs without eviction; after that, new activation returns
+`LimitExceeded` until a new host launch. UUIDs are not durable across restart: the
+caller must reconcile, not automatically retry an unknown operation. Subscription
+retries instead reuse a handle-scoped request ID and return a fresh resync snapshot;
+changed resource/limit is `InvalidShape`. Core remote task starts keep their existing
+one-hour start-result journal and reconnect semantics, not this UI activation budget.
+
+Mobile ignores unsupported extension/desktop-HTML events and preserves unknown
+provider IDs as historical data. It never receives a privileged desktop webview.
+Browser shared-host fixtures characterize observer isolation, not installed native
+multiwindow qualification; that remains deferred under the accepted scope.
+
 ## Current trusted-host decision — Windows x64 only
 
 T24's **experimental Windows x64 local trusted-host slice is verified**: native trust,

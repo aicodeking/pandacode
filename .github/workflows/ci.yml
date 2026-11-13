@@ -119,6 +119,13 @@ jobs:
         env: { PW_PORT: '1454', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-harness.spec.ts tests/extensions-provider-catalog.spec.ts tests/extensions-provider-teams.spec.ts tests/extensions-provider-cli.spec.ts tests/extensions-provider-skills.spec.ts tests/extensions-remote.spec.ts --workers=1
 
+      - name: Multiwindow workspace ownership (Chromium preview)
+        env: { PW_PORT: '1467', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-multiwindow.spec.ts --workers=1
+      - name: Multiwindow workspace ownership (WebKit preview)
+        env: { PW_PORT: '1468', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-multiwindow.spec.ts --workers=1
+
   rust:
     name: Rust check and tests (Linux)
     runs-on: ubuntu-22.04

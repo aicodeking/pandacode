@@ -1579,6 +1579,14 @@ let extensionContextBroker: ReturnType<typeof import('./extensions/context-previ
 // Apply after normal fixture initialization (which decorates the canonical sample tasks).
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('project-context') && new URLSearchParams(location.search).has('no-project')) { projects = []; sessions = []; }
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (command === 'agents_dock_snapshot' && new URLSearchParams(location.search).has('extension-multiwindow') && typeof (window as any).__extensionSharedDockSnapshot === 'function') {
+    (window as any).__extensionSharedDockPush = (value: unknown) => emit('agents-dock-changed', value);
+    return await (window as any).__extensionSharedDockSnapshot() as T;
+  }
+  // Explicit shared-host characterization; never enabled in ordinary preview or native IPC.
+  if (command === 'extensions_context' && new URLSearchParams(location.search).has('extension-multiwindow') && typeof (window as any).__extensionSharedContext === 'function') {
+    return await (window as any).__extensionSharedContext(args.request) as T;
+  }
   if (new URLSearchParams(location.search).has('extension-harness')) {
     (window as any).__extensionHarness ??= { call: (command: string, args: Record<string, unknown>) => invoke(command, args), task: () => structuredClone(session('session-1')), messages: () => structuredClone(messages['session-1'] ?? []) };
   }

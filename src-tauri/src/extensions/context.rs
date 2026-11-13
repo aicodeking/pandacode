@@ -501,6 +501,31 @@ mod tests {
         assert!(!state.missed_jobs.load(Ordering::Acquire));
     }
     #[test]
+    fn independent_observers_release_only_their_stream_and_leave_workspace_job_running() {
+        for close_first in [0, 1] {
+            let (mut broker, snapshot, store) = fixture();
+            store.db.execute("UPDATE sessions SET status='running',provider='sample.fake-harness/recorded' WHERE id='a1'", []).unwrap();
+            let handles = [capture(&mut broker, &snapshot, &store, Some("A")), capture(&mut broker, &snapshot, &store, Some("A"))];
+            let mut streams = Vec::new();
+            for handle in &handles {
+                consent(&mut broker, &snapshot, &store, handle, "jobs.summary", true);
+                streams.push(call(&mut broker, &snapshot, &store, json!({"op":"subscribe","handle":handle,"resource":"jobs","limit":10}))["value"].clone());
+            }
+            assert_ne!(streams[0]["subscription"], streams[1]["subscription"]);
+            assert_eq!(broker.subscriptions.len(), 2);
+            call(&mut broker, &snapshot, &store, json!({"op":"release","handle":handles[close_first]}));
+            assert_eq!(broker.subscriptions.len(), 1);
+            let status: String = store.db.query_row("SELECT status FROM sessions WHERE id='a1'", [], |row| row.get(0)).unwrap();
+            assert_eq!(status, "running");
+            store.db.execute("UPDATE sessions SET status='completed' WHERE id='a1'", []).unwrap();
+            broker.journal.record("a1", "terminal", "completed");
+            let survivor = 1 - close_first;
+            let reply = call(&mut broker, &snapshot, &store, json!({"op":"events","handle":handles[survivor],"subscription":streams[survivor]["subscription"],"cursor":streams[survivor]["cursor"]}));
+            assert_eq!(reply["value"]["snapshot"]["items"][0]["status"], "completed");
+            assert_eq!(call(&mut broker, &snapshot, &store, query(&handles[close_first], "jobs"))["error"]["code"], "StaleContext");
+        }
+    }
+    #[test]
     fn subscribe_retries_are_handle_scoped_bounded_authorized_and_resync_after_lost_reply() {
         let (mut broker, snapshot, store) = fixture();
         let a = capture(&mut broker, &snapshot, &store, Some("A"));

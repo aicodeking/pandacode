@@ -56,7 +56,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node --test 'tests/*.test.ts' 'src/live/*.test.ts'",
+    "test": "node --test tests/*.test.ts src/live/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build:ios": "EAS_NO_VCS=1 eas build -p ios --profile production",
     "submit:ios": "eas submit -p ios --latest"
