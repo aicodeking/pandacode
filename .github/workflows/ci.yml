@@ -96,10 +96,10 @@ jobs:
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-replacement.spec.ts tests/extensions-composer-conformance.spec.ts tests/extensions-transcript-conformance.spec.ts --workers=1
       - name: Extension tools and API connections (Chromium preview)
         env: { PW_PORT: '1449', PW_PROD: '1' }
-        run: npx playwright test tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts --workers=1
+        run: npx playwright test tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts tests/extensions-services.spec.ts --workers=1
       - name: Extension tools and API connections (WebKit preview)
         env: { PW_PORT: '1450', PW_PROD: '1' }
-        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts --workers=1
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-jobs.spec.ts tests/extensions-connections.spec.ts tests/extensions-services.spec.ts --workers=1
       - name: Extension appearance (Chromium)
         env: { PW_PORT: '1445', PW_PROD: '1' }
         run: npx playwright test tests/extensions-appearance.spec.ts --workers=1

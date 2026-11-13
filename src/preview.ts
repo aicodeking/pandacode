@@ -644,6 +644,12 @@ if (new URLSearchParams(location.search).has('extension-connections')) {
     stats: async () => (await import('./extensions/preview')).previewConnections.stats(),
   };
 }
+if (new URLSearchParams(location.search).has('extension-services')) {
+  (window as any).__extensionServices = {
+    context: (request: Record<string, unknown>) => invoke('extensions_context', { request }),
+    call: (handle: string, request: Record<string, unknown>) => invoke('extensions_runtime', { request: { op: 'services', handle, request } }),
+  };
+}
 if (new URLSearchParams(location.search).has('extension-storage')) {
   // Synthetic host transport only; package identity still comes from a captured declaration.
   const adapters = new Map<string, Awaited<ReturnType<typeof import('./extensions/storage').captureExtensionStorage>>>();
@@ -1580,13 +1586,19 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       fixture.addTasks = () => { const source = sessions[0]; for (let i = 0; i < 12; i++) sessions.push({ ...source, id: `context-page-${String(i).padStart(2, '0')}`, title: 'TRANSCRIPT_SENTINEL', status: 'pending' }); };
     }
     const reply = broker(args.request, previewExtensionSnapshot(), { ...inventoryData, projects, tasks: sessions });
-    if (reply.ok && args.request?.op === 'release') { previewPrivateStorage.dispose(undefined, args.request.handle); previewConnections.stop(undefined, args.request.handle); }
+    if (reply.ok && args.request?.op === 'release') { previewPrivateStorage.dispose(undefined, args.request.handle); previewConnections.stop(undefined, args.request.handle); (await import('./extensions/preview')).previewServices.stop(undefined, args.request.handle); }
     return reply as T;
   }
 if (command === 'extensions_runtime' && args.request?.op === 'connections') {
     const { previewExtensionSnapshot, previewConnections } = await import('./extensions/preview');
     const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
     try { return { ok: true, value: previewConnections.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
+    catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
+  }
+if (command === 'extensions_runtime' && args.request?.op === 'services') {
+    const { previewExtensionSnapshot, previewServices } = await import('./extensions/preview');
+    const snapshot = previewExtensionSnapshot(), handle = args.request.handle;
+    try { return { ok: true, value: previewServices.call(snapshot, extensionContextBroker?.binding(snapshot, handle), handle, args.request.request) } as T; }
     catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
   }
 if (command === 'extensions_runtime' && args.request?.op === 'storage') {

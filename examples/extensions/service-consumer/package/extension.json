@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.service-consumer",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "services.call"],
+  "dependencies": { "sample.service-provider": "^1.0.0" },
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.service-consumer/greet"] },
+  "contributes": {
+    "commands": [{ "id": "sample.service-consumer/greet", "title": "Call public greeting", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.service-consumer/button", "command": "sample.service-consumer/greet", "location": "panda.workspace.header.actions" }]
+  }
+}

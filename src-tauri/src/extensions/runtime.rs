@@ -7,7 +7,7 @@ use tauri::Manager;
 
 struct Active { owner: String, cancel: Arc<AtomicBool> }
 #[derive(Default)]
-pub struct ExtensionRuntime { active: Mutex<BTreeMap<String, Active>>, quarantine: Mutex<BTreeSet<(String, String)>>, cancelled: Mutex<VecDeque<String>> }
+pub struct ExtensionRuntime { active: Mutex<BTreeMap<String, Active>>, quarantine: Mutex<BTreeSet<(String, String)>>, cancelled: Mutex<VecDeque<String>>, pub(super) services: Arc<Mutex<super::services::Registry>> }
 impl ExtensionRuntime {
     fn cancel(&self, request_id: String) {
         // Same lock order as admission: cancel-before-start cannot be lost between capture and spawn.
@@ -38,10 +38,12 @@ enum Request {
     Storage { handle: String, request: Value },
     Jobs { handle: String, request: Value },
     Connections { handle: String, request: Value },
+    Services { handle: String, request: Value },
     RemoveOwnData { id: String, confirmation: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
+    if let Ok(mut services) = app.state::<ExtensionRuntime>().services.lock() { services.stop(owner, None); }
     app.state::<super::connections::ExtensionConnections>().stop(owner, None);
     app.state::<super::jobs::ExtensionJobs>().stop(owner);
     app.state::<ExtensionRuntime>().stop(owner);
@@ -58,6 +60,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
     if request.to_string().len() > limit { return context::failure("LimitExceeded"); }
     let request: Request = match serde_json::from_value(request) { Ok(value) => value, Err(_) => return context::failure("InvalidShape") };
     match request {
+        Request::Services { handle, request } => super::services::call(&app, &handle, request, true),
         Request::Connections { handle, request } => super::connections::call(&app, &handle, request, true),
         Request::Jobs { handle, request } => super::jobs::call(&app, &handle, request),
         Request::StorageGrant { id, allow } => {
@@ -162,6 +165,10 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                             drop(packages);
                             return Ok(super::connections::call(&app, &handle, params, false));
                         }
+                        if method == "services" {
+                            drop(packages);
+                            return Ok(super::services::call(&app, &handle, params, false));
+                        }
                         if method == "storage" {
                             return Ok(match packages.storage_call(&owner, &version, captured_project.as_deref(), &handle, params) { Ok(value) => ok(value), Err(code) => context::failure(&code) });
                         }
@@ -184,6 +191,7 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 Ok(dialogs)
             });
             app.state::<ContextBroker>().runtime_release(&handle);
+            if let Ok(mut services) = app.state::<ExtensionRuntime>().services.lock() { services.stop(Some(&owner), Some(&handle)); }
             app.state::<super::connections::ExtensionConnections>().stop(Some(&owner), Some(&handle));
             if let Ok(packages) = app.state::<ExtensionPackages>().0.lock() { packages.storage_dispose(Some(&owner), Some(&handle)); }
             let state = app.state::<ExtensionRuntime>();

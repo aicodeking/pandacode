@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.service-provider",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.service-provider/info"] },
+  "contributes": {
+    "commands": [{ "id": "sample.service-provider/info", "title": "Service provider", "action": { "kind": "runCommand" } }],
+    "services": [{ "id": "sample.service-provider/greeting", "version": "1.0.0", "methods": [{ "id": "hello", "inputSchema": { "type": "string" }, "outputSchema": { "type": "string" }, "eventSchema": { "type": "string" } }] }]
+  }
+}

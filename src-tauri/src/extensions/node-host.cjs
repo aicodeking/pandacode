@@ -50,6 +50,7 @@ process.stdin.on('data', chunk => {
         ui: Object.freeze({ showDialog: dialog => rpc('dialog', dialog) }),
         jobs: Object.freeze(Object.fromEntries(['start', 'poll', 'cancel'].map(op => [op, options => rpc('jobs', { ...options, op })]))),
         connections: Object.freeze(Object.fromEntries(['status', 'start', 'poll', 'cancel'].map(op => [op, options => rpc('connections', { ...options, op })]))),
+        services: Object.freeze(Object.fromEntries(['start', 'poll', 'dispose'].map(op => [op, options => rpc('services', { ...options, op })]))),
         // Scope can only be global or this invocation's captured project. No owner/path input.
         storage: Object.freeze(Object.fromEntries(['get', 'set', 'remove', 'snapshot', 'subscribe', 'events', 'unsubscribe', 'migrate'].map(op => [op, options => rpc('storage', { ...options, op })]))),
       });
@@ -57,6 +58,15 @@ process.stdin.on('data', chunk => {
         const module = new Module(join(process.cwd(), 'extension.cjs'));
         module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
         module._compile(init.source, module.filename);
+        if (invocation?.service) {
+          const call = invocation.service;
+          const handler = module.exports.services?.[call.id]?.[call.method];
+          if (typeof handler !== 'function') throw new Error('Missing public service');
+          const result = await handler(call.input, freeze({ consumer: call.consumer, context: call.context, emit: value => rpc('serviceEvent', value) }));
+          await rpc('serviceResult', result ?? null);
+          await rpc('complete', null);
+          return;
+        }
         if (invocation?.job) {
           const handler = module.exports.tools?.[invocation.job.tool];
           if (typeof handler !== 'function') throw new Error('Missing tool');

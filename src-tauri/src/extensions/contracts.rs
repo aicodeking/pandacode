@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 12] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections"];
+const CONTRIBUTIONS: [&str; 13] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -221,7 +221,7 @@ fn menu_items<'a>(values: &'a [Value], contributions: Option<&Value>, owner: &st
     }
     Ok(())
 }
-fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
+fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -> Result<Value> {
     let input = input.as_array().ok_or_else(|| invalid("$"))?;
     if input.len() as u64 > SCHEMA["x-dataLimits"]["packages"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
     let mut packages = input.iter().enumerate().map(|(i, value)| shape(value, &SCHEMA["$defs"]["manifest"], &format!("$/{i}"), diagnostics)).collect::<Result<Vec<_>>>()?;
@@ -236,16 +236,16 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         if !matches(text(&manifest["engines"], "pandacodeApi"), "1.0.0", &format!("{path}/engines/pandacodeApi"))? { return Err(fail("IncompatibleApi", &format!("{path}/engines/pandacodeApi"), vec![id])); }
         for key in ["permissions", "requiredCapabilities"] {
             for capability in strings(&manifest[key]) {
-                if !["connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
+                if !["services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
             }
         }
         let optional = strings(&manifest["optionalCapabilities"]);
         for (i, capability) in optional.iter().enumerate() {
-            if !["connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) {
+            if !["services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) {
                 diagnostics.push(json!({"code":"UnknownOptionalCapability", "path":format!("{path}/optionalCapabilities/{i}")}));
             }
         }
-        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| ["connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&v.as_str())).collect::<Vec<_>>()); }
+        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| ["services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&v.as_str())).collect::<Vec<_>>()); }
         for kind in strings(&manifest["requiredContributions"]) {
             if !CONTRIBUTIONS.contains(&kind.as_str()) { return Err(fail("UnsupportedContribution", &format!("{path}/requiredContributions"), vec![kind])); }
         }
@@ -259,6 +259,11 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         if manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id)) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
         let mut owned = BTreeSet::new();
         let mut tool_commands = BTreeSet::new();
+        for service in items(contributions, "services") {
+            if manifest.get("runtime").is_none() { return Err(fail("UnsupportedRuntime", &path, vec![])); }
+            let mut methods = BTreeSet::new();
+            for method in items(service, "methods") { if !methods.insert(text(method, "id")) { return Err(fail("DuplicateId", &path, vec![])); } }
+        }
         for connection in items(contributions, "connections") {
             if !executable.contains(&text(connection, "command").to_owned()) || !strings(&manifest["permissions"]).contains(&"connections.request".to_owned()) || !tool_commands.insert(text(connection, "command")) { return Err(fail("PermissionDenied", &path, vec![])); }
             let mut operations = BTreeSet::new();
@@ -328,7 +333,10 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
                 package_id(id, &path)?;
                 let range = range.as_str().unwrap();
                 matches(range, "1.0.0", &path)?;
-                let dependency = packages.iter().find(|item| item["id"] == *id).ok_or_else(|| fail("UnknownReference", &path, vec![id.clone()]))?;
+                let Some(dependency) = packages.iter().find(|item| item["id"] == *id) else {
+                    if allow_missing { continue; }
+                    return Err(fail("UnknownReference", &path, vec![id.clone()]));
+                };
                 if !matches(range, text(dependency, "version"), &path)? { return Err(fail("IncompatibleDependency", &path, vec![id.clone()])); }
                 dependencies.push((id.clone(), text(manifest, "id").to_owned()));
             }
@@ -360,7 +368,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         bounded(value, "$", 0, &mut 0, &mut bytes)?;
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
-        let value = if kind == "packages" { manifests(value, &mut diagnostics)? }
+        let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
             else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }

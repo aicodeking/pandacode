@@ -3,6 +3,9 @@
  */
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 export type Disposable = { dispose(): void };
+export type ServicePayloadSchema = { type: 'null' | 'string' | 'integer' | 'boolean' };
+export type ServiceDescriptor = { id: string; version: string; methods: { id: string; inputSchema: ServicePayloadSchema; outputSchema: ServicePayloadSchema; eventSchema: ServicePayloadSchema }[] };
+export type ServiceCall = { schemaVersion: 1; request: string; state: 'running' | 'settled'; events: { sequence: number; value: Json }[]; output: Json; error: string | null };
 export interface InvocationContext {
   readonly schemaVersion: 1;
   readonly commandId: string;
@@ -39,6 +42,12 @@ export interface DialogDefinition {
   readonly confirmation?: string; readonly successMessage: string; readonly cancelMessage?: string;
 }
 export interface PandaCode {
+  /** Host-granted public exports only. Poll drains at most 32 events; dispose cancels owned work. */
+  readonly services: {
+    start(options: { service: string; version: string; method: string; input: Json }): Promise<ServiceCall>;
+    poll(options: { request: string }): Promise<ServiceCall>;
+    dispose(options: { request: string }): Promise<null>;
+  };
   readonly apiVersion: '1.0.0';
   /** Invocation-scoped opaque API; credentials are entered only in host UI. No raw HTTP
    * strings/headers are returned. This does not constrain trusted code's independent OS access. */

@@ -1,0 +1,5 @@
+# Public service consumer (experimental API 1)
+
+Install and trust the provider first, then create a ZIP containing this example's `extension.json` and `main.cjs` at its root and install/trust/enable it through Settings → Extensions. Click **Call public greeting**, then **Allow public services and run**. The resulting dialog contains the greeting plus the provider event identifying this consumer and captured project. **Run without API grants** returns `PermissionDenied` without calling the provider.
+
+Package dependency ranges select compatible provider packages; the request selects an exact exported API version. Only explicitly declared methods and primitive JSON schemas are supported in v1. Poll drains the per-call subscription (32 buffered events maximum; overflow fails rather than silently dropping). Dispose cancels; disable/reload/trust revocation cancels affected calls, removes grants/subscriptions, and ignores late responses. There is no persistent provider singleton or automatic activation at install.

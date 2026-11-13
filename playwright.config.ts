@@ -47,6 +47,7 @@ config.testMatch.push('**/extensions-development.spec.ts');
 config.testMatch.push('**/extensions-storage.spec.ts');
 config.testMatch.push('**/extensions-jobs.spec.ts');
 config.testMatch.push('**/extensions-connections.spec.ts');
+config.testMatch.push('**/extensions-services.spec.ts');
 config.testMatch.push('**/extensions-views.spec.ts');
 config.testMatch.push('**/extensions-rich-views.spec.ts');
 config.testMatch.push('**/extensions-placement.spec.ts');

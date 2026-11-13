@@ -123,7 +123,9 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         if files.insert(name.to_ascii_lowercase(), (name, content)).is_some() { return Err("Duplicate archive ownership.".into()); }
     }
     let raw: Value = serde_json::from_slice(&files.get("extension.json").ok_or("Missing extension.json.")?.1).map_err(|_| "Malformed extension.json.")?;
-    let checked = super::contracts::validate_contract("packages", &json!([raw]));
+    // Archive validation checks declarations, not installed dependency availability. Enable and
+    // every service admission separately validate the reachable enabled dependency graph.
+    let checked = super::contracts::validate_contract("packageFiles", &json!([raw]));
     if checked["ok"] != true {
         if checked["error"]["code"] == "UnsupportedRuntime" { return Err(format!("UnsupportedRuntime: {}", super::runtime::unsupported_reason())); }
         return Err(format!("Invalid manifest: {}", checked["error"]["code"]));
@@ -414,6 +416,22 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     pub(super) fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    #[test]
+    fn service_packages_install_trust_and_enable_without_running_code() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        for (id, manifest, source) in [
+            ("sample.service-provider", include_bytes!("../../../examples/extensions/service-provider/package/extension.json").as_slice(), include_bytes!("../../../examples/extensions/service-provider/package/main.cjs").as_slice()),
+            ("sample.service-consumer", include_bytes!("../../../examples/extensions/service-consumer/package/extension.json").as_slice(), include_bytes!("../../../examples/extensions/service-consumer/package/main.cjs").as_slice()),
+        ] {
+            packages.install(&archive(&[("extension.json", manifest), ("main.cjs", source)])).unwrap();
+            assert!(packages.enable(id, true).is_err());
+            let snapshot = packages.snapshot(); let package = snapshot.packages.iter().find(|p| p.manifest["id"] == id).unwrap();
+            packages.trust(id, &package.executable.as_ref().unwrap().digest, true).unwrap(); packages.enable(id, true).unwrap();
+        }
+        assert_eq!(packages.snapshot().packages.iter().filter(|p| p.enabled).count(), 2);
+        packages.enable("sample.service-provider", false).unwrap();
+        assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == "sample.service-provider").unwrap().enabled);
+    }
     #[test]
     fn rich_view_archive_validates_local_assets_without_exposing_source_in_snapshot() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/rich-view/extension.json");

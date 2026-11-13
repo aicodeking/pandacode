@@ -11,6 +11,8 @@ import executableManifest from '../../tests/fixtures/extensions/project-summary/
 import toolManifest from '../../tests/fixtures/extensions/test-runner/extension.json';
 import connectionManifest from '../../tests/fixtures/extensions/fake-service/extension.json';
 import { createConnectionsPreview } from './connections-preview';
+import { createServicesPreview } from './services-preview';
+export const previewServices = createServicesPreview();
 export const previewConnections = createConnectionsPreview();
 import { createJobsPreview } from './jobs-preview';
 export const previewOwnedJobs = createJobsPreview();
@@ -52,6 +54,9 @@ function read(): ExtensionSnapshot {
 }
 export const previewExtensionSnapshot = read;
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
+  if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewServices.stop(String(args.id));
+  if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') previewServices.stop();
+  if (command === 'extensions_runtime' && ['developmentReload', 'trust'].includes((args.request as { op: string })?.op)) previewServices.stop((args.request as { id: string }).id);
   if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewConnections.stop(String(args.id));
   if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') previewConnections.stop();
   if (command === 'extensions_runtime' && (args.request as { op?: string; allow?: boolean })?.op === 'trust' && (args.request as { allow?: boolean }).allow === false) previewConnections.stop((args.request as { id: string }).id);

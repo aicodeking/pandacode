@@ -12,8 +12,8 @@ export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | 
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections'];
-const capabilities = ['connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services'];
+const capabilities = ['services.call', 'connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
@@ -225,6 +225,11 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (!fullMatch('^assets/[a-zA-Z0-9_./-]+[.](svg|png|webp)$', asset) || asset.split('/').some(part => !part || part === '.' || part === '..')) error('UnsafeAsset', `${path}/contributes/icons`, [icon.id as string]);
     }
     const toolCommands = new Set<Json>();
+    for (const service of (contributions.services ?? []) as ObjectValue[]) {
+      if (!manifest.runtime) error('UnsupportedRuntime', path);
+      const methods = new Set<Json>();
+      for (const method of service.methods as ObjectValue[]) { if (methods.has(method.id)) error('DuplicateId', path); methods.add(method.id); }
+    }
     for (const connection of (contributions.connections ?? []) as ObjectValue[]) {
       reference('commands', connection.command, 'connections');
       if (!executable.includes(connection.command) || !(manifest.permissions as string[]).includes('connections.request') || toolCommands.has(connection.command)) error('PermissionDenied', `${path}/contributes/connections`);
