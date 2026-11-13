@@ -133,7 +133,8 @@ import { BtwPanel } from './btw-panel';
 import './btw.css';
 import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
-import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
+import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, resolveTabs, isExtensionInspectorView, type InspectorView, type BuiltinInspectorView } from './inspector-tabs';
+import type { RegisteredView } from './extensions/views-state';
 import { TailText } from './tail-text';
 import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
@@ -152,17 +153,27 @@ const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMa
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
 /** Open files is the inspector's per-task editor view: shown only while the task has file tabs, never saved in the strip's order. */
 type PanelView = InspectorView | 'file';
-const INSPECTOR_TITLES: Record<InspectorView, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design', btw: 'By the way' };
+const INSPECTOR_TITLES: Record<BuiltinInspectorView, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design', btw: 'By the way' };
 const INSPECTOR_TIPS: Partial<Record<InspectorView, string>> = { simulator: 'iOS & Android simulators', design: 'Design canvas', btw: 'By the way: a side thread' };
-const INSPECTOR_ICONS: Record<InspectorView, string> = { files: 'file', search: 'search', changes: 'branch', browser: 'globe', pull: 'pull', simulator: 'phone', vm: 'monitor', design: 'sketch', btw: 'chat' };
+const INSPECTOR_ICONS: Record<BuiltinInspectorView, string> = { files: 'file', search: 'search', changes: 'branch', browser: 'globe', pull: 'pull', simulator: 'phone', vm: 'monitor', design: 'sketch', btw: 'chat' };
 /** Tab buttons keep the actions the old icon bar used, so every handler and shortcut still applies. */
-const INSPECTOR_ACTIONS: Record<InspectorView, string> = { files: 'tab-files', search: 'tab-search', changes: 'tab-changes', browser: 'browser', pull: 'tab-pull', simulator: 'tab-simulator', vm: 'tab-vm', design: 'tab-design', btw: 'tab-btw' };
+const INSPECTOR_ACTIONS: Record<BuiltinInspectorView, string> = { files: 'tab-files', search: 'tab-search', changes: 'tab-changes', browser: 'browser', pull: 'tab-pull', simulator: 'tab-simulator', vm: 'tab-vm', design: 'tab-design', btw: 'tab-btw' };
+let extensionInspectorViews: RegisteredView[] = [];
+let extensionViewVisible: (id: string) => boolean = () => true;
+let extensionViewOrder: (ids: InspectorView[]) => InspectorView[] = ids => ids;
+let extensionViewIdentity: (owner: string) => string = () => '';
+let mountExtensionView: typeof import('./extensions/views').mountInspectorView | undefined;
+let extensionViewInstance: { key: string; dispose(): void } | undefined;
+let lastInspectorResolution: InspectorView = threadDefault(inspectorTabs);
+const inspectorAvailable = (): InspectorView[] => [...INSPECTOR_AVAILABLE, ...extensionInspectorViews.filter(entry => extensionViewVisible(entry.view.id)).map(entry => entry.view.id)];
+const inspectorTitle = (view: InspectorView) => isExtensionInspectorView(view) ? extensionInspectorViews.find(entry => entry.view.id === view)?.view.title ?? 'Extension view' : INSPECTOR_TITLES[view];
+const inspectorIcon = (view: InspectorView) => isExtensionInspectorView(view) ? 'info' : INSPECTOR_ICONS[view];
 const state = {
   projects: [] as Project[], sessions: [] as Session[], providers: [] as Provider[],
   projectId: '', sessionId: '', messages: [] as Message[], messagesLoading: false, messagesError: '', streams: new Map<string, Stream>(),
   view: (({ board: 'board', github: 'github' } as Record<string, 'board' | 'github'>)[localStorage.getItem('pandacode.view') ?? ''] ?? 'conversation') as WorkspaceView, boardPanel: false,
   sidebarCollapsed: localStorage.getItem('pandacode.sidebarCollapsed') === 'true',
-  query: '', inspector: false, inspectorTab: threadDefault(inspectorTabs) as PanelView,
+  query: '', inspector: false, inspectorTab: threadDefault(inspectorTabs, inspectorAvailable()) as PanelView,
   projectFilter: localStorage.getItem('pandacode.projectFilter') ?? '', collapsedFolders: readCollapsed(localStorage, 'pandacode.collapsedFolders'), expandedFolders: new Set<string>(),
   /** Follow-ups typed while an agent works, per task, in delivery order; mirrored from native storage. */
   queues: new Map<string, QueuedMessage[]>(), queueHolds: new Map<string, HoldReason>(), queueEditing: '', queueBusy: new Set<string>(),
@@ -529,7 +540,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
-  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file" tabindex="-1"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
+  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file" tabindex="-1"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${inspectorTitle(threadDefault(inspectorTabs))}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
 </div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
 mountDesktopBrand($('.brand-name'));
 const extensionContextListeners = new Set<() => void>();
@@ -561,6 +572,19 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       [[`panda.inspector.${view}.toolbar/refresh`, $('#inspector-refresh')], [`panda.inspector.${view}.toolbar/hide`, document.querySelector<HTMLElement>('.inspector-hide')!]]);
   }
   const { layout, registerLayoutContext, applyControlVisibility, applyControlOrder } = await import('./extensions/layout-host');
+  const { orderedControls } = await import('./extensions/layout-host');
+  const { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } = await import('./extensions/views-state');
+  const { registerInspectorViewOpener } = await import('./extensions/view-navigation');
+  mountExtensionView = (await import('./extensions/views')).mountInspectorView;
+  extensionViewVisible = id => !layout.isHidden(id, state.projectId ?? undefined);
+  extensionViewOrder = ids => orderedControls(INSPECTOR_VIEW_LOCATION, ids) as InspectorView[];
+  registerInspectorViewOpener(id => {
+    if (!extensionInspectorViews.some(entry => entry.view.id === id)) return false;
+    // The declared command remains invokable while hidden; visibility still wins presentation.
+    inspectorTabs = openTab(inspectorTabs, id); saveTabs(localStorage, inspectorTabs);
+    inspectorSuppressed = false; state.inspector = true; state.inspectorTab = id; state.selectedKind = '';
+    renderInspector(); return true;
+  });
   registerLayoutContext(() => state.projectId ?? undefined);
   // Do not apply saved overlays until native launch recovery policy has been read.
   let extensionsLayoutSafeMode = true;
@@ -599,7 +623,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     if (sidebarFocused && $('.sidebar').hidden) (document.querySelector<HTMLElement>('#prompt:not([disabled])') ?? $('#view-menu')).focus({ preventScroll: true });
     window.dispatchEvent(new Event('resize'));
   };
-  layout.subscribe(() => refreshLayout(true));
+  layout.subscribe(() => { refreshLayout(true); syncExtensionViews(); });
   extensionContextListeners.add(refreshLayout);
   refreshLayout();
   // These exact business handlers also serve the existing delegated controls and shortcuts.
@@ -608,10 +632,23 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     'panda.ui/open-settings': () => showSettings(),
     'panda.ui/toggle-theme': () => toggleTheme(),
   });
-  const { loadExtensions, extensionsSnapshot, onExtensionsChanged } = await import('./extensions/manager');
+  const { loadExtensions, extensionsSnapshot, onExtensionsChanged, extensionIdentity } = await import('./extensions/manager');
+  extensionViewIdentity = extensionIdentity;
+  function syncExtensionViews() {
+    const focused = document.activeElement instanceof HTMLElement && $('#inspector').contains(document.activeElement) ? document.activeElement : undefined;
+    const previous = lastInspectorResolution;
+    extensionInspectorViews = registeredInspectorViews(extensionsSnapshot());
+    if (isExtensionInspectorView(state.inspectorTab) || state.inspectorTab === previous && isExtensionInspectorView(inspectorTabs.selected)) {
+      state.inspectorTab = resolveTabs(inspectorTabs, inspectorAvailable()).selected;
+    }
+    renderInspector();
+    if (focused && (!focused.isConnected || !focused.checkVisibility())) document.querySelector<HTMLElement>('.inspector-tabs [role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+  }
+  onExtensionsChanged(syncExtensionViews);
   onExtensionsChanged(() => { if (document.querySelector('#dialog.command-dialog[open]')) renderCommands(document.querySelector<HTMLInputElement>('#command-query')?.value ?? ''); });
   (await import('./extensions/windows')).mountNativeExtensionPresentation(notify);
   await loadExtensions();
+  syncExtensionViews();
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
     if (extensionsLayoutSafeMode) document.querySelectorAll<HTMLElement>('[data-layout-hidden]').forEach(element => { element.removeAttribute('data-layout-hidden'); element.inert = false; });
@@ -1227,7 +1264,7 @@ function restoreThreadPanel(task?: Session): void {
   const sameWorkspace = saved?.workspace === workspaceKey();
   // Without saved state the conversation opens the panel on the selected tab, unless the user closed it or it would cover the chat.
   state.inspector = saved?.open ?? (state.view === 'conversation' && inspectorChosen && !matchMedia('(max-width: 920px)').matches);
-  state.inspectorTab = saved?.tab && (saved.tab === 'file' || inspectorTabs.open.includes(saved.tab)) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
+  state.inspectorTab = saved?.tab && (saved.tab === 'file' || inspectorTabs.open.includes(saved.tab)) ? saved.tab : threadDefault(inspectorTabs, inspectorAvailable()); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
   fileTabs.show(state.sessionId, workspaceKey());
@@ -5087,10 +5124,27 @@ $('.inspector-tabs').addEventListener('focusout', event => {
   if (!nav.contains(event.relatedTarget as Node | null)) rovingTabs(nav);
 });
 function renderInspectorTabs(pullLinked: boolean): void {
-  const tabs = state.inspectorTab === 'file' ? inspectorTabs : openTab(inspectorTabs, state.inspectorTab);
+  const available = inspectorAvailable().filter(view => view !== 'pull' || pullLinked);
+  const resolved = resolveTabs(inspectorTabs, available);
+  const tabs = state.inspectorTab === 'file' || state.inspectorTab === resolved.selected ? inspectorTabs : openTab(inspectorTabs, state.inspectorTab);
   if (!sameTabs(tabs, inspectorTabs)) { inspectorTabs = tabs; saveTabs(localStorage, tabs); }
   const nav = $('.inspector-tabs'), add = nav.querySelector<HTMLElement>('.inspector-tab-add')!;
-  const shown = tabs.open.filter(view => view !== 'pull' || pullLinked);
+  const shown = resolveTabs(tabs, available).open;
+  const ordered = extensionViewOrder(shown.filter(isExtensionInspectorView));
+  let extensionIndex = 0;
+  for (let i = 0; i < shown.length; i++) if (isExtensionInspectorView(shown[i])) shown[i] = ordered[extensionIndex++];
+  for (const node of nav.querySelectorAll<HTMLElement>('[data-extension-view]')) if (!extensionInspectorViews.some(entry => entry.view.id === node.dataset.view)) node.remove();
+  for (const { view } of extensionInspectorViews) {
+    let node = [...nav.querySelectorAll<HTMLElement>('[data-extension-view]')].find(node => node.dataset.view === view.id);
+    if (!node) {
+      node = document.createElement('div'); node.className = 'inspector-tab'; node.dataset.view = view.id; node.dataset.extensionView = view.id;
+      node.innerHTML = `<button class="inspector-tab-button" role="tab" tabindex="-1" data-action="tab-extension-view">${icon('info')}<span class="inspector-tab-label"></span></button>${button('close-inspector-tab', 'Close extension view', 'close', 'inspector-tab-close', `data-view="${view.id}" tabindex="-1"`)}`;
+      nav.insertBefore(node, add);
+    }
+    const tab = node.querySelector<HTMLElement>('[role="tab"]')!;
+    tab.setAttribute('aria-label', view.title); tab.title = view.title; tab.querySelector('.inspector-tab-label')!.textContent = view.title;
+    node.querySelector('.inspector-tab-close')!.setAttribute('aria-label', `Close ${view.title}`);
+  }
   const files = nav.querySelector<HTMLElement>(':scope>.file-panel-tab')!;
   files.hidden = !fileTabs.count;
   const items = [files, ...nav.querySelectorAll<HTMLElement>(':scope>.inspector-tab:not(.file-panel-tab)')];
@@ -5098,7 +5152,7 @@ function renderInspectorTabs(pullLinked: boolean): void {
     const view = item.dataset.view as PanelView, selected = view === state.inspectorTab;
     if (item !== files) {
       item.hidden = !shown.includes(view as InspectorView);
-      item.querySelector<HTMLElement>('.inspector-tab-close')!.hidden = shown.length < 2;
+      item.querySelector<HTMLElement>('.inspector-tab-close')!.hidden = shown.length < 2 || !tabs.open.includes(view as InspectorView);
     }
     const tab = item.querySelector<HTMLElement>('.inspector-tab-button')!;
     tab.classList.toggle('selected', selected);
@@ -5107,17 +5161,21 @@ function renderInspectorTabs(pullLinked: boolean): void {
   rovingTabs(nav);
   // Move nodes only when the order changed, so a focused tab keeps focus.
   if (items.filter(item => !item.hidden && item !== files).map(item => item.dataset.view).join() !== shown.join()) for (const view of shown) nav.insertBefore(items.find(item => item.dataset.view === view)!, add);
-  add.hidden = !closedViews(tabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked)).length;
+  add.hidden = !closedViews(resolveTabs(tabs, available), available).length;
   revealSelectedTab();
 }
 function openInspectorView(view: InspectorView): void {
   const tab = document.querySelector<HTMLElement>(`.inspector-tab[data-view="${view}"] .inspector-tab-button`);
-  if (tab) run(action(tab.dataset.action!, tab));
+  if (isExtensionInspectorView(view)) {
+    if (!inspectorAvailable().includes(view)) return;
+    inspectorTabs = openTab(inspectorTabs, view); saveTabs(localStorage, inspectorTabs);
+    inspectorSuppressed = false; state.inspector = true; state.inspectorTab = view; state.selectedKind = ''; renderInspector();
+  } else if (tab) run(action(tab.dataset.action!, tab));
 }
 function closeInspectorTab(view: PanelView): void {
   if (view === 'file') {
     fileTabs.forget(state.sessionId);
-    if (state.inspectorTab === 'file') state.inspectorTab = threadDefault(inspectorTabs);
+    if (state.inspectorTab === 'file') state.inspectorTab = threadDefault(inspectorTabs, inspectorAvailable());
     renderInspector();
     document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
     return;
@@ -5126,14 +5184,15 @@ function closeInspectorTab(view: PanelView): void {
   if (next === inspectorTabs) return;
   const wasSelected = state.inspectorTab === view;
   inspectorTabs = next; saveTabs(localStorage, next);
-  if (wasSelected) { ++fileRequest; state.inspectorTab = next.selected; state.selectedKind = ''; }
+  if (wasSelected) { ++fileRequest; state.inspectorTab = resolveTabs(next, inspectorAvailable()).selected; state.selectedKind = ''; }
   renderInspector();
   if (wasSelected) document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
 }
 async function showInspectorViews(anchor: HTMLElement): Promise<void> {
   const pullLinked = Boolean(githubEnabled() && session()?.pullRequest);
-  const views = closedViews(inspectorTabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked));
-  await showChoices(anchor, { title: 'Open view', width: 240, actions: true, items: views.map(view => ({ id: view, label: INSPECTOR_TITLES[view], icon: INSPECTOR_ICONS[view] })), onSelect: id => { closeChoiceMenu(); openInspectorView(id as InspectorView); } });
+  const available = inspectorAvailable().filter(view => view !== 'pull' || pullLinked);
+  const views = closedViews(resolveTabs(inspectorTabs, available), available);
+  await showChoices(anchor, { title: 'Open view', width: 240, actions: true, items: views.map(view => ({ id: view, label: inspectorTitle(view), icon: inspectorIcon(view) })), onSelect: id => { closeChoiceMenu(); openInspectorView(id as InspectorView); } });
 }
 /** One Changes view lives while the Changes tab shows the same checkout, so folds, scroll and loaded diffs survive refreshes. */
 let changesView: ChangesView | undefined, changesViewKey = '';
@@ -5205,6 +5264,17 @@ let inspectorArmed = false;
 const armInspector = () => { inspectorArmed = true; removeEventListener('pointerdown', armInspector, true); removeEventListener('keydown', armInspector, true); };
 addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
 function renderInspector(): void {
+  const available = inspectorAvailable();
+  const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
+  if (state.inspectorTab === 'pull' && !pullTask) {
+    const shown = resolveTabs(inspectorTabs, available.filter(view => view !== 'pull')).open;
+    state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0];
+  }
+  if (state.inspectorTab === 'file' && !fileTabs.count) state.inspectorTab = threadDefault(inspectorTabs, available);
+  if (isExtensionInspectorView(state.inspectorTab) && !available.includes(state.inspectorTab)) state.inspectorTab = resolveTabs(inspectorTabs, available).selected;
+  const extension = extensionInspectorViews.find(entry => entry.view.id === state.inspectorTab);
+  const extensionKey = extension && state.inspector && !inspectorSuppressed && !state.sharedChannelId ? JSON.stringify([extension, extensionViewIdentity(extension.owner), state.projectId, state.sessionId, state.generation]) : '';
+  if (extensionViewInstance?.key !== extensionKey) { extensionViewInstance?.dispose(); extensionViewInstance = undefined; }
   if (!['files', 'changes', 'search'].includes(state.inspectorTab)) for (const node of [$('#inspector-refresh'), document.querySelector<HTMLElement>('.inspector-hide')!]) if (node.parentElement !== $('.inspector-strip-actions')) $('.inspector-strip-actions').append(node);
   refreshExtensionInspectorActions();
   applyExtensionVisibility();
@@ -5224,15 +5294,13 @@ function renderInspector(): void {
   else hidePanel(inspector, animate, () => { if (inspector.hidden) workspace.classList.add('inspector-closed'); }, $('#inspector-toggle'));
   inspectorDrawn = true; inspectorView = state.view;
   $('#inspector-toggle').classList.toggle('active', visible);
-  const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
-  if (state.inspectorTab === 'pull' && !pullTask) { const shown = inspectorTabs.open.filter(view => view !== 'pull'); state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0]; }
-  if (state.inspectorTab === 'file' && !fileTabs.count) state.inspectorTab = threadDefault(inspectorTabs);
   renderInspectorTabs(Boolean(pullTask));
+  lastInspectorResolution = resolveTabs(inspectorTabs, available).selected;
   const pullTab = $('.inspector-tabs').querySelector<HTMLButtonElement>('[data-action="tab-pull"]')!;
   if (pullTask) { pullTab.title = `Pull request #${pullTask.pullRequest!.number}`; pullTab.setAttribute('aria-label', `Pull request #${pullTask.pullRequest!.number}`); }
   const changeCount = state.git?.files.length ?? 0;
   $('.inspector-tabs [data-action="tab-changes"]').setAttribute('aria-label', changeCount ? `Changes, ${changeCount} changed ${changeCount === 1 ? 'file' : 'files'}` : 'Changes');
-  $('#inspector-title').textContent = state.inspectorTab === 'file' ? 'Open files' : INSPECTOR_TITLES[state.inspectorTab];
+  $('#inspector-title').textContent = state.inspectorTab === 'file' ? 'Open files' : inspectorTitle(state.inspectorTab);
   $('#changes-count').textContent = state.git?.files.length ? String(state.git.files.length) : '';
   const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}`;
   const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !session()?.remoteDevice && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
@@ -5250,6 +5318,12 @@ function renderInspector(): void {
   pullView.dispose();
   if (state.inspectorTab === 'btw' && visible) { btwPanel.show(target); return; }
   btwPanel.dispose();
+  if (extension) {
+    if (visible && mountExtensionView && !extensionViewInstance) {
+      extensionViewInstance = { key: extensionKey, dispose: mountExtensionView(target, extension, { revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) }, notify) };
+    }
+    return;
+  }
   if (!project()) { target.innerHTML = '<div class="inspector-empty">Open a project to browse files and review changes.</div>'; return; }
   const remote = session()?.remoteDevice;
   if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>Runs on ${escape(remote.name)}</h3><p>Its changes and files are on that computer, so review and commit them there.</p></div>`; return; }
@@ -7077,6 +7151,10 @@ async function toggleTerminal(): Promise<void> {
 }
 
 async function action(name: string, element: HTMLElement): Promise<void> {
+  const explicitView = element.closest<HTMLElement>('.inspector-tab')?.dataset.view;
+  if (element.matches('[role="tab"]') && explicitView && explicitView !== 'file' && inspectorAvailable().includes(explicitView as InspectorView)) {
+    inspectorTabs = openTab(inspectorTabs, explicitView as InspectorView); saveTabs(localStorage, inspectorTabs);
+  }
   if (element.dataset.command) closeModal();
   if (['tab-files', 'tab-changes', 'browser', 'back-inspector'].includes(name) || name === 'toggle-inspector' && !state.filePreviewLoading) ++fileRequest;
   if (name.startsWith('queue-')) { await queueAction(name, element); return; }
@@ -7199,6 +7277,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-vm': openVm(); break;
     case 'tab-btw': openBtw(); btwPanel.focus(); break;
     case 'inspector-add-tab': await showInspectorViews(element); break;
+    case 'tab-extension-view': if (isExtensionInspectorView(explicitView)) openInspectorView(explicitView); break;
     case 'close-inspector-tab': closeInspectorTab(element.dataset.view as PanelView); break;
     case 'tab-open-files': state.inspectorTab = 'file'; state.selectedKind = ''; renderInspector(); break;
     case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;

@@ -25,7 +25,8 @@ fields are accepted with `UnknownOptionalField` and **removed** from the returne
 use the sanitized value, not recover ignored fields from the original JSON. Unknown fields inside actions,
 expressions, error envelopes, payload schemas and surface policies are rejected, since those shapes affect behavior.
 
-Only `packages`, `command`, `contribution`, `surface`, `context`, `error`, and `expression` are public validation
+Only `packages`, `command`, `contribution`, `surface`, `context`, `error`, `expression`, `dialog`,
+`selectOptions`, `view`, and `viewControl` are public validation
 kinds. Internal schema definitions (including the manifest shape without graph/ownership checks) are not separate
 activation entry points. No current API registers or invokes a command merely by passing a DTO to this validator.
 
@@ -66,9 +67,9 @@ Manifest `contributes` holds the following bounded definitions:
 
 | Definition | Fields / meaning |
 |---|---|
-| Command | Owned `id`, `title`, optional declared `icon`, `action`. Only `{kind: "showMessage", message}`, `{kind: "showDialog", dialog}` or schema-only `{kind: "openView", view}` (not installable yet). No JavaScript handler/string, shell command or private built-in command dispatch. |
+| Command | Owned `id`, `title`, optional declared `icon`, `action`. `{kind: "showMessage", message}`, `{kind: "showDialog", dialog}`, `{kind: "openView", view}` and the separate captured `showProjectContext` / trusted-runtime `runCommand` adapters. No JavaScript source/string, shell command or private built-in command dispatch in the declaration. |
 | Icon | Owned `id`, `asset`: relative `assets/…` path ending in `.svg`, `.png` or `.webp`; ASCII letters/digits/underscore/dot/slash/hyphen only. No empty, `.` or `..` segments, backslashes, percent encoding, absolute/URL paths. This checks the reference, **not the file contents**. |
-| View | Owned `id`, `title`, static `text`. No HTML, script, DOM handle or renderer promise. |
+| View | Owned `id`, `title`, static `text`, optional bounded `controls` and `toolbar`. Installed as a main-window inspector tab. No HTML, script, DOM handle or renderer promise. |
 | Menu contribution | Owned `id`, one of `panda.workspace.header.actions` / `panda.sidebar.footer` / `panda.inspector.actions` (when open), declared `command`, optional declared `icon`, `group`, `order`, `before`/`after` IDs, `visible`/`enabled` AST and recursive `items`. |
 | Layout proposal | Owned `id`, `title`, action-slot `location`, bounded `rules: [{id, target, side: "before" or "after"}]`. Requires both `ui.contribute` and `ui.customize` declarations. Cycles are rejected by both validators. |
 
@@ -77,6 +78,35 @@ in the same submitted batch and location. Missing/cross-location targets fail. T
 constraints first, with location, group (default empty), numeric order (default 0), then ID as deterministic ties.
 Text ties use Unicode scalar order in both implementations. Cycles fail with `OrderingCycle` and sorted blocked
 IDs. Validation has no persistence side effects; the host's user overlay takes precedence over suggestions.
+
+### Host-rendered inspector views (M6, experimental)
+
+`contributes.views` accepts up to 32 views. Each has a namespaced `id`, `title` (1–256
+characters), `text` (up to 4096), optional `toolbar: [{command}]` (up to 16 same-package
+command references), and up to 24 `controls`. Every control has `kind` and an accessible `label`:
+
+- `list`: `items` contains up to 100 text strings.
+- `tree`: up to 100 `items` per level, each `{label, children?: [...]}`. The shared data
+  depth/node/byte bounds apply to the whole package. Arrow keys expand/collapse/navigate.
+- `table`: 1–16 text `columns` and up to 100 text-array `rows` (at most 16 cells each).
+  Missing cells render empty; cells beyond the declared columns are not rendered.
+- `tabs`: 1–16 `items: [{label, text}]`; host-owned selection and Arrow/Home/End navigation.
+- `progress`: integer `value` from 0 through 100.
+
+All labels/content are plain text, not Markdown/HTML or callbacks. The shared schema
+validates these definitions in both TypeScript and Rust. An `openView` action names an
+owned declared view. The toolbar captures project/task context on mount, rechecks command
+conditions/ownership on invocation, and disposes listeners/transients on view/context
+switch, hide, close or disable. It never owns project tasks, file sessions or PTYs.
+
+The public catalog location is `panda.inspector.views`; contributed item IDs are the view
+IDs themselves. Existing global/project visibility and same-owner order overlays apply.
+Built-in IDs/defaults remain stable. Saved valid-but-unavailable extension IDs stay dormant;
+Changes is the deterministic fallback. Re-enable/reinstall restores selection unless the
+user explicitly selected another tab in the meantime. Saved open intent and layout overlay
+remain separate. This slice adds no HTML views, arbitrary windows, cross-container moves,
+replacement contracts or polling API. Native/platform UI qualification remains experimental.
+The installable fixture is `tests/fixtures/extensions/data-panel/extension.json`.
 
 ### Nested menus (M3, experimental)
 

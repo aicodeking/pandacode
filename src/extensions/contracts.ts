@@ -13,7 +13,7 @@ export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits']
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
 const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras'];
 const capabilities = ['ui.contribute', 'ui.customize', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read'];
-const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions'];
+const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
   detail: ContractError;
@@ -223,6 +223,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       const action = command.action as ObjectValue;
       if (action.kind === 'openView') reference('views', action.view, 'commands');
       if (action.kind === 'showDialog') dialogFields(action.dialog as ObjectValue, `${path}/contributes/commands`);
+    }
+    for (const view of (contributions.views ?? []) as ObjectValue[]) {
+      for (const item of (view.toolbar ?? []) as ObjectValue[]) reference('commands', item.command, 'views');
     }
     for (const page of (contributions.settings ?? []) as ObjectValue[]) {
       dialogFields(page, `${path}/contributes/settings`);

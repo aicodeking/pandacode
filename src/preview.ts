@@ -649,6 +649,10 @@ if (new URLSearchParams(location.search).has('extension-storage')) {
 (window as any).__previewDisableExtension = async (id: string) => {
   await (await import('./extensions/manager')).enableExtension(id, false);
 };
+if (new URLSearchParams(location.search).has('data-panel')) {
+  (window as any).__previewEnableExtension = async (id: string) => (await import('./extensions/manager')).enableExtension(id, true);
+  (window as any).__previewRefreshExtensions = async () => (await import('./extensions/manager')).loadExtensions();
+}
 (window as any).__previewExtensionDialogTransport = async () => {
   const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
   (window as any).__extensionDialogTransport = transport;

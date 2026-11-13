@@ -267,6 +267,9 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
             if command["action"]["kind"] == "openView" { reference(contributions, "views", &command["action"]["view"], &format!("{path}/contributes/commands"))?; }
             if command["action"]["kind"] == "showDialog" { dialog_fields(&command["action"]["dialog"], &format!("{path}/contributes/commands"))?; }
         }
+        for view in items(contributions, "views") {
+            for item in items(view, "toolbar") { reference(contributions, "commands", &item["command"], &format!("{path}/contributes/views"))?; }
+        }
         for page in items(contributions, "settings") {
             dialog_fields(page, &format!("{path}/contributes/settings"))?;
             if items(page, "fields").iter().any(|field| field["async"] == true) { return Err(fail("UnsupportedContribution", &format!("{path}/contributes/settings"), vec![text(page, "id").to_owned()])); }
@@ -334,7 +337,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" { manifests(value, &mut diagnostics)? }
-            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }

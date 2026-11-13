@@ -70,6 +70,13 @@ jobs:
         env: { PW_PORT: '1438', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-storage.spec.ts --workers=1
 
+      - name: Dynamic inspector views (Chromium)
+        env: { PW_PORT: '1439', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-views.spec.ts --workers=1
+      - name: Dynamic inspector views (WebKit)
+        env: { PW_PORT: '1440', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-views.spec.ts --workers=1
+
   rust:
     name: Rust check and tests (Linux)
     runs-on: ubuntu-22.04

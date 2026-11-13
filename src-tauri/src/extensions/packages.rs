@@ -130,7 +130,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
     }
     let manifest = checked["value"]["packages"][0].clone();
     let contributions = &manifest["contributes"];
-    if contributions["views"].as_array().is_some_and(|a| !a.is_empty()) || contributions["commands"].as_array().into_iter().flatten().any(|c| !["showMessage", "showDialog", "showProjectContext", "runCommand"].contains(&c["action"]["kind"].as_str().unwrap_or(""))) { return Err("Unsupported command or view.".into()); }
+    if contributions["commands"].as_array().into_iter().flatten().any(|c| !["showMessage", "showDialog", "showProjectContext", "runCommand", "openView"].contains(&c["action"]["kind"].as_str().unwrap_or(""))) { return Err("Unsupported command or view.".into()); }
     let mut allowed = BTreeSet::from(["extension.json".to_string()]); let mut icons = BTreeMap::new();
     let executable = if manifest.get("runtime").is_some() {
         let (name, source) = files.get("main.cjs").ok_or("Missing executable entrypoint.")?;
@@ -400,6 +400,31 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     pub(super) fn sample() -> Vec<u8> { archive(&[("extension.json", MANIFEST.as_bytes()), ("assets/info.svg", SVG.as_bytes())]) }
+    #[test]
+    fn data_panel_views_install_restart_disable_and_reject_malformed_controls_atomically() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/data-panel/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes())])).unwrap();
+        packages.enable("sample.data-panel", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert!(snapshot.packages[0].enabled);
+        assert_eq!(snapshot.packages[0].manifest["contributes"]["views"][0]["controls"].as_array().unwrap().len(), 5);
+        packages.enable("sample.data-panel", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        for mutation in ["progress", "toolbar", "namespace", "html"] {
+            let mut invalid: Value = serde_json::from_str(manifest).unwrap();
+            match mutation {
+                "progress" => invalid["contributes"]["views"][0]["controls"][4]["value"] = json!(101),
+                "toolbar" => invalid["contributes"]["views"][0]["toolbar"][0]["command"] = json!("other.package/command"),
+                "namespace" => invalid["contributes"]["views"][0]["id"] = json!("panda.core/panel"),
+                _ => invalid["contributes"]["views"][0]["controls"][0] = json!({"kind":"html", "label":"Unsafe", "html":"<script>bad()</script>"}),
+            }
+            assert!(validate(&archive(&[("extension.json", &serde_json::to_vec(&invalid).unwrap())])).is_err(), "{mutation}");
+        }
+        assert_eq!(packages.snapshot().packages.len(), 1);
+        assert!(!packages.snapshot().packages[0].enabled);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
     pub(super) const EXECUTABLE_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/project-summary/extension.json");
     pub(super) const EXECUTABLE_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/project-summary/main.cjs");
     pub(super) fn executable(source: &str) -> Vec<u8> { archive(&[("extension.json", EXECUTABLE_MANIFEST.as_bytes()), ("main.cjs", source.as_bytes())]) }

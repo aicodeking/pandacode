@@ -1,5 +1,7 @@
 /** Presentation preferences only. Separate records isolate corruption and scoped resets from core data. */
 import { actionLocations, reorder, type Placement } from './ordering.ts';
+import { isExtensionInspectorView } from '../inspector-tabs.ts';
+const layoutLocations = [...actionLocations, 'panda.inspector.views'];
 export const LAYOUT_KEY = 'pandacode.extensions.layout.v1';
 export const SIDEBAR = 'panda.sidebar';
 type Overlay = { schemaVersion: 1; visibility: Record<string, boolean>; extensionLayoutsEnabled: boolean; orders: Record<string, string[]>; selected: Record<string, string> };
@@ -19,7 +21,7 @@ export function createLayoutStore(storage: Storage) {
       const value = JSON.parse(raw);
       if (!value || value.schemaVersion !== 1 || typeof value.extensionLayoutsEnabled !== 'boolean' || !value.visibility || typeof value.visibility !== 'object' || Array.isArray(value.visibility) || Object.keys(value.visibility).length > 2000 || Object.entries(value.visibility).some(([id, visible]) => !validId(id) || typeof visible !== 'boolean')) throw new Error('Invalid overlay');
       const orders = value.orders ?? {}, selected = value.selected ?? {};
-      for (const record of [orders, selected]) if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).some(location => !actionLocations.includes(location))) throw new Error('Invalid layout location');
+      for (const record of [orders, selected]) if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).some(location => !layoutLocations.includes(location))) throw new Error('Invalid layout location');
       if (Object.values(orders).some(ids => !Array.isArray(ids) || ids.length > 2000 || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !validId(id))) || Object.values(selected).some(id => typeof id !== 'string' || !validId(id))) throw new Error('Invalid ordering');
       const result: Overlay = { schemaVersion: 1, visibility: { ...value.visibility }, extensionLayoutsEnabled: value.extensionLayoutsEnabled, orders, selected };
       cache.set(name, result); return result;
@@ -42,7 +44,7 @@ export function createLayoutStore(storage: Storage) {
       return result;
     },
     move(location: string, ids: readonly string[], operation: Placement, projectId?: string) {
-      if (!actionLocations.includes(location) || ids.some(id => !validId(id))) throw new Error('Unsupported placement; inspector and general views require a state contract');
+      if (!layoutLocations.includes(location) || ids.some(id => !validId(id) || location === 'panda.inspector.views' && !isExtensionInspectorView(id))) throw new Error('Unsupported placement; only compatible controls or extension inspector tabs can reorder');
       const current = read(projectId), ordered = reorder(ids, operation);
       // Keep missing extension IDs dormant, including across edits while disabled.
       let index = 0;

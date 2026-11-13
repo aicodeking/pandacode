@@ -65,7 +65,7 @@ impl ContextBroker {
         let invocation = broker.handles.get(handle).filter(|invocation| invocation.expires > Instant::now()).ok_or("StaleContext")?;
         let manifest = owner(snapshot, &invocation.id, &invocation.version, &invocation.context)?;
         let contributes = &manifest["contributes"];
-        let command_id = if matches!(invocation.context["surfaceId"].as_str(), Some("panda.commands" | "panda.shortcuts")) { json!(invocation.id) } else {
+        let command_id = if matches!(invocation.context["surfaceId"].as_str(), Some("panda.commands" | "panda.shortcuts")) || view_command(contributes, &invocation.id, &invocation.context) { json!(invocation.id) } else {
             contributes["menus"].as_array().into_iter().flatten().find_map(|menu| {
                 if menu["location"] != invocation.context["surfaceId"] { return None; }
                 if let Some(items) = menu["items"].as_array() { leaf(items, &invocation.id, &invocation.context).map(|item| item["command"].clone()) }
@@ -126,6 +126,9 @@ fn leaf<'a>(items: &'a [Value], id: &str, context: &Value) -> Option<&'a Value> 
     }
     None
 }
+fn view_command(contributes: &Value, id: &str, context: &Value) -> bool {
+    contributes["views"].as_array().into_iter().flatten().any(|view| view["id"] == context["surfaceId"] && view["toolbar"].as_array().into_iter().flatten().any(|item| item["command"] == id))
+}
 /// Declarative authentication: identity comes from the installed command, not JS fields.
 fn owner(snapshot: &Snapshot, id: &str, version: &str, context: &Value) -> Reply {
     if snapshot.safe_mode || context["windowId"] != "main" || id.len() > 160 || version.len() > 32 { return Err("PermissionDenied"); }
@@ -135,7 +138,7 @@ fn owner(snapshot: &Snapshot, id: &str, version: &str, context: &Value) -> Reply
     for manifest in &enabled {
         if manifest["version"] != version { continue; }
         let contributes = &manifest["contributes"];
-        let command_id = if matches!(context["surfaceId"].as_str(), Some("panda.commands" | "panda.shortcuts")) { Some(json!(id)) } else {
+        let command_id = if matches!(context["surfaceId"].as_str(), Some("panda.commands" | "panda.shortcuts")) || view_command(contributes, id, context) { Some(json!(id)) } else {
             contributes["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == context["surfaceId"] && allowed(menu, context) && !matches!(menu["presentation"].as_str(), Some("status" | "badge"))).find_map(|menu| {
                 if let Some(items) = menu["items"].as_array() { leaf(items, id, context).map(|item| item["command"].clone()) }
                 else { (menu["id"] == id).then(|| menu["command"].clone()) }
@@ -390,6 +393,27 @@ async fn bounded_reply<E>(duration: Duration, work: impl std::future::Future<Out
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn view_toolbar_capture_and_runtime_binding_require_declared_owner_version_command_and_window() {
+        let mut manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/project-summary/extension.json")).unwrap();
+        let command = manifest["contributes"]["commands"][0]["id"].as_str().unwrap().to_owned();
+        manifest["contributes"]["views"] = json!([{"id":"sample.project-summary/panel","title":"Summary","text":"","toolbar":[{"command":command}]}]);
+        let mut snapshot = super::super::packages::context_test_snapshot(manifest);
+        let context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"sample.project-summary/panel","revision":1,"projectId":"A"});
+        assert!(owner(&snapshot, &command, "1.0.0", &context).is_ok());
+        assert!(owner(&snapshot, &command, "9.0.0", &context).is_err());
+        for (key, forged) in [("windowId", "tray"), ("surfaceId", "sample.project-summary/missing")] {
+            let mut invalid = context.clone(); invalid[key] = json!(forged);
+            assert!(owner(&snapshot, &command, "1.0.0", &invalid).is_err());
+        }
+        assert!(owner(&snapshot, "other.extension/command", "1.0.0", &context).is_err());
+        let broker = ContextBroker::default();
+        broker.broker.lock().unwrap().handles.insert("view-handle".into(), Invocation { id: command.clone(), version:"1.0.0".into(), owner:"sample.project-summary".into(), context:context.clone(), expires:Instant::now() + LIFETIME });
+        assert_eq!(broker.runtime_binding(&snapshot, "view-handle").unwrap().2["commandId"], command);
+        snapshot.packages[0].enabled = false;
+        assert!(broker.runtime_binding(&snapshot, "view-handle").is_err());
+        assert!(owner(&snapshot, &command, "1.0.0", &context).is_err());
+    }
     fn fixture() -> (Broker, Snapshot, Store) {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         store.db.execute("INSERT INTO projects(id,name,path) VALUES ('A','Alpha','/private/credential-root'),('B','Beta','/private/other')", []).unwrap();

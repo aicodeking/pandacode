@@ -11,6 +11,7 @@ import { openExtensionDialog } from './dialogs';
 import { openProjectContext } from './context-inspector';
 import { openExecutableCommand } from './executable';
 import type { ExtensionAction } from './manager';
+import { requestInspectorView } from './view-navigation';
 type WindowBinding = { windowId: string; invoke(id: string, version: string): Promise<ExtensionAction | undefined> };
 
 /** Append only owned nodes; never remount or delegate legacy controls. Native buttons supply
@@ -83,7 +84,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
         const identity = extensionIdentity(entry.owner.extensionId);
         const stillOwned = () => extensionIdentity(entry.owner.extensionId) === identity;
         if (menu.location !== location) continue;
-        if (!command || !['showMessage', 'showDialog', 'showProjectContext', 'runCommand'].includes(command.action.kind)) continue;
+        if (!command || !['showMessage', 'showDialog', 'showProjectContext', 'runCommand', 'openView'].includes(command.action.kind)) continue;
         const passive = menu.presentation === 'status' || menu.presentation === 'badge';
         const button = passive ? document.createElement('span') : document.createElement('button');
         if (button instanceof HTMLButtonElement) button.type = 'button';
@@ -123,6 +124,7 @@ export function mountExtensionActions(host: HTMLElement, location: ActionLocatio
             catch (error) { if (activation === extensionGeneration() && button.isConnected) showMessage(String(error)); return; }
             if (activation !== extensionGeneration() || !button.isConnected) return;
             if (action?.kind === 'showMessage') showMessage(action.message);
+            if (action?.kind === 'openView') { closeMenu?.(); requestInspectorView(action.view); }
             if (action?.kind === 'runCommand') {
               closeMenu?.(); closeContext?.(); closeContext = openExecutableCommand(id, entry.owner.version, captured, button, showMessage);
               contextIdentity = stillOwned;

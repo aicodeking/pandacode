@@ -5,6 +5,8 @@ import { createUiCatalog, createCoreCommands, HEADER, FOOTER, INSPECTOR } from '
 import { validateContract } from '../src/extensions/contracts.ts';
 import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS } from '../src/extensions/surfaces.ts';
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from '../src/extensions/window-surfaces.ts';
+import { INSPECTOR_VIEW_LOCATION } from '../src/extensions/views-state.ts';
+import { INSPECTOR_VIEWS } from '../src/inspector-tabs.ts';
 const sample = JSON.parse(readFileSync(new URL('./fixtures/extensions/sample-project-helper/extension.json', import.meta.url), 'utf8'));
 const empty = () => ({ safeMode: false, packages: [], diagnostics: [] });
 const installed = () => ({ safeMode: false, packages: [{ manifest: structuredClone(sample), enabled: true, icons: {} }], diagnostics: [] });
@@ -19,9 +21,9 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, FOOTER, HEADER, ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
   const items = ui.listItems().items;
-  const expected = 9 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6;
+  const expected = 9 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
   assert.equal(items.length, expected); assert.equal(new Set(items.map(item => item.id)).size, expected);
   assert.deepEqual(items.filter(item => item.owner === sample.id).map(item => item.id), ['sample.project-helper/header', 'sample.project-helper/sidebar']);
   for (const item of [...items, ...surfaces]) {

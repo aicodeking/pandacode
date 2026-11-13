@@ -3,8 +3,9 @@
 The action adapters add host-rendered `showMessage` and `showDialog` buttons/menus beside the existing
 workspace header, sidebar footer and open inspector strip in the main window. [Declarative dialogs](dialogs.md)
 support text/switch/select fields and asynchronous searchable single/multi-select quick picks. Existing buttons,
-their commands and native drag regions are not replaced. Custom views, executable JavaScript and install hooks
-are not supported by this slice.
+their commands and native drag regions are not replaced. Host-rendered inspector views are described in
+[the view contract](contracts.md#host-rendered-inspector-views-m6-experimental). Executable packages have a
+separate [trusted runtime](runtime.md) and consent flow; install hooks remain unsupported.
 The data vocabulary is described in [contracts.md](contracts.md); a schema-valid later capability is not
 necessarily implemented by this adapter.
 
@@ -46,6 +47,14 @@ Duplicate installation is rejected; replacing/updating packages is not implement
 does not create an active or partial package. No core database migration occurs.
 
 ## Recovery
+
+For a complete data-panel example, ZIP only `extension.json` from
+`tests/fixtures/extensions/data-panel/` at the archive root. Install and enable `sample.data-panel`,
+then activate **Open data panel** or choose **Data panel** from the inspector's **+** menu. It includes
+a declared command toolbar and list, tree, table, tabs and progress controls. Settings → Extensions →
+Surface explorer exposes its tab visibility/order preferences. Disable or missing installation retains
+saved tabs/selection, displays Changes, and restores the saved extension selection on re-enable unless
+the user selected another tab. Closing/hiding a view disposes its presentation, not core work.
 
 Launch PandaCode with `--safe-mode` to bypass extension storage enumeration and package loading before
 activation. The built-in Extensions page also has **Disable extensions for this launch**, which removes

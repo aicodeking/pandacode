@@ -33,3 +33,14 @@
 .extension-project-read-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .extension-context-inspector { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; border-color: var(--border); } }
 @media (forced-colors: active) { .extension-context-inspector, .extension-context-output { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; } }
+.extension-inspector-view { padding: 12px; overflow-wrap: anywhere; }
+.extension-view-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+.extension-view-control { margin-block: 12px; padding: 8px; border: 1px solid var(--ds-border-inner); border-radius: var(--ds-radius-inner); }
+.extension-view-control h3 { font-size: var(--ds-text-meta); margin-block: 0 8px; }
+.extension-view-control table { width: 100%; border-collapse: collapse; }
+.extension-view-control :is(th, td) { text-align: start; padding: 4px; border-bottom: 1px solid var(--ds-border); }
+.extension-view-control progress { accent-color: var(--accent); max-width: 100%; }
+.extension-view-control [role="tablist"] { display: flex; flex-wrap: wrap; gap: 4px; }
+.extension-view-control [role="tab"][aria-selected="true"] { background: var(--ds-fill); }
+.extension-view-control [role="tree"] { list-style: none; padding-inline-start: 0; }
+.extension-view-control [role="group"] { list-style: none; padding-inline-start: 16px; }

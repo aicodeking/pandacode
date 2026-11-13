@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.data-panel",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "commands": [
+      { "id": "sample.data-panel/open", "title": "Open data panel", "action": { "kind": "openView", "view": "sample.data-panel/overview" } },
+      { "id": "sample.data-panel/refresh", "title": "Refresh panel", "action": { "kind": "showMessage", "message": "Data panel refreshed" } },
+      { "id": "sample.data-panel/options", "title": "Panel options", "action": { "kind": "showDialog", "dialog": { "title": "Panel options", "fields": [{ "id": "name", "kind": "text", "label": "Name" }], "successMessage": "Panel options saved" } } }
+    ],
+    "menus": [{ "id": "sample.data-panel/header", "location": "panda.workspace.header.actions", "command": "sample.data-panel/open", "presentation": "button" }],
+    "views": [
+      {
+        "id": "sample.data-panel/overview", "title": "Data panel", "text": "Host-rendered project overview. No package HTML is executed.",
+        "toolbar": [{ "command": "sample.data-panel/refresh" }, { "command": "sample.data-panel/options" }],
+        "controls": [
+          { "kind": "list", "label": "Reports", "items": ["Build summary", "Test summary"] },
+          { "kind": "tree", "label": "Report files", "items": [{ "label": "Reports folder", "children": [{ "label": "summary.json" }] }] },
+          { "kind": "table", "label": "Results", "columns": ["Check", "Status"], "rows": [["Types", "Passed"], ["Tests", "Passed"]] },
+          { "kind": "tabs", "label": "Report details", "items": [{ "label": "Summary", "text": "Two checks passed." }, { "label": "Details", "text": "Detailed report content." }] },
+          { "kind": "progress", "label": "Report completion", "value": 75 }
+        ]
+      },
+      { "id": "sample.data-panel/notes", "title": "Panel notes", "text": "A second view demonstrates stable ordering." }
+    ]
+  }
+}
