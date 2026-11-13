@@ -17,6 +17,7 @@ export function createUpdatePreview() {
     if (value.removing) { packages.splice(index, 1); entries.delete(id); }
     else if (value.approved && value.staged) {
       value.previous = structuredClone(packages[index]); delete value.previous.update;
+      value.staged.enabled = packages[index].enabled;
       packages[index] = value.staged; value.staged = undefined; value.approved = false;
     }
   };

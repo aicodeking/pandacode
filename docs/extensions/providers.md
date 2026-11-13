@@ -320,8 +320,8 @@ original routes. Disabling an unrelated extension cannot remove a built-in
 registration. Rollback can select the unchanged core `Protocol` construction and
 native discovery/catalog entrypoints. Dynamic records remain readable and inactive
 after disable; their identity migration is not downgraded by rollback. Managed
-package runs are cancelled on disable/revocation; reviewed update/version lifecycle
-remains M9 work.
+package runs are cancelled on disable/revocation; reviewed updates and uninstall
+instead drain pinned provider runs as described in [Local package lifecycle](lifecycle.md).
 
 ## Remote and headless placement (experimental API 1)
 

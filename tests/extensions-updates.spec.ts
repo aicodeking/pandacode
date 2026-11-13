@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
-for (const operation of ['update', 'uninstall']) test(`extensions updates: active provider stays pinned through ${operation} until explicit cancellation`, async ({ page }) => {
+for (const operation of ['update', 'uninstall', 'disable']) test(`extensions updates: active provider stays pinned through ${operation} until explicit cancellation`, async ({ page }) => {
   const manifest = JSON.parse(readFileSync('tests/fixtures/extensions/fake-harness/extension.json', 'utf8'));
   await page.addInitScript(manifest => { localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: {}, executable: { digest: 'synthetic-recording', trusted: true } }])); }, manifest);
   await page.goto('/?extension-harness'); await expect(page.locator('#prompt')).toBeEnabled();
@@ -21,12 +21,16 @@ for (const operation of ['update', 'uninstall']) test(`extensions updates: activ
   }
   await expect(page.getByRole('status').filter({ hasText: 'Pinned provider runs: 1' })).toBeVisible();
   const before = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.preview.extensions.v1')!)); expect(before[0].manifest.version).toBe('1.0.0');
+  if (operation === 'disable') await page.getByRole('button', { name: `Disable ${manifest.id}`, exact: true }).click();
   await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Approval needed', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Stop task', exact: true }).click();
+  if (operation !== 'disable') {
+    await expect(page.getByRole('region', { name: 'Approval needed', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Stop task', exact: true }).click();
+  }
   await expect.poll(() => page.evaluate(() => (window as any).__extensionHarness.task().status)).toBe('idle');
   const after = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.preview.extensions.v1')!));
   if (operation === 'uninstall') expect(after).toEqual([]); else expect(after[0].manifest.version).toBe('1.1.0');
+  if (operation === 'disable') expect(after[0].enabled).toBe(false);
   await expect(page.locator('#transcript')).toContainText('Keep provider admission');
 });
 
