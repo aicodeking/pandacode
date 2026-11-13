@@ -59,8 +59,9 @@ Older tasks retain their original coding/MCP tools; start a new Codex task to us
 newly added PandaCode app tools. Existing Codex team leads receive the expanded
 catalog through the team's normal context handoff, preserving bounded text history.
 Claude, GLM, Kimi, OpenCode, and other supported local harnesses receive these
-host tools on each run. ACP harnesses must advertise HTTP MCP support. ZCode
-does not yet bridge host tools, and cloud runs do not receive local host tools.
+host tools on each run. ACP harnesses must advertise HTTP MCP support. ZCode bridges them through
+`session/create` `mcpServers` (and `mcp/list` connect on resume), and cloud runs do
+not receive local host tools.
 Provider-owned tools and integrations continue through their own protocols and
 configuration.
 

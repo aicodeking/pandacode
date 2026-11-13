@@ -3984,7 +3984,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "alibaba" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "cursor",
+            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "cursor" | "zcode",
             Some(host),
         ) => (
             None,
@@ -3996,9 +3996,6 @@ async fn run_process_with_tools(
             )
             .await?,
         ),
-        // ZCode bridging does not pass `mcpServers` in session/create yet, so a
-        // started server would sit unconsumed; drop host tools until it does.
-        ("zcode", Some(_)) => (None, None),
         (_, None) => (None, None),
         _ => return Err("Host tools are unavailable for this provider".into()),
     };
@@ -4055,7 +4052,15 @@ async fn run_process_with_tools(
     protocol.image_blocks = image_blocks;
     protocol.host = host;
     // Cline already has the server from its settings file, not from `session/new`.
-    protocol.mcp_server = mcp.as_ref().filter(|_| cline_settings.is_none()).map(mcp_host::Server::kimi_config);
+    // ZCode's entry rides `session/create` instead, and names session isolation
+    // plus always-load so the tools reach the model.
+    protocol.mcp_server = mcp.as_ref().filter(|_| cline_settings.is_none()).map(|server| {
+        if protocol.config.provider == "zcode" {
+            server.zcode_config()
+        } else {
+            server.kimi_config()
+        }
+    });
     protocol.mcp_required = mcp.as_ref().is_some_and(mcp_host::Server::required);
     protocol.codex_mcp_servers = mcp
         .as_ref()

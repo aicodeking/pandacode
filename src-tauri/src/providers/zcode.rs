@@ -17,6 +17,9 @@ const ID_THOUGHT: u64 = 3;
 const ID_SUBSCRIBE: u64 = 4;
 const ID_MODE: u64 = 5;
 const ID_STOP: u64 = 1 << 40;
+/// `mcp/list` connect for a resumed session's fresh per-run bridge. High, like
+/// stop, so it can never collide with the growing prompt ids.
+const ID_MCP: u64 = 1 << 41;
 const FIRST_PROMPT_ID: u64 = 6;
 
 pub(super) const SIGN_IN: &str =
@@ -324,12 +327,18 @@ impl Protocol {
     }
 
     fn zcode_create(&self) -> Value {
-        json!({"id": ID_CREATE, "method": "session/create", "params": {
+        let mut request = json!({"id": ID_CREATE, "method": "session/create", "params": {
             "workspace": workspace_of(&self.config.cwd),
             "mode": mode(&self.config.mode),
             "persistence": "deferred",
             "titleGenerationEnabled": false,
-        }})
+        }});
+        // A fresh session takes its tools server inline; a resumed one cannot
+        // (its schema has no mcpServers) and gets `mcp/list` instead.
+        if let Some(server) = &self.mcp_server {
+            request["params"]["mcpServers"] = json!([server]);
+        }
+        request
     }
 
     pub(super) fn zcode(&mut self, value: Value) -> Result<Step, String> {
@@ -339,6 +348,12 @@ impl Protocol {
             return Ok(step);
         }
         if let Some(error) = value.get("error") {
+            // The bridge check reads the error itself: a CLI without `mcp/list`
+            // only loses optional tools, or fails clearly when they are required.
+            if value["id"] == ID_MCP {
+                self.zcode_bridge(&value)?;
+                return Ok(step);
+            }
             // Deferred persistence promotes a session on its first send, so a
             // start that failed before it left nothing on disk and this
             // per-run server cannot resume it. Start fresh instead of failing
@@ -400,6 +415,7 @@ impl Protocol {
                     return Err("ZCode did not apply the selected thinking level".into());
                 }
             }
+            Some(ID_MCP) => self.zcode_bridge(&value)?,
             Some(ID_SUBSCRIBE) => self.zcode_prompt(self.config.prompt.clone(), &mut step),
             _ => {}
         }
@@ -615,10 +631,50 @@ impl Protocol {
             }));
             self.zcode.requested_thought = Some(effort);
         }
+        // The resumed session kept the servers it was created with, and that
+        // run's bridge is gone; `session/resume` takes no mcpServers, so the
+        // fresh per-run server rides `mcp/list` in connect mode.
+        if self.config.resume_id.is_some() {
+            if let Some(server) = &self.mcp_server {
+                step.write.push(json!({
+                    "id": ID_MCP, "method": "mcp/list",
+                    "params": {"workspace": workspace_of(&self.config.cwd),
+                               "mode": "connect", "mcpServers": [server]},
+                }));
+            }
+        }
         step.write.push(json!({
             "id": ID_SUBSCRIBE, "method": "session/subscribe",
             "params": {"sessionId": self.remote_id, "deliveryKind": "desktop-continuous"},
         }));
+        Ok(())
+    }
+
+    /// Reads the `mcp/list` connect answer for the bridge a resumed run just
+    /// pushed. A server that did not come up leaves the session without host
+    /// tools: when they are required (a team worker) the run fails fast instead
+    /// of dispatching into a session that cannot answer; an optional bridge
+    /// (title suggestions) drops out quietly, as the ACP path does.
+    fn zcode_bridge(&mut self, value: &Value) -> Result<(), String> {
+        let name = self.mcp_server.as_ref().map(|server| field(server, "name")).unwrap_or_default();
+        let status = field(&value["result"]["statuses"][name], "status");
+        let connected = value.get("error").is_none()
+            && (status == "connected" || status == "connecting");
+        if connected {
+            return Ok(());
+        }
+        let detail = if let Some(error) = value.get("error") {
+            short(field(error, "message"))
+        } else if !status.is_empty() {
+            format!("the PandaCode tools server reported {status:?}")
+        } else {
+            "the PandaCode tools server did not report a status".into()
+        };
+        if self.mcp_required {
+            return Err(format!("ZCode cannot load the PandaCode tools this task needs: {detail}"));
+        }
+        self.mcp_server = None;
+        self.mcp_tool_names.clear();
         Ok(())
     }
 
@@ -760,6 +816,86 @@ mod tests {
         assert_eq!(prompt.write[0]["method"], "session/send");
         assert_eq!(prompt.write[0]["params"]["inputId"], "pandacode-1");
         assert_eq!(p.phase, 1);
+    }
+
+    /// The bridge entry `mcp_host::zcode_config` produces, as recorded from the
+    /// live CLI handshake: session isolation and always-load are what put the
+    /// tools in the model's list.
+    fn bridge() -> Value {
+        json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:9/mcp",
+            "headers":[{"name":"Authorization","value":"Bearer secret"}],
+            "isolation":"session","alwaysLoad":true})
+    }
+
+    fn bridged(resume: bool) -> Protocol {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        if resume {
+            config.resume_id = Some("sess_saved".into());
+        }
+        let mut p = Protocol::new(config);
+        p.mcp_server = Some(bridge());
+        p
+    }
+
+    #[test]
+    fn a_fresh_session_carries_the_tools_server_inline() {
+        let mut p = bridged(false);
+        let request = p.initial();
+        assert_eq!(request["method"], "session/create");
+        assert_eq!(request["params"]["mcpServers"][0]["name"], "pandacode_architect");
+        assert_eq!(request["params"]["mcpServers"][0]["isolation"], "session");
+        assert_eq!(request["params"]["mcpServers"][0]["alwaysLoad"], true);
+        // A run without host tools keeps the field off the wire.
+        let mut plain = Protocol::new(super::super::tests::config("zcode"));
+        plain.config.cwd = PathBuf::from("/tmp");
+        assert!(plain.initial()["params"].get("mcpServers").is_none());
+    }
+
+    #[test]
+    fn a_resumed_session_reconnects_its_per_run_tools_server() {
+        let mut p = bridged(true);
+        assert_eq!(p.initial()["method"], "session/resume");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect = step
+            .write
+            .iter()
+            .find(|write| write["method"] == "mcp/list")
+            .expect("the fresh bridge rides mcp/list after a resume");
+        assert_eq!(connect["params"]["mode"], "connect");
+        assert_eq!(connect["params"]["mcpServers"][0]["name"], "pandacode_architect");
+        assert_eq!(connect["params"]["workspace"]["workspaceKey"], "/tmp");
+        assert!(step.write.iter().any(|write| write["method"] == "session/subscribe"));
+        let step = p
+            .receive(json!({"id": ID_MCP, "result": {"statuses": {
+                "pandacode_architect": {"status": "connected", "toolCount": 2}}}}))
+            .unwrap();
+        assert!(step.write.is_empty());
+        assert!(p.mcp_server.is_some(), "a connected bridge stays for the run");
+    }
+
+    #[test]
+    fn a_failed_reconnect_fails_required_runs_and_drops_optional_tools() {
+        let failed = json!({"id": ID_MCP, "result": {"statuses": {
+            "pandacode_architect": {"status": "failed", "error": "dial failed"}}}});
+        let mut required = bridged(true);
+        required.mcp_required = true;
+        required.mcp_tool_names.insert("mcp__pandacode_architect__dispatch_worker".into());
+        required.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert!(required.receive(failed).is_err(), "a team worker cannot run without its tools");
+
+        // A CLI without `mcp/list` answers an error; an optional bridge (title
+        // suggestions) drops out quietly and the run carries on.
+        let mut optional = bridged(true);
+        optional.mcp_required = false;
+        optional.mcp_tool_names.insert("mcp__pandacode_architect__suggest_title".into());
+        optional.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let step = optional
+            .receive(json!({"id": ID_MCP, "error": {"code": -32601, "message": "Method not found"}}))
+            .unwrap();
+        assert!(step.write.is_empty());
+        assert!(optional.mcp_server.is_none());
+        assert!(optional.mcp_tool_names.is_empty());
     }
 
     #[test]
