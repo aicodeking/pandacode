@@ -159,3 +159,30 @@ test.describe('thread tiles', () => {
     expect(await page.evaluate(() => document.getAnimations().filter(animation => (animation.effect as KeyframeEffect | null)?.target?.closest?.('.thread-tile')).length)).toBe(0);
   });
 });
+
+
+test('closing tiles drops their pages and ignores their late history responses', async ({ page }) => {
+  await page.route('**/src/main.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: await response.text() + '\nwindow.__tilePages = tilePages;\n' });
+  });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = /case ["']get_messages["']:/;
+    expect(source).toMatch(marker);
+    await route.fulfill({ response, body: source.replace(marker, match => `${match}
+      if (args.sessionId === window.__holdTileHistory) await new Promise(resolve => { window.__releaseTileHistory = resolve; });
+    `) });
+  });
+  await open(page);
+  const first = (await current(page))!, other = (await threads(page)).find(id => id !== first)!;
+  await page.evaluate(id => { (window as any).__holdTileHistory = id; }, first);
+  await row(page, other).click({ modifiers: ['Meta'] });
+  await expect(page.locator('.thread-tile')).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseTileHistory)).toBe('function');
+  await tile(page, first).getByRole('button', { name: 'Close view' }).click();
+  await expect(page.locator('.thread-tile')).toHaveCount(0);
+  await page.evaluate(() => (window as any).__releaseTileHistory());
+  await expect.poll(() => page.evaluate(() => (window as any).__tilePages.size)).toBe(0);
+});

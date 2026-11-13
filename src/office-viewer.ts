@@ -44,16 +44,36 @@ async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =>
   viewer.dataset.kind = 'pdf';
   viewer.innerHTML = `<div class="office-bar">${doc.numPages.toLocaleString()} page${doc.numPages === 1 ? '' : 's'}${count < doc.numPages ? `<span>Showing the first ${count.toLocaleString()}.</span>` : ''}</div><div class="pdf-pages"></div>`;
   const pages = viewer.querySelector<HTMLElement>('.pdf-pages')!;
+  let disposed = false;
+  const renders = new Map<HTMLElement, { cancel(): void }>();
+  const release = (slot: HTMLElement) => {
+    renders.get(slot)?.cancel();
+    const canvas = slot.querySelector('canvas');
+    if (canvas) { canvas.width = canvas.height = 0; canvas.remove(); }
+  };
   // Pages draw as they come near the screen, so a long PDF opens as fast as a short one.
   const observer = new IntersectionObserver(entries => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       observer.unobserve(entry.target);
-      void drawPage(entry.target as HTMLElement).catch(() => entry.target.classList.add('failed'));
+      void drawPage(entry.target as HTMLElement).catch(error => {
+        if (!disposed && error?.name !== 'RenderingCancelledException') entry.target.classList.add('failed');
+      });
     }
   }, { root: viewer.closest('.file-view-body'), rootMargin: '600px 0px' });
+  // Keep a wider buffer than the draw margin so small scrolls do not repeatedly rasterize a page.
+  const retention = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) continue;
+      const slot = entry.target as HTMLElement;
+      release(slot);
+      retention.unobserve(slot);
+      observer.observe(slot);
+    }
+  }, { root: viewer.closest('.file-view-body'), rootMargin: '1800px 0px' });
   async function drawPage(slot: HTMLElement): Promise<void> {
     const page = await doc.getPage(Number(slot.dataset.page));
+    if (disposed || !slot.isConnected) { page.cleanup(); return; }
     const width = Math.min(pages.clientWidth - 32, 1100);
     const viewport = page.getViewport({ scale: width / page.getViewport({ scale: 1 }).width });
     // A page with an extreme shape would otherwise ask for an enormous canvas.
@@ -62,7 +82,11 @@ async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =>
     canvas.width = Math.floor(viewport.width * ratio); canvas.height = Math.floor(viewport.height * ratio);
     slot.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
     slot.replaceChildren(canvas);
-    await page.render({ canvas, viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] }).promise;
+    const render = page.render({ canvas, viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] });
+    renders.set(slot, render);
+    retention.observe(slot);
+    try { await render.promise; }
+    finally { if (renders.get(slot) === render) renders.delete(slot); page.cleanup(); }
   }
   for (let number = 1; number <= count; number++) {
     const slot = document.createElement('div');
@@ -71,7 +95,11 @@ async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =>
     slot.style.aspectRatio = `${first.width} / ${first.height}`;
     pages.append(slot); observer.observe(slot);
   }
-  return () => { observer.disconnect(); void task.destroy(); };
+  return () => {
+    disposed = true; observer.disconnect(); retention.disconnect();
+    for (const slot of pages.querySelectorAll<HTMLElement>('.pdf-page')) release(slot);
+    void task.destroy();
+  };
 }
 
 /** Wrapper look for docx-preview's pages; it lives in the shadow root with the document's own styles. */

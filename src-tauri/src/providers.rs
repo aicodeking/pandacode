@@ -23,7 +23,7 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms};
+pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, has_capacity as warm_has_capacity, prewarm as prewarm_agent, supported as warms};
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
@@ -752,52 +752,35 @@ pub(crate) fn run_provider(id: &str, args: &[&str], timeout: Duration) -> Option
 }
 
 fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = command
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    #[cfg(windows)]
-    let _job = windows_job::Job::attach(child.id());
-    // Drained on its own thread: a child writing past the OS pipe buffer while we poll
-    // must not block forever on the write (read only after exit would never drain it).
-    let mut piped = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        use std::io::Read as _;
-        let _ = piped.read_to_end(&mut bytes);
-        bytes
+    command.args(args);
+    let output = crate::workspace::run_process(command, "Provider CLI", 2 * 1024 * 1024, timeout).ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout.bytes).trim().to_owned())
+}
+
+fn probe_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
+}
+
+/// Resolve aliases before queuing work: GLM and MiMo commonly share Claude's CLI.
+fn probe_versions(paths: &[PathBuf], probe: impl Fn(&Path) -> Option<String> + Sync) -> HashMap<PathBuf, String> {
+    let paths: HashSet<_> = paths.iter().map(|path| probe_path(path)).collect();
+    let pending = Mutex::new(paths.into_iter());
+    let versions = Mutex::new(HashMap::new());
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| loop {
+                let Some(path) = pending.lock().unwrap().next() else { break };
+                let version = probe(&path).unwrap_or_default();
+                versions.lock().unwrap().insert(path, version);
+            });
+        }
     });
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    if !status.success() {
-        return None;
-    }
-    let mut bytes = reader.join().ok()?;
-    bytes.truncate(2 * 1024 * 1024);
-    Some(String::from_utf8_lossy(&bytes).trim().to_owned())
+    versions.into_inner().unwrap()
 }
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
-    PROVIDERS.into_iter()
+    let mut providers: Vec<_> = PROVIDERS.into_iter()
     .map(|(id, name)| {
         let path = executable(id);
         ProviderInfo {
@@ -807,7 +790,7 @@ pub fn discover() -> Vec<ProviderInfo> {
             version: if id == "antigravity" {
                 "ACP".into()
             } else {
-                path.as_deref().and_then(version).unwrap_or_default()
+                String::new()
             },
             path: path.map(|p| p.to_string_lossy().into_owned()),
             models: if id == "glm" {
@@ -824,7 +807,15 @@ pub fn discover() -> Vec<ProviderInfo> {
             },
         }
     })
-    .collect()
+    .collect();
+    let paths: Vec<_> = providers.iter().filter(|p| p.id != "antigravity").filter_map(|p| p.path.as_ref().map(PathBuf::from)).collect();
+    let versions = probe_versions(&paths, version);
+    for provider in &mut providers {
+        if provider.id != "antigravity" {
+            provider.version = provider.path.as_deref().and_then(|path| versions.get(&probe_path(Path::new(path)))).cloned().unwrap_or_default();
+        }
+    }
+    providers
 }
 
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
@@ -3942,6 +3933,73 @@ mod coalesce_tests {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn discovery_deduplicates_resolved_paths_and_bounds_parallel_probes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = std::env::temp_dir().join(format!("pandacode-probes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths: Vec<_> = (0..9).map(|i| dir.join(format!("cli-{i}"))).collect();
+        for path in &paths {
+            std::fs::write(path, "fixture").unwrap();
+        }
+        let alias = dir.join("alias");
+        std::os::unix::fs::symlink(&paths[0], &alias).unwrap();
+        paths.extend([alias, paths[0].clone()]);
+        let calls = AtomicUsize::new(0);
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let versions = super::probe_versions(&paths, |path| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let running = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(running, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(10));
+            active.fetch_sub(1, Ordering::SeqCst);
+            Some(path.file_name().unwrap().to_string_lossy().into_owned())
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 9);
+        assert_eq!(versions.len(), 9);
+        assert!((2..=4).contains(&peak.load(Ordering::SeqCst)));
+        assert_eq!(versions[&super::probe_path(&paths[0])], "cli-0");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_capture_drains_large_output_with_a_bounded_prefix() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "printf prefix; head -c 8388608 /dev/zero | tr '\\0' x"]);
+        let output = super::capture(command, &[], Duration::from_secs(5)).unwrap();
+        assert_eq!(output.len(), 2 * 1024 * 1024);
+        assert!(output.starts_with("prefix"));
+        assert!(output[6..].bytes().all(|b| b == b'x'));
+        assert!(super::capture(std::process::Command::new("/bin/false"), &[], Duration::from_secs(1)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_capture_timeout_reaps_descendants_holding_the_output_pipe() {
+        let pidfile = std::env::temp_dir().join(format!("pandacode-probe-pid-{}", uuid::Uuid::new_v4()));
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & echo $! > \"$1\"; wait", "fixture"]).arg(&pidfile);
+        let started = std::time::Instant::now();
+        assert!(super::capture(command, &[], Duration::from_millis(150)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the pipe's writer must be reaped too");
+        std::fs::remove_file(pidfile).unwrap();
+
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 &"]);
+        let started = std::time::Instant::now();
+        assert!(super::capture(command, &[], Duration::from_millis(150)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2), "an exited CLI cannot leave capture joining its reader forever");
+    }
+
     #[test]
     fn frame_buffer_shrinks_only_when_large_and_drained() {
         assert!(super::should_shrink(10, 2 * 1024 * 1024));

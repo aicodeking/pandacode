@@ -2665,7 +2665,9 @@ async fn launch_operation_admitted(
                 next.prompt.clear();
                 next.images.clear();
                 tauri::async_runtime::spawn(async move {
-                    let _ = providers::prewarm_agent(next, tools, approvals, launch).await;
+                    let _ = providers::prewarm_agent(next, tools, approvals, launch, || {
+                        agents.lock().is_ok_and(|agents| providers::warm_has_capacity(agents.len()))
+                    }).await;
                 });
             }
         }

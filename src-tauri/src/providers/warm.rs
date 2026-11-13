@@ -6,9 +6,14 @@ use super::*;
 use std::sync::LazyLock;
 
 /// A warm agent waits at most this long for its follow-up.
-const IDLE: Duration = Duration::from_secs(10 * 60);
+const IDLE: Duration = Duration::from_secs(90);
 /// Each one holds an idle CLI process, so only the most recent tasks keep one.
-const LIMIT: usize = 2;
+const LIMIT: usize = 1;
+static PREPARING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub fn has_capacity(running: usize) -> bool {
+    running < 2
+}
 
 pub(super) struct Spare {
     key: String,
@@ -125,16 +130,17 @@ pub fn discard(session_id: &str) {
 
 /// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
 /// placeholder server answers the agent's startup listing and is rebound on adoption.
-pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
-    let result = start(config, tools, approval_tools, launch).await;
+pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, can_start: impl Fn() -> bool) -> Result<(), String> {
+    let _preparing = PREPARING.lock().await;
+    let result = start(config, tools, approval_tools, launch, can_start).await;
     if let Err(error) = &result {
         eprintln!("Could not prepare a warm Claude agent: {error}");
     }
     result
 }
 
-async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
-    if !supported(&config) {
+async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, can_start: impl Fn() -> bool) -> Result<(), String> {
+    if !supported(&config) || !can_start() {
         return Ok(());
     }
     let connection = crate::connections::for_task(&config.session_id, &config.provider)
@@ -187,6 +193,11 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
+    if !can_start() || epoch(&config.session_id) != launch {
+        return Ok(());
+    }
+    // Retire the old spare before spawning, so replacement never doubles the idle CLIs.
+    make_room(&mut spares());
     let child = command.spawn().map_err(|e| format!("Could not start Claude Code: {e}"))?;
     let group = ProcessGroup::register(child.id());
     let born = std::time::Instant::now();
@@ -199,11 +210,6 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
             return Ok(());
         }
         spares.insert(session_id.clone(), Spare { key, child, group, server, born });
-        // Keep only the newest few; dropping a spare kills its process.
-        while spares.len() > LIMIT {
-            let Some(oldest) = spares.iter().min_by_key(|(_, spare)| spare.born).map(|(id, _)| id.clone()) else { break };
-            spares.remove(&oldest);
-        }
     }
     tokio::spawn(async move {
         tokio::time::sleep(IDLE).await;
@@ -215,6 +221,13 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     Ok(())
 }
 
+fn make_room(spares: &mut HashMap<String, Spare>) {
+    while spares.len() >= LIMIT {
+        let Some(oldest) = spares.iter().min_by_key(|(_, spare)| spare.born).map(|(id, _)| id.clone()) else { break };
+        spares.remove(&oldest);
+    }
+}
+
 #[cfg(test)]
 pub(super) fn waiting(session_id: &str) -> bool {
     spares().contains_key(session_id)
@@ -223,6 +236,32 @@ pub(super) fn waiting(session_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warm_policy_skips_busy_agents_and_expires_after_ninety_seconds() {
+        assert!(has_capacity(0));
+        assert!(has_capacity(1));
+        assert!(!has_capacity(2));
+        assert!(!has_capacity(20));
+        assert_eq!(LIMIT, 1);
+        assert_eq!(miss(true, "same", "same", Duration::from_secs(89)), None);
+        assert_eq!(miss(true, "same", "same", Duration::from_secs(90)).as_deref(), Some("it expired"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacing_a_warm_agent_retires_it_before_starting_another() {
+        let mut child = Command::new("sleep");
+        child.arg("30").kill_on_drop(true);
+        let mut spares = HashMap::from([("previous".into(), Spare {
+            key: "same".into(), child: child.spawn().unwrap(), group: ProcessGroup::register(None),
+            server: None, born: std::time::Instant::now(),
+        })]);
+        make_room(&mut spares);
+        assert!(spares.is_empty(), "no old CLI survives to overlap its replacement");
+        let config = crate::providers::tests::config("claude");
+        prewarm(config, vec![], HashSet::new(), 0, || has_capacity(2)).await.unwrap();
+    }
 
     #[test]
     fn skill_manager_disabled_skills_invalidate_a_warm_launch() {

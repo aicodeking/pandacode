@@ -135,7 +135,7 @@ test('the governor drops the render scale under long paints and restores it afte
   await open(page);
   const scale = () => page.evaluate(() => (window as any).__sky.scale as number);
   expect(await scale()).toBe(.6);
-  // The wind keeps the loop at 30 fps, so 30 samples arrive in about a second.
+  // The wind ramps at 30 fps, then uses 8 fps; the governor also samples those timer paints.
   await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
   await page.evaluate(() => { (window as any).__sky.quietMs = 400; (window as any).__sky.forcePaintMs = 20; });
   await expect.poll(scale, { timeout: 5000 }).toBe(.45);
@@ -266,3 +266,134 @@ for (const scene of SCENE_IDS) for (const theme of ['light', 'dark'] as const) {
     for (const result of results) expect(result.ratio, result.selector).toBeGreaterThanOrEqual(4.5);
   });
 }
+
+/** An isolated host lets lifecycle checks drive real WebGL without the app's unrelated timers. */
+async function host(page: Page, tile = false): Promise<void> {
+  await page.route('**/sky-harness', route => route.fulfill({ contentType: 'text/html', body: '<html data-theme="light" data-ready><body><div id="workspace"><div id="pane" style="position:relative;width:800px;height:600px"></div></div></body></html>' }));
+  await page.goto('/sky-harness');
+  await page.evaluate(async tile => {
+    const path = '/src/sky-window.ts';
+    const { mountSky } = await import(path);
+    const pane = document.querySelector('#pane') as HTMLElement;
+    const workspace = document.querySelector('#workspace') as HTMLElement;
+    const state = { wanted: true, controller: null as any };
+    (window as any).skyHost = state;
+    state.controller = mountSky(pane, workspace, { wanted: () => state.wanted, expose: true, tileRoot: tile ? pane : undefined });
+  }, tile);
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
+}
+
+async function freezeClock(page: Page): Promise<void> {
+  const time = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time });
+  await page.clock.pauseAt(new Date(time.getTime() + 1000));
+}
+
+test('a quiet sky settles, refreshes its clock slowly and wakes on input, theme, resize and runs', async ({ page }) => {
+  await freezeClock(page);
+  await host(page);
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  const still = await frames(page);
+  await page.clock.runFor(10_000);
+  expect(await frames(page)).toBe(still);
+  await page.clock.runFor(180_000);
+  expect(await frames(page)).toBe(still + 1);
+  await page.mouse.move(400, 400);
+  await page.clock.runFor(50);
+  await expect.poll(() => frames(page)).toBeGreaterThan(still + 1);
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  await page.clock.runFor(50);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await page.clock.runFor(8500);
+  await page.locator('#pane').evaluate(node => { node.style.width = '700px'; });
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  await page.clock.runFor(50);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await page.clock.runFor(8500);
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+  await page.clock.runFor(2000);
+  await expect(sky(page)).toHaveAttribute('data-wind', '1');
+  const running = await frames(page);
+  await page.clock.runFor(2000);
+  expect((await frames(page)) - running).toBeLessThanOrEqual(18);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+});
+
+test('background tiles run at 2 fps after the ramp and pause behind the focused pane', async ({ page }) => {
+  await freezeClock(page);
+  await host(page, true);
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+  await page.clock.runFor(2500);
+  const start = await frames(page);
+  await page.clock.runFor(2000);
+  expect((await frames(page)) - start).toBeLessThanOrEqual(5);
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-focused', ''));
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  const paused = await frames(page);
+  await page.clock.runFor(2000);
+  expect(await frames(page)).toBe(paused);
+  await page.locator('#pane').evaluate(node => node.removeAttribute('data-focused'));
+  await page.clock.runFor(100);
+  expect(await frames(page)).toBeGreaterThan(paused);
+});
+
+test('disable releases the context and cancelled fade, and enable creates a fresh canvas', async ({ page }) => {
+  await host(page);
+  await page.evaluate(() => (window as any).skyHost.controller.setThread('first'));
+  const before = await page.locator('.thread-sky>canvas').first().elementHandle();
+  await page.evaluate(() => {
+    const host = (window as any).skyHost;
+    for (let i = 0; i < 20 && !document.querySelector('[data-fading]'); i++) host.controller.setThread(`scene-${i}`);
+    document.querySelector('.thread-sky-fade')!.getAnimations().forEach(animation => animation.pause());
+  });
+  await expect(sky(page)).toHaveAttribute('data-fading', 'true');
+  await page.locator('.thread-sky-fade').evaluate(node => node.getAnimations().forEach(animation => animation.cancel()));
+  await expect(sky(page)).not.toHaveAttribute('data-fading');
+  expect(await page.locator('.thread-sky-fade').evaluate(node => [(node as HTMLCanvasElement).width, (node as HTMLCanvasElement).height])).toEqual([0, 0]);
+  await page.evaluate(() => {
+    const host = (window as any).skyHost;
+    for (let i = 20; i < 40 && !document.querySelector('[data-fading]'); i++) host.controller.setThread(`scene-${i}`);
+    host.wanted = false; host.controller.refresh();
+  });
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'off');
+  await expect(sky(page)).not.toHaveAttribute('data-gl');
+  expect(await before!.evaluate(node => [node.width, node.height, node.getContext('webgl')!.isContextLost()])).toEqual([0, 0, true]);
+  expect(await page.locator('.thread-sky-fade').evaluate(node => [(node as HTMLCanvasElement).width, (node as HTMLCanvasElement).height])).toEqual([0, 0]);
+  await page.evaluate(() => { const host = (window as any).skyHost; host.wanted = true; host.controller.refresh(); });
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
+  const start = await frames(page);
+  await expect.poll(() => frames(page)).toBeGreaterThan(start);
+});
+
+test('precompile stops while inactive and resumes with just one neighbor', async ({ page }) => {
+  await host(page);
+  await page.evaluate(() => { document.querySelector('#workspace')!.classList.add('settings-open'); });
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  const compiled = await page.evaluate(() => (window as any).__sky.compiled.length);
+  await page.waitForTimeout(1500);
+  expect(await page.evaluate(() => (window as any).__sky.compiled.length)).toBe(compiled);
+  await page.evaluate(() => { document.querySelector('#workspace')!.classList.remove('settings-open'); });
+  await expect.poll(() => page.evaluate(() => (window as any).__sky.compiled.length)).toBe(2);
+  await page.waitForTimeout(1000);
+  expect(await page.evaluate(() => (window as any).__sky.compiled.length)).toBe(2);
+});
+
+
+test('the fallback governor measures paints on timers without a GPU timing extension', async ({ page }) => {
+  await page.addInitScript(() => {
+    const prototype = WebGLRenderingContext.prototype;
+    const extension = prototype.getExtension, draw = prototype.drawArrays;
+    prototype.getExtension = function(name: string) { return name === 'EXT_disjoint_timer_query' ? null : extension.call(this, name); };
+    prototype.drawArrays = function(...args: Parameters<typeof draw>) {
+      const until = performance.now() + 12;
+      while (performance.now() < until) { /* Simulate slow submission on a driver without GPU timers. */ }
+      draw.apply(this, args);
+    };
+  });
+  await host(page);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await expect.poll(() => page.evaluate(() => (window as any).__sky.scale), { timeout: 7000 }).toBe(.45);
+});

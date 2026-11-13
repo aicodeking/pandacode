@@ -961,7 +961,7 @@ async fn live_resume_after_background_command(warm: bool) {
     if let Some(host) = &host {
         let mut next = cfg.clone();
         next.prompt.clear();
-        super::prewarm_agent(next, host.tools.clone(), HashSet::new(), super::warm_epoch(&cfg.session_id)).await.unwrap();
+        super::prewarm_agent(next, host.tools.clone(), HashSet::new(), super::warm_epoch(&cfg.session_id), || true).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         assert!(super::warm::waiting(&cfg.session_id), "a spare is waiting");
     }

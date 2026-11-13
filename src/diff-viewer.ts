@@ -3,7 +3,7 @@ import type { FileDiff, FileDiffMetadata, FileDiffOptions, VirtualizedFileDiff, 
 import type { WorkerPoolManager } from '@pierre/diffs/worker';
 // A real module URL, not a blob: the app CSP allows no blob: workers.
 import DiffWorker from '@pierre/diffs/worker/worker.js?worker';
-import { likelyFileNames, patchKey, splitPatch, type PatchChunk } from './diff-prefetch';
+import { patchKey, splitPatch, type PatchChunk } from './diff-prefetch';
 import './diff-viewer.css';
 
 export interface DiffViewerInput {
@@ -66,8 +66,6 @@ const SCROLL_SETTLE_MS = 120;
 // Mounting yields to the next frame after this much work, so no task blocks for long.
 const FIRST_SLICE_MS = 12;
 const SLICE_MS = 8;
-// Grammars the pool loads in the background after it starts.
-const COMMON_FILES = ['a.ts', 'a.tsx', 'a.js', 'a.json', 'a.css', 'a.html', 'a.md', 'a.rs', 'a.py', 'a.go', 'a.sh', 'a.yaml', 'a.toml'];
 const THEMES = { dark: 'pierre-dark', light: 'pierre-light' } as const;
 // The pool's options override each viewer's theme and line-diff options, so both use these.
 const HIGHLIGHT = { theme: THEMES, lineDiffType: 'word-alt', maxLineDiffLength: 1_000, tokenizeMaxLineLength: 2_000 } as const;
@@ -130,51 +128,29 @@ type Diffs = typeof import('@pierre/diffs');
 type EngineName = 'worker-wasm' | 'main-wasm' | 'main-js';
 interface Engine { lib: Diffs; pool?: WorkerPoolManager; highlighter: 'shiki-wasm' | 'shiki-js'; name: EngineName }
 let engine: Promise<Engine> | undefined;
+let engineCleanup = Promise.resolve();
+let activeViewers = 0, engineIdleTimer = 0;
+const ENGINE_IDLE_MS = 5 * 60_000;
+
+function releaseEngine(): void {
+  if (--activeViewers || !engine) return;
+  const pending = engine;
+  engineIdleTimer = window.setTimeout(() => {
+    engineIdleTimer = 0;
+    void pending.then(async loaded => {
+      const workers = await import('@pierre/diffs/worker');
+      if (activeViewers || engine !== pending) return;
+      workers.terminateWorkerPoolSingleton();
+      engineCleanup = loaded.lib.disposeHighlighter().catch(() => {});
+      engine = undefined;
+    }).catch(() => {});
+  }, ENGINE_IDLE_MS);
+}
 
 const highlightable = (file: FileDiffMetadata) => Math.max(file.additionLines.length, file.deletionLines.length) <= TOKENIZE_MAX_LINES;
 
 function parseChunk(lib: Diffs, path: string, chunk: PatchChunk): FileDiffMetadata[] {
   return lib.parsePatchFiles(chunk.text, patchKey(path, chunk.text), true).flatMap(patch => patch.files);
-}
-
-const idle = () => new Promise<void>(resolve => typeof requestIdleCallback === 'function' ? requestIdleCallback(() => resolve(), { timeout: 1_000 }) : setTimeout(resolve, 30));
-const poolBusy = (pool: WorkerPoolManager) => { const stats = pool.getStats(); return stats.busyWorkers > 0 || stats.queuedTasks > 0; };
-
-// Code-like lines in no particular language: tokenizing them compiles the grammar's
-// common rules (Oniguruma compiles each on first use), not just its entry point.
-const WARM_HUNK = '@@ -1,2 +1,2 @@\n-import { a } from "b"; const c = { d: [1, \'e\', true], f: (g) => g?.h ?? null }; // i\n'
-  + '-export function j(k: number): string { if (k > 2) return `l${k}`; } /* m */\n'
-  + '+def n(o): return [p for p in o if p] # q\n+- r: s\n';
-
-/**
- * Loads grammars into the main thread and a worker, one per idle period while the pool
- * has nothing visible to do: the languages in the current git status first, then common ones.
- */
-async function warmLanguages(lib: Diffs, pool: WorkerPoolManager): Promise<void> {
-  const warmed = new Set<string>(['text']);
-  // The status list's own languages go first and at once: the next click is likely one of them.
-  // The first language warms in one worker at once (a click may be coming); the other
-  // workers get it with the rest, when idle.
-  const queue = likelyFileNames().length ? [{ name: likelyFileNames()[0], copies: 1 }] : [];
-  for (let first = queue.length > 0; ; first = false) {
-    if (!first) await idle();
-    if (!first && poolBusy(pool)) continue;
-    let next = queue.shift();
-    if (!next) {
-      const name = [...likelyFileNames(), ...COMMON_FILES].find(candidate => !warmed.has(lib.getFiletypeFromFileName(candidate)));
-      if (!name) return;
-      next = { name, copies: POOL_SIZE };
-    }
-    const { name, copies } = next;
-    if (copies < POOL_SIZE) queue.push({ name, copies: POOL_SIZE }); else warmed.add(lib.getFiletypeFromFileName(name));
-    try {
-      // Copies are sent together so each free worker takes one: any free worker takes the
-      // next task, so a grammar warmed in only one would compile again in the other.
-      const files = Array.from({ length: copies }, (_, copy) => lib.parsePatchFiles(`diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n${WARM_HUNK}`, `warm:${copies}:${copy}:${name}`, true)[0].files[0]);
-      await Promise.all(files.map(file => pool.primeDiffHighlightCache(file)));
-      for (const file of files) pool.evictDiffFromCache(file.cacheKey!);
-    } catch { return; }
-  }
 }
 
 async function startEngine(): Promise<Engine> {
@@ -199,7 +175,6 @@ async function startEngine(): Promise<Engine> {
       highlighterOptions: { ...HIGHLIGHT, preferredHighlighter: 'shiki-wasm' },
     });
     await pool.initialize();
-    void warmLanguages(lib, pool);
     return started({ lib, pool, highlighter: 'shiki-wasm', name: 'worker-wasm' });
   } catch {
     for (const worker of spare) worker.terminate();
@@ -210,15 +185,17 @@ async function startEngine(): Promise<Engine> {
   }
 }
 
-/** Starts the renderer, worker pool and themes ahead of the first diff. Safe to call often. */
+/** Starts on the first requested patch; workers load only that patch’s languages. */
 export function preloadDiffViewer(): Promise<unknown> {
-  engine ??= startEngine();
+  engine ??= engineCleanup.then(startEngine);
   return engine;
 }
 
 /** Read-only, bounded diff rendering. Replacing a viewer cancels its old mount. */
 export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): DiffViewerController {
   mountedViewers.get(host)?.dispose();
+  clearTimeout(engineIdleTimer);
+  activeViewers++;
   let disposed = false;
   let renderers: { view: FileDiff; header: boolean; file: FileDiffMetadata }[] = [];
   let pool: WorkerPoolManager | undefined;
@@ -555,6 +532,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     dispose() {
       if (disposed) return;
       disposed = true;
+      releaseEngine();
       listeners.abort();
       resizeObserver?.disconnect();
       themeObserver?.disconnect();

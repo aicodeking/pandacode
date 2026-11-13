@@ -131,7 +131,7 @@ import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
 import { TailText } from './tail-text';
-import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
+import { ImageCache } from './image-cache';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
 
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
@@ -357,8 +357,8 @@ function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
   return classicTeamSetup()
-    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
-    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
+    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy || !state.providers.length ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
+    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${!state.providers.length ? 'disabled' : ''} ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
 let routing: RoutingStatus | null = null;
@@ -1065,6 +1065,7 @@ const sky = mountSky($('.main-pane'), $('.workspace'), {
 const skyTime = preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null;
 /** Threads tiled beside the open one (src/thread-tiles.ts); `tilePages` holds what the read-only views show. */
 const tilePages = new Map<string, MessagePage>();
+const tileRequests = new Map<string, HTMLElement>();
 /** Longest a run this window did not start waits for its page before its live card paints anyway (loadWakeExchange). */
 const WAKE_LOAD_HOLD_MS = 300;
 /** Open threads whose new run is holding its live card back, by the timer that ends the hold. */
@@ -1078,6 +1079,7 @@ const tiles = mountThreadTiles({
   open: async (id, scrollTop) => { await selectSession(id); if (scrollTop !== undefined) { transcriptScroller.scrollTop = scrollTop; releaseTranscript(); } },
   focusPrompt: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
   draw: (id, rows, scroller) => drawTile(id, rows, scroller),
+  drop: id => { tilePages.delete(id); tileRequests.delete(id); },
   scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: () => !wallpapers.preferences.enabled, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
   notify,
 });
@@ -1775,12 +1777,19 @@ function changesFoot(sessionId: string, changes: TurnChanges | undefined): strin
  *  messages change, so a stream's ticks touch just its live card. */
 function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const page = tilePages.get(id) ?? threadPages.get(id);
-  if (!tilePages.has(id)) void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => { tilePages.set(id, fresh); if (rows.isConnected) drawTile(id, rows, scroller); }).catch(error => {
-    report(error);
-    // The live card must still show: the page this view already has stands in for the one that failed.
-    const known = threadPages.get(id);
-    if (known) { tilePages.set(id, known); if (rows.isConnected) drawTile(id, rows, scroller); }
-  });
+  if (!tilePages.has(id) && tileRequests.get(id) !== rows) {
+    tileRequests.set(id, rows);
+    void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => {
+      if (!rows.isConnected || tileRequests.get(id) !== rows) return;
+      tilePages.set(id, fresh); drawTile(id, rows, scroller);
+    }).catch(error => {
+      if (!rows.isConnected || tileRequests.get(id) !== rows) return;
+      report(error);
+      // The live card must still show if the fresh page failed.
+      const known = threadPages.get(id);
+      if (known) { tilePages.set(id, known); drawTile(id, rows, scroller); }
+    }).finally(() => { if (tileRequests.get(id) === rows) tileRequests.delete(id); });
+  }
   if (!page) return;
   // Until the fresh page is in, the saved rows stay alone: a wake's exchange joins its live card only once its message is known.
   const live = tilePages.has(id) ? state.streams.get(id) : undefined;
@@ -2243,23 +2252,32 @@ function contextBlocks(content: string): { typed: string; blocks: string[]; wake
 function userContent(content: string, messageId: number): string {
   const { typed, blocks, wake } = contextBlocks(content);
   const items = parseAttachments(blocks);
-  for (const item of items) if (item.kind === 'image' && item.imageId) loadSentImage(item.imageId);
+  const thumbnails = new Map<string, string | null>();
+  for (const item of items) if (item.kind === 'image' && item.imageId) {
+    void loadSentImage(item.imageId);
+    thumbnails.set(item.imageId, imageCache.get('sent:' + item.imageId) ?? null);
+  }
   const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
-  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, sentImages) + details;
+  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, thumbnails) + details;
 }
-// Sent images live in the capture registry for a week; null marks one that is gone.
-const sentImages = new Map<string, string | null>();
-function loadSentImage(id: string): void {
-  if (sentImages.has(id)) return;
-  sentImages.set(id, null);
-  call<string | null>('prompt_image', { id }).then(url => {
-    if (!url?.startsWith('data:image/')) return;
-    sentImages.set(id, url);
-    for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${id}"]`)) {
+// Both image paths share one budget; only onscreen thumbnails pin their payloads.
+const imageCache = new ImageCache(32 * 1024 * 1024, () => new Set(
+  Array.from(document.querySelectorAll<HTMLImageElement>('img[data-prompt-image], img[data-image-cache]')).filter(image => {
+    // A not-yet-loaded image is hidden; its chip still marks the visible place it will occupy.
+    const rect = (image.hidden ? image.parentElement! : image).getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+  }).map(image => image.dataset.imageCache ?? 'sent:' + image.dataset.promptImage),
+));
+new MutationObserver(() => imageCache.trim()).observe(document.body, { childList: true, subtree: true });
+document.addEventListener('scroll', () => imageCache.trim(), { capture: true, passive: true });
+function loadSentImage(id: string): Promise<string | null> {
+  return imageCache.load('sent:' + id, () => call<string | null>('prompt_image', { id })).then(url => {
+    if (url) for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(id)}"]`)) {
       img.src = url; img.hidden = false;
       if (img.nextElementSibling?.matches('svg.icon')) img.nextElementSibling.remove();
     }
-  }).catch(() => { /* The chip keeps its icon and still opens the block's text. */ });
+    return url;
+  });
 }
 async function openMessageAttachment(element: HTMLElement): Promise<void> {
   // Chips in the By the way tab belong to the side thread's messages, not the open thread's.
@@ -2268,7 +2286,7 @@ async function openMessageAttachment(element: HTMLElement): Promise<void> {
   if (!item) return;
   if (item.kind === 'github') { await call('open_external_url', { url: item.url }); return; }
   if (item.kind === 'image') {
-    const url = item.imageId ? sentImages.get(item.imageId) : null;
+    const url = item.imageId ? await loadSentImage(item.imageId) : null;
     if (url) { modal(item.name, `<img class="message-attachment-image" src="${escape(url)}" alt="${escape(item.name)}">`, 'message-attachment-dialog'); return; }
     modal(item.name, `<p class="dialog-description">This image is no longer stored. Here is what was sent with it.</p><pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog'); return;
   }
@@ -2697,13 +2715,12 @@ function stepImage(tool: ToolActivity): string {
   const match = /"(?:file_path|path|image_path)"\s*:\s*"([^"]+\.(?:png|jpe?g|gif|webp))"/i.exec(tool.input) ?? /^\s*(\S+\.(?:png|jpe?g|gif|webp))\s*$/i.exec(tool.input);
   return match?.[1] ?? '';
 }
-const stepImages = new Map<string, Promise<string | null>>();
 function loadStepImage(label: HTMLElement): void {
   const image = label.querySelector<HTMLImageElement>('img[data-thumb]'), sessionId = state.sessionId;
   if (!image) return;
-  const path = image.dataset.thumb!, key = sessionId + '\0' + path;
-  if (!stepImages.has(key)) stepImages.set(key, call<string>('workspace_image', { sessionId, path }).then(url => url.startsWith('data:image/') ? url : null, () => null));
-  void stepImages.get(key)!.then(url => { if (url && image.isConnected) { image.src = url; image.hidden = false; } });
+  const path = image.dataset.thumb!, key = 'step:' + sessionId + '\0' + path;
+  image.dataset.imageCache = key;
+  void imageCache.load(key, () => call<string>('workspace_image', { sessionId, path })).then(url => { if (url && image.isConnected) { image.src = url; image.hidden = false; } });
 }
 function workingLabel(current: Stream): string {
   let label = current.inputs.size ? 'Waiting for your answer' : current.approvals.size ? 'Waiting for approval' : current.status;
@@ -2825,7 +2842,7 @@ function renderComposer(): void {
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning();
   // A bot's next model can be picked mid-turn; it applies from the next turn.
-  const team = teams.get(s.id), togglingTeam = teamToggles.has(s.id), modelLocked = (running && !team && !botForThread()) || togglingTeam;
+  const team = teams.get(s.id), togglingTeam = teamToggles.has(s.id), modelLocked = (running && !team && !botForThread()) || togglingTeam || (!s.remoteDevice && !state.providers.length);
   const target = remoteTargetFor(s), offline = remoteOffline(s), checking = remoteChecks.has(s.id), retrying = target ? remoteRetries.has(target.deviceId) : false;
   const sendControl = running
     ? `<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="${remoteStartCancels.has(s.id) ? 'Stopping…' : 'Stop task'}" ${remoteStartCancels.has(s.id) ? 'disabled' : ''}>${icon('stop')}</button>`
@@ -4547,7 +4564,7 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
     messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
     if (sessionId === state.sessionId) state.messages = messages;
     else {
-      tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
+      if (tilePages.has(sessionId)) tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
       if (threadPages.has(sessionId)) threadPages.set(sessionId, { messages, hasOlder: page!.hasOlder, chars: messages.reduce((total, message) => total + message.content.length, 0) });
     }
   }
@@ -4781,7 +4798,6 @@ async function refreshInspector(): Promise<void> {
   });
   state.inspectorLoading = false;
   state.git = results[0].status === 'fulfilled' ? results[0].value : null;
-  if (state.git) noteChangedPaths(state.git.files.map(file => file.path));
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
@@ -7372,7 +7388,16 @@ async function boot(): Promise<void> {
     }
   })()));
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
-  [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
+  // CLI version probes must not hold the task list, thread or composer behind discovery.
+  const providerGeneration = settingsDiscoveryGeneration;
+  const providersReady = call<Provider[]>('list_providers').then(providers => {
+    if (providerGeneration !== settingsDiscoveryGeneration) return;
+    state.providers = providers;
+    render(); refreshModelLabels(); slashPicker?.refresh(true);
+    if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+  });
+  run(providersReady);
+  [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
   projectsListed = true;
   run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
   // Queues from an earlier launch wait for an explicit Resume.
@@ -7392,7 +7417,8 @@ async function boot(): Promise<void> {
   run(fileIconsReady.then(refreshFileIcons));
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
   if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
-  if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+  // New-task actions await bootPending; keep their catalog wait after the usable screen.
+  await providersReady.catch(() => undefined);
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify }));
@@ -7405,6 +7431,4 @@ renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
 run(bootPending);
-// The diff engine (module, highlighter workers, themes) starts right after the first paint.
-preloadDiffsAfterPaint();
 if (!preview) initializeNativeAppearance();

@@ -238,3 +238,38 @@ test('passes truncation to the viewer and strips the marker', async ({ page }) =
   await expect(page.locator('.diff-viewer-status')).toContainText('shortened', { timeout: 15_000 });
   await expect(page.locator('.cv-file .cv-stat')).toHaveText('+2');
 });
+
+
+test('diff workers start on demand, survive mounted idle and restart after disposal', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    (window as any).__diffWorkers = { started: 0, stopped: 0 };
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) { super(url, options); (window as any).__diffWorkers.started++; }
+      terminate() { (window as any).__diffWorkers.stopped++; super.terminate(); }
+    };
+  });
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  expect(await page.evaluate(() => (window as any).__diffWorkers.started)).toBe(0);
+  const mountViewer = () => page.evaluate(async patch => {
+    const modulePath = '/src/diff-viewer.ts';
+    const { mountDiffViewer } = await import(/* @vite-ignore */ modulePath);
+    const viewer = mountDiffViewer(document.querySelector('#host'), { patch, path: 'a.ts' });
+    (window as any).__idleViewer = viewer;
+    await viewer.ready;
+  }, patch('a.ts', 2, 1));
+  await mountViewer();
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  expect(await page.evaluate(() => (window as any).__diffWorkers.started)).toBe(2);
+  await page.clock.install();
+  await page.clock.fastForward(301_000);
+  expect(await page.evaluate(() => (window as any).__diffWorkers.stopped)).toBe(0);
+  await page.evaluate(() => (window as any).__idleViewer.dispose());
+  await page.clock.fastForward(301_000);
+  await expect.poll(() => page.evaluate(() => (window as any).__diffWorkers.stopped)).toBe(2);
+  await page.clock.resume();
+  await mountViewer();
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  expect(await page.evaluate(() => (window as any).__diffWorkers.started)).toBe(4);
+});

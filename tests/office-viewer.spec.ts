@@ -37,6 +37,27 @@ test('a Word document renders its paragraphs', async ({ page }) => {
   await expect(viewer).toContainText('Hello from Word.');
 });
 
+test('distant PDF canvases release their pixels and redraw when approached again', async ({ page }) => {
+  await open(page, 'report.pdf');
+  const slots = page.locator('.pdf-page');
+  const first = slots.first();
+  await expect(first.locator('canvas')).toBeVisible();
+  const original = await first.locator('canvas').elementHandle();
+  // Separate the sample's two pages far enough to leave the retention buffer.
+  await first.evaluate(slot => {
+    const spacer = document.createElement('div');
+    spacer.style.height = '5000px'; spacer.style.flexShrink = '0';
+    slot.after(spacer);
+  });
+  await slots.last().scrollIntoViewIfNeeded();
+  await expect(slots.last().locator('canvas')).toBeVisible();
+  await expect(first.locator('canvas')).toHaveCount(0);
+  expect(await original!.evaluate(canvas => [canvas.width, canvas.height, canvas.isConnected])).toEqual([0, 0, false]);
+  await first.scrollIntoViewIfNeeded();
+  await expect(first.locator('canvas')).toBeVisible();
+  expect(await first.locator('canvas').evaluate(canvas => canvas.width * canvas.height)).toBeGreaterThan(0);
+});
+
 test('a spreadsheet shows a grid per sheet and says when rows are cut off', async ({ page }) => {
   await open(page, 'budget.xlsx');
   const viewer = page.locator('.office-viewer[data-kind="sheet"]');

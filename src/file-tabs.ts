@@ -9,8 +9,18 @@ import type { OfficeKind } from './office-viewer';
 type Context = { projectId: string; sessionId?: string };
 /** `source` shows a viewer-handled file (e.g. an SVG) as text. */
 type Tab = { path: string; context: Context; content?: string | ArrayBuffer; reads?: number; source?: boolean; used?: number };
-/** Document bytes kept for tabs not on screen, across all tasks; evicted tabs read their file again when shown. */
+/** Text and document bytes kept off screen; evicted tabs read their file again when shown. */
 const DOCUMENT_CACHE_BYTES = 64 * 1024 * 1024;
+/** Keeps the shown file and the most recently used background content within the byte budget. */
+export function trimDocumentCache(tabs: Tab[], shown?: Tab, budget = DOCUMENT_CACHE_BYTES): void {
+  const cached = tabs.filter(tab => tab !== shown && tab.content !== undefined)
+    .sort((a, b) => (b.used ?? 0) - (a.used ?? 0));
+  for (const tab of cached) {
+    const bytes = typeof tab.content === 'string' ? tab.content.length * 2 : tab.content!.byteLength;
+    if (bytes > budget) tab.content = undefined;
+    else budget -= bytes;
+  }
+}
 /** PDF, Word, spreadsheet and image files arrive as bytes and draw in their own lazily loaded viewer. */
 const officeKind = (path: string): OfficeKind | undefined =>
   /\.pdf$/i.test(path) ? 'pdf' : /\.docx$/i.test(path) ? 'docx' : /\.(?:xlsx|xlsm|xls|ods)$/i.test(path) ? 'sheet' : /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(path) ? 'image' : undefined;
@@ -49,17 +59,8 @@ export function createFileTabs(deps: Deps) {
   const current = (): Tab | undefined => thread()?.tabs.find(tab => tab.path === thread()!.active);
   const name = (path: string) => path.split('/').pop() ?? path;
 
-  /** Keeps the shown tab's bytes and the most recently shown background documents that fit the cache. */
   function trim(): void {
-    const shown = current();
-    let budget = DOCUMENT_CACHE_BYTES;
-    const cached = [...threads.values()].flatMap(entry => entry.tabs)
-      .filter(tab => tab !== shown && typeof tab.content === 'object')
-      .sort((a, b) => (b.used ?? 0) - (a.used ?? 0));
-    for (const tab of cached) {
-      budget -= (tab.content as ArrayBuffer).byteLength;
-      if (budget < 0) tab.content = undefined;
-    }
+    trimDocumentCache([...threads.values()].flatMap(entry => entry.tabs), current());
   }
 
   /** Redraws the strip and view; focus that was on the strip, or that the file view just made inert, lands on the selected tab. */
