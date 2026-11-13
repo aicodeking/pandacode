@@ -338,7 +338,7 @@ pub fn run_args(args: &[OsString]) {
     }
 }
 
-/// What the guard relaunches and where it writes, worked out by the guard itself.
+/// The guard derives its relaunch target and wrapper; its app supplies the resolved directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Own {
     pub data_dir: PathBuf,
@@ -346,21 +346,25 @@ pub struct Own {
     pub wrapper: Option<PathBuf>,
 }
 
-/// The guard's own target, wrapper and data dir, from the same sources the app used (it runs
-/// the same binary with the app's environment). Tests point them elsewhere only through
-/// `#[cfg(test)]` code (`relaunch::launch_target`, `super::app_data_dir`).
+/// The guard's own target and wrapper, plus the directory explicitly passed by its app.
+/// Never infer the directory from HOME, a bundle identifier or a compiled-in default.
 fn derived(mode: Mode) -> Result<Own, String> {
     Ok(Own {
-        data_dir: super::app_data_dir().ok_or("no app data directory")?,
+        data_dir: passed_data_dir(std::env::var_os(super::DATA_DIR_ENV))?,
         target: relaunch::launch_target().map_err(|error| format!("no launch target ({error})"))?,
         wrapper: super::wrapper::for_mode(mode, super::wrapper::current())?,
     })
 }
 
+/// No fallback: an absent, empty or relative child directory is a broken launch contract.
+fn passed_data_dir(value: Option<OsString>) -> Result<PathBuf, String> {
+    value.map(PathBuf::from).filter(|dir| dir.is_absolute()).ok_or_else(|| "no explicit app data directory".into())
+}
+
 /// The first field where argv differs from what the guard derived. Any local process can run
 /// `pandacode __crash-guard …`; this keeps argv alone from choosing what the guard starts or
 /// where it writes. It is no boundary against a caller that also sets the environment the
-/// guard derives them from (HOME or XDG_DATA_HOME for the data dir, XAUTHORITY for whether to
+/// guard reads (DATA_DIR_ENV for the explicit data dir, XAUTHORITY for whether to
 /// re-wrap, APPIMAGE/APPDIR checked by `relaunch::trusted_appimage`): such a caller can point
 /// the state files elsewhere or relaunch a checked AppImage, but runs as the same user and
 /// could start those programs itself. The wrapper is only ever an xvfb-run in /usr/bin or /bin.
@@ -479,6 +483,15 @@ mod tests {
         assert_eq!(Config::parse(&args[2..]), None);
         original.wrapper = Some(PathBuf::from("/usr/bin/xvfb-run"));
         assert_eq!(Config::parse(&original.to_args()[1..]), Some(original));
+    }
+
+    #[test]
+    fn the_child_requires_the_explicit_directory_and_never_guesses() {
+        let dir = std::env::temp_dir().join("bench data/é");
+        assert_eq!(passed_data_dir(Some(dir.clone().into_os_string())), Ok(dir));
+        for value in [None, Some(OsString::new()), Some("relative/data".into())] {
+            assert!(passed_data_dir(value).is_err());
+        }
     }
 
     #[test]

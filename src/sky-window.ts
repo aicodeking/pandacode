@@ -225,8 +225,6 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     if (Math.abs(wind - Math.round(wind)) < .002 && Math.abs(windVelocity) < .002) { wind = Math.round(wind); windVelocity = 0; }
     // Tenths, rounded up (any breeze reads 0.1): a write per frame would cost a style recalc per frame.
     setData('wind', String(Math.ceil(wind * 10) / 10));
-    drift += dt * (.012 + wind * .11);
-    time += dt;
     if (performance.now() - pointer.movedAt > 350) pointer.target = 0;
     // Nearly critically damped, so the clouds settle back softly and quickly (~0.5 s).
     // It answers within ~150 ms as the pointer arrives; the settle back stays as soft as before.
@@ -253,9 +251,12 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     frame = 0; timer = 0;
     if (!active()) return;
     const interval = now - (last || now);
-    const dt = Math.min(.1, interval / 1000);
+    // Scene speed follows elapsed time even at 4/2 fps; only long gaps (sleep) are capped.
+    const dt = Math.min(1, interval / 1000);
     last = now;
-    const busy = step(dt), started = performance.now();
+    const busy = step(Math.min(.1, dt)), started = performance.now();
+    drift += dt * (.012 + wind * .11);
+    time += dt;
     paint();
     if (forcePaintMs !== null) sample(forcePaintMs);
     // Count paint/submission time and missed slots on both rAF and timers, excluding the intentional timer delay.
@@ -318,7 +319,10 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     activityAt = performance.now();
     if (frame || !active() || reducedMotion.matches) return;
     setData('skyState', 'moving');
+    // Rescheduling a live timer must retain the elapsed part of its slot; still/paused clocks are already zero.
+    const previous = last;
     schedule();
+    last = previous;
   }
   /** The run flipped: the wind starts moving on this frame (a small push, still eased by its spring), not a beat later. */
   function windChanged(): void {

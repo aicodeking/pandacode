@@ -594,15 +594,14 @@ let projectsListed = false;
 /** Startup still running: a New task pressed now waits for it, or it would find no projects and boot would then select another thread over it. */
 let bootPending: Promise<void> | undefined;
 let providerDiscovery: Promise<void> | undefined;
+/** Explicit navigation cancels a queued creation; automatic boot restoration does not. */
+let threadNavigation = 0;
 /** Keep startup waits visible without blocking thread navigation or cancelling a queued New task. */
 function syncStartupActions(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('.sidebar-actions [data-action="new-task"], .sidebar-actions [data-action="new-chat"]')) {
-    const label = button.querySelector('span');
-    if (!label) continue;
-    button.dataset.readyLabel ??= label.textContent ?? '';
-    const text = bootPending ? 'Loading agents…' : button.dataset.readyLabel;
-    if (label.textContent !== text) label.textContent = text;
     button.setAttribute('aria-busy', String(Boolean(bootPending)));
+    if (bootPending) button.setAttribute('aria-description', 'Loading agents…');
+    else button.removeAttribute('aria-description');
   }
 }
 let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
@@ -2689,6 +2688,10 @@ const sentImageObserver = new IntersectionObserver(records => {
 });
 new MutationObserver(records => {
   for (const record of records) for (const removed of record.removedNodes) if (removed instanceof Element && !removed.isConnected) {
+    // Cached rows keep their DOM for fast switching, but never keep image payloads or decoded pixels.
+    // Reattachment below observes the chip again and reloads through ImageCache.
+    const images = removed.matches('img[data-prompt-image]') ? [removed] : removed.querySelectorAll('img[data-prompt-image]');
+    for (const image of images) image.removeAttribute('src');
     // IntersectionObserver holds targets strongly; detached transcript rows must be released.
     for (const chip of [removed, ...removed.querySelectorAll('.prompt-chip-image')]) {
       sentImageObserver.unobserve(chip);
@@ -4134,7 +4137,8 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
-function selectSession(id: string, focusComposer = false): Promise<void> {
+function selectSession(id: string, focusComposer = false, restoring = false): Promise<void> {
+  if (!restoring) threadNavigation++;
   if (id !== state.sessionId) voiceDictation.detach();
   return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
 }
@@ -4264,6 +4268,7 @@ function clearOpenSession(): void { state.sessionId = ''; rememberOpenThread(loc
 async function selectProject(id: string): Promise<void> {
   const first = listedSessions().find(s => s.projectId === id && !s.archived);
   if (first) { await selectSession(first.id); return; }
+  threadNavigation++;
   leaveDraft(''); saveThreadPanel();
   const generation = ++state.generation; activateProject(id, false); clearOpenSession(); restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = [];
   render(); if (generation !== state.generation) return; await refreshInspector();
@@ -5890,7 +5895,7 @@ async function showInspectorViews(anchor: HTMLElement): Promise<void> {
 /** One Changes view lives while the Changes tab shows the same checkout, so folds, scroll and loaded diffs survive refreshes. */
 let changesView: ChangesView | undefined, changesViewKey = '';
 function disposeChangesView(): void { changesView?.dispose(); changesView = undefined; changesViewKey = ''; }
-function showChangesView(target: HTMLElement, key: string): void {
+function showChangesView(target: HTMLElement, key: string, visible: boolean): void {
   if (!changesView || changesViewKey !== key || !target.querySelector(':scope>.changes-view')) {
     disposeChangesView();
     const host = document.createElement('div');
@@ -5908,6 +5913,7 @@ function showChangesView(target: HTMLElement, key: string): void {
     });
     changesViewKey = key;
   }
+  changesView.setVisible(visible);
   changesView.update(state.git, undefined);
 }
 /** Files tab rows, VS Code style: open folders list their children inline, indented by depth. */
@@ -5973,6 +5979,7 @@ function renderInspector(): void {
   const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}`;
   const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !session()?.remoteDevice && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
   if (!keepChanges) disposeChangesView();
+  else changesView?.setVisible(visible);
   syncBrowserPanel();
   syncSimulatorPanel();
   syncVmPanel();
@@ -6002,6 +6009,7 @@ function renderInspector(): void {
     return;
   }
   if (state.selectedKind) {
+    if (!visible) return;
     if (state.filePreviewLoading) { target.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
     target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file', 'copy')}${button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div><div class="inspector-diff-host"></div>`;
     if (state.selectedKind === 'diff' && state.inspector) {
@@ -6030,7 +6038,7 @@ function renderInspector(): void {
     return;
   }
   if (!state.git?.isRepo) { target.innerHTML = '<div class="inspector-empty">'+icon('branch')+'<h3>No Git repository</h3><p>Open a Git repository to review changes.</p></div>'; return; }
-  showChangesView(target, changesKey);
+  showChangesView(target, changesKey, visible);
 }
 async function openRunPreview(url: string, context: { projectId: string; sessionId?: string }): Promise<void> {
   const current = () => state.projectId === context.projectId && state.sessionId === (context.sessionId ?? '');
@@ -6360,9 +6368,10 @@ function createTask(projectId = state.projectId): Promise<void> {
   return run;
 }
 async function startTask(projectId: string): Promise<void> {
-  const generation = state.generation;
+  const navigation = threadNavigation;
   if (bootPending) await bootPending.catch(() => undefined);
-  if (generation !== state.generation) return;
+  if (navigation !== threadNavigation) return;
+  const generation = state.generation;
   if (creatingTask) return;
   const projects = state.projects.filter(p => !isChatProject(p));
   const active = projects.find(p => p.id === projectId)
@@ -6392,9 +6401,10 @@ async function startTask(projectId: string): Promise<void> {
 /** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
  *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
 async function createChat(from?: Session): Promise<void> {
-  const generation = state.generation;
+  const navigation = threadNavigation;
   if (bootPending) await bootPending.catch(() => undefined);
-  if (generation !== state.generation || creatingTask) return;
+  if (navigation !== threadNavigation || creatingTask) return;
+  const generation = state.generation;
   closeModelPicker(); closeProjectPicker();
   // A chat nobody has written in yet is reopened, as New task reopens its draft.
   const unused = from ? undefined : state.sessions.find(task => chatTask(task) && task.lastPromptAt == null && !task.resumeId && !task.archived && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
@@ -8377,7 +8387,7 @@ async function boot(): Promise<void> {
   const first = reopened ?? (fallback && !newTask ? candidates.find(s => s.projectId === state.projectId) : undefined);
   if (newTask) run(createTask(newTask));
   // selectSession bumps the generation before its first await; a later bump means the user picked a task meanwhile.
-  const selecting = first ? selectSession(first.id) : undefined, bootGeneration = state.generation;
+  const selecting = first ? selectSession(first.id, false, true) : undefined, bootGeneration = state.generation;
   showCrashNotice();
   // openThread marks the thread until it has painted and clears the mark when it fails.
   if (selecting) await selecting; else { render(); await refreshInspector(); }

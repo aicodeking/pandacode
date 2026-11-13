@@ -293,6 +293,37 @@ async function freezeClock(page: Page): Promise<void> {
   await page.clock.pauseAt(new Date(time.getTime() + 1000));
 }
 
+/** Read the actual shader clock and drift, rather than inferring scene speed from frame counts. */
+const sceneClock = (page: Page) => page.locator('.thread-sky>canvas').first().evaluate(node => {
+  const gl = (node as HTMLCanvasElement).getContext('webgl')!;
+  const program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
+  return { now: performance.now() / 1000,
+    time: gl.getUniform(program, gl.getUniformLocation(program, 'time')) as number,
+    drift: gl.getUniform(program, gl.getUniformLocation(program, 'drift')) as number };
+});
+
+for (const tile of [false, true]) test(`scene time and drift track wall time at the ${tile ? 'tile' : 'steady'} cadence and on pointer wake`, async ({ page }) => {
+  await freezeClock(page);
+  await host(page, tile);
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+  await page.clock.runFor(2500);
+  await expect(sky(page)).toHaveAttribute('data-wind', '1');
+  const start = await sceneClock(page), startFrames = await frames(page);
+  await page.clock.runFor(4000);
+  const steady = await sceneClock(page), paints = (await frames(page)) - startFrames;
+  expect(paints).toBeGreaterThanOrEqual(tile ? 7 : 15);
+  expect(paints).toBeLessThanOrEqual(tile ? 9 : 17);
+  expect(steady.time - start.time).toBeCloseTo(steady.now - start.now, 1);
+  expect(steady.drift - start.drift).toBeCloseTo((steady.now - start.now) * .122, 2);
+  // Wake between timer slots: neither the time before the pointer nor its faster cadence changes scene speed.
+  await page.clock.runFor(200);
+  await page.mouse.move(400, 400);
+  await page.clock.runFor(2000);
+  const awake = await sceneClock(page);
+  expect(Math.abs((awake.time - steady.time) - (awake.now - steady.now))).toBeLessThan(.55);
+  expect(Math.abs((awake.drift - steady.drift) - (awake.now - steady.now) * .122)).toBeLessThan(.07);
+});
+
 test('a quiet sky settles, refreshes its clock slowly and wakes on input, theme, resize and runs', async ({ page }) => {
   await freezeClock(page);
   await host(page);

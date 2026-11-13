@@ -21,6 +21,8 @@ export interface ChangesView {
    * `status` is a new object, or always/never with an explicit `refetch`; a viewer re-mounts only
    * when its patch text changed. */
   update(status: GitStatus | null, error?: string, options?: { refetch?: boolean }): void;
+  /** Hidden inspectors retain patches, folds and scroll, while releasing their renderers. */
+  setVisible(visible: boolean): void;
   dispose(): void;
 }
 
@@ -30,7 +32,7 @@ interface Entry {
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
-  near: boolean; refresh: boolean; scroll?: { top: number; left: number };
+  near: boolean; refresh: boolean; height?: number; scroll?: { top: number; left: number };
   viewer?: DiffViewerController; slot?: HTMLElement; shown?: string;
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
@@ -81,7 +83,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let scope: Scope = 'all';
   let status: GitStatus | null = null;
   let error: string | undefined;
-  let disposed = false;
+  let disposed = false, showing = true;
   let committing = false;
   const entries = new Map<string, Entry>();
   const collapsed = new Set<string>();
@@ -115,6 +117,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       if (!entry) continue;
       entry.near = record.isIntersecting;
       if (entry.near) show(entry);
+      else suspend(entry);
     }
   }, { root: body, rootMargin: '800px 0px' });
   const resizer = new ResizeObserver(() => scheduleFit());
@@ -224,8 +227,19 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     entry.viewer = entry.slot = entry.shown = undefined;
   }
 
+  /** Keep an offscreen diff's extent, so releasing its renderer does not move the list's scroll. */
+  function suspend(entry: Entry): void {
+    if (!entry.viewer) return;
+    entry.height = entry.body.getBoundingClientRect().height || entry.height;
+    if (entry.height) entry.body.style.minHeight = `${entry.height}px`;
+    drop(entry);
+    entry.body.replaceChildren();
+  }
+
   function reset(entry: Entry): void {
     drop(entry);
+    entry.body.style.minHeight = '';
+    entry.height = undefined;
     entry.token++;
     entry.load = 'idle';
     entry.raw = entry.patch = '';
@@ -274,11 +288,11 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   /** Mounts the patch, or swaps in a new viewer once it has rendered so the old one never flashes away. */
   function mountViewer(entry: Entry): void {
-    if (entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
+    if (!showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
     const token = entry.token, raw = entry.raw;
     viewerModule ??= import('./diff-viewer');
     viewerModule.then(({ mountDiffViewer }) => {
-      if (disposed || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
+      if (disposed || !showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
       const slot = document.createElement('div');
       slot.className = 'cv-diff';
       if (entry.viewer && entry.slot) {
@@ -294,6 +308,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         slot.classList.remove('cv-diff-next');
         const content = slot.querySelector<HTMLElement>('.diff-viewer-content');
         if (content && entry.scroll) { content.scrollTop = entry.scroll.top; content.scrollLeft = entry.scroll.left; }
+        entry.body.style.minHeight = '';
+        entry.height = entry.body.getBoundingClientRect().height;
       });
     }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
   }
@@ -375,7 +391,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   /** Hidden panels and folded files keep patch text, but never start the diff engine. */
   function show(entry: Entry): void {
-    if (!entry.near || collapsed.has(entry.path)) return;
+    if (!showing || !entry.near || collapsed.has(entry.path)) return;
     if (entry.load === 'idle' || entry.refresh) {
       entry.refresh = false;
       void load(entry, entry.load === 'loaded');
@@ -387,7 +403,12 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const entry = entries.get(path);
     if (entry) {
       paint(entry, entry.code);
-      if (folded) { drop(entry); entry.body.replaceChildren(); }
+      if (folded) {
+        drop(entry);
+        entry.body.style.minHeight = '';
+        // Error and Retry are lightweight state: folding must not erase them.
+        if (entry.load !== 'error') entry.body.replaceChildren();
+      }
       else show(entry);
     }
   }
@@ -504,6 +525,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       render();
       if (options?.refetch === true) { clearTimeout(refetchTimer); refetchTimer = 0; refetch(); }
       else if (options?.refetch ?? changed) scheduleRefetch();
+    },
+    setVisible(visible) {
+      if (disposed || showing === visible) return;
+      showing = visible;
+      for (const entry of entries.values()) {
+        if (showing) show(entry); else suspend(entry);
+      }
     },
     dispose() {
       if (disposed) return;

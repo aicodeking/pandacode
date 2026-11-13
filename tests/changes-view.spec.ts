@@ -372,3 +372,61 @@ test('collapsed files defer refresh until expanded and then show the current pat
   await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
   expect(await loads(page)).toEqual(['a.ts:false', 'a.ts:false']);
 });
+
+test('a failed diff keeps its error and Retry after collapsing and expanding', async ({ page }) => {
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  await page.evaluate(() => {
+    const h = (window as any).harness;
+    h.diffs['failed.ts'] = new Error('Diff unavailable'); h.mount();
+    h.view.update({ branch: 'main', isRepo: true, files: [{ path: 'failed.ts', index: ' ', working: 'M' }] });
+  });
+  await expect(page.locator('.cv-error')).toContainText('Diff unavailable');
+  await page.getByRole('button', { name: 'Collapse failed.ts', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand failed.ts', exact: true }).click();
+  await expect(page.locator('.cv-error')).toContainText('Diff unavailable');
+  await page.evaluate(text => { (window as any).harness.diffs['failed.ts'] = text; }, patch('failed.ts', 2, 1));
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(1, { timeout: 15_000 });
+});
+
+test('hiding a mounted Changes view releases workers and restores cached patches and folds', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    (window as any).__hiddenWorkers = { started: 0, stopped: 0 };
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) { super(url, options); (window as any).__hiddenWorkers.started++; }
+      terminate() { (window as any).__hiddenWorkers.stopped++; super.terminate(); }
+    };
+  });
+  await mount(page, FILES, DIFFS);
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(5, { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Collapse README.md', exact: true }).click();
+  const before = await loads(page);
+  await page.clock.install();
+  await page.evaluate(() => { document.querySelector<HTMLElement>('#host')!.hidden = true; });
+  await expect(page.locator('.diff-viewer')).toHaveCount(0);
+  await page.clock.fastForward(301_000);
+  await expect.poll(() => page.evaluate(() => (window as any).__hiddenWorkers.stopped)).toBe(2);
+  await page.clock.resume();
+  await page.evaluate(() => { document.querySelector<HTMLElement>('#host')!.hidden = false; });
+  await expect(page.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(4, { timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Expand README.md', exact: true })).toBeVisible();
+  expect(await loads(page)).toEqual(before);
+  expect(await page.evaluate(() => (window as any).__hiddenWorkers.started)).toBe(4);
+});
+
+test('offscreen files suspend their viewers while retaining height and cached patch text', async ({ page }) => {
+  const files = Array.from({ length: 60 }, (_, i) => ({ path: `src/f${String(i).padStart(2, '0')}.ts`, index: ' ', working: 'M' }));
+  const diffs = Object.fromEntries(files.map(f => [f.path, patch(f.path, 30, 0)]));
+  await mount(page, files, diffs);
+  const first = page.locator('.cv-file').first();
+  await expect(first.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  const height = (await first.locator('.cv-file-body').boundingBox())!.height;
+  await page.locator('.cv-file').last().scrollIntoViewIfNeeded();
+  await expect(first.locator('.diff-viewer')).toHaveCount(0);
+  expect((await first.locator('.cv-file-body').boundingBox())!.height).toBeCloseTo(height, 0);
+  await first.scrollIntoViewIfNeeded();
+  await expect(first.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  expect((await loads(page)).filter(path => path === 'src/f00.ts:false')).toHaveLength(1);
+});

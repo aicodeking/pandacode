@@ -238,3 +238,33 @@ test.describe('long threads in tiles', () => {
     await expect(transcript.locator('.team-progress-slot:not([hidden]) .team-progress')).toHaveCount(1);
   });
 });
+
+test('detached cached rows release sent image sources and reload them when reattached', async ({ page }) => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const body = (await response.text()).replace(/switch\s*\(command\)\s*\{/, `if (command === 'prompt_image' && args.id === 'detached-image') { window.__detachedReads = (window.__detachedReads ?? 0) + 1; return ${JSON.stringify(png)}; }\n$&`);
+    await route.fulfill({ response, body });
+  });
+  await blank(page);
+  await page.evaluate(async src => {
+    const { leftRowsCache } = await import(/* @vite-ignore */ `${location.origin}/src/transcript-view.ts`);
+    const row = document.createElement('div');
+    row.style.cssText = 'position:fixed;top:100px;left:100px';
+    row.innerHTML = '<span class="prompt-chip-image"><img width="36" height="36" data-prompt-image="detached-image" alt="Cached attachment"></span>';
+    row.querySelector('img')!.src = src;
+    document.body.append(row);
+    const cache = leftRowsCache();
+    cache.keep('image-thread', { rows: [{ html: '', nodes: [row] }], trimmed: new Map(), keys: ['1'] });
+    (window as any).__imageRows = cache;
+    (window as any).__detachedImage = row.querySelector('img');
+    row.remove();
+  }, png);
+  await expect.poll(() => page.evaluate(() => (window as any).__detachedImage.hasAttribute('src'))).toBe(false);
+  await page.evaluate(() => {
+    const kept = (window as any).__imageRows.take('image-thread');
+    document.body.append(...kept.rows.flatMap((row: any) => row.nodes));
+  });
+  await expect(page.locator('img[data-prompt-image="detached-image"]')).toHaveAttribute('src', png);
+  expect(await page.evaluate(() => (window as any).__detachedReads)).toBe(1);
+});

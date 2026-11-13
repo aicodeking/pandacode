@@ -117,7 +117,7 @@ html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .turn-acti
   .turn-card-time{color:var(--muted)}
 }
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more),(forced-colors:active){
-  .turn-card .live-text::after{content:none}
+  .turn-card:not([data-done])>.turn-card-reply .live-text::after{content:none}
 }
 @media(forced-colors:active){.turn-card,.turn-card>.turn-card-reply{border:1px solid CanvasText}.turn-card-skeleton>i{background:GrayText}.turn-card-more{color:LinkText}
   /* System colours carry no fade: the clamped reply's last line and the streaming line stay at full ink. */

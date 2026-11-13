@@ -22,7 +22,7 @@ test('saved turns: header sentence and time, clamped reply, footer only with cha
   await expect(short.locator('.turn-card-time')).toHaveText('4s');
   await expect(short.locator('.turn-card-foot')).toHaveCount(0);
   await expect(short.locator('.turn-card-more')).toBeHidden();
-  await expect(long.locator('.turn-activity-label')).toContainText('Read 2 files');
+  await expect(long.locator('.turn-activity-label')).toHaveText('Ran tests and read 2 files');
   await expect(long.locator('.turn-card-time')).toHaveText('1h 30m 10s');
   // The header opens the step trace inside the card.
   const header = long.locator('.turn-activity-summary');
@@ -115,7 +115,7 @@ const liveEvent = (page: Page, event: Record<string, unknown>) => page.evaluate(
 const step = (id: string, status: string, output = '') => ({ kind: 'tool', tool: { id, name: 'Bash', status, input: `run ${id}`, output } });
 
 for (const theme of ['light', 'dark'] as const) {
-  test(`long streaming reply keeps full-height elements free of GPU effects (${theme})`, async ({ page }) => {
+  test(`long streaming reply keeps full-height elements free of GPU effects (${theme})`, async ({ page, browserName }) => {
     await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
     await open(page);
     const text = Array.from({ length: 500 }, (_, i) => `Paragraph ${i + 1}: A long streaming answer stays readable over the scene while more text arrives.`).join('\n\n');
@@ -151,6 +151,15 @@ for (const theme of ['light', 'dark'] as const) {
     expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
     await page.emulateMedia({ contrast: 'no-preference', forcedColors: 'active' });
     expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
+    if (browserName === 'chromium') {
+      // Playwright's emulateMedia has no reduced-transparency option; exercise the browser's real CSS feature.
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+      expect(await page.evaluate(() => matchMedia('(prefers-reduced-transparency: reduce)').matches)).toBe(true);
+      expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
+      await cdp.send('Emulation.setEmulatedMedia', { features: [] });
+      await cdp.detach();
+    }
     await page.emulateMedia({ forcedColors: 'none', reducedMotion: 'reduce' });
     await expect(live.locator('.live-text')).toHaveCSS('mask-image', 'none');
     expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
