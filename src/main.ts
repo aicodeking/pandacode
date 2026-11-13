@@ -568,7 +568,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
   <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file" tabindex="-1"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
-</div><div id="toast" class="toast" hidden></div><dialog id="dialog"></dialog>`;
+</div><div id="toast" class="toast" hidden><span class="toast-text" role="status" aria-atomic="false"></span></div><dialog id="dialog"></dialog>`;
 mountDesktopBrand($('.brand-name'));
 // Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.
 if (preview && new URLSearchParams(location.search).has('ds')) void import('./redesign/gallery').then(gallery => gallery.mountGallery());
@@ -1427,9 +1427,12 @@ function notify(text: string, undo?: (() => void) | ToastAction | readonly Toast
   const actions: readonly ToastAction[] = typeof undo === 'function' || !undo ? [] : Array.isArray(undo) ? undo : [undo as ToastAction];
   toastShown = { text, count, plain, tone: options.tone }; toastUndo = typeof undo === 'function' ? undo : undefined; toastSettle = options.settle; toastDismiss = options.dismiss;
   // The live region is the text alone (never the buttons), kept from toast to toast so each new text is announced once,
-  // and not atomic: a count bump says only "Repeated N times".
+  // and not atomic: a count bump says only "Repeated N times". It is in the markup from the start, empty, so the first
+  // toast (often the crash notice at boot) is a change to it, which screen readers announce, not its initial content.
   const label = toast.querySelector<HTMLElement>(':scope>.toast-text') ?? document.createElement('span');
-  label.className = 'toast-text'; label.setAttribute('role', 'status'); label.setAttribute('aria-atomic', 'false'); label.title = toastTitle(text);
+  label.className = 'toast-text'; label.setAttribute('role', 'status'); label.setAttribute('aria-atomic', 'false');
+  // A lasting notice is never clamped, and its text is rewritten in place: a tooltip would only repeat it, then go stale.
+  if (options.dismiss) label.removeAttribute('title'); else label.title = toastTitle(text);
   const counter = document.createElement('span');
   counter.className = 'toast-counter';
   if (count > 1) counter.innerHTML = toastCountHtml(count);
@@ -1463,13 +1466,7 @@ function notify(text: string, undo?: (() => void) | ToastAction | readonly Toast
   });
   const dismissible = Boolean(options.dismiss);
   toast.classList.toggle('toast-dismissible', dismissible);
-  if (dismissible) addToastClose(toast, dismissToast);
-  else {
-    const close = document.createElement('button');
-    close.type = 'button'; close.className = 'toast-close'; close.setAttribute('aria-label', 'Dismiss'); close.innerHTML = icon('close');
-    close.addEventListener('click', dismissToast);
-    toast.append(close);
-  }
+  addToastClose(toast, dismissToast);
   labelToastShortcut(toast);
   toastShownAt = Date.now();
   showToast(toast, options.quiet);
@@ -4132,12 +4129,13 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   /* A load another one took over (a switch, the same thread opened again) never reaches its own dispatch, while a
    * dispatch made meanwhile waited for it (dispatchQueue): what the queue holds goes once the team is known. If this
    * thread is the open one loading again, dispatchQueue leaves it to that load. */
-  // Superseded: its restore mark goes (a later thread's stays).
-  const superseded = (): void => { finishThreadRestore(localStorage, id); dispatchHeld(heldQueue, id, taskLoad); };
+  // Superseded: its restore mark goes (a later thread's stays), unless the same thread opened again and that load,
+  // not yet painted, owns the mark now.
+  const superseded = (): void => { if (state.sessionId !== id) finishThreadRestore(localStorage, id); dispatchHeld(heldQueue, id, taskLoad); };
   const failLoad = (error: unknown, shownMessages: Message[]): boolean => {
+    if (generation !== state.generation) { superseded(); return false; }
     // A failed load did not take the app down; a later thread's mark stays.
     finishThreadRestore(localStorage, id);
-    if (generation !== state.generation) { superseded(); return false; }
     taskDetailsPending = undefined;
     // What the queue held back for this load goes now, once the team is known (asked again if its load is what failed).
     dispatchHeld(heldQueue, id);
@@ -8329,7 +8327,7 @@ run(bootPending);
 // After a crash restart, say so once the tasks are listed (boot calls it); a failed boot still gets the notice.
 function showCrashNotice(): void {
   void showCrashRecovery({
-    notify: (text, actions, holdMs, dismiss, quiet) => notify(text, actions, { holdMs, dismiss, quiet }), toast: $('#toast'), tasks: () => state.sessions, nothingOpened: () => bootOpenedNothing, openThread: id => run(selectSession(id)), openCrashSettings: () => run(showCrashSettings()), windowDied: () => windowDeath, hide: () => void hideToast($('#toast')),
+    notify: (text, actions, holdMs, dismiss, quiet, tone) => notify(text, actions, { holdMs, dismiss, quiet, tone }), toast: $('#toast'), tasks: () => state.sessions, nothingOpened: () => bootOpenedNothing, openThread: id => run(selectSession(id)), openCrashSettings: () => run(showCrashSettings()), windowDied: () => windowDeath, hide: () => { toastDismiss = undefined; dismissToast(); },
     // Asked each time the notice is written: a thread deleted or archived since is no longer offered.
     heldBack: () => {
       const id = heldBackThread?.id, thread = id && !deletedSessions.has(id) ? state.sessions.find(s => s.id === id && !s.archived) : undefined;

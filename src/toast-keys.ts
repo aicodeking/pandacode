@@ -10,16 +10,13 @@ import { icon, isImeKey } from './dom';
 export const TOAST_SHORTCUT = 'F6';
 /** Where keyboard focus leaves the toast for when it has no place of its own to go back to. */
 const COMPOSER = '#prompt';
-export const DISMISS_LABEL = 'Dismiss notice';
-/** The tip names no key: Escape dismisses only with focus in the toast, where a pointer user's
- * focus is not. Keys are announced through aria-keyshortcuts: F6, and Escape while it works. */
-export const DISMISS_TIP = 'Dismiss';
+/** Keys are announced through aria-keyshortcuts (F6, and Escape while it works), never in a tooltip. */
+export const DISMISS_LABEL = 'Dismiss';
 
-/** Appends the close button; notify() calls it for toasts that can be dismissed. */
+/** Appends the close button; notify() calls it for every toast. */
 export function addToastClose(toast: HTMLElement, close: () => void): void {
   const button = document.createElement('button');
   button.type = 'button'; button.className = 'toast-close'; button.setAttribute('aria-label', DISMISS_LABEL);
-  button.dataset.tip = DISMISS_TIP;
   button.innerHTML = icon('close');
   button.addEventListener('click', close);
   toast.append(button);

@@ -26,8 +26,8 @@ type Action = { label: string; run: () => void; name?: string; keep?: boolean; q
 export interface CrashRecoveryHost {
   /** The toast: text, its actions (the first primary, the rest quieter), how long it stays
    * (Infinity: until closed), a close button calling `dismiss`, and `quiet` to bring it back as it
-   * was: unannounced (it was announced before) and without its entrance animation. */
-  notify(text: string, actions: readonly Action[], holdMs: number, dismiss?: () => void, quiet?: boolean): void;
+   * was: unannounced (it was announced before) and without its entrance animation. `tone: 'danger'` marks a failure. */
+  notify(text: string, actions: readonly Action[], holdMs: number, dismiss?: () => void, quiet?: boolean, tone?: 'danger'): void;
   /** The one toast element `notify` fills: its text first, then its buttons. */
   toast: HTMLElement;
   tasks(): readonly Session[];
@@ -42,7 +42,8 @@ export interface CrashRecoveryHost {
   openCrashSettings(): void;
   /** The window's content died before this page (launch-restore.ts), and how. */
   windowDied(): WindowDeath | undefined;
-  /** Hides the toast (the notice is showing and has nothing left to say). */
+  /** Hides the toast with the app's usual dismissal cleanup, without calling the notice's `dismiss`
+   * again (the notice is showing and has nothing left to say). */
   hide(): void;
 }
 
@@ -247,7 +248,7 @@ function keepUntilClosed(notice: Lasting): void {
 function revealReport(host: CrashRecoveryHost): void {
   call('crash_report_reveal').catch(error => {
     console.warn('Could not show the crash report:', error);
-    host.notify(`Could not show the crash report: ${errorMessage(error)}`, [], 6000);
+    host.notify(`Could not show the crash report: ${errorMessage(error)}`, [], 6000, undefined, false, 'danger');
   });
 }
 

@@ -152,7 +152,7 @@ export function launchRestoreTests(): void {
       await expect(toast).toHaveAttribute('aria-live', 'off');
       await toast.getByRole('button', { name: 'Show crash report' }).click();
       await expect.poll(async () => (await calls(page, 'crash_report_reveal')).length).toBe(2);
-      await toast.getByRole('button', { name: 'Dismiss notice' }).click();
+      await toast.getByRole('button', { name: 'Dismiss' }).click();
       await expect(toast).toBeHidden();
     });
 
@@ -267,7 +267,7 @@ export function launchRestoreTests(): void {
       await expect(selected(page)).toHaveCount(0);
       expect(await stored(page, 'pandacode.windowDied')).toBeNull();
       // Honoured once: the launch after that is an ordinary one.
-      await toast.getByRole('button', { name: 'Dismiss notice' }).click();
+      await toast.getByRole('button', { name: 'Dismiss' }).click();
       await page.reload();
       await ready(page);
       await page.waitForTimeout(1000);
@@ -453,6 +453,34 @@ export function launchRestoreTests(): void {
       await page.locator('.task-item', { hasText: 'Refine the navigation' }).click();
       await page.locator('.task-item', { hasText: 'Make search feel instant' }).click();
       await expect(selected(page)).toContainText('Make search feel instant');
+      await expect.poll(() => stored(page, 'pandacode.restoringThread')).toBeNull();
+    });
+
+    test('a thread opened again while its first load is pending stays marked until the second load has painted', async ({ page }) => {
+      // session-2's pages are held while `__holdPages` is set, in order, until released one by one.
+      await page.route('**/src/preview.ts*', async route => {
+        const response = await route.fetch(), source = await response.text(), marker = /switch\s*\(command\)\s*\{/;
+        expect(source).toMatch(marker);
+        await route.fulfill({ response, body: source.replace(marker, match => `if (command === 'get_messages' && args.sessionId === 'session-2' && window.__holdPages) await new Promise(resolve => (window.__heldPages ??= []).push(resolve));
+      ${match}`) });
+      });
+      await page.goto('/');
+      await ready(page);
+      await expect.poll(() => stored(page, 'pandacode.restoringThread')).toBeNull();
+      type Held = Window & { __holdPages?: boolean; __heldPages?: (() => void)[] };
+      await page.evaluate(() => { (window as Held).__holdPages = true; });
+      const held = () => page.evaluate(() => (window as Held).__heldPages?.length ?? 0);
+      await page.locator('.task-item', { hasText: 'Refine the navigation' }).click();
+      await expect.poll(held).toBe(1);
+      await page.locator('.task-item', { hasText: 'Make search feel instant' }).click();
+      await page.locator('.task-item', { hasText: 'Refine the navigation' }).click();
+      await expect.poll(held).toBe(2);
+      expect(await stored(page, 'pandacode.restoringThread')).toBe('session-2');
+      // The first load's late page is superseded by the same thread's second load, which has not painted yet.
+      await page.evaluate(() => (window as Held).__heldPages!.shift()!());
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(await stored(page, 'pandacode.restoringThread')).toBe('session-2');
+      await page.evaluate(() => (window as Held).__heldPages!.shift()!());
       await expect.poll(() => stored(page, 'pandacode.restoringThread')).toBeNull();
     });
 

@@ -80,7 +80,12 @@ test.describe('toast notices', () => {
   });
 
   test('only the toast text is a live region: its buttons are outside it, and a new toast reuses it', async ({ page }) => {
+    // The region is there, empty, before the first toast: its first text is a change screen readers announce.
+    const region = await toast(page).locator('.toast-text').elementHandle();
+    await expect(toast(page).locator('.toast-text')).toHaveText('');
+    await expect(toast(page).locator('.toast-text')).toHaveAttribute('role', 'status');
     await bot(page, 'Hello there');
+    expect(await toast(page).locator('.toast-text').evaluate((label, before) => label === before, region)).toBe(true);
     await expect(toast(page)).toBeVisible();
     await expect(toast(page)).not.toHaveAttribute('role', /.+/);
     await expect(toast(page)).not.toHaveAttribute('aria-live', /.+/);

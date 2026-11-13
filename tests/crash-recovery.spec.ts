@@ -14,9 +14,11 @@ test.describe('crash recovery notice', () => {
     await expect(toast).toHaveText(`PandaCode crashed ${await when(page)} and restarted.`);
     // The live region is the toast's text alone (its buttons are never read with it).
     await expect(toast.locator('.toast-text')).toHaveAttribute('role', 'status');
+    // Never clamped and rewritten in place: no tooltip that only repeats it and could go stale.
+    await expect(toast.locator('.toast-text')).not.toHaveAttribute('title');
     // Only the close button: no report was kept.
     await expect(toast.getByRole('button')).toHaveCount(1);
-    await expect(toast.getByRole('button', { name: 'Dismiss notice' })).toBeVisible();
+    await expect(toast.getByRole('button', { name: 'Dismiss' })).toBeVisible();
     // Asked once per launch.
     expect(await calls(page, 'crash_recovery_take')).toHaveLength(1);
   });
@@ -44,7 +46,7 @@ test.describe('crash recovery notice', () => {
     // Showing the report does not end the notice: it is still there when the user comes back.
     await page.waitForTimeout(500);
     await expect(toast).toHaveText(`PandaCode crashed ${await when(page)} and restarted.Show crash report`);
-    await expect(toast.getByRole('button', { name: 'Dismiss notice' })).toBeVisible();
+    await expect(toast.getByRole('button', { name: 'Dismiss' })).toBeVisible();
   });
 
   test('paused restarts say the app did not restart, that agents stopped, that no thread was opened and when restarts resume, leaving the report to its button', async ({ page }) => {
@@ -120,15 +122,15 @@ test.describe('crash recovery notice', () => {
     await crashed(page, { summary: null, hasReport: true, restarted: true, restartsPaused: false });
     await page.goto('/');
     await ready(page);
-    const toast = page.locator('#toast'), close = toast.getByRole('button', { name: 'Dismiss notice' });
+    const toast = page.locator('#toast'), close = toast.getByRole('button', { name: 'Dismiss' });
     await expect(toast).toContainText(`PandaCode crashed ${await when(page)} and restarted.`);
     // What the page's own Escape handling (it stops a running agent) gets to see.
     await page.evaluate(() => document.addEventListener('keydown', event => {
       if (event.key === 'Escape' && !event.defaultPrevented) (window as Window & { __pageEscapes?: number }).__pageEscapes = ((window as Window & { __pageEscapes?: number }).__pageEscapes ?? 0) + 1;
     }));
     const pageEscapes = () => page.evaluate(() => (window as Window & { __pageEscapes?: number }).__pageEscapes ?? 0);
-    // With focus in the composer Escape is the page's: the notice stays, and its tip promised nothing else.
-    await expect(close).toHaveAttribute('data-tip', 'Dismiss');
+    // With focus in the composer Escape is the page's: the notice stays, and it has no tip and promises no Escape.
+    await expect(close).not.toHaveAttribute('data-tip');
     await expect(close).not.toHaveAttribute('aria-keyshortcuts', /Escape/);
     await page.locator('#prompt').focus();
     await page.keyboard.press('Escape');
@@ -158,10 +160,10 @@ test.describe('crash recovery notice', () => {
     await expect(toast.getByRole('button', { name: 'Show crash report' })).toBeFocused();
     // The close button follows the action (WebKit's Tab skips buttons by default, hence F6).
     await expect(toast.getByRole('button')).toHaveText(['Show crash report', '']);
-    await expect(toast.getByRole('button').nth(1)).toHaveAccessibleName('Dismiss notice');
-    // F6 is announced on the button it reaches; the close button's tip names no key.
+    await expect(toast.getByRole('button').nth(1)).toHaveAccessibleName('Dismiss');
+    // F6 is announced on the button it reaches; the close button has no tip.
     await expect(toast.getByRole('button', { name: 'Show crash report' })).toHaveAttribute('aria-keyshortcuts', 'F6');
-    await expect(toast.getByRole('button').nth(1)).toHaveAttribute('data-tip', 'Dismiss');
+    await expect(toast.getByRole('button').nth(1)).not.toHaveAttribute('data-tip');
     await page.keyboard.press('F6');
     await expect(page.locator('#prompt')).toBeFocused();
     await page.keyboard.press('F6');
@@ -180,7 +182,7 @@ test.describe('crash recovery notice', () => {
     await crashed(page, { summary: null, hasReport: false, restarted: true, restartsPaused: false });
     await page.goto('/');
     await ready(page);
-    await page.locator('#toast').getByRole('button', { name: 'Dismiss notice' }).click();
+    await page.locator('#toast').getByRole('button', { name: 'Dismiss' }).click();
     await expect(page.locator('#toast')).toBeHidden();
   });
 
@@ -221,7 +223,8 @@ test.describe('crash recovery notice', () => {
   });
 
   test('it stays until the user closes it, however long they are away', async ({ page }) => {
-    await page.clock.install();
+    // Midday UTC: the hour skipped below never crosses midnight (which would add the date) in any time zone in use.
+    await page.clock.install({ time: new Date('2026-11-11T12:00:00Z') });
     await crashed(page, { summary: null, hasReport: false, restarted: true, restartsPaused: false });
     await page.goto('/');
     await ready(page);
@@ -236,7 +239,7 @@ test.describe('crash recovery notice', () => {
     await page.clock.fastForward('00:20');
     await expect(toast).toHaveText(text);
     expect(text).not.toMatch(/just now|ago/);
-    await toast.getByRole('button', { name: 'Dismiss notice' }).click();
+    await toast.getByRole('button', { name: 'Dismiss' }).click();
     await expect(toast).toBeHidden();
   });
 
@@ -258,7 +261,7 @@ test.describe('crash recovery notice', () => {
     expect(yesterday).toMatch(/^on .+ at /);
     await expect(toast).toHaveText(`PandaCode crashed ${yesterday} and restarted.`, { timeout: 15_000 });
     await expect(toast).toHaveAttribute('aria-live', 'off');
-    await expect(toast.getByRole('button', { name: 'Dismiss notice' })).toBeVisible();
+    await expect(toast.getByRole('button', { name: 'Dismiss' })).toBeVisible();
   });
 
   test('left on screen while restarts resume, the paused notice drops its resume sentence in place, unannounced', async ({ page }) => {
@@ -276,6 +279,8 @@ test.describe('crash recovery notice', () => {
     await expect(toast).not.toContainText(NOTHING);
     await expect(toast).toContainText(/^PandaCode kept crashing/);
     await expect(toast).toHaveAttribute('aria-live', 'off');
+    // No tooltip left saying when restarts resume.
+    await expect(toast.locator('.toast-text')).not.toHaveAttribute('title');
     await expect(toast.getByRole('button', { name: 'Show crash report' })).toBeVisible();
   });
 
@@ -414,8 +419,11 @@ test.describe('crash recovery notice', () => {
     const toast = page.locator('#toast');
     await toast.getByRole('button', { name: 'Show crash report' }).click();
     await expect(toast).toHaveText('Could not show the crash report: crash_report_reveal failed in the preview');
+    // A failure, in the danger tone like every other.
+    await expect(toast).toHaveAttribute('data-danger', '');
     // The error leaves by itself; the notice returns with its action, which works on the next try.
     await expect(toast).toHaveText(`PandaCode crashed ${await when(page)} and restarted.Show crash report`, { timeout: 20_000 });
+    await expect(toast).not.toHaveAttribute('data-danger');
     await expect(toast).toHaveAttribute('aria-live', 'off');
     await toast.getByRole('button', { name: 'Show crash report' }).click();
     await expect.poll(async () => (await calls(page, 'crash_report_reveal')).length).toBe(2);
@@ -574,7 +582,7 @@ test.describe('crash recovery notice placement', () => {
       const [notice, last] = await Promise.all([toast.boundingBox(), transcript.locator('[data-message-id], .turn-card').filter({ visible: true }).last().boundingBox()]);
       return notice && last ? Math.round(last.y + last.height - notice.y) : 'unmeasured';
     }).toBeLessThanOrEqual(0);
-    await toast.getByRole('button', { name: 'Dismiss notice' }).click();
+    await toast.getByRole('button', { name: 'Dismiss' }).click();
     await expect(toast).toBeHidden();
     await expect.poll(room).toBe('');
   });
