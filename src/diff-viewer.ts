@@ -26,6 +26,8 @@ export interface DiffViewerInput {
 export interface DiffViewerController {
   /** Resolves after the first render or a safe fallback; never rejects. */
   ready: Promise<void>;
+  /** Host adapter only; these nodes/functions never cross the extension boundary. */
+  controls(): { id: 'unified' | 'split' | 'wrap'; node: HTMLButtonElement; invoke(): void }[];
   /** Safe to call during the lazy import, and more than once. */
   dispose(): void;
 }
@@ -552,6 +554,11 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
 
   const controller: DiffViewerController = {
     ready: initialize(),
+    controls: () => [
+      { id: 'unified', node: unified, invoke: () => { requestedLayout = 'unified'; rerender(); } },
+      { id: 'split', node: split, invoke: () => { requestedLayout = 'split'; rerender(); } },
+      { id: 'wrap', node: wrapping, invoke: () => { wrap = !wrap; rerender(); } },
+    ],
     dispose() {
       if (disposed) return;
       disposed = true;

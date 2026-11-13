@@ -1,8 +1,8 @@
 /** JSON-only ordering. Both input methods submit the same relative-placement operation. */
-import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES } from './surfaces.ts';
+import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS } from './surfaces.ts';
 export type Placement = { id: string; target: string; side: 'before' | 'after' };
 export type LayoutProposal = { id: string; title: string; location: string; rules: Placement[] };
-export const actionLocations: readonly string[] = ['panda.workspace.header.actions', 'panda.sidebar.footer', 'panda.inspector.actions', ...VIEW_ACTION_SURFACES, ...DOCUMENT_ACTION_SURFACES, 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer'];
+export const actionLocations: readonly string[] = ['panda.workspace.header.actions', 'panda.sidebar.footer', 'panda.inspector.actions', ...VIEW_ACTION_SURFACES, ...DOCUMENT_ACTION_SURFACES, ...CHANGES_ACTION_SURFACES, 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', ...Object.keys(CHANGES_CONTROLS)];
 export class OrderingCycle extends Error {
   readonly ids: string[];
   constructor(ids: string[]) { super(`OrderingCycle: ${ids.join(', ')}`); this.ids = ids; }

@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.diff",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "requiredContributions": ["components"],
+  "contributes": {
+    "components": [{ "id": "sample.diff/commit", "title": "Commit first", "slot": "panda.changes", "contractVersion": 1, "presentation": "commit-first", "capabilities": ["host-diff", "host-commit", "original-actions"] }],
+    "commands": [{ "id": "sample.diff/info", "title": "Diff tools", "action": { "kind": "showMessage", "message": "Changes presentation uses original host handlers and staged scope." } }],
+    "menus": [
+      { "id": "sample.diff/action", "command": "sample.diff/info", "location": "panda.changes.actions" },
+      { "id": "sample.diff/context", "command": "sample.diff/info", "location": "panda.inspector.changes.context" }
+    ],
+    "layouts": [{ "id": "sample.diff/order", "title": "Menu before folds", "location": "panda.changes.controls", "rules": [{ "id": "panda.changes.controls/menu", "target": "panda.changes.controls/fold-all", "side": "before" }] }]
+  }
+}

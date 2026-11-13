@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createUiCatalog, createCoreCommands, HEADER, FOOTER, INSPECTOR } from '../src/extensions/catalog.ts';
 import { validateContract } from '../src/extensions/contracts.ts';
-import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS } from '../src/extensions/surfaces.ts';
+import { VIEW_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_CONTROLS } from '../src/extensions/surfaces.ts';
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from '../src/extensions/window-surfaces.ts';
 import { INSPECTOR_VIEW_LOCATION } from '../src/extensions/views-state.ts';
 import { INSPECTOR_VIEWS } from '../src/inspector-tabs.ts';
@@ -26,9 +26,9 @@ test('extensions catalog: public DTOs enumerate core/sample identities without h
   const ui = createUiCatalog(installed);
   assert.deepEqual(Object.keys(ui), ['listSurfaces', 'listItems']);
   const surfaces = ui.listSurfaces().items;
-  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, 'panda.documents', 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', 'panda.documents.actions', 'panda.documents.context', ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
+  assert.deepEqual(surfaces.map(item => item.id), [INSPECTOR, INSPECTOR_VIEW_LOCATION, FOOTER, HEADER, 'panda.documents', 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', 'panda.documents.actions', 'panda.documents.context', 'panda.changes', 'panda.changes.actions', ...Object.keys(CHANGES_CONTROLS), ...VIEW_ACTION_SURFACES, ...THREAD_ACTION_SURFACES, ...SETTINGS_ACTION_SURFACES, ...SETTINGS_DATA_SURFACES, ...Object.keys(WINDOW_ACTION_SURFACES)].sort());
   const items = allItems(ui);
-  const expected = 9 + 12 + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
+  const expected = 9 + 12 + Object.values(CHANGES_CONTROLS).reduce((count, controls) => count + controls.length, 0) + Object.values(CONTEXT_COMMANDS).reduce((count, commands) => count + commands.length, 0) + 6 + INSPECTOR_VIEWS.length;
   assert.equal(items.length, expected); assert.equal(new Set(items.map(item => item.id)).size, expected);
   assert.deepEqual(items.filter(item => item.owner === sample.id).map(item => item.id), ['sample.project-helper/header', 'sample.project-helper/sidebar']);
   for (const item of [...items, ...surfaces]) {
@@ -81,8 +81,10 @@ test('extensions catalog: more than one hundred contributions remain fully pagea
   assert.equal(first.items.length, 100); assert.ok(first.nextCursor.length < 4096);
   const second = ui.listItems({ limit: 100, cursor: first.nextCursor });
   const total = 128 + allItems(createUiCatalog(empty)).length;
-  assert.equal(second.items.length, total - 100); assert.equal(second.nextCursor, null);
-  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, total);
+  assert.equal(second.items.length, 100); assert.ok(second.nextCursor);
+  const third = ui.listItems({ limit: 100, cursor: second.nextCursor });
+  assert.equal(third.items.length, total - 200); assert.equal(third.nextCursor, null);
+  assert.equal(new Set([...first.items, ...second.items, ...third.items].map(item => item.id)).size, total);
 });
 test('extensions catalog: every public built-in invokes the exact original handler once with zero arguments', async () => {
   const ids = createUiCatalog(empty).listItems().items.flatMap(item => item.command ? [item.command.id] : []);

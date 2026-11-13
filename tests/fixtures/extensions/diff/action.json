@@ -1,0 +1,13 @@
+{
+  "contractVersion": 1,
+  "context": "main/task-A/checkout-A",
+  "repository": "repo-A",
+  "revision": 7,
+  "fileId": "file-A",
+  "diffId": "diff-A",
+  "fileRevision": 3,
+  "hunkId": "",
+  "hunkRevision": 0,
+  "controlId": "unstage",
+  "requestId": "request-A"
+}

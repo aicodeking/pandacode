@@ -1,9 +1,17 @@
 import type { GitFile, GitStatus } from './types';
 import type { DiffViewerController } from './diff-viewer';
-import { escape, fileIcon, icon } from './dom';
+import { escape, fileIcon, icon, isImeKey } from './dom';
+import { createChangesPresentation, snapshotChangesPresentation, type ChangesPresentation, type ChangesAction, type ChangesResult, type ChangesControl } from './extensions/diff';
+import { applyChangesPresentation, componentProviders, componentSelection } from './extensions/replacement';
+import { extensionsSnapshot, onExtensionsChanged, extensionIdentity } from './extensions/manager';
+import { layout, applyControlOrder, applyControlVisibility } from './extensions/layout-host';
+import { mountExtensionActions } from './extensions/header';
 import './changes-view.css';
 
 export interface ChangesViewDeps {
+  /** Opaque captured host context; not supplied by an extension. */
+  context?: string;
+  actionContext?(): Record<string, import('./extensions/contracts').Json>;
   loadDiff(path: string, staged: boolean): Promise<string>;
   stage(paths: string[], staged: boolean): Promise<void>;
   commit(message: string): Promise<void>;
@@ -19,12 +27,15 @@ export interface ChangesView {
    * `status` is a new object, or always/never with an explicit `refetch`; a viewer re-mounts only
    * when its patch text changed. */
   update(status: GitStatus | null, error?: string, options?: { refetch?: boolean }): void;
+  presentation(): ChangesPresentation;
+  dispatch(action: ChangesAction): ChangesResult;
   dispose(): void;
 }
 
 type Scope = 'all' | 'unstaged' | 'staged';
 type Load = 'idle' | 'loading' | 'loaded' | 'error';
 interface Entry {
+  id: string; diffId: string; revision: number; hunks: { id: string; revision: number }[];
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
@@ -81,6 +92,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let error: string | undefined;
   let disposed = false;
   let committing = false;
+  let mutating = false, revision = 0;
+  let presentationSignature = '';
+  const repository = crypto.randomUUID(), context = deps.context ?? crypto.randomUUID();
+  const applied = new Set<string>();
   const entries = new Map<string, Entry>();
   const collapsed = new Set<string>();
   let order: string[] = [];
@@ -106,6 +121,68 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   const body = q('.cv-body'), list = q('.cv-list'), scopeLabel = q('.cv-scope-label'), filesLabel = q('.cv-files');
   const addsLabel = q('.cv-adds'), delsLabel = q('.cv-dels'), branchLabel = q('.cv-branch'), foldButton = q<HTMLButtonElement>('[data-cv-action="fold-all"]');
   const commitBar = q<HTMLFormElement>('.cv-commit'), commitInput = q<HTMLInputElement>('.cv-commit-input'), commitSubmit = q<HTMLButtonElement>('.cv-commit-submit');
+  const control = (id: string, label: string, enabled = true, selected?: boolean): ChangesControl => ({ id, label, enabled, ...(selected === undefined ? {} : { selected }) });
+  function presentation(): ChangesPresentation {
+    const selected = [...entries.values()].find(entry => entry.el.contains(document.activeElement));
+    // Leave room for controls inside the shared 8,192-node/256 KiB envelope.
+    const items = [...entries.values()].slice(0, 64); let hunkBudget = 256, omitted = entries.size > items.length;
+    const mapped = items.map(entry => {
+      const hunks = entry.hunks.slice(0, Math.min(32, hunkBudget)); hunkBudget -= hunks.length; omitted ||= hunks.length < entry.hunks.length;
+      return { id: entry.id, diffId: entry.diffId, revision: entry.revision, staged: entry.staged, load: entry.load, hunks, controls: [control('toggle', 'Collapse file', true, !collapsed.has(entry.path)), control('copy', 'Copy path'), control('open', 'Open file', entry.code !== 'D'), control('stage', 'Stage file', unstagedFiles().some(file => file.path === entry.path)), control('unstage', 'Unstage file', stagedFiles().some(file => file.path === entry.path)), control('retry-file', 'Retry diff', entry.load === 'error'), ...(entry.viewer?.controls().map(({ id, node }) => control(id, node.getAttribute('aria-label')!, !node.disabled && !node.closest('[hidden]'), node.getAttribute('aria-pressed') === 'true')) ?? [])] };
+    });
+    const state: ChangesPresentation = { contractVersion: 1, context, repository, revision, scope, selected: selected && items.includes(selected) ? selected.id : '', focused: selected?.id ?? '', loading: !status, error: Boolean(error), offline: !navigator.onLine, visible: !disposed && host.checkVisibility() && !host.closest('[inert]'), pending: committing || mutating, truncated: omitted, files: mapped,
+      controls: [control('scope-all', 'All changes', true, scope === 'all'), control('scope-staged', 'Staged', true, scope === 'staged'), control('scope-unstaged', 'Unstaged', true, scope === 'unstaged'), control('fold-all', 'Collapse all', entries.size > 0), control('stage-all', 'Stage all', unstagedFiles().length > 0), control('unstage-all', 'Unstage all', stagedFiles().length > 0), control('open-commit', 'Commit…', Boolean(status?.isRepo), !commitBar.hidden), control('commit', 'Commit', !committing && stagedFiles().length > 0 && Boolean(commitInput.value.trim())), control('refresh', 'Refresh')],
+    };
+    const signature = JSON.stringify({ ...state, revision: 0, selected: '', focused: '' });
+    if (signature !== presentationSignature) { presentationSignature = signature; revision++; }
+    return snapshotChangesPresentation({ ...state, revision });
+  }
+  function dispatch(action: ChangesAction): ChangesResult {
+    const provider = componentSelection.resolve('panda.changes', componentProviders());
+    if (!provider || !host.dataset.changesProvider) return { ok: false, reason: 'Revoked' };
+    const identity = extensionIdentity(provider.id.split('/')[0]);
+    const instance = createChangesPresentation(presentation(), provider.id, presentation, () => {
+      const current = componentSelection.resolve('panda.changes', componentProviders());
+      return { owner: current?.id ?? '', active: !disposed && current !== undefined && extensionIdentity(provider.id.split('/')[0]) === identity, granted: Boolean(extensionsSnapshot().packages.find(item => item.manifest.id === provider.id.split('/')[0])?.manifest.permissions?.includes('ui.contribute')) };
+    }, originalAction, applied);
+    try { return instance.dispatch(action); } finally { instance.dispose(); }
+  }
+  function originalAction(action: ChangesAction): void {
+    const entry = [...entries.values()].find(entry => entry.id === action.fileId);
+    const id = action.controlId;
+    if (entry) {
+      if (id === 'toggle') { toggle(entry.path); totals(); }
+      else if (id === 'copy') copy(entry.path);
+      else if (id === 'open') deps.openFile(entry.path);
+      else if (id === 'stage' || id === 'unstage') void mutate([entry.path], id === 'stage');
+      else if (id === 'retry-file') { reset(entry); void load(entry); }
+      else { entry.viewer?.controls().find(control => control.id === id)?.invoke(); revision++; }
+    } else if (id.startsWith('scope-')) { scope = id.slice(6) as Scope; revision++; render(); }
+    else if (id === 'fold-all') { const fold = ![...entries.keys()].every(path => collapsed.has(path)); for (const path of entries.keys()) toggle(path, fold); totals(); }
+    else if (id === 'stage-all' || id === 'unstage-all') void mutate((id === 'stage-all' ? unstagedFiles() : stagedFiles()).map(file => file.path), id === 'stage-all');
+    else if (id === 'open-commit') openCommit();
+    else if (id === 'commit') void submitCommit();
+    else if (id === 'refresh') deps.refresh();
+  }
+  const headerBindings = ['scope', 'fold-all', 'menu'].map(id => [`panda.changes.controls/${id}`, q<HTMLElement>(`[data-cv-action="${id}"]`)] as const);
+  const commitBindings = [['panda.changes.controls/commit-message', commitInput], ['panda.changes.controls/commit', commitSubmit]] as const;
+  function refreshPresentation(): void {
+    if (disposed) return;
+    applyChangesPresentation(host);
+    applyControlOrder('panda.changes.controls', [...headerBindings, ...commitBindings]);
+    const bindings: (readonly [string, HTMLElement | null])[] = [...headerBindings, ...commitBindings, ['panda.changes.controls/retry', list.querySelector<HTMLElement>('[data-cv-action="retry"]')]];
+    for (const entry of entries.values()) {
+      const controls = ['toggle', 'copy', 'file-menu'].map(id => [`panda.changes.file/${id}`, entry.el.querySelector<HTMLElement>(`[data-cv-action="${id}"]`)!] as const);
+      applyControlOrder('panda.changes.file', controls); bindings.push(...controls);
+      bindings.push(['panda.changes.file/retry-file', entry.body.querySelector<HTMLElement>('[data-cv-action="retry-file"]')]);
+      const viewer = entry.viewer?.controls().map(({ id, node }) => [`panda.changes.viewer/${id}`, node] as const) ?? [];
+      applyControlOrder('panda.changes.viewer', viewer); bindings.push(...viewer);
+    }
+    applyControlVisibility(bindings, () => body);
+  }
+  const disposeActions = mountExtensionActions(q('.cv-header'), 'panda.changes.actions', () => ({ ...(deps.actionContext?.() ?? {}), revision, selection: { kind: 'repository', ids: [repository] } }), deps.notify);
+  const disposeExtensions = onExtensionsChanged(refreshPresentation), disposeLayout = layout.subscribe(refreshPresentation);
+  window.addEventListener('pandacode-components-change', refreshPresentation);
 
   const observer = new IntersectionObserver(records => {
     for (const record of records) {
@@ -173,7 +250,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     foldButton.setAttribute('aria-label', foldButton.title);
     foldButton.setAttribute('aria-pressed', String(allFolded));
     foldButton.disabled = !n;
-    commitSubmit.disabled = committing || !stagedFiles().length || !commitInput.value.trim();
+    commitSubmit.disabled = committing || mutating || !navigator.onLine || !stagedFiles().length || !commitInput.value.trim();
   }
 
   function element(path: string): Entry['el'] {
@@ -205,6 +282,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   function reset(entry: Entry): void {
     drop(entry);
     entry.token++;
+    entry.revision++; revision++;
+    entry.diffId = crypto.randomUUID(); entry.hunks = [];
     entry.load = 'idle';
     entry.raw = entry.patch = '';
     entry.adds = entry.dels = 0;
@@ -235,6 +314,9 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       if (disposed || token !== entry.token) return;
       if (quiet && entry.load === 'loaded' && text === entry.raw) { mountViewer(entry); return; }
       entry.raw = text;
+      entry.revision++; revision++;
+      entry.diffId = crypto.randomUUID();
+      entry.hunks = [...text.matchAll(/^@@ .+ @@/gm)].slice(0, 257).map(() => ({ id: crypto.randomUUID(), revision: entry.revision }));
       const truncated = TRUNCATED.test(text);
       entry.patch = truncated ? text.replace(TRUNCATED, '\n') : text;
       Object.assign(entry, countLines(entry.patch), { load: 'loaded' as Load });
@@ -246,7 +328,9 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       if (disposed || token !== entry.token || (quiet && entry.load === 'loaded')) return;
       drop(entry);
       entry.load = 'error';
+      entry.revision++; revision++;
       entry.body.innerHTML = `<div class="cv-placeholder cv-error">${icon('alert')}<span>${escape(reason instanceof Error ? reason.message : String(reason || 'Unable to load diff'))}</span><button type="button" class="cv-link" data-cv-action="retry-file">Retry</button></div>`;
+      refreshPresentation();
     }
   }
 
@@ -270,6 +354,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         if (disposed || entry.viewer !== viewer) return;
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
+        refreshPresentation();
       });
     }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
   }
@@ -306,6 +391,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       else sync(wanted);
     }
     totals();
+    refreshPresentation();
   }
 
   function sync(wanted: { file: GitFile; staged: boolean }[]): void {
@@ -325,7 +411,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       let entry = entries.get(file.path);
       if (!entry) {
         const el = element(file.path);
-        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
+        entry = { id: crypto.randomUUID(), diffId: crypto.randomUUID(), revision: 0, hunks: [], path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
         entries.set(file.path, entry);
         observer.observe(el);
         fresh.push(entry);
@@ -349,6 +435,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function toggle(path: string, folded = !collapsed.has(path)): void {
+    revision++;
     if (folded) collapsed.add(path); else collapsed.delete(path);
     const entry = entries.get(path);
     if (entry) paint(entry, entry.code);
@@ -356,6 +443,12 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   async function run(task: Promise<void>, failure: string): Promise<void> {
     try { await task; } catch (reason) { deps.notify(reason instanceof Error && reason.message ? reason.message : failure); }
+  }
+  async function mutate(paths: string[], staged: boolean): Promise<void> {
+    if (disposed || committing || mutating || !navigator.onLine || !paths.length) return;
+    mutating = true; revision++; totals();
+    try { await run(deps.stage([...paths], staged), staged ? 'Unable to stage files' : 'Unable to unstage files'); }
+    finally { mutating = false; revision++; if (!disposed) totals(); }
   }
 
   function openCommit(): void {
@@ -370,8 +463,9 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
   async function submitCommit(): Promise<void> {
     const text = commitInput.value.trim();
-    if (!text || committing || !stagedFiles().length) return;
+    if (!text || disposed || committing || mutating || !navigator.onLine || !stagedFiles().length) return;
     committing = true;
+    revision++;
     totals();
     try {
       await deps.commit(text);
@@ -380,6 +474,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       deps.notify(reason instanceof Error && reason.message ? reason.message : 'Commit failed');
     } finally {
       committing = false;
+      revision++;
       if (!disposed) totals();
     }
   }
@@ -397,8 +492,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       { id: 'open', label: 'Open file', icon: 'file', disabled: file.working === 'D' || (file.index === 'D' && file.working === ' ') },
       { id: 'copy', label: 'Copy path', icon: 'copy' },
     ];
+    const capturedRevision = revision;
     deps.choose(anchor, path, items, id => {
-      if (id === 'stage' || id === 'unstage') void run(deps.stage([path], id === 'stage'), id === 'stage' ? 'Unable to stage file' : 'Unable to unstage file');
+      if (disposed || revision !== capturedRevision) return;
+      if (id === 'stage' || id === 'unstage') void mutate([path], id === 'stage');
       else if (id === 'open') deps.openFile(path);
       else if (id === 'copy') copy(path);
     }, path);
@@ -414,6 +511,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         deps.choose(target, 'Show', (Object.keys(SCOPES) as Scope[]).map(id => ({ id, label: SCOPES[id], selected: id === scope })), id => {
           if (id === scope || !(id in SCOPES)) return;
           scope = id as Scope;
+          revision++;
           render();
         });
         break;
@@ -425,6 +523,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       }
       case 'menu': {
         const staged = stagedFiles().map(f => f.path), unstaged = unstagedFiles().map(f => f.path);
+        const capturedRevision = revision;
         deps.choose(target, 'Changes', [
           { id: 'stage-all', label: 'Stage all', icon: 'plus', disabled: !unstaged.length },
           { id: 'unstage-all', label: 'Unstage all', icon: 'minimize', disabled: !staged.length },
@@ -432,8 +531,9 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
           { id: 'refresh', label: 'Refresh', icon: 'refresh' },
           ...(deps.worktree ? [{ id: 'worktree', label: 'Create isolated worktree…', icon: 'branch' }] : []),
         ], id => {
-          if (id === 'stage-all' && unstaged.length) void run(deps.stage(unstaged, true), 'Unable to stage files');
-          else if (id === 'unstage-all' && staged.length) void run(deps.stage(staged, false), 'Unable to unstage files');
+          if (disposed || revision !== capturedRevision) return;
+          if (id === 'stage-all' && unstaged.length) void mutate(unstaged, true);
+          else if (id === 'unstage-all' && staged.length) void mutate(staged, false);
           else if (id === 'commit') openCommit();
           else if (id === 'refresh') deps.refresh();
           else if (id === 'worktree') deps.worktree?.();
@@ -449,18 +549,24 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   const listeners = new AbortController();
+  window.addEventListener('online', totals, { signal: listeners.signal });
+  window.addEventListener('offline', totals, { signal: listeners.signal });
   host.addEventListener('click', onClick, { signal: listeners.signal });
   commitBar.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void submitCommit(); }, { signal: listeners.signal });
-  commitInput.addEventListener('input', totals, { signal: listeners.signal });
+  commitInput.addEventListener('input', () => { revision++; totals(); }, { signal: listeners.signal });
   commitInput.addEventListener('keydown', event => {
+    if (isImeKey(event)) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeCommit(); }
   }, { signal: listeners.signal });
 
   render();
   return {
+    presentation,
+    dispatch,
     update(next, nextError, options) {
       if (disposed) return;
       const changed = next !== status && status !== null;
+      if (JSON.stringify(next) !== JSON.stringify(status) || nextError !== error) revision++;
       status = next;
       error = nextError;
       render();
@@ -470,6 +576,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     dispose() {
       if (disposed) return;
       disposed = true;
+      disposeActions(); disposeExtensions(); disposeLayout();
+      window.removeEventListener('pandacode-components-change', refreshPresentation);
       listeners.abort();
       observer.disconnect();
       resizer.disconnect();

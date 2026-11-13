@@ -30,7 +30,7 @@ test('extensions menus: discovery labels nested contributions as menu triggers, 
   assert.equal(catalog.listItems({ owner: sample.id }).items[0].type, 'menu-trigger');
   for (const surface of catalog.listSurfaces().items) {
     const dataTypes = { 'panda.inspector.views': ['view', 'list', 'tree', 'table', 'tabs', 'progress'], 'panda.commands': ['command'], 'panda.shortcuts': ['keybinding'], 'panda.settings.pages': ['settings-page'], 'panda.dialog.colors.bodyExtras': ['text'], 'panda.dialog.wallpapers.bodyExtras': ['text'] };
-    const documentTypes = { 'panda.documents': ['viewer-first'], 'panda.documents.navigation': ['button'], 'panda.documents.tabs': ['button'], 'panda.documents.viewer': ['button'] };
+    const documentTypes = { 'panda.documents': ['viewer-first'], 'panda.documents.navigation': ['button'], 'panda.documents.tabs': ['button'], 'panda.documents.viewer': ['button'], 'panda.changes': ['commit-first'], 'panda.changes.controls': ['button'], 'panda.changes.file': ['button'], 'panda.changes.viewer': ['button'] };
     assert.deepEqual(surface.supportedItemTypes, documentTypes[surface.id] ?? dataTypes[surface.id] ?? (THREAD_ACTION_SURFACES.includes(surface.id) || surface.id === 'panda.status.items' || surface.id.endsWith('.actions') && surface.id.startsWith('panda.dialog.') || Object.hasOwn(WINDOW_ACTION_SURFACES, surface.id) && surface.id !== 'panda.tray.menu' ? ['button', 'menu-trigger', 'status', 'badge'] : ['button', 'menu-trigger']));
   }
 });

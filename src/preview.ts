@@ -1664,6 +1664,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     fixture.calls.push({ command, args: structuredClone(args) });
     fixture.emitAgent ??= (event: AgentEvent) => agent(event);
     if (fixture.failOnce === command) { fixture.failOnce = null; throw new Error(`Baseline rejected ${command}`); }
+    if (fixture.holdCommand === command) {
+      fixture.holdCommand = null;
+      await new Promise<void>(resolve => { fixture.releaseCommand = resolve; });
+      fixture.releaseCommand = undefined;
+    }
     if (command === 'open_support') return undefined as T;
     if (command === 'get_terminal_activity' && fixture.terminalRunning) return { running: true, processNames: ['preview-job'], uncertain: false } as T;
     if (command === 'get_run_script' && fixture.runScript) {

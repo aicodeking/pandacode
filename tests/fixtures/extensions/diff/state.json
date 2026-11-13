@@ -1,0 +1,17 @@
+{
+  "contractVersion": 1,
+  "context": "main/task-A/checkout-A",
+  "repository": "repo-A",
+  "revision": 7,
+  "scope": "staged",
+  "selected": "file-A",
+  "focused": "file-A",
+  "loading": false,
+  "error": false,
+  "offline": false,
+  "visible": true,
+  "pending": false,
+  "truncated": false,
+  "files": [{ "id": "file-A", "diffId": "diff-A", "revision": 3, "staged": true, "load": "loaded", "hunks": [{ "id": "hunk-A", "revision": 3 }], "controls": [{ "id": "unstage", "label": "Unstage file", "enabled": true }] }],
+  "controls": [{ "id": "commit", "label": "Commit", "enabled": true }]
+}

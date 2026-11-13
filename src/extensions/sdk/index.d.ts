@@ -3,6 +3,13 @@
  */
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 export type Disposable = { dispose(): void };
+/** Closed declarative Changes recipe; no executable Git or content service. */
+export interface ChangesComponent { readonly id: string; readonly title: string; readonly slot: 'panda.changes'; readonly contractVersion: 1; readonly presentation: 'commit-first'; readonly capabilities: readonly ['host-diff', 'host-commit', 'original-actions'] }
+export interface ChangesControl { readonly id: string; readonly label: string; readonly enabled: boolean; readonly selected?: boolean }
+export interface ChangesFile { readonly id: string; readonly diffId: string; readonly revision: number; readonly staged: boolean; readonly load: 'idle' | 'loading' | 'loaded' | 'error'; readonly hunks: readonly { readonly id: string; readonly revision: number }[]; readonly controls: readonly ChangesControl[] }
+export interface ChangesPresentation { readonly contractVersion: 1; readonly context: string; readonly repository: string; readonly revision: number; readonly scope: 'all' | 'staged' | 'unstaged'; readonly selected: string; readonly focused: string; readonly loading: boolean; readonly error: boolean; readonly offline: boolean; readonly visible: boolean; readonly pending: boolean; readonly truncated: boolean; readonly files: readonly ChangesFile[]; readonly controls: readonly ChangesControl[] }
+export interface ChangesAction { readonly contractVersion: 1; readonly context: string; readonly repository: string; readonly revision: number; readonly fileId: string; readonly diffId: string; readonly fileRevision: number; readonly hunkId: string; readonly hunkRevision: number; readonly controlId: string; readonly requestId: string }
+export type ChangesResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'InvalidArguments' | 'UnsupportedCapability' | 'StaleContext' | 'WrongOwner' | 'PermissionDenied' | 'Revoked' | 'Busy' | 'AlreadyApplied' };
 /** Closed declarative recipe; no executable renderer or document-content grant. */
 export interface DocumentComponent { readonly id: string; readonly title: string; readonly slot: 'panda.documents'; readonly contractVersion: 1; readonly presentation: 'viewer-first'; readonly capabilities: readonly ['host-tabs', 'host-viewer', 'original-actions'] }
 export interface DocumentPresentation {

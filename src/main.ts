@@ -5296,10 +5296,13 @@ function showChangesView(target: HTMLElement, key: string): void {
     const host = document.createElement('div');
     target.replaceChildren(host);
     const context = workspaceContext();
+    const changesGeneration = state.generation;
     changesView = mountChangesView(host, {
+      context: crypto.randomUUID(),
+      actionContext: () => ({ ...context }),
       loadDiff: (path, staged) => call<string>('git_diff', { ...context, path, staged }),
-      stage: (paths, staged) => stage(paths, staged),
-      commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
+      stage: (paths, staged) => stage(paths, staged, context, changesGeneration),
+      commit: async message => { const result = await call<string>('git_commit', { ...context, message }); if (changesGeneration !== state.generation) return; await refreshInspector(); notify(result || 'Changes committed'); },
       openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
       refresh: () => run(refreshInspector()),
       notify,
@@ -5307,6 +5310,10 @@ function showChangesView(target: HTMLElement, key: string): void {
       worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
     });
     changesViewKey = key;
+    if (preview && new URLSearchParams(location.search).has('diff-coverage')) {
+      (window as any).__previewChanges = () => changesView?.presentation();
+      (window as any).__previewChangesAction = (action: import('./extensions/diff').ChangesAction) => changesView?.dispatch(action);
+    }
   }
   changesView.update(state.git, undefined);
 }
@@ -5510,10 +5517,9 @@ function attachFile(path: string): void {
   if (state.attachments.length >= 5) { notify('Attach up to 5 files per message.'); return; }
   state.attachments.push(path); renderComposer(); notify('Attached ' + path.split('/').pop());
 }
-async function stage(paths: string[], staged: boolean): Promise<void> {
-  if (!project() || !paths.length) return;
-  const generation = state.generation;
-  await call('git_stage', { ...workspaceContext(), paths, staged });
+async function stage(paths: string[], staged: boolean, context = workspaceContext(), generation = state.generation): Promise<void> {
+  if (!context.projectId || !paths.length) return;
+  await call('git_stage', { ...context, paths, staged });
   if (generation !== state.generation) return;
   state.selectedKind = ''; await refreshInspector();
 }

@@ -5,6 +5,25 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Closed Changes recipe: move only the original commit form's visual order. */
+export function applyChangesPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.cv-header') || !host.querySelector('.cv-commit')) throw Error('Incomplete Changes host');
+}): void {
+  delete host.dataset.changesProvider;
+  const status = host.querySelector<HTMLElement>(':scope > [data-changes-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.changes', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.changesPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Changes replacement failed. Built-in diff remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.changesProvider = provider.id; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 export function componentProviders(): ComponentProvider[] {
   const snapshot = extensionsSnapshot();
   return snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled && item.manifest.permissions?.includes('ui.contribute')).flatMap(item => item.manifest.contributes.components ?? []).sort((a, b) => a.id.localeCompare(b.id));

@@ -1,4 +1,7 @@
 .component-replacement { display: flex; flex-direction: column; gap: var(--ds-row-pad-y, 4px); padding: var(--ds-row-pad-y, 4px); }
+/* Closed host recipe: same form, draft, pending operation and diff nodes. */
+[data-changes-provider] > .cv-commit { order: -1; }
+[data-changes-provider] .cv-file-body .diff-viewer-toolbar { display: flex; }
 /* Presentation only. The same viewer/worker and its reader selection stay mounted. */
 [data-document-provider] #file-view { display: flex; flex-direction: column; }
 [data-document-provider] #file-view > .file-view-header { order: 1; }
