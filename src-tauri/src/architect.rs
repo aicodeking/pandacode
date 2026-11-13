@@ -117,7 +117,6 @@ const FAILED_PREFIX: &str = "A worker failed while other workers are still runni
 const FAILED_BODY: &str = "\n\nRead the failed worker's error and result. Retry it with followup_worker, dispatch a replacement (set replaces to its ID; with profileId \"auto\" Panda Router escalates past the models that failed it, at most 2 retries per assignment, then report the failure to the user; a replacement starts from the old worker's changes in the shared checkout, so revert them or say what to keep), or leave it for the final review. Other workers are still active: do not edit their files, repeat completed assignments, or poll. You may end this turn after you act; settled work will trigger review.\n\n";
 /// Harnesses an architect can run workers on: every one bridges the host-tools
 /// MCP server into its harness protocol (ZCode rides `session/create`).
-
 pub(crate) const HARNESSES: [&str; 21] = [
     "claude",
     "codex",
@@ -140,7 +139,6 @@ pub(crate) const HARNESSES: [&str; 21] = [
     "hermes",
     "cursor",
     "zcode",
-
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
