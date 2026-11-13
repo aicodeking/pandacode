@@ -5,6 +5,27 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Closed Simulator recipe moves the original dock, never the frame/input controller. */
+export function applySimulatorPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.sim-dock') || !host.querySelector('.sim-stage')) throw Error('Incomplete Simulator host');
+}): void {
+  delete host.dataset.simulatorProvider;
+  const dock = host.querySelector<HTMLElement>('.sim-dock');
+  if (dock) dock.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-simulator-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.simulator', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.simulatorPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Simulator replacement failed. Built-in simulator remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.simulatorProvider = provider.id; if (dock) dock.style.order = '-1'; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** Closed Terminal recipe changes only the original tab strip's visual order. */
 export function applyTerminalPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('[role="tablist"]') || !host.querySelector('#terminal-host')) throw Error('Incomplete Terminal host');

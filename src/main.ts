@@ -822,6 +822,10 @@ if (preview && new URLSearchParams(location.search).has('browser-coverage')) {
   (window as any).__previewBrowser = () => browserPanel?.presentation();
   (window as any).__previewBrowserAction = (action: unknown) => browserPanel?.dispatch(action);
 }
+if (preview && new URLSearchParams(location.search).has('simulator-coverage')) {
+  (window as any).__previewSimulator = () => simulatorPanel?.presentation();
+  (window as any).__previewSimulatorAction = (action: unknown) => simulatorPanel?.dispatch(action);
+}
 $('#inspector-content').addEventListener('contextmenu', event => {
   if (state.inspectorTab !== 'files') return;
   const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');
@@ -5059,7 +5063,12 @@ function syncSimulatorPanel(): void {
   simulatorLoading ??= import('./simulator').then(({ mountSimulator }) => {
     simulatorPanel = mountSimulator($('#simulator-panel'), {
       call, notify,
-      choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 300, items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
+      context: () => ({ projectId: session()?.projectId ?? '', sessionId: state.sessionId ?? '' }),
+      choose: (anchor, title, items, onSelect) => {
+        let active = true;
+        void showChoices(anchor, { title, width: 300, items, afterClose: () => { active = false; }, onSelect: id => { closeChoiceMenu(); onSelect(id); } });
+        return () => { if (active && (choiceMenuAnchor === anchor || pendingMenuOpen?.anchor === anchor)) closeChoiceMenu(); active = false; };
+      },
       listen: (name, callback) => subscribe(name, callback),
     });
     if (state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) simulatorPanel.show();

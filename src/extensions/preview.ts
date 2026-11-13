@@ -27,6 +27,7 @@ import documentsManifest from '../../tests/fixtures/extensions/documents/extensi
 import diffManifest from '../../tests/fixtures/extensions/diff/extension.json';
 import searchManifest from '../../tests/fixtures/extensions/search/extension.json';
 import browserManifest from '../../tests/fixtures/extensions/browser/extension.json';
+import simulatorManifest from '../../tests/fixtures/extensions/simulator/extension.json';
 import terminalManifest from '../../tests/fixtures/extensions/terminal/extension.json';
 import composerManifest from '../../tests/fixtures/extensions/composer/extension.json';
 import transcriptManifest from '../../tests/fixtures/extensions/transcript/extension.json';
@@ -157,6 +158,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
+    if (new URLSearchParams(location.search).has('simulator-coverage')) {
+      if (snapshot.packages.some(item => item.manifest.id === simulatorManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: simulatorManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
     if (new URLSearchParams(location.search).has('documents-coverage') || new URLSearchParams(location.search).has('diff-coverage') || new URLSearchParams(location.search).has('search-coverage') || new URLSearchParams(location.search).has('browser-coverage') || new URLSearchParams(location.search).has('terminal-coverage')) {
       const selected = new URLSearchParams(location.search).has('terminal-coverage') ? terminalManifest : new URLSearchParams(location.search).has('browser-coverage') ? browserManifest : new URLSearchParams(location.search).has('search-coverage') ? searchManifest : new URLSearchParams(location.search).has('diff-coverage') ? diffManifest : documentsManifest;
       if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Already installed');

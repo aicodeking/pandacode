@@ -536,9 +536,12 @@ const previewSimulator = (() => {
   const status = () => ({ available: true, axe: true, axeInstall: 'brew install cameroncooke/axe/axe', android: true, devices: devices.map(d => ({ platform: 'ios', ...d })), selected, screen: selected ? screenOf(selected) : null, duoAvailable: true, pose: selected && devices.find(d => d.udid === selected)?.duo ? poses.get(selected) ?? 'closed' : null, error: null });
   const apps = ['Messages', 'Safari', 'Photos', 'Camera', 'Maps', 'Weather', 'Notes', 'Settings', 'Orbit', 'Music', 'Clock', 'Files'];
   const colors = ['#34c759', '#0a84ff', '#ff9f0a', '#636366', '#30b0c7', '#5ac8fa', '#ffd60a', '#8e8e93', '#ffd43b', '#ff375f', '#1c1c1e', '#007aff'];
-  async function frame(udid: string): Promise<ArrayBuffer> {
+  async function frame(udid: string, type = 'image/jpeg'): Promise<ArrayBuffer> {
     const { width, height } = activeOf(udid), scale = 1.5;
-    const canvas = new OffscreenCanvas(width * scale, height * scale), g = canvas.getContext('2d')!;
+    // Windows WebKit has no OffscreenCanvas. Keep the same synthetic device usable
+    // there without disguising a failed frame pump as native/device qualification.
+    const canvas = typeof OffscreenCanvas === 'undefined' ? Object.assign(document.createElement('canvas'), { width: width * scale, height: height * scale }) : new OffscreenCanvas(width * scale, height * scale);
+    const g = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
     g.scale(scale, scale);
     const sky = g.createLinearGradient(0, 0, 0, height);
     sky.addColorStop(0, dark ? '#1b2a4a' : '#7fb2ff'); sky.addColorStop(1, dark ? '#3a1d4a' : '#ffc6a8');
@@ -550,7 +553,10 @@ const previewSimulator = (() => {
       g.fillStyle = '#fff'; g.font = '500 11px -apple-system, sans-serif'; g.textAlign = 'center'; g.fillText(name, x + 31, y + 78); g.textAlign = 'start';
     });
     if (lastTap) { g.fillStyle = 'rgba(255,255,255,.55)'; g.beginPath(); g.arc(lastTap.x, lastTap.y, 18, 0, Math.PI * 2); g.fill(); }
-    const image = await (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 })).arrayBuffer();
+    const blob = canvas instanceof HTMLCanvasElement
+      ? await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(Error('Synthetic simulator frame unavailable')), type, 0.85))
+      : await canvas.convertToBlob({ type, quality: 0.85 });
+    const image = await blob.arrayBuffer();
     const out = new Uint8Array(8 + image.byteLength);
     new DataView(out.buffer).setBigUint64(0, BigInt(seq), true);
     out.set(new Uint8Array(image), 8);
@@ -586,7 +592,7 @@ const previewSimulator = (() => {
       seq++; return `${input.kind} done`;
     },
     appearance(mode: unknown) { dark = mode === 'dark'; seq++; return `Appearance set to ${mode}.`; },
-    async capture(udid: unknown) { return (await frame(device(udid).udid)).slice(8); },
+    async capture(udid: unknown) { return (await frame(device(udid).udid, 'image/png')).slice(8); },
   };
 })();
 /** Imported VS Code themes, as the native importer would store them. */
@@ -2617,7 +2623,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'skill_manager_restore': result = previewSkillManager.restore(args as { name: string; projectId?: string }); break;
     case 'skill_manager_uninstall': result = previewSkillManager.uninstall(args as { name: string; projectId?: string }); break;
     case 'skill_manager_undo_uninstall': result = previewSkillManager.undoUninstall(args as { id: string; projectId?: string }); break;
-    case 'simulator_status': result = previewSimulator.status(); break;
+    case 'simulator_status': result = { ...previewSimulator.status(), ...(new URLSearchParams(location.search).has('simulator-coverage') ? (window as any).__extensionsBaseline?.simulatorStatus : {}) }; break;
     case 'simulator_pose': result = await previewSimulator.pose(args.udid, args.pose); break;
     case 'simulator_create_duo': result = previewSimulator.createDuo(); break;
     case 'simulator_select': result = previewSimulator.select(args.udid); break;

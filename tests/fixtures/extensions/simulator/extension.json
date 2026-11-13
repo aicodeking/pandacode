@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.simulator",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.simulator/controls", "title": "Controls first", "slot": "panda.simulator", "contractVersion": 1, "presentation": "controls-first", "capabilities": ["host-device", "host-input", "host-frames", "original-actions"] }],
+    "commands": [{ "id": "sample.simulator/tools", "title": "Simulator tools", "action": { "kind": "showMessage", "message": "Simulator operations and device connections remain host-owned." } }],
+    "menus": [
+      { "id": "sample.simulator/action", "command": "sample.simulator/tools", "location": "panda.simulator.actions" },
+      { "id": "sample.simulator/context", "command": "sample.simulator/tools", "location": "panda.simulator.context" }
+    ],
+    "layouts": [{ "id": "sample.simulator/home-first", "title": "Home before power", "location": "panda.simulator.controls", "rules": [{ "id": "panda.simulator.controls/home", "target": "panda.simulator.controls/power", "side": "before" }] }]
+  }
+}

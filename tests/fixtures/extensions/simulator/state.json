@@ -1,0 +1,6 @@
+{
+  "contractVersion": 1, "context": "context-A", "project": "project-A", "session": "task-A", "device": "device-A", "platform": "android", "revision": 3,
+  "visible": true, "busy": false, "loading": false, "error": "", "truncated": false, "pose": "", "finish": "black", "appearance": "light",
+  "devices": [{ "id": "device-A", "name": "Pixel", "runtime": "Android 16", "platform": "android", "state": "Booted" }],
+  "controls": [{ "id": "home", "enabled": true, "reason": "", "values": [] }, { "id": "pose", "enabled": false, "reason": "Pose requires iPhone Duo", "values": [] }, { "id": "device", "enabled": true, "reason": "", "values": ["device-A"] }]
+}

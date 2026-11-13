@@ -1,8 +1,15 @@
 import './simulator.css';
-import { icon } from './dom';
+import { icon, isImeKey } from './dom';
 import { androidOnly, isWindows } from './platform';
 import type { Device3D, DeviceButton, DuoPose, DeviceShape, ScreenGesture } from './simulator-3d';
 import { chosenFinish, modelSpec, rememberFinish } from './simulator-models';
+import { createSimulatorPresentation, snapshotSimulator, type SimulatorPresentation, type SimulatorAdmission, type SimulatorControl } from './extensions/simulator';
+import { applySimulatorPresentation, componentProviders, componentSelection } from './extensions/replacement';
+import { extensionsSnapshot, onExtensionsChanged } from './extensions/manager';
+import { applyControlOrder, applyControlVisibility, orderedControls, layout } from './extensions/layout-host';
+import { SIMULATOR_CONTROLS } from './extensions/surfaces';
+import { mountExtensionActions } from './extensions/header';
+import { openContextActions } from './extensions/context-actions';
 
 /* The inspector's iOS Simulator: one device shown as a 3D model with its live
  * screen. Agents reach the same device through the pandacode_simulator_* tools. */
@@ -20,9 +27,10 @@ type Input =
 type ChoiceItem = { id: string; label: string; description?: string; icon?: string; selected?: boolean; disabled?: boolean };
 
 export type SimulatorHost = {
+  context?(): { projectId: string; sessionId: string };
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
-  choose(anchor: HTMLElement, title: string, items: ChoiceItem[], onSelect: (id: string) => void): void;
+  choose(anchor: HTMLElement, title: string, items: ChoiceItem[], onSelect: (id: string) => void): void | (() => void);
   /** Native progress events, e.g. Android setup. */
   listen?(name: 'android-setup', callback: (event: AndroidSetup) => void): Promise<() => void>;
 };
@@ -67,10 +75,16 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   const stage = root.querySelector<HTMLElement>('.sim-stage')!;
   const statusLine = root.querySelector<HTMLElement>('.sim-status')!;
   const button = (name: string) => root.querySelector<HTMLButtonElement>(`[data-sim="${name}"]`)!;
+  const controlBindings = [...root.querySelectorAll<HTMLElement>('[data-sim]')].map(node => [`panda.simulator.controls/${node.dataset.sim}`, node] as const);
 
   let status: SimStatus | undefined, device: Device3D | undefined, flat: HTMLImageElement | undefined, settingUp = false;
   let visible = false, disposed = false, pumpGeneration = 0, seq = 0, busy = false, poseBusy = false, poseWanted: DuoPose | undefined, poseEpoch = 0, poll = 0, polling = false, appearance: 'light' | 'dark' = 'light', warnedAxe = false;
   let typed = '', typeTimer = 0, scroll = { dx: 0, dy: 0, at: { x: 0, y: 0 } }, scrollTimer = 0;
+  const context = crypto.randomUUID(), handles = new Map<string, string>(), applied = new Set<string>();
+  let revision = 0, loadingStatus = true, operationBusy = false;
+  let closeApproval: (() => void) | undefined;
+  const handle = (udid: string) => { if (!handles.has(udid)) handles.set(udid, crypto.randomUUID()); return handles.get(udid)!; };
+  const hostContext = () => host.context?.() ?? { projectId: '', sessionId: '' };
 
   const call = async (command: string, args?: Record<string, unknown>) => forPlatform(await host.call<SimStatus>(command, args));
   const current = (): SimDevice | undefined => status?.devices.find(d => d.udid === status?.selected);
@@ -115,11 +129,13 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   }
 
   function render(): void {
+    revision++;
     const chosen = current();
     root.querySelector('.sim-device-name')!.textContent = chosen?.name ?? (status?.available ? 'No simulators' : 'Simulator');
     root.querySelector('.sim-device-runtime')!.textContent = chosen ? `${chosen.runtime} · ${chosen.state === 'Booted' ? 'Running' : chosen.state}` : '';
     button('device').title = chosen ? `${chosen.name} · ${chosen.runtime}` : '';
     const power = button('power');
+    button('device').disabled = busy || operationBusy || poseBusy || settingUp;
     power.innerHTML = icon(booted() ? 'stop' : 'play');
     power.setAttribute('aria-label', booted() ? 'Shut down simulator' : 'Boot simulator'); power.title = booted() ? 'Shut down' : 'Boot';
     power.disabled = !chosen || busy;
@@ -137,6 +153,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     const axeNote = root.querySelector<HTMLElement>('.sim-axe')!;
     axeNote.hidden = !status || !status.available || status.axe;
     axeNote.querySelector('code')!.textContent = status?.axeInstall ?? '';
+    applyControls();
     if (!status) return;
     if (!status.available) { say(androidOnly ? NO_SDK : status.error ?? 'Install Xcode to use the iOS Simulator.'); message(androidOnly ? 'Android SDK needed' : 'Xcode needed'); return; }
     if (!chosen) { say(androidOnly ? 'No Android emulators. Add one in Android Studio → Device Manager.' : 'No iOS simulators. Add one in Xcode → Window → Devices and Simulators.'); message(''); return; }
@@ -157,11 +174,12 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       if (disposed) return;
       const changed = next.selected !== status?.selected;
       status = next;
+      loadingStatus = false;
       if (changed) seq = 0;
       await view;
       render();
       pump();
-    } catch (error) { say(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { loadingStatus = false; revision++; say(error instanceof Error ? error.message : String(error)); }
   }
 
   /* Frames: a long-poll loop while visible and running. */
@@ -225,6 +243,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     if (text) await input({ kind: 'type', text });
   }
   stage.addEventListener('keydown', event => {
+    if (isImeKey(event)) return;
     if (event.metaKey || event.ctrlKey || event.altKey || !booted()) return;
     const named = KEYS[event.key];
     if (named) { event.preventDefault(); void flushTyping().then(() => input({ kind: 'key', key: named })); return; }
@@ -259,15 +278,38 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   function chooseDevice(anchor: HTMLElement): void {
     if (!status) return;
     const items: ChoiceItem[] = status.devices.map(d => ({ id: d.udid, label: d.name, description: `${d.duo ? 'Foldable · ' : ''}${d.runtime} · ${d.state === 'Booted' ? 'Running' : d.state}`, icon: 'phone', selected: d.udid === status?.selected }));
-    if (status.available && !androidOnly && !status.devices.some(d => d.duo)) items.push({ id: ADD_DUO, label: 'Add iPhone Duo', description: status.duoAvailable ? 'Foldable · creates a simulator' : 'Needs Xcode 27.1 or later', icon: 'plus', disabled: !status.duoAvailable });
+    if (status.available && !androidOnly && !status.devices.some(d => d.duo) && controlVisible('add-duo')) items.push({ id: ADD_DUO, label: 'Add iPhone Duo', description: status.duoAvailable ? 'Foldable · creates a simulator' : 'Needs Xcode 27.1 or later', icon: 'plus', disabled: !status.duoAvailable });
     // One-click setup uses Homebrew, so Windows and Linux point to Android Studio instead.
-    if (!status.android && !androidOnly) items.push({ id: SETUP, label: settingUp ? 'Setting up Android…' : 'Set up Android emulator…', description: 'Downloads about 2 GB with Homebrew', icon: 'download', disabled: settingUp });
+    if (!status.android && !androidOnly && controlVisible('android-setup')) items.push({ id: SETUP, label: settingUp ? 'Setting up Android…' : 'Set up Android emulator…', description: 'Downloads about 2 GB with Homebrew', icon: 'download', disabled: settingUp });
     if (!items.length) return;
+    const menuControls = items.filter(item => item.id === ADD_DUO || item.id === SETUP);
+    const order = orderedControls('panda.simulator.controls', menuControls.map(item => `panda.simulator.controls/${item.id}`));
+    items.splice(items.length - menuControls.length, menuControls.length, ...order.map(id => menuControls.find(item => id.endsWith(`/${item.id}`))!));
     host.choose(anchor, 'Devices', items, id => {
       if (id === SETUP) { void setupAndroid(); return; }
       if (id === ADD_DUO) { void addDuo(); return; }
-      void call('simulator_select', { udid: id }).then(next => { status = next; seq = 0; render(); pump(); }).catch(error => host.notify(String(error)));
+      void selectDevice(id).catch(error => host.notify(String(error)));
     });
+  }
+  async function selectDevice(udid: string): Promise<void> {
+    if (busy || disposed) return;
+    busy = true; render();
+    try {
+      // Flush pending input against the old device, never the newly selected one.
+      await flushTyping(); clearTimeout(scrollTimer); scroll = { dx: 0, dy: 0, at: { x: 0, y: 0 } };
+      poseEpoch++; poseWanted = undefined;
+      const next = await call('simulator_select', { udid });
+      if (!disposed) { status = next; seq = 0; }
+    } finally { busy = false; if (!disposed) { render(); pump(); } }
+  }
+  function setFinish(id: string): void {
+    const model = spec(), finish = model.finishes.find(item => item.id === id); if (!finish) return;
+    rememberFinish(model, finish); device?.setFinish(finish); render();
+  }
+  async function toggleAppearance(): Promise<void> {
+    const udid = status?.selected; if (!udid) return;
+    appearance = appearance === 'dark' ? 'light' : 'dark'; render();
+    await host.call('simulator_appearance', { udid, mode: appearance });
   }
   async function addDuo(): Promise<void> {
     say('Adding iPhone Duo…');
@@ -335,7 +377,91 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     } finally { settingUp = false; stop?.(); }
   }
 
-  root.addEventListener('click', event => {
+  function authority() {
+    const provider = componentSelection.resolve('panda.simulator', componentProviders());
+    const owner = extensionsSnapshot().packages.find(item => item.manifest.id === provider?.id.split('/')[0]);
+    return { owner: provider?.id ?? '', active: !disposed && Boolean(provider && root.dataset.simulatorProvider === provider.id), granted: Boolean(owner?.manifest.permissions?.includes('ui.contribute')), metadata: Boolean(owner?.manifest.permissions?.includes('projects.summary')) };
+  }
+  function presentation(): SimulatorPresentation {
+    const chosen = current(), metadata = authority().metadata, devices = status?.devices.slice(0, 64) ?? [];
+    const controls = SIMULATOR_CONTROLS['panda.simulator.controls'].map(([id]) => {
+      let reason = '', values: string[] = [];
+      if (id === 'device') { values = devices.map(d => handle(d.udid)); if (!values.length) reason = androidOnly ? NO_SDK : 'No simulators available'; }
+      else if (id === 'android-setup') { if (androidOnly) reason = NO_SDK; else if (status?.android) reason = 'Android SDK is already installed'; }
+      else if (id === 'add-duo') { if (androidOnly) reason = 'iOS Simulator requires macOS and Xcode'; else if (!status?.duoAvailable) reason = 'Needs Xcode 27.1 or later'; else if (status.devices.some(d => d.duo)) reason = 'iPhone Duo already exists'; }
+      else if (id === 'copy-axe') { if (androidOnly || status?.axe || !status?.axeInstall) reason = 'AXe installation is not needed on this platform'; }
+      else if (id === 'reset') { if (!device) reason = '3D view is unavailable; flat display remains usable'; }
+      else if (!chosen) reason = 'Choose a simulator first';
+      else if (id === 'finish') values = spec().finishes.map(f => f.id);
+      else if (id !== 'power' && !booted()) reason = 'Boot the selected simulator first';
+      else if (id === 'pose') { if (!chosen.duo) reason = 'Pose requires iPhone Duo'; else values = POSES.map(p => p.id); }
+      else if (['back', 'recents'].includes(id) && chosen.platform !== 'android') reason = 'Android navigation only';
+      else if (['home', 'lock'].includes(id) && !status?.axe && chosen.platform !== 'android') reason = 'Touch input needs AXe';
+      return { id, enabled: !reason, reason: reason.slice(0, 512), values };
+    });
+    return snapshotSimulator({ contractVersion: 1, context, project: hostContext().projectId, session: hostContext().sessionId, device: chosen ? handle(chosen.udid) : '', platform: chosen ? chosen.platform ?? 'ios' : 'none', revision, visible: visible && !disposed, busy: busy || poseBusy || settingUp || operationBusy, loading: loadingStatus, error: (statusLine.textContent ?? '').slice(0, 512), truncated: (status?.devices.length ?? 0) > 64, pose: status?.pose ?? '', finish: chosenFinish(spec()).id, appearance, devices: devices.map(d => ({ id: handle(d.udid), name: metadata ? d.name.slice(0, 256) : '', runtime: metadata ? d.runtime.slice(0, 256) : '', platform: d.platform ?? 'ios', state: d.state.slice(0, 256) })), controls });
+  }
+  async function perform(control: SimulatorControl, value: string): Promise<void> {
+    switch (control) {
+      case 'device': { const udid = [...handles].find(([, id]) => id === value)?.[0]; if (udid) await selectDevice(udid); break; }
+      case 'power': await power(); break;
+      case 'home': case 'back': case 'recents': case 'lock': await press(control); break;
+      case 'pose': await setPose(value as DuoPose); break;
+      case 'finish': setFinish(value); break;
+      case 'appearance': await toggleAppearance(); break;
+      case 'reset': device?.resetView(true); break;
+      case 'capture': await capture(); break;
+      case 'copy-axe': await navigator.clipboard.writeText(status?.axeInstall ?? ''); host.notify('Install command copied'); break;
+      case 'add-duo': await addDuo(); break;
+      case 'android-setup': await setupAndroid(); break;
+    }
+  }
+  function dispatch(input: unknown): SimulatorAdmission {
+    const auth = authority();
+    const slot = createSimulatorPresentation(presentation(), auth.owner, presentation, authority, action => {
+      const run = async () => {
+        operationBusy = true; revision++;
+        try { await perform(action.controlId, action.value); }
+        catch (error) { host.notify(error instanceof Error ? error.message : String(error)); }
+        finally { operationBusy = false; render(); }
+      };
+      if (['capture', 'copy-axe', 'android-setup', 'add-duo'].includes(action.controlId)) {
+        const captured = presentation(), owner = auth.owner;
+        closeApproval?.();
+        closeApproval = host.choose(button(action.controlId === 'add-duo' || action.controlId === 'android-setup' ? 'device' : action.controlId), 'Allow Simulator action?', [{ id: 'allow', label: action.controlId === 'android-setup' ? 'Download Android tools (about 2 GB)' : action.controlId === 'add-duo' ? 'Create iPhone Duo simulator' : 'Write to clipboard' }], id => {
+          closeApproval = undefined;
+          const live = presentation(), auth = authority();
+          if (id !== 'allow' || !auth.active || auth.owner !== owner || !auth.granted || live.revision !== captured.revision || live.project !== captured.project || live.session !== captured.session || !live.visible || live.busy) { host.notify('Simulator request expired; choose the action again'); return; }
+          void run();
+        }) || undefined;
+      } else void run();
+    }, applied);
+    const result = slot.dispatch(input); slot.dispose(); return result;
+  }
+  const controlVisible = (id: string) => extensionsSnapshot().safeMode || !layout.isHidden(`panda.simulator.controls/${id}`, hostContext().projectId);
+  function applyControls(): void {
+    applyControlVisibility(controlBindings, () => stage);
+    // Only siblings in the original action strip move; reset and AXe retain their compatible anchors.
+    applyControlOrder('panda.simulator.controls', controlBindings.filter(([, node]) => node.parentElement?.classList.contains('sim-actions')));
+  }
+  function configure(): void { if (disposed) return; closeApproval?.(); closeApproval = undefined; revision++; applySimulatorPresentation(root); render(); }
+  const stopExtensions = onExtensionsChanged(configure), stopLayout = layout.subscribe(configure);
+  window.addEventListener('pandacode-components-change', configure);
+  const actionContext = () => ({ ...hostContext(), revision, selection: { kind: 'device', ids: current() ? [handle(current()!.udid)] : [] } });
+  const stopActions = mountExtensionActions(root.querySelector('.sim-dock')!, 'panda.simulator.actions', actionContext, host.notify);
+  let closeContext: (() => void) | undefined;
+  const hasContextActions = () => !extensionsSnapshot().safeMode && extensionsSnapshot().packages.some(item => item.enabled && item.manifest.permissions?.includes('ui.contribute') && item.manifest.contributes.menus?.some(menu => menu.location === 'panda.simulator.context'));
+  function openContext(point?: { x: number; y: number }): void {
+    closeContext?.(); const captured = presentation();
+    closeContext = openContextActions(button('device'), 'panda.simulator.context', actionContext(), { title: 'Simulator', items: [], onSelect() {}, notify: host.notify, point, isAlive: () => !disposed && visible && revision === captured.revision && hostContext().projectId === captured.project && hostContext().sessionId === captured.session });
+  }
+  function contextMenu(event: MouseEvent): void { if (!hasContextActions() || !(event.target as Element).closest('.sim-dock')) return; event.preventDefault(); openContext({ x: event.clientX, y: event.clientY }); }
+  function contextKeydown(event: KeyboardEvent): void { if (!isImeKey(event) && hasContextActions() && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openContext(); } }
+  root.addEventListener('contextmenu', contextMenu);
+  button('device').addEventListener('keydown', contextKeydown);
+  configure();
+
+  function onClick(event: MouseEvent): void {
     const target = (event.target as Element).closest<HTMLElement>('[data-sim]'); if (!target || (target as HTMLButtonElement).disabled) return;
     switch (target.dataset.sim) {
       case 'device': chooseDevice(target); break;
@@ -345,9 +471,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       case 'recents': void press('recents'); break;
       case 'lock': void press('lock'); break;
       case 'appearance': {
-        const udid = status?.selected; if (!udid) break;
-        appearance = appearance === 'dark' ? 'light' : 'dark'; render();
-        void host.call('simulator_appearance', { udid, mode: appearance }).catch(error => host.notify(String(error)));
+        void toggleAppearance().catch(error => host.notify(String(error)));
         break;
       }
       case 'capture': void capture(); break;
@@ -360,23 +484,26 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       case 'finish': {
         const model = spec(), now = chosenFinish(model);
         host.choose(target, 'Finish', model.finishes.map(finish => ({ id: finish.id, label: finish.name, icon: 'circle', selected: finish.id === now.id })), id => {
-          const finish = model.finishes.find(item => item.id === id); if (!finish) return;
-          rememberFinish(model, finish); device?.setFinish(finish); render();
+          setFinish(id);
         });
         break;
       }
       case 'copy-axe': void navigator.clipboard.writeText(status?.axeInstall ?? '').then(() => host.notify('Install command copied')); break;
     }
-  });
+  }
+  root.addEventListener('click', onClick);
   const themeWatch = new MutationObserver(() => device?.setDark(isDark()));
   themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   return {
+    presentation, dispatch,
     show(): void { if (visible) return; visible = true; watchPose(); device?.setActive(true); void refresh().then(() => device?.setActive(visible)); },
-    hide(): void { visible = false; clearInterval(poll); pumpGeneration++; device?.setActive(false); },
+    hide(): void { visible = false; closeApproval?.(); closeApproval = undefined; closeContext?.(); clearInterval(poll); pumpGeneration++; device?.setActive(false); },
     refresh,
     dispose(): void {
       disposed = true; visible = false; clearInterval(poll); pumpGeneration++; themeWatch.disconnect();
+      stopExtensions(); stopLayout(); stopActions(); closeContext?.(); window.removeEventListener('pandacode-components-change', configure);
+      closeApproval?.(); root.removeEventListener('contextmenu', contextMenu); root.removeEventListener('click', onClick); button('device').removeEventListener('keydown', contextKeydown);
       clearTimeout(typeTimer); clearTimeout(scrollTimer); device?.dispose(); root.replaceChildren();
     },
   };
