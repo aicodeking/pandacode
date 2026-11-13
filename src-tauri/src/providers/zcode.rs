@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn a_fresh_session_carries_the_tools_server_inline() {
-        let mut p = bridged(false);
+        let p = bridged(false);
         let request = p.initial();
         assert_eq!(request["method"], "session/create");
         assert_eq!(request["params"]["mcpServers"][0]["name"], "pandacode_architect");
