@@ -297,6 +297,7 @@ pub fn rotate_redirected_log(path: &Path, max: u64, targets: &[std::os::fd::Borr
 
 /// A log this process writes through has its modification time kept within this of now
 /// (`refresh_output`), far inside the 90-day prune age.
+#[cfg(unix)]
 pub const LOG_FRESH_WITHIN: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Sets the modification time of the file behind `target` (this process's own output, a log)

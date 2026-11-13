@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+// The notice trims to a character limit and a clock time's width depends on the time zone, so the exact texts
+// below are checked in one zone. (Set before any Date is formatted.)
+process.env.TZ = 'UTC';
+
 // The pure half of crash recovery: what the native answer means and what the notice says.
 const { parseCrashRecovery, plainCause, crashTime, crashNotice, anyInterruptedByCrash, interruptedByCrash, INTERRUPTED_WINDOW, INTERRUPTED_LINE, INTERRUPTED_SHORT, REPORT_LINE, PAUSED_LEAD, pausedLine, resumeTime, notRestartedLead, RESTARTS_OFF_LINE, TITLE_LIMIT, NOTICE_LIMIT, MIN_TITLE, RESUME_WINDOW, WINDOW_RELOADED_LINE, WINDOW_RELOADED_AGAIN_LINE, WINDOW_STOPPED_BEFORE_LINE, NOTHING_OPENED_LINE, NO_THREAD_OPENED, pausedLead, untilNextDay, heldBackLine, shortTitle, reloadNotice, openThreadName, OPEN_THREAD, RESTARTS_BACK_LINE, AGENTS_STOPPED_LINE, REPORT_SHORT, PAUSED_REPORT_LINE, PAUSED_REPORT_SHORT, PAUSED_NOTICE_LIMIT, RESUMED_NOTICE_LIMIT, keptClosedLine, resumesAt } = await import('../src/crash-recovery-model.ts');
 
@@ -199,7 +203,10 @@ test('when boot opened nothing and no thread is named, the notice says so', () =
   const paused = context => crashNotice(recovery({ restarted: false, restartsPaused: true, crashedAt: NOW - 60_000 }), NOW, context).text;
   assert.equal(paused({ interrupted: false, nothingOpened: true }), `${pausedLead(at(60_000))} ${NOTHING_OPENED_LINE} ${resume()}`);
   // It keeps its place when the notice is tight: the agents line shortens, keeping the paused sentence.
-  assert.equal(paused({ interrupted: true, nothingOpened: true }), `${pausedLead(at(60_000))} ${INTERRUPTED_SHORT} ${NOTHING_OPENED_LINE} ${resume()}`);
+  // The crash time stays when it fits; how wide a clock time is depends on the time zone the tests run in.
+  const tight = lead => `${lead} ${INTERRUPTED_SHORT} ${NOTHING_OPENED_LINE} ${resume()}`;
+  const timed = tight(pausedLead(at(60_000)));
+  assert.equal(paused({ interrupted: true, nothingOpened: true }), timed.length <= PAUSED_NOTICE_LIMIT ? timed : tight(PAUSED_LEAD));
   // A named thread says it already.
   const named = paused({ interrupted: false, nothingOpened: true, heldBack: 'Fix login' });
   assert.equal(named, `${pausedLead(at(60_000))} ${NO_THREAD_OPENED} your last thread, “Fix login”, caused this. ${resume()}`, 'the named thread says that nothing was opened either');
@@ -301,7 +308,9 @@ test('paused: the crash time comes back once the other trims leave room for it',
   const paused = context => crashNotice(recovery({ restarted: false, restartsPaused: true, crashedAt: NOW - 60_000 }), NOW, context).text;
   // Without stopped agents "Your last thread" and the time fit beside a named thread.
   const text = paused({ interrupted: false, heldBack: 'Refine the navigation' });
-  assert.equal(text, `${pausedLead(at(60_000))} ${heldBackLine('Refine the navigation')} ${resume()}`);
+  // (Where the local clock time is too wide for the limit, the time gives way: the width depends on the time zone.)
+  const full = `${pausedLead(at(60_000))} ${heldBackLine('Refine the navigation')} ${resume()}`;
+  assert.equal(text, full.length <= PAUSED_NOTICE_LIMIT ? full : `${PAUSED_LEAD} ${heldBackLine('Refine the navigation')} ${resume()}`);
   assert.ok(text.length <= PAUSED_NOTICE_LIMIT, text);
   // Every paused variant that lacks the time could not fit it.
   for (const { recovery: r, context, text: variant } of everyNotice()) {
