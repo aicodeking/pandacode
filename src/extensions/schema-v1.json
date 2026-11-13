@@ -41,7 +41,9 @@
     "registration": { "type": "object", "required": ["extensionId", "version", "activationId"], "properties": { "extensionId": { "$ref": "#/$defs/id" }, "version": { "$ref": "#/$defs/version" }, "activationId": { "$ref": "#/$defs/text" } } },
     "emptyPayloadSchema": { "type": "object", "required": ["type"], "additionalProperties": false, "properties": { "type": { "const": "null" } } },
     "command": { "type": "object", "required": ["schemaVersion", "owner", "definition", "capability", "contexts", "inputSchema", "outputSchema"], "properties": { "schemaVersion": { "const": 1 }, "owner": { "$ref": "#/$defs/registration" }, "definition": { "$ref": "#/$defs/commandDefinition" }, "capability": { "const": "ui.contribute" }, "contexts": { "type": "array", "maxItems": 4, "items": { "enum": ["window", "project", "session", "selection"] } }, "inputSchema": { "$ref": "#/$defs/emptyPayloadSchema" }, "outputSchema": { "$ref": "#/$defs/emptyPayloadSchema" } } },
-    "icon": { "type": "object", "required": ["id", "asset"], "properties": { "id": { "$ref": "#/$defs/id" }, "asset": { "type": "string", "minLength": 1, "maxLength": 256 } } },
+    "icon": { "type": "object", "required": ["id", "asset"], "properties": { "id": { "$ref": "#/$defs/id" }, "asset": { "type": "string", "minLength": 1, "maxLength": 256 }, "host": { "enum": ["file", "folder", "help", "settings", "down", "right", "search", "plus"] } } },
+    "appearanceColors": { "type": "object", "additionalProperties": false, "required": ["background", "foreground", "accent"], "properties": { "background": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }, "foreground": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }, "accent": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" } } },
+    "theme": { "type": "object", "additionalProperties": false, "required": ["id", "schemaVersion", "light", "dark"], "properties": { "id": { "$ref": "#/$defs/id" }, "schemaVersion": { "const": 1 }, "light": { "$ref": "#/$defs/appearanceColors" }, "dark": { "$ref": "#/$defs/appearanceColors" }, "font": { "enum": ["system", "sans-serif", "monospace"] }, "rowPadding": { "type": "integer", "minimum": 4, "maximum": 12 }, "radius": { "type": "integer", "minimum": 4, "maximum": 16 } } },
     "viewTreeItem": { "type": "object", "required": ["label"], "additionalProperties": false, "properties": { "label": { "$ref": "#/$defs/text" }, "children": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/viewTreeItem" } } } },
     "viewControl": { "anyOf": [
       { "type": "object", "required": ["kind", "label", "items"], "additionalProperties": false, "properties": { "kind": { "const": "list" }, "label": { "$ref": "#/$defs/text" }, "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/text" } } } },
@@ -73,6 +75,7 @@
           "commands": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/commandDefinition" } },
           "menus": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/contributionDefinition" } },
           "icons": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/icon" } },
+          "themes": { "type": "array", "maxItems": 1, "items": { "$ref": "#/$defs/theme" } },
           "views": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/view" } },
           "layouts": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/layout" } },
           "settings": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/settingsPage" } },

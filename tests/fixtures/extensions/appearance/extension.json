@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 1, "id": "sample.appearance", "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" }, "extensionKind": "ui", "permissions": ["ui.contribute"],
+  "contributes": {
+    "themes": [{ "id": "sample.appearance/ink", "schemaVersion": 1, "light": { "background": "#f2f5ff", "foreground": "#192239", "accent": "#3355aa" }, "dark": { "background": "#182239", "foreground": "#eef2ff", "accent": "#99bbff" }, "font": "system", "rowPadding": 6, "radius": 14 }],
+    "icons": [{ "id": "sample.appearance/symbol", "asset": "assets/symbol.svg", "host": "settings" }, { "id": "sample.appearance/file", "asset": "assets/symbol.svg", "host": "file" }],
+    "commands": [{ "id": "sample.appearance/hello", "title": "Appearance laboratory", "action": { "kind": "showMessage", "message": "Appearance action" } }],
+    "menus": [{ "id": "sample.appearance/menu", "location": "panda.workspace.header.actions", "command": "sample.appearance/hello", "icon": "sample.appearance/symbol", "items": [{ "id": "sample.appearance/submenu", "kind": "submenu", "title": "Appearance submenu", "icon": "sample.appearance/symbol", "items": [{ "id": "sample.appearance/action", "kind": "command", "title": "Appearance action", "command": "sample.appearance/hello", "icon": "sample.appearance/symbol" }] }] }]
+  }
+}

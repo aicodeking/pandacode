@@ -5,10 +5,11 @@ import type { LayoutProposal } from './ordering';
 import type { DialogDefinition } from './dialog-state';
 import type { SettingsPageDefinition, Keybinding } from './settings-state';
 import type { ViewDefinition } from './views-state';
+import { applyExtensionAppearance, type ExtensionTheme } from './appearance';
 
 export type ExtensionMenuItem = { id: string; kind: 'command' | 'submenu' | 'separator' | 'checkbox' | 'radio'; title?: string; command?: string; icon?: string; checked?: boolean; group?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] };
 export type ExtensionAction = { kind: 'showMessage'; message: string } | { kind: 'showDialog'; dialog: DialogDefinition } | { kind: 'openView'; view: string } | { kind: 'showProjectContext' } | { kind: 'runCommand' };
-export type ExtensionPackage = { storageGranted?: boolean; executable?: { digest: string; trusted: boolean } | null; manifest: { id: string; version: string; permissions?: string[]; runtime?: { kind: 'node'; entrypoint: 'main.cjs'; activationEvents: string[] }; contributes: { views?: ViewDefinition[]; settings?: SettingsPageDefinition[]; keybindings?: Keybinding[]; dialogExtras?: { id: string; dialog: 'colors' | 'wallpapers'; text: string }[]; layouts?: LayoutProposal[]; icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: ExtensionAction; enabled?: Json }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[]; presentation?: 'icon' | 'button' | 'status' | 'badge'; text?: string; badge?: string }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
+export type ExtensionPackage = { storageGranted?: boolean; executable?: { digest: string; trusted: boolean } | null; manifest: { id: string; version: string; permissions?: string[]; runtime?: { kind: 'node'; entrypoint: 'main.cjs'; activationEvents: string[] }; contributes: { themes?: ExtensionTheme[]; views?: ViewDefinition[]; settings?: SettingsPageDefinition[]; keybindings?: Keybinding[]; dialogExtras?: { id: string; dialog: 'colors' | 'wallpapers'; text: string }[]; layouts?: LayoutProposal[]; icons?: { id: string; asset: string; host?: string }[]; commands?: { id: string; title: string; action: ExtensionAction; enabled?: Json }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[]; presentation?: 'icon' | 'button' | 'status' | 'badge'; text?: string; badge?: string }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
 export type ExtensionSnapshot = { safeMode: boolean; packages: ExtensionPackage[]; diagnostics: string[]; development?: { id: string; revision: number; logs: string[] }[] };
 let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: [] };
 const listeners = new Set<() => void>();
@@ -49,6 +50,7 @@ function accept(value: ExtensionSnapshot): void {
   // A lifecycle notification can race its command response. Identical state must not remount UI,
   // discard focus/fields or cancel a newly opened transient a second time.
   if (JSON.stringify(snapshot) === previous) return;
+  applyExtensionAppearance(snapshot);
   if (previousLifecycle !== lifecycle(snapshot)) generation++;
   listeners.forEach(listener => listener());
 }

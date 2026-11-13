@@ -669,6 +669,31 @@ mod tests {
         packages.enable("sample.view-laboratory", false).unwrap();
         assert!(!storage.packages(false).snapshot().packages[0].enabled);
     }
+
+    #[test]
+    fn appearance_pack_validates_tokens_geometry_and_static_assets_then_disables_cleanly() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/appearance/extension.json");
+        let svg = include_bytes!("../../../tests/fixtures/extensions/appearance/assets/symbol.svg");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice()), ("assets/symbol.svg", svg.as_slice())])).unwrap();
+        packages.enable("sample.appearance", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        assert!(snapshot.packages[0].enabled);
+        assert_eq!(snapshot.packages[0].manifest["contributes"]["themes"][0]["radius"], 14);
+        assert_eq!(snapshot.packages[0].manifest["contributes"]["icons"][0]["host"], "settings");
+        packages.enable("sample.appearance", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        for (field, value) in [("radius", json!(100)), ("font", json!("url(https://bad.test/font)")), ("css", json!("body{display:none}"))] {
+            let mut bad: Value = serde_json::from_slice(manifest).unwrap(); bad["contributes"]["themes"][0][field] = value;
+            assert!(validate(&archive(&[("extension.json", &serde_json::to_vec(&bad).unwrap()), ("assets/symbol.svg", svg.as_slice())])).is_err());
+        }
+        let mut bad: Value = serde_json::from_slice(manifest).unwrap(); bad["contributes"]["themes"][0]["light"]["foreground"] = json!("#f2f5ff");
+        assert!(validate(&archive(&[("extension.json", &serde_json::to_vec(&bad).unwrap()), ("assets/symbol.svg", svg.as_slice())])).is_err());
+        for svg in ["<svg xmlns=\"http://www.w3.org/2000/svg\"><script>bad()</script></svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\"><use href=\"https://bad.test/a.svg\"/></svg>"] {
+            assert!(validate(&archive(&[("extension.json", manifest.as_slice()), ("assets/symbol.svg", svg.as_bytes())])).is_err());
+        }
+        assert!(validate(&archive(&[("extension.json", manifest.as_slice())])).is_err());
+    }
     #[test]
     fn ordinary_zip_directory_entries_work_without_extraction() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));

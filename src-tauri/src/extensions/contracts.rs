@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 8] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras"];
+const CONTRIBUTIONS: [&str; 9] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -27,6 +27,13 @@ fn items<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value[key].as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 fn text<'a>(value: &'a Value, key: &str) -> &'a str { value[key].as_str().unwrap_or("") }
+fn appearance_luminance(hex: &str) -> f64 {
+    [0.2126, 0.7152, 0.0722].iter().enumerate().map(|(i, weight)| {
+        let value = u8::from_str_radix(&hex[1 + i * 2..3 + i * 2], 16).unwrap_or(0) as f64 / 255.0;
+        weight * if value <= 0.04045 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
+    }).sum()
+}
+fn appearance_contrast(a: &str, b: &str) -> f64 { let a = appearance_luminance(a); let b = appearance_luminance(b); (a.max(b) + 0.05) / (a.min(b) + 0.05) }
 fn distinct(values: &[Value], key: &str, path: &str) -> Result<()> {
     let mut seen = BTreeSet::new();
     for value in values { let id = text(value, key); if !seen.insert(id) { return Err(fail("DuplicateId", path, vec![id.to_owned()])); } }
@@ -243,6 +250,10 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
             if !CONTRIBUTIONS.contains(&kind.as_str()) { return Err(fail("UnsupportedContribution", &format!("{path}/requiredContributions"), vec![kind])); }
         }
         let contributions = &manifest["contributes"];
+        for theme in items(contributions, "themes") { for mode in ["light", "dark"] {
+            let colors = &theme[mode];
+            if appearance_contrast(text(colors, "background"), text(colors, "foreground")) < 7.0 || appearance_contrast(text(colors, "background"), text(colors, "accent")) < 3.0 { return Err(fail("InvalidAppearanceContrast", &format!("{path}/contributes/themes"), vec![])); }
+        } }
         let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").map(|command| text(command, "id").to_owned()).collect();
         let events = strings(&manifest["runtime"]["activationEvents"]);
         if manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id)) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }

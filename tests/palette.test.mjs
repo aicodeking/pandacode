@@ -2,10 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { contrast, fromOklch, mix, parseHex, toHex, toOklch } from '../src/color.ts';
+import { extensionThemeTokens } from '../src/palette-core.ts';
 import { ACCENT_CLEARANCE, INFO, STATUS, STATUS_CLEARANCE, TONE_FLOOR, TONE_HUES, WARNING, accentTokens, warnClearOf, dominantColor, vsixTokens } from '../src/palette-core.ts';
 
 const rgb = hex => parseHex(hex).rgb;
 const ratio = (a, b) => contrast(rgb(a), rgb(b));
+test('extension theme fixture keeps body, muted controls and focus readable in both modes', () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/extensions/appearance/extension.json', import.meta.url), 'utf8'));
+  for (const mode of ['light', 'dark']) {
+    const tokens = extensionThemeTokens(fixture.contributes.themes[0][mode], mode);
+    for (const surface of ['--bg', '--panel', '--sidebar', '--raised']) {
+      assert.ok(ratio(tokens['--text'], tokens[surface]) >= 4.5, `${mode} body on ${surface}`);
+      assert.ok(ratio(tokens['--muted'], tokens[surface]) >= 4.5, `${mode} muted on ${surface}`);
+      assert.ok(ratio(tokens['--focus'], tokens[surface]) >= 3, `${mode} focus on ${surface}`);
+    }
+  }
+});
 // Recorded from real Open VSX packages: Dracula, One Dark Pro, GitHub, Catppuccin, Tokyo Night.
 const themes = JSON.parse(readFileSync(new URL('./fixtures/vscode-themes.json', import.meta.url), 'utf8'));
 

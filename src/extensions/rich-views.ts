@@ -14,6 +14,10 @@ window.addEventListener('pagehide', () => {
 }, { once: true });
 const json = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026');
 const attribute = (text: string) => text.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
+export function appearanceSnapshot() {
+  const style = getComputedStyle(document.documentElement);
+  return { schemaVersion: 1, colorScheme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light', tokens: Object.fromEntries(['--bg', '--text', '--accent', '--focus', '--muted', '--panel', '--ds-radius-card', '--ds-row-pad-y'].map(name => [name, style.getPropertyValue(name).trim()])) };
+}
 async function hash(source: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source)));
   return `'sha256-${btoa(String.fromCharCode(...bytes))}'`;
@@ -24,7 +28,7 @@ export async function richViewDocument(entry: RegisteredView, assets: RichAssets
   const policy = `default-src 'none'; script-src ${await hash(bootstrap)} ${await hash(assets.script)} ${await hash(shell)}; script-src-attr 'none'; style-src ${await hash(assets.css)}; img-src 'none'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src about:; worker-src 'none'`;
   const meta = `<meta http-equiv="Content-Security-Policy" content="${attribute(policy)}"><meta name="referrer" content="no-referrer">`;
   const document = `<!doctype html><html><head>${meta}<style>${assets.css}</style></head><body>${assets.html}<script type="application/json" id="panda-view-session">${json(session)}</script><script>${bootstrap}</script><script>${assets.script}</script></body></html>`;
-  const config = { session, document, dto: { schemaVersion: 1, owner: entry.owner, version: entry.version, viewId: entry.view.id, windowId, title: entry.view.title, text: entry.view.text }, theme: { schemaVersion: 1, colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light' } };
+  const config = { session, document, dto: { schemaVersion: 1, owner: entry.owner, version: entry.version, viewId: entry.view.id, windowId, title: entry.view.title, text: entry.view.text }, theme: appearanceSnapshot() };
   return `<!doctype html><html><head>${meta}<title>Extension view</title></head><body><script type="application/json" id="panda-view-config">${json(config)}</script><script>${shell}</script></body></html>`;
 }
 
@@ -46,7 +50,9 @@ export async function openRichView(entry: RegisteredView): Promise<string> {
   const popup = window.open('about:blank', '_blank', 'popup,width=760,height=560');
   if (!popup) return 'The extension window was blocked. Allow this explicit window or use the host-rendered view.';
   const unsubscribe = onExtensionChanged(entry.owner, () => { dispose(); popup.close(); });
-  const dispose = () => { unsubscribe(); previewWindows.delete(popup); };
+  const updateTheme = () => { if (!popup.closed) popup.dispatchEvent(new CustomEvent('panda-view-theme', { detail: appearanceSnapshot() })); };
+  window.addEventListener('pandacode-palette-change', updateTheme);
+  const dispose = () => { unsubscribe(); window.removeEventListener('pandacode-palette-change', updateTheme); previewWindows.delete(popup); };
   previewWindows.set(popup, dispose);
   try {
     const assets = { html: (await import('../../tests/fixtures/extensions/rich-view/assets/view.html?raw')).default, css: (await import('../../tests/fixtures/extensions/rich-view/assets/view.css?raw')).default, script: (await import('../../tests/fixtures/extensions/rich-view/assets/view.js?raw')).default };

@@ -1,6 +1,7 @@
 /** Pure v1 data validation. This module grants no permissions and activates nothing. */
 import schemaDocument from './schema-v1.json' with { type: 'json' };
 import { proposalOrder, OrderingCycle, type Placement } from './ordering.ts';
+import { contrast, parseHex } from '../color.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -11,7 +12,7 @@ export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | 
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes'];
 const capabilities = ['ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -201,6 +202,11 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     if (manifest.optionalCapabilities) manifest.optionalCapabilities = optional.filter(c => capabilities.includes(c));
     for (const key of (manifest.requiredContributions ?? []) as string[]) if (!knownContributions.includes(key)) error('UnsupportedContribution', `${path}/requiredContributions`, [key]);
     const contributions = manifest.contributes as ObjectValue;
+    for (const theme of (contributions.themes ?? []) as ObjectValue[]) for (const mode of ['light', 'dark']) {
+      const colors = theme[mode] as ObjectValue;
+      const background = parseHex(String(colors.background))!.rgb;
+      if (contrast(background, parseHex(String(colors.foreground))!.rgb) < 7 || contrast(background, parseHex(String(colors.accent))!.rgb) < 3) error('InvalidAppearanceContrast', `${path}/contributes/themes`);
+    }
     const executable = ((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id);
     const events = (manifest.runtime as ObjectValue | undefined)?.activationEvents as Json[] | undefined;
     if (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id))) error('UnsupportedRuntime', path, [id]);

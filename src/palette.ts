@@ -1,7 +1,8 @@
 import './palette.css';
 import { parseHex, toOklch } from './color';
-import { accentTokens, statusClearOf, TONE_TOKENS, vsixTokens, type Tokens, type VsixTheme } from './palette-core';
+import { accentTokens, statusClearOf, TONE_TOKENS, vsixTokens, extensionThemeTokens, type Tokens, type VsixTheme } from './palette-core';
 import { wallpaperAccents } from './wallpaper-accents';
+import type { ExtensionTheme } from './extensions/appearance-state';
 export type { VsixTheme } from './palette-core';
 
 /* The app's colors: PandaCode's own palette with an accent that is classic yellow,
@@ -53,6 +54,23 @@ function write(tokens: Tokens): void {
   }
 }
 let terminalOverrides: Record<string, string> = {};
+let extensionTheme: ExtensionTheme | undefined;
+const appearanceGeometry = ['--ds-radius-card', '--ds-radius-inner', '--ds-row-pad-y', 'font-family'];
+const appearanceMedia = matchMedia('(forced-colors: active), (prefers-contrast: more)');
+function appearanceAllowed(): boolean { return !appearanceMedia.matches; }
+/** Ephemeral overlay: never replace the user's saved accent, VS Code theme or cache. */
+export function setExtensionTheme(value: ExtensionTheme | undefined): void { extensionTheme = value; apply(); window.dispatchEvent(new CustomEvent('pandacode-palette-change')); }
+function writeAppearance(): void {
+  const value = appearanceAllowed() ? extensionTheme : undefined;
+  for (const name of appearanceGeometry) root.style.removeProperty(name);
+  if (!value) return;
+  const colors = value[theme()];
+  write(extensionThemeTokens(colors, theme()));
+  if (value.radius !== undefined) { root.style.setProperty('--ds-radius-card', `${value.radius}px`); root.style.setProperty('--ds-radius-inner', `${Math.max(4, value.radius - 4)}px`); }
+  if (value.rowPadding !== undefined) root.style.setProperty('--ds-row-pad-y', `${value.rowPadding}px`);
+  if (value.font) root.style.setProperty('font-family', value.font === 'system' ? 'system-ui, sans-serif' : value.font);
+}
+appearanceMedia.addEventListener('change', () => apply());
 /** Terminal colors that follow the palette: accent cursor and selection, or the VS Code theme's. */
 export function paletteTerminal(): Record<string, string> { return terminalOverrides; }
 
@@ -74,11 +92,12 @@ function apply(): void {
   if (state.vsix) root.dataset.theme = state.vsix.kind;
   root.toggleAttribute('data-vsix', Boolean(state.vsix));
   write(next.tokens);
+  writeAppearance();
   terminalOverrides = next.terminal;
   const changed = state.cache?.key !== next.key;
   state = { ...state, cache: next };
   persist();
-  if (changed) window.dispatchEvent(new CustomEvent('pandacode-palette-change'));
+  if (changed || extensionTheme) window.dispatchEvent(new CustomEvent('pandacode-palette-change'));
 }
 
 export const palette = {

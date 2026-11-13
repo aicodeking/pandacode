@@ -1,5 +1,6 @@
 import { captureFileLinkContext, decorateFileLinks, fileReference } from './file-links.ts';
 import { preserveTranscriptPosition } from './transcript-scroll.ts';
+import { appearanceIcon } from './extensions/appearance-state.ts';
 export function escape(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
@@ -84,7 +85,13 @@ const paths: Record<string, string> = {
   thread: '<path d="M14 9a2 2 0 0 1-2 2H6l-3 3V4a1 1 0 0 1 1-1h8a2 2 0 0 1 2 2Z"/><path d="M18 9h2a1 1 0 0 1 1 1v11l-3-3h-6a2 2 0 0 1-2-2v-1"/>',
   widget: '<rect x="3" y="5" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="10" height="5" rx="1.5"/><path d="M16 16.5h5"/>',
 };
-export function icon(name: string, cls = ''): string { return `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? paths.file}</svg>`; }
+export function icon(name: string, cls = ''): string { return `<svg data-host-icon="${escape(name)}" class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${appearanceIcon(name) ?? paths[name] ?? paths.file}</svg>`; }
+if (typeof window !== 'undefined') window.addEventListener('pandacode-icons-change', () => {
+  for (const node of document.querySelectorAll<SVGElement>('svg[data-host-icon]')) {
+    const name = node.dataset.hostIcon!;
+    node.innerHTML = appearanceIcon(name) ?? paths[name] ?? paths.file;
+  }
+});
 // Material file icons load in their own chunk to keep the startup bundle small; plain glyphs show until then.
 let fileIcons: typeof import('./file-icons.ts') | undefined;
 let loadFileIcons: () => void = () => {};

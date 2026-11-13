@@ -2,6 +2,7 @@
 // VS Code does: exact file name, then the longest extension, then the default icon.
 import manifest from 'material-icon-theme/dist/material-icons.json' with { type: 'json' };
 import { escape } from './dom.ts';
+import { appearanceIcon } from './extensions/appearance-state.ts';
 
 type Names = { fileNames: Record<string, string>; fileExtensions: Record<string, string>; folderNames: Record<string, string> };
 const { iconDefinitions, light, ...dark } = manifest as unknown as Names & { iconDefinitions: Record<string, { iconPath: string }>; light: Names };
@@ -31,5 +32,13 @@ export function fileIconUrl(name: string, isDir: boolean, isLight = false): stri
 }
 
 export function fileIcon(name: string, isDir: boolean, isLight = false): string {
-  return `<img class="icon file-type-icon" src="${escape(fileIconUrl(name, isDir, isLight))}" alt="" aria-hidden="true" draggable="false">`;
+  return renderFileIcon(fileIconUrl(name, isDir, isLight), isDir);
 }
+function renderFileIcon(url: string, isDir: boolean): string {
+  const metadata = `data-file-icon-url="${escape(url)}" data-file-icon-kind="${isDir ? 'folder' : 'file'}" class="icon file-type-icon" aria-hidden="true"`;
+  const paths = appearanceIcon(isDir ? 'folder' : 'file');
+  return paths ? `<svg ${metadata} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65">${paths}</svg>` : `<img ${metadata} src="${escape(url)}" alt="" draggable="false">`;
+}
+if (typeof window !== 'undefined') window.addEventListener('pandacode-icons-change', () => {
+  for (const node of document.querySelectorAll<HTMLElement | SVGElement>('[data-file-icon-url]')) node.outerHTML = renderFileIcon(node.dataset.fileIconUrl!, node.dataset.fileIconKind === 'folder');
+});

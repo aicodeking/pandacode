@@ -4,6 +4,19 @@ import { contrast, mix, oklch, onColor, parseHex, toHex, toOklch, triplet, type 
 
 export type VsixTheme = { id: string; name: string; extension: string; kind: 'light' | 'dark'; colors: Record<string, string> };
 export type Tokens = Record<string, string>;
+/** Extension appearance uses the same readable workbench derivation as imported themes. */
+export function extensionThemeTokens(colors: { background: string; foreground: string; accent: string }, kind: 'light' | 'dark'): Tokens {
+  const tokens = vsixTokens({ id: 'extension', name: 'Extension', extension: 'extension', kind, colors: { 'editor.background': colors.background, 'editor.foreground': colors.foreground, 'focusBorder': colors.accent, 'button.background': colors.accent } }).tokens;
+  const surfaces = ['--bg', '--panel', '--sidebar', '--raised'].map(name => parseHex(tokens[name])!.rgb);
+  for (const [name, minimum] of [['--muted', 4.55], ['--faint', 4.55], ['--focus', 3.1]] as const) {
+    const source = parseHex(tokens[name])!.rgb, text = parseHex(tokens['--text'])!.rgb;
+    for (let step = 0; step <= 20; step++) {
+      const color = mix(source, text, step / 20);
+      if (surfaces.every(surface => contrast(color, surface) >= minimum)) { tokens[name] = toHex(color); break; }
+    }
+  }
+  return tokens;
+}
 
 /** The state tones' source colours, as in design-system.css (tests/palette.test.mjs keeps them equal). */
 export const TONE_HUES = {

@@ -10,7 +10,8 @@ function richViewMessage(value, session, kind, sequence) {
     const dto = value.dto, theme = value.theme;
     return !!dto && Object.keys(dto).sort().join(',') === 'owner,schemaVersion,text,title,version,viewId,windowId'
       && dto.schemaVersion === 1 && ['owner', 'version', 'viewId', 'windowId', 'title', 'text'].every(key => typeof dto[key] === 'string' && dto[key].length <= 4096)
-      && !!theme && Object.keys(theme).sort().join(',') === 'colorScheme,schemaVersion'
+      && !!theme && ['colorScheme,schemaVersion', 'colorScheme,schemaVersion,tokens'].includes(Object.keys(theme).sort().join(','))
+      && (theme.tokens === undefined || (theme.tokens && !Array.isArray(theme.tokens) && Object.entries(theme.tokens).length <= 16 && Object.entries(theme.tokens).every(([key, value]) => ['--bg', '--text', '--accent', '--focus', '--muted', '--panel', '--ds-radius-card', '--ds-row-pad-y'].includes(key) && typeof value === 'string' && /^(#[0-9a-fA-F]{6}|[0-9]{1,2}px)$/.test(value))))
       && theme.schemaVersion === 1 && ['dark', 'light'].includes(theme.colorScheme);
   } catch { return false; }
 }
