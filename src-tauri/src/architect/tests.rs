@@ -5171,6 +5171,7 @@ fn effort_model(id: &str, levels: &[&str]) -> crate::providers::ModelInfo {
         reasoning_efforts: levels.iter().map(|l| crate::providers::ReasoningEffortInfo { id: l.to_string(), name: l.to_string(), description: String::new() }).collect(),
         default_reasoning_effort: None,
         context_window: None,
+        speed_tiers: Vec::new(),
     }
 }
 #[test]

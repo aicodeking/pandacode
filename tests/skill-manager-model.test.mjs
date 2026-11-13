@@ -180,7 +180,7 @@ test('preview mirrors native\'s enforcement table and reset clears global and pr
   await mock.add({ source: 'anthropics/skills', skills: ['Friendly 技能'], harnesses: ['claude', 'codex', 'opencode'] });
   const friendly = mock.list({}).skills.find(s => s.name === 'Friendly 技能');
   const asked = { enforcement: 'asked', consoleEnforcement: 'asked' };
-  assert.deepEqual(friendly.enforcementOverrides, { claude: asked, glm: asked, mimo: asked, opencode: { enforcement: 'asked', consoleEnforcement: 'none' } });
+  assert.deepEqual(friendly.enforcementOverrides, { alibaba: asked, claude: asked, glm: asked, mimo: asked, opencode: { enforcement: 'asked', consoleEnforcement: 'none' } });
   assert.equal('askOnly' in friendly, false);
   assert.equal(mock.list({}).skills.find(s => s.name === 'pdf').enforcementOverrides, undefined);
   mock.set({ name: 'pdf', enabled: false });
@@ -452,7 +452,7 @@ test('the preview mock builds its harness matrix from the fixture native generat
   }
   // A non-identifier name reports only the harnesses whose modes differ from the fixture's.
   const spaced = createPreviewSkillManager({ skills: [{ name: 'house style', description: '', source: null, switchable: true, agents: [] }] }).list({}).skills[0];
-  assert.deepEqual(Object.keys(spaced.enforcementOverrides).sort(), ['claude', 'glm', 'mimo', 'opencode']);
+  assert.deepEqual(Object.keys(spaced.enforcementOverrides).sort(), ['alibaba', 'claude', 'glm', 'mimo', 'opencode']);
   for (const [id, m] of Object.entries(spaced.enforcementOverrides ?? {})) {
     assert.notDeepEqual(m, { enforcement: fixture[id].enforcement, consoleEnforcement: fixture[id].consoleEnforcement }, id);
   }

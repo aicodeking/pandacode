@@ -370,7 +370,7 @@ mod tests {
     }
 
     fn info(id: &str, path: Option<&str>) -> ProviderInfo {
-        let model = ModelInfo { id: "m".into(), name: "M".into(), description: String::new(), reasoning_efforts: Vec::new(), default_reasoning_effort: None, context_window: None };
+        let model = ModelInfo { id: "m".into(), name: "M".into(), description: String::new(), reasoning_efforts: Vec::new(), default_reasoning_effort: None, context_window: None, speed_tiers: Vec::new() };
         ProviderInfo { id: id.into(), name: "Codex".into(), installed: path.is_some(), path: path.map(Into::into), version: "1.2.3".into(), models: vec![model.clone(), model] }
     }
 
