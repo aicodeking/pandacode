@@ -142,6 +142,15 @@ impl Server {
     pub(super) fn codex_config(&self) -> Value {
         json!({SERVER_NAME:{"url":format!("http://{}/mcp",self.authority),"http_headers":{"Authorization":format!("Bearer {}",self.token)},"enabled":true,"required":self.required(),"startup_timeout_sec":if self.required() {15} else {3},"tool_timeout_sec":360}})
     }
+    /// ZCode's `session/create` `mcpServers` entry. Session isolation keeps the
+    /// per-run bridge out of the user's server registry, and `alwaysLoad` is
+    /// what lifts the tools into the model's list — ZCode defers every
+    /// MCP tool it does not always load behind its tool search.
+    pub(super) fn zcode_config(&self) -> Value {
+        json!({"type":"http","name":SERVER_NAME,"url":format!("http://{}/mcp",self.authority),
+            "headers":[{"name":"Authorization","value":format!("Bearer {}",self.token)}],
+            "isolation":"session","alwaysLoad":true})
+    }
     pub(super) fn redact(&self, text: &str) -> String {
         text.replace(&self.token, "[redacted]")
     }
@@ -415,10 +424,21 @@ impl Context {
                     .unwrap_or("2025-03-26");
                 json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"PandaCode architect","version":"0.1.0"}})
             }
+            // ZCode (2026-07-28 revision) probes every HTTP server with
+            // `server/discover` and drops the ones that cannot name a version it
+            // speaks; it never falls back to `initialize` for them.
+            "server/discover" => {
+                json!({"supportedVersions":["2026-07-28","2025-06-18","2025-03-26"],
+                       "capabilities":{"tools":{"listChanged":false}},
+                       "serverInfo":{"name":"PandaCode architect","version":"0.1.0"}})
+            }
             "ping" => json!({}),
+            // Results carry the revision's wire fields unconditionally: modern
+            // clients reject a `tools/list` or `tools/call` without
+            // `resultType` outright, and legacy SDKs ignore the extra keys.
             "tools/list" => {
                 let tools:Vec<Value> = self.host.tools.iter().map(|spec| json!({"name":spec["name"],"description":spec["description"],"inputSchema":spec["inputSchema"]})).collect();
-                json!({"tools":tools})
+                json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":tools})
             }
             "tools/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or_default();
@@ -495,7 +515,7 @@ impl Context {
                     &input,
                     &output,
                 );
-                json!({"content":content,"isError":error})
+                json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","content":content,"isError":error})
             }
             _ => return HttpResponse::error(id, -32601, "Method not found"),
         };
@@ -608,6 +628,38 @@ mod tests {
     async fn request(server: &Server, body: Value, extra: &str) -> (u16, Value) {
         let bytes = serde_json::to_vec(&body).unwrap();
         raw(server,format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\r\n",server.authority,server.token,bytes.len(),extra),bytes).await
+    }
+
+    /// ZCode (2026-07-28 revision) probes HTTP servers with `server/discover`,
+    /// and its tool results must carry the revision's wire fields.
+    #[tokio::test]
+    async fn discover_and_result_fields_satisfy_the_2026_revision() {
+        let server = server().await;
+        let (_, discover) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}), "").await;
+        assert!(discover["result"]["supportedVersions"].as_array().unwrap().iter().any(|v| v == "2026-07-28"));
+        assert_eq!(discover["result"]["capabilities"]["tools"]["listChanged"], false);
+        let (_, list) = request(&server, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}), "").await;
+        assert_eq!(list["result"]["resultType"], "complete");
+        assert_eq!(list["result"]["ttlMs"], 0);
+        assert_eq!(list["result"]["cacheScope"], "private");
+        let (_, call) = request(
+            &server,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pandacode_delegate","arguments":{"prompt":"Bridge 🐼"}}}),
+            "",
+        )
+        .await;
+        assert_eq!(call["result"]["resultType"], "complete");
+        assert_eq!(call["result"]["ttlMs"], 0);
+        // The entry ZCode rides in session/create: session isolation keeps the
+        // per-run server out of the user's registry, always-load puts the tools
+        // in the model's list.
+        let entry = server.zcode_config();
+        assert_eq!(entry["name"], SERVER_NAME);
+        assert_eq!(entry["type"], "http");
+        assert_eq!(entry["isolation"], "session");
+        assert_eq!(entry["alwaysLoad"], true);
+        assert!(entry["url"].as_str().unwrap().ends_with("/mcp"));
+        assert_eq!(entry["headers"][0]["name"], "Authorization");
     }
     async fn raw(server: &Server, header: String, body: Vec<u8>) -> (u16, Value) {
         let mut stream = TcpStream::connect(&server.authority).await.unwrap();
@@ -1241,6 +1293,69 @@ mod tests {
         Server::start(host, "p".into(), Arc::new(|_| {}))
             .await
             .unwrap()
+    }
+
+    /// Live smoke (ignored by default, like `installed_zcode_lists_models`):
+    /// the installed ZCode CLI accepts the bridge entry and connects. `mcp/list`
+    /// in connect mode revalidates the strict 2026-07-28 wire — discover,
+    /// `resultType`, `ttlMs`, `cacheScope` — so `connected` with tools means the
+    /// whole handshake held. Recorded working against CLI 0.17.1 on 2026-11-13.
+    #[tokio::test]
+    #[ignore = "spawns the installed ZCode CLI"]
+    async fn installed_zcode_connects_the_native_bridge() {
+        let Some(path) = zcode::bundled().or_else(|| launch::find("zcode")) else {
+            panic!("ZCode CLI is not installed");
+        };
+        let server = server().await;
+        let entry = server.zcode_config();
+        let workspace = std::env::temp_dir();
+        let mut command = provider_command("zcode", &path).unwrap();
+        command
+            .arg("app-server")
+            .current_dir(&workspace)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().expect("zcode app-server starts");
+        use tokio::io::AsyncBufReadExt as _;
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap());
+        let workspace = json!({"workspacePath": workspace, "workspaceKey": workspace});
+        let result = tokio::time::timeout(Duration::from_secs(90), async {
+            write_json(&mut stdin, &json!({"id": 1, "method": "session/create", "params": {
+                "workspace": workspace, "mode": "build", "persistence": "deferred",
+                "titleGenerationEnabled": false, "mcpServers": [entry],
+            }})).await?;
+            loop {
+                let mut line = Vec::new();
+                stdout.read_until(b'\n', &mut line).await.map_err(|e| e.to_string())?;
+                let frame: Value = serde_json::from_slice(&line).map_err(|_| "invalid JSON".to_string())?;
+                if frame.get("method").is_some() && frame.get("id").is_some() {
+                    write_json(&mut stdin, &json!({"id": frame["id"], "error": {"code": -32601, "message": "Method not found"}})).await?;
+                    continue;
+                }
+                if frame["id"] == 1 {
+                    if let Some(error) = frame.get("error") {
+                        return Err(format!("create failed: {error}"));
+                    }
+                    write_json(&mut stdin, &json!({"id": 2, "method": "mcp/list", "params": {
+                        "workspace": workspace, "mode": "connect", "mcpServers": [entry],
+                    }})).await?;
+                }
+                if frame["id"] == 2 {
+                    return match frame.get("error") {
+                        Some(error) => Err(format!("mcp/list failed: {error}")),
+                        None => Ok(frame["result"]["statuses"][SERVER_NAME].clone()),
+                    };
+                }
+            }
+        }).await;
+        drop(stdin);
+        let _ = child.start_kill();
+        let status = result.expect("the bridge check finished in time").expect("the CLI spoke the bridge wire");
+        assert_eq!(status["status"], "connected", "status: {status}");
+        assert!(status["toolCount"].as_u64().unwrap_or(0) > 0, "status: {status}");
     }
 }
 
