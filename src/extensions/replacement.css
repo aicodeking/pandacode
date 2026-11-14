@@ -19,3 +19,6 @@
 #transcript.component-timeline .turn-activity { outline: 1px solid var(--ds-border); outline-offset: -1px; }
 .transcript-presentation-status { position: absolute; z-index: 2; top: var(--header-height); right: var(--space-2); max-width: 32em; padding: var(--space-2); background: var(--ds-card); color: var(--text); border: 1px solid var(--ds-border); }
 .transcript-presentation-status[hidden] { display: none; }
+[data-github-hub-provider] .gh-bar { order: -1; }
+[data-github-hub-accessory]:empty { display: none; }
+[data-github-hub-consent] { white-space: normal; margin: 8px; }

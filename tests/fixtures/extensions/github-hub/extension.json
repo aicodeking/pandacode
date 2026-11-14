@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.github-hub",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.github-hub/tabs", "title": "Tabs first", "slot": "panda.githubHub", "contractVersion": 1, "presentation": "tabs-first", "capabilities": ["host-repositories", "host-runs", "original-actions"] }],
+    "commands": [{ "id": "sample.github-hub/tools", "title": "GitHub tools", "action": { "kind": "showMessage", "message": "Repository, task and workflow ownership stays with PandaCode." } }],
+    "menus": [
+      { "id": "sample.github-hub/actions", "command": "sample.github-hub/tools", "location": "panda.githubHub.actions" },
+      { "id": "sample.github-hub/context", "command": "sample.github-hub/tools", "location": "panda.githubHub.context" }
+    ],
+    "layouts": [{ "id": "sample.github-hub/fix-first", "title": "Fix before details", "location": "panda.githubHub.controls", "rules": [{ "id": "panda.githubHub.controls/fix", "target": "panda.githubHub.controls/details", "side": "before" }] }]
+  }
+}

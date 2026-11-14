@@ -15,7 +15,7 @@ export interface RunArtifact { name: string; size: number; expired: boolean }
 export interface RunAttempt { attempt: number; state: string; startedAt: string; updatedAt: string; url: string; jobs: RunJob[] }
 export interface RunDetails { jobs: RunJob[]; artifacts: RunArtifact[]; attempts: RunAttempt[] }
 /** `summaries` holds each job summary already rendered to sanitized HTML, by job id. */
-export type DetailsLoad = { details?: RunDetails; summaries?: Record<number, string>; error?: string };
+export type DetailsLoad = { details?: RunDetails; summaries?: Record<number, string>; error?: string; loading?: boolean };
 /** Event ('' = any), pull request number (0 = any), and whether to keep only each pull request's latest run per workflow. */
 export interface RunFilter { event: string; pull: number; latest: boolean }
 
@@ -87,7 +87,7 @@ function filters(runs: HubRun[], pulls: HubPull[] | undefined, filter: RunFilter
 function detailsBody(run: HubRun, load: DetailsLoad | undefined, now: number): string {
   const blocked = run.state === 'not_started'
     ? `<p class="gh-note gh-run-blocked">${icon('alert')}GitHub couldn’t start this run. The workflow file is likely invalid (a YAML or schema error), uses an action or reusable workflow that doesn’t exist, or asks for a runner that isn’t available.</p>` : '';
-  if (!load) return `${blocked}<p class="gh-note" role="status">Loading jobs…</p>`;
+  if (!load || load.loading) return `${blocked}<p class="gh-note" role="status">Loading jobs…</p>`;
   if (load.error) return `${blocked}<p class="gh-note">Couldn’t load jobs: ${escape(load.error)}</p>`;
   const { jobs, artifacts, attempts = [] } = load.details!;
   const time = (item: { state: string; startedAt: string; completedAt: string }) => escape(item.state === 'queued' ? '' : span(item.startedAt, item.completedAt, item.state === 'in_progress', now));

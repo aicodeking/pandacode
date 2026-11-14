@@ -3302,6 +3302,10 @@ function syncGithubHub(shown: boolean): void {
       chooseFolder, notify,
       projectsChanged: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); },
     });
+    if (preview && new URLSearchParams(location.search).has('github-hub-coverage')) {
+      (window as any).__previewGithubHub = () => githubHub?.presentation();
+      (window as any).__previewGithubHubAction = (input: unknown) => githubHub?.dispatch(input);
+    }
     // The hub fades in once it has drawn (opacity only: a transform would move its full-height repository list).
     settleIn(host, 0);
   }).finally(() => { githubHubLoading = false; }));

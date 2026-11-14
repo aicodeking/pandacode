@@ -5,6 +5,7 @@ import { DESIGN_ACTION_SURFACES, DESIGN_CONTROLS, VIEW_ACTION_SURFACES, DOCUMENT
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from './window-surfaces.ts';
 import { BTW_ACTION_SURFACES, BTW_CONTROLS } from './surfaces.ts';
 import { BOARD_ACTION_SURFACES, BOARD_CONTROLS } from './surfaces.ts';
+import { GITHUB_HUB_ACTION_SURFACES, GITHUB_HUB_CONTROLS } from './surfaces.ts';
 import { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } from './views-state.ts';
 import { INSPECTOR_VIEWS } from '../inspector-tabs.ts';
 
@@ -24,6 +25,7 @@ export class CatalogError extends Error {
 }
 
 const coreItems: ItemMetadata[] = [
+  ...Object.entries(GITHUB_HUB_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(BOARD_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(BTW_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: id === 'stop' || id === 'focus' ? ['inspect'] : ['inspect', 'hide', 'show', 'reorder'], available: true }))),
   ...Object.entries(VM_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
@@ -61,6 +63,9 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
+      { id: 'panda.githubHub', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.githubHub', label: 'Host GitHub hub presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['tabs-first'], windows: ['main'], available: true },
+      ...Object.keys(GITHUB_HUB_CONTROLS).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
+      ...GITHUB_HUB_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
       { id: 'panda.board', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.board', label: 'Host Board presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['review-first'], windows: ['main'], available: true },
       ...Object.keys(BOARD_CONTROLS).filter(location => !BOARD_ACTION_SURFACES.includes(location as typeof BOARD_ACTION_SURFACES[number])).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
       ...BOARD_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),

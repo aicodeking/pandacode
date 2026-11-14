@@ -7,7 +7,8 @@ export const SIDEBAR = 'panda.sidebar';
 type Overlay = { schemaVersion: 1; visibility: Record<string, boolean>; extensionLayoutsEnabled: boolean; orders: Record<string, string[]>; selected: Record<string, string> };
 type Storage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
 const defaults = (): Overlay => ({ schemaVersion: 1, visibility: {}, extensionLayoutsEnabled: true, orders: {}, selected: {} });
-const validId = (id: string) => id.length <= 160 && (id === SIDEBAR || /^(?:panda\.[a-z0-9.-]+|[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*)\/[a-z][a-z0-9-]*$/.test(id));
+// Core locations include camel-case families (actionDock, githubHub); package identities stay lowercase.
+const validId = (id: string) => id.length <= 160 && (id === SIDEBAR || /^(?:panda\.[a-zA-Z0-9.-]+|[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*)\/[a-z][a-z0-9-]*$/.test(id));
 export function createLayoutStore(storage: Storage) {
   const cache = new Map<string, Overlay>(), listeners = new Set<() => void>();
   let diagnostic = '';

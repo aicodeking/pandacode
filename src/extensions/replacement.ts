@@ -5,6 +5,29 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Compatible visual move on original nodes, without fetching or remounting. */
+export function applyGithubHubPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.gh-bar') || !host.querySelector('.gh-head')) throw Error('Incomplete GitHub host');
+}): void {
+  delete host.dataset.githubHubProvider;
+  const bar = host.querySelector<HTMLElement>('.gh-bar');
+  if (bar) bar.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-github-hub-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.githubHub', componentProviders());
+  if (!provider) return;
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.githubHubProvider = provider.id;
+    if (bar) bar.style.order = '-1';
+  } catch {
+    faults.add(identity(provider));
+    const notice = status ?? document.createElement('p');
+    notice.dataset.githubHubPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'GitHub replacement failed. Built-in hub remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  }
+}
 /** Reorder original stage sections; never mutate task stages or remount details. */
 export function applyBoardPresentation(host: HTMLElement, qualify = () => {
   if (host.querySelectorAll('.board-column').length !== 4) throw Error('Incomplete Board host');

@@ -11,6 +11,8 @@ import { providerLogo } from './provider-logos';
 import { taskStage } from './task-board';
 import { age, connectAdvice, isRecent, issuePrompt, PULL_ACTIONS, pullPrompt, runPrompt, runTitle, threadTitle, WORKFLOW_CHECK_TITLE, workflowCheckPrompt, type IssueAction, type PullAction } from './github-hub-prompts';
 import type { Project, Session, TaskLink } from './types';
+import { mountGithubHubPresentation } from './extensions/github-hub-host';
+import type { GithubHubRow } from './extensions/github-hub';
 
 export interface HubRepo { nameWithOwner: string; description: string; private: boolean; fork: boolean; archived: boolean; pushedAt: string; url: string; defaultBranch: string; openIssues: number; language: string }
 export interface HubPull { number: number; title: string; author: string; state: string; head: string; base: string; updatedAt: string; url: string; review: string; checks: string; additions: number; deletions: number; labels: string[] }
@@ -33,7 +35,7 @@ export interface HubHost {
   projectsChanged(): Promise<void>;
   notify(text: string): void;
 }
-export interface HubView { render(): void; refresh(): void; dispose(): void }
+export interface HubView { render(): void; refresh(): void; dispose(): void; presentation: ReturnType<typeof mountGithubHubPresentation>['presentation']; dispatch: ReturnType<typeof mountGithubHubPresentation>['dispatch'] }
 
 const STALE = 60_000;
 const TABS: { id: Tab; label: string }[] = [{ id: 'threads', label: 'Threads' }, { id: 'pulls', label: 'Pull requests' }, { id: 'issues', label: 'Issues' }, { id: 'actions', label: 'Actions' }];
@@ -55,10 +57,12 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   let tab = (stored('pandacode.githubTab') as Tab) || 'threads';
   let otherOpen = stored('pandacode.githubOther') === 'open';
   if (!TABS.some(item => item.id === tab)) tab = 'threads';
-  let repoFilter = '', query = '', cloning = '', disposed = false;
+  let repoFilter = '', query = '', cloning = '', disposed = false, pending = false, reposLoading = false;
+  let presentation: ReturnType<typeof mountGithubHubPresentation> | undefined;
   let mapping = new Map<string, string>();
   let runFilter: RunFilter = { event: '', pull: 0, latest: false };
-  const expanded = new Set<number>(), details = new Map<string, DetailsLoad>();
+  const expansions = new Map<string, Set<number>>(), details = new Map<string, DetailsLoad>();
+  const expanded = () => { if (!expansions.has(selected)) expansions.set(selected, new Set()); return expansions.get(selected)!; };
   const detailsKey = (run: HubRun) => `${selected}#${run.id}#${run.attempt}#${run.state}`;
   const pulls = new Map<string, Load<HubPull>>(), issues = new Map<string, Load<HubIssue>>(), runs = new Map<string, Load<HubRun>>();
   const loads: Record<Exclude<Tab, 'threads'>, Map<string, Load<unknown>>> = { pulls, issues, actions: runs };
@@ -81,9 +85,12 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   const matches = (text: string) => !query || text.toLowerCase().includes(query.toLowerCase());
 
   async function loadRepos(force = false): Promise<void> {
+    if (reposLoading) return;
     if (repos && !force) return;
+    reposLoading = true;
     reposError = '';
     const [list, local] = await Promise.allSettled([host.call<HubRepo[]>('github_repos'), host.call<ProjectRepo[]>('github_project_repos')]);
+    reposLoading = false;
     if (disposed) return;
     if (local.status === 'fulfilled') mapping = new Map(local.value.map(item => [item.repo, item.projectId]));
     if (list.status === 'fulfilled') {
@@ -155,6 +162,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (event) event.value = runFilter.event;
     if (pull) pull.value = String(runFilter.pull);
     if (latest) latest.checked = runFilter.latest;
+    presentation?.refresh();
   }
   function bodyHtml(): string {
     const item = repo();
@@ -167,7 +175,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (!items) return load?.error ? emptyState('alert', 'Couldn’t load from GitHub', escape(load.error), '<button type="button" class="secondary-button" data-gh="refresh">Try again</button>') : skeleton(6);
     if (tab === 'pulls') return pullsBody(items as HubPull[], project);
     if (tab === 'issues') return issuesBody(items as HubIssue[], project);
-    return runsBody(items as HubRun[], pulls.get(item.nameWithOwner)?.items, runFilter, query, expanded, run => details.get(detailsKey(run)));
+    return runsBody(items as HubRun[], pulls.get(item.nameWithOwner)?.items, runFilter, query, expanded(), run => details.get(detailsKey(run)));
   }
 
   function threadsBody(project: Project | undefined): string {
@@ -221,15 +229,16 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   function render(): void {
     if (disposed) return;
     renderRepos(); renderHead(); renderTabs(); renderBody();
+    presentation?.refresh();
   }
 
   /** A local checkout for the repository: the matched project, or a fresh clone. */
-  async function ensureLocal(): Promise<Project | undefined> {
-    const item = repo(); if (!item) return undefined;
+  async function ensureLocal(name = selected): Promise<Project | undefined> {
+    const item = repos?.find(item => item.nameWithOwner === name); if (!item || cloning) return undefined;
     const existing = projectFor(item.nameWithOwner); if (existing) return existing;
-    const parent = await host.chooseFolder(`Choose where to clone ${item.nameWithOwner}`); if (!parent || disposed) return undefined;
     cloning = item.nameWithOwner; render();
     try {
+      const parent = await host.chooseFolder(`Choose where to clone ${item.nameWithOwner}`); if (!parent || disposed) return undefined;
       const added = await host.call<Project>('github_clone_repo', { repo: item.nameWithOwner, parent });
       mapping.set(item.nameWithOwner, added.id);
       await host.projectsChanged();
@@ -239,21 +248,21 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     finally { cloning = ''; render(); }
   }
   const linkFor = (kind: 'pull' | 'issue', item: { number: number; url: string; title: string }, state: string): TaskLink => ({ kind, number: item.number, url: item.url, title: item.title, state, checkedAt: Date.now() });
-  async function pullAction(action: PullAction, pull: HubPull): Promise<void> {
-    const project = await ensureLocal(); if (!project) return;
+  async function pullAction(action: PullAction, pull: HubPull, name = selected): Promise<void> {
+    const project = await ensureLocal(name); if (!project || disposed) return;
     await host.startTask({ projectId: project.id, prompt: pullPrompt(action, pull), title: threadTitle('pull', action, pull), link: linkFor('pull', pull, pull.state), send: action !== 'thread' });
   }
   async function issueAction(action: IssueAction, issue: HubIssue): Promise<void> {
-    const project = await ensureLocal(); if (!project) return;
+    const name = selected, project = await ensureLocal(name); if (!project || disposed) return;
     await host.startTask({ projectId: project.id, prompt: issuePrompt(action, issue), title: threadTitle('issue', action, issue), link: linkFor('issue', issue, 'open'), send: action === 'solve' });
   }
 
   async function fixRun(run: HubRun): Promise<void> {
-    const project = await ensureLocal(); if (!project) return;
+    const name = selected, project = await ensureLocal(name); if (!project || disposed) return;
     await host.startTask({ projectId: project.id, prompt: runPrompt(run), title: runTitle(run), send: true });
   }
   async function checkWorkflows(): Promise<void> {
-    const name = selected, project = await ensureLocal(); if (!project) return;
+    const name = selected, project = await ensureLocal(name); if (!project || disposed) return;
     await host.startTask({ projectId: project.id, prompt: workflowCheckPrompt(name), title: WORKFLOW_CHECK_TITLE, send: true });
   }
   function showTab(next: Tab): void {
@@ -261,10 +270,11 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   }
   function filterRunsBy(pull: number): void { runFilter = { ...runFilter, pull }; showTab('actions'); }
   async function toggleRun(run: HubRun): Promise<void> {
-    if (expanded.has(run.id)) expanded.delete(run.id); else expanded.add(run.id);
+    if (expanded().has(run.id)) expanded().delete(run.id); else expanded().add(run.id);
     const key = detailsKey(run), name = selected;
     renderBody();
-    if (!expanded.has(run.id) || details.has(key)) return;
+    if (!expanded().has(run.id) || details.has(key)) return;
+    details.set(key, { loading: true });
     try {
       const loaded = await host.call<RunDetails>('github_run_details', { repo: name, id: run.id });
       // Summaries are rendered once here, sanitized by markdownHtml, so the synchronous body can hold them.
@@ -292,7 +302,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (data.ghRepo) { select(data.ghRepo); return; }
     if (data.ghTab) { showTab(data.ghTab as Tab); return; }
     if (data.ghRunPull) { filterRunsBy(Number(data.ghRunPull)); return; }
-    if ('ghWorkflowCheck' in data) { void checkWorkflows(); return; }
+    if ('ghWorkflowCheck' in data) { void operate(checkWorkflows); return; }
     if ('ghRunClear' in data) { runFilter = { event: '', pull: 0, latest: false }; renderBody(); return; }
     if (data.ghTask) { host.openTask(data.ghTask); return; }
     if (data.gh === 'refresh') { void loadRepos(true); return; }
@@ -300,15 +310,16 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (data.gh === 'clone') { void ensureLocal(); return; }
     const pull = pulls.get(selected)?.items?.find(item => item.number === number);
     const issue = issues.get(selected)?.items?.find(item => item.number === number);
-    if (data.ghPull && pull) { void pullAction(data.ghPull as PullAction, pull); return; }
+    if (data.ghPull && pull) { void operate(() => pullAction(data.ghPull as PullAction, pull)); return; }
     if ('ghPullRuns' in data && pull) { filterRunsBy(pull.number); return; }
     if ('ghPullMenu' in data && pull) {
-      void host.showChoices(target, { title: `Pull request #${pull.number}`, items: [...PULL_ACTIONS, { id: 'github', label: 'Open on GitHub', icon: 'external' }], onSelect: id => id === 'github' ? void host.call('open_external_url', { url: pull.url }) : pullAction(id as PullAction, pull) });
+      const name = selected;
+      void host.showChoices(target, { title: `Pull request #${pull.number}`, items: [...PULL_ACTIONS, { id: 'github', label: 'Open on GitHub', icon: 'external' }], onSelect: id => id === 'github' ? void host.call('open_external_url', { url: pull.url }) : operate(() => pullAction(id as PullAction, pull, name)) });
       return;
     }
-    if (data.ghIssue && issue) { void issueAction(data.ghIssue as IssueAction, issue); return; }
+    if (data.ghIssue && issue) { void operate(() => issueAction(data.ghIssue as IssueAction, issue)); return; }
     const run = runs.get(selected)?.items?.find(item => item.id === Number(target.closest<HTMLElement>('[data-gh-run]')?.dataset.ghRun));
-    if ('ghRunFix' in data && run) void fixRun(run);
+    if ('ghRunFix' in data && run) void operate(() => fixRun(run));
     if ('ghRunToggle' in data && run) void toggleRun(run);
   };
   const input = (event: Event) => {
@@ -328,9 +339,9 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     event.preventDefault();
     const prompt = String(new FormData(form).get('prompt') ?? '').trim();
     const project = projectFor(selected);
-    if (!prompt || !project) return;
+    if (!prompt || !project || pending) return;
     form.reset();
-    void host.startTask({ projectId: project.id, prompt, send: true });
+    void operate(() => host.startTask({ projectId: project.id, prompt, send: true }));
   };
   /** Arrow keys move through a list like a native one; Enter activates the row's first action. */
   const keydown = (event: KeyboardEvent) => {
@@ -359,12 +370,33 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   root.addEventListener('change', change);
   root.addEventListener('submit', submit);
   root.addEventListener('keydown', keydown);
+  async function operate(action: () => Promise<void>): Promise<void> {
+    if (pending || disposed) return;
+    pending = true;
+    try { await action(); } catch (cause) { host.notify(cause instanceof Error ? cause.message : String(cause)); }
+    finally { pending = false; presentation?.refresh(); }
+  }
+  presentation = mountGithubHubPresentation(root, () => {
+    const load = tab === 'threads' ? undefined : loads[tab].get(selected);
+    const row = (id: string, kind: GithubHubRow['kind'], title: string, revision: number, attempt = 0, open = false, loading = false, error = false): GithubHubRow => ({ id, kind, title, revision, attempt, expanded: open, loading, error });
+    const rows = (repos ?? []).map(item => row(`repo:${item.nameWithOwner}`, 'repo', item.nameWithOwner, 0));
+    rows.push(...threads(projectFor(selected)?.id).map(item => row(`thread:${item.id}`, 'thread', item.title, item.updatedAt)));
+    rows.push(...(pulls.get(selected)?.items ?? []).map(item => row(`pull:${selected}:${item.number}`, 'pull', item.title, Date.parse(item.updatedAt) || 0)));
+    rows.push(...(issues.get(selected)?.items ?? []).map(item => row(`issue:${selected}:${item.number}`, 'issue', item.title, Date.parse(item.updatedAt) || 0)));
+    rows.push(...(runs.get(selected)?.items ?? []).map(item => { const detail = details.get(detailsKey(item)); return row(`run:${selected}:${item.id}`, 'run', item.title, Date.parse(item.updatedAt) || 0, item.attempt, expanded().has(item.id), Boolean(detail?.loading), Boolean(detail?.error)); }));
+    const filter = JSON.stringify({ repositories: repoFilter.slice(0, 8), event: runFilter.event.slice(0, 8), pull: runFilter.pull, latest: runFilter.latest });
+    return { repository: selected, project: projectFor(selected)?.id ?? '', tab, visible: !root.hidden && root.isConnected, loading: reposLoading || Boolean(load?.loading), busy: pending || Boolean(cloning), error: Boolean(reposError || load?.error), query, filter, filterKey: JSON.stringify([repoFilter, runFilter]), rows };
+  }, host.notify, (anchor, proceed) => {
+    void host.showChoices(anchor, { title: 'Extension requested a GitHub entry', items: [{ id: 'continue', label: 'Continue with original GitHub action' }], onSelect: id => { if (id === 'continue') proceed(); } });
+  });
   render();
   void loadRepos();
   return {
     render,
+    presentation: presentation.presentation,
+    dispatch: presentation.dispatch,
     refresh: () => { void loadRepos(true); },
-    dispose: () => { disposed = true; root.removeEventListener('click', click); root.removeEventListener('input', input); root.removeEventListener('change', change); root.removeEventListener('submit', submit); root.removeEventListener('keydown', keydown); root.replaceChildren(); root.classList.remove('gh-hub'); },
+    dispose: () => { disposed = true; presentation?.dispose(); root.removeEventListener('click', click); root.removeEventListener('input', input); root.removeEventListener('change', change); root.removeEventListener('submit', submit); root.removeEventListener('keydown', keydown); root.replaceChildren(); root.classList.remove('gh-hub'); },
   };
 }
 
