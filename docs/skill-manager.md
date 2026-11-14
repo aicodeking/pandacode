@@ -204,7 +204,7 @@ a JSON-quoted instruction not to use it. `none`: nothing reaches the agent. Iden
 | Codex | blocked | blocked | blocked / blocked | session `skills.config` name selectors; the user's config is untouched |
 | OpenCode | blocked | blocked | asked / **none** | skill permission denies for every agent (`opencode_agents.rs`), also through `OPENCODE_PERMISSION` and as `"<name> *"` keys so later layers can't reorder them; consoles have no reminder channel |
 | Pi, OMP, Grok, Muse, Hermes | asked | asked | asked / asked | reminder; consoles use a system-prompt flag, Muse `run.developer_prompt`, Hermes `HERMES_EPHEMERAL_SYSTEM_PROMPT` |
-| Kimi, Antigravity, DeepSeek, Command Code, Kilo, ZCode, GitHub Copilot, Devin (and any other) | asked | none | asked / none | reminder in tasks only |
+| Kimi, Antigravity, DeepSeek, Command Code, Kilo, ZCode, GitHub Copilot, Devin, Cursor (and any other) | asked | none | asked / none | reminder in tasks only |
 | Cline | asked | **none** | asked / none | reminder in tasks; `cline --system` would replace the whole system prompt |
 
 - The task reminder is appended to each turn's prompt; on a turn starting with `/<name>` or `/skill:<name>` of an
