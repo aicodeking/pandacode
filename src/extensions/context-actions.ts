@@ -10,7 +10,7 @@ import { openExecutableCommand } from './executable';
 import { boundedContextActions, type ActionLocation } from './surfaces';
 
 /** One clicked object, one bounded lifetime. No callback resolves a later active task. */
-export function openContextActions(anchor: HTMLElement, location: ActionLocation, context: Record<string, Json>, options: { title: string; items: ChoiceItem[]; onSelect: (id: string) => void | Promise<void>; point?: { x: number; y: number }; notify: (message: string) => void; onClose?: () => void; isAlive?: () => boolean }): () => void {
+export function openContextActions(anchor: HTMLElement, location: ActionLocation, context: Record<string, Json>, options: { title: string; items: ChoiceItem[]; onSelect: (id: string) => void | Promise<void>; point?: { x: number; y: number }; notify: (message: string) => void; onClose?: () => void; isAlive?: () => boolean; width?: number; pinned?: readonly string[] }): () => void {
   const captured: Record<string, Json> = structuredClone({ ...context, schemaVersion: 1, windowId: 'main', surfaceId: location });
   const activation = extensionGeneration(), owned = createDeclarativeActivation(extensionsSnapshot(), activation);
   let ended = false, openingDialog = false, closeDialog: (() => void) | undefined, closeMenu: (() => void) | undefined;
@@ -41,11 +41,14 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
   const bounded = boundedContextActions<ChoiceItem>(core, contributed);
   if (bounded.omitted) options.notify('Some extension actions exceed this menu’s 128-item limit. Built-in actions remain available.');
   const items = new Map(bounded.items.map(item => [item.id, item]));
-  const ids = orderedControls(location, [...items.keys()], typeof captured.projectId === 'string' ? captured.projectId : undefined);
-  const visible = ids.filter(id => extensionsSnapshot().safeMode || !layout.isHidden(id, typeof captured.projectId === 'string' ? captured.projectId : undefined));
+  // Pinned host rows (protected recovery, consent, integrations) keep their slot and are never hidden.
+  const pinned = new Set((options.pinned ?? []).map(id => `${location}/${id}`)), keys = [...items.keys()];
+  const movable = orderedControls(location, keys.filter(id => !pinned.has(id)), typeof captured.projectId === 'string' ? captured.projectId : undefined);
+  const ids = keys.map(id => pinned.has(id) ? id : movable.shift()!);
+  const visible = ids.filter(id => pinned.has(id) || extensionsSnapshot().safeMode || !layout.isHidden(id, typeof captured.projectId === 'string' ? captured.projectId : undefined));
   let first = true;
   const choices = visible.map(id => { const item = { ...items.get(id)! }; if (first) item.separator = false; first = false; return item; });
-  closeMenu = openChoiceMenu({ anchor, title: options.title, point: options.point, width: 280, actions: true, items: choices, itemLimit: 128, onSelect: id => {
+  closeMenu = openChoiceMenu({ anchor, title: options.title, point: options.point, width: options.width ?? 280, actions: true, items: choices, itemLimit: 128, onSelect: id => {
     if (!valid()) { dispose(); return; }
     const legacy = core.find(item => item.id === id);
     if (legacy) { closeMenu?.(); return options.onSelect(id.slice(location.length + 1)); }

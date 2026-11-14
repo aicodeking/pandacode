@@ -3,6 +3,9 @@ import { escape, icon } from './dom';
 import { toned } from './approval-modes';
 import { githubEnabled } from './github';
 import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
+import { mountWorktreePresentation, type WorktreeHostControl, type WorktreeHostState } from './extensions/worktree-host';
+import { WORKTREE_ENTRY_CONTROLS, type WorktreeAction, type WorktreeControl, type WorktreePending } from './extensions/worktree';
+import { WORKTREE_CONTROLS } from './extensions/surfaces';
 
 /* One branch control for every task. The chip above the prompt names the checkout
  * and opens the only worktree menu; dialogs convert an unstarted task in place,
@@ -14,7 +17,7 @@ export type WorktreeHost = {
   modal(title: string, body: string, cls?: string): HTMLDialogElement;
   closeModal(): void;
   notify(text: string): void;
-  showChoices(anchor: HTMLElement, options: { title: string; items: ChoiceItem[]; actions?: boolean; width?: number; onSelect: (id: string) => void | Promise<void> }): Promise<void>;
+  showChoices(anchor: HTMLElement, options: { title: string; items: ChoiceItem[]; actions?: boolean; width?: number; searchPlaceholder?: string; onSelect: (id: string) => void | Promise<void>; extensionSurface?: { location: 'panda.worktree.actions'; context: { projectId: string; revision: number; selection: { kind: 'task'; ids: string[] } }; isAlive?: () => boolean; pinned?: readonly string[]; width?: number } }): Promise<void>;
   session(): Session | undefined;
   project(): Project | undefined;
   git(): GitStatus | null;
@@ -36,6 +39,8 @@ export type WorktreeHost = {
   /** The computer control (PandaCode Connect) for the context bar; empty when there is none. */
   computer(session: Session, fresh: boolean): string;
   onExtra(id: string, session: Session, anchor: HTMLElement): Promise<void> | void;
+  /** Redraw the context bar after an extension, layout or selection change. */
+  rerender?(): void;
 };
 export type CleanupIntent = 'complete' | 'remove';
 export type CleanupDecision = { proceed: boolean; remove: boolean };
@@ -58,9 +63,70 @@ export function finalBranchName(name: string): string {
   return /^(pandacode|kingcode|codex)\//.test(trimmed) ? trimmed : trimmed ? `pandacode/${trimmed}` : '';
 }
 const BRANCH_PATTERN = /^(?!.*\.\.)[A-Za-z0-9_/-]+$/;
+/** Menu rows a user may hide or reorder; recovery, integration and consent rows stay pinned. */
+const MENU_ELIGIBLE: readonly string[] = WORKTREE_CONTROLS['panda.worktree.actions'].map(([id]) => id);
+const ENTRY_LABEL: Partial<Record<WorktreeControl, string>> = { 'switch-default': 'Switch to the main branch', 'worktree-merge': 'Merge the worktree branch', 'worktree-recreate': 'Recreate the worktree', 'settle-task': 'Settle the task', 'copy-path': 'Copy the checkout path', 'open-url': 'Open the linked issue on GitHub' };
 
 export function createWorktrees(host: WorktreeHost) {
-  let cleanup: { resolve: (decision: CleanupDecision) => void; dialog: HTMLDialogElement } | undefined;
+  let cleanup: { resolve: (decision: CleanupDecision) => void; dialog: HTMLDialogElement; session: string; intent: CleanupIntent } | undefined;
+  /** One branch operation at a time: a repeated submit or request never starts a second switch, create or cleanup. */
+  let pending: WorktreePending = 'none';
+  const branchCache = new Map<string, BranchList>();
+  async function branches(session: Session): Promise<BranchList> {
+    const list = await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id });
+    branchCache.set(session.id, list); return list;
+  }
+  async function exclusive<T>(kind: Exclude<WorktreePending, 'none'>, run: () => Promise<T>): Promise<T | undefined> {
+    if (pending !== 'none') { host.notify('Wait for the current branch action to finish.'); return undefined; }
+    pending = kind;
+    try { return await run(); } finally { pending = 'none'; host.rerender?.(); }
+  }
+
+  /** Captured host state for the extension contract; the session and nodes never leave this module. */
+  function hostState(): WorktreeHostState | undefined {
+    const session = host.session(); if (!session) return undefined;
+    const project = host.project(), git = host.git(), error = host.gitError(), missing = worktreeMissing(session, error);
+    const checkout: WorktreeHostState['checkout'] = session.remoteDevice ? 'remote' : missing ? 'missing' : session.worktreePath ? 'worktree' : git?.isRepo ? 'local' : 'none';
+    const branchName = session.remoteDevice || session.worktreePath && (missing || !git?.branch) ? session.worktreeBranch || '' : git?.branch || '';
+    const running = host.running(), controls: WorktreeHostControl[] = [];
+    const add = (controlId: WorktreeControl, enabled = true, key: string = controlId) => controls.push({ controlId, key, enabled });
+    if (checkout === 'local' || checkout === 'worktree' || checkout === 'missing') add('branch-menu');
+    if (checkout === 'local') { add('switch-default', !running); add('switch-other', !running); add(host.attachable() ? 'worktree-attach' : 'worktree-new'); add('copy-path'); }
+    if (checkout === 'worktree') { add('worktree-merge', !running); add('worktree-remove', !running); add('copy-path'); }
+    if (checkout === 'missing') { add('worktree-recreate'); add('settle-task'); }
+    if (githubEnabled() && session.pullRequest) add('open-pull', true, `pull:${session.pullRequest.url}`);
+    if (githubEnabled() && session.issue) add('open-url', true, `issue:${session.issue.url}`);
+    const offer = cleanup && cleanup.dialog.open && cleanup.session === session.id ? cleanup : undefined;
+    if (offer) add('cleanup-cancel', true, `cleanup:${offer.intent}`);
+    const form = document.querySelector<HTMLFormElement>('dialog[open] #worktree-form');
+    return {
+      project: session.projectId, task: session.id, repository: session.worktreePath ?? project?.path ?? '', branchName, base: branchCache.get(session.id)?.defaultBranch ?? '', worktree: session.worktreePath ?? '',
+      checkout, loading: !session.remoteDevice && !git && !error, running, error: Boolean(error), detached: checkout === 'local' && !git?.branch, pending,
+      form: form?.dataset.sessionId === session.id && (form.dataset.mode === 'attach' || form.dataset.mode === 'new') ? form.dataset.mode : 'none', cleanup: offer?.intent ?? 'none',
+      linked: { issue: Boolean(session.issue), pull: Boolean(session.pullRequest) }, controls,
+    };
+  }
+
+  /** A captured extension action runs the original handler; mutations, clipboard and external entries only after a fresh host choice. */
+  function execute(action: WorktreeAction, alive: () => boolean): void {
+    const session = host.session(), bar = document.querySelector<HTMLElement>('#composer-context');
+    if (!session || !bar) return;
+    const chip = bar.querySelector<HTMLElement>('#branch-chip'), link = (kind: string) => bar.querySelector<HTMLElement>(`.link-chip[data-action="${kind}"]`);
+    const run = () => {
+      const current = host.session(); if (!alive() || current?.id !== session.id) return;
+      switch (action.controlId) {
+        case 'branch-menu': chip?.click(); break;
+        case 'open-pull': link('open-pull')?.click(); break;
+        case 'open-url': link('open-url')?.click(); break;
+        case 'cleanup-cancel': if (cleanup?.session === session.id) cleanup.dialog.querySelector<HTMLElement>('[data-action="close-dialog"]')?.click(); break;
+        default: if (chip) void runMenuItem(action.controlId, current, chip);
+      }
+    };
+    if (!WORKTREE_ENTRY_CONTROLS.includes(action.controlId)) { run(); return; }
+    const anchor = action.controlId === 'open-url' ? link('open-url') : chip; if (!anchor) return;
+    void host.showChoices(anchor, { title: 'Extension requested a branch action', items: [{ id: 'continue', label: `Continue: ${ENTRY_LABEL[action.controlId]}`, icon: 'branch' }], onSelect: id => { if (id === 'continue') run(); } });
+  }
+  const presentation = mountWorktreePresentation({ state: hostState, bar: () => document.querySelector<HTMLElement>('#composer-context'), execute, notify: host.notify, rerender: () => host.rerender?.() });
 
   function checkoutLabel(session: Session): string {
     return session.worktreePath ? 'Worktree' : 'Local';
@@ -77,8 +143,10 @@ export function createWorktrees(host: WorktreeHost) {
       : git?.isRepo || session.worktreePath
       ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${escape(missing ? 'Worktree missing' : `Branch ${branch || 'detached HEAD'}`)}" aria-description="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(missing ? `Worktree missing · was at ${path}` : `Branch ${branch || 'detached HEAD'} · ${session.worktreePath ? 'worktree' : 'checkout'} at ${path}`)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${icon('down')}</button>`
       : '';
-    const links = [session.issue, session.pullRequest].filter(Boolean).map(link => linkChip(link!, session.id)).join('');
-    return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${host.computer(session, fresh)}<span class="composer-local" data-checkout="${session.worktreePath ? 'worktree' : 'local'}" role="img" tabindex="0" aria-label="${escape(`${checkoutLabel(session)}: ${path}`)}" data-tip="${escape(`${checkoutLabel(session)}: ${path}`)}">${icon(session.worktreePath ? 'worktree' : 'folder')}<span class="sr-only">${checkoutLabel(session)}</span></span>${chip}${links}</div>`;
+    const local = `<span class="composer-local" data-checkout="${session.worktreePath ? 'worktree' : 'local'}" role="img" tabindex="0" aria-label="${escape(`${checkoutLabel(session)}: ${path}`)}" data-tip="${escape(`${checkoutLabel(session)}: ${path}`)}">${icon(session.worktreePath ? 'worktree' : 'folder')}<span class="sr-only">${checkoutLabel(session)}</span></span>`;
+    // Eligible chips carry the user's order and reversible visibility in the markup, so a redraw never undoes them.
+    const items: [string, string][] = [['checkout', local], ['branch-menu', chip], ['open-url', session.issue ? linkChip(session.issue, session.id) : ''], ['open-pull', session.pullRequest ? linkChip(session.pullRequest, session.id) : '']];
+    return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}"${presentation.providerAttribute()}>${host.computer(session, fresh)}${presentation.decorate(items.filter(([, html]) => html))}</div>`;
   }
 
   async function showMenu(anchor: HTMLElement): Promise<void> {
@@ -91,14 +159,14 @@ export function createWorktrees(host: WorktreeHost) {
       items.push({ id: 'worktree-recreate', label: 'Recreate worktree', description: 'Check the branch out again at the same path.', icon: 'refresh' });
       items.push({ id: 'settle-task', label: 'Settle task', description: 'Keep the history; forget the checkout.', icon: 'check' });
     } else if (session.worktreePath) {
-      const target = (await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).catch(() => null))?.defaultBranch || 'main';
+      const target = (await branches(session).catch(() => null))?.defaultBranch || 'main';
       items.push({ id: 'worktree-merge', label: `Merge into ${target}`, description: host.running() ? 'Wait for the agent to finish.' : 'Locally, in the project checkout. Commit first.', icon: 'merge', disabled: host.running() });
       items.push(...host.extraItems(session));
       items.push({ id: 'worktree-remove', label: 'Remove worktree…', description: 'Settles the task; refuses when work would be lost.', icon: 'close', disabled: host.running() });
       items.push({ id: 'copy-path', label: 'Copy worktree path', icon: 'copy' });
     } else {
       // The project's own checkout can move between branches; worktree tasks keep theirs.
-      const list = await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).catch(() => null);
+      const list = await branches(session).catch(() => null);
       if (list) {
         const busy = host.running(), others = list.branches.filter(name => name !== list.current);
         if (list.defaultBranch && list.defaultBranch !== list.current) items.push({ id: 'switch-default', label: `Switch to ${list.defaultBranch}`, description: busy ? 'Wait for the agent to finish.' : 'Uncommitted changes come along when they don’t conflict.', icon: 'branch', disabled: busy });
@@ -109,30 +177,42 @@ export function createWorktrees(host: WorktreeHost) {
       items.push(...host.extraItems(session));
       items.push({ id: 'copy-path', label: 'Copy project path', icon: 'copy' });
     }
-    await host.showChoices(anchor, { title: 'Branch and worktree', width: 320, actions: true, items, onSelect: async id => {
+    const consent = presentation.consentItem(); if (consent) items.push(consent);
+    const captured = presentation.presentation();
+    await host.showChoices(anchor, { title: 'Branch and worktree', width: 320, actions: true, items, extensionSurface: { location: 'panda.worktree.actions', context: { projectId: session.projectId, revision: captured.revision, selection: { kind: 'task', ids: [captured.task] } }, isAlive: () => host.session()?.id === session.id, pinned: items.map(item => item.id).filter(id => !MENU_ELIGIBLE.includes(id)), width: 320 }, onSelect: async id => {
       const current = host.session(); if (!current || current.id !== session.id) return;
-      switch (id) {
-        case 'worktree-attach': openDialog('attach'); break;
-        case 'worktree-new': openDialog('new'); break;
-        case 'worktree-remove': await removeInteractive(current); break;
-        case 'worktree-merge': await merge(current); break;
-        case 'worktree-recreate': await recreate(current); break;
-        case 'switch-default': await switchTo(current, ''); break;
-        // The picker replaces this menu, so it opens once this one has closed.
-        case 'switch-other': window.setTimeout(() => void pickBranch(current, anchor), 0); break;
-        case 'settle-task': await host.settle(current); break;
-        case 'copy-path': await navigator.clipboard.writeText(path); host.notify(current.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
-        default: await host.onExtra(id, current, anchor);
-      }
+      if (id === 'extension-branch-control') { presentation.toggleConsent(); return; }
+      await runMenuItem(id, current, anchor);
     } });
+  }
+
+  /** The original menu handlers, shared by the menu and captured extension actions. */
+  async function runMenuItem(id: string, current: Session, anchor: HTMLElement): Promise<void> {
+    const path = current.worktreePath ?? host.project()?.path ?? '';
+    switch (id) {
+      case 'worktree-attach': openDialog('attach'); break;
+      case 'worktree-new': openDialog('new'); break;
+      case 'worktree-remove': await removeInteractive(current); break;
+      case 'worktree-merge': await merge(current); break;
+      case 'worktree-recreate': await recreate(current); break;
+      case 'switch-default': await switchTo(current, ''); break;
+      // The picker replaces this menu, so it opens once this one has closed.
+      case 'switch-other': window.setTimeout(() => void pickBranch(current, anchor), 0); break;
+      case 'settle-task': await host.settle(current); break;
+      case 'copy-path': await navigator.clipboard.writeText(path); host.notify(current.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
+      default: await host.onExtra(id, current, anchor);
+    }
   }
 
   /** Check out `branch` (or the default branch when empty) in the task's own checkout. */
   async function switchTo(session: Session, branch: string): Promise<void> {
     try {
-      const target = branch || (await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id })).defaultBranch;
+      const known = branch ? undefined : await branches(session), target = branch || known!.defaultBranch;
       if (!target) { host.notify('This repository has no main branch.'); return; }
-      const list = await host.call<BranchList>('git_switch_branch', { projectId: session.projectId, sessionId: session.id, branch: target });
+      if (known && known.current === target) { host.notify(`Already on ${target}`); return; }
+      const list = await exclusive('switch', () => host.call<BranchList>('git_switch_branch', { projectId: session.projectId, sessionId: session.id, branch: target }));
+      if (!list) return;
+      branchCache.set(session.id, list);
       host.notify(`Switched to ${list.current}`);
       // Refresh once the menu has closed: an open menu keeps the context bar from redrawing its chip.
       window.setTimeout(() => void host.branchChanged(), 0);
@@ -142,7 +222,7 @@ export function createWorktrees(host: WorktreeHost) {
   }
 
   async function pickBranch(session: Session, anchor: HTMLElement): Promise<void> {
-    const list = await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).catch(() => null);
+    const list = await branches(session).catch(() => null);
     const others = list?.branches.filter(name => name !== list.current) ?? [];
     if (!others.length) { host.notify('There are no other local branches.'); return; }
     // The context bar may have redrawn its chip meanwhile; anchor to the one on screen.
@@ -170,7 +250,7 @@ export function createWorktrees(host: WorktreeHost) {
     input.addEventListener('input', update); update();
     input.focus(); input.select();
     const select = dialog.querySelector<HTMLSelectElement>('#branch-base')!;
-    void host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).then(list => {
+    void branches(session).then(list => {
       if (!select.isConnected) return;
       for (const name of list.branches) if (name !== list.current) { const option = document.createElement('option'); option.value = name; option.textContent = name; select.append(option); }
     }).catch(() => { /* The current branch remains the start point. */ });
@@ -189,8 +269,11 @@ export function createWorktrees(host: WorktreeHost) {
     const branch = String(data.get('branch') ?? '').trim(), base = String(data.get('base') ?? '').trim(), existing = data.get('existing') === 'on';
     const error = form.querySelector<HTMLElement>('.worktree-error')!, existingRow = form.querySelector<HTMLElement>('.worktree-existing')!;
     if (!BRANCH_PATTERN.test(branch)) { error.textContent = 'Use letters, numbers, hyphens, underscores, and slashes.'; error.hidden = false; return true; }
+    // A repeated submit while the first request runs is ignored: it never creates a second worktree.
+    if (pending === 'create') return true;
     try {
-      const saved = await host.call<Session>(mode === 'attach' ? 'attach_worktree' : 'create_worktree', { sessionId: session.id, branch, ...(base ? { base } : {}), existing });
+      const saved = await exclusive('create', () => host.call<Session>(mode === 'attach' ? 'attach_worktree' : 'create_worktree', { sessionId: session.id, branch, ...(base ? { base } : {}), existing }));
+      if (!saved) return true;
       // A dialog dismissed meanwhile must not steal navigation or close whatever replaced it.
       const live = form.isConnected && Boolean(form.closest('dialog[open]'));
       if (mode === 'attach') await host.afterAttach(saved, live); else await host.afterCreate(saved, live, host.session()?.id === session.id);
@@ -223,13 +306,15 @@ export function createWorktrees(host: WorktreeHost) {
       const canProceed = intent !== 'remove' || (status.exists ? status.clean : true);
       const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" ${canProceed ? '' : 'disabled'}>${intent === 'remove' ? 'Remove and settle' : verb}</button></div></form>`, 'compact-dialog worktree-dialog');
       cleanup?.resolve({ proceed: false, remove: false });
-      cleanup = { resolve, dialog };
+      cleanup = { resolve, dialog, session: session.id, intent };
+      host.rerender?.();
       dialog.addEventListener('close', () => { if (cleanup?.dialog === dialog) { cleanup = undefined; resolve({ proceed: false, remove: false }); } }, { once: true });
     }));
   }
 
   async function remove(session: Session): Promise<WorktreeRemoval> {
-    const removal = await host.call<WorktreeRemoval>('remove_worktree', { sessionId: session.id, deleteBranch: true });
+    const removal = await exclusive('cleanup', () => host.call<WorktreeRemoval>('remove_worktree', { sessionId: session.id, deleteBranch: true }));
+    if (!removal) throw new Error('Another branch action is still running.');
     host.notify(removal.note || (removal.branchDeleted ? `Removed the worktree and deleted ${removal.branch}` : removal.removed ? `Removed the worktree; ${removal.branch} is kept` : 'Worktree registration pruned'));
     return removal;
   }
@@ -245,7 +330,9 @@ export function createWorktrees(host: WorktreeHost) {
   async function merge(session: Session): Promise<void> {
     let merged: WorktreeMerge;
     try {
-      merged = await host.call<WorktreeMerge>('merge_worktree', { sessionId: session.id });
+      const result = await exclusive('merge', () => host.call<WorktreeMerge>('merge_worktree', { sessionId: session.id }));
+      if (!result) return;
+      merged = result;
     } catch (cause) {
       host.notify(`Couldn’t merge: ${cause instanceof Error ? cause.message : String(cause)}`);
       return;
@@ -258,12 +345,17 @@ export function createWorktrees(host: WorktreeHost) {
   }
 
   async function recreate(session: Session): Promise<void> {
-    const restored = await host.call<Session>('recreate_worktree', { sessionId: session.id });
+    const restored = await exclusive('recreate', () => host.call<Session>('recreate_worktree', { sessionId: session.id }));
+    if (!restored) return;
     await host.afterAttach(restored, false);
     host.notify(`Worktree restored on ${restored.worktreeBranch ?? 'its branch'}`);
   }
 
-  return { contextBar, showMenu, openDialog, submit, cleanupOffer, remove, removeInteractive, recreate };
+  return {
+    contextBar, showMenu, openDialog, submit, cleanupOffer, remove, removeInteractive, recreate,
+    presentation: () => presentation.presentation(),
+    dispatch: (input: unknown) => presentation.dispatch(input),
+  };
 }
 
 /** A linked issue or pull request. With a task, a pull request opens in the inspector; otherwise on GitHub. Hidden while the integration is off. */

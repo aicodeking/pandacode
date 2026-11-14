@@ -26,3 +26,6 @@
 [data-pull-accessory]:empty { display: none; }
 [data-pull-consent] { align-self: flex-start; white-space: normal; }
 [data-pull-consent][hidden] { display: none; }
+/* The context bar may be display: contents inside the tray: order stays after the tray tools. */
+.composer-context[data-worktree-provider] > * { order: 2; }
+.composer-context[data-worktree-provider] > :is(.branch-chip, .link-chip) { order: 1; }

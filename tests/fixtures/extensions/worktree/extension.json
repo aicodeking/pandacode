@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.worktree",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.worktree/branch-first", "title": "Branch first", "slot": "panda.worktree", "contractVersion": 1, "presentation": "controls-first", "capabilities": ["host-branch", "host-worktree", "original-actions"] }],
+    "commands": [{ "id": "sample.worktree/tools", "title": "Branch tools", "action": { "kind": "showMessage", "message": "Branch, worktree and cleanup ownership stays with PandaCode." } }],
+    "menus": [
+      { "id": "sample.worktree/actions", "command": "sample.worktree/tools", "location": "panda.worktree.actions" },
+      { "id": "sample.worktree/context", "command": "sample.worktree/tools", "location": "panda.worktree.context" }
+    ],
+    "layouts": [{ "id": "sample.worktree/copy-first", "title": "Copy path before switching", "location": "panda.worktree.actions", "rules": [{ "id": "panda.worktree.actions/copy-path", "target": "panda.worktree.actions/switch-default", "side": "before" }] }]
+  }
+}

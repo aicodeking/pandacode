@@ -507,6 +507,17 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
     if (task) task.pullRequest = { kind: 'pull', number, url: `https://github.com/orbit-labs/orbit/pull/${number}`, title, state: 'open', checkedAt: now };
   }
 }
+// Explicit branch/worktree extension fixture only: linked work on the local task, an in-memory
+// worktree folder that can vanish, and safe mode while a host form is open. No real git or worktree.
+if (new URLSearchParams(location.search).has('worktree-coverage')) {
+  const task = sessions.find(item => item.id === 'session-1');
+  if (task) {
+    task.pullRequest = { kind: 'pull', number: 130, url: 'https://github.com/orbit-labs/orbit/pull/130', title: 'Debounce library search', state: 'open', checkedAt: now };
+    task.issue = { kind: 'issue', number: 41, url: 'https://github.com/orbit-labs/orbit/issues/41', title: 'Search is slow', state: 'open', checkedAt: now };
+  }
+  (window as any).__previewWorktreeVanish = (sessionId: string) => { const path = sessions.find(item => item.id === sessionId)?.worktreePath; if (path) worktreeGit.delete(path); };
+  (window as any).__previewWorktreeSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 /** A pretend iOS Simulator: two devices and a drawn home screen that answers taps. */
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();

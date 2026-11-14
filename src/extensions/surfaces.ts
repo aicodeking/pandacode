@@ -1,5 +1,14 @@
 /** Stable host-owned locations; these are not selectors or dynamic inspector view IDs. */
 import type { WindowActionLocation } from './window-surfaces';
+/** Branch/worktree menu entries and chip context. `panda.worktree.protected` is inspect-only:
+ * recovery rows, the branch picker and form/cleanup confirmations are never hidden, reordered or package-confirmed. */
+export const WORKTREE_ACTION_SURFACES = ['panda.worktree.actions', 'panda.worktree.context'] as const;
+export const WORKTREE_CONTROLS = {
+  'panda.worktree.controls': [['branch-menu', 'Branch and worktree menu'], ['checkout', 'Checkout kind'], ['open-pull', 'Linked pull request'], ['open-url', 'Linked issue']],
+  'panda.worktree.actions': [['switch-default', 'Switch to the main branch'], ['switch-other', 'Other branch'], ['worktree-attach', 'Work in a new worktree'], ['worktree-new', 'New task in a worktree'], ['worktree-merge', 'Merge worktree'], ['worktree-remove', 'Remove worktree'], ['copy-path', 'Copy checkout path']],
+  'panda.worktree.protected': [['checkout-row', 'Current checkout'], ['worktree-recreate', 'Recreate worktree'], ['settle-task', 'Settle task'], ['branch-pick', 'Pick a branch to switch to'], ['worktree-confirm', 'Create worktree'], ['cleanup-confirm', 'Confirm cleanup'], ['cleanup-remove', 'Remove the worktree folder']],
+} as const;
+export const WORKTREE_PROTECTED_LOCATION = 'panda.worktree.protected';
 export const PULL_ACTION_SURFACES = ['panda.pull.actions', 'panda.pull.context'] as const;
 /** `panda.pull.merge` is protected: inspectable only, never hidden, reordered or package-confirmed. */
 export const PULL_CONTROLS = {
@@ -65,7 +74,7 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

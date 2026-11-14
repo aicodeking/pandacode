@@ -5,6 +5,28 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** The selected, unfaulted branch/worktree provider. The host composer markup carries it, so a
+ * context-bar redraw keeps the same presentation without remounting chips, menus or forms. */
+export function worktreeProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.worktree', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Branch-first visual move on the original context bar: no git call, menu, form or cleanup change.
+ * Returns false only when the selected provider faults now (built-in order restored), so the host reports it once. */
+export function applyWorktreePresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.composer-local')) throw Error('Incomplete branch and worktree host');
+}): boolean {
+  const provider = componentSelection.resolve('panda.worktree', componentProviders());
+  if (!provider) { delete host.dataset.worktreeProvider; return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.worktreeProvider = provider.id; return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete host.dataset.worktreeProvider;
+    return !fresh;
+  }
+}
 /** Section-first visual move on the original Pull view: no fetch, remount, viewer disposal or merge-state change. */
 export function applyPullPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.pull-tabs') || !host.querySelector('.pull-header')) throw Error('Incomplete Pull request host');

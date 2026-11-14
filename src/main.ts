@@ -944,7 +944,12 @@ const worktrees = createWorktrees({
   settle: async task => { await changeTaskStage(task, 'completed', false); },
   extraItems: task => github.menuItems(task),
   onExtra: (id, task) => github.onMenu(id, task),
+  rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('worktree-coverage')) {
+  (window as any).__previewWorktree = () => worktrees.presentation();
+  (window as any).__previewWorktreeAction = (input: unknown) => worktrees.dispatch(input);
+}
 window.addEventListener('pandacode-github-change', () => { renderComposer(); renderHeader(); renderInspector(); });
 window.addEventListener('focus', () => void github.refreshLinks(state.projectId));
 /** The prompt's aria-description, shared by the composer render and dictation's restore, so the bot-steering and
@@ -1986,11 +1991,21 @@ function renderHeader(): void {
   $('.conversation-pane').classList.toggle('bot-thread', Boolean(bot));
   const crumb = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon('folder')}<button data-action="select-project" data-id="${escape(p.id)}">${escape(p.name)}</button>` : '';
   if (!showsHtml($('#breadcrumb'), crumb)) $('#breadcrumb').innerHTML = crumb;
+  renderContextBar(fresh);
+}
+/** Redraw only the composer's checkout row; also the branch/worktree presentation's light refresh. */
+function renderContextBar(fresh = newTaskView()): void {
   const s = session(), bar = document.querySelector<HTMLElement>('#composer-area .composer-context');
   if (s && bar) {
     const markup = contextBarHtml(s, fresh);
     // A menu opening from the bar keeps its anchor; replacing it mid-open would cancel the menu.
-    if (!showsHtml(bar, markup, true) && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) bar.outerHTML = markup;
+    if (!showsHtml(bar, markup, true) && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) {
+      // A redraw (layout, presentation or recovery) keeps keyboard focus on the same chip.
+      const focused = bar.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+      const key = focused && (focused.id ? `#${CSS.escape(focused.id)}` : focused.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]` : '');
+      bar.outerHTML = markup;
+      if (key) document.querySelector<HTMLElement>(`#composer-area .composer-context ${key}`)?.focus({ preventScroll: true });
+    }
   }
 }
 /** The composer's context row. A linked PR or issue shows its state as a dot, so the state also goes in its tooltip. */
@@ -5972,7 +5987,7 @@ async function createChat(from?: Session): Promise<void> {
 async function forgetChat(projectId: string): Promise<void> {
   if (await call<boolean>('chat_cleanup', { projectId }).catch(() => false)) state.projects = state.projects.filter(p => p.id !== projectId);
 }
-type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'> & { afterClose?: () => void; extensionSurface?: { location: import('./extensions/surfaces').ActionLocation; context: Record<string, import('./extensions/contracts').Json>; isAlive?: () => boolean } };
+type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'> & { afterClose?: () => void; extensionSurface?: { location: import('./extensions/surfaces').ActionLocation; context: Record<string, import('./extensions/contracts').Json>; isAlive?: () => boolean; pinned?: readonly string[]; width?: number } };
 async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise<void> {
   // A second click on the trigger closes its menu; a right-click (a point) moves it there instead.
   if (!options.point && pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
@@ -5986,7 +6001,7 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   if (options.extensionSurface) {
     const { openContextActions } = await import('./extensions/context-actions');
     if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
-    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, notify, onClose: () => { choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; options.afterClose?.(); } });
+    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, pinned: options.extensionSurface.pinned, width: options.extensionSurface.width, notify, onClose: () => { choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; options.afterClose?.(); } });
     return;
   }
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
