@@ -76,6 +76,17 @@ repository or pull request, and does not fetch, merge, clone or start anything.
 GitHub, cloud and multi-machine fixtures are synthetic; no GitHub mutation, cloud
 spend, pairing or real device is exercised.
 
+Control families compose the same way. Settings, sidebar, action dock, roster and
+status recipes can be selected together, and one launch-wide safe mode returns all
+of them to built-in order and visibility. A dialog reached from both a main opener
+and a module-owned or direct opener (Tools & integrations, Jev assistance, Browser
+tests) has one dialog ID and draws one accessory band; every package's extras
+appear there once. The Bots panel in the sidebar (bot and shared-channel rows, its
+search and its create menu) joins them through the selected sidebar recipe: its
+head accessory, bot and channel row menus, group order and reversible visibility
+follow the same safe mode, while deletion, pausing, channel membership and
+credentials stay with PandaCode (see [Sidebar](sidebar.md#bots-panel)).
+
 Design intentionally detaches artboard documents when the entire panel is hidden;
 that original lifecycle is not used for recipe movement, faults or disable.
 The existing VM inspector is macOS-only and local virtualization needs Apple
