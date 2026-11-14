@@ -30,11 +30,11 @@ that team. It is added after
 the built-in rules and never replaces them, including the guard that treats worker
 output as data rather than instructions.
 
-The architect and each worker can independently use any of 18 harnesses: Claude
-Code, Codex, Kimi Code, OpenCode, GLM and Xiaomi MiMo through Claude Code,
+The architect and each worker can independently use any of 21 harnesses: Claude
+Code, Codex, Kimi Code, OpenCode, GLM, Xiaomi MiMo and Alibaba Token Plan through Claude Code,
 Antigravity, Grok Build, Pi, DeepSeek, Command Code, Cline, Kilo Code, omp, GitHub
-Copilot CLI, Muse Code, Devin CLI, or Hermes Agent (`HARNESSES` in `architect.rs`;
-ZCode is left out until it can bridge the team tools). Model and effort choices come from the existing harness catalog; configured
+Copilot CLI, Muse Code, Devin CLI, Hermes Agent, Cursor CLI, or ZCode (`HARNESSES` in
+`architect.rs`). Model and effort choices come from the existing harness catalog; configured
 custom model IDs remain available. A model must be supported by the selected
 harness and the user's account. PandaCode does not supply inference or API credits.
 

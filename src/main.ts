@@ -6232,8 +6232,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       configuringSessions.add(selected.id);
       try {
-        // A plain model leaves a named team; ZCode only supports single-agent tasks.
-        if (teams.get(selected.id)?.config.rosterOnly || (providerId === 'zcode' && teams.has(selected.id))) {
+        // A plain model leaves a named team.
+        if (teams.get(selected.id)?.config.rosterOnly) {
           await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
           onArchitect({ sessionId: selected.id, removed: true });
         }

@@ -1045,9 +1045,33 @@ offered. The protocol is ZCode's private surface and evolves with the CLI — fr
 are parsed defensively (unknown events ignored, unknown reverse requests answered
 `-32601`) and pinned per recorded version.
 
-ZCode cannot lead or join agent teams yet. Automatic teams exclude its models;
-selecting a ZCode model turns off a team with no worker history. Start a new task
-if the team has already run workers.
+ZCode can lead and join agent teams. A fresh session carries the host-tools MCP
+server inline in `session/create` (`mcpServers`, one entry from
+`mcp_host::zcode_config`: loopback HTTP, the same bearer the other harnesses use,
+`isolation: "session"`, `alwaysLoad: true` so ZCode does not defer the tools
+behind its tool search). `session/resume` takes no `mcpServers` and
+`session/update` is not implemented, so a resumed session pushes the run's fresh
+server through `mcp/list` in `connect` mode (recorded 2026-11-13 against CLI
+0.17.1). A required fresh session — a team worker, or a solo task whose tools
+are required — sends that same check before the prompt. An unreachable server
+does not fail `session/create`, and a subscribe reply can arrive first, so the
+prompt waits until the check settles. An optional fresh bridge (title
+suggestions) stays inline and does not wait on `mcp/list`. When the check
+fails, a required run stops with a clear message and an optional bridge drops
+out quietly.
+
+ZCode negotiates MCP revision 2026-07-28. It probes HTTP servers with
+`server/discover`, and `tools/list` / `tools/call` results must carry
+`resultType: "complete"` plus `ttlMs` and `cacheScope`. `mcp_host` answers
+accordingly for every harness, including those fields on `server/discover`.
+`ttlMs: 0` means immediately stale, so a client does not replay a host-tool
+call. The listed tools are this run's host catalog (name, description and input
+schema only) — the same catalog the other harnesses receive, not a wider one.
+A request may send `MCP-Protocol-Version: 2026-07-28`; that header is accepted
+alongside `2025-06-18` and `2025-03-26`, and `initialize` echoes it. The CLI
+bundled with an older ZCode.app may reject the create's `mcpServers` key with
+its own schema error — the bridge is recorded from 0.17.1, and the CLI tracks
+the installed app.
 
 Verified against the CLI bundled with ZCode.app (user-agent `ZCode/3.16.3`) on
 2026-10-25 by driving `zcode app-server` directly (create, subscribe, two turns,
