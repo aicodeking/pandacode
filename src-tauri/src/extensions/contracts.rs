@@ -8,6 +8,10 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
+/// One limit of the public primitive declaration (`x-primitives`) shared with the frontend renderers.
+pub fn primitive_limit(family: &str, name: &str) -> u64 {
+    SCHEMA["x-primitives"]["families"][family]["limits"][name]["value"].as_u64().expect("declared primitive limit")
+}
 const CONTRIBUTIONS: [&str; 14] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services", "providers"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
@@ -449,6 +453,59 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
+    #[test]
+    fn primitive_declaration_matches_schema_carriers_limits_hosts_and_conformance_package() {
+        let primitives = &super::SCHEMA["x-primitives"];
+        assert_eq!(primitives["contractVersion"], 1);
+        let mut declared = std::collections::BTreeSet::new();
+        for (name, family) in primitives["families"].as_object().unwrap() {
+            let def = &super::SCHEMA["$defs"][family["carrier"]["def"].as_str().unwrap()];
+            let key = family["carrier"]["key"].as_str().unwrap();
+            let alternatives = def["anyOf"].as_array().cloned().unwrap_or_else(|| vec![def.clone()]);
+            let mut carried: Vec<String> = alternatives.iter().flat_map(|alternative| { let property = &alternative["properties"][key]; property["enum"].as_array().cloned().unwrap_or_else(|| vec![property["const"].clone()]) }).map(|value| value.as_str().unwrap().to_owned()).collect();
+            let mut kinds = super::strings(&family["kinds"]);
+            for kind in &kinds { declared.insert(format!("{name}.{kind}")); }
+            carried.sort(); kinds.sort();
+            assert_eq!(kinds, carried, "{name}");
+            for (limit, entry) in family["limits"].as_object().unwrap() {
+                for path in super::strings(&entry["at"]) { assert_eq!(super::SCHEMA.pointer(&format!("/{path}")), Some(&entry["value"]), "{name}.{limit} at {path}"); }
+                if super::strings(&entry["at"]).is_empty() { assert!(["field.rowsDefault", "field.query"].contains(&format!("{name}.{limit}").as_str())); }
+            }
+        }
+        assert_eq!(super::primitive_limit("field", "text"), 4096);
+        assert_eq!(super::primitive_limit("menu", "depth"), super::SCHEMA["x-menuLimits"]["depth"].as_u64().unwrap());
+        for (name, host) in primitives["hosts"].as_object().unwrap() {
+            let accepts = super::strings(&host["accepts"]);
+            let degrades = host["degrades"].as_object().unwrap();
+            for id in accepts.iter().chain(super::strings(&host["omits"]).iter()).chain(super::strings(&host["disables"]).iter()).chain(degrades.keys()) { assert!(declared.contains(id), "{name}: {id}"); }
+            for id in super::strings(&host["omits"]).iter().chain(super::strings(&host["disables"]).iter()).chain(degrades.keys()) { assert!(!accepts.contains(id), "{name}: {id}"); }
+            for target in degrades.values() { assert!(accepts.contains(&target.as_str().unwrap().to_owned()), "{name}"); }
+        }
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/primitives/extension.json")).unwrap();
+        let checked = super::validate_contract("packages", &json!([manifest]));
+        assert_eq!(checked["ok"], true, "{checked}"); assert_eq!(checked["diagnostics"], json!([]));
+        let field = |change: &dyn Fn(&mut Value)| { let mut value = manifest.clone(); change(&mut value["contributes"]["commands"][0]["action"]["dialog"]["fields"][1]); super::validate_contract("packages", &json!([value])) };
+        let package = |change: &dyn Fn(&mut Value)| { let mut value = manifest.clone(); change(&mut value); super::validate_contract("packages", &json!([value])) };
+        for (case, result) in [
+            ("rows low", field(&|f| f["rows"] = json!(1))), ("rows high", field(&|f| f["rows"] = json!(13))), ("rows fraction", field(&|f| f["rows"] = json!(2.5))),
+            ("oversize", field(&|f| f["value"] = json!("a".repeat(4097)))), ("number", field(&|f| f["value"] = json!(3))), ("unknown kind", field(&|f| f["kind"] = json!("richtext"))),
+            ("callback", field(&|f| f["onInput"] = json!("fetch()"))), ("prototype", field(&|f| f["__proto__"] = json!({"polluted": true}))),
+            ("view kind", package(&|m| m["contributes"]["views"][0]["controls"].as_array_mut().unwrap().push(json!({"kind":"chart","label":"Chart","items":[]})))),
+            ("view markup", package(&|m| m["contributes"]["views"][0]["controls"][0]["html"] = json!("<script></script>"))),
+            ("presentation", package(&|m| m["contributes"]["menus"][1]["presentation"] = json!("select"))),
+            ("ungranted", package(&|m| m["permissions"] = json!([]))),
+            ("settings async", package(&|m| m["contributes"]["settings"][0]["fields"].as_array_mut().unwrap().push(json!({"id":"remote","kind":"select","label":"Remote","async":true,"options":[]})))),
+        ] { assert_eq!(result["ok"], false, "{case}"); assert_ne!(result["error"]["code"], "DuplicateId", "{case}"); }
+        assert_eq!(package(&|m| m["permissions"] = json!([]))["error"]["code"], "PermissionDenied");
+        assert_eq!(package(&|m| m["contributes"]["settings"][0]["fields"].as_array_mut().unwrap().push(json!({"id":"remote","kind":"select","label":"Remote","async":true,"options":[]})))["error"]["code"], "UnsupportedContribution");
+        let dialog = &manifest["contributes"]["commands"][0]["action"]["dialog"];
+        let mut many = dialog.clone(); many["fields"] = json!((0..25).map(|n| json!({"id": format!("field-{n}"), "kind": "textarea", "label": "Notes"})).collect::<Vec<_>>());
+        assert_eq!(super::validate_contract("dialog", &many)["error"]["code"], "LimitExceeded");
+        // Prior fixtures keep validating unchanged.
+        for prior in [include_str!("../../../tests/fixtures/extensions/menu-laboratory/extension.json"), include_str!("../../../tests/fixtures/extensions/data-panel/extension.json"), include_str!("../../../tests/fixtures/extensions/settings-laboratory/extension.json")] {
+            assert_eq!(super::validate_contract("packages", &json!([serde_json::from_str::<Value>(prior).unwrap()]))["ok"], true);
+        }
+    }
     #[test]
     fn machines_component_state_action_share_native_schema() {
         let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/machines/extension.json")).unwrap();

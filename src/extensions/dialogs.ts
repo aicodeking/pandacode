@@ -1,6 +1,8 @@
 import { escape, isImeKey } from '../dom';
 import { openChoiceMenu, type ChoiceItem } from '../choice-menu';
-import { createDialogState, type DialogCallbacks, type DialogContext, type DialogDefinition, type DialogResult } from './dialog-state';
+import { createDialogState, TEXT_LIMIT, type DialogCallbacks, type DialogContext, type DialogDefinition, type DialogResult } from './dialog-state';
+import { primitiveLimit } from './contracts';
+type FieldControl = HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement;
 
 /** Host-only transport seam. No package function is ever read from dialog JSON. */
 let callbacks: DialogCallbacks | undefined;
@@ -27,7 +29,7 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
   let resolve!: (result: DialogResult) => void;
   const result = new Promise<DialogResult>(done => { resolve = done; });
   let ended = false, pending = false, confirming = false, closePick: (() => void) | undefined;
-  const controls = new Map<string, HTMLInputElement | HTMLButtonElement>();
+  const controls = new Map<string, FieldControl>();
   dialog.className = 'extension-dialog'; dialog.dataset.extensionDialog = token;
   dialog.setAttribute('aria-label', `${spec.title} — ${owner}`); dialog.removeAttribute('aria-describedby');
   dialog.innerHTML = `<form novalidate><div class="dialog-heading"><h2>${escape(spec.title)}</h2></div><p class="dialog-description">Extension: ${escape(owner)}</p><div class="extension-dialog-fields"></div><p class="extension-dialog-confirm" hidden></p><p class="extension-dialog-error" role="alert" hidden></p><p class="extension-dialog-status" role="status"></p><div class="dialog-footer"><button type="button" class="secondary-button" data-extension-cancel>Cancel</button><button type="submit" class="primary-button">${escape(spec.confirmLabel ?? 'Confirm')}</button></div></form>`;
@@ -59,8 +61,12 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
   for (const field of spec.fields) {
     const row = document.createElement('div'); row.className = 'extension-dialog-field';
     const id = `${token}-${field.id}`;
-    row.innerHTML = `<label for="${id}">${escape(field.label)}</label>${field.kind === 'select' ? `<button type="button" class="secondary-button" id="${id}" aria-haspopup="dialog"></button>` : `<input id="${id}" ${field.kind === 'switch' ? 'type="checkbox" role="switch" class="ds-toggle"' : 'type="text" maxlength="4096" autocomplete="off"'}>`}<p id="${id}-error" class="extension-field-error" hidden></p>`;
-    const control = row.querySelector<HTMLInputElement | HTMLButtonElement>('input, button')!;
+    // Enter in a textarea inserts a line break and never submits; the form's IME guard still applies.
+    const markup = field.kind === 'select' ? `<button type="button" class="secondary-button" id="${id}" aria-haspopup="dialog"></button>`
+      : field.kind === 'textarea' ? `<textarea id="${id}" rows="${field.rows ?? primitiveLimit('field', 'rowsDefault')}" maxlength="${TEXT_LIMIT}" autocomplete="off"></textarea>`
+      : `<input id="${id}" ${field.kind === 'switch' ? 'type="checkbox" role="switch" class="ds-toggle"' : `type="text" maxlength="${TEXT_LIMIT}" autocomplete="off"`}>`;
+    row.innerHTML = `<label for="${id}">${escape(field.label)}</label>${markup}<p id="${id}-error" class="extension-field-error" hidden></p>`;
+    const control = row.querySelector<FieldControl>('input, textarea, button')!;
     control.setAttribute('aria-describedby', `${id}-error`); if ('required' in field && field.required) control.setAttribute('aria-required', 'true');
     controls.set(field.id, control); fields.append(row);
     if (field.kind === 'select') {
@@ -87,9 +93,9 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
         });
       }, { signal: state.signal });
     } else {
-      const input = control as HTMLInputElement;
-      if (field.kind === 'switch') input.checked = Boolean(state.values()[field.id]); else input.value = String(state.values()[field.id]);
-      input.addEventListener('input', () => { if (!ended && !pending) { state.set(field.id, field.kind === 'switch' ? input.checked : input.value); clearConfirmation(); } }, { signal: state.signal });
+      const input = control as HTMLInputElement | HTMLTextAreaElement;
+      if (input instanceof HTMLInputElement && field.kind === 'switch') input.checked = Boolean(state.values()[field.id]); else input.value = String(state.values()[field.id]);
+      input.addEventListener('input', () => { if (!ended && !pending) { state.set(field.id, input instanceof HTMLInputElement && field.kind === 'switch' ? input.checked : input.value); clearConfirmation(); } }, { signal: state.signal });
     }
   }
   form.addEventListener('submit', event => {

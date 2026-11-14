@@ -137,13 +137,15 @@ sample package's header or sidebar contribution (not duplicated within one packa
 ### Dialogs and quick picks (M3, experimental)
 
 `showDialog` supplies bounded `title`, `fields`, `successMessage`, optional `confirmLabel`, `confirmation`
-and `cancelMessage`. Up to 24 unique local-ID fields may be text (4096 characters), boolean switch or
-single/multi-select (100 unique label/value options, optional disabled/async/search behavior). The shared
+and `cancelMessage`. Up to 24 unique local-ID fields may be text or textarea (4096 characters; textarea
+`rows` 2–12), boolean switch or single/multi-select (100 unique label/value options, optional disabled/async/search behavior). The shared
 `dialog` and `selectOptions` contracts validate direct host DTOs and the identical embedded manifest data.
 Package code/callbacks/HTML are never accepted. Both native/frontend validators reject malformed variants,
 duplicate identities and executable fields. See [dialogs.md](dialogs.md) for the exact field vocabulary,
 host-only asynchronous transport, cancellation/validation/focus semantics and current runtime/platform limits.
 The installable `tests/fixtures/extensions/menu-laboratory/extension.json` demonstrates the complete flow.
+The schema's `x-primitives` declaration lists every shared primitive, its limits and the hosts that accept
+it; see [primitives.md](primitives.md) and the combined `tests/fixtures/extensions/primitives` package.
 
 ### Selecting and reordering layouts (M2, experimental)
 

@@ -1,0 +1,69 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.primitives",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.primitives/mark", "asset": "assets/mark.svg" }],
+    "commands": [
+      { "id": "sample.primitives/form", "title": "Primitive form", "icon": "sample.primitives/mark", "action": {
+        "kind": "showDialog",
+        "dialog": {
+          "title": "Primitive form",
+          "confirmLabel": "Save form",
+          "successMessage": "Primitive form saved",
+          "cancelMessage": "Primitive form cancelled",
+          "fields": [
+            { "id": "name", "kind": "text", "label": "Form name", "required": true, "minLength": 2 },
+            { "id": "notes", "kind": "textarea", "label": "Form notes", "required": true, "minLength": 3, "rows": 5 },
+            { "id": "enabled", "kind": "switch", "label": "Form enabled", "value": true },
+            { "id": "format", "kind": "select", "label": "Form format", "required": true, "placeholder": "Choose a format", "options": [{ "value": "brief", "label": "Brief" }, { "value": "full", "label": "Full" }, { "value": "archived", "label": "Archived", "disabled": true }] },
+            { "id": "tags", "kind": "select", "label": "Form tags", "multiple": true, "async": true, "options": [{ "value": "alpha", "label": "Alpha" }, { "value": "beta", "label": "Beta" }, { "value": "gamma", "label": "Gamma" }] }
+          ]
+        }
+      } },
+      { "id": "sample.primitives/notify", "title": "Primitive notification", "action": { "kind": "showMessage", "message": "Primitive notification" } },
+      { "id": "sample.primitives/details", "title": "Show details", "action": { "kind": "showMessage", "message": "Primitive details toggled" } },
+      { "id": "sample.primitives/density", "title": "Density", "action": { "kind": "showMessage", "message": "Primitive density chosen" } },
+      { "id": "sample.primitives/open-gallery", "title": "Primitive gallery", "action": { "kind": "openView", "view": "sample.primitives/gallery" } }
+    ],
+    "menus": [
+      { "id": "sample.primitives/tools", "location": "panda.workspace.header.actions", "command": "sample.primitives/form", "icon": "sample.primitives/mark", "items": [
+        { "id": "sample.primitives/primitives", "kind": "submenu", "title": "Primitives", "icon": "sample.primitives/mark", "items": [
+          { "id": "sample.primitives/forms", "kind": "submenu", "title": "Forms", "items": [
+            { "id": "sample.primitives/open-form", "kind": "command", "title": "Open form", "command": "sample.primitives/form", "icon": "sample.primitives/mark" }
+          ] },
+          { "id": "sample.primitives/divider", "kind": "separator" },
+          { "id": "sample.primitives/show-details", "kind": "checkbox", "title": "Show details", "checked": false, "command": "sample.primitives/details" },
+          { "id": "sample.primitives/compact", "kind": "radio", "title": "Compact", "group": "Density", "checked": true, "command": "sample.primitives/density" },
+          { "id": "sample.primitives/comfortable", "kind": "radio", "title": "Comfortable", "group": "Density", "checked": false, "command": "sample.primitives/density" }
+        ] },
+        { "id": "sample.primitives/send", "kind": "command", "title": "Send notification", "command": "sample.primitives/notify" }
+      ] },
+      { "id": "sample.primitives/gallery-button", "location": "panda.workspace.header.actions", "command": "sample.primitives/open-gallery", "presentation": "button", "text": "Primitive gallery" },
+      { "id": "sample.primitives/count", "location": "panda.workspace.header.actions", "command": "sample.primitives/notify", "presentation": "badge", "text": "Primitive count", "badge": "3" },
+      { "id": "sample.primitives/state", "location": "panda.workspace.header.actions", "command": "sample.primitives/notify", "presentation": "status", "text": "Primitives ready" }
+    ],
+    "views": [
+      {
+        "id": "sample.primitives/gallery", "title": "Primitive gallery", "text": "Every host-rendered view primitive. No package HTML is executed.",
+        "toolbar": [{ "command": "sample.primitives/notify" }, { "command": "sample.primitives/form" }],
+        "controls": [
+          { "kind": "list", "label": "Primitive list", "items": ["First entry", "Second entry"] },
+          { "kind": "tree", "label": "Primitive tree", "items": [{ "label": "Parent node", "children": [{ "label": "Child node" }] }, { "label": "Leaf node" }] },
+          { "kind": "table", "label": "Primitive table", "columns": ["Name", "State"], "rows": [["Alpha", "Ready"], ["Beta", "Pending"]] },
+          { "kind": "tabs", "label": "Primitive tabs", "items": [{ "label": "Overview", "text": "Overview content." }, { "label": "History", "text": "History content." }] },
+          { "kind": "progress", "label": "Primitive progress", "value": 40 }
+        ]
+      }
+    ],
+    "settings": [
+      { "id": "sample.primitives/preferences", "title": "Primitive preferences", "fields": [
+        { "id": "summary", "kind": "textarea", "label": "Preference summary", "rows": 3, "value": "First line" },
+        { "id": "active", "kind": "switch", "label": "Preference active", "value": false }
+      ] }
+    ]
+  }
+}

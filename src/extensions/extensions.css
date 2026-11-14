@@ -16,7 +16,11 @@
 [data-layout-hidden] { display: none !important; }
 .extension-dialog-field { display: grid; gap: var(--space-2); margin-block: 12px; }
 .extension-dialog-field > label { color: var(--text); font-size: var(--text-sm); }
-.extension-dialog-field > input[type="text"] { width: 100%; padding: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); }
+.extension-dialog-field > :is(input[type="text"], textarea) { width: 100%; padding: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); }
+/* Same tokens as the text input; the user may grow it vertically, never wider than the dialog. */
+.extension-dialog-field > textarea { color: var(--text); font: inherit; line-height: 1.4; resize: vertical; max-height: 40vh; }
+/* Forced colors drop the inset box-shadow focus ring of text fields: give primitive fields a system outline. */
+@media (forced-colors: active) { :is(.extension-dialog-field, [data-extension-settings-form]) :is(input, textarea, select):focus-visible { outline: 2px solid Highlight; outline-offset: 1px; } }
 .extension-dialog-field > button { text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .extension-field-error, .extension-dialog-error { color: var(--ds-danger); font-size: var(--text-xs); }
 .extension-dialog-confirm { color: var(--text); font-size: var(--text-sm); }

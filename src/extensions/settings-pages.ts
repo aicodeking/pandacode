@@ -4,7 +4,9 @@ import { SECTIONS, type ExtensionSettingsPage } from '../settings-sections';
 import { extensionsSnapshot } from './manager';
 import { SETTINGS_FIELD_PAGES } from './surfaces';
 import { settingsDefaults, validSettingsValues, type SettingsPageDefinition } from './settings-state';
-import type { DialogValues } from './dialog-state';
+import { TEXT_LIMIT, type DialogValues } from './dialog-state';
+import { primitiveLimit } from './contracts';
+type SettingsControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
 function enabledSettingsPages() {
   const snapshot = extensionsSnapshot();
@@ -24,16 +26,17 @@ export function mountExtensionSettingsPage(host: HTMLElement, owner: string, pag
   const defaults = settingsDefaults(page);
   host.innerHTML = `<p>Extension: ${escape(owner)} · Settings belong only to this extension.</p><form data-extension-settings-form><div data-fields></div><p role="status">Loading settings…</p><button type="submit" class="secondary-button" disabled>Save extension settings</button></form>`;
   const form = host.querySelector<HTMLFormElement>('form')!, fields = host.querySelector<HTMLElement>('[data-fields]')!, status = host.querySelector<HTMLElement>('[role="status"]')!, save = host.querySelector<HTMLButtonElement>('button')!;
-  const controls = new Map<string, HTMLInputElement | HTMLSelectElement>();
+  const controls = new Map<string, SettingsControl>();
   const draw = (values: DialogValues) => {
     fields.innerHTML = page.fields.map(field => {
       const label = escape(field.label), id = escape(`extension-setting-${page.id}-${field.id}`), name = escape(field.id), value = values[field.id];
-      const control = field.kind === 'switch' ? `<input type="checkbox" id="${id}" name="${name}" ${value ? 'checked' : ''}>` : field.kind === 'text' ? `<input id="${id}" name="${name}" type="text" maxlength="4096" value="${escape(String(value))}" ${field.required ? 'required' : ''} minlength="${field.minLength ?? 0}">` : `<select id="${id}" name="${name}" ${field.required ? 'required' : ''} ${field.multiple ? 'multiple' : ''}><option value="" ${field.required ? 'disabled' : ''}>${escape(field.placeholder ?? 'Choose…')}</option>${field.options.map(option => `<option value="${escape(option.value)}" ${option.disabled ? 'disabled' : ''} ${(Array.isArray(value) ? value : [value]).includes(option.value) ? 'selected' : ''}>${escape(option.label)}</option>`).join('')}</select>`;
+      const control = field.kind === 'switch' ? `<input type="checkbox" id="${id}" name="${name}" ${value ? 'checked' : ''}>` : field.kind === 'text' ? `<input id="${id}" name="${name}" type="text" maxlength="${TEXT_LIMIT}" value="${escape(String(value))}" ${field.required ? 'required' : ''} minlength="${field.minLength ?? 0}">`
+        : field.kind === 'textarea' ? `<textarea id="${id}" name="${name}" rows="${field.rows ?? primitiveLimit('field', 'rowsDefault')}" maxlength="${TEXT_LIMIT}" ${field.required ? 'required' : ''} minlength="${field.minLength ?? 0}">${escape(String(value))}</textarea>` : `<select id="${id}" name="${name}" ${field.required ? 'required' : ''} ${field.multiple ? 'multiple' : ''}><option value="" ${field.required ? 'disabled' : ''}>${escape(field.placeholder ?? 'Choose…')}</option>${field.options.map(option => `<option value="${escape(option.value)}" ${option.disabled ? 'disabled' : ''} ${(Array.isArray(value) ? value : [value]).includes(option.value) ? 'selected' : ''}>${escape(option.label)}</option>`).join('')}</select>`;
       return `<div class="setting-row"><label for="${id}">${label}</label>${control}</div>`;
     }).join('');
     // Valid field names such as "elements" shadow HTMLFormElement named properties.
     // Retain the host-created controls rather than traversing that author-controlled collection.
-    for (const control of fields.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')) controls.set(control.name, control);
+    for (const control of fields.querySelectorAll<SettingsControl>('input, textarea, select')) controls.set(control.name, control);
   };
   void call<DialogValues | null>('extensions_settings_get', { id: owner, page: page.id }).then(values => {
     if (disposed) return;

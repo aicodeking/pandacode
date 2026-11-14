@@ -13,6 +13,19 @@ export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | 
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
 export const MENU_LIMITS = Object.freeze({ ...schemaDocument['x-menuLimits'] });
+type PrimitiveFamily = { carrier: { def: string; key: string }; kinds: string[]; limits: Record<string, { value: number; at: string[] }> };
+/** Public primitive declaration shared with the native validator; renderers read their limits here. */
+export const PRIMITIVES = deepFreeze(structuredClone(schemaDocument['x-primitives'])) as unknown as {
+  readonly contractVersion: 1; readonly families: Readonly<Record<string, PrimitiveFamily>>;
+  readonly hosts: Readonly<Record<string, { accepts: string[]; degrades: Record<string, string>; omits: string[]; disables: string[]; rejects?: string[] }>>;
+  readonly accessibility: readonly string[]; readonly excluded: readonly string[];
+};
+/** One declared limit of a primitive family, e.g. `primitiveLimit('field', 'text')`. */
+export function primitiveLimit(family: string, name: string): number { return PRIMITIVES.families[family].limits[name].value; }
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object') { Object.values(value).forEach(deepFreeze); Object.freeze(value); }
+  return value;
+}
 const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers'];
 const capabilities = ['btw.content', 'btw.taskControl', 'services.call', 'connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
 const publicShapes = ['statusPresentation', 'statusAction', 'rosterPresentation', 'rosterAction', 'dockPresentation', 'dockAction', 'sidebarPresentation', 'sidebarAction', 'settingsPresentation', 'settingsAction', 'dialogAccessory', 'machinesPresentation', 'machinesAction', 'cloudPresentation', 'cloudAction', 'moodboardPresentation', 'moodboardAction', 'worktreePresentation', 'worktreeAction', 'pullPresentation', 'pullAction', 'githubHubPresentation', 'githubHubAction', 'boardPresentation', 'boardAction', 'btwPresentation', 'btwAction', 'designPresentation', 'designAction', 'command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction', 'searchPresentation', 'searchAction', 'browserPresentation', 'browserAction', 'terminalPresentation', 'terminalAction', 'simulatorPresentation', 'simulatorAction', 'vmPresentation', 'vmAction'];

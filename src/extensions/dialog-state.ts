@@ -1,9 +1,10 @@
 /** JSON-only form state. Host callbacks receive copies and cancellation, never DOM handles. */
-import { validateContract, type Json } from './contracts.ts';
+import { primitiveLimit, validateContract, type Json } from './contracts.ts';
 
 export type SelectOption = { value: string; label: string; disabled?: boolean };
 export type DialogField = { id: string; label: string } & (
   { kind: 'text'; value?: string; required?: boolean; minLength?: number } |
+  { kind: 'textarea'; value?: string; required?: boolean; minLength?: number; rows?: number } |
   { kind: 'switch'; value?: boolean } |
   { kind: 'select'; options: SelectOption[]; required?: boolean; multiple?: boolean; async?: boolean; placeholder?: string }
 );
@@ -15,6 +16,9 @@ export type DialogCallbacks = {
   options(field: Extract<DialogField, { kind: 'select' }>, query: string, context: DialogContext, signal: AbortSignal): Promise<SelectOption[]>;
   validate(values: DialogValues, context: DialogContext, signal: AbortSignal): Promise<Record<string, string>>;
 };
+/** Text and textarea share one value contract; only their presentation differs. */
+export const isTextField = (field: DialogField): field is Extract<DialogField, { kind: 'text' | 'textarea' }> => field.kind === 'text' || field.kind === 'textarea';
+export const TEXT_LIMIT = primitiveLimit('field', 'text');
 export const declarativeDialogCallbacks: DialogCallbacks = {
   async options(field, query) { return field.options.filter(option => option.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())); },
   async validate() { return {}; },
@@ -31,7 +35,7 @@ export function createDialogState(input: DialogDefinition, context: DialogContex
   const available = new Map(definition.fields.flatMap(field => field.kind === 'select' ? [[field.id, structuredClone(field.options)] as const] : []));
   const errors = (): Record<string, string> => Object.fromEntries(definition.fields.flatMap(field => {
     const value = values[field.id];
-    if (field.kind === 'text' && (field.required && !String(value).trim() || String(value).length < (field.minLength ?? 0))) return [[field.id, field.minLength ? `Enter at least ${field.minLength} characters.` : 'This field is required.']];
+    if (isTextField(field) && (field.required && !String(value).trim() || String(value).length < (field.minLength ?? 0))) return [[field.id, field.minLength ? `Enter at least ${field.minLength} characters.` : 'This field is required.']];
     if (field.kind === 'select' && field.required && !(Array.isArray(value) ? value.length : String(value).length)) return [[field.id, 'Choose an option.']];
     return [];
   }));
@@ -45,7 +49,7 @@ export function createDialogState(input: DialogDefinition, context: DialogContex
       const field = definition.fields.find(field => field.id === id);
       if (!field) throw new Error('Unknown field.');
       const options = available.get(id) ?? [];
-      if (field.kind === 'text' && (typeof value !== 'string' || value.length > 4096) || field.kind === 'switch' && typeof value !== 'boolean' || field.kind === 'select' && (field.multiple ? !Array.isArray(value) || value.length > 100 || value.some(v => typeof v !== 'string' || !options.some(option => option.value === v && !option.disabled)) || new Set(value).size !== value.length : typeof value !== 'string' || !options.some(option => option.value === value && !option.disabled))) throw new Error('Invalid field value.');
+      if (isTextField(field) && (typeof value !== 'string' || value.length > TEXT_LIMIT) || field.kind === 'switch' && typeof value !== 'boolean' || field.kind === 'select' && (field.multiple ? !Array.isArray(value) || value.length > primitiveLimit('field', 'options') || value.some(v => typeof v !== 'string' || !options.some(option => option.value === v && !option.disabled)) || new Set(value).size !== value.length : typeof value !== 'string' || !options.some(option => option.value === value && !option.disabled))) throw new Error('Invalid field value.');
       values[id] = structuredClone(value);
     },
     async options(id: string, query: string): Promise<SelectOption[] | undefined> {
@@ -55,7 +59,7 @@ export function createDialogState(input: DialogDefinition, context: DialogContex
       requests.get(id)?.abort();
       const request = new AbortController(); requests.set(id, request);
       try {
-        const response = await callbacks.options(structuredClone(field), query.slice(0, 200), structuredClone(invocation), request.signal);
+        const response = await callbacks.options(structuredClone(field), query.slice(0, primitiveLimit('field', 'query')), structuredClone(invocation), request.signal);
         if (request.signal.aborted || lifetime.signal.aborted || requests.get(id) !== request) return;
         const result = validateContract('selectOptions', response);
         if (!result.ok) throw new Error('Invalid option response.');

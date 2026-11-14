@@ -147,7 +147,8 @@ pub fn native_items(snapshot: &Snapshot) -> Vec<NativeItem> {
     }
     for package in snapshot.packages.iter().filter(|package| package.enabled) {
         let version = package.manifest["version"].as_str().unwrap_or_default();
-        for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == "panda.tray.menu" && menu.get("visible").is_none_or(|condition| contracts::evaluate_condition(condition, &context)["value"] == true)) {
+        // Passive status/badge presentations have no native menu form (`x-primitives` hosts.nativeMenu.omits).
+        for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == "panda.tray.menu" && !matches!(menu["presentation"].as_str(), Some("status" | "badge")) && menu.get("visible").is_none_or(|condition| contracts::evaluate_condition(condition, &context)["value"] == true)) {
             let title = package.manifest["contributes"]["commands"].as_array().into_iter().flatten().find(|command| command["id"] == menu["command"]).and_then(|command| command["title"].as_str()).unwrap_or("Extension action");
             let nested = menu["items"].as_array().map(|items| children(items, snapshot, version, &context)).unwrap_or_default();
             if menu["items"].is_array() && nested.is_empty() { continue; }

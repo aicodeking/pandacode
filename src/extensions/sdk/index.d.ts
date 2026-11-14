@@ -68,6 +68,8 @@ export interface ContextStream {
 }
 export type DialogField = { readonly id: string; readonly label: string } & (
   { readonly kind: 'text'; readonly value?: string; readonly required?: boolean; readonly minLength?: number } |
+  /** Multi-line text: the same 4096-character value contract as `text`; `rows` is 2-12 (default 4). */
+  { readonly kind: 'textarea'; readonly value?: string; readonly required?: boolean; readonly minLength?: number; readonly rows?: number } |
   { readonly kind: 'switch'; readonly value?: boolean } |
   { readonly kind: 'select'; readonly options: readonly { readonly value: string; readonly label: string; readonly disabled?: boolean }[]; readonly required?: boolean; readonly multiple?: boolean; readonly async?: boolean; readonly placeholder?: string }
 );

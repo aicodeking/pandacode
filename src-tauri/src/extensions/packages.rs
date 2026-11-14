@@ -384,7 +384,8 @@ fn valid_settings_values(page: &Value, values: &Value) -> bool {
     values.len() == fields.len() && fields.iter().all(|field| {
         let Some(value) = values.get(field["id"].as_str().unwrap_or("")) else { return false; };
         match field["kind"].as_str() {
-            Some("text") => value.as_str().is_some_and(|text| text.encode_utf16().count() <= 4096 && text.encode_utf16().count() >= field["minLength"].as_u64().unwrap_or(0) as usize && (field["required"] != true || !text.trim().is_empty())),
+            // Text and textarea share one value contract; the limit is the public primitive declaration.
+            Some("text" | "textarea") => value.as_str().is_some_and(|text| text.encode_utf16().count() as u64 <= super::contracts::primitive_limit("field", "text") && text.encode_utf16().count() >= field["minLength"].as_u64().unwrap_or(0) as usize && (field["required"] != true || !text.trim().is_empty())),
             Some("switch") => value.is_boolean(),
             Some("select") => {
                 let allowed = |value: &Value| value.is_string() && field["options"].as_array().into_iter().flatten().any(|option| option["value"] == *value && option["disabled"] != true);
@@ -879,6 +880,48 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
         packages.enable("sample.project-helper", false).unwrap();
         assert!(!storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
+    fn primitives_package_archive_settings_textarea_native_menu_disable_and_safe_mode() {
+        use super::super::windows::{resolve, native_items, ActionRequest};
+        let manifest = include_str!("../../../tests/fixtures/extensions/primitives/extension.json");
+        let svg = include_bytes!("../../../tests/fixtures/extensions/primitives/assets/mark.svg");
+        let (id, page) = ("sample.primitives", "sample.primitives/preferences");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("assets/mark.svg", svg.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable(id, true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        assert!(restarted.packages[0].icons["sample.primitives/mark"].starts_with("<svg"), "validated static icon survives restart");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["commands"][0]["action"]["dialog"]["fields"][1]["kind"], "textarea");
+        // Textarea settings share the bounded text value contract natively.
+        let values = json!({"summary": "One\nTwo", "active": true});
+        packages.settings_set(id, page, &values).unwrap();
+        assert_eq!(storage.packages(false).settings_get(id, page).unwrap(), values);
+        for invalid in [json!({"summary": "x".repeat(4097), "active": true}), json!({"summary": 4, "active": true}), json!({"summary": "ok"}), json!({"summary": "ok", "active": true, "extra": 1})] { assert!(packages.settings_set(id, page, &invalid).is_err()); }
+        // A native menu advertises check/radio entries as plain commands and omits passive presentations.
+        let tray = |snapshot: &mut Snapshot| { for menu in snapshot.packages[0].manifest["contributes"]["menus"].as_array_mut().unwrap() { menu["location"] = json!("panda.tray.menu"); } };
+        let mut snapshot = storage.packages(false).snapshot(); tray(&mut snapshot);
+        let model = native_items(&snapshot);
+        let entry = |id: &str| model.iter().find(|item| item.id == format!("extension:sample.primitives/{id}"));
+        assert_eq!(model.len(), 2); assert!(entry("count").is_none() && entry("state").is_none());
+        let primitives = &entry("tools").unwrap().children[0];
+        assert_eq!(primitives.children.iter().map(|item| item.title.as_str()).collect::<Vec<_>>(), ["Forms", "—", "Show details", "Compact", "Comfortable"]);
+        assert!(primitives.children[1].separator);
+        for entry in &primitives.children[2..] { assert!(entry.enabled && entry.request.is_some()); }
+        assert!(!entry("gallery-button").unwrap().enabled, "openView has no native presentation and stays unavailable");
+        let request = |item: &str| ActionRequest { surface_id: "panda.tray.menu".into(), id: format!("sample.primitives/{item}"), version: "1.0.0".into() };
+        let form = resolve(&snapshot, "tray", &request("open-form")).unwrap();
+        assert_eq!(form.action["kind"], "showDialog"); assert_eq!(form.action["dialog"]["fields"][1]["rows"], 5);
+        assert_eq!(resolve(&snapshot, "tray", &request("show-details")).unwrap().action["kind"], "showMessage");
+        for blocked in ["count", "state", "gallery-button"] { assert!(resolve(&snapshot, "tray", &request(blocked)).is_err(), "{blocked}"); }
+        assert!(resolve(&snapshot, "main", &request("open-form")).is_err());
+        packages.enable(id, false).unwrap();
+        let mut disabled = storage.packages(false).snapshot(); tray(&mut disabled);
+        assert!(native_items(&disabled).is_empty()); assert!(packages.settings_set(id, page, &values).is_err());
+        packages.enable(id, true).unwrap(); assert_eq!(packages.settings_get(id, page).unwrap(), values);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
     fn window_adapter_resolves_real_installed_actions_with_native_identity_and_revocation() {

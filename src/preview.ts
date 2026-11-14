@@ -758,7 +758,7 @@ if (new URLSearchParams(location.search).has('extension-storage')) {
 (window as any).__previewDisableExtension = async (id: string) => {
   await (await import('./extensions/manager')).enableExtension(id, false);
 };
-if (new URLSearchParams(location.search).has('data-panel') || new URLSearchParams(location.search).has('appearance')) {
+if (new URLSearchParams(location.search).has('data-panel') || new URLSearchParams(location.search).has('appearance') || new URLSearchParams(location.search).has('primitives-coverage')) {
   (window as any).__previewEnableExtension = async (id: string) => (await import('./extensions/manager')).enableExtension(id, true);
   (window as any).__previewAppearanceModules = async () => ({ ...(await import('./extensions/rich-views')), ...(await import('./extensions/appearance-state')), ...(await import('./extensions/appearance')), ...(await import('./extensions/contracts')), ...(await import('./palette')), ...(await import('./file-icons')) });
   (window as any).__previewRefreshExtensions = async () => (await import('./extensions/manager')).loadExtensions();

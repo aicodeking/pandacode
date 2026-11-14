@@ -3,6 +3,26 @@
   "$id": "pandacode:extensions:contracts:1",
   "x-dataLimits": { "bytes": 262144, "depth": 32, "nodes": 8192, "packages": 64, "numberBytes": 32 },
   "x-menuLimits": { "depth": 5, "items": 128 },
+  "x-primitives": {
+    "contractVersion": 1,
+    "families": {
+      "action": { "carrier": { "def": "contributionDefinition", "key": "presentation" }, "kinds": ["icon", "button", "status", "badge"], "limits": { "badge": { "value": 16, "at": ["$defs/contributionDefinition/properties/badge/maxLength"] } } },
+      "icon": { "carrier": { "def": "icon", "key": "host" }, "kinds": ["file", "folder", "help", "settings", "down", "right", "search", "plus"], "limits": { "asset": { "value": 256, "at": ["$defs/icon/properties/asset/maxLength"] } } },
+      "menu": { "carrier": { "def": "menuItem", "key": "kind" }, "kinds": ["command", "submenu", "separator", "checkbox", "radio"], "limits": { "depth": { "value": 5, "at": ["x-menuLimits/depth"] }, "items": { "value": 128, "at": ["x-menuLimits/items", "$defs/menuItem/properties/items/maxItems", "$defs/contributionDefinition/properties/items/maxItems"] } } },
+      "command": { "carrier": { "def": "action", "key": "kind" }, "kinds": ["runCommand", "showProjectContext", "showMessage", "openView", "showDialog"], "limits": { "message": { "value": 4096, "at": ["$defs/action/anyOf/2/properties/message/maxLength"] } } },
+      "field": { "carrier": { "def": "dialogField", "key": "kind" }, "kinds": ["text", "textarea", "switch", "select"], "limits": { "fields": { "value": 24, "at": ["$defs/dialog/properties/fields/maxItems", "$defs/settingsPage/properties/fields/maxItems"] }, "options": { "value": 100, "at": ["$defs/selectOptions/maxItems"] }, "text": { "value": 4096, "at": ["$defs/dialogField/anyOf/0/properties/value/maxLength", "$defs/dialogField/anyOf/1/properties/value/maxLength", "$defs/dialogField/anyOf/0/properties/minLength/maximum", "$defs/dialogField/anyOf/1/properties/minLength/maximum"] }, "rowsMin": { "value": 2, "at": ["$defs/dialogField/anyOf/1/properties/rows/minimum"] }, "rowsMax": { "value": 12, "at": ["$defs/dialogField/anyOf/1/properties/rows/maximum"] }, "rowsDefault": { "value": 4, "at": [] }, "query": { "value": 200, "at": [] } } },
+      "view": { "carrier": { "def": "viewControl", "key": "kind" }, "kinds": ["list", "tree", "table", "tabs", "progress"], "limits": { "controls": { "value": 24, "at": ["$defs/view/properties/controls/maxItems"] }, "items": { "value": 100, "at": ["$defs/viewControl/anyOf/0/properties/items/maxItems", "$defs/viewControl/anyOf/1/properties/items/maxItems", "$defs/viewTreeItem/properties/children/maxItems", "$defs/viewControl/anyOf/2/properties/rows/maxItems"] }, "columns": { "value": 16, "at": ["$defs/viewControl/anyOf/2/properties/columns/maxItems"] }, "tabs": { "value": 16, "at": ["$defs/viewControl/anyOf/3/properties/items/maxItems"] }, "toolbar": { "value": 16, "at": ["$defs/view/properties/toolbar/maxItems"] } } }
+    },
+    "hosts": {
+      "actionSlot": { "accepts": ["action.icon", "action.button", "action.status", "action.badge", "icon.file", "icon.folder", "icon.help", "icon.settings", "icon.down", "icon.right", "icon.search", "icon.plus", "menu.command", "menu.submenu", "menu.separator", "menu.checkbox", "menu.radio", "command.runCommand", "command.showProjectContext", "command.showMessage", "command.openView", "command.showDialog"], "degrades": {}, "omits": [], "disables": [] },
+      "nativeMenu": { "accepts": ["menu.command", "menu.submenu", "menu.separator", "command.showMessage", "command.showDialog"], "degrades": { "menu.checkbox": "menu.command", "menu.radio": "menu.command" }, "omits": ["action.status", "action.badge"], "disables": ["command.runCommand", "command.showProjectContext", "command.openView"] },
+      "dialog": { "accepts": ["field.text", "field.textarea", "field.switch", "field.select"], "degrades": {}, "omits": [], "disables": [] },
+      "settings": { "accepts": ["field.text", "field.textarea", "field.switch", "field.select"], "degrades": {}, "omits": [], "disables": [], "rejects": ["async"] },
+      "inspectorView": { "accepts": ["view.list", "view.tree", "view.table", "view.tabs", "view.progress", "command.runCommand", "command.showProjectContext", "command.showMessage", "command.openView", "command.showDialog"], "degrades": {}, "omits": [], "disables": [] }
+    },
+    "accessibility": ["accessible-name", "decorative-icons-hidden", "keyboard", "ime-guard", "escape-one-level", "focus-restore", "loading-error-retry", "increase-contrast", "forced-colors", "reduced-motion", "reduced-transparency"],
+    "excluded": ["callbacks", "markup", "dom-handles", "raw-ipc", "selectors"]
+  },
   "x-projectReads": { "capabilities": ["projects.files.metadata", "projects.files.read", "projects.git.read"], "resources": ["metadata", "file", "git"], "scope": "exact-relative-file-or-local-head", "fileBytes": 131072, "pageBytes": 4096, "pathBytes": 1024, "pathComponents": 32, "links": "denied", "git": "local-HEAD-only-no-process" },
   "$defs": {
     "machinesControlId": { "enum": ["computer-menu", "target-local", "target-device", "target-setup", "reconnect", "start-retry", "start-dismiss", "behind-cancel", "link-open", "link-decline", "link-cancel", "lineage-open", "lineage-stop", "stop-all"] },
@@ -137,6 +157,7 @@
     "selectOptions": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/selectOption" } },
     "dialogField": { "anyOf": [
       { "type": "object", "required": ["id", "kind", "label"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/fieldId" }, "kind": { "const": "text" }, "label": { "$ref": "#/$defs/text" }, "value": { "type": "string", "maxLength": 4096 }, "required": { "type": "boolean" }, "minLength": { "type": "integer", "minimum": 0, "maximum": 4096 } } },
+      { "type": "object", "required": ["id", "kind", "label"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/fieldId" }, "kind": { "const": "textarea" }, "label": { "$ref": "#/$defs/text" }, "value": { "type": "string", "maxLength": 4096 }, "required": { "type": "boolean" }, "minLength": { "type": "integer", "minimum": 0, "maximum": 4096 }, "rows": { "type": "integer", "minimum": 2, "maximum": 12 } } },
       { "type": "object", "required": ["id", "kind", "label"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/fieldId" }, "kind": { "const": "switch" }, "label": { "$ref": "#/$defs/text" }, "value": { "type": "boolean" } } },
       { "type": "object", "required": ["id", "kind", "label", "options"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/fieldId" }, "kind": { "const": "select" }, "label": { "$ref": "#/$defs/text" }, "options": { "$ref": "#/$defs/selectOptions" }, "multiple": { "type": "boolean" }, "async": { "type": "boolean" }, "required": { "type": "boolean" }, "placeholder": { "$ref": "#/$defs/text" } } }
     ] },

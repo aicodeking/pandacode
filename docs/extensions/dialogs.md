@@ -38,6 +38,8 @@ Required dialog fields: `title`, `fields`, `successMessage`. Optional: `confirmL
 this is not a core permission dialog. At most 24 fields are accepted:
 
 - `text`: `id`, `kind`, `label`, optional `value` (4096 characters), `required`, `minLength`.
+- `textarea`: the same value contract as `text`, plus optional `rows` (2–12, default 4). Enter inserts
+  a line break and never submits; the IME/229 guard still applies. Also accepted on Settings pages.
 - `switch`: `id`, `kind`, `label`, optional boolean `value`.
 - `select`: `id`, `kind`, `label`, `options`, optional `required`, `multiple`, `async`, `placeholder`.
   Options have separate `value` and `label`, optional `disabled`; at most 100 per reply. Search
