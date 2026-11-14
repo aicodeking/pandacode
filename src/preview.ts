@@ -511,6 +511,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
 if (new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettingsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
+if (new URLSearchParams(location.search).has('dialog-coverage')) {
+  (window as any).__previewDialogSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+  (window as any).__previewDialogRefresh = async () => (await import('./extensions/manager')).loadExtensions();
+}
 // Explicit branch/worktree extension fixture only: linked work on the local task, an in-memory
 // worktree folder that can vanish, and safe mode while a host form is open. No real git or worktree.
 if (new URLSearchParams(location.search).has('worktree-coverage')) {

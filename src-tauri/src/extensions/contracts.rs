@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["settingsPresentation", "settingsAction", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -847,6 +847,37 @@ mod tests {
         }
         let mut invalid = sample.clone(); invalid["contributes"]["settings"][0]["fields"][2]["async"] = serde_json::json!(true);
         assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["error"]["code"], "UnsupportedContribution");
+    }
+    #[test]
+    fn core_dialog_extras_admit_only_eligible_main_dialogs() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/core-dialogs/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([manifest]))["ok"], true);
+        let eligible = SCHEMA["$defs"]["mainDialogId"]["enum"].as_array().unwrap().clone();
+        assert_eq!(eligible.len(), 23);
+        for id in &eligible {
+            let location = format!("panda.dialog.{}.actions", id.as_str().unwrap());
+            assert!(manifest["contributes"]["menus"].as_array().unwrap().iter().any(|menu| menu["location"] == location.as_str()));
+        }
+        // Destructive, credential and recovery dialogs have no ID anywhere in the shared contract.
+        for name in ["remove-project", "delete-task", "provider-connections", "delete-cloud", "github-behind", "delete-bot", "machine-link", "unknown"] {
+            let mut invalid = manifest.clone(); invalid["contributes"]["dialogExtras"][0]["dialog"] = serde_json::json!(name);
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false, "{name}");
+            let mut invalid = manifest.clone(); invalid["contributes"]["menus"][0]["location"] = serde_json::json!(format!("panda.dialog.{name}.actions"));
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false, "{name}");
+        }
+        let mut oversized = manifest.clone();
+        oversized["contributes"]["dialogExtras"] = serde_json::json!((0..65).map(|index| serde_json::json!({"id": format!("sample.core-dialogs/n{index}"), "dialog": "usage", "text": "Note"})).collect::<Vec<_>>());
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([oversized]))["ok"], false);
+        let accessory = serde_json::json!({"contractVersion":1,"window":"main","dialog":"rename-task","mount":"main/4","revision":7,"project":"project-1","task":"session-1","target":"task"});
+        assert_eq!(super::validate_contract("dialogAccessory", &accessory)["ok"], true);
+        for (field, value) in [("dialog", serde_json::json!("delete-task")), ("window", serde_json::json!("tray")), ("contractVersion", serde_json::json!(2)), ("selector", serde_json::json!("#dialog")), ("target", serde_json::json!("bot")), ("mount", serde_json::json!(""))] {
+            let mut forged = accessory.clone(); forged[field] = value;
+            assert_eq!(super::validate_contract("dialogAccessory", &forged)["ok"], false, "{field}");
+        }
+        let context = serde_json::json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.dialog.rename-task.actions","revision":7,"dialog":"rename-task","projectId":"project-1","sessionId":"session-1","selection":{"kind":"task","ids":["session-1"]}});
+        assert_eq!(super::validate_contract("context", &context)["ok"], true);
+        let mut forged = context.clone(); forged["dialog"] = serde_json::json!("github-behind");
+        assert_eq!(super::validate_contract("context", &forged)["ok"], false);
     }
     use super::*;
 

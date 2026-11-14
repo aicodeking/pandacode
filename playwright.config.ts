@@ -55,6 +55,7 @@ config.testMatch.push('**/extensions-github-hub-coverage.spec.ts');
 config.testMatch.push('**/extensions-pull-coverage.spec.ts');
 config.testMatch.push('**/extensions-worktrees-coverage.spec.ts');
 config.testMatch.push('**/extensions-settings-coverage.spec.ts');
+config.testMatch.push('**/extensions-core-dialogs-coverage.spec.ts');
 config.testMatch.push('**/extensions-moodboards-coverage.spec.ts');
 config.testMatch.push('**/extensions-cloud-coverage.spec.ts');
 config.testMatch.push('**/extensions-machine-coverage.spec.ts');

@@ -106,8 +106,34 @@ export const THREAD_ACTION_SURFACES = [
   'panda.actionDock.actions', 'panda.team.actions', 'panda.agents.actions',
 ] as const;
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
-export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
-export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
+export const SETTINGS_ACTION_SURFACES = ['panda.status.items'] as const;
+export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts'] as const;
+/** Main-window modals opened through the shared main.ts modal helper (docs/extensions/core-dialogs.md). Eligible
+ * dialogs accept owner-labelled body extras and secondary actions in one band after the host content:
+ * [dialog id, title, captured target]. The original fields, primary action and confirmation stay host-owned. */
+export const MAIN_DIALOG_EXTRAS = [
+  ['recipes', 'Workflow recipes', 'task'], ['attachment', 'Message attachment', 'task'], ['task-details', 'Task details', 'task'],
+  ['subagents', 'Subagents', 'task'], ['task-status', 'Task status', 'task'], ['integrations-fallback', 'Integrations', 'task'],
+  ['working-directory', 'Working directory', 'task'], ['changed-files', 'Changed files', 'task'], ['open-project', 'Open project', 'none'],
+  ['rename-task', 'Rename task', 'task'], ['colors', 'Colors', 'none'], ['wallpapers', 'Wallpapers', 'none'],
+  ['opencode-models', 'OpenCode models', 'none'], ['moodboards', 'Moodboards', 'project'], ['integrations', 'Tools & integrations', 'project'],
+  ['jev-settings', 'Jev add-on', 'none'], ['jev-assist', 'Jev assistance', 'task'], ['jev-tests', 'Browser tests', 'task'],
+  ['conversation-import', 'Import conversations', 'none'], ['bots', 'Bots', 'none'], ['bot-settings', 'Bot settings', 'none'],
+  ['usage', 'Agent usage', 'none'], ['command-palette', 'Go to anything', 'none'],
+] as const;
+export type MainDialogId = typeof MAIN_DIALOG_EXTRAS[number][0];
+/** Main-window modals that never mount the band: [dialog id, title, reason]. Inspect-only in the catalog. */
+export const MAIN_DIALOG_PROTECTED = [
+  ['remove-project', 'Remove project', 'A destructive confirmation stays host-owned; the folder-retention explanation is not extensible.'],
+  ['delete-task', 'Delete task', 'A destructive confirmation stays host-owned.'],
+  ['provider-connections', 'Provider connections', 'Credential entry and sign-in are never presented beside package content.'],
+  ['delete-cloud', 'Delete cloud machine', 'A destructive confirmation stays host-owned (panda.cloud.protected).'],
+  ['github-behind', 'GitHub is behind this computer', 'The start-anyway recovery choice stays host-owned (panda.machines.protected).'],
+  ['delete-bot', 'Delete bot', 'A destructive confirmation stays host-owned.'],
+] as const;
+export const DIALOG_ACTION_SURFACES = MAIN_DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.actions` as const);
+export const DIALOG_DATA_SURFACES = MAIN_DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.bodyExtras` as const);
+export const DIALOG_PROTECTED_LOCATION = 'panda.dialog.protected';
 /** Core Settings adoption (docs/extensions/settings.md). `panda.settings.actions` is each core page's header
  * accessory and `panda.settings.context` the section list's context menu. `panda.settings.sections` holds the
  * left-column sections (reorder for all; hide only where no protected control lives); `panda.settings.controls`
@@ -149,7 +175,7 @@ export const SETTINGS_PROTECTED_CONTROLS = [
 ] as const;
 /** Core pages that accept a package's shared fields (`settings[].section`); the others host protected controls or live checklists. */
 export const SETTINGS_FIELD_PAGES = ['general', 'appearance', 'teams', 'schedules', 'tools', 'skills', 'rules'] as const;
-export type ActionLocation = typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

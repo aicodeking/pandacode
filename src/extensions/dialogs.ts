@@ -5,10 +5,19 @@ import { createDialogState, type DialogCallbacks, type DialogContext, type Dialo
 /** Host-only transport seam. No package function is ever read from dialog JSON. */
 let callbacks: DialogCallbacks | undefined;
 export function setDialogCallbacks(value: DialogCallbacks): void { callbacks = value; }
+/** One reusable top-layer dialog for forms opened from a main-dialog band; never the host's `#dialog`. */
+function nestedDialog(): HTMLDialogElement {
+  const existing = document.querySelector<HTMLDialogElement>('#extension-nested-dialog');
+  if (existing) return existing;
+  const dialog = document.createElement('dialog'); dialog.id = 'extension-nested-dialog'; document.body.append(dialog);
+  return dialog;
+}
 
 /** Uses the existing transparent modal/plate/motion. Never replace another owner's open dialog. */
 export function openExtensionDialog(definition: DialogDefinition, context: DialogContext, owner: string, trigger: HTMLElement, openSelect = false): { result: Promise<DialogResult>; close: () => void } {
-  const element = document.querySelector<HTMLDialogElement>('#dialog');
+  const shared = document.querySelector<HTMLDialogElement>('#dialog');
+  // A main-dialog accessory stacks its form above the open host dialog; the host keeps its fields and focus target.
+  const element = shared?.open && trigger.closest('.dialog-extension-extras') && shared.contains(trigger) ? nestedDialog() : shared;
   if (!element || element.open) return { result: Promise.resolve({ kind: 'cancelled', reason: 'busy' }), close() {} };
   const dialog = element;
   const state = createDialogState(definition, context, callbacks);

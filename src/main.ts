@@ -141,6 +141,7 @@ import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, resolveTabs, isExtensionInspectorView, type InspectorView, type BuiltinInspectorView } from './inspector-tabs';
 import type { RegisteredView } from './extensions/views-state';
+import { MAIN_DIALOG_EXTRAS } from './extensions/surfaces';
 import { TailText } from './tail-text';
 import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
@@ -953,6 +954,28 @@ if (preview && new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettings = () => settingsView?.adoption()?.presentation();
   (window as any).__previewSettingsAction = (input: unknown) => settingsView?.adoption()?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
+if (preview && new URLSearchParams(location.search).has('dialog-coverage')) {
+  // Each entry calls the dialog's original opener with preview data; nothing here renders a dialog itself.
+  const task = () => session() ?? state.sessions[0];
+  const openers: Record<string, () => unknown> = {
+    recipes: () => openRecipes(), 'task-details': () => showBoardTaskForm(task()),
+    subagents: () => performSlashAction('subagents', '', task()), 'task-status': () => performSlashAction('status', '', task()),
+    'integrations-fallback': () => performSlashAction('integrations', '', { ...task(), provider: 'claude' }), 'working-directory': () => performSlashAction('pwd', '', task()),
+    'changed-files': () => openSavedDiff(task().id, { id: 'preview-change', files: [] } as unknown as TurnChanges), 'open-project': () => showOpenProject(),
+    'rename-task': () => showRename(), colors: () => showColorsSettings(), wallpapers: () => showWallpaperSettings(),
+    'opencode-models': () => showOpenCodeModels(), moodboards: () => showMoodboards(), integrations: () => showAgentIntegrations(workspaceContext()),
+    'jev-settings': () => openJevSettings(), 'jev-assist': () => openJevAssist('review'), 'jev-tests': () => openJevTests(),
+    'conversation-import': () => showConversationImport(), bots: () => showBots(), 'bot-settings': () => showBotSettings(sidebarBots[0]?.id ?? 'preview-bot'),
+    usage: () => showAgentUsage(), 'command-palette': () => showCommands(),
+    'remove-project': () => { const p = project(); if (p) showRemoveProject(p); }, 'delete-task': () => showDeleteTask(task()),
+    'provider-connections': () => showProviderConnections(), 'delete-cloud': () => confirmDeleteMachine({ ...task(), cloud: { provider: 'preview', label: 'Preview cloud', stage: 'ready' } } as unknown as Session),
+    'github-behind': () => confirmBehind('Preview computer', { repo: 'you/orbit', branch: 'main', ahead: 1, dirty: false, pushed: false }, task().id), 'delete-bot': () => confirmBotDelete('Preview bot'),
+  };
+  (window as any).__previewOpenMainDialog = (id: string) => { const open = openers[id]; if (!open) throw Error(`No opener for ${id}`); void Promise.resolve(open()).catch(() => undefined); };
+  (window as any).__previewDialogAccessory = () => dialogAccessory && document.querySelector<HTMLDialogElement>('#dialog')?.open ? structuredClone(dialogAccessory) : null;
+  (window as any).__previewDialogAdmission = async (input: unknown) => (await import('./extensions/dialog-accessory')).admitDialogAccessory(input, (window as any).__previewDialogAccessory() ?? undefined);
+  (window as any).__previewSelectTask = (id: string) => run(selectSession(id, true));
+}
 if (preview && new URLSearchParams(location.search).has('worktree-coverage')) {
   (window as any).__previewWorktree = () => worktrees.presentation();
   (window as any).__previewWorktreeAction = (input: unknown) => worktrees.dispatch(input);
@@ -1080,7 +1103,7 @@ const attachments = mountPromptAttachments({
 async function openRecipes(): Promise<void> {
   const s = session(); if (!s) return;
   const { mountRecipes } = await import('./recipes');
-  modal('Workflow recipes', '<div id="recipes-body"></div>', 'recipes-dialog');
+  modal('Workflow recipes', '<div id="recipes-body"></div>', 'recipes-dialog', { dialog: 'recipes', task: s.id, project: s.projectId });
   mountRecipes($('#recipes-body'), {
     call, projectId: s.projectId, provider: s.provider,
     slashCommands: async () => (await call<{ commands: { name: string }[] }>('list_slash_commands', { sessionId: s.id })).commands.map(c => c.name),
@@ -2633,12 +2656,13 @@ async function openMessageAttachment(element: HTMLElement): Promise<void> {
   const item = message && parseAttachments(contextBlocks(message.content).blocks)[Number(element.dataset.index)];
   if (!item) return;
   if (item.kind === 'github') { await call('open_external_url', { url: item.url }); return; }
+  const accessory = { dialog: 'attachment', ...(state.sessionId ? { task: state.sessionId } : {}) } as const;
   if (item.kind === 'image') {
     const url = item.imageId ? sentImages.get(item.imageId) : null;
-    if (url) { modal(item.name, `<img class="message-attachment-image" src="${escape(url)}" alt="${escape(item.name)}">`, 'message-attachment-dialog'); return; }
-    modal(item.name, `<p class="dialog-description">This image is no longer stored. Here is what was sent with it.</p><pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog'); return;
+    if (url) { modal(item.name, `<img class="message-attachment-image" src="${escape(url)}" alt="${escape(item.name)}">`, 'message-attachment-dialog', accessory); return; }
+    modal(item.name, `<p class="dialog-description">This image is no longer stored. Here is what was sent with it.</p><pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog', accessory); return;
   }
-  if (item.kind === 'raw') { modal(item.name, `<pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog'); return; }
+  if (item.kind === 'raw') { modal(item.name, `<pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog', accessory); return; }
   // Project files are workspace-relative; documents and folders carry the path they came from.
   const root = workspacePath().replace(/[\\/]+$/, '');
   const relative = item.kind === 'file' && !/^(?:\/|[A-Za-z]:[\\/])/.test(item.path) ? item.path
@@ -3509,7 +3533,7 @@ async function editBoardTask(): Promise<void> {
 function showBoardTaskForm(task?: Session): void {
   const p = task ? state.projects.find(p => p.id === task.projectId) : project() ?? state.projects[0];
   if (!p) { notify('Open a project to add a task.'); return; }
-  modal(task ? 'Task details' : 'Add task', `<form id="board-task-form" class="board-task-form" data-project-id="${escape(p.id)}" ${task ? `data-session-id="${escape(task.id)}"` : ''}><p class="board-task-project">${icon('folder')}${escape(p.name)}</p><label class="field-label" for="board-task-title">Task title</label><input id="board-task-title" name="title" maxlength="200" placeholder="What needs to be done?" value="${escape(task?.title ?? '')}" required><label class="field-label" for="board-task-description">Task description</label><textarea id="board-task-description" name="description" rows="5" maxlength="${MESSAGE_LIMIT}" placeholder="Describe the outcome, context, and anything the agent should know.">${escape(task?.taskDescription ?? '')}</textarea><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${task ? 'Save details' : 'Add to pending'}</button></div></form>`);
+  modal(task ? 'Task details' : 'Add task', `<form id="board-task-form" class="board-task-form" data-project-id="${escape(p.id)}" ${task ? `data-session-id="${escape(task.id)}"` : ''}><p class="board-task-project">${icon('folder')}${escape(p.name)}</p><label class="field-label" for="board-task-title">Task title</label><input id="board-task-title" name="title" maxlength="200" placeholder="What needs to be done?" value="${escape(task?.title ?? '')}" required><label class="field-label" for="board-task-description">Task description</label><textarea id="board-task-description" name="description" rows="5" maxlength="${MESSAGE_LIMIT}" placeholder="Describe the outcome, context, and anything the agent should know.">${escape(task?.taskDescription ?? '')}</textarea><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${task ? 'Save details' : 'Add to pending'}</button></div></form>`, '', { dialog: 'task-details', project: p.id, ...(task ? { task: task.id } : {}) });
   document.querySelector<HTMLInputElement>('#board-task-title')?.focus();
   const description = document.querySelector<HTMLTextAreaElement>('#board-task-description')!;
   description.setAttribute('aria-description', 'Type @ to mention a project file.');
@@ -3985,7 +4009,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'export': await exportTask(task, argumentsText || undefined); break;
     case 'worktree': worktrees.openDialog(newTaskView() ? 'attach' : 'new', argumentsText); break;
     case 'agents': showCommands(); break;
-    case 'subagents': { const trigger = document.querySelector<HTMLButtonElement>('#agents-toggle:not([hidden])'); if (trigger) trigger.click(); else modal('Subagents', '<p class="dialog-description">No subagents have been reported for this task yet.</p>'); break; }
+    case 'subagents': { const trigger = document.querySelector<HTMLButtonElement>('#agents-toggle:not([hidden])'); if (trigger) trigger.click(); else modal('Subagents', '<p class="dialog-description">No subagents have been reported for this task yet.</p>', '', { dialog: 'subagents', task: task.id, project: task.projectId }); break; }
     case 'mention':
       if (argumentsText) { await projectFileText(task, argumentsText); if (task.id === state.sessionId) attachFile(argumentsText); }
       else { state.inspector = true; state.inspectorTab = 'files'; renderInspector(); }
@@ -4016,9 +4040,9 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     }
     case 'diff': state.inspector = true; state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
-    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
+    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`, '', { dialog: 'task-status', task: task.id, project: task.projectId }); break;
     case 'integrations': {
-      if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
+      if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>', '', { dialog: 'integrations-fallback', task: task.id, project: task.projectId }); break; }
       if (state.sessionId === task.id) await showAgentIntegrations(workspaceContext(task));
       break;
     }
@@ -4033,7 +4057,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       await navigator.clipboard.writeText(answer.content); notify('Response copied'); break;
     }
     case 'btw': { const refusal = btwRefusal(task); if (refusal) throw new Error(refusal); openBtw(); if (argumentsText) await sendBtw(argumentsText); else btwPanel.focus(); break; }
-    case 'pwd': modal('Working directory', `<p class="dialog-description">${escape(workspacePath())}</p>`); break;
+    case 'pwd': modal('Working directory', `<p class="dialog-description">${escape(workspacePath())}</p>`, '', { dialog: 'working-directory', task: task.id, project: task.projectId }); break;
     default: throw new Error('This command is not available in PandaCode yet.');
   }
 }
@@ -5706,7 +5730,7 @@ let openCodeModelsCleanup: (() => void) | undefined;
 let moodboardsCleanup: (() => void) | undefined;
 let botsView: import('./bots').BotsView | undefined;
 function disposeSettingsViews(): void {
-  namedDialogExtrasCleanup?.(); namedDialogExtrasCleanup = undefined;
+  dialogAccessory = undefined; dialogExtrasCleanup?.(); dialogExtrasCleanup = undefined;
   botsView?.dispose(); botsView = undefined;
   boardMentionPicker?.dispose(); boardMentionPicker = undefined;
   agentUsageCleanup?.(); agentUsageCleanup = undefined;
@@ -5718,8 +5742,28 @@ function disposeSettingsViews(): void {
   architectSetupCleanup?.(); architectSetupCleanup = undefined;
   wallpaperSettingsCleanup?.(); wallpaperSettingsCleanup = undefined;
 }
-function modal(title: string, body: string, cls = ''): HTMLDialogElement {
+/** One opening of an eligible main modal (docs/extensions/core-dialogs.md); protected dialogs pass none. */
+type MainDialogRequest = { dialog: import('./extensions/surfaces').MainDialogId; task?: string; project?: string };
+let dialogMount = 0;
+let dialogExtrasCleanup: (() => void) | undefined;
+let dialogAccessory: import('./extensions/dialog-accessory').DialogAccessory | undefined;
+/** Captures the dialog's target once and mounts its extension band after the host content. Switching tasks
+ * later never retargets it; a replaced or closed dialog never receives the band. */
+function mountDialogAccessory(dialog: HTMLDialogElement, request: MainDialogRequest, mount: number): void {
+  const target = MAIN_DIALOG_EXTRAS.find(([id]) => id === request.dialog)?.[2] ?? 'none';
+  const task = target === 'none' ? request.task ?? state.sessionId ?? '' : request.task ?? '';
+  const project = target === 'none' ? request.project ?? state.projectId ?? '' : request.project ?? state.sessions.find(item => item.id === task)?.projectId ?? '';
+  const accessory = { contractVersion: 1, window: 'main', dialog: request.dialog, mount: `main/${mount}`, revision: state.generation, project, task, target: target === 'task' && !task ? project ? 'project' : 'none' : target } as const;
+  dialogAccessory = accessory;
+  const live = () => dialog.open && dialogAccessory === accessory ? accessory : undefined;
+  void import('./extensions/dialog-extras').then(({ mountMainDialogExtras }) => {
+    if (mount !== dialogMount || !live()) return;
+    dialogExtrasCleanup = mountMainDialogExtras(dialog, accessory, notify, live);
+  }).catch(() => { /* The host dialog stays complete without its extension band. */ });
+}
+function modal(title: string, body: string, cls = '', accessory?: MainDialogRequest): HTMLDialogElement {
   disposeSettingsViews();
+  const mount = ++dialogMount;
   closeMenus();
   openingProjectForTask = undefined;
   const dialog = document.querySelector<HTMLDialogElement>('#dialog')!;
@@ -5749,6 +5793,7 @@ function modal(title: string, body: string, cls = ''): HTMLDialogElement {
   }
   if (!dialog.open) dialog.showModal();
   dialog.querySelector<HTMLElement>('input, select, textarea')?.focus();
+  if (accessory) mountDialogAccessory(dialog, accessory, mount);
   return dialog;
 }
 const LONG_DESCRIPTION = 90;
@@ -5759,7 +5804,7 @@ async function showTurnDiff(element: HTMLElement): Promise<void> {
   await openSavedDiff(request.sessionId, request.changes, request.path);
 }
 async function openSavedDiff(sessionId: string, changes: TurnChanges, path?: string): Promise<void> {
-  const dialog = modal('Changed files', '<div id="change-review-host"><p role="status">Loading diff viewer…</p></div>', 'change-review-dialog');
+  const dialog = modal('Changed files', '<div id="change-review-host"><p role="status">Loading diff viewer…</p></div>', 'change-review-dialog', { dialog: 'changed-files', task: sessionId });
   const host = dialog.querySelector<HTMLElement>('#change-review-host')!;
   try {
     const { mountChangeReview } = await import('./change-review');
@@ -5775,7 +5820,7 @@ async function openSavedDiff(sessionId: string, changes: TurnChanges, path?: str
   }
 }
 function showOpenProject(forTask = false): void {
-  modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" required><p class="field-help">Enter a full path or choose Browse.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`);
+  modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" required><p class="field-help">Enter a full path or choose Browse.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`, '', { dialog: 'open-project' });
   if (forTask && newTaskView()) openingProjectForTask = { id: state.sessionId, generation: state.generation };
 }
 async function changeTaskProject(projectId: string): Promise<void> {
@@ -6380,7 +6425,7 @@ function showDeleteTask(task = session()): void {
     })();
   });
 }
-function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
+function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`, '', { dialog: 'rename-task', task: s.id, project: s.projectId }); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
 let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
@@ -6489,28 +6534,21 @@ function toggleTheme(): void {
   if (settingsView) { closeSettings(); void showSettings('appearance'); }
 }
 let colorsSettingsCleanup: (() => void) | undefined;
-let namedDialogExtrasCleanup: (() => void) | undefined;
 async function showColorsSettings(): Promise<void> {
-  const context = { revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) };
-  const dialog = modal('Colors', '<div id="colors-settings-content"><div class="dialog-loading">Loading themes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'colors-dialog');
+  const dialog = modal('Colors', '<div id="colors-settings-content"><div class="dialog-loading">Loading themes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'colors-dialog', { dialog: 'colors' });
   const host = dialog.querySelector<HTMLElement>('#colors-settings-content')!;
   const { mountThemeSettings } = await import('./theme-settings');
   if (!dialog.open || !host.isConnected) return;
   colorsSettingsCleanup?.();
   colorsSettingsCleanup = mountThemeSettings(host, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) });
-  const { mountNamedDialogExtras } = await import('./extensions/dialog-extras');
-  if (dialog.open && host.isConnected) namedDialogExtrasCleanup = mountNamedDialogExtras(dialog, 'colors', context, notify);
   dialog.addEventListener('close', () => { colorsSettingsCleanup?.(); colorsSettingsCleanup = undefined; }, { once: true });
 }
 async function showWallpaperSettings(): Promise<void> {
-  const context = { revision: state.generation, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) };
-  const dialog = modal('Wallpapers', '<div id="wallpaper-settings-content"><div class="dialog-loading">Loading scenes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'wallpaper-settings-dialog');
+  const dialog = modal('Wallpapers', '<div id="wallpaper-settings-content"><div class="dialog-loading">Loading scenes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'wallpaper-settings-dialog', { dialog: 'wallpapers' });
   const host = dialog.querySelector<HTMLElement>('#wallpaper-settings-content')!;
   const { mountWallpaperSettings } = await import('./wallpaper-settings');
   if (!dialog.open || !host.isConnected) return;
   wallpaperSettingsCleanup = mountWallpaperSettings(host, wallpapers);
-  const { mountNamedDialogExtras } = await import('./extensions/dialog-extras');
-  if (dialog.open && host.isConnected) namedDialogExtrasCleanup = mountNamedDialogExtras(dialog, 'wallpapers', context, notify);
 }
 async function showProviderConnections(): Promise<void> {
   const dialog = modal('Provider connections', '<div id="provider-connections-content"><p class="dialog-loading">Loading connections…</p></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'provider-connections-dialog');
@@ -6524,7 +6562,7 @@ function invalidateModels(id: ProviderId): void {
   const entry = provider(id); if (entry) entry.models = [];
 }
 async function showOpenCodeModels(): Promise<void> {
-  const dialog = modal('OpenCode models', '<div id="opencode-model-settings"></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'opencode-model-dialog');
+  const dialog = modal('OpenCode models', '<div id="opencode-model-settings"></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'opencode-model-dialog', { dialog: 'opencode-models' });
   const host = dialog.querySelector<HTMLElement>('#opencode-model-settings')!;
   const {mountOpenCodeModels} = await import('./opencode-model-settings');
   if (!dialog.open || !host.isConnected) return;
@@ -6533,7 +6571,7 @@ async function showOpenCodeModels(): Promise<void> {
 async function showMoodboards(): Promise<void> {
   const p = project(); if (!p) { notify('Open a project to create a moodboard.'); return; }
   const task = session();
-  const dialog = modal('Moodboards', '<div id="moodboards-content"><p class="dialog-loading">Loading moodboards…</p></div>', 'moodboards-dialog');
+  const dialog = modal('Moodboards', '<div id="moodboards-content"><p class="dialog-loading">Loading moodboards…</p></div>', 'moodboards-dialog', { dialog: 'moodboards', project: p.id, ...(task ? { task: task.id } : {}) });
   const host = dialog.querySelector<HTMLElement>('#moodboards-content')!;
   const { mountMoodboards } = await import('./moodboards');
   if (!host.isConnected || !dialog.open) return;
@@ -6547,14 +6585,14 @@ async function showMoodboards(): Promise<void> {
   } });
 }
 async function showAgentIntegrations(context: { projectId: string; sessionId?: string }): Promise<void> {
-  const dialog = modal('Tools & integrations', '<div class="dialog-loading">Loading integrations…</div>', 'integrations-dialog');
+  const dialog = modal('Tools & integrations', '<div class="dialog-loading">Loading integrations…</div>', 'integrations-dialog', { dialog: 'integrations', project: context.projectId, ...(context.sessionId ? { task: context.sessionId } : {}) });
   const loadingView = dialog.firstElementChild;
   const { showIntegrations } = await import('./integrations');
   if (!dialog.open || dialog.firstElementChild !== loadingView) return;
   await showIntegrations(dialog, context);
 }
 async function openJevSettings(): Promise<void> {
-  const dialog = modal('Jev add-on', '<div class="dialog-loading">Loading Jev settings…</div>', 'jev-dialog');
+  const dialog = modal('Jev add-on', '<div class="dialog-loading">Loading Jev settings…</div>', 'jev-dialog', { dialog: 'jev-settings' });
   const loading = dialog.firstElementChild;
   const { showJevSettings } = await import('./jev');
   if (dialog.open && dialog.firstElementChild === loading) await showJevSettings(dialog);
@@ -6562,7 +6600,7 @@ async function openJevSettings(): Promise<void> {
 async function openJevAssist(kind: import('./jev-assist').AssistKind = 'review', sessionId = state.sessionId, changes?: TurnChanges): Promise<void> {
   if (!sessionId) return;
   const ownerId = state.sessionId;
-  const dialog = modal('Jev assistance', '<div class="dialog-loading">Preparing Jev assistance…</div>', 'jev-dialog');
+  const dialog = modal('Jev assistance', '<div class="dialog-loading">Preparing Jev assistance…</div>', 'jev-dialog', { dialog: 'jev-assist', task: sessionId });
   const loading = dialog.firstElementChild;
   const { showJevAssist } = await import('./jev-assist');
   if (!dialog.open || dialog.firstElementChild !== loading) return;
@@ -6618,14 +6656,14 @@ async function openJevTests(url?: string, anchor?: HTMLElement): Promise<void> {
     jevTestCleanup = showJevTestPopover(anchor, { ...context, onClose: () => { jevTestCleanup = undefined; } });
     return;
   }
-  const dialog = modal('Browser tests', '<div class="dialog-loading">Loading browser tests…</div>', 'jev-dialog');
+  const dialog = modal('Browser tests', '<div class="dialog-loading">Loading browser tests…</div>', 'jev-dialog', { dialog: 'jev-tests', task: task.id, project: task.projectId });
   const loading = dialog.firstElementChild;
   const { showJevTests } = await import('./jev');
   if (!dialog.open || dialog.firstElementChild !== loading) return;
   await showJevTests(dialog, context);
 }
 async function showConversationImport(): Promise<void> {
-  const dialog = modal('Import conversations', '<div id="conversation-import-host"><p role="status">Loading…</p></div>', 'conversation-import-dialog');
+  const dialog = modal('Import conversations', '<div id="conversation-import-host"><p role="status">Loading…</p></div>', 'conversation-import-dialog', { dialog: 'conversation-import' });
   const host = dialog.querySelector<HTMLElement>('#conversation-import-host')!;
   try {
     const { mountConversationImport } = await import('./conversation-import');
@@ -6659,7 +6697,7 @@ function botsOptions(providers: Provider[]): import('./bots').BotsOptions {
   };
 }
 async function showBots(open: { botId?: string; startNew?: boolean } = {}): Promise<void> {
-  const dialog = modal(open.startNew ? 'New bot' : 'Bots', '<div id="bots-host"><p role="status">Loading bots…</p></div>', 'bots-dialog');
+  const dialog = modal(open.startNew ? 'New bot' : 'Bots', '<div id="bots-host"><p role="status">Loading bots…</p></div>', 'bots-dialog', { dialog: 'bots' });
   const host = dialog.querySelector<HTMLElement>('#bots-host')!;
   try {
     const [{ mountBots }, providers] = await Promise.all([
@@ -6675,7 +6713,7 @@ async function showBots(open: { botId?: string; startNew?: boolean } = {}): Prom
 /** One bot's settings as a modal: profile, conversations, memory, schedules, channels, rules and activity. */
 async function showBotSettings(botId: string, tab?: import('./bots').Section): Promise<void> {
   const name = sidebarBots.find(bot => bot.id === botId)?.name;
-  const dialog = modal(name ? `${name} settings` : 'Bot settings', '<div id="bots-host"><p role="status">Loading…</p></div>', 'bot-settings-dialog');
+  const dialog = modal(name ? `${name} settings` : 'Bot settings', '<div id="bots-host"><p role="status">Loading…</p></div>', 'bot-settings-dialog', { dialog: 'bot-settings' });
   const host = dialog.querySelector<HTMLElement>('#bots-host')!;
   try {
     const [{ mountBots }, providers] = await Promise.all([import('./bots'), state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers')]);
@@ -7491,7 +7529,7 @@ async function openBot(botId: string): Promise<void> {
   await selectSession(id, true);
 }
 async function showAgentUsage(): Promise<void> {
-  const dialog = modal('Agent usage', '<div id="agent-usage-host"><p role="status">Loading usage panel…</p></div>', 'agent-usage-dialog');
+  const dialog = modal('Agent usage', '<div id="agent-usage-host"><p role="status">Loading usage panel…</p></div>', 'agent-usage-dialog', { dialog: 'usage' });
   const host = dialog.querySelector<HTMLElement>('#agent-usage-host')!;
   try {
     const [{ mountAgentUsage }, providers] = await Promise.all([
@@ -7505,7 +7543,7 @@ async function showAgentUsage(): Promise<void> {
   }
 }
 function showCommands(): void {
-  modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
+  modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog', { dialog: 'command-palette' }); renderCommands('');
 }
 /** Every Settings page, findable by page or section name or a page's keywords; only listed once there is a query. */
 const settingsPageCommands = () => [
@@ -7890,7 +7928,8 @@ function outsideDialog(event: MouseEvent): boolean {
 }
 document.querySelector<HTMLDialogElement>('#dialog')!.addEventListener('pointerdown', event => { dialogBackdropPressed = outsideDialog(event); });
 document.querySelector<HTMLDialogElement>('#dialog')!.addEventListener('click', event => { if (dialogBackdropPressed && outsideDialog(event)) closeModal(); dialogBackdropPressed = false; });
-document.querySelector<HTMLDialogElement>('#dialog')!.addEventListener('close', disposeSettingsViews);
+// The close event is queued: when another modal opened before it fired, that modal already disposed the old views.
+document.querySelector<HTMLDialogElement>('#dialog')!.addEventListener('close', event => { if (!(event.currentTarget as HTMLDialogElement).open) disposeSettingsViews(); });
 document.querySelector<HTMLDialogElement>('#dialog')!.addEventListener('cancel', () => { closeMenus(); openingProjectForTask = undefined; });
 window.matchMedia('(max-width: 920px)').addEventListener('change', event => { if (event.matches) { state.inspector = false; renderInspector(); } });
 document.addEventListener('paste', event => { if ((event.target as HTMLElement | null)?.id === 'prompt' && !document.querySelector<HTMLDialogElement>('#dialog')!.open) attachments.handlePaste(event); });

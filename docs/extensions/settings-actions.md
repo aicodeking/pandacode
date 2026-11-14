@@ -37,25 +37,13 @@ preferences and survive reload; missing IDs remain dormant. Core/browser editing
 cannot be taken over. Inputs, editable content, selects, terminals, active IME/keyCode 229, repeats, handled
 events and open menus/dialogs never dispatch an extension global shortcut. Commands remain usable via search.
 
-## Existing dialogs: named v1 contracts
+## Existing dialogs
 
-Only these hosts opt in; the generic modal has **no** extension insertion hook:
-
-| Host | Named body contract | Named secondary action contract |
-| --- | --- | --- |
-| Colors | `panda.dialog.colors.bodyExtras` | `panda.dialog.colors.actions` |
-| Wallpapers | `panda.dialog.wallpapers.bodyExtras` | `panda.dialog.wallpapers.actions` |
-
-`contributes.dialogExtras` declares `{ id, dialog: "colors" | "wallpapers", text }`. Body extras are bounded
-plain text labelled with their owner, not HTML, callbacks or writable core fields. Secondary actions use normal
-menu contributions. Host Done, Back, Escape, focus policy and preference handlers stay unchanged. The core
-palette also exposes Colors dialog and Wallpapers dialog, using their existing handlers. Close/replacement or
-disable disposes contributions and anchored menus. Dialog commands cannot open another modal over an owned one.
-
-Permission, approval, privacy, credential and recovery hosts reject third-party targeting during both native
-and frontend manifest validation. They remain reachable through the host's original routes. Other unadopted
-dialogs are open implementation work, **not** protected exceptions. These two opted-in hosts each have a
-regression fixture in `tests/extensions-settings-actions.spec.ts` and entries in the surface ledger.
+Colors and Wallpapers were the first two opted-in hosts. Since T56B every eligible main-window modal uses
+the same contract (`panda.dialog.<id>.bodyExtras` / `panda.dialog.<id>.actions`, `contributes.dialogExtras`
+with `{ id, dialog, text }`); the registry, the protected dialogs and their reasons are in
+[core-dialogs.md](core-dialogs.md). The core palette still exposes Colors dialog and Wallpapers dialog through
+their existing handlers, and `tests/extensions-settings-actions.spec.ts` keeps their regression fixture.
 
 Browser preview uses synthetic IPC; native Rust tests exercise real package/settings files. Neither qualifies
 installed Windows/WebView2, macOS/WKWebView, Linux/WebKitGTK, real OS IME or native tray/shortcut behavior.

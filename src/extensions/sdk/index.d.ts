@@ -39,7 +39,16 @@ export interface InvocationContext {
   readonly sessionId?: string;
   readonly selection?: Json;
   readonly revision: number;
+  /** Set when the command runs from a main-dialog band: the dialog it was captured in, never the current one. */
+  readonly dialog?: MainDialogId;
 }
+/** Eligible main-window modals (`panda.dialog.<id>.actions` / `.bodyExtras`). Destructive, credential and recovery dialogs have no ID. */
+export type MainDialogId = 'recipes' | 'attachment' | 'task-details' | 'subagents' | 'task-status' | 'integrations-fallback' | 'working-directory' | 'changed-files' | 'open-project' | 'rename-task' | 'colors' | 'wallpapers' | 'opencode-models' | 'moodboards' | 'integrations' | 'jev-settings' | 'jev-assist' | 'jev-tests' | 'conversation-import' | 'bots' | 'bot-settings' | 'usage' | 'command-palette';
+/** `contributes.dialogExtras[]` (at most 64): owner-labelled plain text in the dialog's extension band; 8 per dialog are shown. */
+export interface DialogExtra { readonly id: string; readonly dialog: MainDialogId; readonly text: string }
+/** Captured once when an eligible main dialog opens; `project`/`task` are opaque handles, empty when none. */
+export interface DialogAccessory { readonly contractVersion: 1; readonly window: 'main'; readonly dialog: MainDialogId; readonly mount: string; readonly revision: number; readonly project: string; readonly task: string; readonly target: 'none' | 'task' | 'project' }
+export type DialogAccessoryAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' };
 export type ContextResource = 'projects' | 'tasks' | 'harnesses' | 'connections' | 'jobs';
 export interface SummaryItem {
   readonly id: string; readonly name?: string; readonly projectId?: string; readonly status?: string;

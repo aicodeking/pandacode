@@ -1,0 +1,435 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.core-dialogs",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute"
+  ],
+  "requiredContributions": [
+    "dialogExtras"
+  ],
+  "contributes": {
+    "icons": [
+      {
+        "id": "sample.core-dialogs/mark",
+        "asset": "assets/note.svg"
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.core-dialogs/note",
+        "title": "Dialog note",
+        "action": {
+          "kind": "showMessage",
+          "message": "Core dialog note: the host keeps this dialog"
+        }
+      },
+      {
+        "id": "sample.core-dialogs/follow-up",
+        "title": "Follow-up",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Dialog follow-up",
+            "fields": [
+              {
+                "id": "note",
+                "kind": "text",
+                "label": "Follow-up note",
+                "required": true
+              },
+              {
+                "id": "kind",
+                "kind": "select",
+                "label": "Follow-up kind",
+                "placeholder": "Choose a kind",
+                "options": [
+                  {
+                    "value": "review",
+                    "label": "Review later"
+                  },
+                  {
+                    "value": "share",
+                    "label": "Share with team"
+                  },
+                  {
+                    "value": "archive",
+                    "label": "Archive",
+                    "disabled": true
+                  }
+                ]
+              },
+              {
+                "id": "remind",
+                "kind": "switch",
+                "label": "Remind me"
+              }
+            ],
+            "confirmLabel": "Record",
+            "successMessage": "Dialog follow-up recorded",
+            "cancelMessage": "Dialog follow-up cancelled"
+          }
+        }
+      },
+      {
+        "id": "sample.core-dialogs/more",
+        "title": "More dialog actions",
+        "action": {
+          "kind": "showMessage",
+          "message": "Choose a dialog action"
+        }
+      },
+      {
+        "id": "sample.core-dialogs/unavailable",
+        "title": "Unavailable dialog action",
+        "enabled": false,
+        "action": {
+          "kind": "showMessage",
+          "message": "Must never appear"
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.core-dialogs/recipes",
+        "location": "panda.dialog.recipes.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/attachment",
+        "location": "panda.dialog.attachment.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/task-details",
+        "location": "panda.dialog.task-details.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/subagents",
+        "location": "panda.dialog.subagents.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/task-status",
+        "location": "panda.dialog.task-status.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/integrations-fallback",
+        "location": "panda.dialog.integrations-fallback.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/working-directory",
+        "location": "panda.dialog.working-directory.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/changed-files",
+        "location": "panda.dialog.changed-files.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/open-project",
+        "location": "panda.dialog.open-project.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/rename-task",
+        "location": "panda.dialog.rename-task.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/colors",
+        "location": "panda.dialog.colors.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/wallpapers",
+        "location": "panda.dialog.wallpapers.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/opencode-models",
+        "location": "panda.dialog.opencode-models.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/moodboards",
+        "location": "panda.dialog.moodboards.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/integrations",
+        "location": "panda.dialog.integrations.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/jev-settings",
+        "location": "panda.dialog.jev-settings.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/jev-assist",
+        "location": "panda.dialog.jev-assist.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/jev-tests",
+        "location": "panda.dialog.jev-tests.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/conversation-import",
+        "location": "panda.dialog.conversation-import.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/bots",
+        "location": "panda.dialog.bots.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/bot-settings",
+        "location": "panda.dialog.bot-settings.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/usage",
+        "location": "panda.dialog.usage.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/command-palette",
+        "location": "panda.dialog.command-palette.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/note",
+        "text": "Dialog note"
+      },
+      {
+        "id": "sample.core-dialogs/rename-more",
+        "location": "panda.dialog.rename-task.actions",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/more",
+        "items": [
+          {
+            "id": "sample.core-dialogs/rename-more-note",
+            "kind": "command",
+            "title": "Show dialog note",
+            "command": "sample.core-dialogs/note",
+            "icon": "sample.core-dialogs/mark"
+          },
+          {
+            "id": "sample.core-dialogs/rename-more-follow-up",
+            "kind": "command",
+            "title": "Open follow-up…",
+            "command": "sample.core-dialogs/follow-up"
+          },
+          {
+            "id": "sample.core-dialogs/rename-more-unavailable",
+            "kind": "command",
+            "title": "Unavailable dialog action",
+            "command": "sample.core-dialogs/unavailable"
+          }
+        ]
+      },
+      {
+        "id": "sample.core-dialogs/task-follow-up",
+        "location": "panda.dialog.task-details.actions",
+        "presentation": "button",
+        "icon": "sample.core-dialogs/mark",
+        "command": "sample.core-dialogs/follow-up",
+        "text": "Follow-up"
+      }
+    ],
+    "dialogExtras": [
+      {
+        "id": "sample.core-dialogs/recipes-note",
+        "dialog": "recipes",
+        "text": "Extension guidance for Workflow recipes; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/attachment-note",
+        "dialog": "attachment",
+        "text": "Extension guidance for Message attachment; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/task-details-note",
+        "dialog": "task-details",
+        "text": "Extension guidance for Task details; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/subagents-note",
+        "dialog": "subagents",
+        "text": "Extension guidance for Subagents; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/task-status-note",
+        "dialog": "task-status",
+        "text": "Extension guidance for Task status; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/integrations-fallback-note",
+        "dialog": "integrations-fallback",
+        "text": "Extension guidance for Integrations; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/working-directory-note",
+        "dialog": "working-directory",
+        "text": "Extension guidance for Working directory; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/changed-files-note",
+        "dialog": "changed-files",
+        "text": "Extension guidance for Changed files; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/open-project-note",
+        "dialog": "open-project",
+        "text": "Extension guidance for Open project; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/rename-task-note",
+        "dialog": "rename-task",
+        "text": "Extension guidance for Rename task; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/colors-note",
+        "dialog": "colors",
+        "text": "Extension guidance for Colors; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/wallpapers-note",
+        "dialog": "wallpapers",
+        "text": "Extension guidance for Wallpapers; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/opencode-models-note",
+        "dialog": "opencode-models",
+        "text": "Extension guidance for OpenCode models; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/moodboards-note",
+        "dialog": "moodboards",
+        "text": "Extension guidance for Moodboards; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/integrations-note",
+        "dialog": "integrations",
+        "text": "Extension guidance for Tools & integrations; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/jev-settings-note",
+        "dialog": "jev-settings",
+        "text": "Extension guidance for Jev add-on; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/jev-assist-note",
+        "dialog": "jev-assist",
+        "text": "Extension guidance for Jev assistance; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/jev-tests-note",
+        "dialog": "jev-tests",
+        "text": "Extension guidance for Browser tests; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/conversation-import-note",
+        "dialog": "conversation-import",
+        "text": "Extension guidance for Import conversations; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/bots-note",
+        "dialog": "bots",
+        "text": "Extension guidance for Bots; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/bot-settings-note",
+        "dialog": "bot-settings",
+        "text": "Extension guidance for Bot settings; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/usage-note",
+        "dialog": "usage",
+        "text": "Extension guidance for Agent usage; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.core-dialogs/command-palette-note",
+        "dialog": "command-palette",
+        "text": "Extension guidance for Go to anything; the host keeps its fields and actions."
+      }
+    ]
+  }
+}

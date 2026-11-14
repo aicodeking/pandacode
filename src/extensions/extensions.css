@@ -45,6 +45,19 @@
 .extension-view-control [role="tree"] { list-style: none; padding-inline-start: 0; }
 .extension-view-control [role="group"] { list-style: none; padding-inline-start: 16px; }
 
+/* Main-dialog band: owner-labelled notes and secondary actions after the host content, hidden when empty. */
+.dialog-extension-extras { display: grid; gap: var(--space-2); margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--ds-border); }
+.dialog-extension-extras:not(:has([data-extension-contribution]:not([hidden]))) { display: none; }
+.dialog-extension-notes:empty { display: none; }
+.dialog-extension-notes p { margin: 0; color: var(--muted); font-size: var(--ds-text-sub); overflow-wrap: anywhere; }
+.dialog-extension-notes p + p { margin-top: 4px; }
+/* A form opened from the band stacks above the host dialog as a solid sheet; no backdrop-filter or
+   transform, so its own selects and menus keep viewport positioning. */
+#extension-nested-dialog { background: var(--panel); border: 1px solid var(--glass-border); box-shadow: 0 40px 100px -30px var(--glass-shadow-deep), 0 16px 36px -20px var(--glass-shadow-near); }
+#extension-nested-dialog::backdrop { background: var(--scrim); }
+@media (prefers-contrast: more) { .dialog-extension-extras { border-top-color: var(--text); } #extension-nested-dialog { border-color: var(--text); box-shadow: none; } }
+@media (forced-colors: active) { .dialog-extension-extras { border-top-color: CanvasText; } #extension-nested-dialog { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; } }
+
 /* Package shared fields placed in a core Settings page: owner-labelled, after the core rows. */
 .settings-extension-group { margin-top: 24px; }
 .settings-extension-group > p { margin: 0 0 6px; padding: 0 var(--ds-row-pad-x); color: var(--muted); font-size: var(--ds-text-sub); }

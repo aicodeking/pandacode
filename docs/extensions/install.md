@@ -10,8 +10,8 @@ The data vocabulary is described in [contracts.md](contracts.md); a schema-valid
 necessarily implemented by this adapter.
 
 [Settings and actions](settings-actions.md) additionally documents namespaced persistent Settings pages,
-status actions, searchable commands, conflict-resolved shortcuts and the explicitly opted-in Colors/Wallpapers
-body/secondary-action contracts. Its canonical `settings-laboratory` example is packaged with only
+status actions, searchable commands and conflict-resolved shortcuts; [core dialogs](core-dialogs.md) documents the
+body/secondary-action band of every eligible main dialog. Its canonical `settings-laboratory` example is packaged with only
 `extension.json` at the ZIP root. Core privacy, permission and recovery controls never accept third-party content.
 
 [Auxiliary windows and native menus](windows.md) covers the actual `tray`, `launcher` and `agents-dock`
