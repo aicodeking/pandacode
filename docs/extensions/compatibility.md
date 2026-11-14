@@ -1,6 +1,6 @@
-# Content and tools contract compatibility (experimental)
+# Content, tools and workspace contract compatibility (experimental)
 
-The content contracts use version 1 DTOs and the existing declarative package
+The content, tools and workspace contracts use version 1 DTOs and the existing declarative package
 schema. This is **not** a stable API or a cross-platform qualification announcement.
 The general platform completion/API stabilization gate is separate.
 
@@ -16,6 +16,13 @@ The general platform completion/API stabilization gate is separate.
 | `panda.vm` | `controls-first` | Original dock visual order; compatible control siblings | Local/cloud machine, connection, canvas, serialized input and read-only share policy |
 | `panda.design` | `comments-first` | Original comments region visual order, never iframe ancestors | Artboards, view, picked resource, comments, live draft and pending saves |
 | `panda.btw` | `composer-first` | Original composer visual order and compatible control siblings | Distinct main/side task IDs, editor/undo, queue, stream, approvals and Stop |
+| `panda.board` | `review-first` | Original four stage sections; compatible header/column/card/detail siblings | Tasks, stages, drafts, detail forms, running agents and worktree cleanup |
+| `panda.githubHub` | `tabs-first` | Original tab bar; compatible unique sibling controls | Repositories, caches, sign-in, clone/task creation and workflow runs |
+| `panda.pull` | `tabs-first` | Original tab bar; compatible header siblings | Pull identity, diff viewers, link/unlink and the merge confirmation |
+| `panda.worktree` | `controls-first` | Original branch/worktree controls | Branches, worktree create/recreate and cleanup confirmations |
+| `panda.moodboards` | `viewer-first` | Original library/viewer order | Boards, images, captions, file picker/drop and delete confirmations |
+| `panda.cloud` | `controls-below` | Original cloud strip and machine menu siblings | Machines, provisioning, credentials, spend and delete confirmation |
+| `panda.machines` | `controls-below` | Original Run on rows and lineage siblings | Execution host, remote start, pairing, link/access consent and unlink |
 
 These are deliberately closed host-rendered recipes, not arbitrary executable
 renderers, DOM/selector APIs or business-service ownership grants. Inspect the
@@ -55,6 +62,15 @@ approval/mode and recovery stay host-owned. Simulator clipboard/setup/create and
 VM setup/create/delete/share choices remain host-confirmed. Presentation recovery
 does not restart a device/VM connection or repeat an accepted operation.
 
+Workspace surfaces follow the same rules. Contributed toolbar and context actions
+on Board, GitHub hub and Pull see `selection.kind` `board`, `github-hub` and `pull`
+(worktree uses `task`, moodboards `moodboard`/`moodboard-image`, cloud and machines
+`machine`); `projectId` and `sessionId` are omitted when there is none, never sent
+empty. A click runs only the package command: it does not move the selected task,
+repository or pull request, and does not fetch, merge, clone or start anything.
+GitHub, cloud and multi-machine fixtures are synthetic; no GitHub mutation, cloud
+spend, pairing or real device is exercised.
+
 Design intentionally detaches artboard documents when the entire panel is hidden;
 that original lifecycle is not used for recipe movement, faults or disable.
 The existing VM inspector is macOS-only and local virtualization needs Apple
@@ -74,5 +90,7 @@ platform boundaries, not exemptions for missing supported host controls.
 See [documents](documents.md), [diff](diff.md), [Search](search.md),
 [Browser](browser.md) and [Terminal](terminal.md) for exact bounds and authoring
 examples; tools have separate [Simulator](simulator.md), [VM](vm.md),
-[Design](design.md) and [BTW](btw.md) contracts. Canonical implementation evidence and historical failed checks remain
+[Design](design.md) and [BTW](btw.md) contracts; workspace surfaces have [Board](board.md),
+[GitHub hub](github-hub.md), [Pull](pull.md), [worktree](worktree.md),
+[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md). Canonical implementation evidence and historical failed checks remain
 in the project's extensibility receipt, not in a claim of universal API stability.

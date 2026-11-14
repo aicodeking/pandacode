@@ -56,7 +56,8 @@ export function mountBoardPresentation(root: HTMLElement, details: HTMLElement, 
       Promise.resolve(operation).catch(error => host.notify(error instanceof Error ? error.message : String(error))).finally(() => { pending = false; refresh(); });
     } catch (error) { pending = false; host.notify(error instanceof Error ? error.message : String(error)); refresh(); }
   }
-  function actionContext(task = '') { const state = host.state(); return { projectId: state.project, sessionId: task || state.task, revision: presentation().revision, selection: { kind: 'board', ids: task ? [handle(`task:${task}`)] : [] } }; }
+  // Empty identifiers are omitted: the public context rejects empty text, which would disable every contributed action.
+  function actionContext(task = '') { const state = host.state(), session = task || state.task; return { ...(state.project ? { projectId: state.project } : {}), ...(session ? { sessionId: session } : {}), revision: presentation().revision, selection: { kind: 'board', ids: task ? [handle(`task:${task}`)] : [] } }; }
   function accessory(parent: HTMLElement, location: 'panda.board.header' | 'panda.board.card' | 'panda.board.detail', task = '') {
     let node = parent.querySelector<HTMLElement>(':scope > [data-board-accessory]');
     if (!node) { node = document.createElement('span'); node.dataset.boardAccessory = ''; parent.append(node); }

@@ -73,7 +73,8 @@ export function mountGithubHubPresentation(root: HTMLElement, state: () => State
     });
     const result = slot.dispatch(input); slot.dispose(); return result;
   }
-  const actionContext = () => ({ projectId: state().project, revision: presentation().revision, selection: { kind: 'github-hub', ids: [handle(`repo:${state().repository}`)] } });
+  // A repository without a PandaCode project has no projectId; an empty one would fail the public context and disable actions.
+  const actionContext = () => ({ ...(state().project ? { projectId: state().project } : {}), revision: presentation().revision, selection: { kind: 'github-hub', ids: [handle(`repo:${state().repository}`)] } });
   const accessory = document.createElement('span'); accessory.dataset.githubHubAccessory = ''; root.querySelector('.gh-repos-head')!.append(accessory);
   const stopActions = mountExtensionActions(accessory, 'panda.githubHub.actions', actionContext, notify);
   const consent = document.createElement('button'); consent.type = 'button'; consent.className = 'secondary-button'; consent.dataset.githubHubConsent = ''; root.querySelector('.gh-repos')!.append(consent);

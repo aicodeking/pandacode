@@ -57,6 +57,7 @@ config.testMatch.push('**/extensions-worktrees-coverage.spec.ts');
 config.testMatch.push('**/extensions-moodboards-coverage.spec.ts');
 config.testMatch.push('**/extensions-cloud-coverage.spec.ts');
 config.testMatch.push('**/extensions-machine-coverage.spec.ts');
+config.testMatch.push('**/extensions-workspace-coverage.spec.ts');
 config.testMatch.push('**/extensions-tools-coverage.spec.ts');
 config.testMatch.push('**/extensions-storage.spec.ts');
 config.testMatch.push('**/extensions-jobs.spec.ts');

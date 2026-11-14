@@ -565,6 +565,19 @@ mod tests {
         assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
     }
     #[test]
+    fn workspace_action_contexts_share_native_selection_kinds() {
+        // Board, GitHub hub and Pull accessories capture these kinds; a rejected context disables every contributed action.
+        for kind in ["board", "github-hub", "pull", "task", "moodboard", "moodboard-image", "machine"] {
+            let context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.pull.actions","revision":1,"projectId":"p","selection":{"kind":kind,"ids":["handle"]}});
+            assert_eq!(super::validate_contract("context", &context)["ok"], true, "{kind}");
+        }
+        let unknown = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.pull.actions","revision":1,"selection":{"kind":"pull-request","ids":[]}});
+        assert_eq!(super::validate_contract("context", &unknown)["ok"], false);
+        // Hosts omit an absent project rather than sending empty text.
+        let empty = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.githubHub.actions","revision":1,"projectId":"","selection":{"kind":"github-hub","ids":["handle"]}});
+        assert_eq!(super::validate_contract("context", &empty)["ok"], false);
+    }
+    #[test]
     fn pull_component_state_action_share_native_schema() {
         let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/pull/extension.json")).unwrap();
         assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);

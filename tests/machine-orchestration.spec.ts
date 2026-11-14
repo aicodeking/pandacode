@@ -428,11 +428,12 @@ test('machine orchestration: one thread changing status touches only its own row
     await new Promise<void>(resolve => { const check = () => [...document.querySelectorAll(`[data-thread="${id}"]`)].every(row => row.textContent!.includes('Done')) ? resolve() : requestAnimationFrame(check); check(); });
     await new Promise(resolve => setTimeout(resolve, 200));
     observer.disconnect();
-    const count = (selector: string) => {
+    // The animated sidebar brand mark (brand-mark.ts) writes ~18 transforms per frame on its own clock; it is not a redraw.
+    const count = (selector: string, ignore = '.desktop-brand') => {
       const nodes = new Set<Node>();
       for (const record of records) {
         const owner = record.target instanceof Element ? record.target : record.target.parentElement;
-        if (!owner?.closest(selector)) continue;
+        if (!owner?.closest(selector) || owner.closest(ignore)) continue;
         nodes.add(record.target);
         for (const node of [...record.addedNodes, ...record.removedNodes]) { nodes.add(node); if (node instanceof Element) node.querySelectorAll('*').forEach(child => nodes.add(child)); }
       }
