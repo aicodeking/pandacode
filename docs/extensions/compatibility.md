@@ -93,5 +93,5 @@ See [documents](documents.md), [diff](diff.md), [Search](search.md),
 examples; tools have separate [Simulator](simulator.md), [VM](vm.md),
 [Design](design.md) and [BTW](btw.md) contracts; workspace surfaces have [Board](board.md),
 [GitHub hub](github-hub.md), [Pull](pull.md), [worktree](worktree.md),
-[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md); core Settings has [settings](settings.md); eligible main dialogs have the accessory band in [core dialogs](core-dialogs.md). Canonical implementation evidence and historical failed checks remain
+[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md); core Settings has [settings](settings.md); eligible main dialogs have the accessory band in [core dialogs](core-dialogs.md), and module-owned and directly mounted dialogs reuse it in [owned dialogs](owned-dialogs.md). Canonical implementation evidence and historical failed checks remain
 in the project's extensibility receipt, not in a claim of universal API stability.

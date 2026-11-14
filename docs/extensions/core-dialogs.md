@@ -66,10 +66,8 @@ Protected main dialogs never mount the band, have no schema ID and are inspect-o
 Eligible dialogs that embed a host credential or pairing sub-form (Jev provider keys, bot channel tokens)
 keep that sub-form host-owned; the band is outside it and no field value crosses the contract.
 
-Module-owned dialogs that reach the main modal through their own host object (agent updates, shared
-channels, GitHub import/PR/link, Link a machine, sketch, worktree create/cleanup) and directly mounted
-dialog elements (command center, integrations/Jev direct mounts, progress lightbox, skill add, team model
-add, extension forms) are T56C's: they must capture their own target rather than inherit the global modal.
+Module-owned dialogs that reach the main modal through their own host object and directly mounted dialog
+elements use the same band and contract with their own captured target; see [owned-dialogs.md](owned-dialogs.md).
 `dialogCoverage` names each one.
 
 ## Contract and policy

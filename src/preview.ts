@@ -511,7 +511,7 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
 if (new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettingsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
-if (new URLSearchParams(location.search).has('dialog-coverage')) {
+if (new URLSearchParams(location.search).has('dialog-coverage') || new URLSearchParams(location.search).has('owned-dialog-coverage')) {
   (window as any).__previewDialogSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
   (window as any).__previewDialogRefresh = async () => (await import('./extensions/manager')).loadExtensions();
 }

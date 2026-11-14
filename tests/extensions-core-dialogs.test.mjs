@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { validateContract } from '../src/extensions/contracts.ts';
 import { admitDialogAccessory, dialogContext, isEligibleDialog, MAX_DIALOG_BODY_EXTRAS } from '../src/extensions/dialog-accessory.ts';
-import { MAIN_DIALOG_EXTRAS, MAIN_DIALOG_PROTECTED, DIALOG_ACTION_SURFACES, DIALOG_DATA_SURFACES, DIALOG_PROTECTED_LOCATION } from '../src/extensions/surfaces.ts';
+import { MAIN_DIALOG_EXTRAS, MAIN_DIALOG_PROTECTED, OWNED_DIALOG_PROTECTED, DIALOG_EXTRAS, DIALOG_ACTION_SURFACES, DIALOG_DATA_SURFACES, DIALOG_PROTECTED_LOCATION } from '../src/extensions/surfaces.ts';
 import { createUiCatalog } from '../src/extensions/catalog.ts';
 import { createDeclarativeActivation } from '../src/extensions/activation.ts';
 
@@ -16,7 +16,7 @@ const eligible = MAIN_DIALOG_EXTRAS.map(([id]) => id), protectedIds = MAIN_DIALO
 const accessory = (changes = {}) => ({ contractVersion: 1, window: 'main', dialog: 'rename-task', mount: 'main/4', revision: 7, project: 'project-1', task: 'session-1', target: 'task', ...changes });
 const packages = value => validateContract('packages', [value]);
 
-test('Core dialogs: every main.ts modal ledger entry is eligible or protected with its reason; others are mapped to T56C', () => {
+test('Core dialogs: every main.ts modal ledger entry is eligible or protected with its reason; others are led by T56C', () => {
   const members = ledger.families.find(family => family.id === 'panda.dialog').members;
   const mainMembers = members.filter(([, owner]) => owner === 'src/main.ts').map(([id]) => id);
   assert.deepEqual([...eligible, ...protectedIds].sort(), [...mainMembers].sort());
@@ -29,7 +29,8 @@ test('Core dialogs: every main.ts modal ledger entry is eligible or protected wi
   for (const [id, , reason] of MAIN_DIALOG_PROTECTED) assert.deepEqual(ledger.dialogCoverage[`panda.dialog.${id}`], { lead: 'T56B', status: 'protected', reason, tests: ['tests/extensions-core-dialogs-coverage.spec.ts'] });
   for (const [id, owner, anchor] of members.filter(([, owner]) => owner !== 'src/main.ts')) {
     assert.equal(ledger.dialogCoverage[`panda.dialog.${id}`].lead, 'T56C', `${owner} ${anchor}`);
-    assert.equal(ledger.dialogCoverage[`panda.dialog.${id}`].status, anchor.startsWith('modal(') ? 'module-owned' : 'direct-dialog');
+    // Registered with the same contract or protected with a reason (tests/extensions-owned-dialogs.test.mjs).
+    assert.ok(['implemented-experimental', 'protected'].includes(ledger.dialogCoverage[`panda.dialog.${id}`].status), id);
   }
   // Each eligible opener captures its stable ID; protected openers never pass one.
   for (const id of eligible) assert.ok(main.includes(`{ dialog: '${id}'`), `missing accessory for ${id}`);
@@ -39,14 +40,16 @@ test('Core dialogs: every main.ts modal ledger entry is eligible or protected wi
 });
 
 test('Core dialogs: shared schema enumerates exactly the eligible IDs for extras, actions and invocation context', () => {
-  assert.deepEqual(schema.$defs.mainDialogId.enum, eligible);
+  // The shared main modals come first; module-owned and directly mounted dialogs follow (T56C).
+  assert.deepEqual(schema.$defs.mainDialogId.enum.slice(0, eligible.length), eligible);
+  assert.deepEqual(schema.$defs.mainDialogId.enum, DIALOG_EXTRAS.map(([id]) => id));
   assert.deepEqual(schema.$defs.dialogExtra.properties.dialog, { $ref: '#/$defs/mainDialogId' });
   assert.deepEqual(schema.$defs.context.properties.dialog, { $ref: '#/$defs/mainDialogId' });
   assert.deepEqual(schema.$defs.actionLocation.enum.filter(location => location.startsWith('panda.dialog.')), DIALOG_ACTION_SURFACES);
   assert.equal(schema.$defs.manifest.properties.contributes.properties.dialogExtras.maxItems, 64);
   for (const id of protectedIds) assert.ok(!JSON.stringify(schema).includes(`"${id}"`) && !JSON.stringify(schema).includes(`panda.dialog.${id}.`), id);
   for (const id of eligible) assert.equal(isEligibleDialog(id), true);
-  for (const id of [...protectedIds, 'permission', 'privacy', 'recovery', 'machine-link', 'command-center']) assert.equal(isEligibleDialog(id), false);
+  for (const id of [...protectedIds, 'permission', 'privacy', 'recovery', 'machine-link', 'skill-add']) assert.equal(isEligibleDialog(id), false);
 });
 
 test('Core dialogs: the installed fixture contributes to every eligible dialog; protected, unknown and oversized declarations are refused', () => {
@@ -84,7 +87,7 @@ test('Core dialogs: captured accessory admission refuses forged, protected, repl
     [{ mount: 'main/5' }, 'StaleContext'], [{ revision: 8 }, 'StaleContext'], [{ task: 'session-2' }, 'StaleContext'],
     [{ project: 'project-2' }, 'StaleContext'], [{ dialog: 'task-status' }, 'StaleContext'], [{ target: 'project' }, 'StaleContext'],
     [{ contractVersion: 2 }, 'UnsupportedCapability'], [{ dialog: 'delete-task' }, 'UnsupportedCapability'], [{ dialog: 'provider-connections' }, 'UnsupportedCapability'],
-    [{ window: 'tray' }, 'InvalidArguments'], [{ selector: '#dialog' }, 'InvalidArguments'], [{ ipc: 'raw' }, 'InvalidArguments'], [{ dialog: 'machine-link' }, 'InvalidArguments'], [{ mount: '' }, 'InvalidArguments'], [{ task: 'x'.repeat(257) }, 'InvalidArguments'],
+    [{ window: 'tray' }, 'InvalidArguments'], [{ selector: '#dialog' }, 'InvalidArguments'], [{ ipc: 'raw' }, 'InvalidArguments'], [{ dialog: 'machine-link' }, 'UnsupportedCapability'], [{ dialog: 'integrations-direct' }, 'InvalidArguments'], [{ mount: '' }, 'InvalidArguments'], [{ task: 'x'.repeat(257) }, 'InvalidArguments'],
   ]) assert.deepEqual(admitDialogAccessory(accessory(change), live), { ok: false, reason }, JSON.stringify(change));
   assert.deepEqual(admitDialogAccessory(accessory(), undefined), { ok: false, reason: 'Revoked' });
   assert.deepEqual(admitDialogAccessory(null, live), { ok: false, reason: 'InvalidArguments' });
@@ -110,7 +113,7 @@ test('Core dialogs: catalog lists every eligible slot with its item types and th
   for (const location of DIALOG_DATA_SURFACES) assert.deepEqual(surfaces.find(surface => surface.id === location)?.supportedOperations, ['inspect', 'contribute']);
   assert.deepEqual(surfaces.find(surface => surface.id === DIALOG_PROTECTED_LOCATION)?.supportedOperations, ['inspect']);
   const protectedItems = all({ kind: 'listItems', filter: { location: DIALOG_PROTECTED_LOCATION } });
-  assert.deepEqual(protectedItems.map(item => item.id), MAIN_DIALOG_PROTECTED.map(([id]) => `${DIALOG_PROTECTED_LOCATION}/${id}`).sort());
+  assert.deepEqual(protectedItems.map(item => item.id), [...MAIN_DIALOG_PROTECTED, ...OWNED_DIALOG_PROTECTED].map(([id]) => `${DIALOG_PROTECTED_LOCATION}/${id}`).sort());
   for (const item of protectedItems) { assert.deepEqual(item.supportedOperations, ['inspect']); assert.match(item.label, / — /); }
   const contributed = all({ kind: 'listItems', filter: { owner: manifest.id } });
   assert.ok(contributed.some(item => item.location === 'panda.dialog.rename-task.actions' && item.type === 'menu-trigger'));

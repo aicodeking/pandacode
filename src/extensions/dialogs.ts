@@ -16,8 +16,10 @@ function nestedDialog(): HTMLDialogElement {
 /** Uses the existing transparent modal/plate/motion. Never replace another owner's open dialog. */
 export function openExtensionDialog(definition: DialogDefinition, context: DialogContext, owner: string, trigger: HTMLElement, openSelect = false): { result: Promise<DialogResult>; close: () => void } {
   const shared = document.querySelector<HTMLDialogElement>('#dialog');
-  // A main-dialog accessory stacks its form above the open host dialog; the host keeps its fields and focus target.
-  const element = shared?.open && trigger.closest('.dialog-extension-extras') && shared.contains(trigger) ? nestedDialog() : shared;
+  // A dialog accessory (the shared modal or a directly mounted dialog) stacks its form above the open host
+  // dialog; the host keeps its fields and focus target.
+  const hostDialog = trigger.closest<HTMLDialogElement>('dialog[open]');
+  const element = hostDialog && hostDialog.id !== 'extension-nested-dialog' && trigger.closest('.dialog-extension-extras') && hostDialog.contains(trigger) ? nestedDialog() : shared;
   if (!element || element.open) return { result: Promise.resolve({ kind: 'cancelled', reason: 'busy' }), close() {} };
   const dialog = element;
   const state = createDialogState(definition, context, callbacks);

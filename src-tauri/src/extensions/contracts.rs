@@ -852,14 +852,20 @@ mod tests {
     fn core_dialog_extras_admit_only_eligible_main_dialogs() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/core-dialogs/extension.json")).unwrap();
         assert_eq!(super::validate_contract("packages", &serde_json::json!([manifest]))["ok"], true);
+        let owned: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/owned-dialogs/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &serde_json::json!([owned]))["ok"], true);
         let eligible = SCHEMA["$defs"]["mainDialogId"]["enum"].as_array().unwrap().clone();
-        assert_eq!(eligible.len(), 23);
-        for id in &eligible {
+        // 23 shared main modals, then 11 module-owned and directly mounted dialogs (docs/extensions/owned-dialogs.md).
+        assert_eq!(eligible.len(), 34);
+        for (index, id) in eligible.iter().enumerate() {
             let location = format!("panda.dialog.{}.actions", id.as_str().unwrap());
-            assert!(manifest["contributes"]["menus"].as_array().unwrap().iter().any(|menu| menu["location"] == location.as_str()));
+            let fixture = if index < 23 { &manifest } else { &owned };
+            assert!(fixture["contributes"]["menus"].as_array().unwrap().iter().any(|menu| menu["location"] == location.as_str()), "{location}");
         }
-        // Destructive, credential and recovery dialogs have no ID anywhere in the shared contract.
-        for name in ["remove-project", "delete-task", "provider-connections", "delete-cloud", "github-behind", "delete-bot", "machine-link", "unknown"] {
+        let accessory = serde_json::json!({"contractVersion":1,"window":"main","dialog":"command-center","mount":"command-center/2","revision":5,"project":"project-1","task":"session-2","target":"task"});
+        assert_eq!(super::validate_contract("dialogAccessory", &accessory)["ok"], true);
+        // Destructive, credential, permission and recovery dialogs have no ID anywhere in the shared contract.
+        for name in ["remove-project", "delete-task", "provider-connections", "delete-cloud", "github-behind", "delete-bot", "machine-link", "worktree-cleanup", "skill-add", "extension-form", "integrations-direct", "unknown"] {
             let mut invalid = manifest.clone(); invalid["contributes"]["dialogExtras"][0]["dialog"] = serde_json::json!(name);
             assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false, "{name}");
             let mut invalid = manifest.clone(); invalid["contributes"]["menus"][0]["location"] = serde_json::json!(format!("panda.dialog.{name}.actions"));

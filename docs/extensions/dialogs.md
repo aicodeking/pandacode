@@ -19,8 +19,8 @@ ordinary selection still filters/opens that project. Their context contains that
 currently selected task. Closing the filter chooser hands focus ownership to its surviving trigger;
 removing the logical project cancels the action. Other source rows cancel when detached/replaced.
 Navigation never retargets pending dialogs/options/validation. Disable/unload aborts them and
-suppresses late messages, with focus on a surviving host control. From a main-dialog extension band
-([core-dialogs.md](core-dialogs.md)) the form stacks in its own top-layer dialog above the host dialog;
+suppresses late messages, with focus on a surviving host control. From a dialog extension band
+([core-dialogs.md](core-dialogs.md), [owned-dialogs.md](owned-dialogs.md)) the form stacks in its own top-layer dialog above the host dialog;
 from anywhere else it uses the shared dialog only when no other dialog is open.
 
 Each location exposes owner/type/location-filtered catalog metadata and supports global/project

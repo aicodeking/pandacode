@@ -1,6 +1,7 @@
 import './agent-updates.css';
 import { call, subscribe } from './bridge';
 import { escape, icon } from './dom';
+import type { DialogRequest } from './extensions/owned-dialogs';
 import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
 import { infoMark } from './tooltip';
@@ -22,7 +23,7 @@ export interface AgentUpdate {
 }
 export interface AgentUpdateProgress { provider: ProviderId; phase: 'updating' | 'verifying' | 'completed' | 'error'; message?: string | null; }
 export interface AgentUpdatesHost {
-  modal(title: string, body: string, className?: string): HTMLDialogElement;
+  modal(title: string, body: string, className?: string, request?: DialogRequest): HTMLDialogElement;
   closeModal(): void;
   providersChanged(): Promise<void>;
   providers(): Provider[];
@@ -207,7 +208,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
   async function show(): Promise<void> {
     if (disposed) return;
     manualRevision++; allowPopup = false; hidePopup();
-    const dialog = host.modal('Agent updates', `<section class="agent-updates"><div class="agent-updates-toolbar"><span>Installed agents</span><button type="button" class="secondary-button agent-updates-check">${icon('refresh')}Check updates</button></div><ul class="agent-updates-list"></ul><p class="agent-updates-status" role="status"></p><div class="dialog-footer"><button type="button" class="secondary-button agent-updates-close">Done</button></div></section>`, 'agent-updates-dialog');
+    const dialog = host.modal('Agent updates', `<section class="agent-updates"><div class="agent-updates-toolbar"><span>Installed agents</span><button type="button" class="secondary-button agent-updates-check">${icon('refresh')}Check updates</button></div><ul class="agent-updates-list"></ul><p class="agent-updates-status" role="status"></p><div class="dialog-footer"><button type="button" class="secondary-button agent-updates-close">Done</button></div></section>`, 'agent-updates-dialog', { dialog: 'agent-updates' });
     dialogBody = dialog.querySelector<HTMLElement>('.agent-updates')!;
     dialogBody.addEventListener('click', onClick); render();
     dialogBody.querySelector<HTMLButtonElement>('.agent-updates-check')!.focus({ preventScroll: true });

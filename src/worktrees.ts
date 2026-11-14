@@ -1,5 +1,6 @@
 import './worktrees.css';
 import { escape, icon } from './dom';
+import type { DialogRequest } from './extensions/owned-dialogs';
 import { toned } from './approval-modes';
 import { githubEnabled } from './github';
 import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
@@ -14,7 +15,7 @@ import { WORKTREE_CONTROLS } from './extensions/surfaces';
 type ChoiceItem = { id: string; label: string; description?: string; icon?: string; disabled?: boolean; selected?: boolean };
 export type WorktreeHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
-  modal(title: string, body: string, cls?: string): HTMLDialogElement;
+  modal(title: string, body: string, cls?: string, request?: DialogRequest): HTMLDialogElement;
   closeModal(): void;
   notify(text: string): void;
   showChoices(anchor: HTMLElement, options: { title: string; items: ChoiceItem[]; actions?: boolean; width?: number; searchPlaceholder?: string; onSelect: (id: string) => void | Promise<void>; extensionSurface?: { location: 'panda.worktree.actions'; context: { projectId: string; revision: number; selection: { kind: 'task'; ids: string[] } }; isAlive?: () => boolean; pinned?: readonly string[]; width?: number } }): Promise<void>;
@@ -240,7 +241,7 @@ export function createWorktrees(host: WorktreeHost) {
     const description = mode === 'attach'
       ? `This task keeps its draft, harness, and model, and its changes stay in an isolated checkout beside ${escape(project?.name)}.`
       : `Start a new task in an isolated checkout of ${escape(project?.name)}. It inherits this task's harness and model.`;
-    const dialog = host.modal(mode === 'attach' ? 'Work in a new worktree' : 'New task in a worktree', `<form id="worktree-form" data-mode="${mode}" data-session-id="${escape(session.id)}"><p class="dialog-description">${description}</p><label class="field-label" for="branch-name">Branch name</label><input id="branch-name" name="branch" value="${escape(suggested)}" placeholder="my-feature" required pattern="[A-Za-z0-9_\\/\\-]+" maxlength="120" autocomplete="off" spellcheck="false"><p class="field-help worktree-preview" id="branch-preview" data-live></p><label class="field-label" for="branch-base">Start from</label><select id="branch-base" name="base" aria-describedby="branch-base-help"><option value="">${escape(git?.branch ? `Current branch (${git.branch})` : 'Current HEAD')}</option></select><p class="field-help" id="branch-base-help">Local branches load from the ${session.worktreePath ? 'worktree' : 'project'} checkout.</p><label class="worktree-existing" hidden><input type="checkbox" name="existing"><span>Use the existing branch instead of creating one</span></label><p class="worktree-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${mode === 'attach' ? 'Use a worktree' : 'Create worktree task'}</button></div></form>`, 'compact-dialog worktree-dialog');
+    const dialog = host.modal(mode === 'attach' ? 'Work in a new worktree' : 'New task in a worktree', `<form id="worktree-form" data-mode="${mode}" data-session-id="${escape(session.id)}"><p class="dialog-description">${description}</p><label class="field-label" for="branch-name">Branch name</label><input id="branch-name" name="branch" value="${escape(suggested)}" placeholder="my-feature" required pattern="[A-Za-z0-9_\\/\\-]+" maxlength="120" autocomplete="off" spellcheck="false"><p class="field-help worktree-preview" id="branch-preview" data-live></p><label class="field-label" for="branch-base">Start from</label><select id="branch-base" name="base" aria-describedby="branch-base-help"><option value="">${escape(git?.branch ? `Current branch (${git.branch})` : 'Current HEAD')}</option></select><p class="field-help" id="branch-base-help">Local branches load from the ${session.worktreePath ? 'worktree' : 'project'} checkout.</p><label class="worktree-existing" hidden><input type="checkbox" name="existing"><span>Use the existing branch instead of creating one</span></label><p class="worktree-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${mode === 'attach' ? 'Use a worktree' : 'Create worktree task'}</button></div></form>`, 'compact-dialog worktree-dialog', { dialog: 'worktree-create', task: session.id, project: session.projectId });
     const input = dialog.querySelector<HTMLInputElement>('#branch-name')!, preview = dialog.querySelector<HTMLElement>('#branch-preview')!;
     const update = () => {
       const final = finalBranchName(input.value);

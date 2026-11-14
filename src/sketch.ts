@@ -1,5 +1,6 @@
 import './sketch.css';
 import { escape, icon, isImeKey } from './dom';
+import type { DialogRequest } from './extensions/owned-dialogs';
 import type { PromptImage } from './attachments';
 
 /** A quick wireframe editor. Shapes live in scene coordinates; the canvas scales to fit.
@@ -15,7 +16,7 @@ type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'start' | 'end
 export type SketchOptions = {
   taskId: string;
   existing?: PromptImage;
-  modal(title: string, body: string, cls?: string): HTMLDialogElement;
+  modal(title: string, body: string, cls?: string, request?: DialogRequest): HTMLDialogElement;
   close(): void;
   attach(dataUrl: string, name: string, sketchId: string, replace?: string): Promise<PromptImage>;
 };
@@ -240,7 +241,7 @@ export function showSketch(options: SketchOptions): void {
       </div>
       <div class="sketch-stage"><div class="sketch-paper"><canvas role="img" aria-label="Mockup canvas"></canvas></div></div>
       <div class="dialog-footer sketch-footer"><span class="sketch-hint" role="status">Drag to draw. Double-click a component or text to edit its label.</span><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="button" class="primary-button sketch-attach">${options.existing ? 'Update mockup' : 'Attach to message'}</button></div>
-    </div>`, 'sketch-dialog');
+    </div>`, 'sketch-dialog', { dialog: 'sketch', task: options.taskId });
   const editor = dialog.querySelector<HTMLElement>('.sketch-editor')!;
   const paper = editor.querySelector<HTMLElement>('.sketch-paper')!;
   const canvas = editor.querySelector<HTMLCanvasElement>('canvas')!;

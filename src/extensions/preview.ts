@@ -46,6 +46,8 @@ import appearanceSvg from '../../tests/fixtures/extensions/appearance/assets/sym
 import windowSvg from '../../tests/fixtures/extensions/window-laboratory/assets/info.svg?raw';
 import coreDialogsManifest from '../../tests/fixtures/extensions/core-dialogs/extension.json';
 import coreDialogsSvg from '../../tests/fixtures/extensions/core-dialogs/assets/note.svg?raw';
+import ownedDialogsManifest from '../../tests/fixtures/extensions/owned-dialogs/extension.json';
+import ownedDialogsSvg from '../../tests/fixtures/extensions/owned-dialogs/assets/mark.svg?raw';
 import { validSettingsValues } from './settings-state';
 import { validateContract } from './contracts';
 import type { ExtensionPackage, ExtensionSnapshot, ExtensionMenuItem } from './manager';
@@ -73,7 +75,7 @@ function read(): ExtensionSnapshot {
     for (const item of packages) item.storageGranted = previewPrivateStorage.granted(item.manifest.id, item.manifest.version);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
-    return { safeMode, development: structuredClone(development), packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === harnessManifest.id ? { 'sample.fake-harness/mark': harnessSvg } : {}), ...(item.manifest.id === appearanceManifest.id ? { 'sample.appearance/symbol': appearanceSvg, 'sample.appearance/file': appearanceSvg } : {}), ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}), ...(item.manifest.id === coreDialogsManifest.id ? { 'sample.core-dialogs/mark': coreDialogsSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
+    return { safeMode, development: structuredClone(development), packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === harnessManifest.id ? { 'sample.fake-harness/mark': harnessSvg } : {}), ...(item.manifest.id === appearanceManifest.id ? { 'sample.appearance/symbol': appearanceSvg, 'sample.appearance/file': appearanceSvg } : {}), ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}), ...(item.manifest.id === coreDialogsManifest.id ? { 'sample.core-dialogs/mark': coreDialogsSvg } : {}), ...(item.manifest.id === ownedDialogsManifest.id ? { 'sample.owned-dialogs/mark': ownedDialogsSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export const previewExtensionSnapshot = read;
@@ -184,6 +186,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (new URLSearchParams(location.search).has('moodboards-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === moodboardManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: moodboardManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('owned-dialog-coverage')) {
+      if (snapshot.packages.some(item => item.manifest.id === ownedDialogsManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: ownedDialogsManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('dialog-coverage')) {

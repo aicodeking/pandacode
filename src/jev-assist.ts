@@ -2,6 +2,7 @@ import './jev.css';
 import './jev-assist.css';
 import { call } from './bridge';
 import { escape, icon } from './dom';
+import { attachDialogExtras } from './extensions/owned-dialogs';
 
 export type AssistKind = 'review' | 'rules' | 'context' | 'route';
 export interface AssistEvidence { id: string; label: string; text: string; truncated: boolean; path?: string; changeId?: string; }
@@ -73,7 +74,9 @@ export async function showJevAssist(dialog: HTMLDialogElement, context: AssistCo
   dialog.addEventListener('close', dispose, { once: true });
   views.set(dialog, dispose);
   el('[data-assist-close]').addEventListener('click', () => { dispose(); dialog.close(); });
-  if (!dialog.open) dialog.showModal();
+  // Opened through the main modal helper the dialog already carries its `jev-assist` band; opening it here mounts
+  // that same band for this view only (docs/extensions/owned-dialogs.md).
+  if (!dialog.open) { dialog.showModal(); attachDialogExtras(dialog, { dialog: 'jev-assist', task: context.sessionId }, { owner: host, alive: () => !disposed }); }
   function tell(message: string, error = false) { if (alive()) { el('.jev-feedback').textContent = message; el('.jev-feedback').classList.toggle('error', error); } }
   function request(): Request {
     const result: Request = { kind };

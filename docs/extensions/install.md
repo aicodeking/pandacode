@@ -11,7 +11,7 @@ necessarily implemented by this adapter.
 
 [Settings and actions](settings-actions.md) additionally documents namespaced persistent Settings pages,
 status actions, searchable commands and conflict-resolved shortcuts; [core dialogs](core-dialogs.md) documents the
-body/secondary-action band of every eligible main dialog. Its canonical `settings-laboratory` example is packaged with only
+body/secondary-action band of every eligible main dialog, which [owned dialogs](owned-dialogs.md) extends to module-owned and directly mounted dialogs. Its canonical `settings-laboratory` example is packaged with only
 `extension.json` at the ZIP root. Core privacy, permission and recovery controls never accept third-party content.
 
 [Auxiliary windows and native menus](windows.md) covers the actual `tray`, `launcher` and `agents-dock`

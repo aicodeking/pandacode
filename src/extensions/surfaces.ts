@@ -121,7 +121,32 @@ export const MAIN_DIALOG_EXTRAS = [
   ['conversation-import', 'Import conversations', 'none'], ['bots', 'Bots', 'none'], ['bot-settings', 'Bot settings', 'none'],
   ['usage', 'Agent usage', 'none'], ['command-palette', 'Go to anything', 'none'],
 ] as const;
-export type MainDialogId = typeof MAIN_DIALOG_EXTRAS[number][0];
+/** Main-window dialogs opened by their own module host through the modal helper, or mounted directly on a
+ * dialog element (docs/extensions/owned-dialogs.md): [dialog id, title, captured target, host]. Same band and
+ * `dialogAccessory` contract as MAIN_DIALOG_EXTRAS; each host passes its own target, never the global modal's. */
+export const OWNED_DIALOG_EXTRAS = [
+  ['agent-updates', 'Agent updates', 'none', 'module'], ['channel-create', 'New channel', 'none', 'module'], ['channel-settings', 'Channel settings', 'none', 'module'],
+  ['github-import', 'Import from GitHub', 'project', 'module'], ['github-pr', 'Push & open pull request', 'task', 'module'], ['github-link', 'Link pull request', 'task', 'module'],
+  ['sketch', 'Sketch a mockup', 'task', 'module'], ['worktree-create', 'New worktree', 'task', 'module'],
+  ['command-center', 'Command center', 'task', 'direct'], ['progress-lightbox', 'Progress large view', 'task', 'direct'], ['team-model-add', 'Models for teams', 'none', 'direct'],
+] as const;
+/** Direct mounts of a main dialog's own view (used when the view opens the dialog itself): they reuse that
+ * dialog's ID and band, so one opening never registers twice. [ledger id, reused dialog id]. */
+export const OWNED_DIALOG_ALIASES = [['integrations-direct', 'integrations'], ['jev-assist-direct', 'jev-assist'], ['jev-tests-direct', 'jev-tests']] as const;
+/** Module-owned or direct dialogs that never mount the band: [ledger id, title, reason]. Inspect-only in the catalog. */
+export const OWNED_DIALOG_PROTECTED = [
+  ['machine-link', 'Link a machine', 'Granting agents here access to another machine is a permission choice that stays host-owned (panda.machines.protected).'],
+  ['worktree-cleanup', 'Settle task / Remove worktree', 'Removing a worktree folder or branch is a destructive confirmation that stays host-owned (panda.worktree.protected).'],
+  ['skill-add', 'Add skills', 'Installing third-party skills into agent harnesses follows a host security scan; its verdicts and the install confirmation stay host-owned.'],
+  ['extension-form', 'Extension form', "A package's own form is itself the accessory surface; another package's content is never placed inside it."],
+] as const;
+export type MainDialogId = typeof MAIN_DIALOG_EXTRAS[number][0] | typeof OWNED_DIALOG_EXTRAS[number][0];
+export type DialogTarget = 'none' | 'task' | 'project';
+/** Every dialog that accepts the band, in schema order: main modals first, then module-owned and direct dialogs. */
+export const DIALOG_EXTRAS: ReadonlyArray<readonly [MainDialogId, string, DialogTarget]> = [...MAIN_DIALOG_EXTRAS, ...OWNED_DIALOG_EXTRAS.map(([id, title, target]) => [id, title, target] as const)];
+/** The target kind a dialog captures; unknown IDs capture nothing. */
+export const dialogTarget = (id: string): DialogTarget => DIALOG_EXTRAS.find(([dialog]) => dialog === id)?.[2] ?? 'none';
+export const isOwnedDialog = (id: string): boolean => OWNED_DIALOG_EXTRAS.some(([dialog]) => dialog === id);
 /** Main-window modals that never mount the band: [dialog id, title, reason]. Inspect-only in the catalog. */
 export const MAIN_DIALOG_PROTECTED = [
   ['remove-project', 'Remove project', 'A destructive confirmation stays host-owned; the folder-retention explanation is not extensible.'],
@@ -131,8 +156,8 @@ export const MAIN_DIALOG_PROTECTED = [
   ['github-behind', 'GitHub is behind this computer', 'The start-anyway recovery choice stays host-owned (panda.machines.protected).'],
   ['delete-bot', 'Delete bot', 'A destructive confirmation stays host-owned.'],
 ] as const;
-export const DIALOG_ACTION_SURFACES = MAIN_DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.actions` as const);
-export const DIALOG_DATA_SURFACES = MAIN_DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.bodyExtras` as const);
+export const DIALOG_ACTION_SURFACES = DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.actions` as const);
+export const DIALOG_DATA_SURFACES = DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.bodyExtras` as const);
 export const DIALOG_PROTECTED_LOCATION = 'panda.dialog.protected';
 /** Core Settings adoption (docs/extensions/settings.md). `panda.settings.actions` is each core page's header
  * accessory and `panda.settings.context` the section list's context menu. `panda.settings.sections` holds the

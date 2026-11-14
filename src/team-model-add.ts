@@ -1,6 +1,7 @@
 /* Add model…: choose which of a long harness catalog's models teams may use, beside its recent ones. */
 import './team-model-add.css';
 import { escape, icon } from './dom';
+import { attachDialogExtras } from './extensions/owned-dialogs';
 import { ADDED_MAX, addedTeamModels, dupModelNames, excludedTeamModels, recentTeamModelIds, setTeamModelOn, teamModels } from './team-catalog';
 import type { ProviderId, ProviderModel } from './types';
 
@@ -51,8 +52,11 @@ export async function openAddTeamModels({ provider, name, loadModels, trigger }:
     render();
     list.querySelector<HTMLElement>(`input[data-model="${CSS.escape(model)}"]`)?.focus();
   });
-  dialog.addEventListener('close', () => trigger()?.focus(), { once: true });
   dialog.showModal();
+  // Opt-in extension band after the footer (docs/extensions/owned-dialogs.md); it never touches the switches.
+  const heading = dialog.querySelector<HTMLElement>('.dialog-heading')!;
+  const detachExtras = attachDialogExtras(dialog, { dialog: 'team-model-add' }, { owner: heading, alive: () => dialog.classList.contains('team-model-dialog') });
+  dialog.addEventListener('close', () => { detachExtras(); trigger()?.focus(); }, { once: true });
   search.focus();
   models = await loadModels(provider).catch(() => [] as ProviderModel[]);
   if (dialog.open && dialog.classList.contains('team-model-dialog')) render();

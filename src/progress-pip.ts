@@ -343,7 +343,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     if (lightbox) return;
     stopPlay();
     lightbox = openLightbox({
-      snaps: () => snaps, index: () => index, go: i => go(i), thumb: media.thumb, ago, fromPointer,
+      snaps: () => snaps, index: () => index, go: i => go(i), thumb: media.thumb, ago, fromPointer, task: sessionId,
       paint: (stage, direction) => void paint(stage, direction, true),
       closed: () => { lightbox = null; q<HTMLElement>('[data-pp="enlarge"]')?.focus({ preventScroll: true }); dim.apply(); },
     });

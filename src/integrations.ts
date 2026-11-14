@@ -1,6 +1,7 @@
 import './integrations.css';
 import { call, preview } from './bridge';
 import { escape, icon } from './dom';
+import { attachDialogExtras } from './extensions/owned-dialogs';
 
 interface Tool { name: string; description: string; }
 interface Entry extends Tool { status: string; }
@@ -14,7 +15,10 @@ export async function showIntegrations(dialog: HTMLDialogElement, context: { pro
     <p class="dialog-description">Codex uses its own coding tools, your configured MCP servers, and skills for this project.</p>
     <div class="integration-content" role="status">Checking available integrations…</div>
     <div class="dialog-footer"><button class="secondary-button" data-integration-refresh>Refresh</button><button class="primary-button" data-action="close-dialog">Done</button></div>`;
-  dialog.className = 'settings-dialog'; dialog.replaceChildren(host); if (!dialog.open) dialog.showModal();
+  dialog.className = 'settings-dialog'; dialog.replaceChildren(host);
+  // Opened through the main modal helper the dialog already carries its `integrations` band; opening it here
+  // mounts that same band for this view only (docs/extensions/owned-dialogs.md), never a second one.
+  if (!dialog.open) { dialog.showModal(); attachDialogExtras(dialog, { dialog: 'integrations', project: context.projectId, ...(context.sessionId ? { task: context.sessionId } : {}) }, { owner: host }); }
   let revision = 0;
   const row = (item: Tool, status?: string) => `<div class="integration-row"><div><strong>${escape(item.name)}</strong>${item.description ? `<small>${escape(item.description)}</small>` : ''}</div>${status ? `<span class="integration-status">${escape(status)}</span>` : ''}</div>`;
   async function refresh(): Promise<void> {

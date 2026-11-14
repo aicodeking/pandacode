@@ -42,8 +42,9 @@ export interface InvocationContext {
   /** Set when the command runs from a main-dialog band: the dialog it was captured in, never the current one. */
   readonly dialog?: MainDialogId;
 }
-/** Eligible main-window modals (`panda.dialog.<id>.actions` / `.bodyExtras`). Destructive, credential and recovery dialogs have no ID. */
-export type MainDialogId = 'recipes' | 'attachment' | 'task-details' | 'subagents' | 'task-status' | 'integrations-fallback' | 'working-directory' | 'changed-files' | 'open-project' | 'rename-task' | 'colors' | 'wallpapers' | 'opencode-models' | 'moodboards' | 'integrations' | 'jev-settings' | 'jev-assist' | 'jev-tests' | 'conversation-import' | 'bots' | 'bot-settings' | 'usage' | 'command-palette';
+/** Eligible main-window dialogs (`panda.dialog.<id>.actions` / `.bodyExtras`): shared modals, then module-owned and directly mounted dialogs. Destructive, credential, permission and recovery dialogs have no ID. */
+export type MainDialogId = 'recipes' | 'attachment' | 'task-details' | 'subagents' | 'task-status' | 'integrations-fallback' | 'working-directory' | 'changed-files' | 'open-project' | 'rename-task' | 'colors' | 'wallpapers' | 'opencode-models' | 'moodboards' | 'integrations' | 'jev-settings' | 'jev-assist' | 'jev-tests' | 'conversation-import' | 'bots' | 'bot-settings' | 'usage' | 'command-palette'
+  | 'agent-updates' | 'channel-create' | 'channel-settings' | 'github-import' | 'github-pr' | 'github-link' | 'sketch' | 'worktree-create' | 'command-center' | 'progress-lightbox' | 'team-model-add';
 /** `contributes.dialogExtras[]` (at most 64): owner-labelled plain text in the dialog's extension band; 8 per dialog are shown. */
 export interface DialogExtra { readonly id: string; readonly dialog: MainDialogId; readonly text: string }
 /** Captured once when an eligible main dialog opens; `project`/`task` are opaque handles, empty when none. */

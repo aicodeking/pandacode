@@ -51,6 +51,8 @@
 .dialog-extension-notes:empty { display: none; }
 .dialog-extension-notes p { margin: 0; color: var(--muted); font-size: var(--ds-text-sub); overflow-wrap: anywhere; }
 .dialog-extension-notes p + p { margin-top: 4px; }
+/* Messages from a band action in a dialog that has no app toast of its own. */
+.dialog-extension-status { margin: 0; color: var(--muted); font-size: var(--ds-text-sub); overflow-wrap: anywhere; }
 /* A form opened from the band stacks above the host dialog as a solid sheet; no backdrop-filter or
    transform, so its own selects and menus keep viewport positioning. */
 #extension-nested-dialog { background: var(--panel); border: 1px solid var(--glass-border); box-shadow: 0 40px 100px -30px var(--glass-shadow-deep), 0 16px 36px -20px var(--glass-shadow-near); }

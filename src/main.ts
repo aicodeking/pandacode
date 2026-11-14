@@ -94,7 +94,7 @@ import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
-import { closeLinkDialog, decorateTranscript, initOrchestration, lineageSource, onOrchestrationChange, orchestrationSnapshot, runMachineAction, setLinkDecorator, syncOrchestration } from './machine-orchestration';
+import { closeLinkDialog, openLinkDialog, decorateTranscript, initOrchestration, lineageSource, onOrchestrationChange, orchestrationSnapshot, runMachineAction, setLinkDecorator, syncOrchestration } from './machine-orchestration';
 import { mountMachinesPresentation, MACHINES_CONSENT_ITEM, MACHINES_LABELS, type MachinesHostRequest } from './extensions/machines-host';
 import { createThreadFind } from './thread-find';
 import { installPointerDrag } from './pointer-drag';
@@ -141,7 +141,7 @@ import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, resolveTabs, isExtensionInspectorView, type InspectorView, type BuiltinInspectorView } from './inspector-tabs';
 import type { RegisteredView } from './extensions/views-state';
-import { MAIN_DIALOG_EXTRAS } from './extensions/surfaces';
+import { dialogTarget, isOwnedDialog } from './extensions/surfaces';
 import { TailText } from './tail-text';
 import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
@@ -976,6 +976,37 @@ if (preview && new URLSearchParams(location.search).has('dialog-coverage')) {
   (window as any).__previewDialogAdmission = async (input: unknown) => (await import('./extensions/dialog-accessory')).admitDialogAccessory(input, (window as any).__previewDialogAccessory() ?? undefined);
   (window as any).__previewSelectTask = (id: string) => run(selectSession(id, true));
 }
+if (preview && new URLSearchParams(location.search).has('owned-dialog-coverage')) {
+  // Each entry calls the module's original opener with preview data (docs/extensions/owned-dialogs.md).
+  // Direct mounts of a main dialog's view run with #dialog closed, as when the view opens it itself.
+  const task = () => session() ?? state.sessions[0];
+  const codex = () => state.sessions.find(item => item.provider === 'codex') ?? task();
+  const linked = () => state.sessions.find(item => item.id === 'session-1') ?? task();
+  const shared = () => document.querySelector<HTMLDialogElement>('#dialog')!;
+  const openers: Record<string, () => unknown> = {
+    'agent-updates': () => agentUpdates.show(), 'channel-create': () => createSharedChannel(),
+    'channel-settings': async () => { const [channel] = await call<{ id: string }[]>('bot_shared_channels'); const { openSharedChannelSettings } = await import('./bot-shared-channels'); await openSharedChannelSettings(channel.id, sharedChannelUi()); },
+    'github-import': async () => { await github.status(linked().projectId); github.showImport(linked().projectId); },
+    'github-pr': async () => { await github.status(linked().projectId); github.showPullRequest(linked()); },
+    'github-link': async () => { await github.status(linked().projectId); github.showLinkPull(linked()); },
+    sketch: () => openSketch(task().id), 'worktree-create': () => worktrees.openDialog('attach'),
+    'command-center': () => openCommandPanel(codex(), 'hooks'), goal: () => openGoal(codex()),
+    'team-model-add': async () => (await import('./team-model-add')).openAddTeamModels({ provider: 'codex', name: 'Codex', loadModels: async () => [{ id: 'preview-model', name: 'Preview model' } as ProviderModel], trigger: () => null }),
+    'integrations-direct': async () => (await import('./integrations')).showIntegrations(shared(), workspaceContext(task())),
+    'jev-assist-direct': async () => (await import('./jev-assist')).showJevAssist(shared(), { sessionId: task().id }),
+    'jev-tests-direct': async () => (await import('./jev')).showJevTests(shared(), { sessionId: task().id }),
+    'machine-link': () => openLinkDialog(),
+  };
+  (window as any).__previewOpenOwnedDialog = (id: string) => { const open = openers[id]; if (!open) throw Error(`No opener for ${id}`); void Promise.resolve(open()).catch(() => undefined); };
+  const ownedAccessory = async (id: string) => {
+    if (dialogAccessory?.dialog === id && shared().open) return structuredClone(dialogAccessory);
+    const found = (await import('./extensions/dialog-extras')).liveOwnedAccessories().find(item => item.dialog === id);
+    return found ? structuredClone(found) : null;
+  };
+  (window as any).__previewOwnedAccessory = ownedAccessory;
+  (window as any).__previewOwnedAdmission = async (id: string, input: unknown) => (await import('./extensions/dialog-accessory')).admitDialogAccessory(input, await ownedAccessory(id) ?? undefined);
+  (window as any).__previewSelectTask = (id: string) => run(selectSession(id, true));
+}
 if (preview && new URLSearchParams(location.search).has('worktree-coverage')) {
   (window as any).__previewWorktree = () => worktrees.presentation();
   (window as any).__previewWorktreeAction = (input: unknown) => worktrees.dispatch(input);
@@ -1147,7 +1178,7 @@ async function updateGoal(task: Session, request: GoalAction): Promise<GoalState
 }
 function openGoal(task: Session, initialObjective?: string): void {
   activeCommandView = showGoalDialog(commandDialog(), {
-    taskId: task.id, initialObjective,
+    taskId: task.id, initialObjective, target: { task: task.id, project: task.projectId, revision: state.generation },
     load: () => call('task_goal', { sessionId: task.id, request: { action: 'get' } }),
     execute: request => updateGoal(task, request),
   });
@@ -1158,7 +1189,7 @@ function openCommandPanel(task: Session, kind: string, argumentsText = ''): void
   const load = (cursor?: string) => kind === 'jobs'
     ? call<CommandPanel>('codex_jobs', { sessionId: task.id })
     : call<CommandPanel>('codex_command', { sessionId: task.id, request: { action: kind, ...(kind === 'conversations' ? { cursor: cursor ?? null, search: argumentsText || null } : {}) } });
-  activeCommandView = showCommandCenter(commandDialog(), { title: titles[kind] ?? kind, initialSearch: kind === 'conversations' ? argumentsText : undefined, initialSection: kind === 'usage' && argumentsText === 'daily' ? 'daily' : undefined, load, execute: async (action, payload) => {
+  activeCommandView = showCommandCenter(commandDialog(), { title: titles[kind] ?? kind, initialSearch: kind === 'conversations' ? argumentsText : undefined, initialSection: kind === 'usage' && argumentsText === 'daily' ? 'daily' : undefined, target: { task: task.id, project: task.projectId, revision: state.generation }, load, execute: async (action, payload) => {
     if (action === 'set_preferences') {
       for (const [id, value] of Object.entries(payload.values as Record<string, unknown>)) await call('codex_command', { sessionId: task.id, request: { action: 'setPreference', id, value } });
       slashPicker?.refresh(); return load();
@@ -5750,10 +5781,12 @@ let dialogAccessory: import('./extensions/dialog-accessory').DialogAccessory | u
 /** Captures the dialog's target once and mounts its extension band after the host content. Switching tasks
  * later never retargets it; a replaced or closed dialog never receives the band. */
 function mountDialogAccessory(dialog: HTMLDialogElement, request: MainDialogRequest, mount: number): void {
-  const target = MAIN_DIALOG_EXTRAS.find(([id]) => id === request.dialog)?.[2] ?? 'none';
-  const task = target === 'none' ? request.task ?? state.sessionId ?? '' : request.task ?? '';
-  const project = target === 'none' ? request.project ?? state.projectId ?? '' : request.project ?? state.sessions.find(item => item.id === task)?.projectId ?? '';
-  const accessory = { contractVersion: 1, window: 'main', dialog: request.dialog, mount: `main/${mount}`, revision: state.generation, project, task, target: target === 'task' && !task ? project ? 'project' : 'none' : target } as const;
+  const target = dialogTarget(request.dialog);
+  // A module-owned dialog (docs/extensions/owned-dialogs.md) captures only what its module passed, never the global task.
+  const owned = isOwnedDialog(request.dialog);
+  const task = owned ? request.task ?? '' : target === 'none' ? request.task ?? state.sessionId ?? '' : request.task ?? '';
+  const project = owned ? request.project ?? state.sessions.find(item => item.id === task)?.projectId ?? '' : target === 'none' ? request.project ?? state.projectId ?? '' : request.project ?? state.sessions.find(item => item.id === task)?.projectId ?? '';
+  const accessory = { contractVersion: 1, window: 'main', dialog: request.dialog, mount: `main/${mount}`, revision: state.generation, project, task, target: target === 'task' && !task ? project ? 'project' : 'none' : target === 'project' && !project ? 'none' : target } as const;
   dialogAccessory = accessory;
   const live = () => dialog.open && dialogAccessory === accessory ? accessory : undefined;
   void import('./extensions/dialog-extras').then(({ mountMainDialogExtras }) => {

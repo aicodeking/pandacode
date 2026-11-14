@@ -1,0 +1,310 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.owned-dialogs",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute"
+  ],
+  "requiredContributions": [
+    "dialogExtras"
+  ],
+  "contributes": {
+    "icons": [
+      {
+        "id": "sample.owned-dialogs/mark",
+        "asset": "assets/mark.svg"
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.owned-dialogs/note",
+        "title": "Owned dialog note",
+        "action": {
+          "kind": "showMessage",
+          "message": "Owned dialog note: the host keeps this dialog"
+        }
+      },
+      {
+        "id": "sample.owned-dialogs/follow-up",
+        "title": "Follow-up",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Owned follow-up",
+            "fields": [
+              {
+                "id": "note",
+                "kind": "text",
+                "label": "Follow-up note",
+                "required": true
+              },
+              {
+                "id": "kind",
+                "kind": "select",
+                "label": "Follow-up kind",
+                "placeholder": "Choose a kind",
+                "options": [
+                  {
+                    "value": "review",
+                    "label": "Review later"
+                  },
+                  {
+                    "value": "share",
+                    "label": "Share with team"
+                  },
+                  {
+                    "value": "archive",
+                    "label": "Archive",
+                    "disabled": true
+                  }
+                ]
+              },
+              {
+                "id": "remind",
+                "kind": "switch",
+                "label": "Remind me"
+              }
+            ],
+            "confirmLabel": "Record",
+            "successMessage": "Owned follow-up recorded",
+            "cancelMessage": "Owned follow-up cancelled"
+          }
+        }
+      },
+      {
+        "id": "sample.owned-dialogs/more",
+        "title": "More owned dialog actions",
+        "action": {
+          "kind": "showMessage",
+          "message": "Choose a dialog action"
+        }
+      },
+      {
+        "id": "sample.owned-dialogs/unavailable",
+        "title": "Unavailable dialog action",
+        "enabled": false,
+        "action": {
+          "kind": "showMessage",
+          "message": "Must never appear"
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.owned-dialogs/agent-updates",
+        "location": "panda.dialog.agent-updates.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/channel-create",
+        "location": "panda.dialog.channel-create.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/channel-settings",
+        "location": "panda.dialog.channel-settings.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/github-import",
+        "location": "panda.dialog.github-import.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/github-pr",
+        "location": "panda.dialog.github-pr.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/github-link",
+        "location": "panda.dialog.github-link.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/sketch",
+        "location": "panda.dialog.sketch.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/worktree-create",
+        "location": "panda.dialog.worktree-create.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/command-center",
+        "location": "panda.dialog.command-center.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/progress-lightbox",
+        "location": "panda.dialog.progress-lightbox.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/team-model-add",
+        "location": "panda.dialog.team-model-add.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/integrations",
+        "location": "panda.dialog.integrations.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/jev-assist",
+        "location": "panda.dialog.jev-assist.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/jev-tests",
+        "location": "panda.dialog.jev-tests.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
+        "id": "sample.owned-dialogs/command-center-more",
+        "location": "panda.dialog.command-center.actions",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/more",
+        "items": [
+          {
+            "id": "sample.owned-dialogs/command-center-more-note",
+            "kind": "command",
+            "title": "Show owned note",
+            "command": "sample.owned-dialogs/note",
+            "icon": "sample.owned-dialogs/mark"
+          },
+          {
+            "id": "sample.owned-dialogs/command-center-more-follow-up",
+            "kind": "command",
+            "title": "Open owned follow-up…",
+            "command": "sample.owned-dialogs/follow-up"
+          },
+          {
+            "id": "sample.owned-dialogs/command-center-more-unavailable",
+            "kind": "command",
+            "title": "Unavailable owned action",
+            "command": "sample.owned-dialogs/unavailable"
+          }
+        ]
+      }
+    ],
+    "dialogExtras": [
+      {
+        "id": "sample.owned-dialogs/agent-updates-note",
+        "dialog": "agent-updates",
+        "text": "Owned guidance for Agent updates; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/channel-create-note",
+        "dialog": "channel-create",
+        "text": "Owned guidance for New channel; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/channel-settings-note",
+        "dialog": "channel-settings",
+        "text": "Owned guidance for Channel settings; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/github-import-note",
+        "dialog": "github-import",
+        "text": "Owned guidance for Import from GitHub; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/github-pr-note",
+        "dialog": "github-pr",
+        "text": "Owned guidance for Push & open pull request; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/github-link-note",
+        "dialog": "github-link",
+        "text": "Owned guidance for Link pull request; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/sketch-note",
+        "dialog": "sketch",
+        "text": "Owned guidance for Sketch a mockup; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/worktree-create-note",
+        "dialog": "worktree-create",
+        "text": "Owned guidance for New worktree; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/command-center-note",
+        "dialog": "command-center",
+        "text": "Owned guidance for Command center; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/progress-lightbox-note",
+        "dialog": "progress-lightbox",
+        "text": "Owned guidance for Progress large view; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/team-model-add-note",
+        "dialog": "team-model-add",
+        "text": "Owned guidance for Models for teams; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/integrations-note",
+        "dialog": "integrations",
+        "text": "Owned guidance for Tools & integrations; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/jev-assist-note",
+        "dialog": "jev-assist",
+        "text": "Owned guidance for Jev assistance; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/jev-tests-note",
+        "dialog": "jev-tests",
+        "text": "Owned guidance for Browser tests; the host keeps its fields and actions."
+      }
+    ]
+  }
+}

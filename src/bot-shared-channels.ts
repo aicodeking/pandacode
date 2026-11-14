@@ -1,6 +1,7 @@
 import type { Bot } from './bots';
 import { botAvatarHtml } from './bot-avatars';
 import { escape, icon } from './dom';
+import type { DialogRequest } from './extensions/owned-dialogs';
 import { WORKING_LABELS } from './bot-thread';
 
 export interface SharedChannelSummary {
@@ -28,7 +29,7 @@ export interface SharedChannelDetail extends SharedChannelSummary {
 export interface SharedChannelUiOptions {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   bots: Bot[];
-  modal(title: string, body: string, cls?: string): HTMLDialogElement;
+  modal(title: string, body: string, cls?: string, request?: DialogRequest): HTMLDialogElement;
   closeModal(): void;
   changed(): Promise<void>;
   openChannel(channelId: string): void;
@@ -54,7 +55,7 @@ export function createChannelBody(bots: Bot[]): string {
 }
 
 export function openCreateChannel(options: SharedChannelUiOptions): void {
-  const dialog = options.modal('New channel', createChannelBody(options.bots), 'bot-shared-dialog');
+  const dialog = options.modal('New channel', createChannelBody(options.bots), 'bot-shared-dialog', { dialog: 'channel-create' });
   const form = dialog.querySelector<HTMLFormElement>('.bc-create-form')!;
   form.addEventListener('submit', event => {
     event.preventDefault();
@@ -124,7 +125,7 @@ async function editChannel(options: SharedChannelUiOptions, channel: SharedChann
   const fields = options.bots.map(bot => `<label><input type="checkbox" name="member" value="${escape(bot.id)}" ${selected.has(bot.id) ? 'checked' : ''}>${botAvatarHtml(bot.avatar, bot.name, 'bc-pick-face', bot.color)}<span>${escape(bot.name)}</span></label>`).join('');
   const dialog = options.modal('Channel settings', `<form class="bc-settings-form"><label class="field-label" for="bc-edit-name">Name</label><input id="bc-edit-name" name="name" value="${escape(channel.name)}" maxlength="48" required>
     <fieldset class="bc-member-list"><legend>Members</legend>${fields || '<p>No bots are available.</p>'}</fieldset><label class="field-label" for="bc-lead">Lead</label><select id="bc-lead" name="lead">${channel.memberIds.map(id => options.bots.find(bot => bot.id === id)).filter((bot): bot is Bot => Boolean(bot)).map((bot, index) => `<option value="${escape(bot.id)}" ${bot.id === channel.leadBotId || (!channel.leadBotId && index === 0) ? 'selected' : ''}>${escape(bot.name)}</option>`).join('')}</select>
-    <div class="dialog-footer"><button type="button" class="secondary-button" data-shared-action="settings-cancel">Cancel</button><button type="submit" class="primary-button">Save</button></div></form>`, 'bot-shared-dialog');
+    <div class="dialog-footer"><button type="button" class="secondary-button" data-shared-action="settings-cancel">Cancel</button><button type="submit" class="primary-button">Save</button></div></form>`, 'bot-shared-dialog', { dialog: 'channel-settings' });
   const form = dialog.querySelector<HTMLFormElement>('.bc-settings-form')!;
   form.addEventListener('submit', event => {
     event.preventDefault();

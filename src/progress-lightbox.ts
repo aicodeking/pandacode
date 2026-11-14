@@ -3,6 +3,7 @@ import { legend, linkMarks } from './progress-marks';
 import { lazyThumbs } from './progress-media';
 import { play, still } from './progress-motion';
 import type { Snapshot } from './progress-pip';
+import { attachDialogExtras } from './extensions/owned-dialogs';
 
 /* The large view of one iteration: a modal <dialog> with the annotated image (numbered
  * badges, like the PiP), the note and a legend beside it, and prev / filmstrip / next below.
@@ -19,6 +20,8 @@ export type LightboxHost = {
   ago(at: number): string;
   /** Opened with the pointer: focus the dialog itself rather than ringing the close button. */
   fromPointer: boolean;
+  /** The thread these iterations belong to, captured once for extension extras. */
+  task?: string;
   closed(): void;
 };
 export type Lightbox = { update(direction: number): void; close(): void };
@@ -43,6 +46,7 @@ export function openLightbox(host: LightboxHost): Lightbox {
   const observer = lazyThumbs(strip, host.thumb);
   linkMarks(q('.pp-lb-plate'));
   let closing = false;
+  let detachExtras = () => {};
 
   function update(direction: number): void {
     const snaps = host.snaps(), index = host.index(), s = snaps[index];
@@ -60,7 +64,7 @@ export function openLightbox(host: LightboxHost): Lightbox {
   }
   function close(): void {
     if (closing) return;
-    closing = true;
+    closing = true; detachExtras();
     dialog.classList.add('is-closing');
     observer.disconnect();
     const done = () => { dialog.close(); dialog.remove(); host.closed(); };
@@ -81,12 +85,16 @@ export function openLightbox(host: LightboxHost): Lightbox {
     // Esc is ours here: it must never reach the app's "Esc stops the agent".
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
     else if (closing) event.preventDefault();
+    // Arrow keys on the extension band move between its own controls, never between iterations.
+    else if ((event.target as Element).closest('.dialog-extension-extras')) return;
     else if (event.key === 'ArrowLeft') { event.preventDefault(); host.go(host.index() - 1); }
     else if (event.key === 'ArrowRight') { event.preventDefault(); host.go(host.index() + 1); }
   });
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
   dialog.showModal();
   if (host.fromPointer) dialog.focus(); else q('[data-lb="close"]').focus();
+  // Opt-in extension band at the foot of the plate (docs/extensions/owned-dialogs.md); a closing view drops it.
+  detachExtras = attachDialogExtras(dialog, { dialog: 'progress-lightbox', ...(host.task ? { task: host.task } : {}) }, { owner: q('.pp-lb-plate'), container: q('.pp-lb-plate'), alive: () => !closing });
   play(q('.pp-lb-plate'), [{ opacity: 0, transform: 'scale(.95) translateY(10px)', filter: 'blur(4px)' }, { opacity: 1, transform: 'none', filter: 'blur(0)' }], 380);
   inner.querySelectorAll('.pp-thumb').forEach((thumb, i) => play(thumb, [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], 320, { delay: 120 + Math.min(i, 8) * 35 }));
   update(0);

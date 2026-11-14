@@ -1,6 +1,7 @@
 import './jev.css';
 import { call, preview, subscribe } from './bridge';
 import { escape, icon } from './dom';
+import { attachDialogExtras, type DialogRequest } from './extensions/owned-dialogs';
 import { hidePopover, showPopover } from './popover-motion';
 import type { LocalServer } from './types';
 
@@ -119,7 +120,7 @@ export function showJevTestPopover(anchor: HTMLElement, context: TestContext): (
   return close;
 }
 
-function createView(dialog: HTMLDialogElement, title: string, variant: string) {
+function createView(dialog: HTMLDialogElement, title: string, variant: string, extras?: DialogRequest) {
   views.get(dialog)?.();
   const host = document.createElement('div');
   host.className = 'jev-view';
@@ -141,7 +142,9 @@ function createView(dialog: HTMLDialogElement, title: string, variant: string) {
   views.set(dialog, dispose);
   const close = () => { dispose(); dialog.close(); };
   host.querySelector('[data-jev-close]')!.addEventListener('click', close);
-  if (!dialog.open) dialog.showModal();
+  // Opened through the main modal helper the dialog already carries its band; opening it here mounts that same
+  // band for this view only (docs/extensions/owned-dialogs.md).
+  if (!dialog.open) { dialog.showModal(); if (extras) cleanups.push(attachDialogExtras(dialog, extras, { owner: host, alive: () => !disposed })); }
   return { host, close, alive: () => !disposed && host.isConnected, cleanup: (callback: () => void) => { if (disposed) callback(); else cleanups.push(callback); } };
 }
 
@@ -307,7 +310,7 @@ const presets = {
 } as const;
 
 export async function showJevTests(dialog: HTMLDialogElement, context: TestContext): Promise<void> {
-  const view = createView(dialog, 'Test with Jev', 'jev-tests-dialog');
+  const view = createView(dialog, 'Test with Jev', 'jev-tests-dialog', { dialog: 'jev-tests', task: context.sessionId });
   await mountTests(view, { ...context, settings: context.settings ?? (() => { void showJevSettings(dialog); }) });
 }
 
