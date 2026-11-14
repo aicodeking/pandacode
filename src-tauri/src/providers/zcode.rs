@@ -184,15 +184,15 @@ pub(super) fn stop(remote_id: &str) -> Value {
 const DISCOVERY_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// The catalog is session metadata only: never send a prompt during discovery.
-pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    if let Some(models) = acp_catalog::get("zcode", path) {
+pub(super) async fn models(provider: &str, path: &Path) -> Result<Vec<ModelInfo>, String> {
+    if let Some(models) = acp_catalog::get(provider, path) {
         return Ok(models);
     }
-    let _refresh = acp_catalog::refresh_lock("zcode", path).await;
-    if let Some(models) = acp_catalog::get("zcode", path) {
+    let _refresh = acp_catalog::refresh_lock(provider, path).await;
+    if let Some(models) = acp_catalog::get(provider, path) {
         return Ok(models);
     }
-    let models = discover(path).await?;
+    let models = discover(provider, path).await?;
     acp_catalog::store_models(None, models.clone());
     Ok(models)
 }
@@ -237,8 +237,8 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
-async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::provider_command("zcode", path)?;
+async fn discover(provider: &str, path: &Path) -> Result<Vec<ModelInfo>, String> {
+    let mut command = super::provider_command(provider, path)?;
     command.arg("app-server");
     let workspace = std::env::temp_dir();
     command
