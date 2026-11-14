@@ -5,6 +5,7 @@ import { createDimmer } from './progress-dim';
 import { legend, linkMarks, marks, type Annotation } from './progress-marks';
 import { createMedia, lazyThumbs } from './progress-media';
 import { flipHeight, play, settle, still } from './progress-motion';
+import { statusChanged } from './extensions/status-state';
 
 /* Visual progress: a picture-in-picture over the conversation showing the screenshots
  * and idea sketches an agent posted, iteration by iteration. Collapsed it is a pill of
@@ -20,6 +21,8 @@ export type ProgressPip = {
   update(sessionId: string, allowed: boolean, running: boolean): void;
   /** Reload the list; ignored for another thread. */
   refresh(sessionId?: string): void;
+  /** Host-only state for presentation adoption (docs/extensions/status.md); no title, note or image. */
+  status(): { sessionId: string; state: 'hidden' | 'collapsed' | 'expanded'; total: number; index: number; playing: boolean; confirming: boolean; moving: boolean; large: boolean };
 };
 
 type Corner = 'tl' | 'tr' | 'bl' | 'br';
@@ -155,6 +158,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     // A thread's PiP arrives softly rather than popping in.
     if (fresh) play(root, [{ opacity: 0 }, { opacity: 1 }], 160, { easing: 'ease-out' });
     dim.apply();
+    statusChanged();
   }
   /** Header, legend, note, filmstrip and controls for the current index; repaints the stage. */
   function sync(direction: number, fresh = false): void {
@@ -178,6 +182,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     const stage = q<HTMLElement>('.pp-stage', card)!;
     void paint(stage, direction, false).then(changed => { if (!fresh && (changed || direction === 0)) flipHeight(card, before); });
     lightbox?.update(direction);
+    statusChanged();
   }
   function rail(): void {
     const fill = q<HTMLElement>('.pp-rail-fill'), thumb = root.querySelectorAll<HTMLElement>('.pp-strip .pp-thumb')[index];
@@ -251,6 +256,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     const b = playButton(); if (!b) return;
     b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-label', on ? 'Pause' : 'Play iterations'); b.title = on ? 'Pause' : 'Play iterations';
     q('.pp-play-icon', b)!.innerHTML = icon(on ? 'pause' : 'play');
+    statusChanged();
   }
   function stopPlay(): void { playing = false; clearTimeout(stepTimer); stepTimer = 0; ring?.cancel(); ring = undefined; setPlayButton(false); }
   /** One slide: PLAY_MS on the clock, drawn by the ring around Play. */
@@ -326,6 +332,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
       if (to === 'expanded') { pill.remove(); card.classList.remove('is-overlay'); if (hadFocus) q<HTMLElement>('[data-pp="collapse"]')?.focus({ preventScroll: true }); }
       else { card.remove(); observer?.disconnect(); observer = null; pill.classList.remove('is-overlay'); stageHover = false; }
       dim.apply();
+      statusChanged();
     };
     if (!anims.length) done(); else Promise.all(anims.map(a => a.finished)).then(done, () => undefined);
   }
@@ -345,8 +352,9 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     lightbox = openLightbox({
       snaps: () => snaps, index: () => index, go: i => go(i), thumb: media.thumb, ago, fromPointer, task: sessionId,
       paint: (stage, direction) => void paint(stage, direction, true),
-      closed: () => { lightbox = null; q<HTMLElement>('[data-pp="enlarge"]')?.focus({ preventScroll: true }); dim.apply(); },
+      closed: () => { lightbox = null; q<HTMLElement>('[data-pp="enlarge"]')?.focus({ preventScroll: true }); dim.apply(); statusChanged(); },
     });
+    statusChanged();
   }
 
   /* ---------- clear ---------- */
@@ -355,6 +363,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     confirm.hidden = !on; bar.hidden = on;
     if (on) { stopPlay(); q('span', confirm)!.textContent = `Clear ${total() === 1 ? 'this snapshot' : `all ${total()} iterations`} from this thread?`; play(confirm, [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], 260); q<HTMLElement>('[data-pp="clear-no"]')?.focus(); }
     else q<HTMLElement>('[data-pp="clear"]')?.focus();
+    statusChanged();
   }
   async function clear(): Promise<void> {
     const id = sessionId;
@@ -491,12 +500,16 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
       if (changed) {
         sessionId = id; snaps = []; index = 0; unseen.clear(); stopPlay(); setComparing(false); lightbox?.close(); release();
         morph?.anims.forEach(a => a.cancel()); morph = null;
-        root.hidden = true; root.replaceChildren(); dim.apply();
+        root.hidden = true; root.replaceChildren(); dim.apply(); statusChanged();
         if (id) void reload();
         return;
       }
       render();
     },
     refresh(id) { if (sessionId && (!id || id === sessionId)) void reload(); },
+    status() {
+      const confirm = q<HTMLElement>('.pp-confirm');
+      return { sessionId, state: root.hidden ? 'hidden' : state(), total: total(), index, playing, confirming: Boolean(confirm && !confirm.hidden), moving: Boolean(morph), large: Boolean(lightbox) };
+    },
   };
 }

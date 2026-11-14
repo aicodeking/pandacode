@@ -10,6 +10,7 @@ import type { Provider, ProviderId } from './types';
 import { usageHeatmap } from './usage-heatmap';
 import { averageLimit, calendarFor, summarize, type Ledger, type PromptActivity, type Range, type Summary } from './usage-ledger';
 import { agentCostStrip, renderAgents, renderCostDetails, renderCostHero, renderLimitHero, type AgentLimit, type CostState } from './usage-overview';
+import { activeUsage, publishUsage, statusChanged, type UsageView } from './extensions/status-state';
 
 export interface UsageWindow {
   label: string;
@@ -236,7 +237,10 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     trackSegment(current.parentElement as HTMLElement, current);
     current.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus) current.focus();
+    changed();
   }
+  /** Tells the presentation adoption (docs/extensions/status.md) that tabs, period, breakdown or reads changed. */
+  function changed(): void { if (!disposed) statusChanged(); }
 
   async function loadLimits(force: boolean): Promise<void> {
     let next = 0;
@@ -269,6 +273,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
         setUsage(provider.id, '', result);
         renderLimits();
         preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
+        changed();
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, installed.length) }, worker));
@@ -322,7 +327,9 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     pending = false; refresh.disabled = false; refresh.removeAttribute('aria-busy');
     if (restoreRefreshFocus && document.activeElement === document.body) refresh.focus({ preventScroll: true });
     footer.textContent = 'Updated on demand';
+    changed();
     await estimate;
+    changed();
   }
 
   function click(event: MouseEvent): void {
@@ -335,10 +342,10 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     if (rangeButton && rangeButton.dataset.range !== range) {
       range = rangeButton.dataset.range as Range;
       rangeGroup.querySelectorAll('[data-range]').forEach(button => button.setAttribute('aria-pressed', String(button === rangeButton)));
-      trackSegment(rangeGroup, rangeButton); renderOverview(); return;
+      trackSegment(rangeGroup, rangeButton); renderOverview(); changed(); return;
     }
     const breakdownButton = target?.closest<HTMLButtonElement>('[data-breakdown]');
-    if (breakdownButton && breakdownButton.dataset.breakdown !== breakdown) { breakdown = breakdownButton.dataset.breakdown as 'model' | 'day'; renderOverview(); }
+    if (breakdownButton && breakdownButton.dataset.breakdown !== breakdown) { breakdown = breakdownButton.dataset.breakdown as 'model' | 'day'; renderOverview(); changed(); }
   }
   function keydown(event: KeyboardEvent): void {
     const index = toolbarTabs.indexOf(event.target as HTMLButtonElement);
@@ -355,8 +362,21 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   renderOverview();
   select(tab);
   trackSegment(rangeGroup, rangeGroup.querySelector<HTMLElement>('[aria-pressed="true"]'));
+  // Host-only state for presentation adoption: tab, period, breakdown and each harness's cached read, never account data.
+  const view: UsageView = {
+    host, tab: () => tab, range: () => range, breakdown: () => breakdown, pending: () => pending,
+    providers: () => installed.map(provider => { const result = limits.get(provider.id); return { id: provider.id, status: result?.status ?? 'checking', peak: peak(result), stale: Boolean(result?.stale) }; }),
+    arrange(detailsFirst) {
+      // The same nodes: the cost breakdown moves ahead of the agent list or back after it; focus stays.
+      if (disposed || (detailsFirst ? details.nextElementSibling === agentList : agentList.nextElementSibling === details)) return;
+      const focused = document.activeElement as HTMLElement | null;
+      if (detailsFirst) overview.insertBefore(details, agentList); else agentList.after(details);
+      if (focused && details.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+    },
+  };
+  publishUsage(view);
   void load(false);
-  return () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); refresh.removeEventListener('click', reload); cards.clear(); };
+  return () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); refresh.removeEventListener('click', reload); cards.clear(); if (activeUsage() === view) publishUsage(undefined); };
 }
 
 function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage, member?: PoolMember): void {

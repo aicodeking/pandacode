@@ -62,6 +62,29 @@ export function applyRosterPresentation(host: HTMLElement, arrange: (order?: (ro
     return !fresh;
   }
 }
+/** The selected, unfaulted status provider. The dock's status group carries it, so a usage panel that mounts later
+ * takes the same presentation without remounting a tab, the cached reads or the picture-in-picture. */
+export function statusProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.status', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Details-first on the original usage overview: `arrange(true)` moves the cost breakdown ahead of the agent list
+ * (false restores it). Nodes, the period, the breakdown, focus and cached reads stay. Returns false only when the
+ * selected provider faults now (built-in order restored), so the host reports it once. */
+export function applyStatusPresentation(group: HTMLElement, arrange: (detailsFirst: boolean) => void, qualify = () => {
+  if (!group.matches('.action-dock-group[data-group="status"]') || !group.querySelector(':scope > #update-status')) throw Error('Incomplete status group');
+}): boolean {
+  const provider = componentSelection.resolve('panda.status', componentProviders());
+  if (!provider) { delete group.dataset.statusProvider; arrange(false); return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); group.dataset.statusProvider = provider.id; arrange(true); return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete group.dataset.statusProvider; arrange(false);
+    return !fresh;
+  }
+}
 /** The selected, unfaulted sidebar provider. The sidebar root carries it, so a navigation redraw keeps the same
  * presentation without remounting a row, the filter field or a pending drag. */
 export function sidebarProvider(): ComponentProvider | undefined {

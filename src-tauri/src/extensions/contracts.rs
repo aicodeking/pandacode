@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -566,6 +566,42 @@ mod tests {
         let mut provider = manifest.clone(); provider["contributes"]["components"][0]["presentation"] = json!("workers-replaced");
         assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
         let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.team.context", "sessionId": "session-1", "revision": 1, "selection": {"kind": "team", "ids": ["session-1"]}});
+        assert_eq!(super::validate_contract("context", &context)["ok"], true);
+    }
+    #[test]
+    fn status_component_state_action_and_layouts_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/status/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/status/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/status/action.json")).unwrap();
+        assert_eq!(super::validate_contract("statusPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("statusAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "interval", "email", "toastText"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("statusAction", &forged)["ok"], false);
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("statusPresentation", &raw)["ok"], false);
+        }
+        // Restart, Undo, notice actions, Clear history, sign-in, dashboard links and polling have no public control id.
+        for control in ["update-restart", "toast-undo", "toast-action", "progress-clear", "usage-sign-in", "usage-dashboard", "usage-poll"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("statusAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["providers"] = json!(vec![state["providers"][0].clone(); 65]);
+        assert_eq!(super::validate_contract("statusPresentation", &oversized)["ok"], false);
+        for field in ["email", "plan", "message", "dashboardUrl"] {
+            let mut account = state.clone(); account["providers"][0][field] = json!("you@example.com");
+            assert_eq!(super::validate_contract("statusPresentation", &account)["ok"], false);
+        }
+        let mut percent = state.clone(); percent["providers"][0]["peak"] = json!(101);
+        assert_eq!(super::validate_contract("statusPresentation", &percent)["ok"], false);
+        let mut toast = state.clone(); toast["toast"] = json!("Saved your draft");
+        assert_eq!(super::validate_contract("statusPresentation", &toast)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.status.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        let mut provider = manifest.clone(); provider["contributes"]["components"][0]["presentation"] = json!("usage-replaced");
+        assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
+        let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.status.context", "revision": 1, "selection": {"kind": "usage-provider", "ids": ["provider-a"]}});
         assert_eq!(super::validate_contract("context", &context)["ok"], true);
     }
     #[test]

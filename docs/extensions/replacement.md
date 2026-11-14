@@ -22,6 +22,13 @@ captured actions on the subagent view, team profile controls and the main-window
 widget. Children, their streams and lineage, profile rename and delete, Stop, the widget's
 preference and its pinned window stay host-owned; child data needs `tasks.summary`.
 
+The [Cached usage, status and progress presentation v1](status.md) contract (`panda.status`)
+offers an explicitly selected `details-first` host recipe over the original usage overview, with
+captured actions on the usage panel, the visual progress picture-in-picture and the Jev entry.
+Usage reads, account details, the update prompt, notices and their Undo and Clear history stay
+host-owned; a package Refresh needs the user's Continue; harness reads need `harnesses.inventory`
+and task feedback `tasks.summary`.
+
 The [Sidebar presentation v1](sidebar.md) contract (`panda.sidebar`) offers an explicitly
 selected `filter-first` host recipe over the original sidebar. Grouping, sorting, selection,
 manual order and confirmations stay host-owned; protected behavior has no public action.

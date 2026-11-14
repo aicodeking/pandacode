@@ -512,6 +512,12 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
 if (new URLSearchParams(location.search).has('dock-coverage')) {
   (window as any).__previewDockSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
+// Explicit status extension fixture only: safe mode while the usage panel is open, progress shows and a notice is live.
+if (new URLSearchParams(location.search).has('status-coverage')) {
+  (window as any).__previewStatusSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+  // What an agent's progress tool does: post the next iteration to the first thread (live progress, no network).
+  (window as any).__previewProgressAdd = (title: string) => previewProgress.add('session-1', title);
+}
 // Explicit agent roster extension fixture only: safe mode while children run, a child is open and a setup is open.
 if (new URLSearchParams(location.search).has('roster-coverage')) {
   (window as any).__previewRosterSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();

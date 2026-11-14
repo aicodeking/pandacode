@@ -1080,6 +1080,27 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn status_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/status/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.status-feedback", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        assert_eq!(restarted.packages[0].manifest["contributes"]["components"][0]["slot"], "panda.status");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["layouts"][0]["location"], "panda.status.controls");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["menus"][0]["location"], "panda.status.context");
+        // The shared status group slot keeps accepting the same contributions.
+        assert_eq!(restarted.packages[0].manifest["contributes"]["menus"][1]["location"], "panda.status.items");
+        packages.enable("sample.status-feedback", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.status-feedback", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn action_dock_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/action-dock/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

@@ -301,7 +301,34 @@ export const ROSTER_PROTECTED = [
   ['widget-window', 'Pinned widget window', 'Pinning opens the auxiliary Running agents window; its lifecycle and privileges belong to the window family (T57).'],
   ['widget-preferences', 'Widget preferences', 'Turning the widget on and keeping it on screen are the user\'s Settings choices.'],
 ] as const;
-export type ActionLocation = typeof ROSTER_ACTION_SURFACES[number] | typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Cached usage, status and progress adoption (docs/extensions/status.md): the Agent usage panel, the dock's status
+ * group, the toast, the visual progress picture-in-picture and the Jev entry. `panda.status.context` is a usage agent
+ * row's context menu. Usage reads, the update prompt, notices, snapshots and test reports stay in agent-usage.ts,
+ * app-updates.ts, main.ts, progress-pip.ts and jev-activity.ts. */
+export const STATUS_ACTION_SURFACES = ['panda.status.context'] as const;
+export const STATUS_CONTROLS_LOCATION = 'panda.status.controls';
+export const STATUS_PROTECTED_LOCATION = 'panda.status.protected';
+/** Original status controls: [id, label, member]. Order inside their own parent and reversible hide on the original nodes. */
+export const STATUS_CONTROLS = [
+  ['tabs', 'Usage views', 'usage'], ['refresh', 'Refresh usage', 'usage'],
+  ['prev', 'Previous iteration', 'progress'], ['play', 'Play iterations', 'progress'], ['next', 'Next iteration', 'progress'],
+  ['marks', 'Show annotations', 'progress'], ['compare', 'Compare with the previous iteration', 'progress'], ['enlarge', 'Open large view', 'progress'], ['clear', 'Clear visual history', 'progress'],
+] as const;
+export type StatusControlPart = typeof STATUS_CONTROLS[number][0];
+/** Status controls that never hide, with the reason. They still reorder. */
+export const STATUS_PINNED_CONTROLS: Readonly<Partial<Record<StatusControlPart, string>>> = {
+  tabs: 'The usage views are the only way to each harness\'s limits and calendar.',
+};
+/** Protected status behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const STATUS_PROTECTED = [
+  ['update', 'Restart to update', 'The prompt never hides and restarts only when no agent runs and the user is idle; that decision is the updater\'s.'],
+  ['toast-undo', 'Undo in notices', 'Undo (and ⌘Z) reverts the user\'s own last change; no package runs or dismisses it.'],
+  ['toast-action', 'Notice actions', 'A notice\'s button runs what that notice offered; its text and action never cross the boundary.'],
+  ['progress-clear', 'Clear visual history', 'Clearing deletes the task\'s snapshots and runs only from the card\'s own confirmation.'],
+  ['usage-reads', 'Usage reads', 'Usage is read when the panel opens and on an explicit Refresh; no package reads providers, polls or starts a timer.'],
+  ['usage-account', 'Account details and sign-in', 'Emails, plans, messages, costs, dashboard links and sign-in stay host-drawn and host-run.'],
+] as const;
+export type ActionLocation = typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
@@ -324,6 +351,7 @@ export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string
   'panda.sidebar.context': [['toggle', 'Collapse or expand section']],
   'panda.team.context': [['toggle', 'Show or hide workers'], ['open', 'Open team']],
   'panda.roster.context': [['open', 'Open subagent']],
+  'panda.status.context': [['open', 'Show details']],
   'panda.sidebar.project.context': [['new', 'New task'], ['collapse', 'Collapse other projects'], ['reveal', 'Reveal folder'], ['remove', 'Remove project…']],
   'panda.sidebar.task.context': [['pin', 'Pin task'], ['up', 'Move up'], ['down', 'Move down'], ['beside', 'Open beside'], ['rename', 'Rename…'], ['wake', 'Schedule a wake-up…'], ['unread', 'Mark as unread'], ['branch-task', 'New task from branch…'], ['copy-branch', 'Copy branch name'], ['copy-path', 'Copy project path'], ['copy-id', 'Copy task ID'], ['stage', 'Settle'], ['delete', 'Delete task…']],
 };

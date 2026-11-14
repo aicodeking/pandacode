@@ -1,0 +1,94 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.status-feedback",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.summary",
+    "harnesses.inventory"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.status-feedback/details-first",
+        "title": "Details first",
+        "slot": "panda.status",
+        "contractVersion": 1,
+        "presentation": "details-first",
+        "capabilities": [
+          "host-usage",
+          "host-feedback",
+          "original-actions"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.status-feedback/usage-notes",
+        "title": "Usage notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Usage reads, account details and Refresh stay host-owned."
+        }
+      },
+      {
+        "id": "sample.status-feedback/feedback-note",
+        "title": "Feedback note",
+        "action": {
+          "kind": "showMessage",
+          "message": "The update prompt and Undo stay host-owned."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.status-feedback/usage-context",
+        "command": "sample.status-feedback/usage-notes",
+        "location": "panda.status.context",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "usage-provider"
+        }
+      },
+      {
+        "id": "sample.status-feedback/status-item",
+        "command": "sample.status-feedback/feedback-note",
+        "location": "panda.status.items",
+        "presentation": "button",
+        "text": "Feedback note"
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.status-feedback/refresh-first",
+        "title": "Refresh before usage views",
+        "location": "panda.status.controls",
+        "rules": [
+          {
+            "id": "panda.status.controls/refresh",
+            "target": "panda.status.controls/tabs",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.status-feedback/large-first",
+        "title": "Large view before Previous",
+        "location": "panda.status.controls",
+        "rules": [
+          {
+            "id": "panda.status.controls/enlarge",
+            "target": "panda.status.controls/prev",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

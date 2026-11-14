@@ -753,6 +753,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     subagents, subagentsHost: $('#subagents-host'), widget: $('#agents-dock-host'), onContextChanged, notify,
     state: () => ({ project: state.projectId || undefined, task: state.sessionId || undefined }),
   });
+  // Agent usage, the dock's status group, notices, visual progress and the Jev entry: presentation only. Usage reads,
+  // the update prompt, notices and their Undo, snapshots and test reports stay in agent-usage.ts, app-updates.ts, here,
+  // progress-pip.ts and jev-activity.ts.
+  statusAdoption = (await import('./extensions/status-host')).mountStatusAdoption({
+    group: $('#action-dock > [data-group="status"]'), usageButton: $('#agent-usage-button'), toast: $('#toast'), pipRoot: $('#progress-pip'), pip: () => progressPip, jev: jevActivity, onContextChanged, notify,
+    state: () => ({ project: state.projectId || undefined, task: state.sessionId || undefined }),
+  });
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
     placementHost.refresh();
@@ -811,6 +818,8 @@ let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mount
 let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
 /** Agent roster adoption (docs/extensions/agent-roster.md), mounted once extensions load. */
 let rosterAdoption: ReturnType<typeof import('./extensions/roster-host').mountRosterAdoption> | undefined;
+/** Cached usage, status and progress adoption (docs/extensions/status.md), mounted once extensions load. */
+let statusAdoption: ReturnType<typeof import('./extensions/status-host').mountStatusAdoption> | undefined;
 let sidebarModel: SidebarModel = { sections: [], filtering: false };
 function saveUnreviewed(): void { try { localStorage.setItem(UNREVIEWED_KEY, JSON.stringify([...unreviewed ?? []])); } catch { /* per-launch only */ } }
 bindThreadReordering($('#navigation'), {
@@ -982,6 +991,10 @@ const worktrees = createWorktrees({
 if (preview && new URLSearchParams(location.search).has('dock-coverage')) {
   (window as any).__previewDock = () => dockAdoption?.presentation();
   (window as any).__previewDockAction = (input: unknown) => dockAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
+if (preview && new URLSearchParams(location.search).has('status-coverage')) {
+  (window as any).__previewStatus = () => statusAdoption?.presentation();
+  (window as any).__previewStatusAction = (input: unknown) => statusAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
 if (preview && new URLSearchParams(location.search).has('roster-coverage')) {
   (window as any).__previewRoster = () => rosterAdoption?.presentation();
