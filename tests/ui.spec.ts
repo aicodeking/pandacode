@@ -3048,15 +3048,16 @@ test('browses a file and includes its contents as attached message context', asy
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"name": "orbit"');
+  await expect(page.locator('.file-editor')).toContainText('"name": "orbit"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await expect(page.locator('#attachments')).toContainText('package.json');
   await prompt(page).fill('Explain this package configuration');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const chip = page.locator('.user-message').last().locator('.message-attachments .prompt-chip');
   await expect(chip).toHaveText(/package\.json\s*Project file/);
+  await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
   await chip.click();
-  await expect(page.locator('#inspector #file-view')).toContainText('"name": "orbit"');
+  await expect(page.locator('#file-view')).toContainText('"name": "orbit"');
   await expect(page.locator('#attachments')).toBeEmpty();
   await expect(prompt(page)).toBeEnabled();
 });
@@ -3256,7 +3257,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"checkout":"worktree"');
+  await expect(page.locator('.file-editor')).toContainText('"checkout":"worktree"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await prompt(page).fill('Read the package from this worktree');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -3269,8 +3270,6 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   for (const command of ['git_status', 'list_files', 'git_diff', 'read_file', 'start_terminal']) {
     expect(calls).toContainEqual(expect.objectContaining({ command, args: expect.objectContaining({ projectId: 'project-1', sessionId: taskId }) }));
   }
-  // Opened, attached, and re-read at run end because the file stays on screen in the inspector.
-  expect(calls.filter((call: any) => call.command === 'read_file' && call.args.sessionId === taskId)).toHaveLength(3);
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);

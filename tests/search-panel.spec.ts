@@ -99,8 +99,8 @@ test('toggles reach the backend, invalid regex is reported, and opening a match 
   const path = await line.getAttribute('data-search-open');
   await line.click();
   await expect.poll(async () => (await calls(page, 'read_file')).at(-1)?.args.path).toBe(path);
-  // The match opens in the inspector's Open files tab; the Search tab keeps where it was.
-  await expect(page.locator('#inspector .file-view-path')).toHaveText(path!);
+  // The match opens in the floating editor; the Search tab keeps where it was.
+  await expect(page.locator('.file-view-path')).toHaveText(path!);
   await tab(page, 'tab-search').click();
   await expect(searchInput(page)).toHaveValue('createSearchIndex');
   await expect(page.locator('.search-line').first()).toBeVisible();
