@@ -10,6 +10,9 @@ use tokio::{
 const HEADER_LIMIT: usize = 8192;
 const RESULT_LIMIT: usize = 128 * 1024;
 const SERVER_NAME: &str = "pandacode_architect";
+/// Versions this loopback server speaks. `2026-07-28` is the revision ZCode
+/// probes for; the older two are what the other harnesses negotiate.
+const MCP_VERSIONS: &[&str] = &["2026-07-28", "2025-06-18", "2025-03-26"];
 
 pub(super) struct Server {
     authority: String,
@@ -347,7 +350,7 @@ async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u
     }
     if headers
         .get("mcp-protocol-version")
-        .is_some_and(|version| !matches!(*version, "2025-03-26" | "2025-06-18"))
+        .is_some_and(|version| !MCP_VERSIONS.contains(version))
     {
         return Err(400);
     }
@@ -420,15 +423,18 @@ impl Context {
             "initialize" => {
                 let version = request["params"]["protocolVersion"]
                     .as_str()
-                    .filter(|version| matches!(*version, "2025-03-26" | "2025-06-18"))
+                    .filter(|version| MCP_VERSIONS.contains(version))
                     .unwrap_or("2025-03-26");
                 json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"PandaCode architect","version":"0.1.0"}})
             }
             // ZCode (2026-07-28 revision) probes every HTTP server with
             // `server/discover` and drops the ones that cannot name a version it
-            // speaks; it never falls back to `initialize` for them.
+            // speaks; it never falls back to `initialize` for them. The cache
+            // hints are part of that revision's discover result: ttl 0 is
+            // immediately stale, and private keeps the answer on this bearer.
             "server/discover" => {
-                json!({"supportedVersions":["2026-07-28","2025-06-18","2025-03-26"],
+                json!({"resultType":"complete","ttlMs":0,"cacheScope":"private",
+                       "supportedVersions":MCP_VERSIONS,
                        "capabilities":{"tools":{"listChanged":false}},
                        "serverInfo":{"name":"PandaCode architect","version":"0.1.0"}})
             }
@@ -436,6 +442,9 @@ impl Context {
             // Results carry the revision's wire fields unconditionally: modern
             // clients reject a `tools/list` or `tools/call` without
             // `resultType` outright, and legacy SDKs ignore the extra keys.
+            // `ttlMs: 0` means immediately stale, so a client must not replay a
+            // host-tool call from cache. Each tool is name, description and
+            // input schema from this run's catalog — nothing else.
             "tools/list" => {
                 let tools:Vec<Value> = self.host.tools.iter().map(|spec| json!({"name":spec["name"],"description":spec["description"],"inputSchema":spec["inputSchema"]})).collect();
                 json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":tools})
@@ -515,6 +524,8 @@ impl Context {
                     &input,
                     &output,
                 );
+                // Same cache hints as tools/list. ttl 0 keeps a call from being
+                // served again; the spec's call result allows the extra keys.
                 json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","content":content,"isError":error})
             }
             _ => return HttpResponse::error(id, -32601, "Method not found"),
@@ -635,13 +646,48 @@ mod tests {
     #[tokio::test]
     async fn discover_and_result_fields_satisfy_the_2026_revision() {
         let server = server().await;
+        // Discover is the same authenticated loopback POST as every other method.
+        let (denied, _) = raw(
+            &server,
+            format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\n\r\n", server.authority),
+            vec![],
+        )
+        .await;
+        assert_eq!(denied, 401);
         let (_, discover) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}), "").await;
-        assert!(discover["result"]["supportedVersions"].as_array().unwrap().iter().any(|v| v == "2026-07-28"));
+        assert_eq!(discover["result"]["supportedVersions"].as_array().unwrap().as_slice(), [json!("2026-07-28"), json!("2025-06-18"), json!("2025-03-26")].as_slice());
+        assert_eq!(discover["result"]["resultType"], "complete");
+        assert_eq!(discover["result"]["ttlMs"], 0);
+        assert_eq!(discover["result"]["cacheScope"], "private");
         assert_eq!(discover["result"]["capabilities"]["tools"]["listChanged"], false);
-        let (_, list) = request(&server, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}), "").await;
+        // A client that negotiated 2026-07-28 sends that header. It must not be
+        // rejected, and initialize echoes the version instead of downgrading it.
+        let (status, initialized) = request(
+            &server,
+            json!({"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}),
+            "MCP-Protocol-Version: 2026-07-28\r\n",
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+        let (status, list) = request(
+            &server,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+            "MCP-Protocol-Version: 2026-07-28\r\n",
+        )
+        .await;
+        assert_eq!(status, 200);
         assert_eq!(list["result"]["resultType"], "complete");
         assert_eq!(list["result"]["ttlMs"], 0);
         assert_eq!(list["result"]["cacheScope"], "private");
+        let tools = list["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1, "the bridge lists this run's catalog and nothing else");
+        assert_eq!(tools[0]["name"], "pandacode_delegate");
+        let fields = tools[0].as_object().unwrap();
+        assert_eq!(fields.len(), 3);
+        assert!(fields.contains_key("name") && fields.contains_key("description") && fields.contains_key("inputSchema"));
+        let (rejected, _) = request(&server, json!({"jsonrpc":"2.0","id":9,"method":"ping"}), "MCP-Protocol-Version: 2099-01-01\r\n").await;
+        assert_eq!(rejected, 400);
         let (_, call) = request(
             &server,
             json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pandacode_delegate","arguments":{"prompt":"Bridge 🐼"}}}),
@@ -649,17 +695,28 @@ mod tests {
         )
         .await;
         assert_eq!(call["result"]["resultType"], "complete");
+        // ttl 0 is immediately stale: a host-tool result is not replayed.
         assert_eq!(call["result"]["ttlMs"], 0);
-        // The entry ZCode rides in session/create: session isolation keeps the
-        // per-run server out of the user's registry, always-load puts the tools
-        // in the model's list.
+        assert_eq!(call["result"]["cacheScope"], "private");
+        // The entry ZCode rides in session/create. It is the Kimi entry plus
+        // session isolation and always-load: same loopback URL, same bearer,
+        // no second credential and no command or env.
         let entry = server.zcode_config();
+        let kimi = server.kimi_config();
         assert_eq!(entry["name"], SERVER_NAME);
         assert_eq!(entry["type"], "http");
+        assert_eq!(entry["url"], kimi["url"]);
+        assert_eq!(entry["headers"], kimi["headers"]);
         assert_eq!(entry["isolation"], "session");
         assert_eq!(entry["alwaysLoad"], true);
-        assert!(entry["url"].as_str().unwrap().ends_with("/mcp"));
+        let url = entry["url"].as_str().unwrap();
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        assert!(url.ends_with("/mcp"));
+        assert_eq!(entry["headers"].as_array().unwrap().len(), 1);
         assert_eq!(entry["headers"][0]["name"], "Authorization");
+        assert_eq!(entry["headers"][0]["value"], format!("Bearer {}", server.token));
+        assert!(entry.get("env").is_none());
+        assert!(entry.get("command").is_none());
     }
     async fn raw(server: &Server, header: String, body: Vec<u8>) -> (u16, Value) {
         let mut stream = TcpStream::connect(&server.authority).await.unwrap();
@@ -1353,9 +1410,15 @@ mod tests {
         }).await;
         drop(stdin);
         let _ = child.start_kill();
-        let status = result.expect("the bridge check finished in time").expect("the CLI spoke the bridge wire");
-        assert_eq!(status["status"], "connected", "status: {status}");
-        assert!(status["toolCount"].as_u64().unwrap_or(0) > 0, "status: {status}");
+        // A failure can echo the per-run bearer. Redact it before it reaches the panic.
+        let status = match result {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => panic!("{}", server.redact(&error)),
+            Err(_) => panic!("the bridge check finished in time"),
+        };
+        let shown = server.redact(&status.to_string());
+        assert_eq!(status["status"], "connected", "{shown}");
+        assert!(status["toolCount"].as_u64().unwrap_or(0) > 0, "{shown}");
     }
 }
 

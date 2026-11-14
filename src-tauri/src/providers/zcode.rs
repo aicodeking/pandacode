@@ -124,6 +124,10 @@ pub(super) struct State {
     reasoning: bool,
     /// Latest turn failure, held until the turn's completed frame decides the run.
     error: Option<String>,
+    /// `mcp/list` was sent and has not answered. The prompt waits for it.
+    bridge_pending: bool,
+    /// `session/subscribe` already answered while the bridge check was in flight.
+    prompt_held: bool,
 }
 
 fn same_ref(a: &Value, b: &Value) -> bool {
@@ -351,7 +355,7 @@ impl Protocol {
             // The bridge check reads the error itself: a CLI without `mcp/list`
             // only loses optional tools, or fails clearly when they are required.
             if value["id"] == ID_MCP {
-                self.zcode_bridge(&value)?;
+                self.finish_bridge(&value, &mut step)?;
                 return Ok(step);
             }
             // Deferred persistence promotes a session on its first send, so a
@@ -415,8 +419,14 @@ impl Protocol {
                     return Err("ZCode did not apply the selected thinking level".into());
                 }
             }
-            Some(ID_MCP) => self.zcode_bridge(&value)?,
-            Some(ID_SUBSCRIBE) => self.zcode_prompt(self.config.prompt.clone(), &mut step),
+            Some(ID_MCP) => self.finish_bridge(&value, &mut step)?,
+            Some(ID_SUBSCRIBE) => {
+                if self.zcode.bridge_pending {
+                    self.zcode.prompt_held = true;
+                } else {
+                    self.zcode_prompt(self.config.prompt.clone(), &mut step);
+                }
+            }
             _ => {}
         }
         Ok(step)
@@ -631,17 +641,18 @@ impl Protocol {
             }));
             self.zcode.requested_thought = Some(effort);
         }
-        // The resumed session kept the servers it was created with, and that
-        // run's bridge is gone; `session/resume` takes no mcpServers, so the
-        // fresh per-run server rides `mcp/list` in connect mode.
-        if self.config.resume_id.is_some() {
-            if let Some(server) = &self.mcp_server {
-                step.write.push(json!({
-                    "id": ID_MCP, "method": "mcp/list",
-                    "params": {"workspace": workspace_of(&self.config.cwd),
-                               "mode": "connect", "mcpServers": [server]},
-                }));
-            }
+        // Resume cannot carry mcpServers (`session/update` is not implemented),
+        // so the fresh per-run server rides `mcp/list`. A required fresh session
+        // confirms the inline server the same way: an unreachable one does not
+        // fail `session/create`, and the prompt waits until this check settles.
+        // An optional fresh bridge (title suggestions) stays inline only.
+        if let Some(server) = self.mcp_server.clone().filter(|_| self.config.resume_id.is_some() || self.mcp_required) {
+            self.zcode.bridge_pending = true;
+            step.write.push(json!({
+                "id": ID_MCP, "method": "mcp/list",
+                "params": {"workspace": workspace_of(&self.config.cwd),
+                           "mode": "connect", "mcpServers": [server]},
+            }));
         }
         step.write.push(json!({
             "id": ID_SUBSCRIBE, "method": "session/subscribe",
@@ -650,11 +661,29 @@ impl Protocol {
         Ok(())
     }
 
-    /// Reads the `mcp/list` connect answer for the bridge a resumed run just
-    /// pushed. A server that did not come up leaves the session without host
-    /// tools: when they are required (a team worker) the run fails fast instead
-    /// of dispatching into a session that cannot answer; an optional bridge
-    /// (title suggestions) drops out quietly, as the ACP path does.
+    /// Applies the bridge check, then sends a prompt that was held for it.
+    /// A required failure drops the held prompt: the run is not started.
+    fn finish_bridge(&mut self, value: &Value, step: &mut Step) -> Result<(), String> {
+        let settled = self.zcode_bridge(value);
+        self.zcode.bridge_pending = false;
+        if let Err(error) = settled {
+            self.zcode.prompt_held = false;
+            return Err(error);
+        }
+        if self.zcode.prompt_held {
+            self.zcode.prompt_held = false;
+            self.zcode_prompt(self.config.prompt.clone(), step);
+        }
+        Ok(())
+    }
+
+    /// Reads the `mcp/list` connect answer. A server that did not come up leaves
+    /// the session without host tools: when they are required (a team worker,
+    /// or a solo task whose tools are required) the run fails instead of
+    /// prompting a session that cannot answer; an optional bridge (title
+    /// suggestions) drops out quietly, as the ACP path does. `connecting` counts
+    /// as up: the recorded CLI can report it while the handshake finishes, and
+    /// this reply is the only check before the prompt.
     fn zcode_bridge(&mut self, value: &Value) -> Result<(), String> {
         let name = self.mcp_server.as_ref().map(|server| field(server, "name")).unwrap_or_default();
         let status = field(&value["result"]["statuses"][name], "status");
@@ -821,9 +850,10 @@ mod tests {
     /// The bridge entry `mcp_host::zcode_config` produces, as recorded from the
     /// live CLI handshake: session isolation and always-load are what put the
     /// tools in the model's list.
+    /// Dummy loopback entry. The bearer is a fixture literal, not a credential.
     fn bridge() -> Value {
         json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:9/mcp",
-            "headers":[{"name":"Authorization","value":"Bearer secret"}],
+            "headers":[{"name":"Authorization","value":"Bearer test-token"}],
             "isolation":"session","alwaysLoad":true})
     }
 
@@ -846,6 +876,10 @@ mod tests {
         assert_eq!(request["params"]["mcpServers"][0]["name"], "pandacode_architect");
         assert_eq!(request["params"]["mcpServers"][0]["isolation"], "session");
         assert_eq!(request["params"]["mcpServers"][0]["alwaysLoad"], true);
+        assert_eq!(request["params"]["mcpServers"][0]["url"], "http://127.0.0.1:9/mcp");
+        assert_eq!(request["params"]["mcpServers"][0]["headers"][0]["value"], "Bearer test-token");
+        let wire = request.to_string();
+        assert!(!wire.contains("sk-") && !wire.contains("ghp_") && !wire.contains("github_pat_"));
         // A run without host tools keeps the field off the wire.
         let mut plain = Protocol::new(super::super::tests::config("zcode"));
         plain.config.cwd = PathBuf::from("/tmp");
@@ -896,6 +930,82 @@ mod tests {
         assert!(step.write.is_empty());
         assert!(optional.mcp_server.is_none());
         assert!(optional.mcp_tool_names.is_empty());
+    }
+
+    #[test]
+    fn the_prompt_waits_until_a_required_bridge_settles() {
+        let connected = json!({"id": ID_MCP, "result": {"statuses": {
+            "pandacode_architect": {"status": "connected", "toolCount": 1}}}});
+        let mut fresh = bridged(false);
+        fresh.mcp_required = true;
+        fresh.config.prompt = "dispatch".into();
+        let step = fresh.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect_at = step.write.iter().position(|write| write["method"] == "mcp/list").unwrap();
+        let subscribe_at = step.write.iter().position(|write| write["method"] == "session/subscribe").unwrap();
+        assert!(connect_at < subscribe_at, "the check is on the wire before subscribe");
+        // Subscribe can answer first. The prompt stays held until the bridge does.
+        let early = fresh
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        assert!(early.write.iter().all(|write| write["method"] != "session/send"));
+        let step = fresh.receive(connected).unwrap();
+        assert_eq!(step.write[0]["method"], "session/send");
+        assert_eq!(step.write[0]["params"]["content"], "dispatch");
+
+        let mut resumed = bridged(true);
+        resumed.mcp_required = true;
+        resumed.config.prompt = "follow up".into();
+        resumed.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let early = resumed
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        assert!(early.write.is_empty());
+        let failed = json!({"id": ID_MCP, "result": {"statuses": {
+            "pandacode_architect": {"status": "failed", "error": "dial failed"}}}});
+        let Err(error) = resumed.receive(failed) else {
+            panic!("a required bridge failure must stop the run before the prompt");
+        };
+        assert!(error.contains("cannot load"), "{error}");
+
+        // An optional resume that loses the bridge still prompts, once the check
+        // has dropped the tools. A fresh optional bridge never sends mcp/list.
+        let mut optional = bridged(true);
+        optional.mcp_required = false;
+        optional.config.prompt = "title".into();
+        optional.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        optional
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        let step = optional
+            .receive(json!({"id": ID_MCP, "error": {"code": -32601, "message": "Method not found"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/send");
+        assert!(optional.mcp_server.is_none());
+
+        let mut titles = bridged(false);
+        titles.mcp_required = false;
+        titles.config.prompt = "title".into();
+        let step = titles.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert!(step.write.iter().all(|write| write["method"] != "mcp/list"));
+        let prompt = titles
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/send");
+    }
+
+    #[test]
+    fn a_dead_resume_keeps_a_required_bridge_on_the_fresh_create() {
+        let mut p = bridged(true);
+        p.mcp_required = true;
+        assert!(p.initial()["params"].get("mcpServers").is_none());
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004, "message": "Session not found: sess_saved"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/create");
+        assert_eq!(step.write[0]["params"]["mcpServers"][0]["url"], "http://127.0.0.1:9/mcp");
+        assert_eq!(step.write[0]["params"]["mcpServers"][0]["headers"][0]["value"], "Bearer test-token");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert!(step.write.iter().any(|write| write["method"] == "mcp/list"));
     }
 
     #[test]
