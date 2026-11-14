@@ -40,6 +40,9 @@ also carries:
 - `latest.json`, written by `scripts/release/updater-manifest.mjs`, naming the version,
   notes and each platform's file and signature.
 
+The check and the download verify TLS with the operating system's certificate store,
+so a root installed there is trusted.
+
 Settings → About → Updates is Automatic (install when idle and no agent works), Notify
 me (check, then ask with Install and restart / Later in the header) or Off; the old
 `on`/`off` preference maps to Automatic/Off. On Linux a run without `APPIMAGE` (an
