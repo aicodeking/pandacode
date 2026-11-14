@@ -389,6 +389,75 @@ fn a_resize_without_pixels_is_asked_for_again_in_full() {
 }
 
 #[test]
+fn a_resize_that_includes_the_whole_frame_keeps_those_pixels() {
+    // DesktopSize and one raw rectangle of the new frame, together. Nothing answers a
+    // further request: asking again would time out and drop the pixels just received.
+    let address = serve_with(|request, _, s| match request {
+        1 => s.write_all(&pixel(RED)).unwrap(),
+        2 => {
+            let mut update = vec![0, 0, 0, 2];
+            for value in [0u16, 0, 2, 1] { update.extend_from_slice(&value.to_be_bytes()); }
+            update.extend_from_slice(&(-223i32).to_be_bytes());
+            for value in [0u16, 0, 2, 1] { update.extend_from_slice(&value.to_be_bytes()); }
+            update.extend_from_slice(&0i32.to_be_bytes());
+            for _ in 0..2 { update.extend_from_slice(&BLUE); }
+            s.write_all(&update).unwrap();
+        }
+        _ => {}
+    });
+    let mut rfb = Rfb::connect(address, None, WAIT).unwrap();
+    rfb.capture().unwrap();
+    let started = std::time::Instant::now();
+    let grown = rfb.capture().unwrap();
+    assert!(started.elapsed() < QUIET, "{:?}", started.elapsed());
+    assert_eq!((grown.width(), grown.height()), (2, 1));
+    assert!(grown.pixels().all(|p| p.0 == [0, 0, 255, 255]), "the frame that arrived with the resize");
+}
+
+#[test]
+fn a_buffered_resize_with_only_part_of_the_frame_is_asked_for_again() {
+    assert!(GAP > DRAIN && GAP * 2 < QUIET);
+    // The resize and a single pixel land while nobody is asking. That pixel is not the new
+    // frame; the full request this capture then sends is.
+    let address = serve_with(|request, bytes, s| {
+        let size = (u16::from_be_bytes([bytes[5], bytes[6]]), u16::from_be_bytes([bytes[7], bytes[8]]));
+        match request {
+            1 => s.write_all(&pixel(RED)).unwrap(),
+            2 => {
+                let mut s = s.try_clone().unwrap();
+                thread::spawn(move || {
+                    thread::sleep(QUIET + GAP);
+                    let mut update = vec![0, 0, 0, 1];
+                    for value in [0u16, 0, 2, 1] { update.extend_from_slice(&value.to_be_bytes()); }
+                    update.extend_from_slice(&(-223i32).to_be_bytes());
+                    s.write_all(&update).unwrap();
+                    let mut partial = vec![0, 0, 0, 1];
+                    for value in [0u16, 0, 1, 1] { partial.extend_from_slice(&value.to_be_bytes()); }
+                    partial.extend_from_slice(&0i32.to_be_bytes());
+                    partial.extend_from_slice(&BLUE);
+                    s.write_all(&partial).unwrap();
+                });
+            }
+            _ if bytes[0] == 0 && size == (2, 1) => {
+                let mut update = vec![0, 0, 0, 1];
+                for value in [0u16, 0, 2, 1] { update.extend_from_slice(&value.to_be_bytes()); }
+                update.extend_from_slice(&0i32.to_be_bytes());
+                for _ in 0..2 { update.extend_from_slice(&GREEN); }
+                s.write_all(&update).unwrap();
+            }
+            _ => {}
+        }
+    });
+    let mut rfb = Rfb::connect(address, None, WAIT).unwrap();
+    assert_eq!(rfb.capture().unwrap().get_pixel(0, 0).0, [255, 0, 0, 255]);
+    assert_eq!(rfb.capture().unwrap().get_pixel(0, 0).0, [255, 0, 0, 255]);
+    thread::sleep(GAP * 2);
+    let grown = rfb.capture().unwrap();
+    assert_eq!((grown.width(), grown.height()), (2, 1));
+    assert!(grown.pixels().all(|p| p.0 == [0, 255, 0, 255]), "partial frame");
+}
+
+#[test]
 fn a_capture_ends_at_its_timeout_however_fast_updates_keep_coming() {
     let address = serve_with(|request, _, s| match request {
         1 => s.write_all(&pixel(RED)).unwrap(),
@@ -409,7 +478,7 @@ fn a_capture_ends_at_its_timeout_however_fast_updates_keep_coming() {
     rfb.capture().unwrap();
     let started = std::time::Instant::now();
     let frame = rfb.capture().unwrap();
-    assert!(started.elapsed() < timeout * 4, "{:?}", started.elapsed());
+    assert!(started.elapsed() < timeout * 2, "{:?}", started.elapsed());
     assert_ne!(frame.get_pixel(0, 0).0, [255, 0, 0, 255], "the frame read so far");
 }
 

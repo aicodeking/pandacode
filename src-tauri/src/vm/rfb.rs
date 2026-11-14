@@ -1,6 +1,8 @@
 //! A small RFB (VNC) client for VM screens: full-frame captures in Raw encoding, pointer
 //! and key events. Virtualization.framework's VNC server speaks RFB 3.8, so a VM needs no
 //! guest software for computer use. Blocking I/O with timeouts; callers use a worker thread.
+//! A capture reads updates already waiting, then waits for its own request, so the frame is
+//! not one update behind.
 use image::RgbaImage;
 use std::{
     io::{Read, Write},
@@ -142,9 +144,11 @@ impl Rfb {
     /// ask for changes only and keep the frame they already have when nothing changed.
     /// Updates already waiting answer older, unanswered requests (QEMU merges all of those
     /// into one), so they are read before asking; only an update after the request ends the
-    /// wait early, and the late answers of still captures never cost a wait. A resize asks for
-    /// a full frame at the new size (its pixels start black). A capture never takes longer than
-    /// `timeout`: past it, a server that keeps streaming updates gets the frame read so far.
+    /// wait early, and the late answers of still captures never cost a wait. A resize with no
+    /// full-frame rectangle asks again for a full frame at the new size (its pixels start
+    /// black); one that covers the new frame is kept. Waiting for the next message stops at
+    /// `timeout` (a read already started can run out the socket timeout). Past it, a server
+    /// that keeps streaming updates gets the frame read so far.
     pub fn capture(&mut self) -> Result<RgbaImage, String> {
         self.capture_by(Instant::now() + self.timeout)
     }
@@ -157,7 +161,7 @@ impl Rfb {
                     break;
                 }
                 let Some(kind) = self.next_message(BUFFERED.min(left))? else { break };
-                self.message(kind)?;
+                self.message(kind, false)?;
             }
         }
         let mut wait = self.request()?;
@@ -167,7 +171,7 @@ impl Rfb {
                 break;
             }
             let Some(kind) = self.next_message(wait.min(left))? else { break };
-            if self.message(kind)? {
+            if self.message(kind, true)? {
                 wait = if self.complete { DRAIN } else { self.request()? };
             }
         }
@@ -186,12 +190,19 @@ impl Rfb {
         Ok(if self.complete { QUIET } else { self.timeout })
     }
 
-    /// Read one server message; true if it updated the frame.
-    fn message(&mut self, kind: u8) -> Result<bool, String> {
+    /// Read one server message; true if it updated the frame. `after_request` is false while
+    /// draining updates that arrived before this capture asked.
+    fn message(&mut self, kind: u8, after_request: bool) -> Result<bool, String> {
         match kind {
             0 => {
-                // A resize leaves the new frame black until a full one arrives.
-                self.complete = !self.update()?;
+                let (resized, covered) = self.update()?;
+                // A size change with no full-frame rectangle is black until one arrives.
+                // An update already buffered completes that frame only when it covers it.
+                if resized && !covered {
+                    self.complete = false;
+                } else if covered || after_request || self.complete {
+                    self.complete = true;
+                }
                 return Ok(true);
             }
             // Colour map, bell and clipboard messages are read and ignored.
@@ -211,10 +222,11 @@ impl Rfb {
         Ok(false)
     }
 
-    /// Read one frame update; true if it resized the screen.
-    fn update(&mut self) -> Result<bool, String> {
+    /// One frame update: a real size change, and whether a raw rectangle covered the whole frame after it.
+    fn update(&mut self) -> Result<(bool, bool), String> {
         let header = self.read::<3>()?;
         let mut resized = false;
+        let mut covered = false;
         let rectangles = u16::from_be_bytes([header[1], header[2]]);
         for _ in 0..rectangles {
             let rect = self.read::<12>()?;
@@ -230,12 +242,18 @@ impl Rfb {
                         let start = ((y as usize + row) * self.width as usize + x as usize) * 4;
                         self.pixels[start..start + w as usize * 4].copy_from_slice(&data[row * w as usize * 4..(row + 1) * w as usize * 4]);
                     }
+                    covered |= x == 0 && y == 0 && (w, h) == (self.width, self.height);
                 }
-                DESKTOP_SIZE => resized |= self.resize(w, h)?,
+                DESKTOP_SIZE => {
+                    if self.resize(w, h)? {
+                        resized = true;
+                        covered = false;
+                    }
+                }
                 other => return Err(format!("Unsupported VNC encoding {other}.")),
             }
         }
-        Ok(resized)
+        Ok((resized, covered))
     }
 
     /// Move the pointer with `buttons` held (bit 0 left, 1 middle, 2 right, 3/4 wheel up/down).
