@@ -4146,9 +4146,18 @@ async function steerQueued(s: Session, id: string): Promise<void> {
 }
 async function saveQueueEdit(s = session()): Promise<void> {
   const entry = s && queueOf(s.id).find(item => item.id === state.queueEditing); if (!s || !entry) return;
-  const text = document.querySelector<HTMLTextAreaElement>('.queue-edit')?.value.trim() ?? '';
-  const updated = await call<QueuedMessage>('queue_update', { id: entry.id, text, attachments: entry.attachments });
-  setQueue(s.id, queueOf(s.id).map(item => item.id === entry.id ? updated : item)); state.queueEditing = ''; refreshComposer(s);
+  if (state.queueBusy.has(s.id)) return;
+  const area = document.querySelector(s.id === state.sessionId ? '#composer-area' : '.btw-panel');
+  const editor = area?.querySelector<HTMLTextAreaElement>(`.queue-row[data-queue-id="${CSS.escape(entry.id)}"] .queue-edit`);
+  if (!editor) return;
+  const typed = editor.value, text = typed.trim();
+  state.queueBusy.add(s.id);
+  try {
+    const updated = await call<QueuedMessage>('queue_update', { id: entry.id, text, attachments: entry.attachments });
+    setQueue(s.id, queueOf(s.id).map(item => item.id === entry.id ? updated : item));
+    // A pending save cannot close another edit or discard text entered while saving.
+    if (state.queueEditing === entry.id && editor.value === typed) state.queueEditing = '';
+  } finally { state.queueBusy.delete(s.id); refreshComposer(s); }
 }
 /** Redraws the composer that shows `s`: the main one, or the By the way panel's. */
 function refreshComposer(s: Session): void { if (s.id === state.sessionId) renderComposer(); else btwPanel.refresh(); }
@@ -4524,9 +4533,11 @@ async function sendDraft(): Promise<void> {
 }
 // /btw side threads (docs/btw.md): a second task beside this one, fed what the main thread said.
 const btwPanel = new BtwPanel({
+  main: () => session(),
   call, report,
   side: () => { const link = btwLink(state.sessionId), side = link && state.sessions.find(task => task.id === link.sideId); return side && { session: side, hiddenThrough: link.hiddenThrough ?? 0 }; },
   running: sideId => isRunning(sideId),
+  busy: sideId => state.queueBusy.has(sideId) || configuringSessions.has(sideId),
   streaming: sideId => state.streams.has(sideId) || finishingStreams.has(sideId),
   waiting: sideId => {
     const live = state.streams.get(sideId), status = state.sessions.find(task => task.id === sideId)?.status;
@@ -4588,7 +4599,7 @@ const btwPanel = new BtwPanel({
       return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role) ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
     }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
   }); },
-  send: text => sendBtw(text),
+  send: (text, mainId, sideId) => sendBtw(text, mainId, sideId),
   queue: (side, text) => btwPanelQueue(side, text),
   // A team takes messages between runs, as in the main composer.
   steer: (side, text) => teams.get(side.id) ? btwPanelQueue(side, text) : steerOrQueue(side, text),
@@ -4601,6 +4612,10 @@ const btwPanel = new BtwPanel({
     prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${text}` : text; state.drafts.set(state.sessionId, prompt.value); resizePrompt();
   },
 });
+if (preview && new URLSearchParams(location.search).has('btw-coverage')) {
+  (window as any).__previewBtw = () => btwPanel.presentation();
+  (window as any).__previewBtwAction = (action: unknown) => btwPanel.dispatch(action);
+}
 async function btwPanelQueue(side: Session, text: string): Promise<void> {
   const entry = await call<QueuedMessage>('queue_add', { sessionId: side.id, text, attachments: [] });
   setQueue(side.id, [...queueOf(side.id), entry]);
@@ -4647,7 +4662,8 @@ function actionTask(element: Element): Session | undefined { return element.clos
 function btwLink(mainId: string): BtwLink | undefined {
   const link = readLinks(localStorage)[mainId];
   const side = link && state.sessions.find(task => task.id === link.sideId);
-  return side && !side.archived ? link : undefined;
+  const main = state.sessions.find(task => task.id === mainId);
+  return side && main && side.id !== main.id && side.projectId === main.projectId && !side.archived && !side.remoteDevice && !side.cloud ? link : undefined;
 }
 function openBtw(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'btw'; state.selectedKind = ''; renderInspector(); }
 /** Why this task cannot open a side thread, if it cannot. */
@@ -4712,11 +4728,14 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
 }
 /** One create-or-send at a time per main thread, so two quick /btw prompts share one side thread. */
 const btwSending = new Map<string, Promise<void>>();
-function sendBtw(text: string): Promise<void> {
-  const main = session(); if (!main) return Promise.resolve();
+function sendBtw(text: string, mainId = state.sessionId, expectedSide?: string): Promise<void> {
+  const main = state.sessions.find(task => task.id === mainId); if (!main) return Promise.reject(new Error('The main task is no longer available.'));
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
-  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text));
+  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => {
+    if (expectedSide !== undefined && (btwLink(main.id)?.sideId ?? '') !== expectedSide) throw new Error('The side thread changed. Send again in its own composer.');
+    return deliverBtw(main, text);
+  });
   btwSending.set(main.id, next); btwPanel.refresh();
   void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
   return next;

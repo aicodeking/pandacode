@@ -5,6 +5,29 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** BTW reorders the original composer, never its editor/history/controller. */
+export function applyBtwPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.btw-input') || !host.querySelector('.btw-stream-region') || !host.querySelector('.btw-above')) throw Error('Incomplete BTW host');
+}): void {
+  delete host.dataset.btwProvider;
+  const composer = host.querySelector<HTMLElement>('.btw-composer-area');
+  if (composer) composer.style.order = '';
+  const provider = componentSelection.resolve('panda.btw', componentProviders());
+  const status = host.querySelector<HTMLElement>('[data-btw-presentation-status]');
+  if (status) status.hidden = true;
+  if (!provider) return;
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.btwProvider = provider.id;
+    if (composer) composer.style.order = '-1';
+  } catch {
+    faults.add(identity(provider));
+    const notice = status ?? document.createElement('p');
+    notice.dataset.btwPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'BTW replacement failed. Built-in conversation remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  }
+}
 /** Visual movement only: reparenting iframe ancestors would reload live documents. */
 export function applyDesignPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.design-comments') || !host.querySelector('.design-viewport')) throw Error('Incomplete Design host');

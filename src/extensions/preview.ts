@@ -30,6 +30,7 @@ import browserManifest from '../../tests/fixtures/extensions/browser/extension.j
 import simulatorManifest from '../../tests/fixtures/extensions/simulator/extension.json';
 import vmManifest from '../../tests/fixtures/extensions/vm/extension.json';
 import designManifest from '../../tests/fixtures/extensions/design/extension.json';
+import btwManifest from '../../tests/fixtures/extensions/btw/extension.json';
 import terminalManifest from '../../tests/fixtures/extensions/terminal/extension.json';
 import composerManifest from '../../tests/fixtures/extensions/composer/extension.json';
 import transcriptManifest from '../../tests/fixtures/extensions/transcript/extension.json';
@@ -160,6 +161,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
+    if (new URLSearchParams(location.search).has('btw-coverage')) {
+      if (snapshot.packages.some(item => item.manifest.id === btwManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: btwManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
     if (new URLSearchParams(location.search).has('design-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === designManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: designManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });

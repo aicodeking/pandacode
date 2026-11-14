@@ -1,0 +1,1 @@
+{ "contractVersion": 1, "window": "main", "context": "context-a", "project": "project-a", "main": "main-a", "side": "side-a", "revision": 3, "visible": true, "busy": false, "running": false, "waiting": false, "draft": true, "messages": ["answer-a"], "queues": ["queue-a"], "controls": ["send", "insert", "queue-save", "focus"] }

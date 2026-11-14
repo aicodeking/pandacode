@@ -1674,6 +1674,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   }
   // Opt-in synthetic baseline instrumentation also works in a production preview build.
   // No live/native session or executable is involved; normal preview behavior is unchanged.
+  if (new URLSearchParams(location.search).has('btw-coverage')) {
+    const fixture = window as any;
+    (fixture.__btwCalls ??= []).push({ command, args: structuredClone(args) });
+    fixture.__btwEmit ??= emit;
+  }
   if (new URLSearchParams(location.search).has('extensions-baseline')) {
     const fixture = (window as any).__extensionsBaseline ??= { version: 1, calls: [] };
     fixture.calls.push({ command, args: structuredClone(args) });
@@ -2398,6 +2403,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       // Recorded runs still validate and persist the prompt; only automatic response events are held.
       if (providerOwner(s.provider)) { previewProviderStarted(providerOwner(s.provider)!); harnessPreview.start(s); break; }
       if (new URLSearchParams(location.search).has('extensions-baseline') && w.__extensionsBaseline?.holdRun) break;
+      if (new URLSearchParams(location.search).has('btw-coverage') && (s.id === w.__mainId || w.__holdSide)) break;
       if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
       const tool: ToolActivity = { id: `preview-tool-${crypto.randomUUID()}`, name: 'Bash', status: 'running', input: 'npm test -- --runInBand', output: '' };

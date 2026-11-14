@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1, "id": "sample.btw", "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" }, "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "btw.content", "btw.taskControl"],
+  "contributes": {
+    "components": [{ "id": "sample.btw/conversation", "title": "Composer first", "slot": "panda.btw", "contractVersion": 1, "presentation": "composer-first", "capabilities": ["host-input", "host-history", "main-side-isolation", "original-actions"] }],
+    "commands": [{ "id": "sample.btw/tools", "title": "Side conversation tools", "action": { "kind": "showMessage", "message": "Main and side tasks remain independently host-owned." } }],
+    "menus": [
+      { "id": "sample.btw/header", "location": "panda.btw.header", "command": "sample.btw/tools", "presentation": "button" },
+      { "id": "sample.btw/composer", "location": "panda.btw.composer", "command": "sample.btw/tools" },
+      { "id": "sample.btw/context", "location": "panda.btw.context", "command": "sample.btw/tools" },
+      { "id": "sample.btw/message", "location": "panda.thread.message.actions", "command": "sample.btw/tools" }
+    ]
+  }
+}

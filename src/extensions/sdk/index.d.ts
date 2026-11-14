@@ -149,6 +149,12 @@ export interface PrivateStorage {
    * Only next-version, explicitly rollback-compatible transformations are supported. */
   migrate(options: { scope: StorageScope; revision: number; fromVersion: number; toVersion: number; rollbackCompatible: true; values: Readonly<Record<string, Json>> }): Promise<{ readonly schemaVersion: 1; readonly revision: number }>;
 }
+/** Explicit closed host recipe. Approval/mode and main-task control are not delegated. */
+export interface BtwComponent { readonly id: string; readonly title: string; readonly slot: 'panda.btw'; readonly contractVersion: 1; readonly presentation: 'composer-first'; readonly capabilities: readonly ['host-input', 'host-history', 'main-side-isolation', 'original-actions'] }
+export type BtwControl = 'new' | 'open' | 'close' | 'focus' | 'send' | 'steer' | 'stop' | 'model' | 'queue-edit' | 'queue-save' | 'queue-cancel' | 'queue-remove' | 'queue-send' | 'queue-steer' | 'queue-resume' | 'insert';
+export interface BtwPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly main: string; readonly side: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly running: boolean; readonly waiting: boolean; readonly draft: boolean; readonly messages: readonly string[]; readonly queues: readonly string[]; readonly controls: readonly BtwControl[] }
+export interface BtwAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly main: string; readonly side: string; readonly revision: number; readonly controlId: BtwControl; readonly resource: string; readonly requestId: string }
+export type BtwAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
 /** Closed Browser recipe; no package guest, DOM, raw IPC or content ownership. */
 /** Closed VM recipe. No frame content, raw input, native ID, writable share or provisioning authority. */
 export interface VmComponent { readonly id: string; readonly title: string; readonly slot: 'panda.vm'; readonly contractVersion: 1; readonly presentation: 'controls-first'; readonly capabilities: readonly ['host-machine', 'host-input', 'host-frames', 'original-actions'] }

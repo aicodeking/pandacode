@@ -1,9 +1,9 @@
 /** JSON-only ordering. Both input methods submit the same relative-placement operation. */
 import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS, BROWSER_ACTION_SURFACES, BROWSER_CONTROLS, TERMINAL_ACTION_SURFACES, TERMINAL_CONTROLS, SIMULATOR_ACTION_SURFACES, SIMULATOR_CONTROLS, VM_ACTION_SURFACES, VM_CONTROLS } from './surfaces.ts';
 export type Placement = { id: string; target: string; side: 'before' | 'after' };
-import { DESIGN_ACTION_SURFACES, DESIGN_CONTROLS } from './surfaces.ts';
+import { BTW_ACTION_SURFACES, BTW_CONTROLS, DESIGN_ACTION_SURFACES, DESIGN_CONTROLS } from './surfaces.ts';
 export type LayoutProposal = { id: string; title: string; location: string; rules: Placement[] };
-export const actionLocations: readonly string[] = [...DESIGN_ACTION_SURFACES, ...Object.keys(DESIGN_CONTROLS), 'panda.workspace.header.actions', 'panda.sidebar.footer', 'panda.inspector.actions', ...VIEW_ACTION_SURFACES, ...DOCUMENT_ACTION_SURFACES, ...CHANGES_ACTION_SURFACES, ...BROWSER_ACTION_SURFACES, ...TERMINAL_ACTION_SURFACES, ...SIMULATOR_ACTION_SURFACES, ...VM_ACTION_SURFACES, 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', ...Object.keys(CHANGES_CONTROLS), ...Object.keys(SEARCH_CONTROLS), ...Object.keys(BROWSER_CONTROLS), ...Object.keys(TERMINAL_CONTROLS), ...Object.keys(SIMULATOR_CONTROLS), ...Object.keys(VM_CONTROLS)];
+export const actionLocations: readonly string[] = [...BTW_ACTION_SURFACES, ...Object.keys(BTW_CONTROLS), ...DESIGN_ACTION_SURFACES, ...Object.keys(DESIGN_CONTROLS), 'panda.workspace.header.actions', 'panda.sidebar.footer', 'panda.inspector.actions', ...VIEW_ACTION_SURFACES, ...DOCUMENT_ACTION_SURFACES, ...CHANGES_ACTION_SURFACES, ...BROWSER_ACTION_SURFACES, ...TERMINAL_ACTION_SURFACES, ...SIMULATOR_ACTION_SURFACES, ...VM_ACTION_SURFACES, 'panda.documents.navigation', 'panda.documents.tabs', 'panda.documents.viewer', ...Object.keys(CHANGES_CONTROLS), ...Object.keys(SEARCH_CONTROLS), ...Object.keys(BROWSER_CONTROLS), ...Object.keys(TERMINAL_CONTROLS), ...Object.keys(SIMULATOR_CONTROLS), ...Object.keys(VM_CONTROLS)];
 export class OrderingCycle extends Error {
   readonly ids: string[];
   constructor(ids: string[]) { super(`OrderingCycle: ${ids.join(', ')}`); this.ids = ids; }

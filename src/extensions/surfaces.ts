@@ -1,5 +1,12 @@
 /** Stable host-owned locations; these are not selectors or dynamic inspector view IDs. */
 import type { WindowActionLocation } from './window-surfaces';
+export const BTW_ACTION_SURFACES = ['panda.btw.header', 'panda.btw.composer', 'panda.btw.context'] as const;
+export const BTW_CONTROLS = {
+  'panda.btw.header': [['new', 'New side thread'], ['open', 'Open side thread'], ['close', 'Close side panel']],
+  'panda.btw.controls': [['focus', 'Side draft'], ['model', 'Side model'], ['send', 'Send side message'], ['steer', 'Steer side task'], ['stop', 'Stop side task']],
+  'panda.btw.queue': [['queue-edit', 'Edit queued side message'], ['queue-save', 'Save queued side message'], ['queue-cancel', 'Cancel queue edit'], ['queue-remove', 'Remove queued side message'], ['queue-send', 'Send queued side message'], ['queue-steer', 'Steer queued side message'], ['queue-resume', 'Resume side queue']],
+  'panda.btw.message': [['insert', 'Insert side answer into main draft']],
+} as const;
 export const VIEW_ACTION_SURFACES = [
   'panda.inspector.files.toolbar', 'panda.inspector.files.context',
   'panda.inspector.changes.toolbar', 'panda.inspector.changes.context',
@@ -40,7 +47,7 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
