@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["sidebarPresentation", "sidebarAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -537,6 +537,36 @@ mod tests {
         assert_eq!(super::validate_contract("moodboardPresentation", &long)["ok"], false);
         let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.moodboards.protected");
         assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+    }
+    #[test]
+    fn action_dock_component_state_action_and_layouts_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/action-dock/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/action-dock/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/action-dock/action.json")).unwrap();
+        assert_eq!(super::validate_contract("dockPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("dockAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "workerId", "sessionId", "assignment"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("dockAction", &forged)["ok"], false);
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("dockPresentation", &raw)["ok"], false);
+        }
+        // Stop, approvals, answers and worker recovery have no public control id.
+        for control in ["stop", "stop-worker", "approve", "deny", "answer", "retry", "skip"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("dockAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["workers"] = json!(vec![state["workers"][0].clone(); 65]);
+        assert_eq!(super::validate_contract("dockPresentation", &oversized)["ok"], false);
+        let mut named = state.clone(); named["workers"][0]["name"] = json!("Builder");
+        assert_eq!(super::validate_contract("dockPresentation", &named)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.actionDock.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        let mut provider = manifest.clone(); provider["contributes"]["components"][0]["presentation"] = json!("workers-replaced");
+        assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
+        let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.team.context", "sessionId": "session-1", "revision": 1, "selection": {"kind": "team", "ids": ["session-1"]}});
+        assert_eq!(super::validate_contract("context", &context)["ok"], true);
     }
     #[test]
     fn sidebar_component_state_action_and_layouts_share_native_schema() {

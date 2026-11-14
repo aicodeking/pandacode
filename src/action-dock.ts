@@ -287,6 +287,8 @@ export function mountActionDock(dock: HTMLElement): void {
       const item = record.target as HTMLElement;
       if (!(item instanceof HTMLButtonElement)) continue;
       if (record.attributeName === 'title') { takeTitle(item); continue; }
+      // An item an installed layout hid or showed (docs/extensions/action-dock.md) keeps its node: it only re-roves and re-places.
+      if (record.attributeName === 'data-layout-hidden') { if (item.hasAttribute('data-layout-hidden')) { if (tip.anchor === item) tip.hide(); if (pill.target === item) pill.to(); } structure = true; continue; }
       if (record.attributeName === 'hidden') {
         const was = record.oldValue !== null;
         if (was && !item.hidden) appear(dock, item);
@@ -303,7 +305,7 @@ export function mountActionDock(dock: HTMLElement): void {
       }
     }
     if (structure) { rove(dock); place(); }
-  }).observe(dock, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class', 'title'], attributeOldValue: true });
+  }).observe(dock, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class', 'title', 'data-layout-hidden'], attributeOldValue: true });
 
   let keyboard = false;
   document.addEventListener('keydown', () => { keyboard = true; }, true);

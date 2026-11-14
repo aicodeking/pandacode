@@ -1,0 +1,119 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.action-dock",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.summary"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.action-dock/actions-first",
+        "title": "Actions first",
+        "slot": "panda.actionDock",
+        "contractVersion": 1,
+        "presentation": "actions-first",
+        "capabilities": [
+          "host-groups",
+          "host-workers",
+          "original-actions"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.action-dock/dock-notes",
+        "title": "Dock notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Dock ownership stays with PandaCode."
+        }
+      },
+      {
+        "id": "sample.action-dock/team-notes",
+        "title": "Team notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Workers, approvals and Stop stay host-owned."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.action-dock/dock",
+        "command": "sample.action-dock/dock-notes",
+        "location": "panda.actionDock.actions",
+        "presentation": "button",
+        "text": "Dock notes"
+      },
+      {
+        "id": "sample.action-dock/agents",
+        "command": "sample.action-dock/team-notes",
+        "location": "panda.agents.actions",
+        "presentation": "button",
+        "text": "Agent notes"
+      },
+      {
+        "id": "sample.action-dock/team",
+        "command": "sample.action-dock/team-notes",
+        "location": "panda.team.actions",
+        "presentation": "button",
+        "text": "Team notes"
+      },
+      {
+        "id": "sample.action-dock/team-context",
+        "command": "sample.action-dock/team-notes",
+        "location": "panda.team.context",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "team"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.action-dock/agents-first",
+        "title": "Agents first",
+        "location": "panda.actionDock.controls",
+        "rules": [
+          {
+            "id": "panda.actionDock.controls/agents",
+            "target": "panda.actionDock.controls/inspector",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.action-dock/deploy-first",
+        "title": "Deploy before Run",
+        "location": "panda.actionDock.controls",
+        "rules": [
+          {
+            "id": "panda.actionDock.controls/deploy",
+            "target": "panda.actionDock.controls/run",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.action-dock/menu-first",
+        "title": "Open team before Workers",
+        "location": "panda.team.controls",
+        "rules": [
+          {
+            "id": "panda.team.controls/menu",
+            "target": "panda.team.controls/toggle",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

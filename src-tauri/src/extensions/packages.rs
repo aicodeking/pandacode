@@ -1080,6 +1080,25 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn action_dock_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/action-dock/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.action-dock", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        assert_eq!(restarted.packages[0].manifest["contributes"]["components"][0]["slot"], "panda.actionDock");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["layouts"][0]["location"], "panda.actionDock.controls");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["menus"][3]["location"], "panda.team.context");
+        packages.enable("sample.action-dock", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.action-dock", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn sidebar_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/sidebar/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

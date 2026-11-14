@@ -70,3 +70,9 @@
 .navigation[data-row-hidden~="provider"] .task-provider, .navigation[data-row-hidden~="link"] .task-link,
 .navigation[data-row-hidden~="branch"] .task-branch-name { display: none; }
 .navigation[data-row-order="more-first"] .task-more { order: -1; }
+
+/* Action dock items hidden by the user keep their node; a group with nothing left to show folds with its separator.
+   Workers line parts hidden or reordered by the user (one attribute on the workspace, never per list). */
+.action-dock-group:not(:has(>button:not([hidden]):not([data-layout-hidden]),>button[data-leaving])) { display: none; }
+.workspace[data-team-hidden~="menu"] .team-progress-menu { display: none; }
+.workspace[data-team-order="menu-first"] .team-progress-menu { order: -1; }

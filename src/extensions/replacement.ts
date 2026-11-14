@@ -5,6 +5,39 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** The selected, unfaulted action dock provider. The dock carries it, so a redraw of its items keeps the same
+ * presentation without remounting a button, the flyout or a panel. */
+export function dockProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.actionDock', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Actions-first move on the original dock: the actions group's node goes ahead of the panels group's, the status
+ * group stays last. Items, listeners, the roving stop and the flyout stay. Returns false only when the selected
+ * provider faults now (built-in order restored), so the host reports it once. */
+export function applyDockPresentation(dock: HTMLElement, qualify = () => {
+  if (!dock.classList.contains('action-dock') || !dock.querySelector(':scope > [data-group="panels"]') || !dock.querySelector(':scope > [data-group="actions"]')) throw Error('Incomplete action dock');
+}): boolean {
+  const provider = componentSelection.resolve('panda.actionDock', componentProviders());
+  const arrange = (first: boolean) => {
+    const panels = dock.querySelector<HTMLElement>(':scope > [data-group="panels"]'), actions = dock.querySelector<HTMLElement>(':scope > [data-group="actions"]');
+    if (!panels || !actions) return;
+    const [lead, next] = first ? [actions, panels] : [panels, actions];
+    if (lead.nextElementSibling === next) return;
+    const focused = document.activeElement as HTMLElement | null;
+    dock.insertBefore(lead, next);
+    // Moving a node drops focus in some engines; the same item keeps it.
+    if (focused && lead.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+  };
+  if (!provider) { delete dock.dataset.dockProvider; arrange(false); return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); dock.dataset.dockProvider = provider.id; arrange(true); return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete dock.dataset.dockProvider; arrange(false);
+    return !fresh;
+  }
+}
 /** The selected, unfaulted sidebar provider. The sidebar root carries it, so a navigation redraw keeps the same
  * presentation without remounting a row, the filter field or a pending drag. */
 export function sidebarProvider(): ComponentProvider | undefined {

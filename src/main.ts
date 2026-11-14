@@ -740,6 +740,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     state: () => ({ project: state.projectFilter || undefined, task: state.sessionId || undefined, group: sidebarSort.group, taskSort: sidebarSort.tasks, projectSort: sidebarSort.projects, busy: sidebarDragging || orderingBusy }),
     rerender: () => renderNavigation(),
   });
+  // Action dock items and groups, the Workers line's parts and its context menu: presentation only. Placement, motion,
+  // the flyout's panels, team state, approvals and Stop stay in action-dock.ts, team-progress.ts and here.
+  dockAdoption = (await import('./extensions/dock-host')).mountDockAdoption({
+    dock: $('#action-dock'), root: $('.workspace'), flyout: $('#agents-flyout'), onContextChanged, notify,
+    state: () => ({ project: state.projectId || undefined, task: state.sessionId || undefined, team: state.sessionId ? teams.get(state.sessionId) : undefined, needsInput: id => architectView?.needsInput(id) ?? false }),
+  });
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
     placementHost.refresh();
@@ -794,6 +800,8 @@ function branchLabel(branch: string): string {
 let unreviewed: Set<string> | undefined;
 /** Sidebar presentation adoption (docs/extensions/sidebar.md), mounted once extensions load; the groups of the last draw. */
 let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mountSidebarAdoption> | undefined;
+/** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
+let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
 let sidebarModel: SidebarModel = { sections: [], filtering: false };
 function saveUnreviewed(): void { try { localStorage.setItem(UNREVIEWED_KEY, JSON.stringify([...unreviewed ?? []])); } catch { /* per-launch only */ } }
 bindThreadReordering($('#navigation'), {
@@ -962,6 +970,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('dock-coverage')) {
+  (window as any).__previewDock = () => dockAdoption?.presentation();
+  (window as any).__previewDockAction = (input: unknown) => dockAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('sidebar-coverage')) {
   (window as any).__previewSidebar = () => sidebarAdoption?.presentation();
   (window as any).__previewSidebarAction = (input: unknown) => sidebarAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };

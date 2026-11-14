@@ -236,7 +236,43 @@ export const SIDEBAR_PROTECTED = [
   ['delete-confirm', 'Delete task confirmation', 'A destructive confirmation stays host-owned.'],
   ['remove-confirm', 'Remove project confirmation', 'A destructive confirmation stays host-owned.'],
 ] as const;
-export type ActionLocation = typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Action dock and team progress adoption (docs/extensions/action-dock.md). `panda.team.context` is the Workers line's
+ * context menu; the existing `panda.actionDock.actions`, `panda.team.actions` and `panda.agents.actions` stay
+ * THREAD_ACTION_SURFACES. Dock placement, motion, the flyout's panels and every team handler stay in action-dock.ts,
+ * team-progress.ts, architect.ts and main.ts. */
+export const DOCK_ACTION_SURFACES = ['panda.team.context'] as const;
+export const DOCK_CONTROLS_LOCATION = 'panda.actionDock.controls';
+export const TEAM_CONTROLS_LOCATION = 'panda.team.controls';
+export const DOCK_PROTECTED_LOCATION = 'panda.actionDock.protected';
+/** The dock's groups in built-in order. The `actions-first` recipe moves `actions` ahead of `panels`; `status` stays last. */
+export const DOCK_GROUPS = ['panels', 'actions', 'status'] as const;
+export type DockGroupId = typeof DOCK_GROUPS[number];
+/** Original dock items: [id, label, group]. Order inside their own group and reversible hide on the original nodes. */
+export const DOCK_CONTROLS = [
+  ['inspector', 'Toggle inspector', 'panels'], ['terminal', 'Toggle terminal', 'panels'], ['browser', 'Open browser', 'panels'],
+  ['moodboards', 'Project moodboards', 'panels'], ['agents', 'Agents', 'panels'],
+  ['run', 'Run project', 'actions'], ['deploy', 'Deploy', 'actions'], ['task-menu', 'Task actions', 'actions'],
+] as const;
+export type DockControlId = typeof DOCK_CONTROLS[number][0];
+/** Dock items that never hide, with the reason. They still reorder. */
+export const DOCK_PINNED_CONTROLS: Readonly<Partial<Record<DockControlId, string>>> = {
+  agents: 'Workers that need attention, their approvals and the team panel are reached from Agents.',
+};
+/** Workers line parts: [id, label]. Hidden or reordered through one workspace attribute, never per list. */
+export const TEAM_PARTS = [['toggle', 'Workers toggle'], ['menu', 'Open team button']] as const;
+export type TeamPartId = typeof TEAM_PARTS[number][0];
+export const TEAM_PINNED_PARTS: Readonly<Partial<Record<TeamPartId, string>>> = {
+  toggle: 'The Workers line shows each turn\'s workers and what needs attention; it never hides.',
+};
+/** Protected dock and team behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const DOCK_PROTECTED = [
+  ['stop', 'Stop task and workers', 'Stop stays in the composer and the team panel; no package control stops a task or a worker.'],
+  ['approvals', 'Worker approvals and questions', 'Allow, deny and answers stay host-drawn in the composer and the worker panel.'],
+  ['attention', 'Attention and running counts', 'The Workers count, its tone, the Agents badge and needs-attention states stay on every list.'],
+  ['recovery', 'Worker recovery', 'Retry, resume and skip of paused or failed workers stay in the team panel.'],
+  ['update', 'Restart to update', 'The restart prompt runs only while safe and belongs to the status family.'],
+] as const;
+export type ActionLocation = typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
@@ -257,6 +293,7 @@ export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string
   'panda.inspector.changes.context': [['stage', 'Stage file'], ['unstage', 'Unstage file'], ['open', 'Open file'], ['copy', 'Copy path']],
   'panda.inspector.search.context': [['open', 'Open file']],
   'panda.sidebar.context': [['toggle', 'Collapse or expand section']],
+  'panda.team.context': [['toggle', 'Show or hide workers'], ['open', 'Open team']],
   'panda.sidebar.project.context': [['new', 'New task'], ['collapse', 'Collapse other projects'], ['reveal', 'Reveal folder'], ['remove', 'Remove project…']],
   'panda.sidebar.task.context': [['pin', 'Pin task'], ['up', 'Move up'], ['down', 'Move down'], ['beside', 'Open beside'], ['rename', 'Rename…'], ['wake', 'Schedule a wake-up…'], ['unread', 'Mark as unread'], ['branch-task', 'New task from branch…'], ['copy-branch', 'Copy branch name'], ['copy-path', 'Copy project path'], ['copy-id', 'Copy task ID'], ['stage', 'Settle'], ['delete', 'Delete task…']],
 };
