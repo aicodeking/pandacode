@@ -23,6 +23,11 @@ The [Cloud machine presentation v1](cloud.md) contract (`panda.cloud`) offers an
 selected `controls-below` host recipe over a cloud task's status strip. The provisioning send,
 provider credentials and the delete confirmation stay host-owned and have no public action.
 
+The [Execution target and machine coordination presentation v1](machines.md) contract
+(`panda.machines`) offers an explicitly selected `controls-below` host recipe over the orchestration
+slot. Remote starts, the behind-GitHub continue, pairing, link and access consent stay host-owned and
+have no public action.
+
 Install the `tests/fixtures/extensions/replacement` package as a local archive. In Settings →
 Extensions → Surface explorer choose **Project presentation** or **File presentation** explicitly.
 Enable alone does not replace anything. Competing providers never win by installation order.

@@ -10,6 +10,7 @@ import { PULL_ACTION_SURFACES, PULL_CONTROLS, PULL_PROTECTED_LOCATION } from './
 import { WORKTREE_ACTION_SURFACES, WORKTREE_CONTROLS, WORKTREE_PROTECTED_LOCATION } from './surfaces.ts';
 import { MOODBOARD_ACTION_SURFACES, MOODBOARD_CONTROLS, MOODBOARD_PROTECTED_LOCATION } from './surfaces.ts';
 import { CLOUD_ACTION_SURFACES, CLOUD_CONTROLS, CLOUD_PROTECTED_LOCATION } from './surfaces.ts';
+import { MACHINES_ACTION_SURFACES, MACHINES_CONTROLS, MACHINES_PROTECTED_LOCATION } from './surfaces.ts';
 import { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } from './views-state.ts';
 import { INSPECTOR_VIEWS } from '../inspector-tabs.ts';
 
@@ -29,6 +30,7 @@ export class CatalogError extends Error {
 }
 
 const coreItems: ItemMetadata[] = [
+  ...Object.entries(MACHINES_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(CLOUD_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(MOODBOARD_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(WORKTREE_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
@@ -71,6 +73,10 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
+      { id: 'panda.machines', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.machines', label: 'Host execution target and machine coordination presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['controls-below'], windows: ['main'], available: true },
+      ...(['panda.machines.controls', 'panda.machines.targets'] as const).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
+      { id: MACHINES_PROTECTED_LOCATION, owner: 'panda.core', type: 'declarative-data-slot', location: MACHINES_PROTECTED_LOCATION, label: 'Protected execution host, pairing, link and access consent', supportedOperations: ['inspect'], supportedItemTypes: ['button'], windows: ['main'], available: true },
+      ...MACHINES_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
       { id: 'panda.cloud', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.cloud', label: 'Host cloud machine presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['controls-below'], windows: ['main'], available: true },
       ...(['panda.cloud.controls', 'panda.cloud.targets'] as const).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
       { id: CLOUD_PROTECTED_LOCATION, owner: 'panda.core', type: 'declarative-data-slot', location: CLOUD_PROTECTED_LOCATION, label: 'Protected cloud machine confirmations, provisioning and credentials', supportedOperations: ['inspect'], supportedItemTypes: ['button'], windows: ['main'], available: true },
@@ -129,7 +135,7 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       })),
     ];
     const activation = createDeclarativeActivation(state, 0);
-    const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: item.location.startsWith('panda.btw.') || item.location === PULL_PROTECTED_LOCATION || item.location === WORKTREE_PROTECTED_LOCATION || item.location === MOODBOARD_PROTECTED_LOCATION || item.location === CLOUD_PROTECTED_LOCATION ? item.supportedOperations : [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.presentation === 'status' || menu.presentation === 'badge' ? menu.presentation : menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: menu.location === 'panda.tray.menu' ? ['inspect'] : ['inspect', 'hide', 'show', 'reorder'], available: true }))];
+    const items: ItemMetadata[] = [...coreItems.map((item, defaultPosition) => ({ ...item, defaultPosition, supportedOperations: item.location.startsWith('panda.btw.') || item.location === PULL_PROTECTED_LOCATION || item.location === WORKTREE_PROTECTED_LOCATION || item.location === MOODBOARD_PROTECTED_LOCATION || item.location === CLOUD_PROTECTED_LOCATION || item.location === MACHINES_PROTECTED_LOCATION ? item.supportedOperations : [...item.supportedOperations, 'hide', 'show', 'reorder'] })), ...activation.entries.map(({ owner, menu, command }, index): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, defaultPosition: coreItems.length + index, type: menu.presentation === 'status' || menu.presentation === 'badge' ? menu.presentation : menu.items ? 'menu-trigger' : 'button', location: menu.location, label: command.title, supportedOperations: menu.location === 'panda.tray.menu' ? ['inspect'] : ['inspect', 'hide', 'show', 'reorder'], available: true }))];
     activation.dispose();
     items.push(...INSPECTOR_VIEWS.map((view, defaultPosition): ItemMetadata => ({ id: `${INSPECTOR_VIEW_LOCATION}/${view}`, owner: 'panda.core', type: 'view', location: INSPECTOR_VIEW_LOCATION, label: view, defaultPosition, supportedOperations: ['inspect'], available: true })));
     items.push(...registeredInspectorViews(state).map(({ owner, version, view }, defaultPosition): ItemMetadata => ({ id: view.id, owner, version, type: 'view', location: INSPECTOR_VIEW_LOCATION, label: view.title, defaultPosition, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], available: true })));

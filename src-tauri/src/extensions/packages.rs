@@ -1044,6 +1044,18 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn machines_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/machines/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.machines", true).unwrap();
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest["contributes"]["components"][0]["slot"], "panda.machines");
+        packages.enable("sample.machines", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
+    #[test]
     fn cloud_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/cloud/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

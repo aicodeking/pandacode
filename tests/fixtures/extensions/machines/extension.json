@@ -1,0 +1,61 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.machines",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "connections.summary"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.machines/coordination-below",
+        "title": "Coordination below",
+        "slot": "panda.machines",
+        "contractVersion": 1,
+        "presentation": "controls-below",
+        "capabilities": [
+          "host-targets",
+          "host-lineage",
+          "original-actions"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.machines/notes",
+        "title": "Machine notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Computers, links and access stay with PandaCode."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.machines/context",
+        "command": "sample.machines/notes",
+        "location": "panda.machines.context"
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.machines/others-first",
+        "title": "Other computers first",
+        "location": "panda.machines.targets",
+        "rules": [
+          {
+            "id": "panda.machines.targets/target-device",
+            "target": "panda.machines.targets/target-local",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

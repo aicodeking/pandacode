@@ -38,3 +38,6 @@
 /* Strip below the composer: the original cloud strip follows the composer; no node is moved or remounted. */
 #composer-area:has(> .cloud-strip[data-cloud-provider]) { display: flex; flex-direction: column; }
 #composer-area > .cloud-strip[data-cloud-provider] { order: 1; margin: 8px 0 0; }
+/* Coordination below the composer: the original orchestration slot (link requests, waiting line) follows the composer; no node is moved or remounted. */
+#composer-area:has(> #machine-orchestration[data-machines-provider]) { display: flex; flex-direction: column; }
+#composer-area > #machine-orchestration[data-machines-provider] { order: 1; }

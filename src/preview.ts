@@ -20,7 +20,7 @@ import { createPreviewCloud, createPreviewVm } from './preview-vm';
 import { createPreviewTurnChanges } from './preview-turn-changes';
 // Bundled with the preview, not lazily imported: a late module load during a paused test clock stalled startup.
 import { invokeBots, previewBotBusy } from './preview-bots';
-import { invokeRemote, previewRemoteStart } from './preview-remote';
+import { invokeRemote, previewRemoteStart, seedPreviewRemote } from './preview-remote';
 import { createPreviewDesign } from './preview-design';
 import { previewProgress } from './preview-progress';
 import { BRIEF_ID, GALLERY_ID, briefAnswer, briefMessages, briefTimings, briefTools, galleryMessages } from './preview-traces';
@@ -549,6 +549,12 @@ if (new URLSearchParams(location.search).has('cloud-coverage')) {
   if (task) Object.assign(task, { worktreeBranch: 'pandacode/cloud-fixture', cloud: { provider: 'e2b', label: 'E2B', machine: 'e2b:pc-fixture', stage: 'ready', detail: null } });
   (window as any).__previewCloudStage = (sessionId: string, stage: NonNullable<Session['cloud']>['stage']) => { const target = sessions.find(item => item.id === sessionId); if (target) cloudStage(target, stage); };
   (window as any).__previewCloudSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
+// Explicit machine coordination extension fixture only: the in-memory sample account is signed in with
+// orchestration on; every remote, link and thread command stays the preview mock below.
+if (new URLSearchParams(location.search).has('machines-coverage')) {
+  seedPreviewRemote();
+  (window as any).__previewMachinesSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;

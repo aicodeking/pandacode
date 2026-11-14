@@ -94,7 +94,8 @@ import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
-import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
+import { closeLinkDialog, decorateTranscript, initOrchestration, lineageSource, onOrchestrationChange, orchestrationSnapshot, runMachineAction, setLinkDecorator, syncOrchestration } from './machine-orchestration';
+import { mountMachinesPresentation, MACHINES_CONSENT_ITEM, MACHINES_LABELS, type MachinesHostRequest } from './extensions/machines-host';
 import { createThreadFind } from './thread-find';
 import { installPointerDrag } from './pointer-drag';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
@@ -978,6 +979,34 @@ const cloudPresentation = mountCloudPresentation({
 if (preview && new URLSearchParams(location.search).has('cloud-coverage')) {
   (window as any).__previewCloud = () => cloudPresentation.presentation();
   (window as any).__previewCloudAction = (input: unknown) => cloudPresentation.dispatch(input);
+}
+/* Execution target and machine coordination presentation (docs/extensions/machines.md): the task whose
+ * behind-GitHub confirmation is open. Starts, link requests and threads keep their own host state. */
+let machinesBehind: string | undefined;
+const machinesPresentation = mountMachinesPresentation({
+  state: () => {
+    const s = session(); if (!s) return undefined;
+    const mode = s.remoteDevice ? 'task' as const : !s.cloud && newTaskView() ? 'choice' as const : 'none' as const;
+    const chosen = mode === 'choice' && remoteChoice !== LOCAL && !cloudProvider(remoteChoice) ? remoteChoice : '';
+    const host = s.remoteDevice?.id ?? chosen, start = remoteStart(s.id);
+    const pending = remoteChecks.has(s.id) ? 'checking' as const : start && start.stage !== 'error' ? 'starting' as const : host && remoteRetries.has(host) ? 'reconnecting' as const : start ? 'error' as const : 'none' as const;
+    return {
+      project: s.projectId, task: s.id, mode, host, label: s.remoteDevice?.name ?? (chosen ? remoteTargets.find(target => target.deviceId === chosen)?.name ?? remoteChoiceName ?? '' : ''),
+      pending, behind: machinesBehind === s.id, hostOffline: Boolean(host) && remoteOffline(s), missing: Boolean(remoteMissing(s)), signedIn: remoteSignedIn,
+      devices: mode === 'choice' ? remoteTargets.map(target => ({ id: target.deviceId, online: target.online })) : [], setup: mode === 'choice' && !remoteTargets.length, failed: start?.stage === 'error',
+    };
+  },
+  coordination: orchestrationSnapshot,
+  slot: () => document.querySelector<HTMLElement>('#composer-area #machine-orchestration'),
+  execute: (request, alive) => runMachinesRequest(request, alive),
+  openContext: (anchor, source, point) => { const s = session(); if (s) void showMachinesMenu(anchor, s, source, point); },
+  notify, rerender: () => setLinkDecorator(items => machinesPresentation.decorate(items)),
+});
+setLinkDecorator(items => machinesPresentation.decorate(items));
+onOrchestrationChange(() => machinesPresentation.observe());
+if (preview && new URLSearchParams(location.search).has('machines-coverage')) {
+  (window as any).__previewMachines = () => machinesPresentation.presentation();
+  (window as any).__previewMachinesAction = (input: unknown) => machinesPresentation.dispatch(input);
 }
 window.addEventListener('pandacode-github-change', () => { renderComposer(); renderHeader(); renderInspector(); });
 window.addEventListener('focus', () => void github.refreshLinks(state.projectId));
@@ -3189,9 +3218,9 @@ function renderComposer(): void {
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStripHtml(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
+  $('#composer').insertAdjacentHTML('beforebegin', `<div id="machine-orchestration"${machinesPresentation.providerAttribute()}></div>` + cloudStripHtml(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
   if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
-  renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
+  renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt(); machinesPresentation.observe();
   trayStateChanged();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
@@ -6782,6 +6811,7 @@ async function refreshRemoteTargets(signedIn: boolean): Promise<void> {
   renderHeader();
   const s = session(); if (!s) return;
   if (remoteComposerKey(s) !== renderedRemoteKey) renderComposer(); else syncRemoteConnection();
+  machinesPresentation.observe();
 }
 /** Devices asking this computer for access (src/remote-pairing-prompt.ts), while signed in to Connect. */
 function syncPairingPrompt(signedIn: boolean): void {
@@ -6973,14 +7003,60 @@ async function initRemote(): Promise<void> {
   if (status) { signedIn = status.signedIn; remoteConnected = status.connected; await refreshRemoteTargets(signedIn); }
 }
 async function showComputerMenu(anchor: HTMLElement): Promise<void> {
-  // Cloud rows keep their place after the other computers, in the user's order and visibility.
-  const items = cloudPresentation.decorateTargets(computerItems(remoteTargets, remoteChoice, cloudTargets), item => cloudProvider(item.id) ? 'target-cloud' : item.id === SETUP_CHOICE ? 'target-setup' : undefined);
-  const consent = cloudPresentation.consentItem();
-  await showChoices(anchor, { title: 'Run on', width: 280, items: [...items, ...(consent ? [consent] : [])], onSelect: id => {
+  // This computer, other computers and Connect setup come first, then the cloud rows, each in the user's order and visibility.
+  const own = machinesPresentation.decorateTargets(computerItems(remoteTargets, remoteChoice, cloudTargets), item => item.id === LOCAL ? 'target-local' : item.id === CONNECT_SETUP ? 'target-setup' : remoteTargets.some(target => target.deviceId === item.id) ? 'target-device' : undefined);
+  const items = cloudPresentation.decorateTargets(own, item => cloudProvider(item.id) ? 'target-cloud' : item.id === SETUP_CHOICE ? 'target-setup' : undefined);
+  const consents = [machinesPresentation.consentItem(), cloudPresentation.consentItem()].flatMap(item => item ? [item] : []);
+  await showChoices(anchor, { title: 'Run on', width: 280, items: [...items, ...consents], onSelect: id => {
     closeChoiceMenu();
     if (id === CLOUD_CONSENT_ITEM) { cloudPresentation.toggleConsent(); return; }
+    if (id === MACHINES_CONSENT_ITEM) { machinesPresentation.toggleConsent(); return; }
     chooseComputer(id);
   } });
+}
+/** The lineage row, waiting line and fixed remote chip context menu (`panda.machines.context`), for the task it opened on. */
+async function showMachinesMenu(anchor: HTMLElement, s: Session, source: { thread?: string; chip?: boolean }, point?: { x: number; y: number }): Promise<void> {
+  const coordination = orchestrationSnapshot(s.id), thread = coordination.threads.find(item => item.id === source.thread), anyLive = coordination.threads.some(item => item.live);
+  const items = source.chip
+    ? [{ id: 'reconnect', label: MACHINES_LABELS.reconnect, icon: 'refresh', disabled: !remoteOffline(s) || remoteRetries.has(remoteDeviceId(s) ?? '') }]
+    : [...(thread ? [{ id: 'lineage-open', label: MACHINES_LABELS['lineage-open'], icon: 'external' }, { id: 'lineage-stop', label: MACHINES_LABELS['lineage-stop'], icon: 'stop', disabled: !thread.live }] : []), { id: 'stop-all', label: MACHINES_LABELS['stop-all'], icon: 'stop', disabled: !anyLive }];
+  const consent = machinesPresentation.consentItem();
+  await showChoices(anchor, { title: 'Machine', width: 240, point, items: [...items, ...(consent ? [consent] : [])], extensionSurface: { location: 'panda.machines.context', context: { projectId: s.projectId, sessionId: s.id, revision: state.generation, selection: thread ? { kind: 'task', ids: [thread.id] } : { kind: 'machine', ids: [s.id] } }, isAlive: () => state.sessionId === s.id, pinned: [MACHINES_CONSENT_ITEM], width: 240 }, onSelect: id => {
+    closeChoiceMenu();
+    if (id === MACHINES_CONSENT_ITEM) machinesPresentation.toggleConsent();
+    else if (id === 'reconnect') run(retryRemoteConnection());
+    else if (id === 'lineage-open' && thread) runMachineAction('open', thread.id);
+    else if (id === 'lineage-stop' && thread) runMachineAction('stop', thread.id);
+    else if (id === 'stop-all') runMachineAction('stop-all');
+  } });
+}
+/** A captured extension request through the original handlers. Choosing a target, retrying a start, declining a
+ * link request and stopping threads also wait for a fresh host choice; Link opens the original dialog, whose
+ * machine and access choice and submit stay with the user. */
+function runMachinesRequest(request: MachinesHostRequest, alive: () => boolean): void {
+  const id = request.key.slice(request.key.indexOf(':') + 1);
+  const visible = (...selectors: string[]) => selectors.map(selector => document.querySelector<HTMLElement>(selector)).find(node => node?.isConnected && node.getClientRects().length);
+  const confirmEntry = (anchor: HTMLElement | null | undefined, run: () => void) => {
+    if (!anchor?.isConnected) return;
+    void showChoices(anchor, { title: 'Extension requested a machine action', items: [{ id: 'continue', label: `Continue: ${MACHINES_LABELS[request.controlId] ?? request.controlId}`, icon: 'refresh' }], onSelect: choice => { closeChoiceMenu(); if (choice === 'continue' && alive()) run(); } });
+  };
+  const threadAnchor = () => visible(`.lineage-row[data-thread="${CSS.escape(id)}"]`, '#machine-orchestration .lineage-wait', '#composer');
+  switch (request.controlId) {
+    case 'computer-menu': document.querySelector<HTMLElement>('#composer-area #composer-computer')?.click(); return;
+    case 'target-setup': chooseComputer(CONNECT_SETUP); return;
+    case 'start-dismiss': document.querySelector<HTMLElement>('#composer-area [data-remote-start="dismiss"]')?.click(); return;
+    case 'behind-cancel': document.querySelector<HTMLElement>('#remote-behind-form [data-action="close-dialog"]')?.click(); return;
+    case 'link-open': runMachineAction('link', id); return;
+    case 'link-cancel': closeLinkDialog(); return;
+    case 'lineage-open': runMachineAction('open', id); return;
+    case 'reconnect': if (alive()) run(retryRemoteConnection()); return;
+    case 'target-local': confirmEntry(visible('#composer-area #composer-computer'), () => chooseComputer(LOCAL)); return;
+    case 'target-device': confirmEntry(visible('#composer-area #composer-computer'), () => chooseComputer(id)); return;
+    case 'start-retry': confirmEntry(visible('#composer-area .remote-start-strip'), () => document.querySelector<HTMLElement>('#composer-area [data-remote-start="retry"]')?.click()); return;
+    case 'link-decline': confirmEntry(visible(`#machine-orchestration .machine-link-card[data-request="${CSS.escape(id)}"]`, '#composer'), () => runMachineAction('decline', id)); return;
+    case 'lineage-stop': confirmEntry(threadAnchor(), () => runMachineAction('stop', id)); return;
+    case 'stop-all': confirmEntry(threadAnchor(), () => runMachineAction('stop-all'));
+  }
 }
 /** The original Run on choice; a cloud provider only marks where the next message runs, nothing is provisioned. */
 function chooseComputer(id: string): void {
@@ -6989,16 +7065,19 @@ function chooseComputer(id: string): void {
   remoteChoice = id; remoteChoiceName = remoteTargets.find(item => item.deviceId === id)?.name; renderHeader();
   const task = session();
   if (task && remoteComposerKey(task) !== renderedRemoteKey) renderComposer();
+  machinesPresentation.observe();
   if (cloudProvider(id)) { if (task && newTaskView()) { const refusal = harnessRefusal(task.provider, provider(task.provider)?.name ?? task.provider); if (refusal) notify(refusal); } return; }
   if (task && newTaskView()) run(adaptPickerToComputer(task, id, remoteTargets.find(item => item.deviceId === id)?.name ?? 'That computer'));
 }
 /** Resolves true on Continue; Cancel or closing the dialog resolves false. */
-function confirmBehind(name: string, check: RemoteRepoCheck): Promise<boolean> {
+function confirmBehind(name: string, check: RemoteRepoCheck, sessionId: string): Promise<boolean> {
   const dialog = modal('GitHub is behind this computer', behindDialog(name, check));
   const form = dialog.querySelector<HTMLFormElement>('#remote-behind-form')!;
+  machinesBehind = sessionId; machinesPresentation.observe();
+  const settle = () => { if (machinesBehind === sessionId) machinesBehind = undefined; machinesPresentation.observe(); };
   return new Promise(resolve => {
-    dialog.addEventListener('close', () => resolve(false), { once: true });
-    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); resolve(true); closeModal(); }, { once: true });
+    dialog.addEventListener('close', () => { settle(); resolve(false); }, { once: true });
+    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); settle(); resolve(true); closeModal(); }, { once: true });
   });
 }
 /** A New task sent with another computer chosen: check GitHub, then start it there with the same settings. */
@@ -7015,7 +7094,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
   try {
     const check = await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
     if (!check.repo) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
-    if (behindText(check) && !await confirmBehind(target.name, check)) return;
+    if (behindText(check) && !await confirmBehind(target.name, check, s.id)) return;
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
     remoteChecks.delete(s.id);

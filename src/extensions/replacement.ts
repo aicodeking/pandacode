@@ -5,6 +5,28 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** The selected, unfaulted machine coordination provider. The host orchestration slot carries it, so a
+ * composer redraw keeps the same presentation without remounting a link card, dialog or pending start. */
+export function machinesPresentationProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.machines', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Controls-below visual move on the original orchestration slot: no remote call, link, start or target change.
+ * Returns false only when the selected provider faults now (built-in layout restored), so the host reports it once. */
+export function applyMachinesPresentation(host: HTMLElement, qualify = () => {
+  if (host.id !== 'machine-orchestration' || !host.closest('#composer-area')) throw Error('Incomplete machine coordination host');
+}): boolean {
+  const provider = componentSelection.resolve('panda.machines', componentProviders());
+  if (!provider) { delete host.dataset.machinesProvider; return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.machinesProvider = provider.id; return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete host.dataset.machinesProvider;
+    return !fresh;
+  }
+}
 /** The selected, unfaulted cloud machine provider. The host strip markup carries it, so a progress
  * redraw keeps the same presentation without remounting the menu, the dialog or a pending action. */
 export function cloudPresentationProvider(): ComponentProvider | undefined {

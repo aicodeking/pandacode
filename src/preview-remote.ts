@@ -135,6 +135,9 @@ export async function previewRemoteStart(args: Record<string, any>, emit: (name:
     send('starting', null, w.__remoteStartBusy ?? null); await step();
   } finally { activeStarts.delete(key); }
 }
+/** Explicit machine extension fixture only: the sample account already signed in, with orchestration on.
+ * No relay, pairing, security setting or real computer is involved. */
+export function seedPreviewRemote(): void { signedIn = true; orchestration = true; devices = sampleDevices(); }
 /** Test hook: a computer going offline or coming back. */
 export function setPreviewOnline(id: string, online: boolean, emit: (name: string, payload: unknown) => void): void {
   if (online) offline.delete(id); else offline.add(id);

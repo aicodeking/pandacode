@@ -1,5 +1,17 @@
 /** Stable host-owned locations; these are not selectors or dynamic inspector view IDs. */
 import type { WindowActionLocation } from './window-surfaces';
+/** Execution host and machine coordination. `panda.machines.context` is the lineage row, waiting line and
+ * fixed remote chip context menu; `panda.machines.protected` is inspect-only: the fixed task computer, the
+ * behind-GitHub continue, the remote start send, the Link a machine submit with its access choice, pairing
+ * approval, the orchestration switch and unlinking are never hidden, reordered or package-confirmed. */
+export const MACHINES_ACTION_SURFACES = ['panda.machines.context'] as const;
+export const MACHINES_CONTROLS = {
+  'panda.machines.controls': [['link-decline', 'Decline link request'], ['link-open', 'Link a machine…']],
+  'panda.machines.targets': [['target-local', 'This computer'], ['target-device', 'Other computers'], ['target-setup', 'Set up other computers…']],
+  'panda.machines.context': [['lineage-open', 'Open thread'], ['lineage-stop', 'Stop thread'], ['stop-all', 'Stop all threads'], ['reconnect', 'Retry connection']],
+  'panda.machines.protected': [['chip', 'Fixed task computer'], ['behind-continue', 'Start from GitHub anyway'], ['remote-start', 'Start on another computer'], ['link-confirm', 'Link machine with access'], ['pairing', 'Pairing approval'], ['orchestration', 'Agent orchestration switch'], ['unlink', 'Unlink computer']],
+} as const;
+export const MACHINES_PROTECTED_LOCATION = 'panda.machines.protected';
 /** Cloud machine menu entries and strip/chip context. `panda.cloud.protected` is inspect-only: the fixed
  * computer chip, the delete confirmation, the provisioning send and provider credentials are never hidden,
  * reordered or package-confirmed. */
@@ -96,7 +108,7 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

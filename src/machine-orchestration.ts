@@ -58,6 +58,12 @@ const expanded = new Set<string>();
 const older = new Map<string, MachineChild>(), asked = new Set<string>();
 const THREADS_PER_CALL = 64;
 let ticker = 0;
+/** The open Link a machine dialog, if any: its submit and access choice stay host-owned. */
+let linkDialog: HTMLDialogElement | undefined;
+/** Observers of drawn state (requests, threads, switch), e.g. the extension presentation's revision. */
+const observers = new Set<() => void>();
+/** Order and reversible visibility for a link card's two buttons, rendered into the card markup itself. */
+let decorateLink: ((items: readonly (readonly [string, string])[]) => string) | undefined;
 /** Which threads each drawn transcript card holds, and the card of each thread: a status change
  * goes straight to its card, with no transcript scan. Rebuilt by `decorateTranscript`. */
 const cards = new Map<HTMLElement, string[]>(), threadCards = new Map<string, HTMLElement>();
@@ -173,10 +179,34 @@ function refresh(id: string): void {
   });
 }
 
+function linkActions(request: LinkRequest): string {
+  const decline = `<button type="button" class="machine-quiet" data-mo="decline" data-request="${escape(request.requestId)}">Not now</button>`;
+  const link = `<button type="button" class="machine-primary" data-mo="link" data-request="${escape(request.requestId)}" aria-haspopup="dialog">Link…</button>`;
+  return decorateLink ? decorateLink([['link-decline', decline], ['link-open', link]]) : decline + link;
+}
 function linkCard(request: LinkRequest): string {
   const reason = request.reason.trim();
-  return `<section class="machine-link-card" aria-label="Link a machine" data-request="${escape(request.requestId)}">${icon('monitor', 'machine-link-mark')}<div class="machine-link-text"><strong>Link a machine to this environment</strong>${reason ? `<span title="${escape(reason)}">${escape(reason)}</span>` : ''}</div><span class="machine-actions"><button type="button" class="machine-quiet" data-mo="decline" data-request="${escape(request.requestId)}">Not now</button><button type="button" class="machine-primary" data-mo="link" data-request="${escape(request.requestId)}" aria-haspopup="dialog">Link…</button></span></section>`;
+  return `<section class="machine-link-card" aria-label="Link a machine" data-request="${escape(request.requestId)}">${icon('monitor', 'machine-link-mark')}<div class="machine-link-text"><strong>Link a machine to this environment</strong>${reason ? `<span title="${escape(reason)}">${escape(reason)}</span>` : ''}</div><span class="machine-actions">${linkActions(request)}</span></section>`;
 }
+/** Sets the link card decorator and redraws the shown cards' buttons in place; keyboard focus stays on the same button. */
+export function setLinkDecorator(next: typeof decorateLink): void {
+  decorateLink = next;
+  for (const card of document.querySelectorAll<HTMLElement>('#machine-orchestration > .machine-link-card')) {
+    const request = pending.find(item => item.requestId === card.dataset.request), actions = card.querySelector<HTMLElement>('.machine-actions');
+    if (!request || !actions) continue;
+    const markup = linkActions(request); if (actions.innerHTML === markup) continue;
+    const focused = actions.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.mo : undefined;
+    actions.innerHTML = markup;
+    if (focused) actions.querySelector<HTMLElement>(`[data-mo="${focused}"]:not([inert])`)?.focus({ preventScroll: true });
+  }
+}
+/** What the visible task's coordination shows now: its link requests, launched threads and the switch. */
+export function orchestrationSnapshot(sessionId: string): { enabled: boolean; requests: readonly string[]; threads: readonly { id: string; live: boolean }[]; linking: boolean } {
+  return { enabled, requests: pending.filter(request => request.sessionId === sessionId).map(request => request.requestId), threads: (children.get(sessionId) ?? []).map(child => ({ id: child.sessionId, live: live(child) })), linking: Boolean(linkDialog?.open && linkDialog.querySelector('#machine-link-form')) };
+}
+export function onOrchestrationChange(callback: () => void): () => void { observers.add(callback); return () => observers.delete(callback); }
+/** Closes the open Link a machine dialog without linking (its Cancel). */
+export function closeLinkDialog(): void { if (linkDialog?.open && linkDialog.querySelector('#machine-link-form') && host) host.closeModal(); }
 
 const faces = (list: MachineChild[]) => [...new Set(list.map(child => initials(child.provider)))].slice(0, 3).map(face => `<span>${escape(face)}</span>`).join('');
 const rowHtml = (child: MachineChild, stop: boolean) => `<li class="lineage-row" data-thread="${escape(child.sessionId)}" data-state="${threadState(child)}"><span class="lineage-face" aria-hidden="true">${escape(initials(child.provider))}</span><button type="button" class="lineage-open" data-mo="open" data-session="${escape(child.sessionId)}" title="Open ${escape(child.title)}">${escape(child.title)}</button><span class="lineage-where">${escape(whereText(child))}</span>${stop ? `<button type="button" class="machine-quiet lineage-stop" data-mo="stop" data-session="${escape(child.sessionId)}" aria-label="Stop ${escape(child.title)}" ${live(child) ? '' : 'hidden'}>Stop</button>` : ''}</li>`;
@@ -420,6 +450,7 @@ function render(): void {
   if (!panel && threads.length && (flyoutOpen() || reopenFor === id)) { reopenFor = ''; openPanel(); }
   else paintPanel(sameTask);
   lastTask = id;
+  for (const observer of observers) observer();
   const signal = `${threads.length > 0}:${threads.filter(running).length}`;
   if (signal !== agentsSignal) { agentsSignal = signal; dispatchEvent(new Event('pandacode:agents')); }
 }
@@ -427,20 +458,26 @@ function render(): void {
 function onClick(event: MouseEvent): void {
   const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(':is(#machine-orchestration, .machine-threads, .lineage-panel) [data-mo]');
   if (!target || !host) return;
-  const h = host, action = target.dataset.mo, request = pending.find(item => item.requestId === target.dataset.request);
+  const action = target.dataset.mo;
+  if (action === 'card' && target.dataset.card) { const key = target.dataset.card; if (!expanded.delete(key)) expanded.add(key); render(); decorateTranscript(); return; }
+  // The stop button hides once the thread stops, so focus moves to the row first.
+  if (action === 'stop') target.closest('.lineage-row')?.querySelector<HTMLElement>('.lineage-open')?.focus();
+  if (action === 'stop-all') panel?.querySelector<HTMLElement>('.lineage-open')?.focus();
+  if (action === 'stop-waiting') document.querySelector<HTMLElement>('#prompt')?.focus();
+  runMachineAction(action ?? '', target.dataset.request ?? target.dataset.session ?? '');
+}
+/** The original link request and thread handlers, shared by the drawn buttons and the host's captured
+ * extension requests. `id` is the request (decline, link) or thread (open, stop); a stale id does nothing. */
+export function runMachineAction(action: string, id = ''): void {
+  if (!host) return;
+  const h = host, request = pending.find(item => item.requestId === id);
   const fail = (e: unknown) => h.notify(message(e));
-  const toggle = (key: string) => { if (!expanded.delete(key)) expanded.add(key); render(); decorateTranscript(); };
   if (action === 'decline' && request) void h.call('orchestration_link_respond', { requestId: request.requestId }).then(() => settle(request.requestId), fail);
   else if (action === 'link' && request) void openLinkDialog({ request });
-  else if (action === 'card' && target.dataset.card) toggle(target.dataset.card);
-  else if (action === 'open' && target.dataset.session) h.openSession(target.dataset.session);
-  else if (action === 'stop' && target.dataset.session) {
-    // The button hides once the thread stops, so focus moves to the row first.
-    target.closest('.lineage-row')?.querySelector<HTMLElement>('.lineage-open')?.focus();
-    void h.call('stop_session', { sessionId: target.dataset.session }).then(syncOrchestration, fail);
-  } else if (action === 'stop-all' || action === 'stop-waiting') {
+  else if (action === 'open' && id) h.openSession(id);
+  else if (action === 'stop' && id) void h.call('stop_session', { sessionId: id }).then(syncOrchestration, fail);
+  else if (action === 'stop-all' || action === 'stop-waiting') {
     const list = (children.get(h.sessionId()) ?? []).filter(action === 'stop-all' ? live : child => RUNNING.has(child.status));
-    (action === 'stop-all' ? panel?.querySelector<HTMLElement>('.lineage-open') : document.querySelector<HTMLElement>('#prompt'))?.focus();
     void Promise.all(list.map(child => h.call('stop_session', { sessionId: child.sessionId }))).then(syncOrchestration, fail);
   }
 }
@@ -466,6 +503,8 @@ export async function openLinkDialog(options: { request?: LinkRequest; deviceId?
   const h = host;
   let rows: Row[] = [], step: 1 | 2 = 1, chosen = '', access: Access = 'ask', error = '', busy = false;
   const dialog = h.modal('Link a machine', '<p class="dialog-description">Agents here can then launch, message and wait on threads there.</p><form id="machine-link-form" class="machine-link-form"><p class="dialog-loading" role="status">Loading computers…</p></form>', 'machine-link-dialog');
+  linkDialog = dialog; render();
+  dialog.addEventListener('close', () => { if (linkDialog === dialog) { linkDialog = undefined; render(); } }, { once: true });
   const form = dialog.querySelector<HTMLFormElement>('#machine-link-form')!;
   try {
     const [devices, status] = await Promise.all([h.call<RemoteDevice[]>('remote_devices'), h.call<OrchestrationStatus>('orchestration_status')]);
