@@ -701,7 +701,7 @@ fn read_text_path(path: &Path) -> Result<String, String> {
     if meta.len() > FILE_LIMIT as u64 {
         return Err("File exceeds the 128 KiB preview limit".into());
     }
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let file = File::open(path).map_err(|e| e.to_string())?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > FILE_LIMIT as u64 {
         return Err("Only regular text files can be edited.".into());
