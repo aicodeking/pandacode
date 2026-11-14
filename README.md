@@ -118,6 +118,8 @@ embedded editor engine.
 - **Review every turn.** Saved [turn changes](docs/turn-changes.md) with
   unified/split diffs, an embedded [browser](docs/browser.md), and file previews.
   [Edit a sent prompt](docs/rewind.md) to fork the thread from just before it.
+- **Line comments.** Comment on a line or a range in a file or a diff, then
+  [send them all](docs/line-comments.md) to the agent in one message.
 - **Approvals at hand.** Requests wait in a slim bar above the prompt, one line
   each, grouped with **Approve all** when there are several.
 - **Turn checks.** After a clean turn, optionally run the project's own test or check

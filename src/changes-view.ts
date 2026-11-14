@@ -2,6 +2,8 @@ import type { GitFile, GitStatus } from './types';
 import type { DiffViewerController } from './diff-viewer';
 import { escape, fileIcon, icon } from './dom';
 import './changes-view.css';
+import './review-send.css';
+import { mountSendButton, reviewDiffUi, reviewDiffUiNow, reviewUi, unshownComments, type ReviewStore } from './review-comments';
 import { errorText } from './error-text';
 
 export interface ChangesViewDeps {
@@ -15,6 +17,8 @@ export interface ChangesViewDeps {
   choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
   worktree?(): void;
+  /** Line comments for the shown thread: diff line numbers take comments, and the header sends them. */
+  review?: ReviewStore;
 }
 export interface ChangesView {
   /** Re-renders from `status`. Loaded patches are quietly refetched (at most once a second) when
@@ -96,6 +100,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       <span class="cv-files"></span><span class="cv-adds"></span><span class="cv-dels"></span>
       <span class="cv-branch" hidden></span>
       <span class="cv-spacer"></span>
+      ${deps.review ? '<button class="ds-btn cv-review-send" data-rc-send></button>' : ''}
       ${iconButton('fold-all', 'Collapse all', FOLD, 'aria-pressed="false"')}
       ${iconButton('menu', 'More actions', icon('more'), 'aria-haspopup="menu"')}
     </div>
@@ -103,11 +108,15 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       <input class="cv-commit-input" type="text" placeholder="Commit message" aria-label="Commit message" autocomplete="off" spellcheck="true">
       <button type="submit" class="cv-commit-submit">Commit</button>
     </form>
-    <div class="cv-body" tabindex="-1"><div class="cv-list"></div></div>`;
+    <div class="cv-body" tabindex="-1">${deps.review ? '<div class="cv-away" hidden></div>' : ''}<div class="cv-list"></div></div>`;
   const q = <T extends HTMLElement>(s: string) => host.querySelector<T>(s)!;
   const body = q('.cv-body'), list = q('.cv-list'), scopeLabel = q('.cv-scope-label'), filesLabel = q('.cv-files');
   const addsLabel = q('.cv-adds'), delsLabel = q('.cv-dels'), branchLabel = q('.cv-branch'), foldButton = q<HTMLButtonElement>('[data-cv-action="fold-all"]');
   const commitBar = q<HTMLFormElement>('.cv-commit'), commitInput = q<HTMLInputElement>('.cv-commit-input'), commitSubmit = q<HTMLButtonElement>('.cv-commit-submit');
+  const awayHost = host.querySelector<HTMLElement>('.cv-away');
+  /** The thread this view was drawn for: comments are read for it alone, so a thread switch (the
+   * store shows the next thread just before this view goes) never draws the next one's. */
+  const thread = deps.review?.sessionId ?? '';
 
   const observer = new IntersectionObserver(records => {
     for (const record of records) {
@@ -266,14 +275,19 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       drop(entry);
       entry.load = 'error';
       entry.body.innerHTML = `<div class="cv-placeholder cv-error">${icon('alert')}<span>${escape(reason instanceof Error ? reason.message : String(reason || 'Unable to load diff'))}</span><button type="button" class="cv-link" data-cv-action="retry-file">Retry</button></div>`;
+      showAway();
     }
   }
 
   /** Mounts the patch, or swaps in a new viewer once it has rendered so the old one never flashes away. */
   function mountViewer(entry: Entry): void {
     if (entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
-    const token = entry.token, raw = entry.raw;
+    const token = entry.token, raw = entry.raw, patch = entry.patch;
     viewerModule ??= import('./diff-viewer');
+    // Line comments' code starts loading with the first diff, which never waits for it: a diff
+    // mounted before it arrives takes its hooks then (and draws itself again, once).
+    const store = deps.review;
+    const comments = store && !reviewDiffUiNow() ? reviewDiffUi().catch(error => { console.warn('Could not load line comments:', error); return undefined; }) : undefined;
     viewerModule.then(({ mountDiffViewer }) => {
       if (disposed || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
       const slot = document.createElement('div');
@@ -283,14 +297,26 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         slot.classList.add('cv-diff-next');
         entry.body.append(slot);
       } else entry.body.replaceChildren(slot);
-      const viewer = mountDiffViewer(slot, { patch: entry.patch, path: entry.path, layout: 'unified', truncated: entry.el.dataset.truncated === 'true', scrollRoot: body, shadowCSS: SHADOW_CSS });
+      const ui = store ? reviewDiffUiNow() : undefined;
+      const review = (loaded: NonNullable<typeof ui>) => {
+        // How to start a comment, above the list, until the first one is made.
+        if (!stopHint && !disposed) stopHint = loaded.mountCommentHint(body, store!, thread);
+        return loaded.createDiffReview(store!, entry.path, patch, thread);
+      };
+      // A diff can fall back to plain text after it is ready (a later slice fails to mount): its
+      // comments move to the group then, not at the next refresh.
+      const viewer = mountDiffViewer(slot, { patch, path: entry.path, layout: 'unified', truncated: entry.el.dataset.truncated === 'true', scrollRoot: body, shadowCSS: SHADOW_CSS, review: ui ? review(ui) : undefined, onFallback: () => queueMicrotask(showAway) });
+      // Not to a diff a refetch already replaced: the newest one owns the comment being written.
+      if (store && !ui) void comments?.then(loaded => { if (loaded && !disposed && entry.viewer === viewer) viewer.attachReview(() => review(loaded)); });
       Object.assign(entry, { viewer, slot, shown: raw });
       void viewer.ready.then(() => {
         if (disposed || entry.viewer !== viewer) return;
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
+        // A diff shown as plain text (binary, too large, unparsable) shows no comments.
+        showAway();
       });
-    }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
+    }, () => { if (!disposed && token === entry.token) { entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; showAway(); } });
   }
 
   function refetch(): void {
@@ -325,6 +351,29 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       else sync(wanted);
     }
     totals();
+    showAway();
+  }
+
+  /* Comments no view shows get a group of their own at the top: diff comments on files this list no
+   * longer shows (committed, reverted, or hidden by the scope) or shows as plain text, and Files view
+   * comments on files with no tab open. The inline UI loads only once there is one. */
+  let away: { update(): void; dispose(): void } | undefined, awayLoading = false;
+  let stopHint: (() => void) | undefined;
+  /** A diff drawn as plain text (binary, too large, unparsable) or that failed to load has no lines to comment on. */
+  const plain = (entry: Entry) => entry.load === 'error' || Boolean(entry.body.querySelector(':scope > .cv-raw, .diff-viewer[data-diff-state="fallback"]'));
+  // Until the list is known (loading, an error, not a repository), every file counts as listed.
+  const listed = (file: string) => { if (!status?.isRepo || error) return true; const entry = entries.get(file); return Boolean(entry && !plain(entry)); };
+  function showAway(): void {
+    const store = deps.review;
+    if (!store || !awayHost || disposed) return;
+    if (away) { away.update(); return; }
+    if (awayLoading || !unshownComments(store, listed, thread).length) return;
+    awayLoading = true;
+    reviewUi().then(ui => {
+      awayLoading = false;
+      if (disposed || away) return;
+      away = ui.mountAwayComments(awayHost, store, listed, thread);
+    }, reason => { awayLoading = false; console.warn('Could not load line comments:', reason); });
   }
 
   function sync(wanted: { file: GitFile; staged: boolean }[]): void {
@@ -468,6 +517,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   const listeners = new AbortController();
+  const sendButton = host.querySelector<HTMLButtonElement>('[data-rc-send]');
+  const stopSend = deps.review && sendButton ? mountSendButton(sendButton, deps.review, icon('chat')) : () => {};
+  listeners.signal.addEventListener('abort', stopSend);
+  if (deps.review) listeners.signal.addEventListener('abort', deps.review.subscribe(showAway));
   host.addEventListener('click', onClick, { signal: listeners.signal });
   commitBar.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void submitCommit(); }, { signal: listeners.signal });
   commitInput.addEventListener('input', totals, { signal: listeners.signal });
@@ -490,6 +543,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       if (disposed) return;
       disposed = true;
       listeners.abort();
+      away?.dispose();
+      stopHint?.();
       observer.disconnect();
       resizer.disconnect();
       clearTimeout(refetchTimer);

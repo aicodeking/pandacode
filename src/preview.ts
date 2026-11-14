@@ -426,6 +426,22 @@ const benchListed = new URLSearchParams(typeof location !== 'undefined' ? locati
 let git: GitStatus = { branch: 'feat/instant-search', isRepo: true, files: [{ path: 'src/components/search.ts', index: ' ', working: 'M' }, { path: 'src/lib/search-index.ts', index: '?', working: '?' }, { path: 'src/components/search.test.ts', index: ' ', working: 'M' }, ...(benchDiffs ? benchListed.filter(path => BENCH_DIFFS[path]).map(path => ({ path, index: ' ', working: 'M' })) : [])] };
 const worktreeGit = new Map<string, GitStatus>();
 const previewBranches = new Set<string>(), pushedBranches = new Set<string>(['feat/instant-search']), mergedBranches = new Set<string>();
+// Tests: `__previewAgentEdit(edit)` rewrites the sample diff with `edit` and adds a new file to the
+// status, as an agent at work does, so the next refresh refetches the Changes view's diffs (the app
+// ignores a status equal to the last one, so each edit lists its own file, never the same one twice).
+let diffEdit: ((patch: string) => string) | undefined, agentEdits = 0;
+(window as any).__previewAgentEdit = (edit: (patch: string) => string) => {
+  diffEdit = edit;
+  const path = `src/notes-${++agentEdits}.md`;
+  git = { ...git, files: [...git.files, { path, index: '?', working: '?' }] };
+};
+// Tests: `__previewCommitFile(path)` drops a file from the status, as an agent committing or
+// reverting it does; the next refresh takes it out of the Changes list.
+(window as any).__previewCommitFile = (path: string) => { git = { ...git, files: git.files.filter(file => file.path !== path) }; };
+// Tests: `__previewFileEdit(edit)` rewrites the sample source the Files view reads, as an agent at work
+// does; the inspector's refresh reloads an open file tab.
+let sourceEdit: ((source: string) => string) | undefined;
+(window as any).__previewFileEdit = (edit: (source: string) => string) => { sourceEdit = edit; };
 function checkoutGit(sessionId: unknown): GitStatus {
   const path = sessionId ? session(sessionId).worktreePath : null;
   if (!path) return git;
@@ -2238,7 +2254,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'respond_approval': case 'respond_user_input': break;
     case 'git_status': result = checkoutGit(args.sessionId); break;
-    case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;
+    case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`;
+      if (diffEdit) result = diffEdit(result as string);
+      break;
     case 'git_stage': checkoutGit(args.sessionId).files.forEach(file => { if (args.paths.includes(file.path)) { file.index = args.staged ? 'M' : ' '; file.working = args.staged ? ' ' : 'M'; } }); break;
     case 'git_commit': {
       const checkout = checkoutGit(args.sessionId);
@@ -2535,7 +2553,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
     case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
-      result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
+      result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sourceEdit ? sourceEdit(sampleSource) : sampleSource; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;

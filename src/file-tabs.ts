@@ -1,7 +1,9 @@
 // Editor tabs in the inspector: files opened from the Files tree, search, or file links each get
 // a tab in the inspector's Open files view, kept per task, so the conversation stays in sight.
 import './file-tabs.css';
+import './review-send.css';
 import { renderDocument } from './document-viewer';
+import { mountSendButton, reviewUi, reviewUiNow, type ReviewStore } from './review-comments';
 import { escape, fileIcon, icon } from './dom';
 import { isPreviewableFile } from './file-links';
 import type { OfficeKind } from './office-viewer';
@@ -35,6 +37,8 @@ type Deps = {
   focusConversation(): void;
   /** The shown task's last tab closed, so the host can leave the Open files view. */
   emptied(): void;
+  /** Line comments for the shown thread: code files take comments on their line numbers. */
+  review?: ReviewStore;
 };
 
 export function createFileTabs(deps: Deps) {
@@ -44,6 +48,7 @@ export function createFileTabs(deps: Deps) {
   const threads = new Map<string, Thread>();
   let key = '', workspace = '';
   let disposeOffice = () => {};
+  let disposeComments = () => {}, disposeSend = () => {};
   let tick = 0;
 
   const thread = (): Thread | undefined => threads.get(key);
@@ -81,6 +86,10 @@ export function createFileTabs(deps: Deps) {
     const scroll = active && view.dataset.path === active.path ? view.querySelector('.file-view-body')?.scrollTop ?? 0 : 0;
     view.dataset.path = active?.path ?? '';
     disposeOffice(); disposeOffice = () => {};
+    disposeComments(); disposeComments = () => {};
+    disposeSend(); disposeSend = () => {};
+    // Files view comments on a file with no tab open are listed in the Changes view instead.
+    if (key) deps.review?.openFiles(key, entry?.tabs.map(tab => tab.path) ?? []);
     strip.hidden = !entry?.tabs.length;
     view.hidden = !active;
     if (!entry?.tabs.length) { strip.innerHTML = ''; view.innerHTML = ''; return; }
@@ -90,13 +99,31 @@ export function createFileTabs(deps: Deps) {
     };
     strip.innerHTML = entry.tabs.map(tab => tabButton(tab.path, name(tab.path), fileIcon(name(tab.path), false))).join('');
     if (!active) { view.innerHTML = ''; return; }
-    const attach = deps.canAttach(active.context) ? `<button data-file-tab="attach">${icon('attach')} Attach</button>` : '';
+    const attach = deps.canAttach(active.context) ? `<button data-file-tab="attach" title="Attach">${icon('attach')} <span class="file-attach-label">Attach</span></button>` : '';
     const preview = isPreviewableFile(active.path) ? `<button class="icon-button" data-file-tab="preview" aria-label="Preview in browser" title="Preview in browser">${icon('globe')}</button>` : '';
-    view.innerHTML = `<div class="file-view-header"><span class="file-view-path" title="${escape(active.path)}">${escape(active.path)}</span><div class="file-preview-actions">${preview}${typeof active.content === 'object' ? '' : `<button class="icon-button" data-file-tab="copy" aria-label="Copy file" title="Copy file">${icon('copy')}</button>`}${attach}</div></div><div class="file-view-body"></div>`;
+    // Comments belong to the thread on screen, so only its own files take them.
+    const review = deps.review && active.context.sessionId && active.context.sessionId === deps.review.sessionId && typeof active.content === 'string' ? deps.review : undefined;
+    view.innerHTML = `<div class="file-view-header"><span class="file-view-path" title="${escape(active.path)}">${escape(active.path)}</span><div class="file-preview-actions">${review ? '<button class="ds-btn" data-rc-send></button>' : ''}${preview}${typeof active.content === 'object' ? '' : `<button class="icon-button" data-file-tab="copy" aria-label="Copy file" title="Copy file">${icon('copy')}</button>`}${attach}</div></div><div class="file-view-body"></div>`;
     const body = view.querySelector<HTMLElement>('.file-view-body')!;
     if (active.content === undefined) { body.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
     if (typeof active.content === 'string') {
-      renderDocument(body, active.path, active.content, path => deps.call<string>('workspace_image', { ...active.context, path }));
+      const text = active.content;
+      const send = view.querySelector<HTMLButtonElement>('[data-rc-send]');
+      if (review && send) disposeSend = mountSendButton(send, review, icon('chat'));
+      // The viewer redraws itself (Wrap), handing over a new code preview each time; the comment being
+      // written lives in the store, so every redraw (this render too) picks it up.
+      const thread = active.context.sessionId!;
+      const decorate = review ? (code: HTMLElement) => {
+        disposeComments();
+        // The inline UI loads on first use; once loaded, a redraw adds the comments in the same paint.
+        const mount = (ui: NonNullable<ReturnType<typeof reviewUiNow>>) => { disposeComments = ui.mountFileComments(code, review, active.path, text, thread); };
+        const loaded = reviewUiNow();
+        if (loaded) { mount(loaded); return; }
+        let cancelled = false;
+        disposeComments = () => { cancelled = true; };
+        reviewUi().then(ui => { if (!cancelled && code.isConnected) mount(ui); }, error => console.warn('Could not load line comments:', error));
+      } : undefined;
+      renderDocument(body, active.path, text, path => deps.call<string>('workspace_image', { ...active.context, path }), decorate);
       body.scrollTop = scroll;
       return;
     }

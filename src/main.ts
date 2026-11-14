@@ -111,6 +111,7 @@ import { createAgentInput, type AgentInput } from './agent-input';
 import { mountSlashCommands, type SlashCommand } from './slash-commands';
 import { mountFileMentions, type MentionEntry } from './file-mentions';
 import { createFileTabs } from './file-tabs';
+import { createReviewStore } from './review-comments';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
@@ -668,7 +669,32 @@ const searchPanel = createSearchPanel({
   context: () => project() ? workspaceContext() : null,
   open: path => run(openFile(path, 'file')),
 });
+/** Puts a prompt in the composer without sending it (design comments, line comments); false when no composer is shown. */
+function composeDraft(text: string): boolean {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  if (!prompt) return false;
+  prompt.value = text; prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus();
+  return true;
+}
+/** Line comments (docs/line-comments.md), shared by the file view and the Changes diff: kept per thread in local storage, like composer drafts, until sent. */
+const reviewStore = createReviewStore({
+  isImeKey,
+  mac: isMac,
+  // Unsent comments are kept like composer drafts: local storage, under Settings' Keep unsent drafts.
+  storage: localStorage,
+  keep: () => state.drafts.keepsDrafts,
+  // Sending clears the comments, so they join whatever the draft already says rather than replace it.
+  compose: text => {
+    const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trimEnd() ?? '';
+    return composeDraft(draft ? `${draft}\n\n${text}` : text);
+  },
+  // A deleted comment can come back for a few seconds: the toast's Undo (or Cmd/Ctrl+Z).
+  undoable: (text, undo) => notify(text, undo, { holdMs: 6000 }),
+});
+// Text still being typed in a comment field is written as the page goes, not half a second later.
+window.addEventListener('pagehide', () => reviewStore.flushTyping());
 const fileTabs = createFileTabs({
+  review: reviewStore,
   call,
   canAttach: context => Boolean(state.sessionId) && context.sessionId === state.sessionId,
   attach: path => attachFile(path),
@@ -1184,6 +1210,7 @@ function restoreThreadPanel(task?: Session): void {
   state.inspectorTab = saved?.tab && (saved.tab === 'file' || inspectorTabs.open.includes(saved.tab)) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
+  reviewStore.show(state.sessionId);
   fileTabs.show(state.sessionId, workspaceKey());
   state.filePreviewLoading = Boolean(state.selectedKind);
 }
@@ -1228,14 +1255,14 @@ function setProjectFilter(id: string): void { state.projectFilter = id; localSto
 function saveCollapsedFolders(): void { try { localStorage.setItem('pandacode.collapsedFolders', JSON.stringify([...state.collapsedFolders])); } catch { /* per-launch preference only */ } }
 /** Tasks shown in lists: a New task draft appears only after its first prompt. */
 function listedSessions(): Session[] { return state.sessions.filter(task => !task.draft); }
-/** Leaving an untouched draft discards it; one with typed text, attachments or a worktree stays hidden and New task reopens it. */
+/** Leaving an untouched draft discards it; one with typed text, attachments, line comments or a worktree stays hidden and New task reopens it. */
 function leaveDraft(nextId: string): void {
   if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
   if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || draft.worktreePath) return;
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   const typed = prompt?.dataset.sessionId === draft.id ? prompt.value : state.drafts.get(draft.id) ?? '';
-  if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
+  if (voiceDictation.ownsThread(draft.id) || typed.trim() || reviewStore.has(draft.id) || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
   state.sessions = state.sessions.filter(task => task.id !== draft.id);
   state.drafts.delete(draft.id);
   void call<boolean>('discard_draft', { sessionId: draft.id }).catch(() => undefined);
@@ -4242,6 +4269,7 @@ async function loadSessions(): Promise<void> {
 }
 function removeDeletedSessions(ids: string[]): void {
   voiceDictation.discardThreads(ids);
+  reviewStore.forget(ids);
   committedDrafts.forget(ids);
   terminalPanel.forget(ids);
   const removed = new Set(ids);
@@ -4499,6 +4527,7 @@ function clearSavedDrafts(): void {
   if (prompt?.dataset.sessionId && prompt.value) shown.add(prompt.dataset.sessionId);
   if (state.sharedChannelId && document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt')?.value) shown.add(channelDraftKey(state.sharedChannelId));
   state.drafts.clearStored(id => shown.has(id));
+  reviewStore.clearStored();
   notify('Saved drafts cleared.');
 }
 /** Rejected sends come back before newer draft text, in written order (composer-restore.ts). */
@@ -5650,7 +5679,7 @@ function syncDesignPanel(): void {
     designPanel = mountDesignCanvas($('#design-panel'), {
       call, notify, notifyError,
       context: () => state.projectId ? { projectId: state.projectId, sessionId: state.sessionId || null } : null,
-      compose: text => { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = text; prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus(); } },
+      compose: composeDraft,
     });
     if (state.inspector && state.inspectorTab === 'design' && !inspectorSuppressed) designPanel.show();
   }).catch(error => { designLoading = undefined; report(error); });
@@ -5840,6 +5869,7 @@ function showChangesView(target: HTMLElement, key: string): void {
       notify, notifyError,
       choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
       worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
+      review: state.sessionId ? reviewStore : undefined,
     });
     changesViewKey = key;
   }
@@ -5880,6 +5910,7 @@ const armInspector = () => { inspectorArmed = true; removeEventListener('pointer
 addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
 function renderInspector(): void {
   const diffEpoch = ++inspectorDiffEpoch;
+  reviewStore.show(state.sessionId);
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
   const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
@@ -6362,8 +6393,9 @@ async function createChat(from?: Session): Promise<void> {
     const browserItems = state.browserAttachments.get(from.id);
     if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);
     state.browserAttachments.delete(from.id);
-    // Project files and moodboards belong to the project, so a chat cannot send them.
-    if ((from.id === state.sessionId && state.attachments.length) || state.moodboardAttachments.get(from.id)?.length) notify('Project files and moodboards stay with the project, so they were not moved to the chat.');
+    // Project files, moodboards and line comments belong to the project, so a chat cannot send them.
+    const stays = [(from.id === state.sessionId && state.attachments.length) && 'Project files', state.moodboardAttachments.get(from.id)?.length && 'moodboards', reviewStore.has(from.id) && 'line comments'].filter((item): item is string => Boolean(item));
+    if (stays.length) notify(`${(stays.length > 1 ? `${stays.slice(0, -1).join(', ')} and ${stays.at(-1)}` : stays[0]).replace(/^./, first => first.toUpperCase())} stay with the project, so they were not moved to the chat.`);
     state.moodboardAttachments.delete(from.id);
   }
   if (generation !== state.generation) { renderNavigation(); return; }
@@ -6743,7 +6775,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
       clearDrafts: clearSavedDrafts,
-      keepDrafts: { get: () => state.drafts.keepsDrafts, set: on => state.drafts.setKeeping(on) },
+      keepDrafts: { get: () => state.drafts.keepsDrafts, set: on => { state.drafts.setKeeping(on); if (!on) reviewStore.clearStored(); } },
       embed: {
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
@@ -8269,8 +8301,12 @@ async function boot(): Promise<void> {
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
   [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
   projectsListed = true;
-  // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
-  void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
+  // Drafts and line comments of threads deleted while the app was closed go (the list leaves out
+  // older threads, so ask), in one check.
+  void dropDeletedDrafts({
+    keys: () => new Set([...state.drafts.keys(), ...reviewStore.storedThreads()]),
+    delete: id => { if (state.drafts.has(id)) state.drafts.delete(id); reviewStore.forget([id]); },
+  }, ids => call<string[]>('sessions_missing', { ids }));
   // New task text of projects removed some other way than this window's Remove (a failed list throws above).
   if (Array.isArray(state.projects)) dropRemovedProjectDrafts(state.drafts, state.projects.map(project => project.id));
   replayDismissals();
@@ -8319,7 +8355,9 @@ const agentUpdates = initializeAgentUpdates({
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 // A New task's text is kept per project, since its draft session does not outlive the launch.
 state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
-expireDraftsWhileRunning(state.drafts);
+// Unsent line comments expire like drafts: now, then daily and when the window shows again.
+reviewStore.expire();
+expireDraftsWhileRunning({ expire: () => { state.drafts.expire(); reviewStore.expire(); } });
 renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });

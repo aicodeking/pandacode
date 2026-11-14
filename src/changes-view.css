@@ -202,4 +202,5 @@
    focuses only from the keyboard and which reports focus on its host but never :focus-visible) get the shared
    ring, drawn inside the body's clip at its inner radius. */
 .cv-file-body :is(.diff-viewer-content, diffs-container):focus { outline: none; }
-.cv-file-body:has(.diff-viewer-content:focus-visible, diffs-container:focus) { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* A focused line number (line comments' keyboard path) draws its own ring instead. */
+.cv-file-body:has(.diff-viewer-content:focus-visible, diffs-container:focus):not(:has(.diff-viewer[data-line-focus])) { outline: 2px solid var(--focus); outline-offset: -2px; }

@@ -1,0 +1,104 @@
+/* Line comments (src/review-comments-ui.ts, docs/line-comments.md): inline comment cards in the Files
+ * view's code preview and in Changes diffs (as @pierre/diffs line annotations, which are slotted
+ * light-DOM elements, so these rules reach them). Loaded with the inline UI on first use; the Send
+ * button and the announcer, shown before that, are in review-send.css. Tokens only. */
+
+/* How strongly commented (covered) and selected lines are tinted: the file view's rows and a diff's
+ * line numbers. A diff's code lines take only a faint tint (--rc-diff-*), so their own added and
+ * deleted colours stay clearly apart under a comment (the shadow-root rules in review-comments-ui.ts
+ * read these). */
+:root{--rc-tint-covered:.12;--rc-tint-selected:.24;--rc-diff-tint-covered:.08;--rc-diff-tint-selected:.11}
+
+/* File view: line numbers start a comment (a "+" on hover and keyboard focus says so); covered
+ * lines are tinted with an accent edge. */
+.code-preview.rc-commentable{position:relative}
+.rc-commentable .line-number{position:relative;cursor:pointer;transition:color 120ms var(--ds-ease-out)}
+.rc-commentable .line-number:hover{color:var(--text)}
+.rc-commentable .line-number:is(:hover,:focus-visible)::before{content:"+";position:absolute;top:0;bottom:0;left:3px;display:flex;align-items:center;font-weight:var(--weight-strong);color:var(--accent-ink,var(--accent))}
+.rc-commentable .line-number:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;color:var(--text)}
+.rc-commentable .code-line{transition:background-color 120ms var(--ds-ease-out)}
+.code-line.rc-covered{background:rgb(var(--accent-rgb) / var(--rc-tint-covered))}
+.code-line.rc-covered>.line-number{box-shadow:inset 2px 0 0 var(--accent);color:var(--text)}
+.code-line.rc-selected{background:rgb(var(--accent-rgb) / var(--rc-tint-selected))}
+.code-line.rc-selected>.line-number{box-shadow:inset 2px 0 0 var(--accent);color:var(--text)}
+/* Focused, a commented number keeps its edge inside the focus ring. */
+.code-line:is(.rc-covered,.rc-selected)>.line-number:focus-visible{box-shadow:inset 4px 0 0 var(--accent)}
+
+/* Until the first comment is made: a faint line in the code's toolbar says how to start one. */
+.rc-hint{min-width:0;margin:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--faint);font-size:var(--ds-text-meta)}
+.cv-body>.rc-hint{padding:6px 10px 2px}
+
+/* The comment itself. In the code preview it stays in view while the code scrolls sideways. */
+.rc-thread{font-family:var(--ui-font);font-size:var(--ds-text-meta);line-height:1.45;color:var(--text);white-space:normal;user-select:text;-webkit-user-select:text;cursor:auto}
+.code-preview .rc-thread{position:sticky;left:0;box-sizing:border-box;width:min(680px,calc(100% - 12px));padding:4px 12px 8px 42px}
+/* Narrow side padding: in a diff the comment sits in the code column only (right of the gutter),
+ * whose own edge leaves room on the right, so a new comment's placeholder stays on one row there at
+ * the inspector's default width. */
+.diff-viewer .rc-thread{padding:6px 2px 8px 6px;max-width:720px}
+.rc-card{display:flex;flex-direction:column;gap:4px;padding:4px;border-radius:var(--ds-radius-inner);background:var(--ds-card);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+.rc-head{display:flex;align-items:center;gap:8px;padding:2px 4px 0}
+.rc-body{display:flex;align-items:flex-start;gap:2px}
+.rc-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--ds-radius-chip);font-size:var(--text-xs);font-weight:var(--weight-medium);white-space:nowrap;box-shadow:inset 0 0 0 1px currentColor}
+.rc-badge[data-rc-status="outdated"]{color:var(--ds-warn)}
+.rc-thread[data-status="outdated"] .rc-field textarea:not(:focus){color:var(--muted)}
+/* Why a comment is not beside its lines (past the preview), or not all of them are highlighted. */
+.rc-note{min-width:0;color:var(--muted);font-size:var(--text-xs)}
+
+/* The comment's text is its field: one row, growing with the text to three, then scrolling. The
+ * hidden ::after copy of the text (data-value; the placeholder while empty, so a narrow field is
+ * tall enough to show all of it) shares the grid cell and sets the height. The field reads as
+ * plain text until hovered or focused; padding never changes, so nothing moves. */
+.rc-field{flex:1;min-width:0;display:grid;--rc-pad:3px 6px;--rc-max:calc(3lh + 6px)}
+.rc-field>textarea,.rc-field::after{grid-area:1/1/2/2;box-sizing:border-box;width:100%;max-height:var(--rc-max);margin:0;padding:var(--rc-pad);border:0;font:inherit;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;letter-spacing:inherit}
+.rc-field::after{content:attr(data-value) " ";visibility:hidden;overflow:hidden}
+.rc-field>textarea{resize:none;overflow-x:hidden;overflow-y:auto;border-radius:var(--ds-radius-control);background:transparent;color:var(--text);cursor:text;transition:background-color 120ms var(--ds-ease-out),box-shadow 120ms var(--ds-ease-out)}
+.rc-field>textarea::placeholder{color:var(--faint);line-height:inherit}
+/* Empty, it shows only its placeholder: never a scrollbar (WebKit could size the placeholder past
+ * the one row and show both scrollbars until something was typed). */
+.rc-field>textarea:placeholder-shown{overflow:hidden}
+.rc-field>textarea:hover{background:var(--ds-row-hover)}
+.rc-field>textarea:focus{outline:none;background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+.rc-field>textarea:focus-visible{outline:2px solid var(--focus);outline-offset:0}
+
+/* Changes view: diff comments on files its list no longer shows (mountAwayComments), in a group at
+ * the top of the list, each under its file and lines. */
+.rc-away{display:flex;flex-direction:column;gap:8px;padding:8px 10px 10px;font-family:var(--ui-font);font-size:var(--ds-text-meta)}
+.rc-away[hidden]{display:none}
+.rc-away-title{color:var(--muted);font-weight:var(--weight-medium)}
+.rc-away-item{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rc-away-where{display:flex;align-items:baseline;gap:8px;min-width:0;white-space:nowrap;font-size:var(--text-xs);color:var(--muted)}
+.rc-away-file{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.rc-away-lines{flex:none}
+
+/* Delete (a saved comment) or discard (a new one). */
+.rc-delete{flex:none;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:var(--ds-radius-chip);color:var(--muted);transition:color 120ms var(--ds-ease-out),background-color 120ms var(--ds-ease-out)}
+.rc-delete:hover{color:var(--ds-danger);background:var(--ds-row-hover)}
+.rc-delete:focus-visible{outline:2px solid var(--focus);outline-offset:0}
+
+@media (prefers-reduced-motion:reduce){
+  .rc-commentable .line-number,.rc-commentable .code-line,.rc-delete,.rc-field>textarea{transition:none}
+}
+@media (prefers-contrast:more){
+  .rc-card,.rc-field>textarea:focus{box-shadow:inset 0 0 0 1px var(--border)}
+  .code-line.rc-covered>.line-number,.code-line.rc-selected>.line-number{box-shadow:inset 3px 0 0 var(--text)}
+  .code-line:is(.rc-covered,.rc-selected)>.line-number:focus-visible{box-shadow:inset 5px 0 0 var(--text)}
+  .rc-hint{color:var(--muted)}
+  .rc-delete,.rc-field>textarea::placeholder,.rc-note,.rc-away-title,.rc-away-where,.rc-thread[data-status="outdated"] .rc-field textarea:not(:focus){color:var(--text)}
+}
+@media (forced-colors:active){
+  .rc-card{border:1px solid CanvasText;box-shadow:none}
+  .rc-field>textarea:focus{outline:1px solid CanvasText;box-shadow:none}
+  .code-line.rc-covered>.line-number,.code-line.rc-selected>.line-number{forced-color-adjust:none;background:Highlight;color:HighlightText}
+  /* Fills and shadows are dropped: a range is outlined as one block (dashed while selected), its
+   * sides on every row, its top on the first and its bottom on the last (the -first and -last
+   * classes, set as the rows are marked). An overlay, so the rows keep their height. */
+  .code-line:is(.rc-covered,.rc-selected){position:relative}
+  .code-line:is(.rc-covered,.rc-selected)::after{content:"";position:absolute;inset:0;pointer-events:none;border-inline:2px solid Highlight}
+  .code-line:is(.rc-covered-first,.rc-selected-first)::after{border-block-start:2px solid Highlight}
+  .code-line:is(.rc-covered-last,.rc-selected-last)::after{border-block-end:2px solid Highlight}
+  .code-line.rc-selected::after{border-style:dashed}
+  .rc-commentable .line-number:is(:hover,:focus-visible)::before{color:Highlight}
+  .code-line:is(.rc-covered,.rc-selected)>.line-number:is(:hover,:focus-visible)::before{color:HighlightText}
+  .rc-commentable .line-number:focus-visible{outline-color:Highlight}
+  .rc-note{color:CanvasText}
+}

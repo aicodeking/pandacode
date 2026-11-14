@@ -21,11 +21,56 @@ export interface DiffViewerInput {
   scrollRoot?: HTMLElement;
   /** Constant CSS added to every diff's shadow root (never patch content). */
   shadowCSS?: string;
+  /**
+   * Work on the diff's lines (line comments, review-comments-diff.ts): pierre's own line selection
+   * (click, drag or Shift-click line numbers) is reported to it, and it renders line annotations.
+   * A host whose hooks are still loading mounts without them and calls `attachReview` later.
+   */
+  review?: DiffReviewHooks;
+  /** The diff is shown as plain text (binary, too large, unparsable, or it failed while mounting,
+   * which can happen after `ready`): the host learns it has no lines to work on. */
+  onFallback?(): void;
+}
+
+/** A line range as pierre's line selection reports it. */
+export type DiffLineRange = { start: number; side?: 'deletions' | 'additions'; end: number; endSide?: 'deletions' | 'additions' };
+/** A rendered hunk's line spans, as pierre gives them. */
+export type DiffHunkSpan = { additionStart: number; additionCount: number; deletionStart: number; deletionCount: number };
+/** A line annotation: rendered below `lineNumber` (0: above the first hunk), `metadata` keying its element. */
+export type DiffAnnotation = { side: 'deletions' | 'additions'; lineNumber: number; metadata: string };
+/** What a viewer offers the feature working on its lines. */
+export type DiffReviewHost = {
+  /** The viewer's root; the line numbers are in the shadow roots of its `diffs-container`s. */
+  root: HTMLElement;
+  /** Reapplies the annotations and CSS. */
+  repaint(): void;
+  /** Shows a line selection without reporting it back; null drops it. */
+  show(range: DiffLineRange | null): void;
+};
+/** The hooks a feature working on a diff's lines gives the viewer. The viewer knows nothing else of it. */
+export interface DiffReviewHooks {
+  /** Annotations for one rendered hunk group. */
+  annotations(hunks: readonly DiffHunkSpan[]): DiffAnnotation[];
+  /** The element for an annotation's key; the same key returns the same element. */
+  render(key: string): HTMLElement | undefined;
+  /** Shadow-root CSS for the lines (never patch text). */
+  css(): string;
+  /** The user selected lines on the line numbers. */
+  select(range: DiffLineRange | null): void;
+  /** A selection being drawn (pressed, dragged or Shift-clicked): the range to show instead, or
+   * `range` itself to leave it as drawn. */
+  selecting(range: DiffLineRange | null): DiffLineRange | null;
+  /** Connects a viewer before its first rows mount: `rendered` runs after pierre draws, `detach` on dispose. */
+  attach(host: DiffReviewHost): { rendered(): void; detach(): void };
 }
 
 export interface DiffViewerController {
   /** Resolves after the first render or a safe fallback; never rejects. */
   ready: Promise<void>;
+  /** Adds review hooks to a viewer mounted without them (their code arrived later): a diff already
+   * drawn is drawn again once with them. `create` runs only when they will be used: not after
+   * dispose, on a plain text fallback, or when the viewer has hooks already. */
+  attachReview(create: () => DiffReviewHooks | undefined): void;
   /** Safe to call during the lazy import, and more than once. */
   dispose(): void;
 }
@@ -220,7 +265,35 @@ export function preloadDiffViewer(): Promise<unknown> {
 export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): DiffViewerController {
   mountedViewers.get(host)?.dispose();
   let disposed = false;
-  let renderers: { view: FileDiff; header: boolean; file: FileDiffMetadata }[] = [];
+  // `annotated`: pierre holds line annotations for it (see `annotations`).
+  let renderers: { view: FileDiff<string>; header: boolean; file: FileDiffMetadata; annotated?: boolean }[] = [];
+  let review = input.review;
+  let reviewLink: ReturnType<DiffReviewHooks['attach']> | undefined;
+  /** Connects the review before rows mount (or, attached late, before they are drawn again). The
+   * root says so (`data-review-hooks`): the hooks can arrive after the diff is ready. */
+  const connect = () => {
+    reviewLink = review?.attach({
+      root,
+      repaint: () => { if (!disposed) rerender(); },
+      show: range => { for (const { view } of renderers) view.setSelectedLines(range, { notify: false }); },
+    });
+    root.toggleAttribute('data-review-hooks', Boolean(reviewLink));
+  };
+  /** A selection being drawn is shown as the review would take it (its own hunk; across deleted and
+   * added lines, only the lines a comment covers), so what is highlighted is what is commented on. */
+  const drawing = (range: DiffLineRange | null) => {
+    const shown = review?.selecting(range);
+    if (shown !== undefined && shown !== range) for (const { view } of renderers) view.setSelectedLines(shown, { notify: false });
+  };
+  /** The review's annotations for a renderer, or undefined when it has none and pierre holds none:
+   * pierre is never handed an empty list, which makes a virtualized diff's parked rows drift
+   * (tests/diff-perf.spec.ts, "scroll the whole list"). */
+  const annotations = (entry: { file: FileDiffMetadata; annotated?: boolean }) => {
+    const list = review?.annotations(entry.file.hunks);
+    const wanted = list?.length || entry.annotated ? list : undefined;
+    entry.annotated = Boolean(list?.length);
+    return wanted;
+  };
   let pool: WorkerPoolManager | undefined;
   let rerenderFrame = 0, primeFrame = 0, settleTimer = 0, scrolling = false, viewHeight = 0;
   const priming = new Set<string>();
@@ -271,7 +344,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   // The element that actually scrolls: this viewer's content, or an ancestor list.
   const scroller = input.scrollRoot ?? content;
 
-  const options = (header: boolean): FileDiffOptions<undefined, undefined> => ({
+  const options = (header: boolean, hooks = review): FileDiffOptions<string, undefined> => ({
     themeType: themeType(),
     preferredHighlighter: highlighter,
     diffStyle: layout,
@@ -287,16 +360,17 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     tokenizeMaxLength: TOKENIZE_MAX_LINES,
     disableErrorHandling: true,
     // The content strip is each diff's one Tab stop; Chrome would also stop on the scroller inside the shadow root.
-    onPostRender: node => node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach(code => { code.tabIndex = -1; }),
-    enableLineSelection: false,
-    // This CSS is constant; no patch content is ever interpolated into it.
+    onPostRender: node => { node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach(code => { code.tabIndex = -1; }); reviewLink?.rendered(); },
+    enableLineSelection: Boolean(hooks),
+    ...(hooks ? { onLineSelected: (range: DiffLineRange | null) => hooks.select(range), onLineSelectionStart: drawing, onLineSelectionChange: drawing, renderAnnotation: (annotation: { metadata: string }) => hooks.render(annotation.metadata) } : {}),
+    // This CSS is constant apart from the review's line rules (line numbers only); no patch content is ever interpolated into it.
     // Pierre adds it to every container it creates, including hunk groups mounted later.
-    unsafeCSS: ':host { --diffs-font-family: var(--mono, monospace); --diffs-font-size: 0.86rem; --diffs-line-height: 1.45rem; }' + (input.shadowCSS ?? ''),
+    unsafeCSS: ':host { --diffs-font-family: var(--mono, monospace); --diffs-font-size: 0.86rem; --diffs-line-height: 1.45rem; }' + (input.shadowCSS ?? '') + (hooks?.css() ?? ''),
   });
 
   // Distance in pixels from the viewport to a virtualized renderer (0 when visible).
-  function distance(entry: { view: FileDiff }, top: number, bottom: number): number {
-    const view = entry.view as VirtualizedFileDiff, start = view.top ?? 0, end = start + view.height;
+  function distance(entry: { view: FileDiff<string> }, top: number, bottom: number): number {
+    const view = entry.view as VirtualizedFileDiff<string>, start = view.top ?? 0, end = start + view.height;
     return start > bottom ? start - bottom : end < top ? top - end : 0;
   }
 
@@ -354,9 +428,14 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     cleanRenderers();
     resizeObserver?.disconnect();
     themeObserver?.disconnect();
+    // The review's fields go with the rows: a focused one is saved as leaving it would (letGo).
+    reviewLink?.detach();
+    reviewLink = undefined;
+    root.removeAttribute('data-review-hooks');
     content.replaceChildren();
     content.setAttribute('aria-busy', 'false');
     root.dataset.diffState = 'fallback';
+    input.onFallback?.();
     controls.hidden = true;
     status.hidden = false;
     status.textContent = message;
@@ -390,7 +469,12 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     cancelAnimationFrame(rerenderFrame);
     const scrollTop = scroller.scrollTop;
     const failed = () => showFallback('Unable to format this diff. Showing the recorded patch.');
-    const apply = ({ view, header }: { view: FileDiff; header: boolean }) => { view.setOptions(options(header)); view.rerender(); };
+    const apply = (entry: (typeof renderers)[number]) => {
+      entry.view.setOptions(options(entry.header));
+      const list = annotations(entry);
+      if (list) entry.view.setLineAnnotations(list);
+      entry.view.rerender();
+    };
     try {
       updateControls();
       let order = renderers, now = renderers.length;
@@ -489,10 +573,11 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
           if (index) { const extra = element('div', 'diff-viewer-file'); target.after(extra); target = extra; }
           target.setAttribute('aria-label', file.name);
           const header = !chunk.continued && (sections > 1 || files.length > 1);
-          const view = virtualizer ? new lib.VirtualizedFileDiff(options(header), virtualizer, { hunkLineCount: RENDER_BATCH_LINES }, pool) : new lib.FileDiff(options(header), pool);
-          renderers.push({ view, header, file });
+          const view = virtualizer ? new lib.VirtualizedFileDiff<string>(options(header), virtualizer, { hunkLineCount: RENDER_BATCH_LINES }, pool) : new lib.FileDiff<string>(options(header), pool);
+          const entry = { view, header, file };
+          renderers.push(entry);
           mounted.push(file);
-          view.render({ fileDiff: file, containerWrapper: target });
+          view.render({ fileDiff: file, containerWrapper: target, lineAnnotations: annotations(entry) });
           if (!file.hunks.length) {
             const message = file.type === 'rename-pure'
               ? `Renamed ${file.prevName ?? 'file'} to ${file.name}. Contents unchanged.`
@@ -519,6 +604,8 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
           });
         } else finish();
       };
+      // Attached before the first rows mount, so they render the annotations as they are now.
+      connect();
       pump(FIRST_SLICE_MS);
       if (root.dataset.diffState === 'fallback') return;
       schedulePrime();
@@ -552,10 +639,20 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
 
   const controller: DiffViewerController = {
     ready: initialize(),
+    attachReview(create) {
+      if (disposed || review || root.dataset.diffState === 'fallback') return;
+      review = create();
+      // Not mounted yet: initialize connects it before the first rows mount.
+      if (!review || !renderers.length) return;
+      connect();
+      // Line selection, the review's CSS and its annotations come with the options.
+      rerender();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       listeners.abort();
+      reviewLink?.detach();
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
       cancelAnimationFrame(resizeFrame);
