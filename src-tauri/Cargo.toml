@@ -51,7 +51,10 @@ webpki-roots = "0.26"
 des = "0.8"
 shell-words = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-tauri-plugin-updater = ">=2, <2.10"
+# 2.14 checks and downloads updates with reqwest 0.13, which verifies TLS against
+# the OS certificate store. It needs Tauri 2.12 (the Windows bindings below) and
+# rustc 1.90. Keep the cap on 2.14 so a later minor cannot change that stack.
+tauri-plugin-updater = ">=2.14.1, <2.15"
 tauri-plugin-process = ">=2, <2.4"
 if-addrs = "=0.15.0"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
