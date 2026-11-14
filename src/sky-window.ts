@@ -267,7 +267,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
    * cost of the growth signal — one integer read per paint, which forces a style/layout flush only when the DOM is dirty,
    * and a frame that is painting a streaming thread has just made it dirty, so the flush it moves forward would have
    * happened in that same frame anyway (paint() reads no layout, so this is the instance's only read). It is 8 reads a
-   * second under the cap it arms, at most 30 otherwise, and none at all while nothing paints. A `ResizeObserver` would not
+   * second under the cap it arms, at most 30 while only the wind moves and 60 while the pointer burst runs, and none at
+   * all while nothing paints. A `ResizeObserver` would not
    * do: the transcript is a fixed-height scroller, so a growing thread does not resize its box. */
   function sampleGrowth(now: number): void {
     const height = scroller()?.scrollHeight ?? -1;
@@ -438,7 +439,13 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     }
     if (churning(performance.now())) {
       // Nothing queued at all (the loop was stopped and this is the first nudge back): arm one idle tick, never a burst.
-      if (!urgent) { if (!timer) timer = window.setTimeout(() => tick(performance.now()), 1000 / IDLE_FPS); return; }
+      // Say so now. The previous state could stay `idle` until that tick (up to 125 ms) while the pointer was already
+      // parting the clouds.
+      if (!urgent) {
+        setData('skyState', 'moving');
+        if (!timer) timer = window.setTimeout(() => tick(performance.now()), 1000 / IDLE_FPS);
+        return;
+      }
       window.clearTimeout(timer); timer = 0;
       setData('skyState', 'moving');
       frame = requestAnimationFrame(tick);
