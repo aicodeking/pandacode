@@ -541,6 +541,15 @@ if (new URLSearchParams(location.search).has('vm-coverage') && !new URLSearchPar
   previewCloud.connect('daytona', 'preview-only', {});
   previewCloud.create('daytona', 'preview-cloud');
 }
+// Explicit cloud machine extension fixture only: E2B connected with a preview-only key and the second
+// task already on a ready synthetic machine. No provider call, spend or provisioning; every action is the mock below.
+if (new URLSearchParams(location.search).has('cloud-coverage')) {
+  previewCloud.connect('e2b', 'preview-only', {});
+  const task = sessions.find(item => item.id === 'session-2');
+  if (task) Object.assign(task, { worktreeBranch: 'pandacode/cloud-fixture', cloud: { provider: 'e2b', label: 'E2B', machine: 'e2b:pc-fixture', stage: 'ready', detail: null } });
+  (window as any).__previewCloudStage = (sessionId: string, stage: NonNullable<Session['cloud']>['stage']) => { const target = sessions.find(item => item.id === sessionId); if (target) cloudStage(target, stage); };
+  (window as any).__previewCloudSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
 function cloudStage(s: Session, stage: NonNullable<Session['cloud']>['stage'], detail: string | null = null): void {

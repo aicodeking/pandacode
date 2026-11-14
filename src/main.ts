@@ -102,7 +102,9 @@ import type { RemoteStart } from './remote-progress';
 import type { RoutingMode, RoutingStatus } from './model-routing';
 import { CONNECT_SETUP, LOCAL, behindDialog, behindText, cancelledRemoteStart, clearRemoteStart, computerControl, computerItems, lastSeenText, remoteStart, remoteStartAttached, remoteStartStrip, startStageText, trackRemoteStart } from './remote-target';
 import './cloud-agents.css';
-import { SETUP_CHOICE, cloudActionItems, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, type CloudStage, type CloudTarget } from './cloud-agents';
+import { SETUP_CHOICE, cloudActionItems, cloudChoice, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, CLOUD_HARNESSES, type CloudStage, type CloudTarget } from './cloud-agents';
+import { mountCloudPresentation, CLOUD_CONSENT_ITEM, CLOUD_LABELS, type CloudHostRequest } from './extensions/cloud-host';
+import type { CloudPending } from './extensions/cloud';
 import { botsBarHtml, botsListHtml, botsPanelHeadHtml, markAllBotsRead, moveBot, pinnedBots, setBotPinned, storedSidebarView, storeSidebarView, syncSeen, type BotSignals, type SidebarView } from './sidebar-bots';
 import { sharedChannelActionsHtml, sharedChannelComposerHtml, sharedChannelThreadHtml, type SharedChannelDetail, type SharedChannelSummary, type SharedChannelUiOptions } from './bot-shared-channels';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
@@ -949,6 +951,33 @@ const worktrees = createWorktrees({
 if (preview && new URLSearchParams(location.search).has('worktree-coverage')) {
   (window as any).__previewWorktree = () => worktrees.presentation();
   (window as any).__previewWorktreeAction = (input: unknown) => worktrees.dispatch(input);
+}
+/* Cloud machine presentation (docs/extensions/cloud.md): one machine action per task at a time, and the
+ * task whose delete confirmation is open. Both stay with the captured task when the user switches. */
+const cloudPending = new Map<string, Exclude<CloudPending, 'none'>>();
+let cloudConfirming: string | undefined;
+const cloudPresentation = mountCloudPresentation({
+  state: () => {
+    const s = session(); if (!s) return undefined;
+    const choice = !s.cloud && !s.remoteDevice && newTaskView();
+    if (!s.cloud && !choice) return { project: s.projectId, task: s.id, mode: 'none', provider: '', machine: '', stage: 'none', label: '', pending: 'none', confirm: false, supported: CLOUD_HARNESSES.includes(s.provider), targets: [], items: [] };
+    const chosen = choice ? cloudTargets.find(target => target.ready && target.provider === cloudProvider(remoteChoice)) : undefined;
+    return {
+      project: s.projectId, task: s.id, mode: s.cloud ? 'task' : 'choice', provider: s.cloud?.provider ?? chosen?.provider ?? '', machine: s.cloud?.machine ?? '',
+      stage: s.cloud?.stage ?? 'none', label: s.cloud?.label ?? chosen?.label ?? '', pending: cloudPending.get(s.id) ?? 'none', confirm: cloudConfirming === s.id,
+      supported: CLOUD_HARNESSES.includes(s.provider), targets: s.cloud ? [] : cloudTargets.filter(target => target.ready).map(target => target.provider),
+      items: s.cloud ? cloudActionItems(s, cloudPending.has(s.id)) : [],
+    };
+  },
+  strip: () => document.querySelector<HTMLElement>('#composer-area .cloud-strip'),
+  computer: () => document.querySelector<HTMLElement>('#composer-computer'),
+  execute: (request, alive) => runCloudRequest(request, alive),
+  openContext: (anchor, point) => { const s = session(); if (s?.cloud) void showCloudMenu(anchor, s, point); },
+  notify, rerender: () => syncCloudStrip(),
+});
+if (preview && new URLSearchParams(location.search).has('cloud-coverage')) {
+  (window as any).__previewCloud = () => cloudPresentation.presentation();
+  (window as any).__previewCloudAction = (input: unknown) => cloudPresentation.dispatch(input);
 }
 window.addEventListener('pandacode-github-change', () => { renderComposer(); renderHeader(); renderInspector(); });
 window.addEventListener('focus', () => void github.refreshLinks(state.projectId));
@@ -3160,7 +3189,7 @@ function renderComposer(): void {
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
+  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStripHtml(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
   if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
   renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
   trayStateChanged();
@@ -6828,16 +6857,20 @@ async function refreshCloudTargets(): Promise<void> {
 function syncCloudStrip(): void {
   const s = session(), old = document.querySelector<HTMLElement>('#composer-area .cloud-strip'), composer = document.querySelector('#composer');
   if (!s || !composer || old?.querySelector('[aria-expanded="true"]')) return;
-  const markup = cloudStrip(s);
+  const markup = cloudStripHtml(s);
+  cloudPresentation.observe();
+  // A redraw (progress, layout, presentation or recovery) keeps keyboard focus on the same control.
+  const focused = old?.contains(document.activeElement) && document.activeElement?.id ? document.activeElement.id : '';
   if (old) { if (old.outerHTML !== markup) { if (markup) old.outerHTML = markup; else old.remove(); } }
   else if (markup) composer.insertAdjacentHTML('beforebegin', markup);
+  if (focused && !document.activeElement?.closest('.cloud-strip')) document.querySelector<HTMLElement>(`#composer-area .cloud-strip #${CSS.escape(focused)}`)?.focus({ preventScroll: true });
 }
 function onCloudProgress(event: { sessionId: string; stage: CloudStage; detail?: string | null }): void {
   const task = state.sessions.find(item => item.id === event.sessionId);
   // A task that just turned into a cloud task may not be listed as one yet.
   if (!task?.cloud) { run(reloadSessions()); return; }
   task.cloud = { ...task.cloud, stage: event.stage, detail: event.detail ?? null };
-  if (task.id === state.sessionId) { syncCloudStrip(); renderHeader(); }
+  if (task.id === state.sessionId) { syncCloudStrip(); renderHeader(); cloudPresentation.observe(); }
   renderNavigation();
 }
 async function initCloudAgents(): Promise<void> {
@@ -6845,24 +6878,57 @@ async function initCloudAgents(): Promise<void> {
   await (subscribe as unknown as (name: string, callback: typeof onCloudProgress) => Promise<() => void>)('cloud-agent://progress', onCloudProgress);
   await refreshCloudTargets();
 }
-async function showCloudMenu(anchor: HTMLElement): Promise<void> {
-  const s = session(); if (!s?.cloud) return;
-  await showChoices(anchor, { title: 'Cloud machine', width: 240, items: cloudActionItems(s), onSelect: async id => {
+/** The strip with the extension presentation's provider attribute, order and visibility, if any. */
+function cloudStripHtml(s: Session): string {
+  return cloudStrip(s, { pending: cloudPending.has(s.id), attributes: cloudPresentation.providerAttribute(), decorate: items => cloudPresentation.decorate(items) });
+}
+/** The machine menu (`panda.cloud.actions`) or the strip/chip context menu (`panda.cloud.context`), for the task it opened on. */
+async function showCloudMenu(anchor: HTMLElement, s = session(), point?: { x: number; y: number }): Promise<void> {
+  if (!s?.cloud) return;
+  const consent = cloudPresentation.consentItem(), location = point || anchor.id !== 'cloud-menu' ? 'panda.cloud.context' as const : 'panda.cloud.actions' as const;
+  await showChoices(anchor, { title: 'Cloud machine', width: 240, point, items: [...cloudActionItems(s, cloudPending.has(s.id)), ...(consent ? [consent] : [])], extensionSurface: { location, context: { projectId: s.projectId, sessionId: s.id, revision: state.generation, selection: { kind: 'machine', ids: [s.cloud.machine ?? s.id] } }, isAlive: () => state.sessionId === s.id, pinned: [CLOUD_CONSENT_ITEM], width: 240 }, onSelect: id => {
     closeChoiceMenu();
+    if (id === CLOUD_CONSENT_ITEM) { cloudPresentation.toggleConsent(); return; }
+    void runCloudAction(s, id);
+  } });
+}
+/** The original machine action for the task it was chosen on; a second one waits for the first (exactly once). */
+async function runCloudAction(s: Session, id: string): Promise<void> {
+  if (!s.cloud || !['sync', 'retry', 'open', 'stop', 'delete'].includes(id)) return;
+  if (cloudPending.has(s.id)) { notify('Wait for the current cloud machine action to finish.'); return; }
+  cloudPending.set(s.id, id as Exclude<CloudPending, 'none'>); syncCloudStrip();
+  try {
     if (id === 'delete' && !await confirmDeleteMachine(s)) return;
     try { await call('cloud_agent_action', { sessionId: s.id, action: id }); }
     catch (error) { notify(errorText(error)); return; }
     if (id === 'open') openVm();
     else if (id === 'delete') notify('Deleted the cloud machine. Your next message creates a new one.');
-  } });
+  } finally { cloudPending.delete(s.id); syncCloudStrip(); }
 }
 function confirmDeleteMachine(s: Session): Promise<boolean> {
   const dialog = modal('Delete cloud machine?', deleteMachineDialog(s));
   const form = dialog.querySelector<HTMLFormElement>('#cloud-delete-form')!;
+  cloudConfirming = s.id; cloudPresentation.observe();
   return new Promise(resolve => {
-    dialog.addEventListener('close', () => resolve(false), { once: true });
-    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); resolve(true); closeModal(); }, { once: true });
+    dialog.addEventListener('close', () => { if (cloudConfirming === s.id) cloudConfirming = undefined; resolve(false); }, { once: true });
+    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); if (cloudConfirming === s.id) cloudConfirming = undefined; resolve(true); closeModal(); }, { once: true });
   });
+}
+/** A captured extension request through the original handlers. Choosing a target and machine operations
+ * also wait for a fresh host choice; delete keeps its own confirmation after that. */
+function runCloudRequest(request: CloudHostRequest, alive: () => boolean): void {
+  const task = state.sessions.find(item => item.id === request.task);
+  const confirmEntry = (anchor: HTMLElement | null | undefined, run: () => void) => {
+    if (!anchor?.isConnected) return;
+    void showChoices(anchor, { title: 'Extension requested a cloud action', items: [{ id: 'continue', label: `Continue: ${CLOUD_LABELS[request.controlId] ?? request.controlId}`, icon: 'refresh' }], onSelect: id => { closeChoiceMenu(); if (id === 'continue' && alive()) run(); } });
+  };
+  switch (request.controlId) {
+    case 'machine-menu': document.querySelector<HTMLElement>('#composer-area #cloud-menu')?.click(); return;
+    case 'target-setup': run(showSettings('cloud')); return;
+    case 'delete-cancel': document.querySelector<HTMLElement>('#cloud-delete-form [data-action="close-dialog"]')?.click(); return;
+    case 'target-cloud': confirmEntry(document.querySelector<HTMLElement>('#composer-computer'), () => chooseComputer(cloudChoice(request.key.slice('target:'.length)))); return;
+    default: if (task?.cloud) confirmEntry(document.querySelector<HTMLElement>('#composer-area #cloud-menu') ?? document.querySelector<HTMLElement>('#composer-area .cloud-strip'), () => void runCloudAction(task, request.controlId));
+  }
 }
 /** A New task sent with a cloud provider chosen: the same message content as a Connect start, on a cloud machine. */
 async function sendCloud(s: Session, target: CloudTarget, draft: string, text: string): Promise<void> {
@@ -6907,16 +6973,24 @@ async function initRemote(): Promise<void> {
   if (status) { signedIn = status.signedIn; remoteConnected = status.connected; await refreshRemoteTargets(signedIn); }
 }
 async function showComputerMenu(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Run on', width: 280, items: computerItems(remoteTargets, remoteChoice, cloudTargets), onSelect: id => {
+  // Cloud rows keep their place after the other computers, in the user's order and visibility.
+  const items = cloudPresentation.decorateTargets(computerItems(remoteTargets, remoteChoice, cloudTargets), item => cloudProvider(item.id) ? 'target-cloud' : item.id === SETUP_CHOICE ? 'target-setup' : undefined);
+  const consent = cloudPresentation.consentItem();
+  await showChoices(anchor, { title: 'Run on', width: 280, items: [...items, ...(consent ? [consent] : [])], onSelect: id => {
     closeChoiceMenu();
-    if (id === SETUP_CHOICE) { run(showSettings('cloud')); return; }
-    if (id === CONNECT_SETUP) { run(showSettings('remote')); return; }
-    remoteChoice = id; remoteChoiceName = remoteTargets.find(item => item.deviceId === id)?.name; renderHeader();
-    const task = session();
-    if (task && remoteComposerKey(task) !== renderedRemoteKey) renderComposer();
-    if (cloudProvider(id)) { if (task && newTaskView()) { const refusal = harnessRefusal(task.provider, provider(task.provider)?.name ?? task.provider); if (refusal) notify(refusal); } return; }
-    if (task && newTaskView()) run(adaptPickerToComputer(task, id, remoteTargets.find(item => item.deviceId === id)?.name ?? 'That computer'));
+    if (id === CLOUD_CONSENT_ITEM) { cloudPresentation.toggleConsent(); return; }
+    chooseComputer(id);
   } });
+}
+/** The original Run on choice; a cloud provider only marks where the next message runs, nothing is provisioned. */
+function chooseComputer(id: string): void {
+  if (id === SETUP_CHOICE) { run(showSettings('cloud')); return; }
+  if (id === CONNECT_SETUP) { run(showSettings('remote')); return; }
+  remoteChoice = id; remoteChoiceName = remoteTargets.find(item => item.deviceId === id)?.name; renderHeader();
+  const task = session();
+  if (task && remoteComposerKey(task) !== renderedRemoteKey) renderComposer();
+  if (cloudProvider(id)) { if (task && newTaskView()) { const refusal = harnessRefusal(task.provider, provider(task.provider)?.name ?? task.provider); if (refusal) notify(refusal); } return; }
+  if (task && newTaskView()) run(adaptPickerToComputer(task, id, remoteTargets.find(item => item.deviceId === id)?.name ?? 'That computer'));
 }
 /** Resolves true on Continue; Cancel or closing the dialog resolves false. */
 function confirmBehind(name: string, check: RemoteRepoCheck): Promise<boolean> {

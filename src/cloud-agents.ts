@@ -58,22 +58,26 @@ export function cloudChip(session: Session): string {
   return `<span class="composer-computer composer-computer-fixed" data-remote="cloud" role="img" tabindex="0" aria-label="Computer: ${label} cloud machine (fixed for this task) · ${stage}" data-tip="This task runs on a ${label} cloud machine. ${stage}.">${CLOUD_ICON}<span class="sr-only">on ${label}</span></span>`;
 }
 
-/** The status strip above a cloud task's composer. */
-export function cloudStrip(session: Session): string {
+/** The status strip above a cloud task's composer. `pending` shows a machine action in flight; `decorate`
+ * lets the extension presentation order and hide the two original controls inside the same markup. */
+export function cloudStrip(session: Session, options: { pending?: boolean; attributes?: string; decorate?: (items: readonly (readonly [string, string])[]) => string } = {}): string {
   const cloud = session.cloud; if (!cloud) return '';
   const text = stageText(cloud.stage, cloud.detail, session.provider);
-  const lead = busyStage(cloud.stage) ? '<span class="support-spinner" aria-hidden="true"></span>' : CLOUD_ICON;
-  return `<div class="cloud-strip" data-stage="${cloud.stage}"><span class="cloud-strip-status" role="status">${lead}<span class="cloud-strip-text">${escape(cloud.label)} · ${escape(text)}</span></span><button type="button" id="cloud-menu" class="cloud-strip-menu" data-action="cloud-menu" aria-haspopup="dialog" aria-expanded="false" aria-label="Cloud machine actions" title="Cloud machine actions">${icon('more')}</button></div>`;
+  const lead = busyStage(cloud.stage) || options.pending ? '<span class="support-spinner" aria-hidden="true"></span>' : CLOUD_ICON;
+  const status = `<span class="cloud-strip-status" role="status">${lead}<span class="cloud-strip-text">${escape(cloud.label)} · ${escape(text)}</span></span>`;
+  const menu = `<button type="button" id="cloud-menu" class="cloud-strip-menu" data-action="cloud-menu" aria-haspopup="dialog" aria-expanded="false" aria-label="Cloud machine actions" title="Cloud machine actions">${icon('more')}</button>`;
+  return `<div class="cloud-strip" data-stage="${cloud.stage}"${options.attributes ?? ''}>${options.decorate ? options.decorate([['status', status], ['machine-menu', menu]]) : status + menu}</div>`;
 }
 
-export function cloudActionItems(session: Session) {
+/** The machine menu rows; while one action is pending for this task every row waits for it. */
+export function cloudActionItems(session: Session, pending = false) {
   const stage = session.cloud?.stage;
   return [
-    { id: 'sync', label: 'Sync changes', icon: 'refresh', disabled: stage === 'syncing' },
-    ...(stage === 'error' ? [{ id: 'retry', label: 'Retry', icon: 'refresh' }] : []),
-    { id: 'open', label: 'Open machine', icon: 'monitor' },
-    { id: 'stop', label: 'Stop machine', icon: 'stop', disabled: stage === 'stopped' },
-    { id: 'delete', label: 'Delete machine…', icon: 'trash', danger: true },
+    { id: 'sync', label: 'Sync changes', icon: 'refresh', disabled: pending || stage === 'syncing' },
+    ...(stage === 'error' ? [{ id: 'retry', label: 'Retry', icon: 'refresh', disabled: pending }] : []),
+    { id: 'open', label: 'Open machine', icon: 'monitor', disabled: pending },
+    { id: 'stop', label: 'Stop machine', icon: 'stop', disabled: pending || stage === 'stopped' },
+    { id: 'delete', label: 'Delete machine…', icon: 'trash', danger: true, disabled: pending },
   ];
 }
 

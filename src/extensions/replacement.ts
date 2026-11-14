@@ -5,6 +5,28 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** The selected, unfaulted cloud machine provider. The host strip markup carries it, so a progress
+ * redraw keeps the same presentation without remounting the menu, the dialog or a pending action. */
+export function cloudPresentationProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.cloud', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Strip-below visual move on the original cloud strip: no cloud call, menu, dialog or target change.
+ * Returns false only when the selected provider faults now (built-in layout restored), so the host reports it once. */
+export function applyCloudPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.cloud-strip-status')) throw Error('Incomplete cloud machine host');
+}): boolean {
+  const provider = componentSelection.resolve('panda.cloud', componentProviders());
+  if (!provider) { delete host.dataset.cloudProvider; return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.cloudProvider = provider.id; return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete host.dataset.cloudProvider;
+    return !fresh;
+  }
+}
 /** Images-first visual move on the original moodboard library: no load, thumbnail, file, form or attach change.
  * Returns false only when the selected provider faults now (built-in layout restored), so the host reports it once. */
 export function applyMoodboardPresentation(host: HTMLElement, qualify = () => {

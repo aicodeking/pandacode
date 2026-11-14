@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.cloud",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "connections.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.cloud/strip-below", "title": "Strip below", "slot": "panda.cloud", "contractVersion": 1, "presentation": "controls-below", "capabilities": ["host-machine", "host-targets", "original-actions"] }],
+    "commands": [{ "id": "sample.cloud/tools", "title": "Machine notes", "action": { "kind": "showMessage", "message": "Machines, spend and credentials stay with PandaCode." } }],
+    "menus": [
+      { "id": "sample.cloud/actions", "command": "sample.cloud/tools", "location": "panda.cloud.actions" },
+      { "id": "sample.cloud/context", "command": "sample.cloud/tools", "location": "panda.cloud.context" }
+    ],
+    "layouts": [{ "id": "sample.cloud/stop-first", "title": "Stop before syncing", "location": "panda.cloud.actions", "rules": [{ "id": "panda.cloud.actions/stop", "target": "panda.cloud.actions/sync", "side": "before" }] }]
+  }
+}

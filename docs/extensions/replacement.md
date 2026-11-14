@@ -19,6 +19,10 @@ The [Moodboard presentation v1](moodboards.md) contract (`panda.moodboards`) off
 explicitly selected `viewer-first` host recipe over the project moodboard library. The create
 submit, delete confirmation, file chooser and drop stay host-owned and have no public action.
 
+The [Cloud machine presentation v1](cloud.md) contract (`panda.cloud`) offers an explicitly
+selected `controls-below` host recipe over a cloud task's status strip. The provisioning send,
+provider credentials and the delete confirmation stay host-owned and have no public action.
+
 Install the `tests/fixtures/extensions/replacement` package as a local archive. In Settings →
 Extensions → Surface explorer choose **Project presentation** or **File presentation** explicitly.
 Enable alone does not replace anything. Competing providers never win by installation order.

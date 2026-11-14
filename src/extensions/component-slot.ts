@@ -1,6 +1,7 @@
 /** ComponentSlot v1: JSON-only presentation; core objects and operations stay in the host. */
-export type SlotId = 'panda.moodboards' | 'panda.worktree' | 'panda.pull' | 'panda.githubHub' | 'panda.board' | 'panda.btw' | 'panda.projects' | 'panda.files' | 'panda.composer' | 'panda.transcript' | 'panda.documents' | 'panda.changes' | 'panda.search' | 'panda.browser' | 'panda.terminal' | 'panda.simulator' | 'panda.vm' | 'panda.design';
+export type SlotId = 'panda.cloud' | 'panda.moodboards' | 'panda.worktree' | 'panda.pull' | 'panda.githubHub' | 'panda.board' | 'panda.btw' | 'panda.projects' | 'panda.files' | 'panda.composer' | 'panda.transcript' | 'panda.documents' | 'panda.changes' | 'panda.search' | 'panda.browser' | 'panda.terminal' | 'panda.simulator' | 'panda.vm' | 'panda.design';
 export type ComponentProvider = { id: string; title: string; slot: SlotId; contractVersion: number; presentation: 'tabs-first' | 'review-first' | 'composer-first' | 'cards' | 'list' | 'toolbar-first' | 'timeline' | 'viewer-first' | 'commit-first' | 'results-first' | 'controls-below' | 'tabs-below' | 'controls-first' | 'comments-first'; capabilities?: string[] };
+export const CLOUD_CAPABILITIES = ['host-machine', 'host-targets', 'original-actions'] as const;
 export const MOODBOARD_CAPABILITIES = ['host-boards', 'host-images', 'original-actions'] as const;
 export const WORKTREE_CAPABILITIES = ['host-branch', 'host-worktree', 'original-actions'] as const;
 export const PULL_CAPABILITIES = ['host-pull', 'host-diffs', 'original-actions'] as const;
@@ -19,7 +20,11 @@ export const COMPOSER_CAPABILITIES = ['host-input', 'attachments', 'model-mode',
 export const TRANSCRIPT_CAPABILITIES = ['streaming', 'tool-output', 'questions', 'approvals', 'team-progress', 'usage', 'stop-resume', 'host-history'] as const;
 export function componentIncompatibility(provider: ComponentProvider): string | undefined {
   if (provider.contractVersion !== 1) return 'Incompatible slot version';
-  if (provider.slot === 'panda.moodboards') {
+  if (provider.slot === 'panda.cloud') {
+    if (provider.presentation !== 'controls-below') return 'Unsupported cloud machine presentation';
+    if (CLOUD_CAPABILITIES.some(capability => !provider.capabilities?.includes(capability))) return 'Missing required cloud machine capabilities';
+    if (provider.capabilities?.some(capability => !CLOUD_CAPABILITIES.includes(capability as typeof CLOUD_CAPABILITIES[number]))) return 'Unsupported cloud machine capability';
+  } else if (provider.slot === 'panda.moodboards') {
     if (provider.presentation !== 'viewer-first') return 'Unsupported moodboard presentation';
     if (MOODBOARD_CAPABILITIES.some(capability => !provider.capabilities?.includes(capability))) return 'Missing required moodboard capabilities';
     if (provider.capabilities?.some(capability => !MOODBOARD_CAPABILITIES.includes(capability as typeof MOODBOARD_CAPABILITIES[number]))) return 'Unsupported moodboard capability';
@@ -90,7 +95,7 @@ export type SlotProps = { contractVersion: 1; slot: SlotId; context: string; rev
 export type SlotAction = { contractVersion: 1; kind: 'select' | 'open' | 'toggle'; id: string; objectRevision: number; revision: number; context: string };
 export type ComponentSlot<TProps, TActions, TState> = { props: TProps; dispatch(action: TActions): boolean; state: TState; dispose(): void };
 export const REPLACEMENT_KEY = 'pandacode.components.v1';
-const slots: SlotId[] = ['panda.moodboards', 'panda.worktree', 'panda.pull', 'panda.githubHub', 'panda.board', 'panda.btw', 'panda.projects', 'panda.files', 'panda.composer', 'panda.transcript', 'panda.documents', 'panda.changes', 'panda.search', 'panda.browser', 'panda.terminal', 'panda.simulator', 'panda.vm', 'panda.design'];
+const slots: SlotId[] = ['panda.cloud', 'panda.moodboards', 'panda.worktree', 'panda.pull', 'panda.githubHub', 'panda.board', 'panda.btw', 'panda.projects', 'panda.files', 'panda.composer', 'panda.transcript', 'panda.documents', 'panda.changes', 'panda.search', 'panda.browser', 'panda.terminal', 'panda.simulator', 'panda.vm', 'panda.design'];
 export function createComponentSelection(storage: Pick<Storage, 'getItem' | 'setItem'>) {
   const read = (): Partial<Record<SlotId, string>> => {
     try { const raw = storage.getItem(REPLACEMENT_KEY); if (!raw || raw.length > 8192) return {}; const value = JSON.parse(raw); if (value.schemaVersion !== 1 || !value.selected || Array.isArray(value.selected)) return {}; return Object.fromEntries(slots.filter(slot => typeof value.selected[slot] === 'string' && value.selected[slot].length < 256).map(slot => [slot, value.selected[slot]])); } catch { return {}; }
@@ -111,7 +116,7 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 const text = (value: unknown): value is string => typeof value === 'string' && value.length <= 4096;
 const revision = (value: unknown): boolean => Number.isSafeInteger(value) && Number(value) >= 0;
 export function validSlotProps(value: unknown): value is SlotProps {
-  if (record(value) && (value.slot === 'panda.moodboards' || value.slot === 'panda.worktree' || value.slot === 'panda.pull' || value.slot === 'panda.githubHub' || value.slot === 'panda.btw' || value.slot === 'panda.board')) return false;
+  if (record(value) && (value.slot === 'panda.cloud' || value.slot === 'panda.moodboards' || value.slot === 'panda.worktree' || value.slot === 'panda.pull' || value.slot === 'panda.githubHub' || value.slot === 'panda.btw' || value.slot === 'panda.board')) return false;
   // Composer/transcript use closed host recipes, never the list-object protocol.
   if (record(value) && (value.slot === 'panda.design' || value.slot === 'panda.vm' || value.slot === 'panda.simulator' || value.slot === 'panda.composer' || value.slot === 'panda.transcript' || value.slot === 'panda.documents' || value.slot === 'panda.changes' || value.slot === 'panda.search' || value.slot === 'panda.browser' || value.slot === 'panda.terminal')) return false;
   if (!record(value) || Object.keys(value).sort().join(',') !== 'context,contractVersion,objects,revision,slot,state' || value.contractVersion !== 1 || !slots.includes(value.slot as SlotId) || !text(value.context) || !revision(value.revision) || !Array.isArray(value.objects) || value.objects.length > 10000 || !record(value.state)) return false;

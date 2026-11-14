@@ -35,3 +35,6 @@
 @media (max-width: 700px) { .moodboards[data-moodboard-provider] .moodboard-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; } }
 [data-moodboard-accessory]:empty { display: none; }
 [data-moodboard-consent][hidden] { display: none; }
+/* Strip below the composer: the original cloud strip follows the composer; no node is moved or remounted. */
+#composer-area:has(> .cloud-strip[data-cloud-provider]) { display: flex; flex-direction: column; }
+#composer-area > .cloud-strip[data-cloud-provider] { order: 1; margin: 8px 0 0; }
