@@ -99,7 +99,7 @@ const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 21] = [
+pub(crate) const PROVIDERS: [(&str, &str); 22] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -119,6 +119,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 21] = [
     ("muse", "Muse Code"),
     ("devin", "Devin CLI"),
     ("zcode", "ZCode"),
+    ("omniroute", "OmniRoute"),
     ("hermes", "Hermes Agent"),
     ("cursor", "Cursor CLI"),
 ];
@@ -772,7 +773,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo" | "alibaba"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "omniroute" | "hermes",
             None,
         ) => true,
         ("claude" | "glm" | "mimo" | "alibaba", Some(value)) => {
@@ -780,7 +781,8 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
         // Kimi's thinking option lists on/off or the model's levels (low/high/max).
-        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes" | "cursor", Some(value)) => {
+        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "omniroute" | "hermes", Some(value)) => {
+            // grok and cline pass it as an argv value: a leading dash would read as a flag.
             !value.is_empty()
                 && !value.starts_with('-')
                 && value.len() <= 64
@@ -832,7 +834,7 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     launch::find(executable_name(name))
-        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "cursor" { cursor::agent_alias() } else if name == "devin" { devin::bundled() } else if name == "zcode" { zcode::bundled() } else if name == "antigravity" { launch::find("agy") } else { None })
+        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else if name == "zcode" || name == "omniroute" { zcode::bundled() } else if name == "antigravity" { launch::find("agy") } else { None })
 }
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
@@ -1232,7 +1234,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "omniroute" | "hermes"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -1264,7 +1266,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "github-copilot" => github_copilot::models(&path).await,
         "muse" => muse::models(&path).await,
         "devin" => devin::models(&path).await,
-        "zcode" => zcode::models(&path).await,
+        "zcode" | "omniroute" => zcode::models(provider, &path).await,
         "hermes" => hermes::models(&path).await,
         "cursor" => cursor::models(&path).await,
         _ => unreachable!(),
@@ -2251,7 +2253,7 @@ impl Protocol {
     fn initial(&self) -> Value {
         match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"get_state","id":"pandacode-init"}),
-            "zcode" => self.zcode_initial(),
+            "zcode" | "omniroute" => self.zcode_initial(),
             "muse" => self.muse_initial(),
             "codex" => {
                 let mut request = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"}}});
@@ -2294,7 +2296,7 @@ impl Protocol {
         let declined = decline_text(&self.config.session_id, id);
         Some(match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
-            "zcode" => zcode::permission_decision(&request, approved),
+            "zcode" | "omniroute" => zcode::permission_decision(&request, approved),
             "codex" => {
                 let method = string(&request, "method");
                 let result = if method == "item/permissions/requestApproval" {
@@ -2328,7 +2330,7 @@ impl Protocol {
     fn cancel(&self) -> Value {
         match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"abort"}),
-            "zcode" => zcode::stop(&self.remote_id),
+            "zcode" | "omniroute" => zcode::stop(&self.remote_id),
             "muse" => self.muse_cancel(),
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
@@ -2374,7 +2376,7 @@ impl Protocol {
             "codex" => self.codex(value).map(|step| self.steered(step)),
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
-            "zcode" => self.zcode(value).map(|step| self.steered(step)),
+            "zcode" | "omniroute" => self.zcode(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
             "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => self.acp(value),
             _ => self.claude(value),
@@ -3592,7 +3594,7 @@ fn configure_command_with_agents(
             }
         }
         "pi" | "omp" => pi::configure(command, config),
-        "zcode" => zcode::configure(command),
+        "zcode" | "omniroute" => zcode::configure(command),
         "muse" => muse::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
         "github-copilot" | "devin" | "hermes" | "cursor" => acp::configure(command, config),
@@ -3738,6 +3740,7 @@ async fn run_inner(
         "muse",
         "devin",
         "zcode",
+        "omniroute",
         "hermes",
         "cursor",
     ]
@@ -3996,6 +3999,9 @@ async fn run_process_with_tools(
             )
             .await?,
         ),
+        // ZCode bridging does not pass `mcpServers` in session/create yet, so a
+        // started server would sit unconsumed; drop host tools until it does.
+        ("zcode" | "omniroute", Some(_)) => (None, None),
         (_, None) => (None, None),
         _ => return Err("Host tools are unavailable for this provider".into()),
     };

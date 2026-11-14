@@ -2933,6 +2933,7 @@ pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo>
         providers::acp_catalog::invalidate("grok");
         providers::acp_catalog::invalidate("devin");
         providers::acp_catalog::invalidate("zcode");
+        providers::acp_catalog::invalidate("omniroute");
         providers::acp_catalog::invalidate("hermes");
         providers::acp_catalog::invalidate("cursor");
     }
