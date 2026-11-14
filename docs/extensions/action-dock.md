@@ -42,10 +42,12 @@ names; `tests/extensions-team-controls.test.mjs` checks it against the ledger.
 | Member | Public locations | Order | Hide | Captured actions | Note |
 | --- | --- | --- | --- | --- | --- |
 | dock | `panda.actionDock`, `panda.actionDock.controls`, `panda.actionDock.actions` | yes | yes | inspector, terminal, browser, moodboards, agents, run, deploy, task-menu | Run needs a fresh host choice; Agents never hides |
-| flyout | `panda.agents.actions` | yes | yes | agents | the original Agents click pins it; panels are T56F |
+| flyout | `panda.agents.actions` | yes | yes | agents | the original Agents click pins it; its subagent panel is `panda.roster` |
 | status | `panda.actionDock` (stays last), `panda.status.items` | — | — | — | the update prompt is the status family (T56G) |
 | team | `panda.team.controls`, `panda.team.actions`, `panda.team.context` | yes | yes | team-toggle, team-open, worker-open, workers-more | the Workers toggle never hides |
-| subagents, profiles, widget, usage | — | — | — | — | roster/lineage views are T56F, the widget T57, usage T56G |
+| subagents, profiles | `panda.roster`, `panda.roster.controls`, `panda.roster.context` | yes | see [agent roster](agent-roster.md) | see [agent roster](agent-roster.md) | the roster family (T56F) |
+| widget | `panda.roster.controls` | yes | Pin only | widget, widget-open | main-window widget is `panda.roster`; its pinned window is T57 |
+| usage | — | — | — | — | usage is T56G |
 
 ## Contract and policy
 

@@ -272,7 +272,36 @@ export const DOCK_PROTECTED = [
   ['recovery', 'Worker recovery', 'Retry, resume and skip of paused or failed workers stay in the team panel.'],
   ['update', 'Restart to update', 'The restart prompt runs only while safe and belongs to the status family.'],
 ] as const;
-export type ActionLocation = typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Agent roster adoption (docs/extensions/agent-roster.md): the subagent view, the team profile library and the
+ * main-window Running agents widget. `panda.roster.context` is a subagent row's context menu. Child state, streams,
+ * profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts and agents-dock.ts. */
+export const ROSTER_ACTION_SURFACES = ['panda.roster.context'] as const;
+export const ROSTER_CONTROLS_LOCATION = 'panda.roster.controls';
+export const ROSTER_PROTECTED_LOCATION = 'panda.roster.protected';
+/** Original roster controls: [id, label, member]. Order inside their own parent and reversible hide on the original nodes. */
+export const ROSTER_CONTROLS = [
+  ['back', 'Back to Subagents', 'subagents'], ['close', 'Close subagents', 'subagents'],
+  ['picker', 'Choose team profile', 'profiles'], ['manage', 'Manage team profile', 'profiles'], ['create', 'Save as…', 'profiles'], ['update', 'Update profile', 'profiles'],
+  ['widget', 'Running agents', 'widget'], ['pin', 'Pin widget', 'widget'],
+] as const;
+export type RosterControlPart = typeof ROSTER_CONTROLS[number][0];
+/** Roster controls that never hide, with the reason. They still reorder. */
+export const ROSTER_PINNED_CONTROLS: Readonly<Partial<Record<RosterControlPart, string>>> = {
+  back: 'Back is the way from a child\'s work to the list of subagents.',
+  close: 'Close (and Escape) is the way out of the subagent view.',
+  picker: 'The profile picker is the only way to a saved team profile.',
+  widget: 'The widget shows only when the user turns it on in Settings; that preference is the user\'s.',
+};
+/** Protected roster behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const ROSTER_PROTECTED = [
+  ['lineage', 'Parent and child ownership', 'Which task owns a subagent and which child it came from are reported by the harness; no package re-parents, merges or moves children.'],
+  ['stream', 'Open child\'s live work', 'The open child\'s response, tools and loading or failure notices stay host-drawn and keep streaming.'],
+  ['stop', 'Stop subagents', 'Subagents stop with their task from the composer; no package control stops a child or a task.'],
+  ['profile-delete', 'Rename and delete profile', 'Rename and delete run only from the host\'s Profile actions menu.'],
+  ['widget-window', 'Pinned widget window', 'Pinning opens the auxiliary Running agents window; its lifecycle and privileges belong to the window family (T57).'],
+  ['widget-preferences', 'Widget preferences', 'Turning the widget on and keeping it on screen are the user\'s Settings choices.'],
+] as const;
+export type ActionLocation = typeof ROSTER_ACTION_SURFACES[number] | typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
@@ -294,6 +323,7 @@ export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string
   'panda.inspector.search.context': [['open', 'Open file']],
   'panda.sidebar.context': [['toggle', 'Collapse or expand section']],
   'panda.team.context': [['toggle', 'Show or hide workers'], ['open', 'Open team']],
+  'panda.roster.context': [['open', 'Open subagent']],
   'panda.sidebar.project.context': [['new', 'New task'], ['collapse', 'Collapse other projects'], ['reveal', 'Reveal folder'], ['remove', 'Remove project…']],
   'panda.sidebar.task.context': [['pin', 'Pin task'], ['up', 'Move up'], ['down', 'Move down'], ['beside', 'Open beside'], ['rename', 'Rename…'], ['wake', 'Schedule a wake-up…'], ['unread', 'Mark as unread'], ['branch-task', 'New task from branch…'], ['copy-branch', 'Copy branch name'], ['copy-path', 'Copy project path'], ['copy-id', 'Copy task ID'], ['stage', 'Settle'], ['delete', 'Delete task…']],
 };

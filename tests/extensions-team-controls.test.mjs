@@ -20,12 +20,12 @@ test('Action dock registry: every panda.agents ledger member has an explicit ent
     if (entry.lead) assert.ok(['T56F', 'T56G', 'T57'].includes(entry.lead), entry.member);
     for (const location of entry.locations) assert.ok(ledger.catalog.surfaces.includes(location), location);
   }
-  // This task leads dock and team; the roster, widget and usage members stay with their own tasks.
-  assert.deepEqual(DOCK_REGISTRY.filter(entry => !entry.lead).map(entry => entry.member).sort(), ['dock', 'flyout', 'team']);
+  // Dock and team are T56E's, subagents and profiles the roster family's (T56F); the widget window and usage stay with their own tasks.
+  assert.deepEqual(DOCK_REGISTRY.filter(entry => !entry.lead).map(entry => entry.member).sort(), ['dock', 'flyout', 'profiles', 'subagents', 'team']);
   const row = ledger.dockCoverage['panda.actionDock'];
   assert.deepEqual(row.members, schema.$defs.dockControlId.enum);
   assert.deepEqual(row.groups, [...DOCK_GROUPS]); assert.deepEqual(row.teamParts, TEAM_PARTS.map(([id]) => id)); assert.deepEqual(row.protected, DOCK_PROTECTED.map(([id]) => id));
-  assert.deepEqual(Object.keys(row.open).sort(), ['profiles', 'subagents', 'usage', 'widget']);
+  assert.deepEqual(Object.keys(row.open).sort(), ['usage', 'widget']);
   assert.deepEqual(CONTEXT_COMMANDS['panda.team.context'].map(([id]) => id), ['toggle', 'open']);
   assert.equal(ledger.implementedAdapters.filter(adapter => adapter.id === 'panda.actionDock').length, 1);
   assert.ok(ledger.implementedAdapters.some(adapter => adapter.id === 'panda.actionDock' && adapter.tests.includes('tests/extensions-team-controls-coverage.spec.ts')));

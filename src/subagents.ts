@@ -51,6 +51,8 @@ export class Subagents {
   private rows = new Map<string, HTMLButtonElement>();
   private renderedTools = '';
   private fetching = '';
+  /** Presentation order of the list rows (docs/extensions/agent-roster.md); undefined is start order. */
+  private arrange?: (rows: readonly { id: string; active: boolean }[]) => string[];
 
   constructor(private host: HTMLElement, private panelId = 'subagents-panel', private fileContext?: (sessionId: string) => FileLinkContext | undefined) {
     host.innerHTML = `<button type="button" class="subagents-trigger" aria-label="Subagents" aria-expanded="false" aria-controls="subagents-panel" title="View subagent work" hidden>${icon('branch')}<span></span>${icon('chevron')}</button>`;
@@ -205,6 +207,18 @@ export class Subagents {
     this.panel?.querySelector<HTMLButtonElement>('.subagents-back')?.focus();
   }
 
+  /** Host-only roster state for presentation adoption: the open task, the view and each child's lineage and status. */
+  roster(): { task: string; open: boolean; selected: string; panelId: string; children: { id: string; parentId: string | null; status: SubagentActivity['status'] }[] } {
+    const agents = [...this.tasks.get(this.sessionId)?.agents.values() ?? []];
+    return { task: this.sessionId, open: Boolean(this.panel), selected: this.panel && agents.some(entry => entry.value.id === this.selected) ? this.selected : '', panelId: this.panelId,
+      children: agents.map(({ value }) => ({ id: value.id, parentId: value.parentId, status: value.status })) };
+  }
+  /** Orders the list rows with `arrange` (the same row nodes), or start order without one, and redraws. */
+  setArrange(arrange?: (rows: readonly { id: string; active: boolean }[]) => string[]): void {
+    if (this.arrange === arrange) return;
+    this.arrange = arrange; this.render();
+  }
+
   /** For the dock's Agents item: whether this task has subagents, how many run, and the panel. */
   get present(): boolean { return this.visible && Boolean(this.sessionId) && !this.trigger.hidden; }
   get running(): number { return [...this.tasks.get(this.sessionId)?.agents.values() ?? []].filter(entry => active(entry.value)).length; }
@@ -231,6 +245,20 @@ export class Subagents {
     hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear();
     this.trigger.setAttribute('aria-expanded', 'false');
     if (focus) this.trigger.focus({ preventScroll: true });
+  }
+
+  /** Moves rows only when their order differs, so focus, hover and the open details stay. */
+  private order(list: HTMLElement, agents: SubagentActivity[]): void {
+    const built = agents.map(agent => agent.id);
+    let ids = built;
+    try {
+      const arranged = this.arrange?.(agents.map(agent => ({ id: agent.id, active: active(agent) })));
+      // Only a permutation of the drawn rows is an order; anything else keeps start order.
+      if (arranged && arranged.length === built.length && new Set(arranged).size === built.length && arranged.every(id => this.rows.has(id))) ids = arranged;
+    } catch { /* A failing order keeps start order. */ }
+    const focused = document.activeElement as HTMLElement | null;
+    ids.forEach((id, index) => { const row = this.rows.get(id)!; if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null); });
+    if (focused && list.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
   }
 
   private render(): void {
@@ -283,6 +311,7 @@ export class Subagents {
         (description as HTMLElement).hidden = !info;
         if (status.textContent !== statusName(agent)) status.textContent = statusName(agent);
       }
+      this.order(list, agents);
       return;
     }
     detail.dataset.status = selected.status;

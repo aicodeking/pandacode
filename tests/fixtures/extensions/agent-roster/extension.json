@@ -1,0 +1,78 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.agent-roster",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.summary"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.agent-roster/running-first",
+        "title": "Running first",
+        "slot": "panda.roster",
+        "contractVersion": 1,
+        "presentation": "running-first",
+        "capabilities": [
+          "host-rows",
+          "host-lineage",
+          "original-actions"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.agent-roster/child-notes",
+        "title": "Child notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Subagents, their lineage and Stop stay host-owned."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.agent-roster/child-context",
+        "command": "sample.agent-roster/child-notes",
+        "location": "panda.roster.context",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "subagent"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.agent-roster/close-first",
+        "title": "Close before Back",
+        "location": "panda.roster.controls",
+        "rules": [
+          {
+            "id": "panda.roster.controls/close",
+            "target": "panda.roster.controls/back",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.agent-roster/update-first",
+        "title": "Update before Save as",
+        "location": "panda.roster.controls",
+        "rules": [
+          {
+            "id": "panda.roster.controls/update",
+            "target": "panda.roster.controls/create",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

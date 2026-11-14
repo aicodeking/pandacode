@@ -512,6 +512,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
 if (new URLSearchParams(location.search).has('dock-coverage')) {
   (window as any).__previewDockSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
+// Explicit agent roster extension fixture only: safe mode while children run, a child is open and a setup is open.
+if (new URLSearchParams(location.search).has('roster-coverage')) {
+  (window as any).__previewRosterSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit sidebar extension fixture only: safe mode while a task runs and a draft is open.
 if (new URLSearchParams(location.search).has('sidebar-coverage')) {
   (window as any).__previewSidebarSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();

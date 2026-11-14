@@ -57,6 +57,7 @@ config.testMatch.push('**/extensions-worktrees-coverage.spec.ts');
 config.testMatch.push('**/extensions-settings-coverage.spec.ts');
 config.testMatch.push('**/extensions-sidebar-coverage.spec.ts');
 config.testMatch.push('**/extensions-team-controls-coverage.spec.ts');
+config.testMatch.push('**/extensions-agent-roster-coverage.spec.ts');
 config.testMatch.push('**/extensions-core-dialogs-coverage.spec.ts');
 config.testMatch.push('**/extensions-owned-dialogs-coverage.spec.ts');
 config.testMatch.push('**/extensions-moodboards-coverage.spec.ts');

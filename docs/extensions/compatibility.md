@@ -21,6 +21,7 @@ The general platform completion/API stabilization gate is separate.
 | `panda.pull` | `tabs-first` | Original tab bar; compatible header siblings | Pull identity, diff viewers, link/unlink and the merge confirmation |
 | `panda.worktree` | `controls-first` | Original branch/worktree controls | Branches, worktree create/recreate and cleanup confirmations |
 | `panda.actionDock` | `actions-first` | Original dock groups and items, Workers line parts | Team state, workers, approvals, answers, worker recovery and Stop |
+| `panda.roster` | `running-first` | Original subagent rows, subagent view, team profile and main-window widget controls | Children, streams, lineage, profile rename/delete, Stop, the widget's preference and its pinned window |
 | `panda.sidebar` | `filter-first` | Original header, project row, sections and row parts | Grouping, sorting, selection, manual order, unread state and confirmations |
 | `panda.settings` | `actions-first` | Original sections, eligible rows and page headers | Preferences, credentials, grants, pairing, privacy, updates and safe-mode recovery |
 | `panda.moodboards` | `viewer-first` | Original library/viewer order | Boards, images, captions, file picker/drop and delete confirmations |
@@ -95,5 +96,5 @@ See [documents](documents.md), [diff](diff.md), [Search](search.md),
 examples; tools have separate [Simulator](simulator.md), [VM](vm.md),
 [Design](design.md) and [BTW](btw.md) contracts; workspace surfaces have [Board](board.md),
 [GitHub hub](github-hub.md), [Pull](pull.md), [worktree](worktree.md),
-[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md); core Settings has [settings](settings.md); the sidebar has [sidebar](sidebar.md); the action dock and team progress have [action dock](action-dock.md); eligible main dialogs have the accessory band in [core dialogs](core-dialogs.md), and module-owned and directly mounted dialogs reuse it in [owned dialogs](owned-dialogs.md). Canonical implementation evidence and historical failed checks remain
+[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md); core Settings has [settings](settings.md); the sidebar has [sidebar](sidebar.md); the action dock and team progress have [action dock](action-dock.md); subagents, team profiles and the main-window Running agents widget have [agent roster](agent-roster.md); eligible main dialogs have the accessory band in [core dialogs](core-dialogs.md), and module-owned and directly mounted dialogs reuse it in [owned dialogs](owned-dialogs.md). Canonical implementation evidence and historical failed checks remain
 in the project's extensibility receipt, not in a claim of universal API stability.

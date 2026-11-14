@@ -16,6 +16,12 @@ offers an explicitly selected `actions-first` host recipe over the original acti
 Workers line. Team state, workers, approvals and Stop stay host-owned; protected behavior has
 no public action, and progress needs `tasks.summary` separately from presentation.
 
+The [Agent roster, subagent and profile presentation v1](agent-roster.md) contract (`panda.roster`)
+offers an explicitly selected `running-first` host recipe over the original subagent rows, with
+captured actions on the subagent view, team profile controls and the main-window Running agents
+widget. Children, their streams and lineage, profile rename and delete, Stop, the widget's
+preference and its pinned window stay host-owned; child data needs `tasks.summary`.
+
 The [Sidebar presentation v1](sidebar.md) contract (`panda.sidebar`) offers an explicitly
 selected `filter-first` host recipe over the original sidebar. Grouping, sorting, selection,
 manual order and confirmations stay host-owned; protected behavior has no public action.

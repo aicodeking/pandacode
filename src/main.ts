@@ -746,6 +746,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     dock: $('#action-dock'), root: $('.workspace'), flyout: $('#agents-flyout'), onContextChanged, notify,
     state: () => ({ project: state.projectId || undefined, task: state.sessionId || undefined, team: state.sessionId ? teams.get(state.sessionId) : undefined, needsInput: id => architectView?.needsInput(id) ?? false }),
   });
+  // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
+  // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
+  // and agents-dock.ts.
+  rosterAdoption = (await import('./extensions/roster-host')).mountRosterAdoption({
+    subagents, subagentsHost: $('#subagents-host'), widget: $('#agents-dock-host'), onContextChanged, notify,
+    state: () => ({ project: state.projectId || undefined, task: state.sessionId || undefined }),
+  });
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
     placementHost.refresh();
@@ -802,6 +809,8 @@ let unreviewed: Set<string> | undefined;
 let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mountSidebarAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
 let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
+/** Agent roster adoption (docs/extensions/agent-roster.md), mounted once extensions load. */
+let rosterAdoption: ReturnType<typeof import('./extensions/roster-host').mountRosterAdoption> | undefined;
 let sidebarModel: SidebarModel = { sections: [], filtering: false };
 function saveUnreviewed(): void { try { localStorage.setItem(UNREVIEWED_KEY, JSON.stringify([...unreviewed ?? []])); } catch { /* per-launch only */ } }
 bindThreadReordering($('#navigation'), {
@@ -973,6 +982,10 @@ const worktrees = createWorktrees({
 if (preview && new URLSearchParams(location.search).has('dock-coverage')) {
   (window as any).__previewDock = () => dockAdoption?.presentation();
   (window as any).__previewDockAction = (input: unknown) => dockAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
+if (preview && new URLSearchParams(location.search).has('roster-coverage')) {
+  (window as any).__previewRoster = () => rosterAdoption?.presentation();
+  (window as any).__previewRosterAction = (input: unknown) => rosterAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
 if (preview && new URLSearchParams(location.search).has('sidebar-coverage')) {
   (window as any).__previewSidebar = () => sidebarAdoption?.presentation();

@@ -2,6 +2,7 @@ import './replacement.css';
 import { escape } from '../dom';
 import { extensionsSnapshot, extensionIdentity } from './manager';
 import { createComponentSelection, createComponentSlot, type ComponentProvider, type SlotProps, type SlotAction, type SlotId } from './component-slot';
+import { runningFirst } from './roster-core';
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
@@ -35,6 +36,29 @@ export function applyDockPresentation(dock: HTMLElement, qualify = () => {
   } catch {
     const fresh = !faults.has(identity(provider));
     faults.add(identity(provider)); delete dock.dataset.dockProvider; arrange(false);
+    return !fresh;
+  }
+}
+/** The selected, unfaulted agent roster provider. The subagents host carries it, so a list redraw keeps the same order
+ * without remounting a row, the open child or its stream. */
+export function rosterProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.roster', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Running-first on the original subagent rows: `arrange` hands the list its order (undefined restores start order).
+ * Rows, the open child, its stream and focus stay. Returns false only when the selected provider faults now (built-in
+ * order restored), so the host reports it once. */
+export function applyRosterPresentation(host: HTMLElement, arrange: (order?: (rows: readonly { id: string; active: boolean }[]) => string[]) => void, qualify = () => {
+  if (!host.classList.contains('subagents-host') || !host.querySelector(':scope > .subagents-trigger')) throw Error('Incomplete subagents host');
+}): boolean {
+  const provider = componentSelection.resolve('panda.roster', componentProviders());
+  if (!provider) { delete host.dataset.rosterProvider; arrange(undefined); return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.rosterProvider = provider.id; arrange(runningFirst); return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete host.dataset.rosterProvider; arrange(undefined);
     return !fresh;
   }
 }

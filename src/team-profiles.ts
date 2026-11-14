@@ -68,14 +68,29 @@ export function mountTeamProfiles(host: HTMLElement, options: {
       description: library.enabled ? 'Default for new tasks' : 'Remembered · single agent default', selected: !selected && sameTeamSetup(library.lastSetup, options.read()) });
     menu = openChoiceMenu({ anchor: picker, title: 'Team profiles', items, width: 310,
       searchPlaceholder: profiles.length > 5 ? 'Search profiles…' : undefined,
-      onSelect: id => {
-        const setup = id === 'last-saved' ? library.lastSetup : profiles.find(profile => profile.id === id)?.setup;
-        if (!setup) throw new Error('This profile is no longer available.');
-        options.apply(structuredClone(setup)); selected = id === 'last-saved' ? library.activeProfileId : id;
-        closeEditor(); refresh();
-      }, onClose: () => { menu = undefined; },
+      onSelect: choose, onClose: () => { menu = undefined; },
     });
   });
+  /** The picker's choices: classic profiles (named agent teams live elsewhere) and the last saved setup. */
+  function choices(): { id: string; selected: boolean }[] {
+    const items = library.profiles.filter(profile => !profile.setup.config.rosterOnly).map(profile => ({ id: profile.id, selected: selected === profile.id }));
+    return library.lastSetup ? [{ id: 'last-saved', selected: !selected && sameTeamSetup(library.lastSetup, options.read()) }, ...items] : items;
+  }
+  /** A fresh host choice before an extension's profile action. It counts as this form's menu, so the setup stays
+   * open while it shows; Escape or a click elsewhere declines it. */
+  function hostChoice(label: string, run: () => void): void {
+    if (pending || disposed) return;
+    menu?.();
+    menu = openChoiceMenu({ anchor: picker, title: 'Extension requested a roster action', items: [{ id: 'continue', label: `Continue: ${label}`, icon: 'play' }],
+      onSelect: id => { if (id === 'continue' && !disposed && !pending) run(); }, onClose: () => { menu = undefined; } });
+  }
+  /** Applies a choice to the setup form: the picker's own selection handler. */
+  function choose(id: string): void {
+    const setup = id === 'last-saved' ? library.lastSetup : library.profiles.find(profile => profile.id === id && !profile.setup.config.rosterOnly)?.setup;
+    if (!setup) throw new Error('This profile is no longer available.');
+    options.apply(structuredClone(setup)); selected = id === 'last-saved' ? library.activeProfileId : id;
+    closeEditor(); refresh();
+  }
   create.addEventListener('click', () => editName('create'));
   editor.querySelector('.team-library-cancel')!.addEventListener('click', () => { closeEditor(); create.focus(); });
   function saveNamed(): void {
@@ -108,10 +123,20 @@ export function mountTeamProfiles(host: HTMLElement, options: {
     }, onClose: () => { menu = undefined; } });
   });
   refresh();
+  const selectedId = () => { const profile = current(); return profile && sameTeamSetup(profile.setup, options.read()) ? profile.id : null; };
+  const view: TeamProfilesView = { host, selectedId, choices, choose, confirm: hostChoice, pending: () => pending, hasMenu: () => Boolean(menu) };
+  mounted = view; dispatchEvent(new Event(TEAM_PROFILES_EVENT));
   return {
-    selectedId: () => { const profile = current(); return profile && sameTeamSetup(profile.setup, options.read()) ? profile.id : null; },
+    selectedId,
     changed: refresh,
     hasMenu: () => Boolean(menu),
-    dispose: () => { disposed = true; menu?.(); },
+    dispose: () => { disposed = true; menu?.(); if (mounted === view) { mounted = undefined; dispatchEvent(new Event(TEAM_PROFILES_EVENT)); } },
   };
 }
+
+/** Host-only view of the mounted profile library for presentation adoption (docs/extensions/agent-roster.md). */
+export type TeamProfilesView = { host: HTMLElement; selectedId: () => string | null; choices: () => { id: string; selected: boolean }[]; choose: (id: string) => void; confirm: (label: string, run: () => void) => void; pending: () => boolean; hasMenu: () => boolean };
+export const TEAM_PROFILES_EVENT = 'pandacode:team-profiles';
+let mounted: TeamProfilesView | undefined;
+/** The library of the open team setup, while its form is in the page. */
+export function activeTeamProfiles(): TeamProfilesView | undefined { return mounted?.host.isConnected ? mounted : undefined; }
