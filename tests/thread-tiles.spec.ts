@@ -266,8 +266,11 @@ test.describe('thread tiles', () => {
     expect(windows.length, 'the wheel reached the tile, and its sky held for it').toBeGreaterThan(0);
     for (const window of windows) expect(window.to, `no paint ${window.took} ms into the ${HOLD_MS} ms hold the wheel opens`).toBe(window.from);
     expect(await rows.evaluate(node => node.scrollTop), 'the wheel scrolled the tile’s rows').toBeGreaterThan(0);
-    // The hold only defers that tile's loop: it paints again once the reader's hand is off.
+    // The hold only defers that tile's loop: it paints again once the reader's hand is off. The pointer rests after
+    // 350 ms, and the round trips around the wheel outlast that, so the resume itself is the idle cadence.
     await expect.poll(paints, { intervals: [50], timeout: 4000 }).toBeGreaterThan(windows.at(-1)!.from);
+    // A fresh nudge on the same pad: the hold must not leave the tile's sky unable to answer the pointer.
+    await page.mouse.move(pad.x + 48, pad.y + Math.min(160, Math.max(48, pad.height / 3)));
     await expect(layer).toHaveAttribute('data-sky-state', 'moving');
   });
 
