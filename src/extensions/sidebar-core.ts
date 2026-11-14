@@ -1,6 +1,7 @@
 /** JSON-only captured sidebar admission; grouping, sorting, selection and every task handler stay in the host. */
 import { validateContract } from './contracts.ts';
 import { SIDEBAR_FIXED_SECTIONS, SIDEBAR_HEADER_CONTROLS, SIDEBAR_PINNED_SECTIONS, SIDEBAR_PROJECT_CONTROLS, SIDEBAR_PROTECTED, SIDEBAR_ROW_PARTS, SIDEBAR_SECTIONS, type SidebarSectionId } from './surfaces.ts';
+import { SIDEBAR_BOTS_GROUPS_LOCATION, SIDEBAR_BOTS_LOCATION, SIDEBAR_BOTS_PINNED_GROUPS, SIDEBAR_BOTS_PROTECTED_LOCATION, SIDEBAR_BOTS_ROWS_LOCATION, type SidebarBotsGroupId } from './surfaces.ts';
 export type SidebarControl = 'new-task' | 'new-chat' | 'search' | 'project-filter' | 'sort' | 'import' | 'open-project' | 'filter-clear' | 'toggle-section' | 'completed-more' | 'folder-more' | 'select-task' | 'task-menu' | 'settle' | 'reopen';
 export type SidebarPresentation = Readonly<{
   contractVersion: 1; window: 'main'; context: string; project: string; task: string; revision: number;
@@ -18,6 +19,8 @@ export type SidebarAdmission = { ok: true } | { ok: false; reason: 'Revoked' | '
 export const SIDEBAR_ENTRY_CONTROLS: readonly SidebarControl[] = ['new-task', 'new-chat', 'toggle-section', 'settle', 'reopen'];
 /** Controls that act on one task row: the resource is that row, never the selected task. */
 export const SIDEBAR_ROW_CONTROLS: readonly SidebarControl[] = ['select-task', 'task-menu', 'settle', 'reopen'];
+/** Captured Bots panel control ids (`sidebarBotsControlId`), declared before the registry that lists them. */
+export const SIDEBAR_BOTS_CONTROL_IDS = ['toggle-view', 'search', 'mark-read', 'create-menu', 'new-bot', 'new-channel', 'toggle-hidden', 'open-bot', 'bot-settings', 'bot-menu', 'open-channel', 'channel-menu'] as const;
 
 /** One explicit entry per member of the ledger's `panda.sidebar` family, plus the sort/view row it names. Each
  * entry lists its public locations, the operations it supports and the reason for each one it does not. */
@@ -31,8 +34,63 @@ export const SIDEBAR_REGISTRY: readonly SidebarRegistryEntry[] = Object.freeze([
   { member: 'sections', locations: ['panda.sidebar.sections', 'panda.sidebar.rows', 'panda.sidebar.context'], controls: [...SIDEBAR_SECTIONS.map(([id]) => id), ...SIDEBAR_ROW_PARTS.map(([id]) => id)], order: true, hide: true, actions: true, context: 'panda.sidebar.context', reason: [...Object.entries(SIDEBAR_PINNED_SECTIONS), ...Object.entries(SIDEBAR_FIXED_SECTIONS)].map(([id, why]) => `${id}: ${why}`).join(' ') },
   { member: 'project.context', locations: ['panda.sidebar.project.context'], controls: ['new', 'collapse', 'reveal', 'remove'], order: true, hide: true, actions: false, context: 'panda.sidebar.project.context', reason: 'Existing captured project-row menu (projectId and project selection); its rows run the original folder handlers.' },
   { member: 'task.context', locations: ['panda.sidebar.task.context'], controls: ['pin', 'up', 'down', 'beside', 'rename', 'wake', 'unread', 'branch-task', 'copy-branch', 'copy-path', 'copy-id', 'stage', 'delete'], order: true, hide: true, actions: true, context: 'panda.sidebar.task.context', reason: 'Existing captured task-row menu (clicked task, never a later selection); task-menu opens it from a captured action.' },
-  { member: 'bots', locations: [], controls: [], order: false, hide: false, actions: false, context: 'none', lead: 'T56I', reason: 'Bot and shared-channel rows (src/sidebar-bots.ts) are bot/channel objects, not task rows; their dialogs are panda.dialog accessories and the list is assigned to the controls audit.' },
+  { member: 'bots', locations: [SIDEBAR_BOTS_LOCATION, SIDEBAR_BOTS_GROUPS_LOCATION, SIDEBAR_BOTS_ROWS_LOCATION, SIDEBAR_BOTS_PROTECTED_LOCATION, 'panda.sidebar.bots.actions', 'panda.sidebar.bots.context', 'panda.sidebar.channel.context'], controls: [...SIDEBAR_BOTS_CONTROL_IDS], order: true, hide: true, actions: true, context: 'panda.sidebar.bots.context', reason: `Bot and shared-channel rows are bot/channel objects with their own captured contract (sidebarBotsPresentation). ${Object.entries(SIDEBAR_BOTS_PINNED_GROUPS).map(([id, why]) => `${id}: ${why}`).join(' ')} The search field never hides; deletion, pausing, channel membership and credentials stay host-owned (panda.sidebar.bots.protected).` },
 ].map(entry => Object.freeze(entry)));
+
+/** Bots panel presentation (`sidebarBotsPresentation` / `sidebarBotsAction`): bot and shared-channel rows, the
+ * panel head, the create menu and the Hidden group. Grouping, unread state, pins, order and handlers stay host-side. */
+export type SidebarBotsControl = typeof SIDEBAR_BOTS_CONTROL_IDS[number];
+export type SidebarBotsStatus = 'none' | 'waiting' | 'failed' | 'limited' | 'working' | 'unread' | 'responded';
+export type SidebarBotsPresentation = Readonly<{
+  contractVersion: 1; window: 'main'; context: string; project: string; bot: string; channel: string; revision: number;
+  visible: boolean; focused: boolean; busy: boolean; view: 'tasks' | 'bots'; searching: boolean; loaded: boolean; safeMode: boolean;
+  groups: readonly Readonly<{ id: SidebarBotsGroupId; pinned: boolean; hidden: boolean; open: boolean; count: number }>[];
+  rows: readonly Readonly<{ id: string; kind: 'bot' | 'channel'; group: SidebarBotsGroupId; selected: boolean; pinned: boolean; status: SidebarBotsStatus }>[];
+  controls: readonly Readonly<{ id: string; controlId: SidebarBotsControl; resource: string; enabled: boolean; hidden: boolean }>[];
+  truncated: boolean;
+}>;
+export type SidebarBotsAction = Readonly<{ contractVersion: 1; window: 'main'; context: string; project: string; bot: string; channel: string; revision: number; control: string; controlId: SidebarBotsControl; resource: string; requestId: string }>;
+/** Switching the view, a saved Hidden-group preference, marking every reply read and opening a creation dialog run
+ * only after a fresh host user choice. */
+export const SIDEBAR_BOTS_ENTRY_CONTROLS: readonly SidebarBotsControl[] = ['toggle-view', 'mark-read', 'new-bot', 'new-channel', 'toggle-hidden'];
+/** Controls that act on one bot or channel row: the resource is that row, never the open bot or channel. */
+export const SIDEBAR_BOTS_ROW_CONTROLS: readonly SidebarBotsControl[] = ['open-bot', 'bot-settings', 'bot-menu', 'open-channel', 'channel-menu'];
+/** Host-only operations a package may name but never run: refused as PermissionDenied, before any other check of the
+ * request's shape, so the package learns the control is protected rather than misspelled. */
+export const SIDEBAR_BOTS_PROTECTED_CONTROLS = ['delete-bot', 'pause-bot', 'duplicate-bot', 'delete-channel', 'restore-channel', 'channel-members', 'bot-credentials'] as const;
+const BOTS_CAPTURED = ['window', 'context', 'project', 'bot', 'channel', 'revision'] as const;
+export function snapshotSidebarBots(props: SidebarBotsPresentation): SidebarBotsPresentation {
+  if (!validateContract('sidebarBotsPresentation', props).ok) throw Error('Invalid Bots panel presentation');
+  if ([props.controls, props.rows, props.groups].some(list => new Set(list.map(item => item.id)).size !== list.length)) throw Error('Duplicate Bots panel handle');
+  return freeze(structuredClone(props));
+}
+export function createSidebarBotsPresentation(props: SidebarBotsPresentation, owner: string, current: () => SidebarBotsPresentation, authority: () => SidebarAuthority, dispatch: (action: SidebarBotsAction) => void, applied = new Set<string>()) {
+  const captured = snapshotSidebarBots(props); let disposed = false;
+  return { props: captured, dispatch(input: unknown): SidebarAdmission {
+    const auth = authority();
+    if (disposed || !auth.active) return { ok: false, reason: 'Revoked' };
+    if (auth.owner !== owner) return { ok: false, reason: 'WrongOwner' };
+    if (!auth.granted) return { ok: false, reason: 'PermissionDenied' };
+    const field = (key: string) => input && typeof input === 'object' ? Object.getOwnPropertyDescriptor(input, key)?.value : undefined;
+    if (input && typeof input === 'object' && field('contractVersion') !== 1) return { ok: false, reason: 'UnsupportedCapability' };
+    if ((SIDEBAR_BOTS_PROTECTED_CONTROLS as readonly unknown[]).includes(field('controlId'))) return { ok: false, reason: 'PermissionDenied' };
+    if (!validateContract('sidebarBotsAction', input).ok) return { ok: false, reason: 'InvalidArguments' };
+    const action = input as SidebarBotsAction, live = current();
+    // Opening another bot or channel, a redraw that changed rows or groups, or a hidden sidebar is another target.
+    if (BOTS_CAPTURED.some(key => action[key] !== captured[key] || live[key] !== captured[key]) || !captured.visible || !live.visible) return { ok: false, reason: 'StaleContext' };
+    if (applied.has(action.requestId)) return { ok: false, reason: 'AlreadyApplied' };
+    // A drag, an open host dialog or a pending host choice keeps its input: nothing acts until it ends.
+    if (live.busy) return { ok: false, reason: 'Busy' };
+    const control = captured.controls.find(item => item.id === action.control), now = live.controls.find(item => item.id === action.control);
+    if (!control || !now || [control, now].some(item => item.controlId !== action.controlId || item.resource !== action.resource)) return { ok: false, reason: 'StaleContext' };
+    // A row control acts on a row still listed in both snapshots, never on whatever bot or channel is open now.
+    if (SIDEBAR_BOTS_ROW_CONTROLS.includes(action.controlId) && (!captured.rows.some(row => row.id === action.resource) || !live.rows.some(row => row.id === action.resource))) return { ok: false, reason: 'StaleContext' };
+    if (!control.enabled || !now.enabled || now.hidden) return { ok: false, reason: 'UnsupportedCapability' };
+    if (SIDEBAR_BOTS_ENTRY_CONTROLS.includes(action.controlId) && !auth.userChoice) return { ok: false, reason: 'PermissionDenied' };
+    if (applied.size >= 4096) return { ok: false, reason: 'Revoked' };
+    applied.add(action.requestId); dispatch(freeze(structuredClone(action))); return { ok: true };
+  }, dispose() { disposed = true; } };
+}
 
 const CAPTURED = ['window', 'context', 'project', 'task', 'revision'] as const;
 function freeze<T>(value: T): T { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; }

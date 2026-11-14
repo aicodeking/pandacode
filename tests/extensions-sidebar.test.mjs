@@ -25,7 +25,8 @@ test('Sidebar registry: every ledger member and the sort row has an explicit ent
   assert.deepEqual(row.members, schema.$defs.sidebarControlId.enum);
   assert.deepEqual(row.sections, schema.$defs.sidebarSectionId.enum); assert.deepEqual(row.sections, SIDEBAR_SECTIONS.map(([id]) => id));
   assert.deepEqual(row.rowParts, SIDEBAR_ROW_PARTS.map(([id]) => id)); assert.deepEqual(row.protected, SIDEBAR_PROTECTED.map(([id]) => id));
-  assert.ok(row.open.bots && SIDEBAR_REGISTRY.find(entry => entry.member === 'bots').lead === 'T56I');
+  // The Bots panel left the controls audit (T56I) for its own captured contract (T56J, tests/extensions-sidebar-bots.test.mjs).
+  assert.ok(!row.open && row.closed.bots && ledger.sidebarCoverage['panda.sidebar.bots'].lead === 'T56J' && !SIDEBAR_REGISTRY.find(entry => entry.member === 'bots').lead);
   // Existing project-card and sidebar context adapters stay; the task and project row menus keep their core rows.
   assert.deepEqual(CONTEXT_COMMANDS['panda.sidebar.task.context'].map(([id]) => id), SIDEBAR_REGISTRY.find(entry => entry.member === 'task.context').controls);
   assert.deepEqual(CONTEXT_COMMANDS['panda.sidebar.project.context'].map(([id]) => id), SIDEBAR_REGISTRY.find(entry => entry.member === 'project.context').controls);
@@ -38,7 +39,7 @@ test('Sidebar schema, package, selected recipe, bounded catalog, pinned and dock
   const manifest = fixture('extension'), provider = manifest.contributes.components[0];
   assert.equal(validateContract('packages', [manifest]).ok, true); assert.equal(componentIncompatibility(provider), undefined);
   for (const change of [{ capabilities: [] }, { capabilities: [...provider.capabilities, 'grouping'] }, { presentation: 'actions-first' }, { contractVersion: 2 }]) assert.ok(componentIncompatibility({ ...provider, ...change }));
-  for (const location of [SIDEBAR_PROTECTED_LOCATION, 'panda.sidebar', 'panda.sidebar.bots']) {
+  for (const location of [SIDEBAR_PROTECTED_LOCATION, 'panda.sidebar', 'panda.sidebar.bots.protected']) {
     const forged = structuredClone(manifest); forged.contributes.layouts[0].location = location; assert.equal(validateContract('packages', [forged]).ok, false, location);
   }
   const noCustomize = structuredClone(manifest); noCustomize.permissions = ['ui.contribute']; assert.equal(validateContract('packages', [noCustomize]).ok, false);

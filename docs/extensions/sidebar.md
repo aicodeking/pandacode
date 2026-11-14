@@ -47,7 +47,7 @@ checks it against the ledger.
 | sections | `panda.sidebar.sections`, `panda.sidebar.rows`, `panda.sidebar.context` | yes | yes | toggle-section, completed-more, folder-more, select-task, task-menu, settle, reopen | Active never hides; Settled stays docked |
 | project.context | `panda.sidebar.project.context` | yes | yes | — | existing captured project menu |
 | task.context | `panda.sidebar.task.context` | yes | yes | task-menu opens it | existing captured task menu |
-| bots | — | — | — | — | bot/channel rows, assigned to the T56I controls audit |
+| bots | `panda.sidebar.bots`, `.groups`, `.rows`, `.protected`, `panda.sidebar.bots.actions`, `panda.sidebar.bots.context`, `panda.sidebar.channel.context` | yes | yes | toggle-view, search, mark-read, create-menu, new-bot, new-channel, toggle-hidden, open-bot, bot-settings, bot-menu, open-channel, channel-menu | own `sidebarBotsPresentation` contract; see [Bots panel](#bots-panel) |
 
 ## Contract and policy
 
@@ -95,3 +95,61 @@ contributing there, section headings have no context menu, as before.
 Browser fixtures use the preview's sample threads and in-memory storage; the drag in the
 coverage spec is the synthetic browser replay (`src/pointer-drag.ts`), not installed native
 drag qualification, which stays separate and deferred.
+
+## Bots panel
+
+The sidebar's Bots view (`src/sidebar-bots.ts`: the Bots bar, the panel head with search,
+Mark all read and the create menu, the Needs you / Pinned / Bots / Hidden bot groups and the
+Channels / Deleted channels shared-channel groups) joins the same family. Before T56J it had no
+registry entry with locations, no captured action and its row menus passed no extension
+surface; only its four dialogs took `panda.dialog` accessories.
+
+Decision: bot and channel rows are bot/channel objects, not task rows, so they get their own
+bounded contract (`sidebarBotsPresentation` / `sidebarBotsAction`) inside `panda.sidebar`,
+owned by the same selected `panda.sidebar` provider. Rejected: widening `sidebarPresentation`
+(a breaking change to a published v1 shape, and its task/section fields mean nothing here); a
+second component slot or recipe for the panel (a new family for one list, and a recipe that
+would only re-order the same nodes); a per-row renderer hook or remounting rows (would move
+grouping, unread state, pins and the dragged order out of `botsListHtml()` and break the
+drag replay and the morph); letting a package pin, pause, delete or reorder bots.
+
+| Location | Items | Operations |
+| --- | --- | --- |
+| `panda.sidebar.bots` | search, mark-read, create (the panel head) | reorder on the original nodes; Mark all read and create hide; the search field never hides |
+| `panda.sidebar.bots.groups` | needs-you, pinned, bots, hidden, channels, deleted-channels | reorder and hide as whole groups; Needs you never hides |
+| `panda.sidebar.bots.rows` | settings (button), role (tag), time | hide in place through one `data-row-hidden` attribute on the list |
+| `panda.sidebar.bots.protected` | bar, search-field, status, selection, manual-order, delete-confirm, channel-membership, credentials | inspect only, each with its reason |
+| `panda.sidebar.bots.actions` | panel head accessory | contribute, hide, reorder |
+| `panda.sidebar.bots.context` | the bot row menu (Pin, Edit bot, Duplicate bot, Hide (pause), Delete bot…) | contribute, hide, reorder; `selection.kind = "bot"`, the clicked bot id and its workspace `projectId` |
+| `panda.sidebar.channel.context` | the shared-channel row menu (Edit, Delete or Restore) | contribute, hide, reorder; `selection.kind = "channel"`, the clicked channel id, no `projectId` or `sessionId` |
+
+Membership never changes: `botsListHtml()` alone classifies bots and channels, and the
+arrangement only orders whole groups and leaves some out. The group holding the open bot or
+channel stays listed, every group shows while searching and safe mode is built-in. A hidden
+settings button keeps its path through the row menu's Edit bot.
+
+The presentation captures window, mount, project (the open bot's workspace), bot and channel
+(opaque handles, empty when none is open) and a revision, plus visibility, focus, busy (a bot
+drag, an open dialog or a pending host choice), the view, searching, loaded, safe mode, the six
+groups (pinned, hidden, open, count), up to 256 drawn rows (kind, group, selected, pinned and a
+status: none, waiting, failed, limited, working, unread, responded; no name, role, message or
+channel name) and up to 1024 controls with their resource (a row or the Hidden group).
+
+Actions follow the sidebar rules with `bot` and `channel` in place of `task`: the selected
+enabled provider with `ui.contribute`, the current mount, project, bot, channel and revision,
+a control listed in both snapshots with the same resource, a row still drawn for row controls
+(`open-bot`, `bot-settings`, `bot-menu`, `open-channel`, `channel-menu`), an enabled, not
+hidden control (everything but `toggle-view` needs the Bots view open; `mark-read` only while
+a reply is unread) and replay admission. `toggle-view`, `mark-read`, `toggle-hidden` (a saved
+preference), `new-bot` and `new-channel` first open a fresh host choice ("Extension requested
+a sidebar action"); creation then only opens the host dialog. `bot-menu` and `channel-menu`
+open the original row menu through the row's own context-menu listener. A request naming a
+protected operation (`delete-bot`, `pause-bot`, `duplicate-bot`, `delete-channel`,
+`restore-channel`, `channel-members`, `bot-credentials`) is refused as `PermissionDenied`
+before any other check of its shape, so a package learns it is host-only; other unknown ids
+are `InvalidArguments`.
+
+Fault, disable and safe mode restore the built-in panel without changing the open bot or
+channel, the search text, the Hidden group preference or focus. Browser fixtures use the
+preview's `?bots=sample` data (`tests/extensions-sidebar-bots-coverage.spec.ts`); no bot is
+created, deleted or paused and no messaging service is called.

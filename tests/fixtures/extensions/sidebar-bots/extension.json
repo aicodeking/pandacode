@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.sidebar-bots",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "components": [{ "id": "sample.sidebar-bots/filter-first", "title": "Bots filter first", "slot": "panda.sidebar", "contractVersion": 1, "presentation": "filter-first", "capabilities": ["host-sections", "host-rows", "original-actions"] }],
+    "commands": [
+      { "id": "sample.sidebar-bots/notes", "title": "Bots notes", "action": { "kind": "showMessage", "message": "Bots stay host-owned." } },
+      { "id": "sample.sidebar-bots/bot-notes", "title": "Bot notes", "action": { "kind": "showMessage", "message": "Bot rows stay host-owned." } },
+      { "id": "sample.sidebar-bots/channel-notes", "title": "Channel notes", "action": { "kind": "showMessage", "message": "Channel rows stay host-owned." } }
+    ],
+    "menus": [
+      { "id": "sample.sidebar-bots/head", "command": "sample.sidebar-bots/notes", "location": "panda.sidebar.bots.actions", "presentation": "button", "text": "Bots notes" },
+      { "id": "sample.sidebar-bots/bot", "command": "sample.sidebar-bots/bot-notes", "location": "panda.sidebar.bots.context", "visible": { "op": "eq", "key": "selection.kind", "value": "bot" } },
+      { "id": "sample.sidebar-bots/channel", "command": "sample.sidebar-bots/channel-notes", "location": "panda.sidebar.channel.context", "visible": { "op": "eq", "key": "selection.kind", "value": "channel" } }
+    ],
+    "layouts": [
+      { "id": "sample.sidebar-bots/channels-first", "title": "Channels above Needs you", "location": "panda.sidebar.bots.groups", "rules": [{ "id": "panda.sidebar.bots.groups/channels", "target": "panda.sidebar.bots.groups/needs-you", "side": "before" }] },
+      { "id": "sample.sidebar-bots/create-first", "title": "Create before search", "location": "panda.sidebar.bots", "rules": [{ "id": "panda.sidebar.bots/create", "target": "panda.sidebar.bots/search", "side": "before" }] }
+    ]
+  }
+}

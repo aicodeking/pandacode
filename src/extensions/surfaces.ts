@@ -204,7 +204,37 @@ export const SETTINGS_FIELD_PAGES = ['general', 'appearance', 'teams', 'schedule
  * New chat and Search; `panda.sidebar.context` is the section headings' context menu. The task and project row
  * menus stay the existing `panda.sidebar.task.context` / `panda.sidebar.project.context`. Grouping, sorting,
  * selection and every handler stay in main.ts, sidebar-sections.ts and sidebar-sort.ts. */
-export const SIDEBAR_ACTION_SURFACES = ['panda.sidebar.actions', 'panda.sidebar.context'] as const;
+export const SIDEBAR_ACTION_SURFACES = ['panda.sidebar.actions', 'panda.sidebar.context', 'panda.sidebar.bots.actions', 'panda.sidebar.bots.context', 'panda.sidebar.channel.context'] as const;
+/** Bots panel adoption (docs/extensions/sidebar.md#bots-panel). `panda.sidebar.bots.actions` is the panel head's
+ * accessory; `panda.sidebar.bots.context` and `panda.sidebar.channel.context` are the bot and shared-channel row
+ * menus. Grouping (Needs you, Pinned, Hidden), unread state, pins, the dragged order and every handler stay in
+ * main.ts and sidebar-bots.ts. */
+export const SIDEBAR_BOTS_LOCATION = 'panda.sidebar.bots';
+export const SIDEBAR_BOTS_GROUPS_LOCATION = 'panda.sidebar.bots.groups';
+export const SIDEBAR_BOTS_ROWS_LOCATION = 'panda.sidebar.bots.rows';
+export const SIDEBAR_BOTS_PROTECTED_LOCATION = 'panda.sidebar.bots.protected';
+/** Panel head controls: [id, label, hideable]. Reorder on the original nodes; the search field never hides. */
+export const SIDEBAR_BOTS_CONTROLS = [['search', 'Search bots and channels', false], ['mark-read', 'Mark all read', true], ['create', 'New bot or channel', true]] as const;
+/** Bot and channel groups in their built-in order: [id, label]. Membership comes from botsListHtml() alone. */
+export const SIDEBAR_BOTS_GROUPS = [['needs-you', 'Needs you'], ['pinned', 'Pinned'], ['bots', 'Bots'], ['hidden', 'Hidden'], ['channels', 'Channels'], ['deleted-channels', 'Deleted channels']] as const;
+export type SidebarBotsGroupId = typeof SIDEBAR_BOTS_GROUPS[number][0];
+/** Groups that are never hidden, with the reason. They still reorder. */
+export const SIDEBAR_BOTS_PINNED_GROUPS: Readonly<Partial<Record<SidebarBotsGroupId, string>>> = {
+  'needs-you': 'Bots waiting for an approval or an answer stay visible.',
+};
+/** Bot row parts: [id, label]. A hidden settings button keeps its path: the row menu's Edit bot opens the same page. */
+export const SIDEBAR_BOTS_ROW_PARTS = [['settings', 'Bot settings button'], ['role', 'Role tag'], ['time', 'Last message time']] as const;
+/** Protected Bots panel behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const SIDEBAR_BOTS_PROTECTED = [
+  ['bar', 'Bots bar', 'The Bots bar is the only way between the task list and the Bots panel.'],
+  ['search-field', 'Search bots and channels', 'The search field is the keyboard path to every bot and channel, including hidden groups.'],
+  ['status', 'Bot status signals', 'Approval, question, failure, usage-limit, working and unread marks stay on every bot row.'],
+  ['selection', 'Open bot or channel', 'The open bot or channel and the group holding it stay listed, so selection never disappears.'],
+  ['manual-order', 'Drag and Alt+Arrow ordering', 'Pins and the saved bot order change only through host menus, drags and keys.'],
+  ['delete-confirm', 'Delete bot confirmation', 'Deleting a bot, pausing it and its confirmation stay host-owned.'],
+  ['channel-membership', 'Channel membership', 'Shared-channel members, deletion and restore stay in the host menus and dialogs.'],
+  ['credentials', 'Bot credentials', 'Messaging tokens and pairing codes stay in bot settings and never reach a package.'],
+] as const;
 export const SIDEBAR_HEADER_LOCATION = 'panda.sidebar.header';
 export const SIDEBAR_PROJECTS_LOCATION = 'panda.sidebar.projects';
 export const SIDEBAR_SECTIONS_LOCATION = 'panda.sidebar.sections';
@@ -349,6 +379,8 @@ export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string
   'panda.inspector.changes.context': [['stage', 'Stage file'], ['unstage', 'Unstage file'], ['open', 'Open file'], ['copy', 'Copy path']],
   'panda.inspector.search.context': [['open', 'Open file']],
   'panda.sidebar.context': [['toggle', 'Collapse or expand section']],
+  'panda.sidebar.bots.context': [['pin', 'Pin bot'], ['edit', 'Edit bot'], ['duplicate', 'Duplicate bot'], ['hide', 'Hide (pause)'], ['delete', 'Delete bot…']],
+  'panda.sidebar.channel.context': [['edit', 'Edit channel'], ['delete', 'Delete channel'], ['restore', 'Restore channel']],
   'panda.team.context': [['toggle', 'Show or hide workers'], ['open', 'Open team']],
   'panda.roster.context': [['open', 'Open subagent']],
   'panda.status.context': [['open', 'Show details']],

@@ -4,6 +4,7 @@ import { escape, icon } from './dom';
 import { resetLabel } from './usage-limit';
 import { botAvatarHtml } from './bot-avatars';
 import { channelFaceCluster, type SharedChannelSummary } from './bot-shared-channels';
+import { SIDEBAR_BOTS_GROUPS, type SidebarBotsGroupId } from './extensions/surfaces';
 
 /* The sidebar's Bots view: a bar at the bottom of the sidebar switches the whole sidebar
  * between tasks and a list of bots, each with its avatar, latest message and time. */
@@ -14,7 +15,10 @@ export type BotSignals = { waiting?: 'approval' | 'question'; failed?: boolean; 
 export type BotStatus =
   | { kind: 'waiting'; reason: 'approval' | 'question' } | { kind: 'failed' } | { kind: 'limited'; until: number | null }
   | { kind: 'working' } | { kind: 'unread'; count: number } | { kind: 'responded' };
-export type BotsListContext = { bots: Bot[]; channels?: SharedChannelSummary[]; selectedProject: string | undefined; selectedChannel?: string; signals: (bot: Bot) => BotSignals; loaded: boolean; hiddenOpen: boolean };
+/** Group order and reversible visibility from the extension layout (docs/extensions/sidebar.md#bots-panel). Membership
+ *  never changes: the group holding the open bot or channel stays listed, and every group shows while searching. */
+export type BotsArrangement = { order: readonly SidebarBotsGroupId[]; hidden: ReadonlySet<SidebarBotsGroupId> };
+export type BotsListContext = { bots: Bot[]; channels?: SharedChannelSummary[]; selectedProject: string | undefined; selectedChannel?: string; signals: (bot: Bot) => BotSignals; loaded: boolean; hiddenOpen: boolean; arrangement?: BotsArrangement };
 
 const VIEW_KEY = 'pandacode.sidebarView';
 const SEEN_KEY = 'pandacode.botsSeen';
@@ -158,8 +162,8 @@ function rowHtml(bot: Bot, context: BotsListContext, pinned: boolean, group: 'ne
     </div>`;
 }
 
-function groupHtml(label: string, rows: string, showLabel: boolean, name = label): string {
-  return `<div class="bots-group" role="group" aria-label="${escape(name)}">${showLabel ? `<h3 class="bots-group-label" aria-hidden="true">${escape(label)}</h3>` : ''}<div role="list">${rows}</div></div>`;
+function groupHtml(id: SidebarBotsGroupId, label: string, rows: string, showLabel: boolean, name = label): string {
+  return `<div class="bots-group" role="group" aria-label="${escape(name)}" data-bots-group="${id}">${showLabel ? `<h3 class="bots-group-label" aria-hidden="true">${escape(label)}</h3>` : ''}<div role="list">${rows}</div></div>`;
 }
 
 /** Saved order first (bots never dragged come before, newest first), otherwise most recent first. */
@@ -173,9 +177,9 @@ export function ordered(bots: Bot[]): Bot[] {
   });
 }
 
-export function botsListHtml(context: BotsListContext, query: string): string {
+/** The one classification of bots and channels into groups; botsListHtml draws it and botsGroupCounts reports it. */
+function classify(context: BotsListContext, query: string) {
   const channels = context.channels ?? [];
-  if (!context.loaded) return `<div class="bots-skeleton" role="status" aria-label="Loading bots">${'<span class="bot-row-skeleton" aria-hidden="true"><i></i><span><i></i><i></i></span></span>'.repeat(SKELETON_ROWS)}</div>`;
   const needle = query.trim().toLowerCase();
   const bots = ordered(context.bots.filter(bot => !needle || `${bot.name} ${bot.role} ${bot.lastMessage?.text ?? ''}`.toLowerCase().includes(needle)));
   const matchingChannels = channels.filter(channel => !needle || channel.name.toLowerCase().includes(needle));
@@ -184,20 +188,38 @@ export function botsListHtml(context: BotsListContext, query: string): string {
   const pinned = bots.filter(bot => !bot.paused && pins.has(bot.id) && !waiting.includes(bot));
   const rest = bots.filter(bot => !bot.paused && !pins.has(bot.id) && !waiting.includes(bot));
   const hidden = bots.filter(bot => bot.paused);
+  const groups: Record<SidebarBotsGroupId, (Bot | SharedChannelSummary)[]> = { 'needs-you': waiting, pinned, bots: rest, hidden, channels: matchingChannels.filter(channel => !channel.archived), 'deleted-channels': matchingChannels.filter(channel => channel.archived) };
+  return { channels, needle, bots, matchingChannels, pins, groups };
+}
+/** How many bots or channels each group lists for this search, in the built-in order. */
+export function botsGroupCounts(context: BotsListContext, query: string): { id: SidebarBotsGroupId; count: number }[] {
+  const { groups } = classify(context, query);
+  return SIDEBAR_BOTS_GROUPS.map(([id]) => ({ id, count: groups[id].length }));
+}
+
+export function botsListHtml(context: BotsListContext, query: string): string {
+  if (!context.loaded) return `<div class="bots-skeleton" role="status" aria-label="Loading bots">${'<span class="bot-row-skeleton" aria-hidden="true"><i></i><span><i></i><i></i></span></span>'.repeat(SKELETON_ROWS)}</div>`;
+  const { channels, needle, bots, matchingChannels, pins, groups } = classify(context, query);
+  const [waiting, pinned, rest, hidden] = (['needs-you', 'pinned', 'bots', 'hidden'] as const).map(id => groups[id] as Bot[]);
+  const [activeChannels, deletedChannels] = (['channels', 'deleted-channels'] as const).map(id => groups[id] as SharedChannelSummary[]);
   const rows = (list: Bot[], group: 'needs-you' | 'pinned' | 'bots' | 'hidden') => list.map(bot => rowHtml(bot, context, pins.has(bot.id), group)).join('');
   const labelled = Boolean(waiting.length || pinned.length);
   // The open bot stays in view even after it is paused.
   const hiddenOpen = context.hiddenOpen || hidden.some(bot => bot.projectId === context.selectedProject);
-  const botGroups = (waiting.length ? groupHtml('Needs you', rows(waiting, 'needs-you'), true) : '')
-    + (pinned.length ? groupHtml('Pinned', rows(pinned, 'pinned'), true) : '')
-    + (rest.length ? groupHtml('Bots', rows(rest, 'bots'), labelled, 'Other bots') : '')
-    + (hidden.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Hidden"><button type="button" class="bots-group-label bots-group-toggle" data-action="toggle-hidden-bots" aria-expanded="${hiddenOpen}">${icon('chevron')}<span>Hidden (${hidden.length})</span></button>${hiddenOpen ? `<div role="list">${rows(hidden, 'hidden')}</div>` : ''}</div>` : '');
-  const activeChannels = matchingChannels.filter(channel => !channel.archived);
-  const deletedChannels = matchingChannels.filter(channel => channel.archived);
   const channelRows = (items: SharedChannelSummary[]) => items.map(channel => `<button type="button" class="channel-row${context.selectedChannel === channel.id ? ' selected' : ''}"${context.selectedChannel === channel.id ? ' aria-current="page"' : ''} data-action="open-shared-channel" data-channel="${escape(channel.id)}" aria-label="#${escape(channel.name)}">${channelFaceCluster(channel.memberIds, context.bots)}<span>#${escape(channel.name)}</span></button>`).join('');
-  const channelGroups = (activeChannels.length ? `<div class="bots-group bots-group-channels" role="group" aria-label="Channels"><h3 class="bots-group-label">Channels</h3><div role="list">${channelRows(activeChannels)}</div></div>` : '')
-    + (deletedChannels.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Deleted channels"><h3 class="bots-group-label">Deleted channels</h3><div role="list">${channelRows(deletedChannels)}</div></div>` : '');
+  const drawn: Record<SidebarBotsGroupId, string> = {
+    'needs-you': waiting.length ? groupHtml('needs-you', 'Needs you', rows(waiting, 'needs-you'), true) : '',
+    pinned: pinned.length ? groupHtml('pinned', 'Pinned', rows(pinned, 'pinned'), true) : '',
+    bots: rest.length ? groupHtml('bots', 'Bots', rows(rest, 'bots'), labelled, 'Other bots') : '',
+    hidden: hidden.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Hidden" data-bots-group="hidden"><button type="button" class="bots-group-label bots-group-toggle" data-action="toggle-hidden-bots" aria-expanded="${hiddenOpen}">${icon('chevron')}<span>Hidden (${hidden.length})</span></button>${hiddenOpen ? `<div role="list">${rows(hidden, 'hidden')}</div>` : ''}</div>` : '',
+    channels: activeChannels.length ? `<div class="bots-group bots-group-channels" role="group" aria-label="Channels" data-bots-group="channels"><h3 class="bots-group-label">Channels</h3><div role="list">${channelRows(activeChannels)}</div></div>` : '',
+    'deleted-channels': deletedChannels.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Deleted channels" data-bots-group="deleted-channels"><h3 class="bots-group-label">Deleted channels</h3><div role="list">${channelRows(deletedChannels)}</div></div>` : '',
+  };
+  // An arranged group may hide, but never the one holding the open bot or channel, and never while searching.
+  const holds = (id: SidebarBotsGroupId) => groups[id].some(item => 'projectId' in item ? item.projectId === context.selectedProject : item.id === context.selectedChannel);
+  const arrangement = context.arrangement, order = arrangement?.order ?? SIDEBAR_BOTS_GROUPS.map(([id]) => id);
+  const listed = order.filter(id => !arrangement?.hidden.has(id) || needle || holds(id)).map(id => drawn[id]).join('');
   const empty = !bots.length && !channels.length ? `<div class="bots-panel-start"><p>No bots yet</p><button type="button" class="secondary-button" data-action="new-bot-menu">${icon('plus')}<span>New bot or channel</span></button></div>` : '';
   const noMatch = Boolean((context.bots.length || channels.length) && !bots.length && !matchingChannels.length) ? '<p class="bots-panel-empty">No bots or channels match.</p>' : '';
-  return `${empty}${botGroups}${channelGroups}${noMatch}`;
+  return `${empty}${listed}${noMatch}`;
 }

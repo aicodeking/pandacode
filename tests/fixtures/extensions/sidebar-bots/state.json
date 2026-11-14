@@ -1,0 +1,36 @@
+{
+  "contractVersion": 1,
+  "window": "main",
+  "context": "mount-1",
+  "project": "project-a",
+  "bot": "bot-a",
+  "channel": "",
+  "revision": 3,
+  "visible": true,
+  "focused": false,
+  "busy": false,
+  "view": "bots",
+  "searching": false,
+  "loaded": true,
+  "safeMode": false,
+  "groups": [
+    { "id": "needs-you", "pinned": true, "hidden": false, "open": true, "count": 1 },
+    { "id": "bots", "pinned": false, "hidden": false, "open": true, "count": 1 },
+    { "id": "hidden", "pinned": false, "hidden": false, "open": false, "count": 1 },
+    { "id": "channels", "pinned": false, "hidden": false, "open": true, "count": 1 }
+  ],
+  "rows": [
+    { "id": "row-a", "kind": "bot", "group": "needs-you", "selected": true, "pinned": false, "status": "waiting" },
+    { "id": "row-b", "kind": "bot", "group": "bots", "selected": false, "pinned": false, "status": "working" },
+    { "id": "row-c", "kind": "channel", "group": "channels", "selected": false, "pinned": false, "status": "none" }
+  ],
+  "controls": [
+    { "id": "control-view", "controlId": "toggle-view", "resource": "", "enabled": true, "hidden": false },
+    { "id": "control-search", "controlId": "search", "resource": "", "enabled": true, "hidden": false },
+    { "id": "control-open-b", "controlId": "open-bot", "resource": "row-b", "enabled": true, "hidden": false },
+    { "id": "control-menu-b", "controlId": "bot-menu", "resource": "row-b", "enabled": true, "hidden": false },
+    { "id": "control-open-c", "controlId": "open-channel", "resource": "row-c", "enabled": true, "hidden": false },
+    { "id": "control-hidden", "controlId": "toggle-hidden", "resource": "group-hidden", "enabled": true, "hidden": false }
+  ],
+  "truncated": false
+}

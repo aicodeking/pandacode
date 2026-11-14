@@ -391,7 +391,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -724,6 +724,36 @@ mod tests {
         assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
         let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.context", "revision": 1, "selection": {"kind": "sidebar-section", "ids": ["review"]}});
         assert_eq!(super::validate_contract("context", &context)["ok"], true);
+    }
+    #[test]
+    fn sidebar_bots_state_action_layouts_and_selection_kinds_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sidebar-bots/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sidebar-bots/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sidebar-bots/action.json")).unwrap();
+        assert_eq!(super::validate_contract("sidebarBotsPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("sidebarBotsAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "name", "botId", "token"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("sidebarBotsAction", &forged)["ok"], false);
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("sidebarBotsPresentation", &raw)["ok"], false);
+        }
+        // Deletion, pausing, channel changes, membership and credentials have no public control id.
+        for control in ["delete-bot", "pause-bot", "duplicate-bot", "delete-channel", "restore-channel", "channel-members", "bot-credentials"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("sidebarBotsAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["rows"] = json!(vec![state["rows"][0].clone(); 257]);
+        assert_eq!(super::validate_contract("sidebarBotsPresentation", &oversized)["ok"], false);
+        let mut named = state.clone(); named["rows"][0]["name"] = json!("Scout");
+        assert_eq!(super::validate_contract("sidebarBotsPresentation", &named)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.sidebar.bots.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        let bot = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.bots.context", "projectId": "bot-project", "revision": 1, "selection": {"kind": "bot", "ids": ["bot-1"]}});
+        assert_eq!(super::validate_contract("context", &bot)["ok"], true);
+        let channel = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.channel.context", "revision": 1, "selection": {"kind": "channel", "ids": ["channel-1"]}});
+        assert_eq!(super::validate_contract("context", &channel)["ok"], true);
     }
     #[test]
     fn settings_component_state_action_and_placed_fields_share_native_schema() {

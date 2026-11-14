@@ -74,6 +74,10 @@
 .navigation[data-row-hidden~="provider"] .task-provider, .navigation[data-row-hidden~="link"] .task-link,
 .navigation[data-row-hidden~="branch"] .task-branch-name { display: none; }
 .navigation[data-row-order="more-first"] .task-more { order: -1; }
+/* Bot row parts hidden by the user, the same way: one attribute on the Bots list. A hidden settings button keeps its
+   path through the row menu's Edit bot. */
+.bots-panel-list[data-row-hidden~="settings"] .bot-row-settings, .bots-panel-list[data-row-hidden~="role"] .bot-role-tag,
+.bots-panel-list[data-row-hidden~="time"] .bot-card-head > time { display: none; }
 
 /* Action dock items hidden by the user keep their node; a group with nothing left to show folds with its separator.
    Workers line parts hidden or reordered by the user (one attribute on the workspace, never per list). */

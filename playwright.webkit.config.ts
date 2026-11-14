@@ -75,6 +75,7 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Owned dialogs:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Settings extension:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-sidebar-coverage.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-sidebar-bots-coverage.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Sidebar extension:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-team-controls-coverage.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Action dock extension:`);

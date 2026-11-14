@@ -108,7 +108,7 @@ import './cloud-agents.css';
 import { SETUP_CHOICE, cloudActionItems, cloudChoice, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, CLOUD_HARNESSES, type CloudStage, type CloudTarget } from './cloud-agents';
 import { mountCloudPresentation, CLOUD_CONSENT_ITEM, CLOUD_LABELS, type CloudHostRequest } from './extensions/cloud-host';
 import type { CloudPending } from './extensions/cloud';
-import { botsBarHtml, botsListHtml, botsPanelHeadHtml, markAllBotsRead, moveBot, pinnedBots, setBotPinned, storedSidebarView, storeSidebarView, syncSeen, type BotSignals, type SidebarView } from './sidebar-bots';
+import { botsBarHtml, botsGroupCounts, botsListHtml, botsPanelHeadHtml, markAllBotsRead, moveBot, pinnedBots, setBotPinned, storedSidebarView, storeSidebarView, syncSeen, type BotSignals, type BotsListContext, type SidebarView } from './sidebar-bots';
 import { sharedChannelActionsHtml, sharedChannelComposerHtml, sharedChannelThreadHtml, type SharedChannelDetail, type SharedChannelSummary, type SharedChannelUiOptions } from './bot-shared-channels';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
 import { createAgentInput, type AgentInput } from './agent-input';
@@ -740,6 +740,17 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     state: () => ({ project: state.projectFilter || undefined, task: state.sessionId || undefined, group: sidebarSort.group, taskSort: sidebarSort.tasks, projectSort: sidebarSort.projects, busy: sidebarDragging || orderingBusy }),
     rerender: () => renderNavigation(),
   });
+  // Bots panel head, groups, bot row parts and the bot and channel row menus: presentation only. Grouping, unread
+  // state, pins, the dragged order, deletion, channel membership and every handler stay here and in sidebar-bots.ts.
+  renderBots();
+  botsAdoption = (await import('./extensions/sidebar-bots-host')).mountSidebarBotsAdoption({
+    root: $('.sidebar'), bar: $('#sidebar-bots'), panel: $('#sidebar-bots-panel'), context, onContextChanged, notify,
+    state: () => {
+      const context = botsContext(new Map()), bot = sidebarBots.find(item => item.projectId === context.selectedProject);
+      return { view: sidebarView, project: bot?.projectId, bot: bot?.id, channel: state.sharedChannelId || undefined, searching: Boolean(botsQuery.trim()), hiddenOpen: hiddenBotsOpen, loaded: botsLoaded, busy: botsDragging, groups: botsGroupCounts(context, botsQuery) };
+    },
+    rerender: () => renderBots(),
+  });
   // Action dock items and groups, the Workers line's parts and its context menu: presentation only. Placement, motion,
   // the flyout's panels, team state, approvals and Stop stay in action-dock.ts, team-progress.ts and here.
   dockAdoption = (await import('./extensions/dock-host')).mountDockAdoption({
@@ -814,6 +825,8 @@ function branchLabel(branch: string): string {
 let unreviewed: Set<string> | undefined;
 /** Sidebar presentation adoption (docs/extensions/sidebar.md), mounted once extensions load; the groups of the last draw. */
 let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mountSidebarAdoption> | undefined;
+/** Bots panel adoption (docs/extensions/sidebar.md#bots-panel), mounted once extensions load. */
+let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mountSidebarBotsAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
 let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
 /** Agent roster adoption (docs/extensions/agent-roster.md), mounted once extensions load. */
@@ -1003,6 +1016,8 @@ if (preview && new URLSearchParams(location.search).has('roster-coverage')) {
 if (preview && new URLSearchParams(location.search).has('sidebar-coverage')) {
   (window as any).__previewSidebar = () => sidebarAdoption?.presentation();
   (window as any).__previewSidebarAction = (input: unknown) => sidebarAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+  (window as any).__previewSidebarBots = () => botsAdoption?.presentation();
+  (window as any).__previewSidebarBotsAction = (input: unknown) => botsAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
 if (preview && new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettings = () => settingsView?.adoption()?.presentation();
@@ -6208,7 +6223,11 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   if (options.extensionSurface) {
     const { openContextActions } = await import('./extensions/context-actions');
     if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
-    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, pinned: options.extensionSurface.pinned, width: options.extensionSurface.width, notify, onClose: () => { choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; options.afterClose?.(); } });
+    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, pinned: options.extensionSurface.pinned, width: options.extensionSurface.width, notify, onClose: () => {
+      choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
+      if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
+      options.afterClose?.();
+    } });
     return;
   }
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
@@ -7315,6 +7334,8 @@ let botsQuery = '';
 let botsLoaded = false;
 let hiddenBotsOpen = (() => { try { return localStorage.getItem('pandacode.botsHiddenOpen') === 'true'; } catch { return false; } })();
 let botsListPendingRender = false;
+/** A bot row is being dragged: extension actions wait until it drops. */
+let botsDragging = false;
 /** Bot workspaces whose run finished while another thread was open; cleared when the bot opens. */
 const respondedBots = new Set<string>();
 const failedBotProjects = new Set<string>();
@@ -7352,12 +7373,16 @@ function renderBots(): void {
     bindBotRows(panel.querySelector<HTMLElement>('.bots-panel-list')!);
   }
   const list = panel.querySelector<HTMLElement>('.bots-panel-list')!;
-  const html = botsListHtml({ bots: sidebarBots, channels: sidebarChannels, selectedProject: state.sharedChannelId ? undefined : current?.projectId, selectedChannel: state.sharedChannelId, signals: bot => botSignals(bot, unread), loaded: botsLoaded, hiddenOpen: hiddenBotsOpen }, botsQuery);
+  const html = botsListHtml(botsContext(unread), botsQuery);
   if (!showsHtml(list, html)) {
     const menuAnchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
     if (menuAnchor && list.contains(menuAnchor)) botsListPendingRender = true;
     else { morph(list, html); botsListPendingRender = false; }
   }
+}
+/** What the Bots list draws from; the extension arrangement only orders and hides whole groups. */
+function botsContext(unread: Map<string, number>): BotsListContext {
+  return { bots: sidebarBots, channels: sidebarChannels, selectedProject: state.sharedChannelId ? undefined : session()?.projectId, selectedChannel: state.sharedChannelId, signals: bot => botSignals(bot, unread), loaded: botsLoaded, hiddenOpen: hiddenBotsOpen, arrangement: botsAdoption?.arrange(Boolean(botsQuery.trim())) };
 }
 /** Right-click (or the context-menu key) opens a row's menu; rows drag to reorder. */
 function bindBotRows(list: HTMLElement): void {
@@ -7381,7 +7406,7 @@ function bindBotRows(list: HTMLElement): void {
   list.addEventListener('dragstart', event => {
     const row = rowOf(event.target); if (!row) return;
     if (!['pinned', 'bots'].includes(row.dataset.botGroup ?? '')) { event.preventDefault(); return; }
-    dragged = row.dataset.botRow!; draggedGroup = row.dataset.botGroup ?? ''; event.dataTransfer?.setData('text/plain', dragged);
+    dragged = row.dataset.botRow!; draggedGroup = row.dataset.botGroup ?? ''; botsDragging = true; event.dataTransfer?.setData('text/plain', dragged);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   });
   list.addEventListener('dragover', event => { const row = rowOf(event.target); if (dragged && row?.dataset.botGroup === draggedGroup) { event.preventDefault(); row.classList.add('drag-over'); } });
@@ -7392,9 +7417,9 @@ function bindBotRows(list: HTMLElement): void {
     event.preventDefault();
     const shown = [...list.querySelectorAll<HTMLElement>('[data-bot-row]')].map(item => item.dataset.botRow!);
     if (row.dataset.botRow !== dragged) { moveBot(shown, dragged, row.dataset.botRow!); renderBots(); }
-    dragged = ''; draggedGroup = '';
+    dragged = ''; draggedGroup = ''; botsDragging = false;
   });
-  list.addEventListener('dragend', () => { list.querySelectorAll('.drag-over').forEach(item => item.classList.remove('drag-over')); dragged = ''; draggedGroup = ''; });
+  list.addEventListener('dragend', () => { list.querySelectorAll('.drag-over').forEach(item => item.classList.remove('drag-over')); dragged = ''; draggedGroup = ''; botsDragging = false; });
   list.addEventListener('keydown', event => {
     if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
     const row = rowOf(event.target), group = row?.dataset.botGroup;
@@ -7416,7 +7441,7 @@ function bindBotRows(list: HTMLElement): void {
 async function showBotMenu(anchor: HTMLElement, botId: string): Promise<void> {
   const bot = sidebarBots.find(item => item.id === botId); if (!bot) return;
   const pinned = pinnedBots().has(bot.id);
-  await showChoices(anchor, { title: `${bot.name} actions`, actions: true, items: [
+  await showChoices(anchor, { title: `${bot.name} actions`, actions: true, extensionSurface: { location: 'panda.sidebar.bots.context', context: { revision: state.generation, ...(bot.projectId ? { projectId: bot.projectId } : {}), selection: { kind: 'bot', ids: [bot.id] } }, isAlive: () => sidebarBots.some(item => item.id === bot.id) }, items: [
     { id: 'pin', label: pinned ? 'Unpin' : 'Pin', icon: 'pin' },
     { id: 'edit', label: 'Edit bot', icon: 'edit' },
     { id: 'duplicate', label: 'Duplicate bot', icon: 'copy' },
@@ -7495,7 +7520,7 @@ async function openSharedChannel(id: string): Promise<void> {
 }
 async function showSharedChannelMenu(anchor: HTMLElement, channelId: string): Promise<void> {
   const channel = sidebarChannels.find(item => item.id === channelId); if (!channel) return;
-  await showChoices(anchor, { title: `#${channel.name} actions`, actions: true, items: channel.archived
+  await showChoices(anchor, { title: `#${channel.name} actions`, actions: true, extensionSurface: { location: 'panda.sidebar.channel.context', context: { revision: state.generation, selection: { kind: 'channel', ids: [channel.id] } }, isAlive: () => sidebarChannels.some(item => item.id === channel.id && item.archived === channel.archived) }, items: channel.archived
     ? [{ id: 'restore', label: 'Restore', icon: 'undo' }]
     : [{ id: 'edit', label: 'Edit', icon: 'edit' }, { id: 'delete', label: 'Delete', icon: 'trash', danger: true }],
   onSelect: id => { closeChoiceMenu(); run(sharedChannelMenuAction(id, channel)); } });

@@ -1,0 +1,13 @@
+{
+  "contractVersion": 1,
+  "window": "main",
+  "context": "mount-1",
+  "project": "project-a",
+  "bot": "bot-a",
+  "channel": "",
+  "revision": 3,
+  "control": "control-open-b",
+  "controlId": "open-bot",
+  "resource": "row-b",
+  "requestId": "request-1"
+}
