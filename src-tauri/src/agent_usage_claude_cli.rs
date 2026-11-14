@@ -306,11 +306,49 @@ pub(super) fn running(profile: &str) -> bool {
     runs().get(profile).is_some_and(|entry| entry.running)
 }
 
+/// Profiles whose `wait_for_run` is parked (tests). Keyed so parallel tests
+/// do not see each other.
+#[cfg(test)]
+fn waiting_profiles() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static WAITING: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    WAITING.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether `wait_for_run` is parked on `profile`'s in-progress run (tests).
+#[cfg(test)]
+pub(super) fn waiting_for(profile: &str) -> bool {
+    waiting_profiles().contains(profile)
+}
+
+/// Inserts `profile` into `waiting_profiles` until dropped.
+#[cfg(test)]
+struct WaitingFor(String);
+
+#[cfg(test)]
+impl WaitingFor {
+    fn enter(profile: &str) -> Self {
+        waiting_profiles().insert(profile.to_owned());
+        Self(profile.to_owned())
+    }
+}
+
+#[cfg(test)]
+impl Drop for WaitingFor {
+    fn drop(&mut self) {
+        waiting_profiles().remove(&self.0);
+    }
+}
+
 /// Waits (up to `budget`) for `profile`'s run under way to end.
 pub(super) async fn wait_for_run(profile: &str, budget: Duration) {
     // The same clock as the sleeps (paused in timing tests).
     let until = tokio::time::Instant::now() + budget;
     while running(profile) && tokio::time::Instant::now() < until {
+        // Dropped at the end of the iteration, including when the sleep is
+        // cancelled. Tests release a held run only after this is set: opening
+        // it sooner lets that run finish, and the waiter starts another.
+        #[cfg(test)]
+        let _waiting = WaitingFor::enter(profile);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

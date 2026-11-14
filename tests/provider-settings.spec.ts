@@ -241,6 +241,7 @@ async function delayedConnections(page: Page): Promise<void> {
 test('provider connections preserve other drafts and edits made during a save', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await delayedConnections(page);
+  await expect(page.locator('#settings-panel-providers')).toContainText('agy acp --process-per-session');
   const opencode = page.getByLabel('OpenCode executable', { exact: true });
   const antigravity = page.getByLabel('Antigravity ACP executable', { exact: true });
   await antigravity.fill('/draft/agy_acp_server.par');

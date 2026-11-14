@@ -546,10 +546,23 @@ async fn a_refresh_during_a_run_joins_it_instead_of_starting_another() {
     // A Refresh pressed now waits for that run (let go once it has begun),
     // then reads what it saved.
     setup.check.deadline = Duration::from_secs(30);
-    let (refreshed, ()) = tokio::join!(setup.refresh(), async { gate.open() });
+    let key = setup.check.profile.key.clone();
+    // `join!` can open the gate on Refresh's first await, before it sees the
+    // run still under way, so the blocking thread finishes it and Refresh
+    // starts a second one. Release the run only once Refresh is waiting on it.
+    let refresh = tokio::spawn(async move { setup.refresh().await });
+    for _ in 0..10_000 {
+        if cli::waiting_for(&key) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(cli::waiting_for(&key), "refresh never joined the in-progress run");
+    gate.open();
+    let refreshed = refresh.await.expect("refresh task");
     assert_eq!((refreshed.status.as_str(), runs(&cli)), ("ready", 1), "{:?}", refreshed.message);
     // The Refresh may read the saved login just before the run marks itself over.
-    assert!(eventually(|| !cli::asking(&setup.check.profile.key)).await);
+    assert!(eventually(|| !cli::asking(&key)).await);
 }
 
 /// A Claude Code runner that panics.
