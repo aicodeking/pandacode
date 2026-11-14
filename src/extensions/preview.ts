@@ -48,6 +48,8 @@ import composerManifest from '../../tests/fixtures/extensions/composer/extension
 import transcriptManifest from '../../tests/fixtures/extensions/transcript/extension.json';
 import appearanceSvg from '../../tests/fixtures/extensions/appearance/assets/symbol.svg?raw';
 import windowSvg from '../../tests/fixtures/extensions/window-laboratory/assets/info.svg?raw';
+import windowCoverageManifest from '../../tests/fixtures/extensions/window-coverage/extension.json';
+import windowCoverageSvg from '../../tests/fixtures/extensions/window-coverage/assets/mark.svg?raw';
 import coreDialogsManifest from '../../tests/fixtures/extensions/core-dialogs/extension.json';
 import coreDialogsSvg from '../../tests/fixtures/extensions/core-dialogs/assets/note.svg?raw';
 import ownedDialogsManifest from '../../tests/fixtures/extensions/owned-dialogs/extension.json';
@@ -81,7 +83,7 @@ function read(): ExtensionSnapshot {
     for (const item of packages) item.storageGranted = previewPrivateStorage.granted(item.manifest.id, item.manifest.version);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
-    return { safeMode, development: structuredClone(development), packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === harnessManifest.id ? { 'sample.fake-harness/mark': harnessSvg } : {}), ...(item.manifest.id === appearanceManifest.id ? { 'sample.appearance/symbol': appearanceSvg, 'sample.appearance/file': appearanceSvg } : {}), ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}), ...(item.manifest.id === coreDialogsManifest.id ? { 'sample.core-dialogs/mark': coreDialogsSvg } : {}), ...(item.manifest.id === ownedDialogsManifest.id ? { 'sample.owned-dialogs/mark': ownedDialogsSvg } : {}), ...(item.manifest.id === primitivesManifest.id ? { 'sample.primitives/mark': primitivesSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
+    return { safeMode, development: structuredClone(development), packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg, ...(item.manifest.id === harnessManifest.id ? { 'sample.fake-harness/mark': harnessSvg } : {}), ...(item.manifest.id === appearanceManifest.id ? { 'sample.appearance/symbol': appearanceSvg, 'sample.appearance/file': appearanceSvg } : {}), ...(item.manifest.id === 'sample.view-laboratory' ? { 'sample.view-laboratory/info': viewSvg } : {}), ...(item.manifest.id === threadManifest.id ? { 'sample.thread-laboratory/info': threadSvg } : {}), ...(item.manifest.id === windowManifest.id ? { 'sample.window-laboratory/info': windowSvg } : {}), ...(item.manifest.id === windowCoverageManifest.id ? { 'sample.window-coverage/mark': windowCoverageSvg } : {}), ...(item.manifest.id === coreDialogsManifest.id ? { 'sample.core-dialogs/mark': coreDialogsSvg } : {}), ...(item.manifest.id === ownedDialogsManifest.id ? { 'sample.owned-dialogs/mark': ownedDialogsSvg } : {}), ...(item.manifest.id === primitivesManifest.id ? { 'sample.primitives/mark': primitivesSvg } : {}) } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export const previewExtensionSnapshot = read;
@@ -100,6 +102,14 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   const label = windowLabel;
   if (label === 'main' && command.startsWith('extensions_window_')) throw new Error('PermissionDenied');
   if (label !== 'main' && !['extensions_window_snapshot', 'extensions_window_action', 'extensions_window_recover'].includes(command)) throw new Error('PermissionDenied');
+  if (command === 'extensions_native_layout') {
+    // Synthetic stand-in for the native broker's main-only presentation update; the OS menu build is native-tested.
+    const value = args.layout as { hidden?: unknown; order?: unknown } | undefined;
+    const ids = (list: unknown): list is string[] => Array.isArray(list) && list.length <= 128 && list.every(id => typeof id === 'string' && id.length <= 160 && !id.startsWith('panda.') && /^[a-z0-9-]+\.[a-z0-9.-]+\/[a-z0-9-]+$/.test(id));
+    if (!value || Object.keys(value).sort().join(',') !== 'hidden,order' || !ids(value.hidden) || !ids(value.order) || new Set(value.order).size !== value.order.length) throw new Error('InvalidLayout');
+    (window as unknown as { __previewNativeLayout?: unknown }).__previewNativeLayout = structuredClone(value);
+    return null;
+  }
   if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') { safeMode = true; previewPrivateStorage.dispose(); localStorage.setItem('pandacode.preview.extensions.safe', 'true'); notify('extensions-changed', null); return command === 'extensions_safe_mode' ? read() : null; }
   const snapshot = read();
   if (command === 'extensions_window_snapshot') return { windowId: label, snapshot };

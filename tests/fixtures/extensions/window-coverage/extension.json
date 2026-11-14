@@ -1,0 +1,48 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.window-coverage",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.window-coverage/mark", "asset": "assets/mark.svg" }],
+    "commands": [
+      { "id": "sample.window-coverage/tools", "title": "Coverage tools", "action": { "kind": "showMessage", "message": "Coverage tools ran" } },
+      { "id": "sample.window-coverage/state", "title": "Coverage state", "action": { "kind": "showMessage", "message": "Coverage state ran" } },
+      { "id": "sample.window-coverage/follow", "title": "Follow running agents", "action": { "kind": "showMessage", "message": "Follow preference changed" } },
+      { "id": "sample.window-coverage/density", "title": "Coverage density", "action": { "kind": "showMessage", "message": "Coverage density changed" } },
+      { "id": "sample.window-coverage/form", "title": "Window coverage form", "action": { "kind": "showDialog", "dialog": { "title": "Window coverage format", "fields": [{ "id": "format", "kind": "select", "label": "Coverage format", "required": true, "options": [{ "value": "summary", "label": "Summary format" }, { "value": "detail", "label": "Detailed format" }] }], "successMessage": "Window coverage confirmed", "cancelMessage": "Window coverage cancelled" } } },
+      { "id": "sample.window-coverage/launcher", "title": "Launcher coverage", "action": { "kind": "showMessage", "message": "Launcher coverage ran" } },
+      { "id": "sample.window-coverage/dock", "title": "Dock coverage", "action": { "kind": "showMessage", "message": "Dock coverage ran" } },
+      { "id": "sample.window-coverage/native-tools", "title": "Native coverage tools", "action": { "kind": "showMessage", "message": "Native coverage tools ran" } },
+      { "id": "sample.window-coverage/native-more", "title": "Native coverage more", "action": { "kind": "showMessage", "message": "Native coverage more ran" } },
+      { "id": "sample.window-coverage/native-state", "title": "Native coverage state", "action": { "kind": "showMessage", "message": "Native coverage state ran" } }
+    ],
+    "menus": [
+      { "id": "sample.window-coverage/tray-tools", "location": "panda.tray.actions", "command": "sample.window-coverage/tools", "icon": "sample.window-coverage/mark", "items": [
+        { "id": "sample.window-coverage/follow-toggle", "kind": "checkbox", "title": "Follow running agents", "checked": false, "command": "sample.window-coverage/follow" },
+        { "id": "sample.window-coverage/divider", "kind": "separator" },
+        { "id": "sample.window-coverage/compact", "kind": "radio", "title": "Compact", "group": "Density", "checked": true, "command": "sample.window-coverage/density" },
+        { "id": "sample.window-coverage/comfortable", "kind": "radio", "title": "Comfortable", "group": "Density", "command": "sample.window-coverage/density" },
+        { "id": "sample.window-coverage/tray-form", "kind": "command", "title": "Choose coverage format", "command": "sample.window-coverage/form", "icon": "sample.window-coverage/mark" }
+      ] },
+      { "id": "sample.window-coverage/tray-state", "location": "panda.tray.actions", "command": "sample.window-coverage/state", "presentation": "status", "text": "Coverage ready" },
+      { "id": "sample.window-coverage/launcher-tools", "location": "panda.launcher.actions", "command": "sample.window-coverage/launcher", "icon": "sample.window-coverage/mark", "items": [
+        { "id": "sample.window-coverage/launcher-form", "kind": "command", "title": "Choose coverage format", "command": "sample.window-coverage/form" }
+      ] },
+      { "id": "sample.window-coverage/dock-tools", "location": "panda.agentsDock.actions", "command": "sample.window-coverage/dock", "icon": "sample.window-coverage/mark", "items": [
+        { "id": "sample.window-coverage/dock-form", "kind": "command", "title": "Choose coverage format", "command": "sample.window-coverage/form" }
+      ] },
+      { "id": "sample.window-coverage/native-menu", "location": "panda.tray.menu", "command": "sample.window-coverage/native-tools", "items": [
+        { "id": "sample.window-coverage/native-follow", "kind": "checkbox", "title": "Follow running agents", "checked": false, "command": "sample.window-coverage/follow" },
+        { "id": "sample.window-coverage/native-divider", "kind": "separator" },
+        { "id": "sample.window-coverage/native-compact", "kind": "radio", "title": "Compact", "group": "Density", "checked": true, "command": "sample.window-coverage/density" },
+        { "id": "sample.window-coverage/native-comfortable", "kind": "radio", "title": "Comfortable", "group": "Density", "command": "sample.window-coverage/density" },
+        { "id": "sample.window-coverage/native-form", "kind": "command", "title": "Choose coverage format", "command": "sample.window-coverage/form" }
+      ] },
+      { "id": "sample.window-coverage/native-extra", "location": "panda.tray.menu", "command": "sample.window-coverage/native-more" },
+      { "id": "sample.window-coverage/native-status", "location": "panda.tray.menu", "command": "sample.window-coverage/native-state", "presentation": "status", "text": "Native ready" }
+    ]
+  }
+}

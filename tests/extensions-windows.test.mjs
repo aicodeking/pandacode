@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 import { validateContract } from '../src/extensions/contracts.ts';
 import { createDeclarativeActivation } from '../src/extensions/activation.ts';
 import { createUiCatalog } from '../src/extensions/catalog.ts';
-import { WINDOW_ACTION_SURFACES } from '../src/extensions/window-surfaces.ts';
+import { WINDOW_ACTION_SURFACES, WINDOW_PROTECTED_SURFACES } from '../src/extensions/window-surfaces.ts';
+import { WINDOW_REGISTRY, WINDOW_PROTECTED, WINDOW_FALLBACKS } from '../src/extensions/window-core.ts';
+import { createLayoutStore } from '../src/extensions/layout.ts';
 const manifest = JSON.parse(readFileSync(new URL('./fixtures/extensions/window-laboratory/extension.json', import.meta.url), 'utf8'));
 const state = () => ({ safeMode: false, packages: [{ manifest: structuredClone(manifest), enabled: true, icons: {} }], diagnostics: [] });
 test('extensions windows: every actual auxiliary label has an explicit surface and capability fallback', () => {
@@ -54,4 +56,53 @@ test('extensions windows: native policy is wired before dispatch and capabilitie
     assert.deepEqual(capability.webviews, [window]);
     assert.ok(capability.permissions.every(name => ['core:event:allow-listen', 'core:event:allow-unlisten', 'core:window:allow-start-dragging'].includes(name)));
   }
+});
+
+const coverageManifest = JSON.parse(readFileSync(new URL('./fixtures/extensions/window-coverage/extension.json', import.meta.url), 'utf8'));
+const coverageState = () => ({ safeMode: false, packages: [{ manifest: structuredClone(coverageManifest), enabled: true, icons: {} }], diagnostics: [] });
+test('window coverage: every panda.tray/panda.windows member and the pinned widget has an adapter or a specific exception with a fallback', () => {
+  const ledger = JSON.parse(readFileSync(new URL('./fixtures/extensions/surfaces.json', import.meta.url), 'utf8'));
+  const coverage = ledger.windowCoverage['panda.windows'];
+  const members = ledger.families.filter(family => ['panda.tray', 'panda.windows'].includes(family.id)).flatMap(family => family.members.map(([local]) => `${family.id}.${local}`));
+  assert.deepEqual(WINDOW_REGISTRY.map(entry => entry.member).sort(), [...members, 'panda.agents.widget'].sort());
+  assert.deepEqual(Object.keys(coverage.members).sort(), WINDOW_REGISTRY.map(entry => entry.member).sort());
+  assert.equal(ledger.controlsAudit.gaps['panda.agents/widget-window'].severity, 'closed');
+  for (const entry of WINDOW_REGISTRY) {
+    const row = coverage.members[entry.member];
+    assert.equal(row.disposition, entry.disposition, entry.member); assert.deepEqual(row.locations, entry.locations, entry.member); assert.equal(row.fallback, entry.fallback, entry.member);
+    assert.ok(entry.fallback.length > 20, entry.member);
+    // An exception names its specific protected or platform reason; missing implementation is never one.
+    if (entry.disposition !== 'adapter') { assert.ok(entry.reason && entry.reason.length > 30, entry.member); assert.equal(row.reason, entry.reason); }
+    for (const path of row.evidence) assert.doesNotThrow(() => readFileSync(new URL(`../${path}`, import.meta.url)), path);
+  }
+  assert.doesNotMatch(JSON.stringify(coverage), /\blater\b|TODO|pending implementation/i);
+  const ui = createUiCatalog(coverageState);
+  for (const [location, windowId] of Object.entries(WINDOW_PROTECTED_SURFACES)) {
+    const surface = ui.listSurfaces({ windowId, location }).items[0];
+    assert.equal(surface.available, true); assert.deepEqual(surface.windows, [windowId]); assert.deepEqual(surface.supportedOperations, ['inspect']);
+    const items = ui.listItems({ windowId, location, limit: 100 }).items;
+    assert.deepEqual(items.map(item => item.id.slice(location.length + 1)).sort(), WINDOW_PROTECTED[location].map(([id]) => id).sort());
+    for (const item of items) { assert.equal(item.owner, 'panda.core'); assert.equal(item.available, true); assert.deepEqual(item.supportedOperations, ['inspect']); assert.match(item.label, / — \w+/); }
+    assert.ok(ui.listItems({ location, limit: 100 }).items.every(item => !item.available), 'another window never sees them as available');
+  }
+  const menu = ui.listSurfaces({ windowId: 'tray', location: 'panda.tray.menu' }).items[0];
+  assert.deepEqual(menu.supportedOperations, ['inspect', 'contribute', 'hide', 'show', 'reorder']);
+  assert.deepEqual(menu.capabilities.fallbacks, WINDOW_FALLBACKS['panda.tray.menu']); assert.equal(menu.capabilities.icons, false);
+  for (const location of ['panda.tray.actions', 'panda.launcher.actions', 'panda.agentsDock.actions']) assert.equal(ui.listSurfaces({ windowId: WINDOW_ACTION_SURFACES[location], location }).items[0].capabilities.fallbacks.select, 'host-quick-pick');
+  const native = ui.listItems({ windowId: 'tray', location: 'panda.tray.menu', limit: 100 }).items;
+  assert.deepEqual(native.map(item => item.id), ['sample.window-coverage/native-extra', 'sample.window-coverage/native-menu', 'sample.window-coverage/native-status']);
+  for (const item of native) assert.deepEqual(item.supportedOperations, ['inspect', 'hide', 'show', 'reorder']);
+});
+test('window coverage: auxiliary contributions hide and reorder through the host layout store; protected window controls never do', () => {
+  const memory = new Map(); const layout = createLayoutStore({ getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) });
+  const pairs = { 'panda.tray.actions': ['tray-state', 'tray-tools'], 'panda.tray.menu': ['native-extra', 'native-menu'] };
+  for (const [location, [first, second]] of Object.entries(pairs)) {
+    const ids = [first, second].map(id => `sample.window-coverage/${id}`);
+    layout.move(location, ids, { id: ids[1], target: ids[0], side: 'before' });
+    assert.deepEqual(layout.order(location, ids), [ids[1], ids[0]], location);
+  }
+  for (const location of ['panda.launcher.actions', 'panda.agentsDock.actions']) layout.move(location, ['sample.a/one', 'sample.a/two'], { id: 'sample.a/two', target: 'sample.a/one', side: 'before' });
+  layout.setVisible('sample.window-coverage/native-extra', false);
+  assert.equal(layout.isHidden('sample.window-coverage/native-extra'), true);
+  for (const location of Object.keys(WINDOW_PROTECTED_SURFACES)) assert.throws(() => layout.move(location, [`${location}/a`, `${location}/b`], { id: `${location}/b`, target: `${location}/a`, side: 'before' }), /Unsupported placement/);
 });

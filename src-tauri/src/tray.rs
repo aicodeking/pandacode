@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{
     image::Image,
-    menu::{Menu, MenuEvent, MenuItem, Submenu, PredefinedMenuItem},
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, Submenu, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewWindow,
 };
@@ -64,17 +64,24 @@ fn extension_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &MenuItem::with_id(app, "quit", "Quit PandaCode", true, None::<&str>)?,
         ],
     )?;
+    /// Check/radio entries use the toolkit's check item on every platform; others are plain items.
+    fn leaf(app: &AppHandle, item: crate::extensions::windows::NativeItem) -> tauri::Result<Box<dyn IsMenuItem<tauri::Wry>>> {
+        Ok(match item.checked {
+            Some(checked) => Box::new(CheckMenuItem::with_id(app, item.id, item.title, item.enabled, checked, None::<&str>)?),
+            None => Box::new(MenuItem::with_id(app, item.id, item.title, item.enabled, None::<&str>)?),
+        })
+    }
     fn submenu(app: &AppHandle, item: crate::extensions::windows::NativeItem) -> tauri::Result<Submenu<tauri::Wry>> {
         let parent = Submenu::with_id(app, item.id, item.title, item.enabled)?;
         for child in item.children {
             if child.separator { parent.append(&PredefinedMenuItem::separator(app)?)?; }
-            else if child.children.is_empty() { parent.append(&MenuItem::with_id(app, child.id, child.title, child.enabled, None::<&str>)?)?; }
+            else if child.children.is_empty() { parent.append(leaf(app, child)?.as_ref())?; }
             else { parent.append(&submenu(app, child)?)?; }
         }
         Ok(parent)
     }
     for item in crate::extensions::windows::menu_snapshot(app) {
-        if item.children.is_empty() { menu.append(&MenuItem::with_id(app, item.id, item.title, item.enabled, None::<&str>)?)?; }
+        if item.children.is_empty() { menu.append(leaf(app, item)?.as_ref())?; }
         else { menu.append(&submenu(app, item)?)?; }
     }
     Ok(menu)
@@ -126,7 +133,11 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
         "show" => show(app),
         "quit" => app.exit(0),
         "extension-recovery" => { if let Err(error) = crate::extensions::windows::recover(app) { eprintln!("Extension recovery failed: {error}"); } },
-        id if id.starts_with("extension:") => { if let Err(error) = crate::extensions::windows::native_selected(app, id) { eprintln!("Extension tray action refused: {error}"); } },
+        id if id.starts_with("extension:") => {
+            if let Err(error) = crate::extensions::windows::native_selected(app, id) { eprintln!("Extension tray action refused: {error}"); }
+            // The toolkit flips a check item on click; rebuilding shows the authorized state (unchanged when refused).
+            refresh_extension_menu(app);
+        },
         _ => {}
     }
 }

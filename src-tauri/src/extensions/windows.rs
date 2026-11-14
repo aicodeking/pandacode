@@ -2,6 +2,8 @@
 use super::{contracts, packages::{ExtensionPackages, Snapshot}};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 pub const AUXILIARY: [&str; 3] = ["tray", "launcher", "agents-dock"];
@@ -121,26 +123,56 @@ pub fn extensions_window_recover(window: tauri::WebviewWindow, app: tauri::AppHa
     recover(&app)
 }
 
+/// Presentation-only user layout of top-level `panda.tray.menu` contributions, sent by the main
+/// window (the OS menu cannot read webview storage). It never grants, revokes or resolves an action.
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeLayout { pub hidden: Vec<String>, pub order: Vec<String> }
+/// Per-launch native menu presentation: the main-window layout and check/radio state.
+#[derive(Clone, Default, Debug)]
+pub struct NativePresentation { pub layout: NativeLayout, pub checked: BTreeMap<String, bool> }
+static PRESENTATION: Mutex<NativePresentation> = Mutex::new(NativePresentation { layout: NativeLayout { hidden: Vec::new(), order: Vec::new() }, checked: BTreeMap::new() });
+fn presentation() -> std::sync::MutexGuard<'static, NativePresentation> { PRESENTATION.lock().unwrap_or_else(|error| error.into_inner()) }
+pub const NATIVE_LAYOUT_LIMIT: usize = 128;
+pub fn validate_layout(layout: &NativeLayout) -> Result<(), String> {
+    let valid = |id: &String| id.len() <= 160 && !id.starts_with("panda.")
+        && id.split_once('/').is_some_and(|(owner, local)| owner.contains('.') && !local.is_empty() && !local.contains('/'))
+        && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'/'));
+    let unique = layout.order.iter().collect::<std::collections::BTreeSet<_>>().len() == layout.order.len();
+    if layout.hidden.len() > NATIVE_LAYOUT_LIMIT || layout.order.len() > NATIVE_LAYOUT_LIMIT || !unique || !layout.hidden.iter().chain(&layout.order).all(valid) { return Err("InvalidLayout".into()); }
+    Ok(())
+}
+/// Main window only. Auxiliary webviews are refused before dispatch and again here.
+#[tauri::command]
+pub fn extensions_native_layout(window: tauri::WebviewWindow, app: tauri::AppHandle, layout: NativeLayout) -> Result<(), String> {
+    if window.label() != "main" { return Err("PermissionDenied".into()); }
+    validate_layout(&layout)?;
+    let changed = { let mut current = presentation(); let changed = current.layout != layout; current.layout = layout; changed };
+    if changed { crate::tray::refresh_extension_menu(&app); }
+    Ok(())
+}
+
 /// Native menu model used by both the OS adapter and deterministic native policy tests.
 #[derive(Clone, Serialize)]
-pub struct NativeItem { pub id: String, pub title: String, pub enabled: bool, pub separator: bool, pub children: Vec<NativeItem>, pub request: Option<ActionRequest> }
-pub fn native_items(snapshot: &Snapshot) -> Vec<NativeItem> {
+pub struct NativeItem { pub id: String, pub title: String, pub enabled: bool, pub separator: bool, pub checked: Option<bool>, pub children: Vec<NativeItem>, pub request: Option<ActionRequest> }
+pub fn native_items(snapshot: &Snapshot, presentation: &NativePresentation) -> Vec<NativeItem> {
     let mut output = Vec::new();
     if snapshot.safe_mode { return output; }
     let checked = checked_packages(snapshot);
     if checked["ok"] != true { return output; }
     let context = json!({"schemaVersion":1,"windowId":"tray","surfaceId":"panda.tray.menu","revision":1});
-    fn children(items: &[Value], snapshot: &Snapshot, version: &str, context: &Value) -> Vec<NativeItem> {
+    fn children(items: &[Value], snapshot: &Snapshot, version: &str, context: &Value, checked: &BTreeMap<String, bool>) -> Vec<NativeItem> {
         let mut output = Vec::new();
         for item in items.iter().filter(|item| item.get("visible").is_none_or(|condition| contracts::evaluate_condition(condition, context)["value"] == true)) {
-            let nested = item["items"].as_array().map(|items| children(items, snapshot, version, context)).unwrap_or_default();
+            let nested = item["items"].as_array().map(|items| children(items, snapshot, version, context, checked)).unwrap_or_default();
             if item["kind"] == "submenu" && nested.is_empty() { continue; }
-            // Native check/radio entries are explicitly advertised as plain command actions.
             let request = ActionRequest { surface_id: "panda.tray.menu".into(), id: item["id"].as_str().unwrap_or_default().into(), version: version.into() };
             let enabled = if item["kind"] == "submenu" { allows(item, context) } else { resolve_checked(snapshot, "tray", &request).is_ok() };
             let separator = item["kind"] == "separator";
             if separator && output.last().is_none_or(|previous: &NativeItem| previous.separator) { continue; }
-            output.push(NativeItem { id: format!("extension:{}", request.id), title: item["title"].as_str().unwrap_or("—").into(), enabled, separator, children: nested, request: (item["kind"] != "submenu" && !separator).then_some(request) });
+            // Check/radio entries keep their declared state until an authorized selection changes it.
+            let state = matches!(item["kind"].as_str(), Some("checkbox" | "radio")).then(|| checked.get(&request.id).copied().unwrap_or(item["checked"] == true));
+            output.push(NativeItem { id: format!("extension:{}", request.id), title: item["title"].as_str().unwrap_or("—").into(), enabled, separator, checked: state, children: nested, request: (item["kind"] != "submenu" && !separator).then_some(request) });
         }
         if output.last().is_some_and(|item| item.separator) { output.pop(); }
         output
@@ -148,24 +180,52 @@ pub fn native_items(snapshot: &Snapshot) -> Vec<NativeItem> {
     for package in snapshot.packages.iter().filter(|package| package.enabled) {
         let version = package.manifest["version"].as_str().unwrap_or_default();
         // Passive status/badge presentations have no native menu form (`x-primitives` hosts.nativeMenu.omits).
-        for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == "panda.tray.menu" && !matches!(menu["presentation"].as_str(), Some("status" | "badge")) && menu.get("visible").is_none_or(|condition| contracts::evaluate_condition(condition, &context)["value"] == true)) {
+        // Hidden by the user's main-window layout: presentation only, the action stays registered.
+        for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == "panda.tray.menu" && !matches!(menu["presentation"].as_str(), Some("status" | "badge")) && !presentation.layout.hidden.iter().any(|id| menu["id"] == id.as_str()) && menu.get("visible").is_none_or(|condition| contracts::evaluate_condition(condition, &context)["value"] == true)) {
             let title = package.manifest["contributes"]["commands"].as_array().into_iter().flatten().find(|command| command["id"] == menu["command"]).and_then(|command| command["title"].as_str()).unwrap_or("Extension action");
-            let nested = menu["items"].as_array().map(|items| children(items, snapshot, version, &context)).unwrap_or_default();
+            let nested = menu["items"].as_array().map(|items| children(items, snapshot, version, &context, &presentation.checked)).unwrap_or_default();
             if menu["items"].is_array() && nested.is_empty() { continue; }
             let request = ActionRequest { surface_id: "panda.tray.menu".into(), id: menu["id"].as_str().unwrap_or_default().into(), version: version.into() };
-            output.push(NativeItem { id: format!("extension:{}", request.id), title: title.into(), enabled: if menu["items"].is_array() { allows(menu, &context) } else { resolve_checked(snapshot, "tray", &request).is_ok() }, separator: false, children: nested, request: (!menu["items"].is_array()).then_some(request) });
+            output.push(NativeItem { id: format!("extension:{}", request.id), title: title.into(), enabled: if menu["items"].is_array() { allows(menu, &context) } else { resolve_checked(snapshot, "tray", &request).is_ok() }, separator: false, checked: None, children: nested, request: (!menu["items"].is_array()).then_some(request) });
         }
     }
     let order = checked["value"]["menuOrder"].as_array();
     output.sort_by_key(|item| order.and_then(|order| order.iter().position(|id| item.id.strip_prefix("extension:") == id.as_str())).unwrap_or(usize::MAX));
+    // The user's order overrides validated manifest order; unknown IDs are ignored and unlisted items keep their place after.
+    let user = &presentation.layout.order;
+    if !user.is_empty() { output.sort_by_key(|item| user.iter().position(|id| item.id.strip_prefix("extension:") == Some(id.as_str())).unwrap_or(usize::MAX)); }
     fn size(item: &NativeItem) -> usize { 1 + item.children.iter().map(size).sum::<usize>() }
     // Reserve the three protected OS actions and one diagnostic within the shared 128-item budget.
     let mut remaining = 124; let mut omitted = 0;
     output.retain(|item| { let count = size(item); if count > remaining { omitted += 1; false } else { remaining -= count; true } });
-    if omitted > 0 { output.push(NativeItem { id: "extension-menu-limit".into(), title: format!("{omitted} extension groups unavailable (native menu limit)"), enabled: false, separator: false, children: vec![], request: None }); }
+    if omitted > 0 { output.push(NativeItem { id: "extension-menu-limit".into(), title: format!("{omitted} extension groups unavailable (native menu limit)"), enabled: false, separator: false, checked: None, children: vec![], request: None }); }
     output
 }
-pub fn menu_snapshot(app: &tauri::AppHandle) -> Vec<NativeItem> { current(app).map(|snapshot| native_items(&snapshot)).unwrap_or_default() }
+pub fn menu_snapshot(app: &tauri::AppHandle) -> Vec<NativeItem> { let state = presentation().clone(); current(app).map(|snapshot| native_items(&snapshot, &state)).unwrap_or_default() }
+/// After an authorized selection: a checkbox flips, a radio becomes the only checked item of its group
+/// among its siblings. Unknown, stale or command items change nothing.
+pub fn select_checked(snapshot: &Snapshot, request: &ActionRequest, checked: &mut BTreeMap<String, bool>) {
+    fn find<'a>(items: &'a [Value], id: &str) -> Option<(&'a Value, &'a [Value])> {
+        for item in items {
+            if item["id"] == id { return Some((item, items)); }
+            if let Some(found) = item["items"].as_array().and_then(|children| find(children, id)) { return Some(found); }
+        }
+        None
+    }
+    for package in snapshot.packages.iter().filter(|package| package.enabled && package.manifest["version"] == request.version) {
+        for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == request.surface_id) {
+            let Some((leaf, siblings)) = menu["items"].as_array().and_then(|items| find(items, &request.id)) else { continue };
+            match leaf["kind"].as_str() {
+                Some("checkbox") => { let current = checked.get(&request.id).copied().unwrap_or(leaf["checked"] == true); checked.insert(request.id.clone(), !current); }
+                Some("radio") => for sibling in siblings.iter().filter(|item| item["kind"] == "radio" && item["group"] == leaf["group"]) {
+                    if let Some(id) = sibling["id"].as_str() { checked.insert(id.into(), id == request.id); }
+                },
+                _ => {}
+            }
+            return;
+        }
+    }
+}
 pub fn native_selected(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     fn find(items: Vec<NativeItem>, id: &str) -> Option<ActionRequest> {
         for item in items {
@@ -176,8 +236,10 @@ pub fn native_selected(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
         None
     }
     let snapshot = current(app)?;
-    let request = find(native_items(&snapshot), id).ok_or("PermissionDenied")?;
+    let state = presentation().clone();
+    let request = find(native_items(&snapshot, &state), id).ok_or("PermissionDenied")?;
     resolve(&snapshot, "tray", &request)?;
+    select_checked(&snapshot, &request, &mut presentation().checked);
     forward(app, &request)
 }
 
@@ -195,6 +257,26 @@ mod tests {
         assert!(command_allowed("agents-dock", "agents_dock_unpin")); assert!(!command_allowed("tray", "agents_dock_unpin"));
         for unknown in ["overlay", "secondary", "browser", "browser-1", "main-forged", ""] { for command in ["extensions_window_snapshot", "extensions_window_action", "extensions_install", "tray_quit"] { assert!(!command_allowed(unknown, command)); } }
         assert!(command_allowed("main", "extensions_install"));
+        // The native menu layout is a main-window presentation update; no auxiliary or unknown webview may send it.
+        assert!(command_allowed("main", "extensions_native_layout"));
+        for window in AUXILIARY.iter().chain(&["overlay", "extension-view-1", "browser-1", ""]) { assert!(!command_allowed(window, "extensions_native_layout"), "{window}"); }
+    }
+    #[test]
+    fn native_layout_is_bounded_unique_package_scoped_and_rejects_forged_fields() {
+        let layout = |hidden: &[&str], order: &[&str]| NativeLayout { hidden: hidden.iter().map(|id| id.to_string()).collect(), order: order.iter().map(|id| id.to_string()).collect() };
+        assert!(validate_layout(&layout(&["sample.window-coverage/native-more"], &["sample.window-coverage/native-more", "sample.window-coverage/native-tools"])).is_ok());
+        assert!(validate_layout(&NativeLayout::default()).is_ok());
+        let long = format!("sample.x/{}", "a".repeat(160));
+        for forged in ["panda.tray.menu/show", "quit", "extension-recovery", "sample/x", "Sample.x/y", "sample.x/y/z", "sample.x/", "sample.x/<svg>", long.as_str()] {
+            assert!(validate_layout(&layout(&[forged], &[])).is_err(), "{forged}"); assert!(validate_layout(&layout(&[], &[forged])).is_err(), "{forged}");
+        }
+        assert!(validate_layout(&layout(&[], &["sample.x/a", "sample.x/a"])).is_err());
+        let many: Vec<String> = (0..=NATIVE_LAYOUT_LIMIT).map(|index| format!("sample.x/item-{index}")).collect();
+        assert!(validate_layout(&NativeLayout { hidden: many.clone(), order: vec![] }).is_err()); assert!(validate_layout(&NativeLayout { hidden: vec![], order: many }).is_err());
+        for key in ["windowId", "command", "checked", "surfaceId"] {
+            let mut value = json!({"hidden": [], "order": []}); value[key] = json!("main");
+            assert!(serde_json::from_value::<NativeLayout>(value).is_err(), "{key}");
+        }
     }
     #[test]
     fn action_request_rejects_forged_identity_context_and_raw_commands() {

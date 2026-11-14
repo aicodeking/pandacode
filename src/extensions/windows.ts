@@ -3,7 +3,9 @@ import './windows.css';
 import { call, preview } from '../bridge';
 import { icon } from '../dom';
 import { mountExtensionActions } from './header';
-import { loadWindowExtensions, loadExtensions, onExtensionsChanged, extensionIdentity } from './manager';
+import { loadWindowExtensions, loadExtensions, onExtensionsChanged, extensionIdentity, extensionsSnapshot } from './manager';
+import { createDeclarativeActivation } from './activation';
+import { layout } from './layout-host';
 import { openExtensionDialog } from './dialogs';
 import { surfaceWindow, type WindowActionLocation } from './window-surfaces';
 import type { ExtensionAction } from './manager';
@@ -58,13 +60,38 @@ export function mountAuxiliaryExtensions(host: HTMLElement, location: Exclude<Wi
   void refresh(); return dispose;
 }
 
+/** The OS menu cannot read webview storage, so the main window sends only the global presentation
+ * (hidden IDs and order) of panda.tray.menu contributions. Safe mode or a rejected batch sends nothing. */
+export function nativeMenuLayout(): { hidden: string[]; order: string[] } {
+  const state = extensionsSnapshot();
+  if (state.safeMode) return { hidden: [], order: [] };
+  let ids: string[];
+  try {
+    const activation = createDeclarativeActivation(state, 0);
+    ids = activation.entries.filter(entry => entry.menu.location === 'panda.tray.menu').map(entry => entry.menu.id);
+    activation.dispose();
+  } catch { return { hidden: [], order: [] }; }
+  // The native tree holds at most 128 items, so neither list can usefully exceed the broker's bound.
+  return { hidden: ids.filter(id => layout.isHidden(id)).slice(0, 128), order: layout.order('panda.tray.menu', ids).slice(0, 128) };
+}
+
 /** Native/compact surfaces present forms in the existing full-size host, not clipped tiny windows. */
 export function mountNativeExtensionPresentation(show: (message: string) => void): () => void {
   let disposed = false, close: (() => void) | undefined, requestId = 0, originWindow: string | undefined;
   let currentOwner: string | undefined, currentIdentity: string | undefined;
   const cancel = () => { requestId++; close?.(); close = undefined; originWindow = undefined; };
   const originClosed = (event: { windowId: string }) => { if (event.windowId === originWindow) cancel(); };
-  const changed = onExtensionsChanged(() => { if (currentOwner && extensionIdentity(currentOwner) !== currentIdentity) cancel(); });
+  let pushed = '';
+  const pushLayout = () => {
+    if (disposed) return;
+    const value = nativeMenuLayout(), signature = JSON.stringify(value);
+    if (signature === pushed) return;
+    pushed = signature;
+    // A refused update keeps the previous native menu; the next change retries.
+    void call('extensions_native_layout', { layout: value }).catch(() => { if (pushed === signature) pushed = ''; });
+  };
+  const changed = onExtensionsChanged(() => { if (currentOwner && extensionIdentity(currentOwner) !== currentIdentity) cancel(); pushLayout(); });
+  const stopLayout = layout.subscribe(pushLayout);
   const present = (request: ActionRequest) => {
     const current = ++requestId, owner = request.id.split('/')[0], identity = extensionIdentity(owner);
     currentOwner = owner; currentIdentity = identity;
@@ -102,6 +129,6 @@ export function mountNativeExtensionPresentation(show: (message: string) => void
     if (event.key === 'pandacode.preview.extensions.v1' || event.key === 'pandacode.preview.extensions.safe') void loadExtensions();
   };
   window.addEventListener('storage', storage);
-  const dispose = () => { disposed = true; cancel(); changed(); window.removeEventListener('storage', storage); window.removeEventListener('pagehide', dispose); [subscription, refresh, closed].forEach(result => { void result.then(stop => stop()).catch(() => undefined); }); };
-  window.addEventListener('pagehide', dispose, { once: true }); return dispose;
+  const dispose = () => { disposed = true; cancel(); changed(); stopLayout(); window.removeEventListener('storage', storage); window.removeEventListener('pagehide', dispose); [subscription, refresh, closed].forEach(result => { void result.then(stop => stop()).catch(() => undefined); }); };
+  window.addEventListener('pagehide', dispose, { once: true }); pushLayout(); return dispose;
 }

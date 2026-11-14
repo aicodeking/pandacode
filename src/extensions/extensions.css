@@ -8,6 +8,8 @@
 .extension-action-slot .extension-header-actions { flex-wrap: wrap; }
 .extension-action-button, .extension-action-status, .extension-action-badge { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); }
 .extension-action-status { color: var(--muted); }
+/* Compact windows have no global [hidden] rule; a hidden contribution must not keep its inline-flex display. */
+[data-extension-contribution][hidden] { display: none; }
 .extension-action-badge { padding: 2px 5px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); color: var(--text); background: var(--ds-card-inner); }
 .extension-action-slot .icon { width: 16px; height: 16px; }
 [data-extension-location="panda.actionDock.actions"] { flex-direction: column; }

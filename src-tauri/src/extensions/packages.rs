@@ -900,16 +900,17 @@ mod tests {
         packages.settings_set(id, page, &values).unwrap();
         assert_eq!(storage.packages(false).settings_get(id, page).unwrap(), values);
         for invalid in [json!({"summary": "x".repeat(4097), "active": true}), json!({"summary": 4, "active": true}), json!({"summary": "ok"}), json!({"summary": "ok", "active": true, "extra": 1})] { assert!(packages.settings_set(id, page, &invalid).is_err()); }
-        // A native menu advertises check/radio entries as plain commands and omits passive presentations.
+        // A native menu shows declared check/radio state and omits passive presentations.
         let tray = |snapshot: &mut Snapshot| { for menu in snapshot.packages[0].manifest["contributes"]["menus"].as_array_mut().unwrap() { menu["location"] = json!("panda.tray.menu"); } };
         let mut snapshot = storage.packages(false).snapshot(); tray(&mut snapshot);
-        let model = native_items(&snapshot);
+        let model = native_items(&snapshot, &Default::default());
         let entry = |id: &str| model.iter().find(|item| item.id == format!("extension:sample.primitives/{id}"));
         assert_eq!(model.len(), 2); assert!(entry("count").is_none() && entry("state").is_none());
         let primitives = &entry("tools").unwrap().children[0];
         assert_eq!(primitives.children.iter().map(|item| item.title.as_str()).collect::<Vec<_>>(), ["Forms", "—", "Show details", "Compact", "Comfortable"]);
         assert!(primitives.children[1].separator);
         for entry in &primitives.children[2..] { assert!(entry.enabled && entry.request.is_some()); }
+        assert_eq!(primitives.children.iter().map(|item| item.checked).collect::<Vec<_>>(), [None, None, Some(false), Some(true), Some(false)]);
         assert!(!entry("gallery-button").unwrap().enabled, "openView has no native presentation and stays unavailable");
         let request = |item: &str| ActionRequest { surface_id: "panda.tray.menu".into(), id: format!("sample.primitives/{item}"), version: "1.0.0".into() };
         let form = resolve(&snapshot, "tray", &request("open-form")).unwrap();
@@ -919,7 +920,7 @@ mod tests {
         assert!(resolve(&snapshot, "main", &request("open-form")).is_err());
         packages.enable(id, false).unwrap();
         let mut disabled = storage.packages(false).snapshot(); tray(&mut disabled);
-        assert!(native_items(&disabled).is_empty()); assert!(packages.settings_set(id, page, &values).is_err());
+        assert!(native_items(&disabled, &Default::default()).is_empty()); assert!(packages.settings_set(id, page, &values).is_err());
         packages.enable(id, true).unwrap(); assert_eq!(packages.settings_get(id, page).unwrap(), values);
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
@@ -945,22 +946,79 @@ mod tests {
         assert!(resolve(&snapshot, "tray", &request("panda.tray.menu", "form")).is_err(), "raw command ID is not a registered action");
         assert!(resolve(&snapshot, "tray", &request("panda.workspace.header.actions", "native-form")).is_err());
         let mut stale = native.clone(); stale.version = "0.9.0".into(); assert!(resolve(&snapshot, "tray", &stale).is_err());
-        let model = native_items(&snapshot); assert_eq!(model.len(), 1); assert_eq!(model[0].children[0].children.len(), 2);
+        let model = native_items(&snapshot, &Default::default()); assert_eq!(model.len(), 1); assert_eq!(model[0].children[0].children.len(), 2);
         assert!(model[0].children[0].children[0].enabled); assert!(!model[0].children[0].children[1].enabled);
         let mut denied = storage.packages(false).snapshot(); denied.packages[0].manifest["contributes"]["menus"][3]["enabled"] = json!(false);
         assert!(resolve(&denied, "tray", &native).is_err(), "disabled parent cannot be bypassed");
         let mut hidden = storage.packages(false).snapshot(); hidden.packages[0].manifest["contributes"]["menus"][3]["items"][0]["visible"] = json!(false);
-        assert!(resolve(&hidden, "tray", &native).is_err()); assert!(native_items(&hidden).is_empty());
+        assert!(resolve(&hidden, "tray", &native).is_err()); assert!(native_items(&hidden, &Default::default()).is_empty());
         let mut conflict = storage.packages(false).snapshot(); conflict.packages.push(conflict.packages[0].clone());
-        assert!(resolve(&conflict, "tray", &native).is_err()); assert!(native_items(&conflict).is_empty());
+        assert!(resolve(&conflict, "tray", &native).is_err()); assert!(native_items(&conflict, &Default::default()).is_empty());
         let mut oversized = storage.packages(false).snapshot();
         oversized.packages[0].manifest["contributes"]["menus"] = json!([{"id":"sample.window-laboratory/large", "location":"panda.tray.menu", "command":"sample.window-laboratory/note", "items": (0..128).map(|index| json!({"id":format!("sample.window-laboratory/large-{index}"),"kind":"command","title":"Choice","command":"sample.window-laboratory/note"})).collect::<Vec<_>>()}]);
-        let limited = native_items(&oversized); assert_eq!(limited.len(), 1); assert_eq!(limited[0].id, "extension-menu-limit"); assert!(!limited[0].enabled); assert!(limited[0].title.contains("1 extension groups unavailable"));
+        let limited = native_items(&oversized, &Default::default()); assert_eq!(limited.len(), 1); assert_eq!(limited[0].id, "extension-menu-limit"); assert!(!limited[0].enabled); assert!(limited[0].title.contains("1 extension groups unavailable"));
         packages.enable("sample.window-laboratory", false).unwrap();
-        assert!(resolve(&packages.snapshot(), "tray", &native).is_err()); assert!(native_items(&packages.snapshot()).is_empty());
+        assert!(resolve(&packages.snapshot(), "tray", &native).is_err()); assert!(native_items(&packages.snapshot(), &Default::default()).is_empty());
         packages.enable("sample.window-laboratory", true).unwrap();
         assert!(resolve(&storage.packages(true).snapshot(), "tray", &native).is_err());
-        assert!(native_items(&storage.packages(true).snapshot()).is_empty());
+        assert!(native_items(&storage.packages(true).snapshot(), &Default::default()).is_empty());
+    }
+    #[test]
+    fn window_coverage_native_menu_checked_state_layout_and_cross_window_refusal() {
+        use super::super::windows::{resolve, native_items, select_checked, validate_layout, ActionRequest, NativeItem, NativeLayout, NativePresentation, AUXILIARY};
+        let manifest = include_str!("../../../tests/fixtures/extensions/window-coverage/extension.json");
+        let svg = include_str!("../../../tests/fixtures/extensions/window-coverage/assets/mark.svg");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_bytes()), ("assets/mark.svg", svg.as_bytes())])).unwrap();
+        let mut presentation = NativePresentation::default();
+        // Installed but not enabled: no contributed tree; tray.rs keeps Open/Recovery/Quit outside this model.
+        assert!(native_items(&packages.snapshot(), &presentation).is_empty());
+        packages.enable("sample.window-coverage", true).unwrap();
+        let snapshot = storage.packages(false).snapshot();
+        let request = |surface: &str, id: &str| ActionRequest { surface_id: surface.into(), id: format!("sample.window-coverage/{id}"), version: "1.0.0".into() };
+        let ids = |model: &[NativeItem]| model.iter().map(|item| item.id.trim_start_matches("extension:sample.window-coverage/").to_string()).collect::<Vec<_>>();
+        let checks = |model: &[NativeItem]| model[model.len() - 1].children.iter().map(|item| item.checked).collect::<Vec<_>>();
+        let model = native_items(&snapshot, &presentation);
+        // Passive status has no native form (the tray popover renders it); validated manifest order applies.
+        assert_eq!(ids(&model), ["native-extra", "native-menu"]);
+        assert_eq!(checks(&model), [Some(false), None, Some(true), Some(false), None]);
+        // An authorized selection flips a checkbox; a radio becomes the only checked item of its group.
+        for (id, expected) in [("native-follow", [Some(true), None, Some(true), Some(false), None]), ("native-comfortable", [Some(true), None, Some(false), Some(true), None]), ("native-follow", [Some(false), None, Some(false), Some(true), None])] {
+            let selected = request("panda.tray.menu", id);
+            resolve(&snapshot, "tray", &selected).unwrap();
+            select_checked(&snapshot, &selected, &mut presentation.checked);
+            assert_eq!(checks(&native_items(&snapshot, &presentation)), expected, "{id}");
+        }
+        // A command item, a stale version or another surface changes no state.
+        let before = presentation.checked.clone();
+        select_checked(&snapshot, &request("panda.tray.menu", "native-form"), &mut presentation.checked);
+        let mut stale = request("panda.tray.menu", "native-follow"); stale.version = "0.9.0".into();
+        select_checked(&snapshot, &stale, &mut presentation.checked);
+        select_checked(&snapshot, &request("panda.tray.actions", "native-follow"), &mut presentation.checked);
+        assert_eq!(presentation.checked, before);
+        // The main-window layout hides and reorders top-level groups; hiding is presentation only.
+        presentation.layout = NativeLayout { hidden: vec!["sample.window-coverage/native-extra".into()], order: vec![] };
+        assert_eq!(ids(&native_items(&snapshot, &presentation)), ["native-menu"]);
+        assert!(resolve(&snapshot, "tray", &request("panda.tray.menu", "native-extra")).is_ok());
+        presentation.layout = NativeLayout { hidden: vec![], order: vec!["sample.window-coverage/native-menu".into(), "sample.window-coverage/native-extra".into(), "other.package/unknown".into()] };
+        assert!(validate_layout(&presentation.layout).is_ok());
+        assert_eq!(ids(&native_items(&snapshot, &presentation)), ["native-menu", "native-extra"]);
+        // Every action resolves only from its own actual webview; no other label inherits it.
+        for (window, surface, id) in [("tray", "panda.tray.actions", "tray-form"), ("launcher", "panda.launcher.actions", "launcher-form"), ("agents-dock", "panda.agentsDock.actions", "dock-form"), ("tray", "panda.tray.menu", "native-form")] {
+            assert_eq!(resolve(&snapshot, window, &request(surface, id)).unwrap().action["kind"], "showDialog");
+            for other in AUXILIARY.iter().chain(&["main", "extension-view-1", "overlay"]) { if *other != window { assert!(resolve(&snapshot, other, &request(surface, id)).is_err(), "{other}: {id}"); } }
+        }
+        // A dock item claimed from the tray surface or a passive status never resolves.
+        for (surface, id) in [("panda.tray.actions", "dock-form"), ("panda.tray.menu", "native-status"), ("panda.tray.actions", "tray-state"), ("panda.tray.menu", "tray-form")] { assert!(resolve(&snapshot, "tray", &request(surface, id)).is_err(), "{id}"); }
+        // Disable, safe recovery and a failed batch remove the tree; the retained preferences come back after.
+        packages.enable("sample.window-coverage", false).unwrap();
+        assert!(native_items(&storage.packages(false).snapshot(), &presentation).is_empty());
+        packages.enable("sample.window-coverage", true).unwrap();
+        assert!(native_items(&storage.packages(true).snapshot(), &presentation).is_empty());
+        let mut conflict = storage.packages(false).snapshot(); conflict.packages.push(conflict.packages[0].clone());
+        assert!(native_items(&conflict, &presentation).is_empty());
+        let restored = native_items(&storage.packages(false).snapshot(), &presentation);
+        assert_eq!(ids(&restored), ["native-menu", "native-extra"]); assert_eq!(checks(&[restored[0].clone()]), [Some(false), None, Some(false), Some(true), None]);
     }
     #[test]
     fn view_laboratory_archive_icons_and_all_eight_locations_survive_reload_and_disable() {

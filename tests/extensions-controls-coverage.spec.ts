@@ -76,9 +76,13 @@ test('Controls audit: every Settings, dialog, sidebar, agents and status ledger 
   expect(ledger.sidebarCoverage['panda.sidebar'].open?.bots).toBeUndefined();
   expect(Object.values<any>(audit.gaps).filter(gap => gap.severity === 'blocking')).toEqual([]);
   expect(audit.status).toBe('accepted');
-  // The pinned widget window is T57's.
-  expect(audit.gaps['panda.agents/widget-window']).toMatchObject({ severity: 'assigned', lead: 'T57' });
-  expect(ledger.dockCoverage['panda.actionDock'].open.widget).toContain('T57'); expect(ledger.rosterCoverage['panda.roster'].open['widget-window']).toContain('T57');
+  // The pinned widget window gap is closed by T57's own window row, linked to executed evidence.
+  expect(audit.gaps['panda.agents/widget-window']).toMatchObject({ severity: 'closed', lead: 'T57', closedBy: 'windowCoverage["panda.windows"]' });
+  const windows = ledger.windowCoverage['panda.windows'];
+  expect(windows).toMatchObject({ status: 'implemented-experimental', lead: 'T57' }); expect(windows.closes).toContain('panda.agents/widget-window');
+  for (const path of windows.members['panda.agents.widget'].evidence) expect(() => readFileSync(new URL(`../${path}`, import.meta.url)), path).not.toThrow();
+  expect(ledger.dockCoverage['panda.actionDock'].open?.widget).toBeUndefined(); expect(ledger.dockCoverage['panda.actionDock'].closed.widget).toContain('T57');
+  expect(ledger.rosterCoverage['panda.roster'].open?.['widget-window']).toBeUndefined(); expect(ledger.rosterCoverage['panda.roster'].closed['widget-window']).toContain('T57');
 });
 
 test('Controls audit: the T56 packages use only public manifest contracts, no private imports, selectors or host internals', () => {

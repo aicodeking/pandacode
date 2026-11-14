@@ -25,7 +25,8 @@ test('Action dock registry: every panda.agents ledger member has an explicit ent
   const row = ledger.dockCoverage['panda.actionDock'];
   assert.deepEqual(row.members, schema.$defs.dockControlId.enum);
   assert.deepEqual(row.groups, [...DOCK_GROUPS]); assert.deepEqual(row.teamParts, TEAM_PARTS.map(([id]) => id)); assert.deepEqual(row.protected, DOCK_PROTECTED.map(([id]) => id));
-  assert.deepEqual(Object.keys(row.open).sort(), ['widget']);
+  // The pinned widget window was T57's and is closed by the window family's own row.
+  assert.equal(row.open, undefined); assert.deepEqual(Object.keys(row.closed).sort(), ['widget']); assert.ok(ledger.windowCoverage['panda.windows'].members['panda.agents.widget']);
   assert.deepEqual(CONTEXT_COMMANDS['panda.team.context'].map(([id]) => id), ['toggle', 'open']);
   assert.equal(ledger.implementedAdapters.filter(adapter => adapter.id === 'panda.actionDock').length, 1);
   assert.ok(ledger.implementedAdapters.some(adapter => adapter.id === 'panda.actionDock' && adapter.tests.includes('tests/extensions-team-controls-coverage.spec.ts')));

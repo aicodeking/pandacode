@@ -4216,6 +4216,7 @@ pub fn run() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 extensions::windows::extensions_present_action,
+                extensions::windows::extensions_native_layout,
                 extensions::rich_views::extensions_rich_view_open,
                 extensions::context::extensions_context,
                 extensions::runtime::extensions_runtime,

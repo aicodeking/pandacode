@@ -328,7 +328,7 @@ export const ROSTER_PROTECTED = [
   ['stream', 'Open child\'s live work', 'The open child\'s response, tools and loading or failure notices stay host-drawn and keep streaming.'],
   ['stop', 'Stop subagents', 'Subagents stop with their task from the composer; no package control stops a child or a task.'],
   ['profile-delete', 'Rename and delete profile', 'Rename and delete run only from the host\'s Profile actions menu.'],
-  ['widget-window', 'Pinned widget window', 'Pinning opens the auxiliary Running agents window; its lifecycle and privileges belong to the window family (T57).'],
+  ['widget-window', 'Pinned widget window', 'Pinning opens the auxiliary Running agents window; its contributions are panda.agentsDock.actions and its Unpin, Collapse and lifetime stay protected (panda.agentsDock.protected).'],
   ['widget-preferences', 'Widget preferences', 'Turning the widget on and keeping it on screen are the user\'s Settings choices.'],
 ] as const;
 /** Cached usage, status and progress adoption (docs/extensions/status.md): the Agent usage panel, the dock's status
