@@ -1,7 +1,7 @@
 # Provider integrations
 
 PandaCode launches each installed CLI directly. Claude, Codex, Kimi, OpenCode,
-Antigravity, Grok Build, Devin CLI, ZCode, and Hermes Agent own their authentication; sign in using their official
+Antigravity, Grok Build, Devin CLI, ZCode, Hermes Agent, and Cursor CLI own their authentication; sign in using their official
 CLI or extension.
 The optional Z.AI Coding Plan and MiMo Token Plan API keys are stored as separate
 entries in PandaCode's secrets store (see [secret storage](#secret-storage)) and injected only into their isolated Claude subprocesses. The app discovers executable paths
@@ -1089,31 +1089,38 @@ drives it with the shared ACP adapter (`providers/hermes.rs`). Official docs: [h
 
 ## Cursor CLI
 
-Cursor CLI (`cursor-agent`; install with `curl https://cursor.com/install -fsS | bash`)
-serves ACP v1 with `cursor-agent acp`, so PandaCode drives it with the shared ACP
-adapter (`providers/cursor.rs` holds its quirks). The installer also links the CLI as
-`agent`; PandaCode uses that name only when it resolves into Cursor's own install.
-Official docs: [CLI overview](https://cursor.com/docs/cli/overview) and
+Cursor CLI (install with `curl https://cursor.com/install -fsS | bash`) serves ACP v1
+with `agent acp`. Older installs and the current installer also expose `cursor-agent`;
+PandaCode launches whichever it finds first. The generic `agent` name is used only
+when that path resolves inside a Cursor install (the resolved path contains
+`cursor-agent`). A copy installed somewhere else can be selected in Settings.
+PandaCode drives it with the shared ACP adapter (`providers/cursor.rs` holds its
+quirks). Official docs: [CLI overview](https://cursor.com/docs/cli/overview) and
 [ACP](https://cursor.com/docs/cli/acp).
 
-**Sign-in.** Cursor keeps its own sign-in (`cursor-agent login`, or `CURSOR_API_KEY`
-in the harness's environment variables). A signed-in CLI opens sessions without ACP
-`authenticate`, and PandaCode never calls it. Without a sign-in, Cursor answers with
-ACP `-32000` and the turn stops with “Cursor is not signed in. Run `cursor-agent
-login` in a terminal, then send again.” Prompts and model calls go to Cursor under
-your Cursor plan.
+**Sign-in.** Cursor keeps its own sign-in. Run `agent login` (or `cursor-agent login`)
+once, or set `CURSOR_API_KEY` or `CURSOR_AUTH_TOKEN` in the harness's environment
+variables. PandaCode does not put the key on the command line. After `initialize`,
+when the CLI advertises `cursor_login`, PandaCode calls `authenticate` with that
+method and then opens or resumes the session. A missing sign-in fails that call
+(or the session call) with ACP `-32000`, and the turn stops with “Cursor is not
+signed in. Run `agent login` (or `cursor-agent login`) in a terminal, or set
+CURSOR_API_KEY, then send again.” Prompts and model calls go to Cursor under your
+Cursor plan.
 
 **Models and effort.** PandaCode sets `_meta.parameterizedModelPicker` in
 `initialize`, so the `model` option lists base models (`claude-opus-5`, `gpt-5.5`,
 `composer-2.5`…), and each model's effort, context size and speed arrive as separate
-options. Discovery sends Cursor's own `cursor/list_available_models` request once
-(about 4 s, in an empty scratch folder): it returns every model with its options, opens
-no session, leaves nothing in Cursor's chat history and does not change Cursor's
-saved model. The result is cached like other ACP catalogs. Each model's efforts are
-its own `thought_level` values, named as Cursor names them. Some models offer both a
-Thinking switch and an Effort level; the picker shows the Effort level. **Default**
-keeps the model last chosen in Cursor. Choosing a model in a task sets it with
-`session/set_config_option`, and Cursor saves that choice as its own default too.
+options. Discovery sends `authenticate` (when advertised) and then Cursor's own
+`cursor/list_available_models` request once (about 4 s, in an empty scratch folder):
+it returns every model with its options, opens no session, leaves nothing in
+Cursor's chat history and does not change Cursor's saved model. The result is
+cached like other ACP catalogs. Each model's efforts are its own `thought_level`
+values, named as Cursor names them. Some models offer both a Thinking switch and an
+Effort level; the picker shows the Effort level. **Default** keeps the model last
+chosen in Cursor. Choosing a model in a task sets it with `session/set_config_option`,
+and Cursor saves that choice as its own default too. Cursor's per-model Fast switch
+stays on the value saved in Cursor; PandaCode's Speed row is for Codex and Claude.
 
 **Approvals.** Cursor's Agent mode applies file edits without asking, and asks before
 shell commands outside your Cursor allowlist. Standard runs in Agent mode and shows
@@ -1125,19 +1132,24 @@ Full access runs in Agent mode and approves every request. Approving always choo
 
 **Plans and questions.** In Plan mode, Cursor ends with a `cursor/create_plan`
 request. PandaCode shows the plan as its own message and accepts it, and Cursor keeps
-it in its data folder. Cursor's `cursor/ask_question` tool is answered “skipped” with
-a note, so the agent asks the question in its reply instead. Other `cursor/*`
-requests (todos, subagent tasks, image generation) get the shared unsupported-request
-answer.
+it in its data folder. Edits stay declined for that mode, so accepting the plan does
+not start implementation. Cursor's `cursor/ask_question` tool is answered “skipped”
+with a note that includes the question, so the agent asks it in its reply instead.
+`cursor/update_todos`, `cursor/task` and `cursor/generate_image` are acknowledged.
+An image notice is not opened and its bytes are not sent back. Any other `cursor/*`
+request gets the shared unsupported-request answer.
 
 **Fewer round trips.** `session/new` and `session/load` report the mode, model and
 effort, so a setting that is already in place is not sent again. `session/load`
 replays the conversation before it answers; that replay is ignored.
 
 **Turn data.** Text, thoughts, tool calls, cancel, images
-(`promptCapabilities.image`), HTTP MCP for PandaCode tools and steering (held for the
-next turn) use the common ACP paths. Cursor does not report plan usage over ACP, so
-the Usage dialog points to the Cursor dashboard.
+(`promptCapabilities.image`) and steering (held for the next turn) use the common
+ACP paths. When Cursor advertises HTTP MCP, `session/new` and `session/load` include
+PandaCode's per-run tool server, the same way as other ACP harnesses. Servers in a
+project or user `.cursor/mcp.json` stay Cursor's; team MCP from the Cursor dashboard
+is not available over ACP. Cursor does not report plan usage over ACP, so the Usage
+dialog points to the Cursor dashboard.
 
 **Commands.** Cursor has no ACP session delete, so PandaCode does not open a session
 just to read the slash commands; they appear once a task has run.
@@ -1146,14 +1158,15 @@ just to read the slash commands; they appear once a task has run.
 `--model`, `--resume <chat-id>` for an existing task (ACP sessions and CLI chats are
 the same), `--plan` for Plan mode and `--force` for Full access.
 
-**Updates.** Cursor updates itself (`cursor-agent update`), so Settings shows a manual
+**Updates.** Cursor updates itself (`agent update`), so Settings shows a manual
 update link.
 
-Verified against `cursor-agent` 2026.10.22 on 2026-11-10 by driving `cursor-agent acp`
-directly (initialize, `session/new`, `session/load`, `cursor/list_available_models`,
-model and effort switches, an Agent turn, a Plan turn with `cursor/create_plan`, and a
-signed-out start). The recorded frames back the unit tests in `providers/cursor.rs`.
-Live tests: `cargo test --lib installed_cursor -- --ignored`
+Recorded frames from `cursor-agent` 2026.10.22 (2026-11-10) back the unit tests in
+`providers/cursor.rs`: initialize advertises `cursor_login`, and the catalog, session,
+permission, plan and question shapes are from that CLI. `authenticate` runs before
+the session because that is the flow in [Cursor's ACP docs](https://cursor.com/docs/cli/acp)
+and in the sign-in error those frames record. Live tests, which need a signed-in
+CLI: `cargo test --lib installed_cursor -- --ignored`
 (`installed_cursor_lists_models` reads the catalog without a prompt;
 `installed_cursor_runs_and_resumes_a_task` sends two short prompts to `composer-2.5`).
 

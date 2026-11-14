@@ -243,7 +243,7 @@ impl Protocol {
             if self.config.provider == "devin" && value["error"]["code"] == -32000 {
                 return Err(super::devin::SIGN_IN.into());
             }
-            if self.config.provider == "cursor" && value["error"]["code"] == -32000 {
+            if self.config.provider == "cursor" && (value["id"] == 7 || value["error"]["code"] == -32000) {
                 return Err(super::cursor::SIGN_IN.into());
             }
             if self.config.provider == "hermes" {
@@ -339,6 +339,11 @@ impl Protocol {
                         // Grok Build wants an explicit authenticate before any session call,
                         // even with cached credentials. No cached method means no sign-in.
                         let method = cached_auth_method(result).ok_or(GROK_SIGN_IN)?;
+                        self.acp_pending_session = Some(session);
+                        step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
+                    } else if let Some(method) = super::cursor::login_method(self.config.provider.as_str(), result) {
+                        // Cursor's documented flow is initialize, then authenticate
+                        // with the advertised cursor_login method, then the session.
                         self.acp_pending_session = Some(session);
                         step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
                     } else {

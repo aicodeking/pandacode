@@ -1,13 +1,16 @@
-//! Cursor's CLI (`cursor-agent acp`) over the shared ACP transport. Cursor keeps
-//! its own sign-in (`cursor-agent login`, or `CURSOR_API_KEY`); a signed-in CLI
-//! opens sessions without `authenticate`. Its session modes are Agent, Plan and
-//! Ask. With `parameterizedModelPicker` set, the model option lists base models
-//! and each model's effort, context and speed arrive as separate options.
+//! Cursor's CLI (`cursor-agent acp`, or the installer's `agent` link) over the
+//! shared ACP transport. Sign-in stays with the CLI (`agent login` /
+//! `cursor-agent login`, or `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN`). When
+//! initialize advertises `cursor_login`, the next call is `authenticate` with
+//! that method, then `session/new` or `session/load`. Session modes are Agent,
+//! Plan and Ask. With `parameterizedModelPicker` set, the model option lists
+//! base models and each model's effort, context and speed arrive as separate
+//! options.
 use super::*;
 use crate::slash_commands::claude::Pipe;
 
 /// Shown when the CLI has no stored sign-in.
-pub(super) const SIGN_IN: &str = "Cursor is not signed in. Run `cursor-agent login` in a terminal, then send again.";
+pub(super) const SIGN_IN: &str = "Cursor is not signed in. Run `agent login` (or `cursor-agent login`) in a terminal, or set CURSOR_API_KEY, then send again.";
 /// Cursor's own request for the whole catalog, every model with its options.
 const LIST_MODELS: &str = "cursor/list_available_models";
 /// The answer to Cursor's interactive-question tool, which PandaCode cannot show mid-turn.
@@ -27,12 +30,28 @@ pub(super) fn configure(command: &mut Command) {
     command.arg("acp");
 }
 
+/// `cursor_login` when this initialize result advertises it. Other providers,
+/// and a Cursor build that lists no auth methods, skip `authenticate`.
+pub(super) fn login_method<'a>(provider: &str, result: &'a Value) -> Option<&'a str> {
+    if provider != "cursor" {
+        return None;
+    }
+    result["authMethods"].as_array()?.iter().find_map(|method| {
+        let id = method["id"].as_str()?;
+        (id == "cursor_login").then_some(id)
+    })
+}
+
 /// The installer also links the CLI as `agent`, a name too generic to trust
-/// unless it resolves into Cursor's own install.
+/// unless the resolved path sits inside Cursor's own install.
+pub(super) fn in_cursor_install(path: &Path) -> bool {
+    path.to_string_lossy().to_ascii_lowercase().contains("cursor-agent")
+}
+
 pub(super) fn agent_alias() -> Option<PathBuf> {
     let path = launch::find("agent")?;
     let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    target.to_string_lossy().contains("cursor-agent").then_some(path)
+    in_cursor_install(&target).then_some(path)
 }
 
 /// The Cursor session mode for a PandaCode approval mode. Agent mode applies
@@ -170,7 +189,20 @@ async fn list(path: &Path) -> Result<Value, String> {
                         return Err(acp::rpc_error(&frame, "initialize"));
                     }
                     if frame["result"]["protocolVersion"] != 1 {
-                        return Err("This Cursor CLI does not support ACP protocol v1. Run `cursor-agent update`.".into());
+                        return Err("This Cursor CLI does not support ACP protocol v1. Run `agent update`.".into());
+                    }
+                    if login_method("cursor", &frame["result"]).is_some() {
+                        pipe.send(&json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":"cursor_login"}})).await.map_err(|_| transport(&pipe))?;
+                    } else {
+                        pipe.send(&json!({"jsonrpc":"2.0","id":2,"method":LIST_MODELS,"params":{}})).await.map_err(|_| transport(&pipe))?;
+                    }
+                }
+                Some(7) => {
+                    if frame["error"]["code"] == -32000 {
+                        return Err(SIGN_IN.into());
+                    }
+                    if frame.get("error").is_some() {
+                        return Err(acp::rpc_error(&frame, "authenticate"));
                     }
                     pipe.send(&json!({"jsonrpc":"2.0","id":2,"method":LIST_MODELS,"params":{}})).await.map_err(|_| transport(&pipe))?;
                 }
@@ -209,13 +241,16 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
 impl Protocol {
     /// Cursor's own requests during a turn. A plan from Plan mode is shown as
     /// text and accepted (Cursor saves it under its own data folder); questions
-    /// are skipped with a note so the agent asks in its reply. Anything else
-    /// takes the shared unsupported-request answer.
+    /// are skipped with a note so the agent asks in its reply. Todo, subagent
+    /// and image notices are acknowledged and never read back as files. Any
+    /// other `cursor/*` request takes the shared unsupported-request answer.
     pub(super) fn cursor_request(&mut self, value: &Value, step: &mut Step) -> bool {
-        if value["id"].is_null() {
+        let method = field(value, "method");
+        if !method.starts_with("cursor/") {
             return false;
         }
-        match field(value, "method") {
+        let has_id = !value["id"].is_null();
+        let handled = match method {
             "cursor/create_plan" => {
                 let plan = value["params"]["plan"].as_str().unwrap_or_default();
                 if !plan.trim().is_empty() {
@@ -223,16 +258,74 @@ impl Protocol {
                     let id = self.next_text_id();
                     self.text_delta(&id, None, &limited(plan, PLAN_LIMIT), step);
                 }
-                step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"accepted"}}}));
+                if has_id {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"accepted"}}}));
+                }
+                true
             }
             "cursor/ask_question" => {
-                step.events.push(self.event("status", "Interactive question skipped; the agent asks in its reply", None));
-                step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"skipped","reason":QUESTION_SKIPPED}}}));
+                let prompt = model_text(value["params"]["questions"][0]["prompt"].as_str(), "a question", 200);
+                step.events.push(self.event("status", format!("Interactive question skipped ({prompt}); the agent asks in its reply"), None));
+                if has_id {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"skipped","reason":QUESTION_SKIPPED}}}));
+                }
+                true
             }
-            _ => return false,
-        }
-        true
+            "cursor/update_todos" => {
+                if has_id {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"accepted","todos":bounded_todos(&value["params"]["todos"])}}}));
+                }
+                true
+            }
+            "cursor/task" => {
+                let description = model_text(value["params"]["description"].as_str(), "a subagent task", 200);
+                step.events.push(self.event("status", format!("Cursor subagent: {description}"), None));
+                if has_id {
+                    let mut outcome = json!({"outcome":"completed"});
+                    if let Some(agent) = value["params"]["agentId"].as_str().filter(|id| valid_model_id(id)) {
+                        outcome["agentId"] = json!(agent);
+                    }
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":outcome}}));
+                }
+                true
+            }
+            "cursor/generate_image" => {
+                let description = model_text(value["params"]["description"].as_str(), "an image", 200);
+                step.events.push(self.event("status", format!("Cursor image: {description}"), None));
+                if has_id {
+                    // The CLI already produced the image. Acknowledge its path
+                    // and do not read the file or return image bytes.
+                    let path = value["params"]["filePath"].as_str().filter(|path| {
+                        !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+                    });
+                    let outcome = match path {
+                        Some(path) => json!({"outcome":"generated","filePath":path}),
+                        None => json!({"outcome":"rejected","reason":"PandaCode does not generate images."}),
+                    };
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":outcome}}));
+                }
+                true
+            }
+            _ => false,
+        };
+        // A notice with no id needs no answer. An unknown request falls through
+        // to the shared unsupported-method reply so the CLI is not left waiting.
+        handled || !has_id
     }
+}
+
+/// Todo rows echoed back to Cursor: only the fields it sent, bounded.
+fn bounded_todos(todos: &Value) -> Value {
+    let rows = todos.as_array().into_iter().flatten().take(32).filter_map(|todo| {
+        let id = todo["id"].as_str().filter(|id| !id.is_empty() && id.len() <= 80 && !id.chars().any(char::is_control))?;
+        let content = model_text(todo["content"].as_str(), "", 200);
+        let status = todo["status"]
+            .as_str()
+            .filter(|status| matches!(*status, "pending" | "in_progress" | "completed" | "cancelled"))
+            .unwrap_or("pending");
+        Some(json!({"id":id,"content":content,"status":status}))
+    }).collect();
+    Value::Array(rows)
 }
 
 #[cfg(test)]
@@ -297,11 +390,20 @@ mod tests {
             {"value":"gemini-3.1-pro","name":"Gemini 3.1 Pro","configOptions":[]}]})
     }
 
+    /// initialize advertises cursor_login, so the next frame is authenticate.
+    /// A successful answer releases the held session request.
+    fn session_request(p: &mut Protocol) -> Step {
+        let auth = p.receive(initialize_result()).unwrap();
+        assert_eq!(auth.write[0]["method"], "authenticate");
+        assert_eq!(auth.write[0]["params"]["methodId"], "cursor_login");
+        p.receive(json!({"jsonrpc":"2.0","id":7,"result":{}})).unwrap()
+    }
+
     fn ready(mode: &str) -> (Protocol, Step) {
         let mut cfg = super::super::tests::config("cursor");
         cfg.mode = mode.into();
         let mut p = Protocol::new(cfg);
-        let request = p.receive(initialize_result()).unwrap();
+        let request = session_request(&mut p);
         assert_eq!(request.write[0]["method"], "session/new");
         let step = p.receive(json!({"jsonrpc":"2.0","id":2,"result":session()})).unwrap();
         (p, step)
@@ -344,7 +446,7 @@ mod tests {
         cfg.model = "claude-opus-5".into();
         cfg.reasoning_effort = Some("max".into());
         let mut p = Protocol::new(cfg);
-        p.receive(initialize_result()).unwrap();
+        assert_eq!(session_request(&mut p).write[0]["method"], "session/new");
         let model = p.receive(json!({"jsonrpc":"2.0","id":2,"result":session()})).unwrap();
         assert_eq!(model.write[0]["params"]["configId"], "model");
         assert_eq!(model.write[0]["params"]["value"], "claude-opus-5");
@@ -358,7 +460,7 @@ mod tests {
         cfg.model = "claude-opus-5".into();
         cfg.reasoning_effort = Some("high".into());
         let mut p = Protocol::new(cfg);
-        p.receive(initialize_result()).unwrap();
+        assert_eq!(session_request(&mut p).write[0]["method"], "session/new");
         p.receive(json!({"jsonrpc":"2.0","id":2,"result":session()})).unwrap();
         let prompt = p.receive(json!({"jsonrpc":"2.0","id":5,"result":opus_options()})).unwrap();
         assert_eq!(prompt.write[0]["method"], "session/prompt", "high is already the saved effort");
@@ -366,7 +468,7 @@ mod tests {
         let mut cfg = super::super::tests::config("cursor");
         cfg.model = "gpt-9".into();
         let mut p = Protocol::new(cfg);
-        p.receive(initialize_result()).unwrap();
+        assert_eq!(session_request(&mut p).write[0]["method"], "session/new");
         let error = p.receive(json!({"jsonrpc":"2.0","id":2,"result":session()})).err().unwrap();
         assert!(error.contains("gpt-9"), "{error}");
     }
@@ -434,7 +536,21 @@ mod tests {
         let step = p.receive(json!({"jsonrpc":"2.0","id":1,"method":"cursor/ask_question","params":{"toolCallId":"t","title":"Colour","questions":[{"id":"q","prompt":"Red or blue?","options":[{"id":"r","label":"Red"},{"id":"b","label":"Blue"}],"allowMultiple":false}]}})).unwrap();
         assert_eq!(step.write[0]["result"]["outcome"]["outcome"], "skipped");
         assert_eq!(step.write[0]["result"]["outcome"]["reason"], QUESTION_SKIPPED);
-        let step = p.receive(json!({"jsonrpc":"2.0","id":2,"method":"cursor/update_todos","params":{"todos":[]}})).unwrap();
+        assert!(step.events.iter().any(|event| event.kind == "status" && event.text.contains("Red or blue?")));
+        let step = p.receive(json!({"jsonrpc":"2.0","id":2,"method":"cursor/update_todos","params":{"merge":true,"todos":[{"id":"create-readme","content":"Create README.md","status":"pending"}]}})).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["outcome"], "accepted");
+        assert_eq!(step.write[0]["result"]["outcome"]["todos"][0]["content"], "Create README.md");
+        let step = p.receive(json!({"jsonrpc":"2.0","method":"cursor/update_todos","params":{"todos":[]}})).unwrap();
+        assert!(step.write.is_empty(), "a todo notice needs no reply");
+        let step = p.receive(json!({"jsonrpc":"2.0","id":3,"method":"cursor/task","params":{"toolCallId":"call_126","description":"Explore codebase","prompt":"Find auth.","subagentType":"explore","agentId":"agent-1"}})).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["outcome"], "completed");
+        assert_eq!(step.write[0]["result"]["outcome"]["agentId"], "agent-1");
+        assert!(step.events.iter().any(|event| event.text.contains("Explore codebase")));
+        let step = p.receive(json!({"jsonrpc":"2.0","id":4,"method":"cursor/generate_image","params":{"description":"App icon","filePath":"/tmp/icon.png"}})).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["outcome"], "generated");
+        assert_eq!(step.write[0]["result"]["outcome"]["filePath"], "/tmp/icon.png");
+        assert!(step.write[0]["result"]["outcome"].get("imageData").is_none());
+        let step = p.receive(json!({"jsonrpc":"2.0","id":5,"method":"cursor/unknown_extension","params":{}})).unwrap();
         assert_eq!(step.write[0]["error"]["code"], -32601);
     }
 
@@ -453,7 +569,7 @@ mod tests {
         let mut cfg = super::super::tests::config("cursor");
         cfg.resume_id = Some(SESSION.into());
         let mut p = Protocol::new(cfg);
-        let step = p.receive(initialize_result()).unwrap();
+        let step = session_request(&mut p);
         assert_eq!(step.write[0]["method"], "session/load");
         assert_eq!(step.write[0]["params"]["sessionId"], SESSION);
         let replay = p.receive(update(json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Create a file"}}))).unwrap();
@@ -463,9 +579,26 @@ mod tests {
     #[test]
     fn signed_out_cli_names_the_sign_in_command() {
         let mut p = Protocol::new(super::super::tests::config("cursor"));
-        p.receive(initialize_result()).unwrap();
-        let error = p.receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required","data":{"message":"Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."}}})).err().unwrap();
+        let auth = p.receive(initialize_result()).unwrap();
+        assert_eq!(auth.write[0]["method"], "authenticate");
+        let error = p.receive(json!({"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"Authentication required","data":{"message":"Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."}}})).err().unwrap();
         assert_eq!(error, SIGN_IN);
+
+        let mut bare = initialize_result();
+        bare["result"]["authMethods"] = json!([]);
+        let mut p = Protocol::new(super::super::tests::config("cursor"));
+        let session = p.receive(bare).unwrap();
+        assert_eq!(session.write[0]["method"], "session/new", "no advertised method skips authenticate");
+        let error = p.receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required"}})).err().unwrap();
+        assert_eq!(error, SIGN_IN);
+    }
+
+    #[test]
+    fn the_agent_alias_is_only_a_cursor_install() {
+        assert!(in_cursor_install(Path::new("/home/user/.local/share/cursor-agent/versions/2026.10.22/cursor-agent")));
+        assert!(in_cursor_install(Path::new(r"C:\Users\user\AppData\Local\cursor-agent\agent.exe")));
+        assert!(!in_cursor_install(Path::new("/usr/local/bin/agent")));
+        assert!(!in_cursor_install(Path::new("/opt/some-agent/bin/agent")));
     }
 
     #[tokio::test]
