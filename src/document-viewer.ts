@@ -5,6 +5,8 @@ import { trackSegment } from './motion';
 export type DocumentView = 'rendered' | 'raw';
 /** Reads a workspace image (path from the workspace root) as a data: URL. */
 export type ImageLoader = (path: string) => Promise<string>;
+/** Called with the code preview (`.code-preview`, rows `.code-line[data-line]`) each time one is drawn, e.g. to add line comments. */
+export type CodeDecorator = (preview: HTMLElement) => void;
 type Kind = 'markdown' | 'text' | 'code';
 
 const LINE_LIMIT = 2000;
@@ -36,7 +38,7 @@ function stats(content: string): string {
 }
 
 function codeLines(content: string): string {
-  const lines = content.split('\n', LINE_LIMIT).map((line, i) => `<div class="code-line"><span class="line-number">${i + 1}</span><code>${escape(line) || ' '}</code></div>`).join('');
+  const lines = content.split('\n', LINE_LIMIT).map((line, i) => `<div class="code-line" data-line="${i + 1}"><span class="line-number">${i + 1}</span><code>${escape(line) || ' '}</code></div>`).join('');
   const capped = content.split('\n', LINE_LIMIT + 1).length > LINE_LIMIT;
   return `<div class="code-preview">${lines}</div>${capped ? '<div class="inspector-hint">Preview limited to 2,000 lines.</div>' : ''}`;
 }
@@ -96,7 +98,7 @@ function toolbar(kind: Kind, view: DocumentView, wrap: boolean, content: string)
 }
 
 /** Renders a file into the inspector: prose as a reading column (Rendered | Raw), code with line numbers. */
-export function renderDocument(host: HTMLElement, path: string, content: string, image?: ImageLoader): void {
+export function renderDocument(host: HTMLElement, path: string, content: string, image?: ImageLoader, decorate?: CodeDecorator): void {
   const kind = kindOf(path);
   const view = kind === 'code' ? 'raw' : views.get(kind) ?? 'rendered';
   const wrap = wraps.get(kind) ?? kind !== 'code';
@@ -109,6 +111,8 @@ export function renderDocument(host: HTMLElement, path: string, content: string,
   const reader = viewer.querySelector<HTMLElement>('.doc-reader.markdown');
   if (reader && RAW_HTML.test(withoutCode(content))) void renderHtmlDocument(reader, path, content, image).catch(() => markdown(reader, content));
   else if (reader) void markdown(reader, content);
+  const code = viewer.querySelector<HTMLElement>('.code-preview');
+  if (code && decorate) decorate(code);
   const group = viewer.querySelector<HTMLElement>('.doc-view-switch');
   if (group) trackSegment(group, group.querySelector('[aria-pressed="true"]'));
   viewer.addEventListener('click', event => {
@@ -116,6 +120,6 @@ export function renderDocument(host: HTMLElement, path: string, content: string,
     if (!target) return;
     if (target.dataset.docView) views.set(kind, target.dataset.docView as DocumentView);
     else wraps.set(kind, !wrap);
-    renderDocument(host, path, content, image);
+    renderDocument(host, path, content, image, decorate);
   });
 }

@@ -13,6 +13,10 @@
 .file-tab.selected>.icon-button,.file-tab:hover>.icon-button,.file-tab:focus-within>.icon-button{opacity:1}
 .file-view{display:flex;flex-direction:column;flex:1;min-height:0}
 .file-view-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px;font-size:.78rem;color:var(--muted)}
+/* A size container, so what it holds can follow its width (the line comments' Send button,
+ * review-send.css). Safe: it is a stretched flex item of .file-view, whose width never comes from
+ * its content, so size containment changes nothing about its own layout. */
+.file-view-header{container-type:inline-size}
 .file-view-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .file-view-header .icon{width:12px;height:12px}
 .file-view-body{flex:1;min-height:0;overflow:auto}

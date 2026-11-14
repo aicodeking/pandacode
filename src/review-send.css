@@ -1,0 +1,40 @@
+/* Line comments' parts shown before the inline UI loads (review-comments.ts, docs/line-comments.md):
+ * the Send button in the Files view and Changes headers, and the live region. Always loaded, with
+ * file-tabs.css and changes-view.css; the rest is review-comments.css, loaded with the inline UI. */
+
+/* Header actions: Send N comments (named "… to agent"), shown only while there are comments. It
+ * never shrinks and always says "Send": in a narrower header it is "Send", a speech bubble and the
+ * count, and in a narrow one (the inspector's default width) "Send" and the count, so the scope
+ * picker and the file path keep their labels; its name and tooltip always say all of it. The bubble,
+ * not the composer's send arrow, so it does not read as sending the message. */
+.rc-send{flex:none;gap:5px;height:24px;padding:0 10px;font-size:var(--ds-text-meta);font-variant-numeric:tabular-nums}
+.rc-send[hidden]{display:none}
+.rc-send>.icon{display:none;flex:none;width:12px;height:12px}
+.cv-review-send{margin-right:4px}
+/* As tall as the file header's icon buttons, so the header keeps its height when it appears. */
+.file-preview-actions .rc-send{height:21px}
+/* The file header is a size container (file-tabs.css), so its Send button follows the header's width. */
+@container (max-width:479px){
+  .rc-send{padding:0 7px 0 8px}
+  .rc-send>.icon{display:block}
+  .rc-send-label{order:-1}
+  .rc-send-rest{display:none}
+  .rc-send::after{content:attr(data-count)}
+}
+.rc-send::after{color:var(--muted)}
+/* Narrow: the bubble gives way, and so do lower-value labels next to it, before the scope picker or
+ * the file path would ("All changes" stays whole at the inspector's default width): the Files
+ * header's Attach shows its icon only (its name stays), the Changes header's line counts go, then
+ * its file count (each file's row has its own counts). */
+@container (max-width:399px){
+  .rc-send{padding:0 8px}
+  .rc-send>.icon{display:none}
+  .cv-header:has(.rc-send:not([hidden])) :is(.cv-adds,.cv-dels){display:none}
+}
+/* The file header's own width is inside its padding: this is the inspector's default width. */
+@container (max-width:299px){.file-view-header:has(.rc-send:not([hidden])) .file-attach-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
+@container (max-width:339px){.cv-header:has(.rc-send:not([hidden])) .cv-files{display:none}}
+@media (prefers-contrast:more){.rc-send::after{color:inherit}}
+
+/* The one live region announcing comments added, deleted and sent. */
+.rc-announcer{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}

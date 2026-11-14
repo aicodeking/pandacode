@@ -31,7 +31,9 @@
  * again: another reload, or the launch after the native dialog's Restart PandaCode) opens no
  * thread by itself and names the noted one. */
 
-export type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key'> & { readonly length: number };
+import { expiredAt, safeRead, safeRemove, storedKeys, writeWithinBudget, type Store, type StoredSizes } from './stored-budget.ts';
+
+export type { Store };
 type Schedule = (run: () => void, ms: number) => unknown;
 
 export const DRAFT_PREFIX = 'pandacode.draft:';
@@ -72,16 +74,6 @@ export const EXPIRE_EVERY = 24 * 60 * 60 * 1000;
 const bytes = (text: string) => text.length * 2;
 const keep = (text: string) => Boolean(text.trim()) && text.length <= MAX_DRAFT_CHARS;
 
-function safeRead(store: Pick<Store, 'getItem'>, key: string): string | null {
-  try { return store.getItem(key); } catch { return null; }
-}
-function safeRemove(store: Pick<Store, 'removeItem'>, key: string): void {
-  try { store.removeItem(key); } catch { /* this launch only */ }
-}
-function storedKeys(store: Store): string[] {
-  try { return Array.from({ length: store.length }, (_, index) => store.key(index)).filter((key): key is string => key?.startsWith(DRAFT_PREFIX) ?? false); }
-  catch { return []; }
-}
 
 /** One stored draft, or null when it is malformed. */
 export function decodeDraft(raw: string | null): { t: number; text: string } | null {
@@ -99,8 +91,8 @@ export function decodeDraft(raw: string | null): { t: number; text: string } | n
 export class PersistedDrafts extends Map<string, string> {
   newTaskKey: (id: string) => string | undefined = () => undefined;
   private readonly savedAt = new Map<string, number>();
-  /** Bytes of each draft as stored; absent when it is not in storage. */
-  private readonly stored = new Map<string, number>();
+  /** Bytes of each draft as stored, and when it was saved; absent when it is not in storage. */
+  private readonly stored: StoredSizes = new Map();
   /** A New task's id → the project key it is stored under (the latest one typed in owns the key). */
   private readonly claimed = new Map<string, string>();
   private loaded = false;
@@ -112,11 +104,11 @@ export class PersistedDrafts extends Map<string, string> {
     super();
     this.store = store; this.now = now;
     this.keeping = safeRead(store, KEEP_DRAFTS_KEY) !== 'off';
-    for (const key of storedKeys(store)) {
+    for (const key of storedKeys(store, DRAFT_PREFIX)) {
       if (!this.keeping) { safeRemove(store, key); continue; }
       const draft = decodeDraft(safeRead(store, key)), id = key.slice(DRAFT_PREFIX.length);
       if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t) || !keep(draft.text)) { safeRemove(store, key); continue; }
-      super.set(id, draft.text); this.savedAt.set(id, draft.t); this.stored.set(id, bytes(draft.text));
+      super.set(id, draft.text); this.savedAt.set(id, draft.t); this.stored.set(id, { t: draft.t, size: bytes(draft.text) });
     }
     this.loaded = true;
   }
@@ -145,7 +137,7 @@ export class PersistedDrafts extends Map<string, string> {
    * also any this launch never loaded) and drops them from memory, except `keep`'s: the text shown
    * in an open composer stays on screen, unstored until its next change. */
   clearStored(keep: (id: string) => boolean = () => false): void {
-    for (const key of storedKeys(this.store)) safeRemove(this.store, key);
+    for (const key of storedKeys(this.store, DRAFT_PREFIX)) safeRemove(this.store, key);
     this.stored.clear(); this.claimed.clear();
     for (const id of [...this.keys()]) if (!keep(id)) { super.delete(id); this.savedAt.delete(id); }
   }
@@ -167,10 +159,7 @@ export class PersistedDrafts extends Map<string, string> {
     for (const [id, at] of [...this.savedAt]) if (this.expired(at)) this.delete(id);
   }
 
-  private expired(at: number): boolean {
-    const now = this.now();
-    return at < now - DRAFT_MAX_AGE || at > now + DRAFT_FUTURE_SLACK;
-  }
+  private expired(at: number): boolean { return expiredAt(at, this.now(), DRAFT_MAX_AGE, DRAFT_FUTURE_SLACK); }
 
   private keyOf(id: string): string { return DRAFT_PREFIX + (this.claimed.get(id) ?? id); }
 
@@ -180,7 +169,7 @@ export class PersistedDrafts extends Map<string, string> {
     if (key === undefined || text === undefined) return undefined;
     super.set(id, text); this.savedAt.set(id, this.savedAt.get(key) ?? this.now());
     const size = this.stored.get(key);
-    if (size !== undefined) this.stored.set(id, size);
+    if (size !== undefined) this.stored.set(id, { ...size });
     super.delete(key); this.savedAt.delete(key); this.stored.delete(key);
     this.claimed.set(id, key);
     return text;
@@ -225,32 +214,13 @@ export class PersistedDrafts extends Map<string, string> {
     if (!this.keeping) return;
     const text = super.get(id);
     if (text === undefined || !keep(text)) { this.unstore(id); return; }
-    const size = bytes(text);
+    const t = this.savedAt.get(id) ?? this.now();
     this.stored.delete(id);
-    this.evictOldest(DRAFTS_BYTE_BUDGET - size);
-    const value = JSON.stringify({ t: this.savedAt.get(id) ?? this.now(), text }), key = this.keyOf(id);
-    try { this.store.setItem(key, value); }
-    catch {
-      // Full: make room by dropping the older half of what is stored, then try once more.
-      this.evictOldest(Math.floor(this.storedTotal() / 2));
-      try { this.store.setItem(key, value); }
-      catch (error) { console.warn('Could not keep a composer draft:', error); safeRemove(this.store, key); return; }
-    }
-    this.stored.set(id, size);
-  }
-
-  private storedTotal(): number { let total = 0; for (const size of this.stored.values()) total += size; return total; }
-
-  /** Removes the oldest stored drafts (they stay in memory) until the stored total fits `limit`. */
-  private evictOldest(limit: number): void {
-    const byAge = [...this.stored.keys()].sort((a, b) => (this.savedAt.get(a) ?? 0) - (this.savedAt.get(b) ?? 0));
-    let total = this.storedTotal();
-    for (const id of byAge) {
-      if (total <= limit) return;
-      total -= this.stored.get(id) ?? 0;
-      this.stored.delete(id);
-      safeRemove(this.store, this.keyOf(id));
-    }
+    // Older drafts leave storage (they stay in memory) to make room; a full store drops the older
+    // half of what is stored and tries once more (stored-budget.ts).
+    writeWithinBudget(this.store, this.stored, { id, key: this.keyOf(id), value: JSON.stringify({ t, text }), t, size: bytes(text) }, DRAFTS_BYTE_BUDGET,
+      other => { this.stored.delete(other); safeRemove(this.store, this.keyOf(other)); },
+      error => console.warn('Could not keep a composer draft:', error));
   }
 }
 
@@ -267,7 +237,7 @@ export function draftThreadBatches(ids: Iterable<string>): string[][] {
 /** At boot, after the task list: drops the drafts of threads deleted while the app was closed
  * (`missing` returns the asked ids that have no session at all). A failing check is logged once
  * and changes nothing more. */
-export async function dropDeletedDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, missing: (ids: string[]) => Promise<unknown>): Promise<void> {
+export async function dropDeletedDrafts(drafts: { keys(): Iterable<string>; delete(id: string): unknown }, missing: (ids: string[]) => Promise<unknown>): Promise<void> {
   for (const batch of draftThreadBatches(drafts.keys())) {
     let gone: unknown;
     try { gone = await missing(batch); } catch (error) { console.warn('Could not check for drafts of deleted threads:', error); return; }
