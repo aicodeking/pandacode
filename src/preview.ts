@@ -508,6 +508,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
   }
 }
 // Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+// Explicit sidebar extension fixture only: safe mode while a task runs and a draft is open.
+if (new URLSearchParams(location.search).has('sidebar-coverage')) {
+  (window as any).__previewSidebarSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 if (new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettingsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }

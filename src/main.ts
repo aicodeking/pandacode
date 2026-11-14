@@ -5,6 +5,8 @@ import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
+import type { SidebarModel } from './extensions/sidebar-host';
+import type { SidebarSectionId } from './extensions/surfaces';
 import './styles.css';
 import { createVoiceDictation, voiceButtonHtml } from './voice-dictation';
 import './design-system.css';
@@ -731,6 +733,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   (await import('./extensions/windows')).mountNativeExtensionPresentation(notify);
   await loadExtensions();
   syncExtensionViews();
+  // Sidebar sections, rows, header and project-row controls: presentation only. Grouping, sorting, selection,
+  // drag replay and every handler stay here and in sidebar-sections.ts / sidebar-sort.ts.
+  sidebarAdoption = (await import('./extensions/sidebar-host')).mountSidebarAdoption({
+    root: $('.sidebar'), nav: $('#navigation'), model: () => sidebarModel, context, onContextChanged, notify,
+    state: () => ({ project: state.projectFilter || undefined, task: state.sessionId || undefined, group: sidebarSort.group, taskSort: sidebarSort.tasks, projectSort: sidebarSort.projects, busy: sidebarDragging || orderingBusy }),
+    rerender: () => renderNavigation(),
+  });
   const syncLayoutSafeMode = () => {
     extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
     placementHost.refresh();
@@ -783,6 +792,9 @@ function branchLabel(branch: string): string {
 }
 /** Threads whose turn finished out of sight (shown unread until opened); read on first draw. */
 let unreviewed: Set<string> | undefined;
+/** Sidebar presentation adoption (docs/extensions/sidebar.md), mounted once extensions load; the groups of the last draw. */
+let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mountSidebarAdoption> | undefined;
+let sidebarModel: SidebarModel = { sections: [], filtering: false };
 function saveUnreviewed(): void { try { localStorage.setItem(UNREVIEWED_KEY, JSON.stringify([...unreviewed ?? []])); } catch { /* per-launch only */ } }
 bindThreadReordering($('#navigation'), {
   busy: () => orderingBusy,
@@ -950,6 +962,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('sidebar-coverage')) {
+  (window as any).__previewSidebar = () => sidebarAdoption?.presentation();
+  (window as any).__previewSidebarAction = (input: unknown) => sidebarAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettings = () => settingsView?.adoption()?.presentation();
   (window as any).__previewSettingsAction = (input: unknown) => settingsView?.adoption()?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
@@ -2043,10 +2059,23 @@ function renderNavigation(): void {
   const focusSelector = focused?.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : focused?.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]${focused.dataset.project ? `[data-project="${CSS.escape(focused.dataset.project)}"]` : ''}${focused.dataset.section ? `[data-section="${CSS.escape(focused.dataset.section)}"]` : ''}${focused.dataset.task ? `[data-task="${CSS.escape(focused.dataset.task)}"]` : ''}` : '';
   const pinnedGroup = pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks">${heading('pinned', 'Pinned', pinned.length)}<div class="task-list">${pinned.map(s => row(s, !single, true)).join('')}</div></section>` : '';
   const empty = filtering ? '<div class="no-tasks sidebar-no-match">No tasks match</div>' : '';
+  // The groups above, in their built-in order. An installed sidebar layout may reorder or hide whole groups
+  // (never their membership); the group holding the open task stays listed and every group shows while filtering.
+  const groups: [SidebarSectionId, Session[], string][] = [
+    ['pinned', pinned, pinnedGroup],
+    ['active', sections.active, section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))],
+    ['review', sections.review, section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })],
+    ['chats', chats, chatGroup], ['all', others, tasksGroup], ['project', projectTasks, projectList], ['completed', sections.completed, completedSection],
+  ];
+  const holding = groups.find(([, tasks]) => tasks.some(s => s.id === state.sessionId))?.[0];
+  const arranged = sidebarAdoption?.arrange(holding, filtering);
+  const listedGroups = arranged ? [...arranged.order.map(id => groups.find(([key]) => key === id)!), groups.at(-1)!] : groups;
+  const shown = ([id]: (typeof groups)[number]) => !arranged?.hidden.has(id);
+  sidebarModel = { filtering, sections: groups.filter(([, , html]) => html).map(([id, tasks]) => ({ id, count: tasks.length, collapsed: id === 'completed' ? !completedOpen : collapsedSections.has(id), hidden: !shown([id, tasks, '']) })) };
   // Morph rather than replace: unchanged rows keep their nodes, so nothing flickers.
   // Rows sit one level deeper than before (.task-row around .task-item), so morph one level deeper.
   morph(nav, !userProjects().length && !chats.length && !pinned.length && !sectioned ? (projectsListed ? '<div class="sidebar-empty">Open a project to get started.</div>' : '')
-    : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 6);
+    : `${listedGroups.slice(0, -1).filter(shown).map(([, , html]) => html).join('')}${filtering && !matching.length ? empty : ''}${shown(groups.at(-1)!) ? completedSection : ''}`, 6);
   if (retainedRow) {
     const replacement = nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(retainedRow.dataset.id!)}"]`);
     if (replacement) {

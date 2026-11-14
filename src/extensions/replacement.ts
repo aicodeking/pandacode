@@ -5,6 +5,29 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** The selected, unfaulted sidebar provider. The sidebar root carries it, so a navigation redraw keeps the same
+ * presentation without remounting a row, the filter field or a pending drag. */
+export function sidebarProvider(): ComponentProvider | undefined {
+  const provider = componentSelection.resolve('panda.sidebar', componentProviders());
+  return provider && !faults.has(identity(provider)) ? provider : undefined;
+}
+/** Filter-first visual move on the original sidebar: the filter row leads the header actions. No row, section,
+ * selection, sort or preference changes. Returns false only when the selected provider faults now (built-in layout
+ * restored), so the host reports it once. */
+export function applySidebarPresentation(host: HTMLElement, qualify = () => {
+  if (!host.classList.contains('sidebar') || !host.querySelector(':scope > .sidebar-search') || !host.querySelector('#navigation')) throw Error('Incomplete sidebar host');
+}): boolean {
+  const provider = componentSelection.resolve('panda.sidebar', componentProviders());
+  if (!provider) { delete host.dataset.sidebarProvider; return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.sidebarProvider = provider.id; return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete host.dataset.sidebarProvider;
+    return !fresh;
+  }
+}
 /** The selected, unfaulted Settings provider. The Settings root carries it, so a page change or a
  * redraw keeps the same presentation without remounting any page, embed or pending edit. */
 export function settingsProvider(): ComponentProvider | undefined {

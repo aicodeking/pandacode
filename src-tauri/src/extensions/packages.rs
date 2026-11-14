@@ -1080,6 +1080,25 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn sidebar_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/sidebar/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.sidebar", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        assert_eq!(restarted.packages[0].manifest["contributes"]["components"][0]["slot"], "panda.sidebar");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["layouts"][0]["location"], "panda.sidebar.sections");
+        assert_eq!(restarted.packages[0].manifest["contributes"]["menus"][1]["location"], "panda.sidebar.context");
+        packages.enable("sample.sidebar", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.sidebar", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn settings_presentation_and_placed_fields_install_persist_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/settings-core/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

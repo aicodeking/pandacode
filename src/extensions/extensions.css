@@ -63,3 +63,10 @@
 /* Package shared fields placed in a core Settings page: owner-labelled, after the core rows. */
 .settings-extension-group { margin-top: 24px; }
 .settings-extension-group > p { margin: 0 0 6px; padding: 0 var(--ds-row-pad-x); color: var(--muted); font-size: var(--ds-text-sub); }
+
+/* Sidebar row parts hidden or reordered by the user (one attribute on the list, never per row). Hidden parts keep
+   their keyboard paths: the shortcut still settles and the menu key still opens the menu. */
+.navigation[data-row-hidden~="settle"] .task-check, .navigation[data-row-hidden~="more"] .task-more,
+.navigation[data-row-hidden~="provider"] .task-provider, .navigation[data-row-hidden~="link"] .task-link,
+.navigation[data-row-hidden~="branch"] .task-branch-name { display: none; }
+.navigation[data-row-order="more-first"] .task-more { order: -1; }

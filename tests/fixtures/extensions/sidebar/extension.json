@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.sidebar",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "components": [{ "id": "sample.sidebar/filter-first", "title": "Filter first", "slot": "panda.sidebar", "contractVersion": 1, "presentation": "filter-first", "capabilities": ["host-sections", "host-rows", "original-actions"] }],
+    "commands": [
+      { "id": "sample.sidebar/notes", "title": "Sidebar notes", "action": { "kind": "showMessage", "message": "Sidebar ownership stays with PandaCode." } },
+      { "id": "sample.sidebar/task-notes", "title": "Task notes", "action": { "kind": "showMessage", "message": "Task rows stay host-owned." } },
+      { "id": "sample.sidebar/project-notes", "title": "Project notes", "action": { "kind": "showMessage", "message": "Project rows stay host-owned." } }
+    ],
+    "menus": [
+      { "id": "sample.sidebar/header", "command": "sample.sidebar/notes", "location": "panda.sidebar.actions", "presentation": "button", "text": "Sidebar notes" },
+      { "id": "sample.sidebar/section", "command": "sample.sidebar/notes", "location": "panda.sidebar.context", "visible": { "op": "eq", "key": "selection.kind", "value": "sidebar-section" } },
+      { "id": "sample.sidebar/task", "command": "sample.sidebar/task-notes", "location": "panda.sidebar.task.context" },
+      { "id": "sample.sidebar/project", "command": "sample.sidebar/project-notes", "location": "panda.sidebar.project.context" }
+    ],
+    "layouts": [
+      { "id": "sample.sidebar/finished-first", "title": "Finished before Active", "location": "panda.sidebar.sections", "rules": [{ "id": "panda.sidebar.sections/review", "target": "panda.sidebar.sections/active", "side": "before" }] },
+      { "id": "sample.sidebar/search-first", "title": "Search first", "location": "panda.sidebar.header", "rules": [{ "id": "panda.sidebar.header/search", "target": "panda.sidebar.header/new-task", "side": "before" }] },
+      { "id": "sample.sidebar/menu-first", "title": "Task actions before the tick", "location": "panda.sidebar.rows", "rules": [{ "id": "panda.sidebar.rows/more", "target": "panda.sidebar.rows/settle", "side": "before" }] }
+    ]
+  }
+}

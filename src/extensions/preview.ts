@@ -35,6 +35,7 @@ import githubHubManifest from '../../tests/fixtures/extensions/github-hub/extens
 import pullManifest from '../../tests/fixtures/extensions/pull/extension.json';
 import worktreeManifest from '../../tests/fixtures/extensions/worktree/extension.json';
 import settingsCoreManifest from '../../tests/fixtures/extensions/settings-core/extension.json';
+import sidebarManifest from '../../tests/fixtures/extensions/sidebar/extension.json';
 import moodboardManifest from '../../tests/fixtures/extensions/moodboards/extension.json';
 import cloudManifest from '../../tests/fixtures/extensions/cloud/extension.json';
 import machinesManifest from '../../tests/fixtures/extensions/machines/extension.json';
@@ -196,6 +197,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (new URLSearchParams(location.search).has('dialog-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === coreDialogsManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: coreDialogsManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('sidebar-coverage')) {
+      if (snapshot.packages.some(item => item.manifest.id === sidebarManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: sidebarManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('settings-coverage')) {

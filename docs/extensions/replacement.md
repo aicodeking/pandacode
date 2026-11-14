@@ -11,6 +11,10 @@ The [Pull request presentation v1](pull.md) contract (`panda.pull`) offers an ex
 selected `tabs-first` host recipe over the original Pull inspector. Merge confirmation
 and its method select stay host-owned and have no public action.
 
+The [Sidebar presentation v1](sidebar.md) contract (`panda.sidebar`) offers an explicitly
+selected `filter-first` host recipe over the original sidebar. Grouping, sorting, selection,
+manual order and confirmations stay host-owned; protected behavior has no public action.
+
 The [Core Settings presentation v1](settings.md) contract (`panda.settings`) offers an
 explicitly selected `actions-first` host recipe over the original Settings page headers. Preferences,
 credentials, grants, pairing and recovery stay host-owned; protected controls have no public action.

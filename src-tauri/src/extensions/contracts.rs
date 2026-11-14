@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["sidebarPresentation", "sidebarAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -537,6 +537,36 @@ mod tests {
         assert_eq!(super::validate_contract("moodboardPresentation", &long)["ok"], false);
         let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.moodboards.protected");
         assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+    }
+    #[test]
+    fn sidebar_component_state_action_and_layouts_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sidebar/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sidebar/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/sidebar/action.json")).unwrap();
+        assert_eq!(super::validate_contract("sidebarPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("sidebarAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "title", "taskId", "order"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("sidebarAction", &forged)["ok"], false);
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("sidebarPresentation", &raw)["ok"], false);
+        }
+        // Deletion, renaming, manual order and project removal have no public control id.
+        for control in ["delete", "rename", "reorder", "remove-project", "pin", "drag"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("sidebarAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["rows"] = json!(vec![state["rows"][0].clone(); 129]);
+        assert_eq!(super::validate_contract("sidebarPresentation", &oversized)["ok"], false);
+        let mut section = state.clone(); section["sections"][0]["id"] = json!("folders");
+        assert_eq!(super::validate_contract("sidebarPresentation", &section)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.sidebar.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        let mut provider = manifest.clone(); provider["contributes"]["components"][0]["presentation"] = json!("sections-replaced");
+        assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
+        let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.context", "revision": 1, "selection": {"kind": "sidebar-section", "ids": ["review"]}});
+        assert_eq!(super::validate_contract("context", &context)["ok"], true);
     }
     #[test]
     fn settings_component_state_action_and_placed_fields_share_native_schema() {

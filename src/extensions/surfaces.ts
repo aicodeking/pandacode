@@ -200,7 +200,43 @@ export const SETTINGS_PROTECTED_CONTROLS = [
 ] as const;
 /** Core pages that accept a package's shared fields (`settings[].section`); the others host protected controls or live checklists. */
 export const SETTINGS_FIELD_PAGES = ['general', 'appearance', 'teams', 'schedules', 'tools', 'skills', 'rules'] as const;
-export type ActionLocation = typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Sidebar adoption (docs/extensions/sidebar.md). `panda.sidebar.actions` is the header accessory under New task,
+ * New chat and Search; `panda.sidebar.context` is the section headings' context menu. The task and project row
+ * menus stay the existing `panda.sidebar.task.context` / `panda.sidebar.project.context`. Grouping, sorting,
+ * selection and every handler stay in main.ts, sidebar-sections.ts and sidebar-sort.ts. */
+export const SIDEBAR_ACTION_SURFACES = ['panda.sidebar.actions', 'panda.sidebar.context'] as const;
+export const SIDEBAR_HEADER_LOCATION = 'panda.sidebar.header';
+export const SIDEBAR_PROJECTS_LOCATION = 'panda.sidebar.projects';
+export const SIDEBAR_SECTIONS_LOCATION = 'panda.sidebar.sections';
+export const SIDEBAR_ROWS_LOCATION = 'panda.sidebar.rows';
+export const SIDEBAR_PROTECTED_LOCATION = 'panda.sidebar.protected';
+/** Original header and project-row controls: [id, label]. Reorder and reversible hide on the original nodes. */
+export const SIDEBAR_HEADER_CONTROLS = [['new-task', 'New task'], ['new-chat', 'New chat'], ['search', 'Search']] as const;
+export const SIDEBAR_PROJECT_CONTROLS = [['project-filter', 'Filter projects'], ['sort', 'Sort and view'], ['import', 'Import conversations'], ['open-project', 'Open project']] as const;
+/** Sidebar sections in their built-in order: [id, label]. Membership comes from sidebarSections() and the
+ * original Chats/Tasks/project lists; this table only names them. */
+export const SIDEBAR_SECTIONS = [['pinned', 'Pinned'], ['active', 'Active'], ['review', 'Finished'], ['chats', 'Chats'], ['all', 'Tasks'], ['project', 'Project tasks'], ['completed', 'Settled']] as const;
+export type SidebarSectionId = typeof SIDEBAR_SECTIONS[number][0];
+/** Sections that are never hidden, with the reason. They still reorder. */
+export const SIDEBAR_PINNED_SECTIONS: Readonly<Partial<Record<SidebarSectionId, string>>> = {
+  active: 'Running work, approvals, questions, usage limits and failures waiting on you stay visible.',
+};
+/** Sections that keep their place, with the reason. They still hide. */
+export const SIDEBAR_FIXED_SECTIONS: Readonly<Partial<Record<SidebarSectionId, string>>> = {
+  completed: 'Settled is docked at the bottom of the task list.',
+};
+/** Row parts: [id, label, reorderable]. Hidden parts keep their keyboard path (⌘↩ settles, the menu key opens the menu). */
+export const SIDEBAR_ROW_PARTS = [['settle', 'Settle / Reopen tick', true], ['more', 'Task actions button', true], ['provider', 'Harness logo', false], ['link', 'Linked pull request or issue', false], ['branch', 'Branch name', false]] as const;
+/** Protected sidebar behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const SIDEBAR_PROTECTED = [
+  ['filter', 'Filter tasks', 'The task filter (/) is the keyboard path to every row, including rows in hidden sections.'],
+  ['status', 'Row status and unread signals', 'Running, approval, question, usage-limit, failure and unread signals stay on every row.'],
+  ['selection', 'Open task row', 'The open task row and the section holding it stay listed, so selection never disappears.'],
+  ['manual-order', 'Drag and Alt+Arrow ordering', 'Manual task and folder order is saved only by host drag and keyboard input.'],
+  ['delete-confirm', 'Delete task confirmation', 'A destructive confirmation stays host-owned.'],
+  ['remove-confirm', 'Remove project confirmation', 'A destructive confirmation stays host-owned.'],
+] as const;
+export type ActionLocation = typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
@@ -220,6 +256,7 @@ export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string
   'panda.inspector.files.context': [['open', 'Open file'], ['attach', 'Attach file']],
   'panda.inspector.changes.context': [['stage', 'Stage file'], ['unstage', 'Unstage file'], ['open', 'Open file'], ['copy', 'Copy path']],
   'panda.inspector.search.context': [['open', 'Open file']],
+  'panda.sidebar.context': [['toggle', 'Collapse or expand section']],
   'panda.sidebar.project.context': [['new', 'New task'], ['collapse', 'Collapse other projects'], ['reveal', 'Reveal folder'], ['remove', 'Remove project…']],
   'panda.sidebar.task.context': [['pin', 'Pin task'], ['up', 'Move up'], ['down', 'Move down'], ['beside', 'Open beside'], ['rename', 'Rename…'], ['wake', 'Schedule a wake-up…'], ['unread', 'Mark as unread'], ['branch-task', 'New task from branch…'], ['copy-branch', 'Copy branch name'], ['copy-path', 'Copy project path'], ['copy-id', 'Copy task ID'], ['stage', 'Settle'], ['delete', 'Delete task…']],
 };
