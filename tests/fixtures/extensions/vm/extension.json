@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.vm",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.vm/controls", "title": "VM controls first", "slot": "panda.vm", "contractVersion": 1, "presentation": "controls-first", "capabilities": ["host-machine", "host-input", "host-frames", "original-actions"] }],
+    "commands": [{ "id": "sample.vm/tools", "title": "VM tools", "action": { "kind": "showMessage", "message": "VM operations, read-only sharing and connections remain host-owned." } }],
+    "menus": [
+      { "id": "sample.vm/action", "command": "sample.vm/tools", "location": "panda.vm.actions" },
+      { "id": "sample.vm/context", "command": "sample.vm/tools", "location": "panda.vm.context" }
+    ],
+    "layouts": [{ "id": "sample.vm/share-first", "title": "Share before power", "location": "panda.vm.controls", "rules": [{ "id": "panda.vm.controls/share", "target": "panda.vm.controls/power", "side": "before" }] }]
+  }
+}

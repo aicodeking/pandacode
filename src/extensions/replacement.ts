@@ -5,6 +5,27 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** VM v1 keeps the original canvas/input/frame controller and changes dock placement only. */
+export function applyVmPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.vm-dock') || !host.querySelector('.vm-stage')) throw Error('Incomplete VM host');
+}): void {
+  delete host.dataset.vmProvider;
+  const dock = host.querySelector<HTMLElement>('.vm-dock');
+  if (dock) dock.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-vm-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.vm', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.vmPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'VM replacement failed. Built-in VM remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.vmProvider = provider.id; if (dock) dock.style.order = '-1'; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** Closed Simulator recipe moves the original dock, never the frame/input controller. */
 export function applySimulatorPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.sim-dock') || !host.querySelector('.sim-stage')) throw Error('Incomplete Simulator host');

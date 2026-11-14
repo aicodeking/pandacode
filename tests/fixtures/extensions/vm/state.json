@@ -1,0 +1,6 @@
+{
+  "contractVersion": 1, "context": "vm-panel-1", "project": "project-1", "session": "session-1", "machine": "machine-1", "connection": "connection-1", "platform": "cloud", "revision": 3,
+  "visible": true, "busy": false, "loading": false, "error": "", "truncated": false, "share": false,
+  "machines": [{ "id": "machine-1", "connection": "connection-1", "name": "Preview VM", "detail": "Linux desktop", "platform": "cloud", "running": true }],
+  "controls": [{ "id": "power", "enabled": true, "reason": "", "values": [] }, { "id": "select", "enabled": true, "reason": "", "values": ["machine-1"] }]
+}

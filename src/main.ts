@@ -826,6 +826,10 @@ if (preview && new URLSearchParams(location.search).has('simulator-coverage')) {
   (window as any).__previewSimulator = () => simulatorPanel?.presentation();
   (window as any).__previewSimulatorAction = (action: unknown) => simulatorPanel?.dispatch(action);
 }
+if (preview && new URLSearchParams(location.search).has('vm-coverage')) {
+  (window as any).__previewVm = () => vmPanel?.presentation();
+  (window as any).__previewVmAction = (action: unknown) => vmPanel?.dispatch(action);
+}
 $('#inspector-content').addEventListener('contextmenu', event => {
   if (state.inspectorTab !== 'files') return;
   const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');
@@ -5084,7 +5088,12 @@ function syncVmPanel(): void {
   vmLoading ??= import('./vm-panel').then(({ mountVmPanel }) => {
     vmPanel = mountVmPanel($('#vm-panel'), {
       call, notify,
-      choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 300, items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
+      choose: (anchor, title, items, onSelect) => {
+        let active = true;
+        void showChoices(anchor, { title, width: 300, items, afterClose: () => { active = false; }, onSelect: id => { closeChoiceMenu(); onSelect(id); } });
+        return () => { if (active && (choiceMenuAnchor === anchor || pendingMenuOpen?.anchor === anchor)) closeChoiceMenu(); active = false; };
+      },
+      context: () => ({ projectId: project()?.id, sessionId: state.sessionId }),
       project: () => project()?.path ?? null,
     });
     if (state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed) vmPanel.show();

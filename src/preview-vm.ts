@@ -2,6 +2,16 @@
  * VMs that start and stop, a drawn 1024×768 desktop for frames, and recorded input. */
 import type { Vm, VmImage, VmStatus } from './vm-panel';
 
+/** WKWebView and the Windows WebKit runner need the ordinary host canvas fallback. */
+function previewCanvas(width: number, height: number) {
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  return { canvas, g: canvas.getContext('2d')! };
+}
+async function previewFrame(canvas: HTMLCanvasElement): Promise<ArrayBuffer> {
+  const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(Error('Preview frame encoding failed')), 'image/jpeg', 0.8));
+  return blob.arrayBuffer();
+}
+
 const IMAGES: VmImage[] = [
   { id: 'ubuntu', name: 'Ubuntu 24.04', os: 'linux', source: 'ghcr.io/cirruslabs/ubuntu:latest', downloadGb: 5, memoryMb: 2048, cpus: 2 },
   { id: 'debian', name: 'Debian', os: 'linux', source: 'ghcr.io/cirruslabs/debian:latest', downloadGb: 4, memoryMb: 2048, cpus: 2 },
@@ -30,14 +40,14 @@ export function createPreviewVm() {
   const find = (name: unknown) => { const vm = vms.find(candidate => candidate.name === name); if (!vm) throw new Error('No VM with that name.'); return vm; };
 
   async function frame(): Promise<ArrayBuffer> {
-    const canvas = new OffscreenCanvas(1024, 768), g = canvas.getContext('2d')!;
+    const { canvas, g } = previewCanvas(1024, 768);
     g.fillStyle = '#16213a'; g.fillRect(0, 0, 1024, 768);
     g.fillStyle = '#f4f4f2'; g.fillRect(0, 0, 1024, 26);
     g.fillStyle = '#222'; g.font = '13px sans-serif'; g.fillText('Applications', 20, 17);
     g.fillStyle = '#0d1117'; g.fillRect(120, 90, 700, 420);
     g.fillStyle = '#7ee787'; g.font = '15px monospace'; g.fillText(`admin@ubuntu:~$ ${typed}`, 136, 124);
     if (mark) { g.fillStyle = 'rgba(255,255,255,.6)'; g.beginPath(); g.arc(mark.x, mark.y, 14, 0, Math.PI * 2); g.fill(); }
-    return (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 })).arrayBuffer();
+    return previewFrame(canvas);
   }
   return {
     inputs, starts, status,
@@ -155,10 +165,10 @@ export function createPreviewCloud() {
       const machine = find(id);
       if (!machine.desktop) throw new Error('This machine has no screen.');
       if (machine.state !== 'running') throw new Error('This sandbox is stopped. Start it first.');
-      const canvas = new OffscreenCanvas(1280, 800), g = canvas.getContext('2d')!;
+      const { canvas, g } = previewCanvas(1280, 800);
       g.fillStyle = machine.os === 'windows' ? '#0b5cad' : '#2b2f3a'; g.fillRect(0, 0, 1280, 800);
       g.fillStyle = '#fff'; g.font = '20px sans-serif'; g.fillText(`${machine.name} · ${machine.provider}`, 40, 60);
-      return (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 })).arrayBuffer();
+      return previewFrame(canvas);
     },
     input(id: unknown, input: Record<string, unknown>) {
       const machine = find(id);

@@ -505,6 +505,14 @@ const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
 const previewSkillManager = createPreviewSkillManager({ library: previewSkills, dynamicHarnesses: () => packageDiscoveryHarnesses(previewExtensionSnapshot()) });
 const previewCloud = createPreviewCloud();
+// Explicit extension acceptance fixture only: synthetic machines, never native provisioning.
+if (new URLSearchParams(location.search).has('vm-coverage') && !new URLSearchParams(location.search).has('vm-empty')) {
+  previewVm.setup();
+  previewVm.create('ubuntu', 'preview-linux');
+  previewVm.create('macos-tahoe', 'preview-macos');
+  previewCloud.connect('daytona', 'preview-only', {});
+  previewCloud.create('daytona', 'preview-cloud');
+}
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
 function cloudStage(s: Session, stage: NonNullable<Session['cloud']>['stage'], detail: string | null = null): void {
@@ -2595,7 +2603,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_power': result = previewCloud.power(args.id, args.action); break;
     case 'cloud_frame': result = await previewCloud.frame(args.id); break;
     case 'cloud_input': result = previewCloud.input(args.id, args.input); break;
-    case 'vm_status': result = previewVm.status(); break;
+    case 'vm_status': result = { ...previewVm.status(), ...(new URLSearchParams(location.search).has('vm-coverage') ? (window as any).__extensionsBaseline?.vmStatus : {}) }; break;
     case 'vm_setup': result = previewVm.setup(); break;
     case 'vm_show': result = previewVm.show(args.name); break;
     case 'vm_create': result = previewVm.create(args.image, args.name); break;
