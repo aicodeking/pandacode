@@ -259,6 +259,36 @@ const insideHold = (window: HoldWindow): boolean => window.took <= HOLD_MS - 5;
 const stallReport = (windows: HoldWindow[]): string => windows.length
   ? `every probe closed late (${windows.slice(0, 3).map(window => `${window.took} ms of ${HOLD_MS} ms`).join(', ')}): the box stalled the timer past the hold`
   : 'no reader event reached the probe at all';
+/** Park the pointer on a non-readable stretch of the transcript so the sky is on its rAF burst.
+ * A 100 ms probe then contains a paint unless a reader hold is deferring the loop. `data-running` cannot be that
+ * baseline: a streaming run paints at the idle 8 fps, and a 100 ms probe can fall between those ticks with the hold
+ * deleted. The prepend changes `scrollHeight`, which caps the scene for GROWTH_MS, so the burst is measured only after
+ * a paint has sampled the new height and that window has passed. */
+async function burstOverTranscript(page: Page): Promise<void> {
+  const transcript = page.locator('#transcript');
+  const sampled = await frames(page);
+  await transcript.evaluate(node => {
+    let pad = node.querySelector<HTMLElement>('#sky-hold-open');
+    if (!pad) {
+      pad = document.createElement('div');
+      pad.id = 'sky-hold-open';
+      pad.style.height = '420px';
+      node.prepend(pad);
+    }
+    node.scrollTop = 0;
+  });
+  await expect.poll(() => frames(page), { timeout: 2000 }).toBeGreaterThan(sampled);
+  // Past GROWTH_MS even if the paint that sampled the new height was the one after this.
+  await page.waitForTimeout(400);
+  const box = (await page.locator('#sky-hold-open').boundingBox())!;
+  // Below a floating header: the top of the pad can sit under it, and the header is a readable surface.
+  await page.mouse.move(box.x + 36, box.y + Math.min(160, Math.max(48, box.height / 3)));
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  const from = await frames(page);
+  await page.waitForTimeout(100);
+  expect(await frames(page) - from, 'the pointer burst paints inside the hold probe, so an empty probe is the hold').toBeGreaterThan(0);
+}
+
 /** The hold only defers frames, so a window that closed inside it must contain no paint at all. A box too loaded to close
  * the 100 ms probe inside the 150 ms hold cannot say either way, so those windows are dropped and the reader's own
  * sequence is replayed, up to `rounds` times, until one lands — a loaded box then reports itself (`stallReport`) instead
@@ -289,38 +319,32 @@ test('the reader scrolling the transcript or typing in the prompt holds the sky,
   await transcript.evaluate(node => { node.scrollTop = 0; });
   const rest = await gapFromBottom(page);
   expect(rest, 'the thread has a way to scroll').toBeGreaterThan(200);
-  // Over the reader's own bubble, which is a READABLE surface: the pointer never stirs the clouds, so the hold is the
-  // only thing keeping frames off.
-  const message = (await page.locator('#transcript .message').first().boundingBox())!;
-  await page.mouse.move(message.x + 30, message.y + message.height / 2);
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
-
-  // The reader scrolls while a run streams: the wind has the sky painting at 30 fps, so a window the hold does not cover
-  // has frames in it, and the scroll must stop even the wind.
-  await transcript.evaluate(node => node.setAttribute('data-running', ''));
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
-  // The window opens on the wheel itself — the reader's intent, and the event the hold answers — so it starts where the
-  // hold is armed; a scroll event can follow the wheel tens of milliseconds later on a busy frame.
+  // The pointer burst, not a streaming run: the run paints at 8 fps, and a 100 ms probe can be empty with the hold
+  // deleted. The wheel is dispatched on the transcript while the pointer stays on the open pad, so the burst keeps
+  // running underneath the hold.
+  await burstOverTranscript(page);
+  const rested = await gapFromBottom(page);
   await monitorHold(page, '#transcript', 'wheel');
   const scrolling = await expectHeld(page, 'wheel scroll', async () => {
-    for (let notch = 0; notch < 4; notch++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(120); }
+    await transcript.evaluate(node => {
+      node.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 240 }));
+      node.scrollTop += 240;
+    });
+    // The probe closes at two thirds of the hold. Read it after that.
+    await page.waitForTimeout(130);
   });
-  const scrolledTo = await gapFromBottom(page);
-  expect(scrolledTo, 'the wheel scrolled the transcript').toBeLessThan(rest);
-  // The hold only defers the loop: with the reader's hand off it, the run's wind falls away again.
-  await transcript.evaluate(node => node.removeAttribute('data-running'));
-  await expect.poll(async () => Number(await sky(page).getAttribute('data-wind')), { timeout: 4000 }).toBe(0);
-  await expect(sky(page), 'the hold never leaves the sky saying it moved').toHaveAttribute('data-sky-state', 'idle');
-
-  // The same for real keystrokes in the prompt: `keydown` and `input` each arm the hold.
-  await page.locator('#prompt').click();
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  expect(await gapFromBottom(page), 'the wheel scrolled the transcript').toBeLessThan(rested);
+  // The same for real keystrokes in the prompt. Focus stays on the field; the pointer stays on the open pad, so a
+  // missing hold still paints inside the probe. `keydown` and `input` each arm the hold.
+  await page.locator('#prompt').focus();
   await monitorHold(page, '#prompt', 'keydown');
   const typing = await expectHeld(page, 'keystroke', async () => { await page.keyboard.type('a swift grey fox', { delay: 40 }); });
-  await expect(sky(page), 'the hold never leaves the sky saying it moved').not.toHaveAttribute('data-sky-state', 'moving');
-  await expect.poll(() => frames(page), { intervals: [25], timeout: 4000 }).toBeGreaterThan(typing.at(-1)!.from);
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
   expect(await page.locator('#prompt').inputValue()).toContain('a swift grey fox');
+  // Off the open sky: the parting settles and the loop returns to idle. The hold never left it running on its own.
+  const message = (await page.locator('#transcript .message').first().boundingBox())!;
+  await page.mouse.move(message.x + 30, message.y + message.height / 2);
+  await expect.poll(() => frames(page), { intervals: [25], timeout: 4000 }).toBeGreaterThan(Math.max(scrolling.at(-1)!.from, typing.at(-1)!.from));
+  await expect.poll(async () => sky(page).getAttribute('data-sky-state'), { timeout: 4000 }).toBe('idle');
 });
 
 /* The resumed frame after a hold longer than `dt`'s .1 s clamp. `step` now integrates that spanned time in substeps of at
@@ -340,8 +364,9 @@ test('a long hold resumes the sky one frame at a time, with every observable amo
   await lengthenThread(page);
   const transcript = page.locator('#transcript');
   await transcript.evaluate(node => { node.scrollTop = 0; });
-  // The pointer over the bare sky (not over a readable surface), so the parting spring is live and the loop holds 60 fps;
-  // a run, so the wind spring is live too. The frame below therefore integrates both springs across a wait past the clamp.
+  // The pointer over the bare sky (not over a readable surface), so the parting spring is live. A run is live too, which
+  // caps the loop at the idle cadence until the attribute is removed inside the hold; the resume is then the pointer's
+  // own frames. The frame below integrates both springs across a wait past the clamp.
   await page.mouse.move(700, 600); await page.mouse.move(760, 640, { steps: 6 });
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
   await transcript.evaluate(node => node.setAttribute('data-running', ''));
@@ -503,24 +528,21 @@ test('the reader scrolling the side thread holds the sky, which resumes after th
   });
   expect(await sideLog.evaluate(node => node.scrollHeight - node.clientHeight), 'the side thread scrolls').toBeGreaterThan(200);
   await sideLog.evaluate(node => { node.scrollTop = 0; });
-  // The wind has the sky painting at 30 fps, so a window the hold does not cover has frames in it.
-  const transcript = page.locator('#transcript');
-  await transcript.evaluate(node => node.setAttribute('data-running', ''));
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
-
-  const box = (await sideLog.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  // The pane's sky stays on the pointer burst. The wheel is dispatched on the side log, which is what arms the hold;
+  // moving the pointer onto the log would leave the sky and drop the baseline back to the idle cadence.
+  await burstOverTranscript(page);
   await monitorHold(page, '.btw-transcript', 'wheel');
   const scrolling = await expectHeld(page, 'side-thread wheel scroll', async () => {
-    for (let notch = 0; notch < 4; notch++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(120); }
+    await sideLog.evaluate(node => {
+      node.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 160 }));
+      node.scrollTop += 160;
+    });
+    await page.waitForTimeout(130);
   });
   expect(await sideLog.evaluate(node => node.scrollTop), 'the wheel scrolled the side thread').toBeGreaterThan(0);
-  // The hold only defers the loop: with the reader's hand off it, the wind falls away and frames come back.
-  await transcript.evaluate(node => node.removeAttribute('data-running'));
   await page.mouse.move(4, 4);
-  await expect.poll(() => frames(page), { intervals: [25], timeout: 4000 }).toBeGreaterThan(scrolling.at(-1)!.to);
-  await expect.poll(async () => Number(await sky(page).getAttribute('data-wind')), { timeout: 4000 }).toBe(0);
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await expect.poll(() => frames(page), { intervals: [25], timeout: 4000 }).toBeGreaterThan(scrolling.at(-1)!.from);
+  await expect.poll(async () => sky(page).getAttribute('data-sky-state'), { timeout: 4000 }).toBe('idle');
 });
 
 test('the reader typing in the side thread holds the sky, which resumes after the hold', async ({ page }) => {
@@ -535,23 +557,17 @@ test('the reader typing in the side thread holds the sky, which resumes after th
   const sideLog = page.locator('.btw-transcript');
   await expect(sideLog).toBeVisible();
   await expect(page.locator('.btw-head small')).toHaveText(/^Ready/);
-  // The wind has the sky painting at 30 fps, so a window the hold does not cover has frames in it.
-  const transcript = page.locator('#transcript');
-  await transcript.evaluate(node => node.setAttribute('data-running', ''));
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
-
-  // Real keystrokes in the side composer: `keydown` and the `input` that follows each arm the hold, like the main prompt.
+  // Same baseline as the scroll test: the pointer burst, with the keystrokes landing in the side composer.
+  await burstOverTranscript(page);
   const input = page.locator('.btw-input');
-  await input.click();
+  await input.focus();
   await expect(input).toBeFocused();
   await monitorHold(page, '.btw-input', 'keydown');
   const typing = await expectHeld(page, 'keystroke in the side composer', async () => { await page.keyboard.type('a swift grey fox', { delay: 40 }); });
   expect(await input.inputValue(), 'the keystrokes reached the side composer').toContain('a swift grey fox');
-  // The hold only defers the loop: with the reader's hand off it, the wind falls away and frames come back.
-  await transcript.evaluate(node => node.removeAttribute('data-running'));
+  await page.mouse.move(4, 4);
   await expect.poll(() => frames(page), { intervals: [25], timeout: 4000 }).toBeGreaterThan(typing.at(-1)!.from);
-  await expect.poll(async () => Number(await sky(page).getAttribute('data-wind')), { timeout: 4000 }).toBe(0);
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await expect.poll(async () => sky(page).getAttribute('data-sky-state'), { timeout: 4000 }).toBe('idle');
 });
 
 /** One measured window of a live run: the frames painted, the paints inside each short window, and the wind and state read

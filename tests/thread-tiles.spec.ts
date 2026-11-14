@@ -211,21 +211,30 @@ test.describe('thread tiles', () => {
     await expect(layer).toHaveAttribute('data-gl', '');
     const rows = tile(page, first).locator('.thread-mirror-rows');
     await expect(rows).toBeVisible();
-    // A tall row stands in for the long thread a reader scrolls, and the reader starts at its top.
+    // A tall non-readable pad at the top of the rows: the pointer over it stirs this tile's sky onto its rAF burst.
+    // `data-running` cannot be that baseline — a streaming tile paints at the idle 8 fps, and a 100 ms probe can be
+    // empty with the hold deleted. The pad also changes scrollHeight, so the burst is measured only after a paint has
+    // sampled it and the growth window has passed.
     await rows.evaluate(node => {
-      const long = document.createElement('div');
-      long.style.height = '1200px';
-      node.append(long);
+      const pad = document.createElement('div');
+      pad.id = 'tile-hold-open';
+      pad.style.height = '800px';
+      node.prepend(pad);
+      node.scrollTop = 0;
     });
     expect(await rows.evaluate(node => node.scrollHeight - node.clientHeight), 'the tile’s rows scroll').toBeGreaterThan(200);
-    await rows.evaluate(node => { node.scrollTop = 0; });
     const canvas = layer.locator(':scope>canvas:not(.thread-sky-fade)');
     const paints = () => canvas.evaluate(node => (window as any).__paints(node) as number);
-    // A run in that thread keeps its own sky painting: `data-running` on the tile is what its `mountSky` reads.
-    await tile(page, first).evaluate(node => node.setAttribute('data-running', ''));
+    const sampled = await paints();
+    await expect.poll(paints, { intervals: [50], timeout: 4000 }).toBeGreaterThan(sampled);
+    // Past the tile sky's growth window, same reason as `burstOverTranscript` in tests/sky.spec.ts.
+    await page.waitForTimeout(400);
+    const pad = (await tile(page, first).locator('#tile-hold-open').boundingBox())!;
+    await page.mouse.move(pad.x + 24, pad.y + Math.min(120, Math.max(24, pad.height / 3)));
     await expect(layer).toHaveAttribute('data-sky-state', 'moving');
-    const before = await paints();
-    await expect.poll(paints, { intervals: [50], timeout: 4000 }).toBeGreaterThan(before + 3);
+    const burst = await paints();
+    await page.waitForTimeout(100);
+    expect(await paints() - burst, 'the pointer burst paints inside the hold probe, so an empty probe is the hold').toBeGreaterThan(0);
     // A window opens on the wheel itself — the event that arms the hold — and closes at two thirds of HOLD_MS, in the page,
     // so no round trip can stretch it; one the box stalled past is dropped rather than counted.
     await page.evaluate(([selector, holdMs]) => {
@@ -242,9 +251,14 @@ test.describe('thread tiles', () => {
         }, holdMs * 2 / 3);
       }, { capture: true, passive: true });
     }, [`[data-tile="${first}"] .thread-mirror-rows`, HOLD_MS] as const);
-    const box = (await rows.boundingBox())!;
-    await page.mouse.move(box.x + box.width / 2, box.y + 40);
-    for (let notch = 0; notch < 4; notch++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(120); }
+    // One notch, dispatched while the pointer stays on the pad: a real wheel would scroll a message under the cursor
+    // and drop the burst. The event target is the rows, which is what arms this tile's hold.
+    await rows.evaluate(node => {
+      node.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 }));
+      node.scrollTop += 120;
+    });
+    // The probe closes at two thirds of the hold. Read it after that, not before.
+    await page.waitForTimeout(140);
     const windows = await page.evaluate(() => (window as any).__tileHold as { from: number; to: number; took: number }[]);
     expect(windows.length, 'the wheel reached the tile, and its sky held for it').toBeGreaterThan(0);
     for (const window of windows) expect(window.to, `no paint ${window.took} ms into the ${HOLD_MS} ms hold the wheel opens`).toBe(window.from);
