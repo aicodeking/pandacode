@@ -3492,6 +3492,10 @@ const promptResize = new ResizeObserver(entries => {
   if (!width) { promptBoxWidth = -1; return; }
   if (Math.abs(width - promptBoxWidth) < .5) return;
   promptBoxWidth = width;
+  // An empty prompt is one line at any width, so a width change must not lay it out. The first
+  // character still measures, at the width just recorded.
+  const current = promptObserved;
+  if (current && current.value === '' && promptFit?.prompt === current && promptFit.rows === current.rows && current.style.height) return;
   resizePrompt(true);
 });
 // Created once, never per render, and watching the prompt itself: its own inline size is exactly the quantity the fit
@@ -3512,6 +3516,11 @@ function resizePrompt(remeasure = false): void {
   watchPrompt(prompt);
   if (!prompt) { promptFit = undefined; return; }
   const fit = promptFit?.prompt === prompt ? promptFit : undefined;
+  // An empty prompt is one line at any width (docs/agent-reference.md). Every composer render asks, and resolving
+  // min/max height here would restyle the page on each one, so an empty box that is already fitted returns before that
+  // read. `rows` stays in the key: the template copies its row count onto the reused textarea. Interface scale passes
+  // `remeasure` and refits, because the line height changed even though the width did not.
+  if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && prompt.style.height) return;
   // The same text, the same rows and the same height limits in a box that is already fitted, at a width promptResize has
   // accounted for, needs the height it has: this call writes nothing and lays nothing out. `value` and `rows` are a string
   // and an integer, so a keystroke short-circuits on the value before the only read here is reached, and a redraw that
