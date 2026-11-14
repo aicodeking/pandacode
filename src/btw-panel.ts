@@ -82,6 +82,7 @@ export class BtwPanel {
   private queueEditors = new Map<string, HTMLTextAreaElement>();
   private editorKey = '';
   private cleanups: (() => void)[] = [];
+  private actionContextListeners = new Set<() => void>();
   private closeContext?: () => void;
   private handle(id: string): string { if (!this.handles.has(id)) this.handles.set(id, crypto.randomUUID()); return this.handles.get(id)!; }
   constructor(private host: BtwPanelHost) {}
@@ -187,6 +188,7 @@ export class BtwPanel {
     for (const location of ['header', 'controls', 'queue', 'message']) applyControlOrder(`panda.btw.${location}`, bindings.filter(([id]) => id.startsWith(`panda.btw.${location}/`)));
     // Stop and host input cannot disappear; approvals/mode never enter customization bindings.
     applyControlVisibility(bindings.filter(([id, node]) => !id.endsWith('/stop') && !id.endsWith('/focus') && !node.matches('form')), () => this.root?.querySelector('.btw-input') ?? null);
+    this.actionContextListeners.forEach(refresh => refresh());
   }
   private configureGrants(): void {
     const root = this.root; if (!root) return;
@@ -230,11 +232,12 @@ export class BtwPanel {
     root.addEventListener('input', event => { if ((event.target as HTMLElement).matches('.queue-edit')) this.revision++; });
     this.cleanups.push(onExtensionsChanged(() => { this.grants.clear(); this.configure(); }), layout.subscribe(() => this.configure()));
     const context = (): Record<string, Json> => ({ projectId: this.host.main()?.projectId ?? '', sessionId: this.loadedFor, revision: this.revision, selection: { kind: 'task', ids: [this.loadedFor] } });
+    const onContextChanged = (refresh: () => void) => { this.actionContextListeners.add(refresh); return () => { this.actionContextListeners.delete(refresh); }; };
     const notice = (message: string) => this.host.report(message);
     const headerAccessory = document.createElement('div'); root.querySelector('.btw-head')!.after(headerAccessory);
-    this.cleanups.push(mountExtensionActions(headerAccessory, 'panda.btw.header', context, notice));
+    this.cleanups.push(mountExtensionActions(headerAccessory, 'panda.btw.header', context, notice, onContextChanged));
     const accessory = document.createElement('div'); root.querySelector('.btw-composer-area')!.append(accessory);
-    this.cleanups.push(mountExtensionActions(accessory, 'panda.btw.composer', context, notice));
+    this.cleanups.push(mountExtensionActions(accessory, 'panda.btw.composer', context, notice, onContextChanged));
     const menu = (anchor: HTMLElement, point?: { x: number; y: number }) => {
       const revision = this.revision; this.closeContext?.();
       this.closeContext = openContextActions(anchor, 'panda.btw.context', context(), { title: 'Side conversation', items: [], onSelect: () => {}, notify: notice, point, isAlive: () => this.revision === revision });

@@ -1,4 +1,4 @@
-# Content contract compatibility (experimental)
+# Content and tools contract compatibility (experimental)
 
 The content contracts use version 1 DTOs and the existing declarative package
 schema. This is **not** a stable API or a cross-platform qualification announcement.
@@ -12,6 +12,10 @@ The general platform completion/API stabilization gate is separate.
 | `panda.search` | `results-first` | Original form/results order | Query/options scheduler, captured results and original open handlers |
 | `panda.browser` | `controls-below` | Original toolbar order | Guest/session, navigation, geometry and task attachments |
 | `panda.terminal` | `tabs-below` | Original strip order; compatible `panda.views/terminal` placement | PTY/controller/job, tab selection and close approval |
+| `panda.simulator` | `controls-first` | Original dock visual order; compatible hardware/menu siblings | Selected device, frames, input and platform/setup/clipboard policy |
+| `panda.vm` | `controls-first` | Original dock visual order; compatible control siblings | Local/cloud machine, connection, canvas, serialized input and read-only share policy |
+| `panda.design` | `comments-first` | Original comments region visual order, never iframe ancestors | Artboards, view, picked resource, comments, live draft and pending saves |
+| `panda.btw` | `composer-first` | Original composer visual order and compatible control siblings | Distinct main/side task IDs, editor/undo, queue, stream, approvals and Stop |
 
 These are deliberately closed host-rendered recipes, not arbitrary executable
 renderers, DOM/selector APIs or business-service ownership grants. Inspect the
@@ -41,6 +45,24 @@ without erasing the saved preferences. Original documents, draft, query, guest
 and PTY remain core-owned. Package removal disposes its transient UI/listeners;
 it does not repeat dispatched work or kill unrelated processes.
 
+Tools use the same catalog, commands, menus, dialogs, selects, icons and component
+selection contracts, not private source imports or selectors. Each tool's captured
+state/actions have independent version/revision/resource admission. Metadata is
+not content authority. BTW additionally requires independent revocable host-user
+`btw.taskControl` consent for mutations and `btw.content` for visible-answer
+insertion; install/enable/select is not consent. Insertion never sends. Stop,
+approval/mode and recovery stay host-owned. Simulator clipboard/setup/create and
+VM setup/create/delete/share choices remain host-confirmed. Presentation recovery
+does not restart a device/VM connection or repeat an accepted operation.
+
+Design intentionally detaches artboard documents when the entire panel is hidden;
+that original lifecycle is not used for recipe movement, faults or disable.
+The existing VM inspector is macOS-only and local virtualization needs Apple
+silicon. Synthetic MacIntel/local/cloud fixtures do not broaden that native policy.
+The integrated tools suite exercises all four selected providers together,
+captured device/machine typing, a pending Design save/new input, and independent
+BTW draft/queue/Stop recovery, plus each location's shared package primitives.
+
 Automated Chromium/WebKit fixtures prove preview behavior, not installed WebView2,
 WKWebView or WebKitGTK guest/drag/IME qualification. Native library/archive/policy
 tests and the real Windows ConPTY registry/job test are separate native evidence.
@@ -51,5 +73,6 @@ platform boundaries, not exemptions for missing supported host controls.
 
 See [documents](documents.md), [diff](diff.md), [Search](search.md),
 [Browser](browser.md) and [Terminal](terminal.md) for exact bounds and authoring
-examples. Canonical implementation evidence and historical failed checks remain
+examples; tools have separate [Simulator](simulator.md), [VM](vm.md),
+[Design](design.md) and [BTW](btw.md) contracts. Canonical implementation evidence and historical failed checks remain
 in the project's extensibility receipt, not in a claim of universal API stability.

@@ -1,5 +1,68 @@
 {
   "schemaVersion": 1,
+  "toolsAudit": {
+    "task": "extensibility-final-261113-v3yy/T54E",
+    "status": "implemented-experimental",
+    "originalTask": "extensibility-content-261113-w6oo/T54 (historical failure preserved)",
+    "criteria": { "C1": "T54A-D exact member rows below plus shared catalog/admission/layout Node and both-engine fixtures", "C2": "T54A-D installable public manifests, SDK/schema/native validation; T54E four-family shared command/icon/menu/dialog/select tests", "C3": "T54A-D original-handler/recovery fixtures; T54E simultaneous selected providers, device/machine capture, pending Design save, BTW draft/queue/Stop and faults" },
+    "families": [
+      {
+        "slot": "panda.simulator", "details": "simulatorCoverage", "lead": "T54A",
+        "ids": ["panda.inspector.simulator", "panda.inventory.simulator.appearance", "panda.inventory.simulator.back", "panda.inventory.simulator.device", "panda.inventory.simulator.finish", "panda.inventory.simulator.pose", "panda.inventory.simulator.power", "panda.inventory.simulator.recents"],
+        "members": ["device", "pose", "finish", "appearance", "power", "back", "recents", "reset", "home", "lock", "capture", "copy-axe", "add-duo", "android-setup"],
+        "action": "Each member delegates its original Simulator handler; clipboard/create/setup require a host-owned user choice",
+        "control": "panda.simulator.controls exact original controls, plus panda.simulator.actions accessories",
+        "context": "panda.simulator.context; captured opaque project/session/device/platform/context/revision",
+        "visibility": "Every member hide/show; unavailable platform controls retain their original availability policy",
+        "order": "Original hardware siblings and device-menu setup/Add Duo siblings; reset and AXe keep their original independent anchors",
+        "move": "controls-first dock visual order only, same stage/device/frame/input owner",
+        "replacement": "Explicit controls-first v1 compatible selected provider; conflict/future/fault restores built-in",
+        "exceptions": "macOS/Xcode/Duo/AXe capability and Android Studio policy; no raw frame/input endpoint; unavailable 3D resets explain flat fallback",
+        "evidence": ["tests/extensions-simulator.test.mjs", "tests/extensions-simulator-coverage.spec.ts", "tests/extensions-tools-coverage.spec.ts"]
+      },
+      {
+        "slot": "panda.vm", "details": "vmCoverage", "lead": "T54B",
+        "ids": ["panda.inspector.vm", "panda.inventory.vm-panel.desktop", "panda.inventory.vm-panel.new", "panda.inventory.vm-panel.power", "panda.inventory.vm-panel.select", "panda.inventory.vm-panel.share", "panda.inventory.vm-panel.suspend", "panda.inventory.vm-panel.setup"],
+        "members": ["select", "new", "delete", "setup", "desktop", "power", "suspend", "input", "share"],
+        "action": "Each member delegates original local/cloud machine handlers; setup/new/delete/share require host user choices",
+        "control": "panda.vm.controls, original chooser/stage/dock/empty-state controls; panda.vm.actions accessories",
+        "context": "panda.vm.context; captured opaque machine/connection/project/session/context/platform/revision",
+        "visibility": "Every member hide/show without changing connection or deleting machine",
+        "order": "Compatible original dock siblings; input stage and dynamic empty-state controls keep original anchors",
+        "move": "controls-first dock visual order, same canvas and serialized input/connection controller",
+        "replacement": "Explicit controls-first v1 compatible selected provider; conflict/future/fault restores built-in",
+        "exceptions": "Existing macOS inspector gate and Apple silicon local VM policy; cloud-specific suspend/share restrictions; no writable share/raw input/frame authority",
+        "evidence": ["tests/extensions-vm.test.mjs", "tests/extensions-vm-coverage.spec.ts", "tests/extensions-tools-coverage.spec.ts"]
+      },
+      {
+        "slot": "panda.design", "details": "designCoverage", "lead": "T54C", "ids": ["panda.inspector.design"],
+        "members": ["comment", "in", "out", "fit", "refresh", "pan", "select", "draft", "save", "cancel", "resolve", "reopen", "delete", "compose"],
+        "action": "Each member delegates original pan/zoom/picker/comment/form/compose handlers; compose never sends",
+        "control": "panda.design.controls exact original controls and panda.design.actions accessories",
+        "context": "panda.design.context; captured opaque project/task/context/artboard/comment/selection/revisions",
+        "visibility": "Every member reversible; hiding a control does not mutate comments; intentional panel hide retains original frame-detach policy",
+        "order": "Compatible toolbar/form/comment-row siblings only; pan/select/draft anchors retain original input ownership",
+        "move": "comments-first visual order only; never reparent frames or their ancestors",
+        "replacement": "Explicit comments-first v1 selected provider; original artboards/view/draft/pending save stay host-owned",
+        "exceptions": "Host script-free frame/parser and native file-policy ownership; no HTML/selector/comment-text endpoint; original delete had no separate confirmation",
+        "evidence": ["tests/extensions-design.test.mjs", "tests/extensions-design-coverage.spec.ts", "tests/design-canvas.spec.ts", "tests/extensions-tools-coverage.spec.ts"]
+      },
+      {
+        "slot": "panda.btw", "details": "btwCoverage", "lead": "T54D", "ids": ["panda.inspector.btw", "panda.inventory.btw-panel.queue-edit"],
+        "members": ["new", "open", "close", "focus", "model", "send", "steer", "stop", "queue-edit", "queue-save", "queue-cancel", "queue-remove", "queue-send", "queue-steer", "queue-resume", "insert"],
+        "action": "Each member delegates original header/model/send/queue/steer/Stop/visible-answer insertion handler; mutation needs independent host-user taskControl consent and insertion also content consent",
+        "control": "panda.btw.header/controls/queue/message, independent header/composer accessory slots; original protected consent/mode/approval/input/Stop",
+        "context": "panda.btw.context; captured window/project/context/main/side/revision and opaque queue/message resource; shared message actions retain side identity",
+        "visibility": "Eligible members reversible; focus and essential Stop protected; hiding never deletes queue/draft/history",
+        "order": "Compatible original header/toolbar/queue/message siblings, never queue business ordering",
+        "move": "composer-first visual order on same original editor/history/stream nodes",
+        "replacement": "Explicit composer-first v1 compatible provider; disable/safe/fault retains original main and side ownership",
+        "exceptions": "Approval/mode/consent protected; original BTW has no side attachment authoring; no draft/transcript/attachment endpoint or automatic main-task control",
+        "evidence": ["tests/extensions-btw.test.mjs", "tests/extensions-btw-coverage.spec.ts", "tests/btw.spec.ts", "tests/extensions-tools-coverage.spec.ts"]
+      }
+    ],
+    "qualification": "Browser fixtures explicitly synthesize MacIntel/device/machine/cloud state, never installed devices or cloud spend. Native shared schema/archive/library policy is separate. Installed Windows/WebView2 and Linux/WSL are user-deferred; macOS/ARM/mobile/real-device/multi-machine and native IME are unavailable/deferred. Performance and stable API acceptance are not claimed."
+  },
   "btwCoverage": {
     "panda.inspector.btw": { "status": "implemented-experimental", "adapter": "panda.btw", "action": "Captured window/project/main/side/revision and opaque answer/queue resources; no main-task default", "control": "Original header, textarea/IME, model, send/queue/steer/Stop, message/insertion and queue handlers", "visibility": "Eligible controls only; original input, Stop and approval/mode remain core-owned", "order": "Compatible sibling control order", "move": "composer-first visual order on the same host composer/history nodes", "replacement": "Explicit selected composer-first v1 recipe with compatible capabilities; installation/conflict never auto-selects", "evidence": ["tests/extensions-btw-coverage.spec.ts", "tests/extensions-btw.test.mjs", "tests/btw.spec.ts", "src-tauri/src/extensions/contracts.rs", "src-tauri/src/extensions/packages.rs"], "boundary": "Shared message-action adapter is reused, not claimed as whole-panel support. Original BTW has no side attachment authoring; main attachments stay independent. Approvals/mode are protected core actions; no extension approval endpoint. Native package/schema evidence and headless preview are not installed Windows/Linux or actual native IME qualification, which remain deferred." },
     "panda.inventory.btw-panel.queue-edit": { "adapter": "panda.btw.queue/queue-edit", "action": "Captured side/queue handle and revision", "control": "Original edit/save/cancel/remove/send-now/steer/resume handlers", "visibility": "Eligible original controls; hiding does not delete queue", "order": "Sibling controls only, not implicit queue mutation", "move": "Same original queue/editor with composer-first recipe", "replacement": "Host-owned queue and pending-save serialization", "evidence": ["tests/extensions-btw-coverage.spec.ts", "tests/btw.spec.ts"] },
