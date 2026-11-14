@@ -391,7 +391,7 @@ PandaCode does not include provider plans or usage.
 
 Muse Code installs with Meta's launcher into `~/.local/bin/muse`; run `muse login` once in a terminal. PandaCode launches `muse serve` and speaks MSP, Muse's JSON-RPC session protocol, with its sandbox and approval modes; see [docs/providers.md](docs/providers.md#muse-code) for what each mode does and what Muse cannot express.
 
-Antigravity runs Google's `agy_acp_server`, or `agy acp` through the `agy` CLI when that server isn't installed. See [provider details](docs/providers.md).
+Antigravity runs Google's `agy_acp_server`, or `agy acp --process-per-session` through the `agy` CLI when that server isn't installed. See [provider details](docs/providers.md).
 
 [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli) installs with `npm install -g @github/copilot`; run `copilot login` in a terminal, then select **GitHub Copilot CLI** in PandaCode. PandaCode launches the local `copilot` executable over ACP. The CLI manages its own sign-in. See [provider details](docs/providers.md#github-copilot-cli).
 
