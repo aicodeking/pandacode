@@ -661,8 +661,9 @@ subprocess credential scrubbing is enabled.
 Antigravity launches Google's official `agy_acp_server.par` (`agy_acp_server.exe`
 on Windows), which can be selected in Settings. When that server is not found,
 PandaCode falls back to the standalone `agy` CLI and starts its ACP server with
-`agy acp`; an executable override named `agy` starts the same way. The executable
-and provider sign-in must already be installed. ACP initialization/session metadata supplies its model
+`agy acp --process-per-session` to enable HTTP MCP for PandaCode tools. An
+executable override named `agy` starts the same way. The executable and provider
+sign-in must already be installed. ACP initialization/session metadata supplies its model
 labels and supported controls; image, HTTP MCP, resume, and planning support are
 checked explicitly. No private API, unofficial adapter, or browser-cookie
 authentication is used. Antigravity's own policy applies, with ACP approval
