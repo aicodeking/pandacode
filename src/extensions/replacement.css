@@ -22,3 +22,7 @@
 [data-github-hub-provider] .gh-bar { order: -1; }
 [data-github-hub-accessory]:empty { display: none; }
 [data-github-hub-consent] { white-space: normal; margin: 8px; }
+[data-pull-provider] > .pull-tabs { order: -1; }
+[data-pull-accessory]:empty { display: none; }
+[data-pull-consent] { align-self: flex-start; white-space: normal; }
+[data-pull-consent][hidden] { display: none; }

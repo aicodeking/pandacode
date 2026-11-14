@@ -5,6 +5,26 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Section-first visual move on the original Pull view: no fetch, remount, viewer disposal or merge-state change. */
+export function applyPullPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.pull-tabs') || !host.querySelector('.pull-header')) throw Error('Incomplete Pull request host');
+}): void {
+  delete host.dataset.pullProvider;
+  const status = host.querySelector<HTMLElement>('[data-pull-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.pull', componentProviders());
+  if (!provider) return;
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.pullProvider = provider.id;
+  } catch {
+    faults.add(identity(provider));
+    const notice = status ?? document.createElement('p');
+    notice.dataset.pullPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Pull request replacement failed. Built-in view remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  }
+}
 /** Compatible visual move on original nodes, without fetching or remounting. */
 export function applyGithubHubPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.gh-bar') || !host.querySelector('.gh-head')) throw Error('Incomplete GitHub host');

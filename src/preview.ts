@@ -499,6 +499,14 @@ const previewGithub = (() => {
     },
   };
 })();
+// Explicit Pull extension fixture only: two tasks with linked pull requests; no GitHub network or merge.
+if (new URLSearchParams(location.search).has('pull-coverage')) {
+  previewGithub.pulls.push({ projectId: 'project-1', number: 132, title: 'Cache the icon lookups', body: 'Memoizes icon lookups.', base: 'main', head: 'feat/icons' });
+  for (const [id, number, title] of [['session-1', 130, 'Debounce library search'], ['session-2', 132, 'Cache the icon lookups']] as const) {
+    const task = sessions.find(item => item.id === id);
+    if (task) task.pullRequest = { kind: 'pull', number, url: `https://github.com/orbit-labs/orbit/pull/${number}`, title, state: 'open', checkedAt: now };
+  }
+}
 /** A pretend iOS Simulator: two devices and a drawn home screen that answers taps. */
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();

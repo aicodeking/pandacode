@@ -896,6 +896,10 @@ const pullView = createPullView({
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
   notify,
 });
+if (preview && new URLSearchParams(location.search).has('pull-coverage')) {
+  (window as any).__previewPull = () => pullView.presentation();
+  (window as any).__previewPullAction = (input: unknown) => pullView.dispatch(input);
+}
 function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; }
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {

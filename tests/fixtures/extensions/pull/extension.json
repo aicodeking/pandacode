@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.pull",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.pull/sections", "title": "Sections first", "slot": "panda.pull", "contractVersion": 1, "presentation": "tabs-first", "capabilities": ["host-pull", "host-diffs", "original-actions"] }],
+    "commands": [{ "id": "sample.pull/tools", "title": "Pull request tools", "action": { "kind": "showMessage", "message": "Pull request, diff and merge ownership stays with PandaCode." } }],
+    "menus": [
+      { "id": "sample.pull/actions", "command": "sample.pull/tools", "location": "panda.pull.actions" },
+      { "id": "sample.pull/context", "command": "sample.pull/tools", "location": "panda.pull.context" }
+    ],
+    "layouts": [{ "id": "sample.pull/link-first", "title": "Open on GitHub before refresh", "location": "panda.pull.controls", "rules": [{ "id": "panda.pull.controls/link", "target": "panda.pull.controls/refresh", "side": "before" }] }]
+  }
+}

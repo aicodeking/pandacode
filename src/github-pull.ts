@@ -3,6 +3,7 @@ import { escape, icon, markdownHtml } from './dom';
 import { trackSegment } from './motion';
 import type { DiffViewerController } from './diff-viewer';
 import type { Session } from './types';
+import { mountPullPresentation } from './extensions/pull-host';
 
 /* The task's pull request as a view in the inspector: state, checks, reviews,
  * description, files with their diffs, and commits — read through the user's `gh`. */
@@ -69,12 +70,26 @@ function checksSummary(checks: PullCheck[]): { tone: string; text: string } {
 export function createPullView(host: PullHost) {
   const details = new Map<string, { at: number; detail: PullDetail }>();
   const diffs = new Map<string, Promise<PullDiff>>();
-  let mounted: { key: string; session: Session; root: HTMLElement; section: Section; viewers: Map<string, DiffViewerController>; request: number; merge: 'idle' | 'confirm' | 'merging'; method: MergeMethod; checks: boolean } | undefined;
+  let mounted: { key: string; session: Session; root: HTMLElement; section: Section; viewers: Map<string, DiffViewerController>; request: number; merge: 'idle' | 'confirm' | 'merging'; method: MergeMethod; checks: boolean; failed: boolean; unlinking: boolean; presentation?: ReturnType<typeof mountPullPresentation> } | undefined;
   let requests = 0;
 
   function dispose(): void {
+    mounted?.presentation?.dispose();
     mounted?.viewers.forEach(viewer => viewer.dispose());
     mounted = undefined;
+  }
+
+  /** Captured host state for the extension contract; the view object never leaves this module. */
+  function presentationState(view: NonNullable<typeof mounted>) {
+    const detail = details.get(view.key)?.detail, link = view.session.pullRequest;
+    const diff = (path: string) => view.root.querySelector<HTMLElement>(`.pull-file-diff[data-diff-path="${CSS.escape(path)}"]`);
+    return {
+      project: view.session.projectId, task: view.session.id, repository: link?.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//i)?.[1] ?? '', pull: view.key,
+      base: detail?.base ?? '', head: detail?.head ?? '', section: view.section, visible: mounted === view && view.root.isConnected && !view.root.closest('[hidden]'),
+      loading: !detail || view.root.hasAttribute('aria-busy'), busy: view.merge === 'merging' || view.unlinking, error: view.failed, state: detail?.state ?? '',
+      merge: !detail || detail.state !== 'open' || detail.mergeable === 'conflicting' ? 'unavailable' as const : view.merge, method: view.method, checks: view.checks, title: detail?.title ?? '',
+      files: (detail?.files ?? []).map(file => { const host = diff(file.path), open = Boolean(host && !host.hidden); return { path: file.path, additions: file.additions, deletions: file.deletions, expanded: open, loading: open && Boolean(host!.querySelector('[role="status"]')), error: open && Boolean(host!.querySelector('[role="alert"]')) }; }),
+    };
   }
 
   /** Show the task's PR in `target`; a repeat call for the same PR keeps the view as it is. */
@@ -88,7 +103,8 @@ export function createPullView(host: PullHost) {
     root.className = 'pull-view';
     root.addEventListener('click', event => void onClick(event));
     target.replaceChildren(root);
-    mounted = { key, session, root, section: 'overview', viewers: new Map(), request: 0, merge: 'idle', method: 'squash', checks: false };
+    const view: NonNullable<typeof mounted> = mounted = { key, session, root, section: 'overview', viewers: new Map(), request: 0, merge: 'idle', method: 'squash', checks: false, failed: false, unlinking: false };
+    view.presentation = mountPullPresentation(root, () => presentationState(view), host.notify, (anchor, proceed) => void confirmEntry(anchor, proceed));
     void load(false);
   }
 
@@ -99,16 +115,19 @@ export function createPullView(host: PullHost) {
     const request = view.request = ++requests;
     if (hit) { await render(view, hit.detail); view.root.setAttribute('aria-busy', 'true'); }
     else view.root.innerHTML = `<div class="inspector-empty" role="status">${icon('pull')}<p>Loading pull request #${view.session.pullRequest?.number ?? ''}…</p></div>`;
+    view.presentation?.refresh();
     try {
       const detail = await host.call<PullDetail>('github_pull_request', { sessionId: view.session.id });
       details.set(view.key, { at: Date.now(), detail });
+      if (mounted === view && view.request === request) view.failed = false;
       if (force) diffs.delete(view.key);
       if (mounted === view && view.request === request) await render(view, detail);
     } catch (error) {
       if (mounted !== view || view.request !== request) return;
+      view.failed = true;
       const url = view.session.pullRequest?.url ?? '';
       view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(error instanceof Error ? error.message : String(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
-    } finally { if (mounted === view && view.request === request) view.root.removeAttribute('aria-busy'); }
+    } finally { if (mounted === view && view.request === request) { view.root.removeAttribute('aria-busy'); view.presentation?.refresh(); } }
   }
 
   /** Open PRs offer Merge; it asks once for the method before anything reaches GitHub. */
@@ -225,6 +244,7 @@ export function createPullView(host: PullHost) {
     if (mounted !== view || view.section !== section) return;
     view.viewers.forEach(viewer => viewer.dispose()); view.viewers.clear();
     panel.innerHTML = content;
+    view.presentation?.refresh();
   }
 
   async function render(view: NonNullable<typeof mounted>, detail: PullDetail): Promise<void> {
@@ -235,6 +255,7 @@ export function createPullView(host: PullHost) {
     view.root.innerHTML = `${header(detail)}<div class="pull-tabs ds-seg" role="tablist" aria-label="Pull request sections">${tab('overview', 'Summary')}${tab('commits', 'Commits', detail.commits.length)}${tab('files', 'Files', detail.files.length)}</div><div class="pull-content" role="tabpanel">${content}</div>`;
     const tabs = view.root.querySelector<HTMLElement>('.pull-tabs')!;
     trackSegment(tabs, tabs.querySelector<HTMLElement>('[aria-selected="true"]'));
+    view.presentation?.refresh();
   }
 
   async function toggleFile(view: NonNullable<typeof mounted>, button: HTMLButtonElement): Promise<void> {
@@ -263,7 +284,7 @@ export function createPullView(host: PullHost) {
     switch (target.dataset.pullAction) {
       case 'refresh': await load(true); break;
       case 'open': if (target.dataset.url) await host.openUrl(target.dataset.url); break;
-      case 'unlink': await host.unlink(view.session); break;
+      case 'unlink': if (!view.unlinking) { view.unlinking = true; try { await host.unlink(view.session); } finally { view.unlinking = false; view.presentation?.refresh(); } } break;
       case 'merge-start': if (detail) { view.merge = 'confirm'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-cancel"]')?.focus(); } break;
       case 'merge-method': { const { openChoiceMenu } = await import('./choice-menu'); if (mounted !== view || !target.isConnected) break; openChoiceMenu({ anchor: target, title: 'Merge method', items: (Object.keys(MERGE_LABEL) as MergeMethod[]).map(method => ({ id: method, label: MERGE_LABEL[method], icon: 'merge', selected: method === view.method })), onSelect: async id => { view.method = id as MergeMethod; if (detail && mounted === view) { await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-method"]')?.focus(); } }, onClose: () => { if (target.isConnected) target.focus(); } }); break; }
       case 'merge-cancel': if (detail) { view.merge = 'idle'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-start"]')?.focus(); } break;
@@ -274,6 +295,13 @@ export function createPullView(host: PullHost) {
     }
   }
 
+  /** An extension-requested external entry runs the original handler only after a fresh host user choice. */
+  async function confirmEntry(anchor: HTMLElement, proceed: () => void): Promise<void> {
+    const view = mounted, previous = document.activeElement instanceof HTMLElement ? document.activeElement : null, { openChoiceMenu } = await import('./choice-menu');
+    if (!view || mounted !== view || !anchor.isConnected) return;
+    openChoiceMenu({ anchor, title: 'Extension requested a GitHub entry', items: [{ id: 'continue', label: 'Continue with original GitHub action', icon: 'external' }], onSelect: id => { if (id === 'continue' && mounted === view) proceed(); }, onClose: () => { if (previous?.isConnected) previous.focus({ preventScroll: true }); } });
+  }
+
   /** Forget a task's cached PR, e.g. after relinking. */
   function forget(sessionId: string): void {
     for (const key of [...details.keys()]) if (key.startsWith(`${sessionId}:`)) details.delete(key);
@@ -281,5 +309,10 @@ export function createPullView(host: PullHost) {
     if (mounted?.key.startsWith(`${sessionId}:`)) dispose();
   }
 
-  return { show, dispose, forget };
+  const revoked = { ok: false as const, reason: 'Revoked' as const };
+  return {
+    show, dispose, forget,
+    presentation: () => mounted?.presentation?.presentation(),
+    dispatch: (input: unknown) => mounted?.presentation?.dispatch(input) ?? revoked,
+  };
 }

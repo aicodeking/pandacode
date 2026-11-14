@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -449,6 +449,30 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
+    #[test]
+    fn pull_component_state_action_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/pull/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/pull/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/pull/action.json")).unwrap();
+        assert_eq!(super::validate_contract("pullPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("pullAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "credentials", "url", "method", "value"] {
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("pullPresentation", &raw)["ok"], false);
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("pullAction", &forged)["ok"], false);
+        }
+        // Merge confirmation is host-owned: no public control can name it.
+        for control in ["merge-confirm", "merge", "push"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("pullAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["files"] = json!(vec![state["files"][0].clone(); 501]);
+        assert_eq!(super::validate_contract("pullPresentation", &oversized)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.pull.merge");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+    }
     #[test]
     fn github_hub_component_state_action_share_native_schema() {
         let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/github-hub/extension.json")).unwrap();

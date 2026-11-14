@@ -7,6 +7,10 @@ The [Board presentation v1](board.md) contract (`panda.board`) offers an explici
 selected `review-first` host recipe, bounded captured task actions and independent
 host-user task-control consent. It never replaces task lifecycle or the core editor.
 
+The [Pull request presentation v1](pull.md) contract (`panda.pull`) offers an explicitly
+selected `tabs-first` host recipe over the original Pull inspector. Merge confirmation
+and its method select stay host-owned and have no public action.
+
 Install the `tests/fixtures/extensions/replacement` package as a local archive. In Settings →
 Extensions → Surface explorer choose **Project presentation** or **File presentation** explicitly.
 Enable alone does not replace anything. Competing providers never win by installation order.
