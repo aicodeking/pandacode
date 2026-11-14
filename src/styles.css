@@ -518,7 +518,7 @@ html[data-theme="dark"] .jj-log-row.current strong::before{color:var(--accent)}
 .thinking-dots{display:flex;gap:3px}
 .thinking-dots i{width:3px;height:3px;background:var(--raised);border-radius:50%}
 @media(prefers-reduced-motion:no-preference){.thinking-dots i{animation:state-pulse 1.6s ease-in-out infinite}}
-.terminal-drawer{height:245px;min-height:150px;max-height:50vh;flex-shrink:0;background:var(--bg);opacity:1;transform:none;animation:none}
+.terminal-drawer{--terminal-height:245px;position:relative;height:var(--terminal-height);min-height:150px;flex-shrink:0;background:var(--bg);opacity:1;transform:none;animation:none}
 .drawer-heading{height:37px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:var(--text-xs);color:var(--text);background:var(--panel)}
 .drawer-heading>span{display:flex;align-items:center;gap:8px}
 .drawer-heading .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}

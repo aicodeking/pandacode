@@ -225,6 +225,23 @@ function clearOverlay(dock: HTMLElement, header: HTMLElement): void {
   dock.style.right = `${Math.min(frame.right - left + 10, frame.width - dock.offsetWidth - 20)}px`;
 }
 
+/** A tall or maximized terminal drawer reaches up under the floating dock. Reserve the dock's column
+ * inside the drawer (`--terminal-dock-clear`, terminal-resize.css) so the dock's buttons and the
+ * drawer's tabs, Close button and rightmost columns never overlap. Layout offsets, as in clearOverlay. */
+function clearTerminal(dock: HTMLElement | undefined, header: HTMLElement, bottom = 0): void {
+  const drawer = document.querySelector<HTMLElement>('#terminal-drawer');
+  if (!drawer) return;
+  let clear = 0;
+  if (dock && !drawer.hidden) {
+    const box = drawer.getBoundingClientRect(), left = header.getBoundingClientRect().left + dock.offsetLeft;
+    if (bottom > box.top && left < box.right) clear = Math.ceil(box.right - left);
+  }
+  const value = clear ? `${clear}px` : '';
+  if (drawer.style.getPropertyValue('--terminal-dock-clear') === value) return;
+  if (value) drawer.style.setProperty('--terminal-dock-clear', value);
+  else drawer.style.removeProperty('--terminal-dock-clear');
+}
+
 /** Centres a floating dock in the free space between the header (and any file tabs) and the
  * composer, clamped `GAP` from both; a short pane pins it under the header. */
 function placement(dock: HTMLElement, ready: () => void) {
@@ -233,7 +250,7 @@ function placement(dock: HTMLElement, ready: () => void) {
   const place = () => {
     frame = 0;
     const following = follow; follow = false;
-    if (!floating(dock)) { dock.style.top = ''; dock.style.right = ''; placed = false; dock.style.visibility = ''; ready(); return; }
+    if (!floating(dock)) { dock.style.top = ''; dock.style.right = ''; placed = false; dock.style.visibility = ''; clearTerminal(undefined, header); ready(); return; }
     clearOverlay(dock, header);
     const pane = document.querySelector<HTMLElement>('.conversation-pane');
     const composer = document.querySelector<HTMLElement>('#composer-area');
@@ -245,6 +262,7 @@ function placement(dock: HTMLElement, ready: () => void) {
     if (composer?.querySelector<HTMLElement>('#composer')?.offsetHeight) { dock.style.visibility = ''; ready(); }
     const end = composerTop - GAP;
     const y = Math.round(Math.max(start, Math.min((start + end - height) / 2, end - height)));
+    clearTerminal(dock, header, y + height);
     const next = `${y - top.top}px`, previous = dock.style.top;
     if (next === previous) return;
     const shift = placed && previous ? parseFloat(previous) - (y - top.top) : 0;
@@ -264,6 +282,9 @@ function placement(dock: HTMLElement, ready: () => void) {
     observer.disconnect();
     for (const selector of ['.conversation-pane', '#composer-area', '.main-pane', '#inspector']) { const node = document.querySelector(selector); if (node) observer.observe(node); }
     observer.observe(dock);
+    // Opening, resizing or maximizing the terminal can put it under the dock without moving the composer.
+    const drawer = document.querySelector('#terminal-drawer');
+    if (drawer) observer.observe(drawer, { box: 'border-box' });
   };
   watch();
   addEventListener('resize', schedule);
