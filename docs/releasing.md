@@ -109,6 +109,20 @@ repository. To pick up a release sooner, run its `update` workflow by hand. Asse
 are part of the cask and formula, so renaming a macOS or Linux asset breaks the tap. See
 [homebrew.md](homebrew.md).
 
+## Nix flake
+
+`flake.nix` builds PandaCode from source (`nix build`, `nix run`) for Linux; it needs no release
+step, and uses the checkout's own version. npm dependencies come from `package-lock.json`
+itself (`importNpmLock`), so there is no hash to update. One thing to keep in step by hand:
+
+- `relayUrl` and `githubClientId`: the same public values as the `PANDACODE_RELAY_URL` and
+  `PANDACODE_GITHUB_CLIENT_ID` repository variables that `release.yml` bakes into the official
+  builds. If those change, change the flake defaults too, or Nix builds can't pair with the phone
+  app. A fork points the flake at its own with `.override { relayUrl = "…"; githubClientId = "…"; }`.
+
+Known limitation: on aarch64 the `ort` crate downloads its ONNX runtime while building, which
+the Nix sandbox forbids.
+
 ## 1. Prepare the version
 
 Work on `main` (or land your branch there first) with a clean, reviewed tree.
