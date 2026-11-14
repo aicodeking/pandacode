@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.button-icon",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.button-icon/mark", "asset": "assets/mark.svg" }],
+    "commands": [{ "id": "sample.button-icon/hello", "title": "Say hello", "action": { "kind": "showMessage", "message": "Hello from an installed extension" } }],
+    "menus": [
+      { "id": "sample.button-icon/header", "location": "panda.workspace.header.actions", "command": "sample.button-icon/hello", "presentation": "button", "icon": "sample.button-icon/mark", "text": "Hello", "group": "extensions", "order": 100 },
+      { "id": "sample.button-icon/footer", "location": "panda.sidebar.footer", "command": "sample.button-icon/hello", "icon": "sample.button-icon/mark", "group": "extensions", "order": 100 }
+    ]
+  }
+}

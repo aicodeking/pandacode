@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.surface-controls",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary", "tasks.summary"],
+  "contributes": {
+    "icons": [{ "id": "sample.surface-controls/mark", "asset": "assets/mark.svg" }],
+    "components": [
+      { "id": "sample.surface-controls/board", "title": "Review first", "slot": "panda.board", "contractVersion": 1, "presentation": "review-first", "capabilities": ["host-tasks", "host-details", "original-actions"] },
+      { "id": "sample.surface-controls/dock", "title": "Actions first", "slot": "panda.actionDock", "contractVersion": 1, "presentation": "actions-first", "capabilities": ["host-groups", "host-workers", "original-actions"] },
+      { "id": "sample.surface-controls/sidebar", "title": "Filter first", "slot": "panda.sidebar", "contractVersion": 1, "presentation": "filter-first", "capabilities": ["host-sections", "host-rows", "original-actions"] }
+    ],
+    "commands": [
+      { "id": "sample.surface-controls/note", "title": "Surface note", "action": { "kind": "showMessage", "message": "The host keeps ownership of this surface." } },
+      { "id": "sample.surface-controls/format", "title": "Choose format", "action": { "kind": "showDialog", "dialog": { "title": "Format", "fields": [{ "id": "format", "kind": "select", "label": "Format", "required": true, "options": [{ "value": "summary", "label": "Summary" }, { "value": "detail", "label": "Detail" }] }], "successMessage": "Format chosen", "cancelMessage": "Format cancelled" } } }
+    ],
+    "menus": [
+      { "id": "sample.surface-controls/simulator", "location": "panda.simulator.actions", "command": "sample.surface-controls/note" },
+      { "id": "sample.surface-controls/board-header", "location": "panda.board.header", "command": "sample.surface-controls/note" },
+      { "id": "sample.surface-controls/board-context", "location": "panda.board.context", "command": "sample.surface-controls/note" },
+      { "id": "sample.surface-controls/dock-action", "location": "panda.actionDock.actions", "command": "sample.surface-controls/note", "presentation": "button", "text": "Dock note" },
+      { "id": "sample.surface-controls/bots", "location": "panda.sidebar.bots.actions", "command": "sample.surface-controls/note", "presentation": "button", "text": "Bots note" },
+      { "id": "sample.surface-controls/bot-row", "location": "panda.sidebar.bots.context", "command": "sample.surface-controls/note", "visible": { "op": "eq", "key": "selection.kind", "value": "bot" } },
+      { "id": "sample.surface-controls/rename-dialog", "location": "panda.dialog.rename-task.actions", "command": "sample.surface-controls/note", "presentation": "button", "icon": "sample.surface-controls/mark", "text": "Surface note" },
+      { "id": "sample.surface-controls/tray", "location": "panda.tray.actions", "command": "sample.surface-controls/note", "icon": "sample.surface-controls/mark", "items": [
+        { "id": "sample.surface-controls/tray-format", "kind": "command", "title": "Choose format…", "command": "sample.surface-controls/format" }
+      ] },
+      { "id": "sample.surface-controls/tray-menu", "location": "panda.tray.menu", "command": "sample.surface-controls/note" }
+    ],
+    "layouts": [
+      { "id": "sample.surface-controls/board-add-first", "title": "Add before import", "location": "panda.board.header", "rules": [{ "id": "panda.board.header/add", "target": "panda.board.header/import", "side": "before" }] },
+      { "id": "sample.surface-controls/bots-channels-first", "title": "Channels above Needs you", "location": "panda.sidebar.bots.groups", "rules": [{ "id": "panda.sidebar.bots.groups/channels", "target": "panda.sidebar.bots.groups/needs-you", "side": "before" }] }
+    ],
+    "dialogExtras": [{ "id": "sample.surface-controls/rename-note", "dialog": "rename-task", "text": "Extension guidance; the host keeps the rename fields and actions." }]
+  }
+}

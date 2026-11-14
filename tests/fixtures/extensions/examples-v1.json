@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": "1.0.0",
+  "categories": ["button-icon", "submenu-dialog-select", "context-panel", "layout-theme", "replacement", "tool", "api", "service", "harness", "workspace-surfaces"],
+  "examples": [
+    { "dir": "button-icon", "id": "sample.button-icon", "categories": ["button-icon"], "executable": false },
+    { "dir": "submenu-dialog", "id": "sample.submenu-dialog", "categories": ["submenu-dialog-select"], "executable": false },
+    { "dir": "context-panel", "id": "sample.context-panel", "categories": ["context-panel"], "executable": false },
+    { "dir": "layout-theme", "id": "sample.layout-theme", "categories": ["layout-theme"], "executable": false },
+    { "dir": "replacement-recipes", "id": "sample.replacement-recipes", "categories": ["replacement"], "executable": false },
+    { "dir": "surface-controls", "id": "sample.surface-controls", "categories": ["workspace-surfaces"], "executable": false },
+    { "dir": "project-summary", "id": "sample.sdk-summary", "categories": ["api"], "executable": true },
+    { "dir": "local-tool", "id": "sample.local-tool", "categories": ["tool"], "executable": true },
+    { "dir": "service-provider", "id": "sample.service-provider", "categories": ["service"], "executable": true },
+    { "dir": "service-consumer", "id": "sample.service-consumer", "categories": ["service"], "executable": true },
+    { "dir": "acp-recorded", "id": "sample.acp-recorded", "categories": ["harness"], "executable": true }
+  ],
+  "permissions": ["btw.content", "btw.taskControl", "services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"],
+  "priorFixtures": [
+    "sample-project-helper", "menu-laboratory", "layout-a", "layout-b", "data-panel", "appearance", "replacement", "project-context",
+    "test-runner", "fake-service", "fake-harness", "rich-view", "simulator", "board", "action-dock", "status", "sidebar-bots", "core-dialogs", "window-coverage"
+  ],
+  "apiRanges": {
+    "accepted": ["^1.0.0", "~1.0.0", "1.0.0", ">=1.0.0 <2.0.0", ">=1.0.0 <1.1.0"],
+    "rejected": [
+      { "range": "^2.0.0", "code": "IncompatibleApi" },
+      { "range": "^0.9.0", "code": "IncompatibleApi" },
+      { "range": "~0.9.0", "code": "IncompatibleApi" },
+      { "range": "1.1.0", "code": "IncompatibleApi" },
+      { "range": ">=0.5.0 <1.0.0", "code": "IncompatibleApi" },
+      { "range": "^1.0", "code": "InvalidVersionRange" },
+      { "range": "*", "code": "InvalidVersionRange" },
+      { "range": "1.0.0 || 2.0.0", "code": "InvalidVersionRange" }
+    ]
+  },
+  "manifestCases": [
+    { "name": "future manifest version", "key": "manifestVersion", "value": 2, "code": "InvalidShape" },
+    { "name": "missing package id", "key": "id", "remove": true, "code": "InvalidShape" },
+    { "name": "core-reserved package id", "key": "id", "value": "panda.sample", "code": "ReservedId" },
+    { "name": "malformed package id", "key": "id", "value": "Sample", "code": "InvalidShape" },
+    { "name": "malformed package version", "key": "version", "value": "one", "code": "InvalidShape" },
+    { "name": "missing API range", "key": "engines", "value": {}, "code": "InvalidShape" },
+    { "name": "unknown execution placement", "key": "extensionKind", "value": "native", "code": "InvalidShape" },
+    { "name": "unknown required capability", "key": "requiredCapabilities", "value": ["process.spawn"], "code": "UnsupportedCapability" },
+    { "name": "unknown permission", "key": "permissions", "append": "process.spawn", "code": "UnsupportedCapability" },
+    { "name": "contribution without its permission", "example": "button-icon", "key": "permissions", "value": [], "code": "PermissionDenied" },
+    { "name": "foreign contribution owner", "example": "button-icon", "key": "contributes", "value": { "commands": [{ "id": "other.owner/x", "title": "x", "action": { "kind": "showMessage", "message": "x" } }] }, "code": "InvalidId" }
+  ],
+  "optionalCases": [
+    { "name": "unknown optional field is stripped with a diagnostic", "key": "futureGrant", "value": { "execute": true }, "diagnostic": "UnknownOptionalField" },
+    { "name": "unknown optional capability is stripped with a diagnostic", "key": "optionalCapabilities", "value": ["process.spawn", "ui.contribute"], "diagnostic": "UnknownOptionalCapability", "kept": ["ui.contribute"] }
+  ],
+  "archiveCases": [
+    { "name": "undeclared file", "example": "button-icon", "add": "notes.txt", "error": "Undeclared package file; executable files and install hooks are unsupported." },
+    { "name": "install hook manifest", "example": "button-icon", "add": "package.json", "error": "Undeclared package file; executable files and install hooks are unsupported." },
+    { "name": "executable without a runtime declaration", "example": "button-icon", "add": "main.cjs", "error": "Undeclared package file; executable files and install hooks are unsupported." },
+    { "name": "missing declared icon", "example": "button-icon", "omit": "assets/mark.svg", "error": "Missing declared icon." },
+    { "name": "missing executable entrypoint", "example": "local-tool", "omit": "main.cjs", "error": "Missing executable entrypoint." },
+    { "name": "missing manifest", "example": "submenu-dialog", "omit": "extension.json", "error": "Missing extension.json." },
+    { "name": "path outside the package", "example": "submenu-dialog", "add": "../escape.txt", "error": "Unsafe archive entry." }
+  ]
+}

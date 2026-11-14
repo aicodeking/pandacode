@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.submenu-dialog",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "commands": [
+      { "id": "sample.submenu-dialog/report", "title": "Configure report", "action": {
+        "kind": "showDialog",
+        "dialog": {
+          "title": "Report options",
+          "confirmLabel": "Create report",
+          "confirmation": "Create this report?",
+          "successMessage": "Report confirmed",
+          "cancelMessage": "Report cancelled",
+          "fields": [
+            { "id": "name", "kind": "text", "label": "Report name", "required": true, "minLength": 3 },
+            { "id": "notes", "kind": "textarea", "label": "Notes", "rows": 3 },
+            { "id": "details", "kind": "switch", "label": "Include details", "value": true },
+            { "id": "format", "kind": "select", "label": "Report format", "required": true, "placeholder": "Choose a format", "options": [{ "value": "brief", "label": "Brief" }, { "value": "full", "label": "Full report" }, { "value": "archived", "label": "Archived", "disabled": true }] },
+            { "id": "tags", "kind": "select", "label": "Report tags", "multiple": true, "options": [{ "value": "alpha", "label": "Alpha" }, { "value": "beta", "label": "Beta" }] }
+          ]
+        }
+      } },
+      { "id": "sample.submenu-dialog/about", "title": "About reports", "action": { "kind": "showMessage", "message": "Reports are a documentation example." } }
+    ],
+    "menus": [{ "id": "sample.submenu-dialog/header", "location": "panda.workspace.header.actions", "command": "sample.submenu-dialog/report", "text": "Reports", "items": [
+      { "id": "sample.submenu-dialog/reports", "kind": "submenu", "title": "Reports", "items": [
+        { "id": "sample.submenu-dialog/open", "kind": "command", "title": "Configure report…", "command": "sample.submenu-dialog/report" },
+        { "id": "sample.submenu-dialog/divider", "kind": "separator" },
+        { "id": "sample.submenu-dialog/info", "kind": "command", "title": "About reports", "command": "sample.submenu-dialog/about" }
+      ] }
+    ] }]
+  }
+}

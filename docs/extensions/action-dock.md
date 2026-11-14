@@ -46,7 +46,7 @@ names; `tests/extensions-team-controls.test.mjs` checks it against the ledger.
 | status | `panda.actionDock` (stays last), `panda.status.items`, `panda.status.protected` | — | — | — | the update prompt is protected; see [status](status.md) |
 | team | `panda.team.controls`, `panda.team.actions`, `panda.team.context` | yes | yes | team-toggle, team-open, worker-open, workers-more | the Workers toggle never hides |
 | subagents, profiles | `panda.roster`, `panda.roster.controls`, `panda.roster.context` | yes | see [agent roster](agent-roster.md) | see [agent roster](agent-roster.md) | the roster family (T56F) |
-| widget | `panda.roster.controls` | yes | Pin only | widget, widget-open | main-window widget is `panda.roster`; its pinned window is T57 |
+| widget | `panda.roster.controls` | yes | Pin only | widget, widget-open | main-window widget is `panda.roster`; its pinned window uses `panda.agentsDock.actions` ([windows](windows.md)) |
 | usage | `panda.status`, `panda.status.controls`, `panda.status.context` | yes | Refresh only | see [status](status.md) | the status family (T56G) |
 
 ## Contract and policy

@@ -29,7 +29,7 @@ per-child renderer hook (every subagent event would cross the boundary); letting
 save, rename or delete a profile directly (profiles are user data: selection and Update go through a
 fresh host choice and the original handler, rename and delete stay in the host's Profile actions
 menu); a public Stop for children (children stop with their task, from the composer); taking over
-the pinned widget window (an auxiliary window whose lifecycle and privileges are T57's); merging
+the pinned widget window (an auxiliary window whose lifecycle and privileges are covered in [windows](windows.md)); merging
 subagent lineage with machine lineage (`panda.machines`, T55G): a subagent's parent is another child
 of the same task as the harness reports it, not a machine or a linked thread.
 
@@ -37,7 +37,7 @@ of the same task as the harness reports it, not a machine or a linked thread.
 
 `DOCK_REGISTRY` (`src/extensions/dock-core.ts`) keeps one entry per `panda.agents` ledger member;
 the `subagents` and `profiles` entries now name the `panda.roster` locations and controls, and the
-`widget` entry names the main-window parts while its auxiliary window stays T57's.
+`widget` entry names the main-window parts while its auxiliary window is `panda.agentsDock.actions` in [windows](windows.md).
 `ROSTER_REGISTRY` (`src/extensions/roster-core.ts`) lists the three roster members with every
 operation and the reason for each exception; `tests/extensions-agent-roster.test.mjs` checks both
 against the ledger.
@@ -46,7 +46,7 @@ against the ledger.
 | --- | --- | --- | --- | --- | --- |
 | subagents | `panda.roster`, `panda.roster.controls`, `panda.roster.context` | yes | no | subagents, subagent-open, subagents-back, subagents-close, subagents-retry | Back and Close never hide; rows move only with the recipe |
 | profiles | `panda.roster.controls` | yes | yes | profile-picker, profile-select, profile-manage, profile-create, profile-update | select and Update need a fresh host choice; rename/delete stay in the host menu |
-| widget | `panda.roster.controls` | yes | yes (Pin) | widget, widget-open | Running agents never hides; its on/off preference is the user's; the pinned window is T57 |
+| widget | `panda.roster.controls` | yes | yes (Pin) | widget, widget-open | Running agents never hides; its on/off preference is the user's; the pinned window uses `panda.agentsDock.actions` ([windows](windows.md)) |
 
 ## Contract and policy
 

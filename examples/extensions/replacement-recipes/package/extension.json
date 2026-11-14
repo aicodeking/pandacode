@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.replacement-recipes",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "projects.files.metadata"],
+  "requiredContributions": ["components"],
+  "contributes": {
+    "components": [
+      { "id": "sample.replacement-recipes/projects", "title": "Project cards", "slot": "panda.projects", "contractVersion": 1, "presentation": "cards" },
+      { "id": "sample.replacement-recipes/search", "title": "Results first", "slot": "panda.search", "contractVersion": 1, "presentation": "results-first", "capabilities": ["host-query", "host-results", "original-actions"] }
+    ]
+  }
+}

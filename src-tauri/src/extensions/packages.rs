@@ -463,6 +463,94 @@ mod tests {
         packages.enable("sample.service-provider", false).unwrap();
         assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == "sample.service-provider").unwrap().enabled);
     }
+    /// Every file of one shipped example's `package/` folder, as archive-relative names.
+    fn example_files(dir: &str) -> Vec<(String, Vec<u8>)> {
+        fn walk(root: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) {
+            for entry in std::fs::read_dir(root.join(prefix)).unwrap().map(|entry| entry.unwrap()) {
+                let name = entry.file_name().into_string().unwrap();
+                let path = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+                if entry.file_type().unwrap().is_dir() { walk(root, &path, out); } else { out.push((path.clone(), std::fs::read(root.join(&path)).unwrap())); }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/extensions").join(dir).join("package");
+        let mut files = Vec::new(); walk(&root, "", &mut files); files.sort(); files
+    }
+    fn example_archive(files: &[(String, Vec<u8>)], manifest: Option<&Value>) -> Vec<u8> {
+        let replaced = manifest.map(|manifest| serde_json::to_vec(manifest).unwrap());
+        let entries: Vec<(&str, &[u8])> = files.iter().map(|(name, bytes)| (name.as_str(), if name == "extension.json" { replaced.as_deref().unwrap_or(bytes) } else { bytes.as_slice() })).collect();
+        archive(&entries)
+    }
+    fn validation_error(bytes: &[u8]) -> Option<String> { validate(bytes).err() }
+    /// The author corpus in tests/fixtures/extensions/examples-v1.json is shared with
+    /// tests/extensions-examples.test.mjs: the app validator and this native installer must agree.
+    #[test]
+    fn author_examples_install_natively_and_agree_with_the_compatibility_corpus() {
+        let corpus: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/examples-v1.json")).unwrap();
+        let examples = corpus["examples"].as_array().unwrap();
+        let storage = Storage::new(); let packages = storage.packages(false);
+        for example in examples {
+            let (dir, id) = (example["dir"].as_str().unwrap(), example["id"].as_str().unwrap());
+            let files = example_files(dir);
+            let manifest: Value = serde_json::from_slice(&files.iter().find(|(name, _)| name == "extension.json").unwrap().1).unwrap();
+            assert_eq!(manifest["id"], id);
+            for range in corpus["apiRanges"]["accepted"].as_array().unwrap() {
+                let mut edited = manifest.clone(); edited["engines"]["pandacodeApi"] = range.clone();
+                assert_eq!(validation_error(&example_archive(&files, Some(&edited))), None, "{dir} {range}");
+            }
+            for case in corpus["apiRanges"]["rejected"].as_array().unwrap() {
+                let mut edited = manifest.clone(); edited["engines"]["pandacodeApi"] = case["range"].clone();
+                assert_eq!(validation_error(&example_archive(&files, Some(&edited))), Some(format!("Invalid manifest: {}", case["code"])), "{dir} {}", case["range"]);
+            }
+            for case in corpus["manifestCases"].as_array().unwrap().iter().filter(|case| case.get("example").is_none_or(|only| only == dir)) {
+                let mut edited = manifest.clone(); let key = case["key"].as_str().unwrap();
+                if case["remove"] == true { edited.as_object_mut().unwrap().remove(key); }
+                else if let Some(item) = case.get("append") { let mut list = edited.get(key).cloned().unwrap_or(json!([])); list.as_array_mut().unwrap().push(item.clone()); edited[key] = list; }
+                else { edited[key] = case["value"].clone(); }
+                assert_eq!(validation_error(&example_archive(&files, Some(&edited))), Some(format!("Invalid manifest: {}", case["code"])), "{dir}: {}", case["name"]);
+            }
+            for case in corpus["optionalCases"].as_array().unwrap() {
+                let mut edited = manifest.clone(); edited[case["key"].as_str().unwrap()] = case["value"].clone();
+                let package = validate(&example_archive(&files, Some(&edited))).unwrap_or_else(|error| panic!("{dir}: {}: {error}", case["name"]));
+                assert!(package.manifest.get("futureGrant").is_none());
+                if let Some(kept) = case.get("kept") { assert_eq!(&package.manifest["optionalCapabilities"], kept); }
+            }
+            packages.install(&example_archive(&files, None)).unwrap_or_else(|error| panic!("{dir}: {error}"));
+            assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().enabled, "installed disabled");
+            if example["executable"] == true {
+                assert!(packages.enable(id, true).unwrap_err().starts_with("ExecutableTrustRequired"), "{dir}");
+                let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
+                packages.trust(id, &digest, true).unwrap();
+            } else {
+                assert!(packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.is_none(), "{dir} must not carry code");
+            }
+            packages.enable(id, true).unwrap_or_else(|error| panic!("{dir}: {error}"));
+        }
+        let restarted = storage.packages(false).snapshot();
+        assert_eq!(restarted.packages.iter().filter(|p| p.enabled).count(), examples.len(), "enable survives restart");
+        let safe = storage.packages(true).snapshot();
+        assert!(safe.safe_mode && safe.packages.is_empty(), "safe mode loads no package");
+        assert_eq!(storage.packages(false).snapshot().packages.iter().filter(|p| p.enabled).count(), examples.len(), "safe mode keeps preferences");
+        for example in examples.iter().rev() { let id = example["id"].as_str().unwrap(); packages.enable(id, false).unwrap(); packages.uninstall(id).unwrap(); }
+        assert!(storage.packages(false).snapshot().packages.is_empty());
+        for case in corpus["archiveCases"].as_array().unwrap() {
+            let mut files = example_files(case["example"].as_str().unwrap());
+            if let Some(omit) = case["omit"].as_str() { files.retain(|(name, _)| name != omit); }
+            if let Some(add) = case["add"].as_str() { files.push((add.to_owned(), b"module.exports = {};".to_vec())); }
+            assert_eq!(validation_error(&example_archive(&files, None)).as_deref(), case["error"].as_str(), "{}", case["name"]);
+        }
+        for fixture in corpus["priorFixtures"].as_array().unwrap() {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/extensions").join(fixture.as_str().unwrap()).join("extension.json");
+            let raw: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(super::super::contracts::validate_contract("packageFiles", &json!([raw]))["ok"], true, "{fixture}");
+        }
+        let files = example_files("button-icon");
+        let manifest: Value = serde_json::from_slice(&files.iter().find(|(name, _)| name == "extension.json").unwrap().1).unwrap();
+        for permission in corpus["permissions"].as_array().unwrap() {
+            let mut edited = manifest.clone(); edited["optionalCapabilities"] = json!([permission]);
+            let package = validate(&example_archive(&files, Some(&edited))).unwrap();
+            assert_eq!(package.manifest["optionalCapabilities"], json!([permission]), "native validator accepts documented {permission}");
+        }
+    }
     const HARNESS_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/extension.json");
     const HARNESS_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/fake-harness/main.cjs");
     const ACP_MANIFEST: &str = include_str!("../../../examples/extensions/acp-recorded/package/extension.json");

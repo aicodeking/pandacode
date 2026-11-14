@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.local-tool",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "tools.execute"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.local-tool/run"] },
+  "contributes": {
+    "commands": [{ "id": "sample.local-tool/run", "title": "Count words", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.local-tool/button", "location": "panda.workspace.header.actions", "command": "sample.local-tool/run", "presentation": "button", "text": "Count words" }],
+    "tools": [{ "id": "sample.local-tool/count", "command": "sample.local-tool/run", "executable": "node", "arguments": { "maxItems": 8, "maxLength": 1024 }, "cwd": "project", "timeoutMs": 3000 }]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.layout-theme",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "themes": [{ "id": "sample.layout-theme/ink", "schemaVersion": 1, "light": { "background": "#f2f5ff", "foreground": "#192239", "accent": "#3355aa" }, "dark": { "background": "#182239", "foreground": "#eef2ff", "accent": "#99bbff" }, "font": "system", "rowPadding": 6, "radius": 14 }],
+    "layouts": [{ "id": "sample.layout-theme/theme-first", "title": "Theme toggle first", "location": "panda.sidebar.footer", "rules": [
+      { "id": "panda.sidebar.footer/theme", "target": "panda.sidebar.footer/support", "side": "before" }
+    ] }]
+  }
+}

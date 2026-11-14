@@ -28,6 +28,9 @@ jobs:
       # `npm run build` typechecks (tsc --noEmit) and writes dist/, which
       # tests/bundle.test.mjs reads.
       - run: npm run build
+      # Includes tests/extensions-examples.test.mjs: every examples/extensions package, the public SDK
+      # against the shared schema, the compatibility corpus and the author guide's generated tables.
+      # The rust job's `cargo test --lib` installs the same examples and corpus natively.
       - run: npm test
       - run: npm run test:release
       - run: npm run site:build

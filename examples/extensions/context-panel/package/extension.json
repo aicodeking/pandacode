@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.context-panel",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "projects.summary", "tasks.summary"],
+  "contributes": {
+    "commands": [
+      { "id": "sample.context-panel/open", "title": "Open context panel", "action": { "kind": "openView", "view": "sample.context-panel/overview" } },
+      { "id": "sample.context-panel/context", "title": "Show project context", "action": { "kind": "showProjectContext" } },
+      { "id": "sample.context-panel/refresh", "title": "Refresh panel", "action": { "kind": "showMessage", "message": "Context panel refreshed" } }
+    ],
+    "menus": [{ "id": "sample.context-panel/header", "location": "panda.workspace.header.actions", "command": "sample.context-panel/open", "presentation": "button", "text": "Context panel" }],
+    "views": [{
+      "id": "sample.context-panel/overview", "title": "Context panel", "text": "Host-rendered panel. Use Show project context to read the captured project and tasks after granting access.",
+      "toolbar": [{ "command": "sample.context-panel/context" }, { "command": "sample.context-panel/refresh" }],
+      "controls": [
+        { "kind": "list", "label": "Checks", "items": ["Types", "Unit tests"] },
+        { "kind": "table", "label": "Results", "columns": ["Check", "Status"], "rows": [["Types", "Passed"], ["Unit tests", "Passed"]] },
+        { "kind": "progress", "label": "Completion", "value": 50 }
+      ]
+    }]
+  }
+}
