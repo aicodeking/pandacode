@@ -41,7 +41,7 @@ export function createPreviewFileExplorer() {
     manage(args: Args, root: string): string {
       if (args.action === 'path') return [root, args.path].filter(Boolean).join('/');
       const value = state(args), path: string = args.path;
-      if (!path || path.split('/').some(part => !part || part === '.' || part === '..' || part === '.git')) throw new Error('Choose a file or folder inside the project.');
+      if (!path || path.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git' || part.includes(':') || part.includes('\0'))) throw new Error('Choose a file or folder inside the project.');
       const parent = path.split('/').slice(0, -1).join('/');
       if (parent && !value.files.get(parent)?.isDir) throw new Error('Folder no longer exists.');
       if (args.action === 'new-file' || args.action === 'new-folder') {
@@ -51,7 +51,9 @@ export function createPreviewFileExplorer() {
         return path;
       }
       requireFile(args);
-      const next = [parent, args.name].filter(Boolean).join('/');
+      const name = String(args.name ?? '');
+      if (args.action === 'rename' && (!name.trim() || /[/\\:\0]/.test(name) || name === '.' || name === '..' || name.toLowerCase() === '.git')) throw new Error('Enter a single file or folder name.');
+      const next = [parent, name].filter(Boolean).join('/');
       if (args.action === 'rename' && value.files.has(next)) throw new Error('A file or folder with that name already exists.');
       for (const [old, entry] of [...value.files]) if (old === path || old.startsWith(path + '/')) {
         value.files.delete(old);

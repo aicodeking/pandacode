@@ -42,8 +42,8 @@ export function createFileExplorer(deps: Deps) {
         submit.disabled = true;
         try {
           if ((deleting || renaming) && deps.hasChanges(context, path)) throw new Error('Save or discard unsaved edits in this file or folder first.');
-          const value = input?.value ?? '';
-          if (!deleting && (!value.trim() || /[/\\]/.test(value) || value === '.' || value === '..')) throw new Error('Enter a single file or folder name.');
+          const value = (input?.value ?? '').trim();
+          if (!deleting && (!value || /[/\\:\0]/.test(value) || value === '.' || value === '..' || value.toLowerCase() === '.git')) throw new Error('Enter a single file or folder name.');
           const parent = renaming || deleting ? path : directory ? path : path.split('/').slice(0, -1).join('/');
           const target = renaming || deleting ? path : [parent, value].filter(Boolean).join('/');
           const next = await deps.call<string>('manage_workspace_entry', { ...context, action, path: target, ...(renaming ? { name: value } : {}) });

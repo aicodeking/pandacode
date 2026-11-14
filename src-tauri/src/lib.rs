@@ -3152,8 +3152,9 @@ async fn reveal_path(path: String) -> Result<()> {
 #[tauri::command]
 async fn open_workspace_file(state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: String) -> Result<()> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    let target = workspace::scoped_path(&root, &path)?;
-    if !target.is_file() { return Err("Choose an existing file.".into()); }
+    // Canonical regular file inside the project. A symlink is opened only when its
+    // target stays in the checkout, and the path handed to the OS is that target.
+    let target = workspace::openable_file(&root, &path)?;
     #[cfg(target_os = "macos")]
     let mut command = tokio::process::Command::new("/usr/bin/open");
     #[cfg(target_os = "windows")]

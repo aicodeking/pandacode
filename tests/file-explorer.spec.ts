@@ -6,6 +6,10 @@ const explorer = (page: Page) => page.getByRole('region', { name: 'File explorer
 const root = (page: Page) => explorer(page);
 const item = (page: Page, name: string) => root(page).locator('.file-row').getByRole('button', { name, exact: true });
 async function showExplorer(page: Page) {
+  // A thread switch keeps the Files panel open but replaces the tree with "Loading files…".
+  // The toggle would read that as already-open and close the panel, so wait the placeholder out.
+  const loading = page.locator('#inspector-content').getByText('Loading files…', { exact: true });
+  if (await loading.isVisible()) await expect(loading).toBeHidden();
   if (!await explorer(page).isVisible()) await page.getByRole('button', { name: 'Toggle file explorer', exact: true }).click();
   await expect(explorer(page)).toBeVisible();
 }

@@ -164,7 +164,7 @@ export function createFileTabs(deps: Deps) {
       if (read !== tab.reads) return;
       const owner = [...threads.values()].find(entry => entry.tabs.includes(tab));
       if (!owner) return;
-      tab.error = error instanceof Error ? error.message : String(error);
+      tab.error = errorText(error);
       if (current() === tab) render();
     }
   }

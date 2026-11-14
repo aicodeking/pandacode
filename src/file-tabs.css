@@ -24,7 +24,7 @@
 .file-selection-form{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--ds-border)}
 .file-selection-form input{flex:1;min-width:120px;padding:6px 8px;font-size:var(--ds-text-meta)}
 .file-selection-form small{flex-basis:100%;color:var(--danger);font-size:var(--ds-text-meta)}
-.file-window{position:fixed;z-index:45;box-sizing:border-box;min-width:min(360px,calc(100vw - 32px));min-height:min(240px,calc(100vh - 64px));max-width:calc(100vw - 32px);max-height:calc(100vh - 64px);resize:both;overflow:hidden;border:1px solid var(--glass-border);border-radius:var(--glass-radius);background:var(--glass-warm);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);box-shadow:var(--ds-shadow-raised);outline:none}
+.file-window{position:fixed;z-index:45;box-sizing:border-box;min-width:min(360px,calc(100vw - 32px));min-height:min(240px,calc(100vh - 64px));max-width:calc(100vw - 32px);max-height:calc(100vh - 64px);resize:both;overflow:hidden;border:1px solid var(--glass-border);border-radius:var(--glass-radius);background:var(--glass-warm);backdrop-filter:blur(26px) saturate(1.45);-webkit-backdrop-filter:blur(26px) saturate(1.45);box-shadow:0 18px 48px -12px var(--glass-shadow-deep),0 4px 12px -5px var(--glass-shadow-near);outline:none}
 .file-window-heading{display:flex;flex:none;align-items:center;justify-content:space-between;height:40px;padding:0 8px 0 16px;cursor:move;touch-action:none;user-select:none;font-size:var(--ds-text-ui);color:var(--text)}
 .file-window-heading>span,.file-window-heading>div{display:flex;align-items:center;gap:8px}
 .file-window-heading .icon{width:16px;height:16px}
