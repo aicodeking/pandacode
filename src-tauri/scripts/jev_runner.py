@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import importlib
 import importlib.metadata
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -32,7 +33,7 @@ OPERATIONS = {"CLICK", "TYPE_TEXT", "SELECT", "SCROLL_UP", "SCROLL_DOWN", "WAIT"
 FIELDS = {
     "runId", "url", "goal", "maxSteps", "timeoutSeconds", "viewport", "expectedText",
     "expectedTitle", "expectedUrl", "chromePath", "typesafeKey", "textKey",
-    "textModel", "textBaseUrl", "outputDir", "browserDir",
+    "textModel", "textBaseUrl", "outputDir", "browserDir", "decisionBaseUrl",
 }
 
 
@@ -95,12 +96,26 @@ def validate_request(request):
     result = dict(request)
     for key, maximum, required in (
         ("runId", 64, True), ("url", 4096, True), ("goal", 8192, True),
-        ("typesafeKey", 4096, True), ("textKey", 4096, False),
+        ("typesafeKey", 4096, False), ("textKey", 4096, False),
         ("textModel", 200, True), ("textBaseUrl", 2048, True),
         ("chromePath", 4096, False), ("outputDir", 4096, True), ("browserDir", 4096, False),
         ("expectedText", 2000, False), ("expectedTitle", 500, False), ("expectedUrl", 4096, False),
+        ("decisionBaseUrl", 2048, False),
     ):
         result[key] = text_field(request, key, maximum, required)
+    if not result["decisionBaseUrl"] and not result["typesafeKey"]:
+        raise InvalidRequest("Invalid browser test configuration.")
+    if result["decisionBaseUrl"]:
+        parts = http_url(result["decisionBaseUrl"])
+        # Matches the native loopback rule: localhost, ::1, and 127.0.0.0/8 only. Parsed as
+        # an address so lookalike domains ("127.0.0.1.evil.com") cannot pass.
+        try:
+            local = parts.hostname == "localhost" or ipaddress.ip_address(parts.hostname).is_loopback
+        except ValueError:
+            local = False
+        if not local or parts.query or parts.fragment:
+            raise InvalidRequest("The local decision server must use a loopback HTTP address.")
+        result["decisionBaseUrl"] = result["decisionBaseUrl"].rstrip("/")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", result["runId"]):
         raise InvalidRequest("Invalid browser test identifier.")
     for key, minimum, maximum in (("maxSteps", 1, 60), ("timeoutSeconds", 30, 600)):
@@ -377,6 +392,7 @@ class Runtime:
         self.request, self.chrome_path = request, chrome_path
         self.chrome = self.daemon = self.agent = self.temporary = None
         self.browser_module = self.original_operation = None
+        self.model_module = self.original_post = None
 
     def start(self):
         # Short path keeps macOS AF_UNIX endpoints below sun_path's 104 bytes.
@@ -439,10 +455,23 @@ class Runtime:
         else:
             raise RuntimeError("harness_start")
         os.environ.update({
-            "TYPESAFE_API_KEY": self.request["typesafeKey"], "TEXT_MODEL_API_KEY": self.request["textKey"],
+            "TYPESAFE_API_KEY": "local" if self.request["decisionBaseUrl"] else self.request["typesafeKey"],
+            "TEXT_MODEL_API_KEY": self.request["textKey"],
             "TEXT_MODEL": self.request["textModel"], "TEXT_MODEL_BASE_URL": self.request["textBaseUrl"],
             "TEXT_MODEL_REASONING": "none",
         })
+        if self.request["decisionBaseUrl"]:
+            # Local decisions: redirect the pinned agent's TypeSafe decision calls to the
+            # user's loopback server. Upstream's own tests treat post_json as the seam;
+            # everything else (the text helper) keeps its original destination.
+            self.model_module = importlib.import_module("jev_ultrafast.model")
+            self.original_post = self.model_module.post_json
+            base = self.request["decisionBaseUrl"]
+            def local_decisions(url, key, body):
+                if isinstance(url, str) and urlsplit(url).hostname == "api.typesafe.ai":
+                    url = base + "/v1/systemone"
+                return self.original_post(url, key, body)
+            self.model_module.post_json = local_decisions
         self.browser_module = importlib.import_module("jev_ultrafast.browser")
         # Never let upstream self-heal into a replacement daemon we do not own.
         def owned_daemon_only(*_args, **_kwargs):
@@ -478,6 +507,8 @@ class Runtime:
         # process also closes every owned target and its transient profile.
         stop_process(self.daemon)
         stop_process(self.chrome)
+        if self.model_module and self.original_post:
+            self.model_module.post_json = self.original_post
         if self.browser_module and self.original_operation:
             self.browser_module.browser_operation = self.original_operation
         if self.temporary:

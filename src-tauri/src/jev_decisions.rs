@@ -1,7 +1,7 @@
 //! Optional, advisory Jev workflows using bounded local evidence.
 mod api;
 pub(crate) mod models;
-pub(crate) use api::Provider;
+pub(crate) use api::{laya_base_url, laya_endpoint, probe_laya, Provider};
 pub(crate) use models::DecisionModel;
 
 use crate::{
@@ -865,7 +865,7 @@ fn prepare(app: &tauri::AppHandle, sid: &str, request: &Request) -> Result<Prepa
     } else {
         Vec::new()
     };
-    let (enabled, key, _) = crate::jev::decision_credentials().unwrap_or((false, String::new(), api::Provider::TypeSafe));
+    let (enabled, key, provider) = crate::jev::decision_credentials().unwrap_or((false, String::new(), api::Provider::TypeSafe));
     let state = app.state::<AppState>();
     let store = state
         .store
@@ -877,7 +877,8 @@ fn prepare(app: &tauri::AppHandle, sid: &str, request: &Request) -> Result<Prepa
         request,
         &browser_reports,
         enabled,
-        !key.is_empty(),
+        // Local Laya runs without a key; a validated loopback URL is its configuration.
+        !key.is_empty() || provider.local(),
     )
 }
 pub fn prepare_for_task(app: &tauri::AppHandle, sid: &str, request: &Request) -> Result<Preview> {
@@ -920,7 +921,7 @@ pub async fn run_for_task(
     if !enabled {
         return Err("Enable decision assistance in Jev settings first. Normal PandaCode tasks do not need Jev.".into());
     }
-    if key.is_empty() {
+    if key.is_empty() && !provider.local() {
         return Err("Add your decision provider key in Jev settings to use decision assistance.".into());
     }
     let prepared = prepare(&app, sid, &request)?;
