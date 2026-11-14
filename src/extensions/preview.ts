@@ -34,6 +34,7 @@ import boardManifest from '../../tests/fixtures/extensions/board/extension.json'
 import githubHubManifest from '../../tests/fixtures/extensions/github-hub/extension.json';
 import pullManifest from '../../tests/fixtures/extensions/pull/extension.json';
 import worktreeManifest from '../../tests/fixtures/extensions/worktree/extension.json';
+import settingsCoreManifest from '../../tests/fixtures/extensions/settings-core/extension.json';
 import moodboardManifest from '../../tests/fixtures/extensions/moodboards/extension.json';
 import cloudManifest from '../../tests/fixtures/extensions/cloud/extension.json';
 import machinesManifest from '../../tests/fixtures/extensions/machines/extension.json';
@@ -181,6 +182,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (new URLSearchParams(location.search).has('moodboards-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === moodboardManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: moodboardManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('settings-coverage')) {
+      if (snapshot.packages.some(item => item.manifest.id === settingsCoreManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: settingsCoreManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('worktree-coverage')) {

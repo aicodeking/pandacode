@@ -41,3 +41,6 @@
 /* Coordination below the composer: the original orchestration slot (link requests, waiting line) follows the composer; no node is moved or remounted. */
 #composer-area:has(> #machine-orchestration[data-machines-provider]) { display: flex; flex-direction: column; }
 #composer-area > #machine-orchestration[data-machines-provider] { order: 1; }
+/* Settings actions first: the same page header and nodes; the action group leads the heading. */
+.settings-page-root[data-settings-provider] .settings-panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings-page-root[data-settings-provider] .settings-panel-head > .extension-header-actions { order: -1; }

@@ -2,12 +2,19 @@ import { call } from '../bridge';
 import { escape, isImeKey } from '../dom';
 import { SECTIONS, type ExtensionSettingsPage } from '../settings-sections';
 import { extensionsSnapshot } from './manager';
+import { SETTINGS_FIELD_PAGES } from './surfaces';
 import { settingsDefaults, validSettingsValues, type SettingsPageDefinition } from './settings-state';
 import type { DialogValues } from './dialog-state';
 
-export function extensionSettingsPages() {
+function enabledSettingsPages() {
   const snapshot = extensionsSnapshot();
   return snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled).flatMap(item => (item.manifest.contributes.settings ?? []).map(page => ({ owner: item.manifest.id, page })));
+}
+/** Extension-owned pages with their own section. */
+export function extensionSettingsPages() { return enabledSettingsPages().filter(entry => !entry.page.section); }
+/** Shared fields placed in an eligible core page (`section`); the page id stays the deep link and storage namespace. */
+export function placedExtensionSettingsPages() {
+  return enabledSettingsPages().filter(entry => entry.page.section && (SETTINGS_FIELD_PAGES as readonly string[]).includes(entry.page.section));
 }
 export function extensionSettingsSections(): typeof SECTIONS {
   return [...SECTIONS, ...extensionSettingsPages().map(({ owner, page }) => ({ id: page.id as ExtensionSettingsPage, label: page.title, icon: 'info', pages: [{ id: page.id as ExtensionSettingsPage, label: page.title, keywords: owner }] }))];

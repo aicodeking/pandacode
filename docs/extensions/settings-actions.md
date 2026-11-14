@@ -8,7 +8,8 @@ canonical example (ZIP just `extension.json`; its missing icon uses the document
 
 `contributes.settings` declares `{ id, title, fields }`. IDs belong to the package, e.g.
 `sample.settings-laboratory/preferences`. Each page gets its own Settings section, roving keyboard navigation,
-and searchable `Settings › <title>` deep link. Fields use the existing text/switch/select grammar, with static
+and searchable `Settings › <title>` deep link; with `section` it is placed as an owner-labelled group in an
+eligible core page instead ([settings.md](settings.md)). Fields use the existing text/switch/select grammar, with static
 single/multi-select options only; async Settings fields are explicitly rejected. Save is explicit. The native
 host validates enabled installation, page ownership, exact field keys, types, limits and allowed option values
 on every read/write. These fields cannot read/write PandaCode preference keys or secrets.

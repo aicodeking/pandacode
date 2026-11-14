@@ -44,3 +44,7 @@
 .extension-view-control [role="tab"][aria-selected="true"] { background: var(--ds-fill); }
 .extension-view-control [role="tree"] { list-style: none; padding-inline-start: 0; }
 .extension-view-control [role="group"] { list-style: none; padding-inline-start: 16px; }
+
+/* Package shared fields placed in a core Settings page: owner-labelled, after the core rows. */
+.settings-extension-group { margin-top: 24px; }
+.settings-extension-group > p { margin: 0 0 6px; padding: 0 var(--ds-row-pad-x); color: var(--muted); font-size: var(--ds-text-sub); }

@@ -1,6 +1,7 @@
 /** Namespace-scoped persistent form values. No core preference keys or storage handles. */
 import type { DialogField, DialogValues } from './dialog-state';
-export type SettingsPageDefinition = { id: string; title: string; fields: DialogField[] };
+/** `section` places the fields as an owner-labelled group in an eligible core page instead of a page of their own. */
+export type SettingsPageDefinition = { id: string; title: string; section?: string; fields: DialogField[] };
 export type Keybinding = { id: string; command: string; key: string };
 
 export function settingsDefaults(page: SettingsPageDefinition): DialogValues {

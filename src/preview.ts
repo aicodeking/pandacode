@@ -507,6 +507,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
     if (task) task.pullRequest = { kind: 'pull', number, url: `https://github.com/orbit-labs/orbit/pull/${number}`, title, state: 'open', checkedAt: now };
   }
 }
+// Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+if (new URLSearchParams(location.search).has('settings-coverage')) {
+  (window as any).__previewSettingsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit branch/worktree extension fixture only: linked work on the local task, an in-memory
 // worktree folder that can vanish, and safe mode while a host form is open. No real git or worktree.
 if (new URLSearchParams(location.search).has('worktree-coverage')) {

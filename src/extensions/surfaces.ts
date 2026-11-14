@@ -108,7 +108,48 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Core Settings adoption (docs/extensions/settings.md). `panda.settings.actions` is each core page's header
+ * accessory and `panda.settings.context` the section list's context menu. `panda.settings.sections` holds the
+ * left-column sections (reorder for all; hide only where no protected control lives); `panda.settings.controls`
+ * holds eligible original rows; `panda.settings.protected` is inspect-only and never a layout location. */
+export const SETTINGS_CORE_ACTION_SURFACES = ['panda.settings.actions', 'panda.settings.context'] as const;
+export const SETTINGS_SECTIONS_LOCATION = 'panda.settings.sections';
+export const SETTINGS_CONTROLS_LOCATION = 'panda.settings.controls';
+export const SETTINGS_PROTECTED_LOCATION = 'panda.settings.protected';
+/** Sections whose pages host a protected control: reorderable, never hidden, each with its reason. */
+export const SETTINGS_PINNED_SECTIONS: Readonly<Record<string, string>> = {
+  voice: 'Speech provider keys are saved and removed on this page.',
+  agents: 'Provider credentials, harness privacy and the project-checks consent live in this section.',
+  connections: 'Cloud credentials, Connect pairing and revocation, and GitHub sign-in live in this section.',
+  extensions: 'Install, enable, trust and safe-mode recovery must stay one click away.',
+  about: 'Updates, privacy details and support recovery must stay reachable.',
+};
+/** Eligible original controls: [control id, label, page]. Each runs its original Settings handler. */
+export const SETTINGS_CORE_CONTROLS = [
+  ['compact-mode', 'Compact conversation', 'general'], ['expand-tool-activity', 'Expand tool activity', 'general'],
+  ['toggle-theme', 'Theme', 'appearance'], ['daily-wallpapers', 'Wallpapers', 'appearance'],
+  ['default-provider', 'Default agent', 'agents'], ['default-model', 'Default model', 'agents'], ['agent-updates', 'Agent updates', 'agents'], ['refresh-agents', 'Refresh agents', 'agents'],
+  ['agent-integrations', 'Tools & integrations', 'tools'], ['jev-settings', 'Jev', 'tools'],
+  ['support', 'Help & support', 'about'],
+] as const;
+/** Protected Settings controls: [id, label, page, reason]. Inspect-only; no public action reaches them. */
+export const SETTINGS_PROTECTED_CONTROLS = [
+  ['turn-checks', 'Project checks after turns', 'agents', 'Runs project commands with your environment; the consent stays visible and host-owned.'],
+  ['harness-privacy', 'Harness privacy', 'agents', 'Telemetry opt-outs are privacy consent.'],
+  ['provider-credentials', 'Provider keys and sign-in', 'providers', 'Credential entry is never presented or confirmed by a package.'],
+  ['routing-opt-in', 'Model routing opt-in', 'routing', 'Turning routing on starts a profiler download; it stays an explicit host choice.'],
+  ['voice-key', 'Speech provider key', 'voice', 'Credential entry and removal stay host-owned.'],
+  ['cloud-credentials', 'Cloud provider credentials', 'cloud', 'Credential entry and environment opt-in stay host-owned.'],
+  ['remote-pairing', 'Connect pairing and revocation', 'remote', 'Device pairing consent and revocation stay host-owned.'],
+  ['github-sign-in', 'GitHub sign-in', 'github', 'Sign-in stays host-owned; the token is never exposed.'],
+  ['project-remove', 'Remove project', 'general', 'A destructive confirmation stays host-owned.'],
+  ['extension-trust', 'Install, enable and trust packages', 'extensions', 'Grants and executable trust are host decisions.'],
+  ['safe-mode', 'Disable extensions for this launch', 'extensions', 'Safe-mode recovery must always be reachable.'],
+  ['app-update', 'Install update and restart', 'about', 'Update installation and restart stay host-owned recovery.'],
+] as const;
+/** Core pages that accept a package's shared fields (`settings[].section`); the others host protected controls or live checklists. */
+export const SETTINGS_FIELD_PAGES = ['general', 'appearance', 'teams', 'schedules', 'tools', 'skills', 'rules'] as const;
+export type ActionLocation = typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

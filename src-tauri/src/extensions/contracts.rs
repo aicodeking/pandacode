@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["settingsPresentation", "settingsAction", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -537,6 +537,36 @@ mod tests {
         assert_eq!(super::validate_contract("moodboardPresentation", &long)["ok"], false);
         let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.moodboards.protected");
         assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+    }
+    #[test]
+    fn settings_component_state_action_and_placed_fields_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/settings-core/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/settings-core/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/settings-core/action.json")).unwrap();
+        assert_eq!(super::validate_contract("settingsPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("settingsAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "key", "value", "credentials"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("settingsAction", &forged)["ok"], false);
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("settingsPresentation", &raw)["ok"], false);
+        }
+        // Credentials, grants, pairing and recovery have no public control id.
+        for control in ["turn-checks", "provider-credentials", "remote-pairing", "github-sign-in", "safe-mode", "app-update", "project-remove"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("settingsAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 65]);
+        assert_eq!(super::validate_contract("settingsPresentation", &oversized)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.settings.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        for section in ["providers", "voice", "extensions", "about", "remote", "github", "cloud", "recommended"] {
+            let mut placed = manifest.clone(); placed["contributes"]["settings"][0]["section"] = json!(section);
+            assert_eq!(super::validate_contract("packages", &json!([placed]))["ok"], false);
+        }
+        let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.settings.actions", "revision": 1, "selection": {"kind": "settings-page", "ids": ["general"]}});
+        assert_eq!(super::validate_contract("context", &context)["ok"], true);
     }
     #[test]
     fn worktree_component_state_action_share_native_schema() {

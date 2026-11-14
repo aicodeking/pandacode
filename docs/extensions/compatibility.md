@@ -20,6 +20,7 @@ The general platform completion/API stabilization gate is separate.
 | `panda.githubHub` | `tabs-first` | Original tab bar; compatible unique sibling controls | Repositories, caches, sign-in, clone/task creation and workflow runs |
 | `panda.pull` | `tabs-first` | Original tab bar; compatible header siblings | Pull identity, diff viewers, link/unlink and the merge confirmation |
 | `panda.worktree` | `controls-first` | Original branch/worktree controls | Branches, worktree create/recreate and cleanup confirmations |
+| `panda.settings` | `actions-first` | Original sections, eligible rows and page headers | Preferences, credentials, grants, pairing, privacy, updates and safe-mode recovery |
 | `panda.moodboards` | `viewer-first` | Original library/viewer order | Boards, images, captions, file picker/drop and delete confirmations |
 | `panda.cloud` | `controls-below` | Original cloud strip and machine menu siblings | Machines, provisioning, credentials, spend and delete confirmation |
 | `panda.machines` | `controls-below` | Original Run on rows and lineage siblings | Execution host, remote start, pairing, link/access consent and unlink |
@@ -92,5 +93,5 @@ See [documents](documents.md), [diff](diff.md), [Search](search.md),
 examples; tools have separate [Simulator](simulator.md), [VM](vm.md),
 [Design](design.md) and [BTW](btw.md) contracts; workspace surfaces have [Board](board.md),
 [GitHub hub](github-hub.md), [Pull](pull.md), [worktree](worktree.md),
-[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md). Canonical implementation evidence and historical failed checks remain
+[moodboards](moodboards.md), [cloud](cloud.md) and [machines](machines.md); core Settings has [settings](settings.md). Canonical implementation evidence and historical failed checks remain
 in the project's extensibility receipt, not in a claim of universal API stability.

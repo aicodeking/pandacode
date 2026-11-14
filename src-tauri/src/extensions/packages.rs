@@ -1080,6 +1080,28 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn settings_presentation_and_placed_fields_install_persist_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/settings-core/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        let id = "sample.settings-core"; let page = "sample.settings-core/report";
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        assert!(packages.settings_get(id, page).is_err());
+        packages.enable(id, true).unwrap();
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest["contributes"]["components"][0]["slot"], "panda.settings");
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest["contributes"]["settings"][0]["section"], "general");
+        // Placed shared fields keep the package namespace and the same exact-field validation.
+        let values = json!({"label": "Weekly", "summary": true});
+        packages.settings_set(id, page, &values).unwrap();
+        assert_eq!(storage.packages(false).settings_get(id, page).unwrap(), values);
+        for invalid in [json!({"label": "", "summary": true}), json!({"label": "ok", "summary": true, "compact": true}), json!({"label": "ok"}), json!({"label": "ok", "summary": "yes"})] { assert!(packages.settings_set(id, page, &invalid).is_err()); }
+        assert!(packages.settings_set(id, "sample.settings-core/compact-mode", &values).is_err());
+        assert!(storage.packages(true).settings_get(id, page).is_err());
+        packages.enable(id, false).unwrap(); assert!(packages.settings_get(id, page).is_err());
+        packages.enable(id, true).unwrap(); assert_eq!(packages.settings_get(id, page).unwrap(), values);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
+    #[test]
     fn worktree_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/worktree/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

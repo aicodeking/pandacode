@@ -24,7 +24,8 @@ import { appUpdates } from './app-updates';
 import type { RemoteHost } from './remote-types';
 import type { AgentsDockPreferences } from './agents-dock';
 import { type SettingsPage, type SettingsSection } from './settings-sections';
-import { extensionSettingsSections, extensionSettingsPages, mountExtensionSettingsPage } from './extensions/settings-pages';
+import { extensionSettingsSections, extensionSettingsPages, mountExtensionSettingsPage, placedExtensionSettingsPages } from './extensions/settings-pages';
+import { mountSettingsAdoption } from './extensions/settings-host';
 import { onExtensionsChanged } from './extensions/manager';
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
@@ -63,10 +64,14 @@ interface SettingsOptions {
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
   embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed; harnessPrivacy: Embed };
+  /** The workspace's current project, captured into contributed Settings actions. */
+  project?(): string | undefined;
+  /** Shows a short notice (contributed Settings actions and recovery messages). */
+  notify?(message: string): void;
   /** Leaves Settings for the workspace. */
   close(): void;
 }
-export interface SettingsView { show(section: SettingsSection): void; dispose(): void }
+export interface SettingsView { show(section: SettingsSection): void; dispose(): void; adoption(): ReturnType<typeof mountSettingsAdoption> | undefined }
 
 /** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
 const PLANS = new Set<ProviderId>(['glm', 'mimo']);
@@ -204,6 +209,10 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   const cleanups: (() => void)[] = [];
   const mounted = new Set<SettingsPage>();
   const extensionPageCleanups = new Map<SettingsPage, () => void>();
+  /** Package shared fields placed in core pages, by their page id; each group mounts with its core page. */
+  const placedCleanups = new Map<string, () => void>();
+  let placedSignatures = new Map(placedExtensionSettingsPages().map(entry => [entry.page.id, JSON.stringify(entry)]));
+  let adoption: ReturnType<typeof mountSettingsAdoption> | undefined;
   let disposed = false;
 
   const list = host.querySelector<HTMLElement>('.provider-diagnostics')!;
@@ -304,6 +313,21 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   };
   let recommended: ReturnType<typeof mountRecommended> | undefined;
 
+  /** Owner-labelled groups after a core page's rows; their values live in the package's own settings namespace. */
+  function mountPlaced(id: SettingsPage): void {
+    const body = panels.get(id)?.querySelector<HTMLElement>('.settings-panel-body');
+    if (!body) return;
+    for (const entry of placedExtensionSettingsPages().filter(item => item.page.section === id && !placedCleanups.has(item.page.id))) {
+      const group = document.createElement('section');
+      group.className = 'settings-extension-group'; group.dataset.extensionSettingsGroup = entry.page.id;
+      group.setAttribute('aria-label', `${entry.page.title} · ${entry.owner}`);
+      group.innerHTML = `<h3 class="settings-heading">${escape(entry.page.title)}</h3><div></div>`;
+      body.append(group);
+      const cleanup = mountExtensionSettingsPage(group.querySelector<HTMLElement>('div')!, entry.owner, entry.page);
+      placedCleanups.set(entry.page.id, () => { cleanup(); group.remove(); });
+    }
+  }
+
   /** A group's live parts mount the first time it opens, and stay mounted while Settings is open. */
   function mountSection(id: SettingsPage): void {
     if (mounted.has(id)) return;
@@ -346,6 +370,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
     if (id === 'agents' && !discovered) void refresh();
+    adoption?.mountActions(id);
+    mountPlaced(id);
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const mount = () => {
         const embed = options.embed[slot.dataset.embed as keyof SettingsOptions['embed']];
@@ -361,7 +387,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   let shown: SettingsPage | undefined;
   function show(id: SettingsSection, focus = false): void {
     if (disposed) return;
-    const requested = id === 'connections' ? 'cloud' : id;
+    // A placed field group's id is its deep link: it lands on the core page that shows it.
+    const placed = placedExtensionSettingsPages().find(entry => entry.page.id === id);
+    const requested = id === 'connections' ? 'cloud' : placed ? placed.page.section as SettingsPage : id;
     const page = sectionOf(requested) ? requested : 'extensions', section = sectionOf(page)!;
     tabs.forEach(tab => {
       const on = tab.dataset.section === section.id;
@@ -380,6 +408,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     // The first section settles with the page (main.ts); a change settles here, opacity only.
     if (shown && shown !== page) settleIn(content, 0);
     shown = page;
+    adoption?.applyLayout();
+    if (placed) host.querySelector<HTMLElement>(`[data-extension-settings-group="${CSS.escape(placed.page.id)}"]`)?.scrollIntoView({ block: 'nearest' });
     if (focus) (selected && section.pages[0].id !== page ? selected : tabs.find(tab => tab.dataset.section === section.id))?.focus({ preventScroll: true });
   }
 
@@ -397,7 +427,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   /** The section list moves like a native sidebar and a section's pages like a segmented control: arrows, Home and End. */
   const keydown = (event: KeyboardEvent) => {
     const target = event.target as HTMLButtonElement;
-    const vertical = tabs.includes(target), group = vertical ? tabs : pageTabs.includes(target) ? pageTabs.filter(tab => tab.parentElement === target.parentElement) : [];
+    // The section list follows its shown order; sections hidden by the user are skipped.
+    const listed = [...host.querySelectorAll<HTMLButtonElement>('.settings-nav-list>[role="tab"]')].filter(tab => !tab.hasAttribute('data-layout-hidden'));
+    const vertical = tabs.includes(target), group = vertical ? listed : pageTabs.includes(target) ? pageTabs.filter(tab => tab.parentElement === target.parentElement) : [];
     const [back, forward] = vertical ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
     if (!group.length || ![back, forward, 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -421,6 +453,16 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   updateProviders(options.providers);
   cleanups.push(onExtensionsChanged(() => {
     if (disposed) return;
+    const placedNext = new Map(placedExtensionSettingsPages().map(entry => [entry.page.id, JSON.stringify(entry)]));
+    const placedChanged = [...new Set([...placedSignatures.keys(), ...placedNext.keys()])].filter(id => placedSignatures.get(id) !== placedNext.get(id));
+    if (placedChanged.length) {
+      const focusedGroup = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-extension-settings-group]')?.dataset.extensionSettingsGroup;
+      for (const id of placedChanged) { placedCleanups.get(id)?.(); placedCleanups.delete(id); }
+      placedSignatures = placedNext;
+      mounted.forEach(page => mountPlaced(page));
+      // Core rows and their unsaved edits stay; only a removed group's focus returns to its section.
+      if (focusedGroup && placedChanged.includes(focusedGroup) && !host.contains(document.activeElement)) tabs.find(tab => tab.getAttribute('aria-selected') === 'true')?.focus({ preventScroll: true });
+    }
     const entries = extensionSettingsPages(), nextSignatures = new Map(entries.map(entry => [entry.page.id, JSON.stringify(entry)]));
     const changed = new Set([...extensionPageSignatures.keys(), ...nextSignatures.keys()].filter(id => extensionPageSignatures.get(id) !== nextSignatures.get(id)));
     if (!changed.size) return;
@@ -450,14 +492,18 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   host.addEventListener('click', click);
   host.addEventListener('keydown', keydown);
   refreshButton.addEventListener('click', refresh);
+  adoption = mountSettingsAdoption({ root: host, shown: () => shown, open: id => show(id, true), project: () => options.project?.(), notify: message => options.notify?.(message) });
   show(options.section ?? 'recommended', true);
   return {
     show: id => show(id, true),
+    adoption: () => adoption,
     dispose: () => {
       if (disposed) return;
       disposed = true; readinessCleanup.forEach(cleanup => cleanup());
+      adoption?.dispose();
       cleanups.forEach(cleanup => cleanup());
       extensionPageCleanups.forEach(cleanup => cleanup());
+      placedCleanups.forEach(cleanup => cleanup());
       host.removeEventListener('click', click); host.removeEventListener('keydown', keydown);
       refreshButton.removeEventListener('click', refresh);
       host.replaceChildren(); host.classList.remove('settings-page-root'); delete host.dataset.updateTone;

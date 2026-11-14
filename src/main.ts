@@ -80,7 +80,7 @@ import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
-import { extensionSettingsSections } from './extensions/settings-pages';
+import { extensionSettingsSections, placedExtensionSettingsPages } from './extensions/settings-pages';
 import { extensionCommands, invokeExtensionCommand, dispatchExtensionShortcut } from './extensions/commands';
 import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
 import { syncTrayState } from './tray-motion';
@@ -949,6 +949,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('settings-coverage')) {
+  (window as any).__previewSettings = () => settingsView?.adoption()?.presentation();
+  (window as any).__previewSettingsAction = (input: unknown) => settingsView?.adoption()?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('worktree-coverage')) {
   (window as any).__previewWorktree = () => worktrees.presentation();
   (window as any).__previewWorktreeAction = (input: unknown) => worktrees.dispatch(input);
@@ -6421,6 +6425,8 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })), activeProject: () => project()?.id ?? '' },
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
+      project: () => state.projectId || undefined,
+      notify: message => notify(message),
       embed: {
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
@@ -7502,7 +7508,11 @@ function showCommands(): void {
   modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
 }
 /** Every Settings page, findable by page or section name or a page's keywords; only listed once there is a query. */
-const settingsPageCommands = () => extensionSettingsSections().flatMap(section => section.pages.map(item => ({ action: 'settings-page', page: item.id, label: `Settings › ${section.pages.length > 1 ? `${section.label} › ` : ''}${item.label}`, keywords: item.keywords ?? '', icon: section.icon, shortcut: '' })));
+const settingsPageCommands = () => [
+  ...extensionSettingsSections().flatMap(section => section.pages.map(item => ({ action: 'settings-page', page: item.id, label: `Settings › ${section.pages.length > 1 ? `${section.label} › ` : ''}${item.label}`, keywords: item.keywords ?? '', icon: section.icon, shortcut: '' }))),
+  // Package fields placed in a core page are found by their title and owner; the entry opens that page.
+  ...placedExtensionSettingsPages().map(({ owner, page }) => { const section = extensionSettingsSections().find(item => item.pages.some(entry => entry.id === page.section)); return { action: 'settings-page', page: page.id as import('./settings-sections').ExtensionSettingsPage, label: `Settings › ${section?.label ?? page.section} › ${page.title}`, keywords: owner, icon: section?.icon ?? 'settings', shortcut: '' }; }),
+];
 /** Every whitespace-separated word of the query appears somewhere in the text (case-insensitive). */
 const matchesWords = (text: string, query: string): boolean => { const hay = text.toLowerCase(); return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => hay.includes(word)); };
 function renderCommands(query: string): void {

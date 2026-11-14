@@ -1,0 +1,24 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.settings-core",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "components": [{ "id": "sample.settings-core/actions-first", "title": "Actions first", "slot": "panda.settings", "contractVersion": 1, "presentation": "actions-first", "capabilities": ["host-sections", "host-controls", "original-actions"] }],
+    "commands": [{ "id": "sample.settings-core/notes", "title": "Settings notes", "action": { "kind": "showMessage", "message": "Settings ownership stays with PandaCode." } }],
+    "menus": [
+      { "id": "sample.settings-core/page", "command": "sample.settings-core/notes", "location": "panda.settings.actions", "presentation": "button", "text": "Settings notes", "visible": { "op": "eq", "key": "selection.kind", "value": "settings-page" } },
+      { "id": "sample.settings-core/context", "command": "sample.settings-core/notes", "location": "panda.settings.context" }
+    ],
+    "layouts": [
+      { "id": "sample.settings-core/appearance-first", "title": "Appearance before General", "location": "panda.settings.sections", "rules": [{ "id": "panda.settings.sections/appearance", "target": "panda.settings.sections/general", "side": "before" }] },
+      { "id": "sample.settings-core/activity-first", "title": "Tool activity first", "location": "panda.settings.controls", "rules": [{ "id": "panda.settings.controls/expand-tool-activity", "target": "panda.settings.controls/compact-mode", "side": "before" }] }
+    ],
+    "settings": [{ "id": "sample.settings-core/report", "title": "Report fields", "section": "general", "fields": [
+      { "id": "label", "kind": "text", "label": "Report label", "value": "Local report", "required": true },
+      { "id": "summary", "kind": "switch", "label": "Include summary", "value": true }
+    ] }]
+  }
+}
