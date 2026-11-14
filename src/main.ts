@@ -6473,7 +6473,7 @@ async function showMoodboards(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#moodboards-content')!;
   const { mountMoodboards } = await import('./moodboards');
   if (!host.isConnected || !dialog.open) return;
-  moodboardsCleanup = mountMoodboards(host, { projectId: p.id, onAttach: board => {
+  moodboardsCleanup = mountMoodboards(host, { projectId: p.id, destination: task?.id, onAttach: board => {
     if (!task || task.id !== state.sessionId || task.projectId !== board.projectId || isRunning() || task.archived || taskStage(task) === 'completed') { notify('Open an idle task in this project to attach a moodboard.'); return; }
     const items = state.moodboardAttachments.get(task.id) ?? [];
     if (items.some(item => item.id === board.id)) { notify('Moodboard already attached.'); return; }

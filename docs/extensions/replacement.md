@@ -15,6 +15,10 @@ The [Branch and worktree presentation v1](worktree.md) contract (`panda.worktree
 explicitly selected `controls-first` host recipe over the composer branch chip. The create form
 submit and the cleanup confirmation stay host-owned and have no public action.
 
+The [Moodboard presentation v1](moodboards.md) contract (`panda.moodboards`) offers an
+explicitly selected `viewer-first` host recipe over the project moodboard library. The create
+submit, delete confirmation, file chooser and drop stay host-owned and have no public action.
+
 Install the `tests/fixtures/extensions/replacement` package as a local archive. In Settings →
 Extensions → Surface explorer choose **Project presentation** or **File presentation** explicitly.
 Enable alone does not replace anything. Competing providers never win by installation order.

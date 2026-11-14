@@ -54,6 +54,7 @@ config.testMatch.push('**/extensions-board-coverage.spec.ts');
 config.testMatch.push('**/extensions-github-hub-coverage.spec.ts');
 config.testMatch.push('**/extensions-pull-coverage.spec.ts');
 config.testMatch.push('**/extensions-worktrees-coverage.spec.ts');
+config.testMatch.push('**/extensions-moodboards-coverage.spec.ts');
 config.testMatch.push('**/extensions-tools-coverage.spec.ts');
 config.testMatch.push('**/extensions-storage.spec.ts');
 config.testMatch.push('**/extensions-jobs.spec.ts');

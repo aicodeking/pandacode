@@ -29,3 +29,9 @@
 /* The context bar may be display: contents inside the tray: order stays after the tray tools. */
 .composer-context[data-worktree-provider] > * { order: 2; }
 .composer-context[data-worktree-provider] > :is(.branch-chip, .link-chip) { order: 1; }
+/* Images first: the original canvas leads and the board library follows; no node is moved or remounted. */
+.moodboards[data-moodboard-provider] .moodboard-workspace { grid-template-columns: minmax(0, 1fr) 12rem; }
+.moodboards[data-moodboard-provider] .moodboard-library { order: 2; }
+@media (max-width: 700px) { .moodboards[data-moodboard-provider] .moodboard-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; } }
+[data-moodboard-accessory]:empty { display: none; }
+[data-moodboard-consent][hidden] { display: none; }

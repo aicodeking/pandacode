@@ -1,5 +1,14 @@
 /** Stable host-owned locations; these are not selectors or dynamic inspector view IDs. */
 import type { WindowActionLocation } from './window-surfaces';
+/** Moodboard toolbar entries and image/board context. `panda.moodboards.protected` is inspect-only:
+ * the create submit, delete confirmation, file chooser and drop are never hidden, reordered or package-confirmed. */
+export const MOODBOARD_ACTION_SURFACES = ['panda.moodboards.actions', 'panda.moodboards.context'] as const;
+export const MOODBOARD_CONTROLS = {
+  'panda.moodboards.controls': [['board-new', 'New moodboard'], ['image-add', 'Add images'], ['board-delete', 'Delete moodboard'], ['attach', 'Attach to task']],
+  'panda.moodboards.context': [['image-preview', 'View image'], ['image-caption', 'Edit caption'], ['image-remove', 'Remove image']],
+  'panda.moodboards.protected': [['create-confirm', 'Create moodboard'], ['delete-confirm', 'Delete the board and its images'], ['file-picker', 'Choose image files'], ['file-drop', 'Drop or paste images']],
+} as const;
+export const MOODBOARD_PROTECTED_LOCATION = 'panda.moodboards.protected';
 /** Branch/worktree menu entries and chip context. `panda.worktree.protected` is inspect-only:
  * recovery rows, the branch picker and form/cleanup confirmations are never hidden, reordered or package-confirmed. */
 export const WORKTREE_ACTION_SURFACES = ['panda.worktree.actions', 'panda.worktree.context'] as const;
@@ -74,7 +83,7 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

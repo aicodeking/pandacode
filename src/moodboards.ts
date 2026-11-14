@@ -1,11 +1,14 @@
 import './moodboards.css';
 import { call, preview } from './bridge';
 import { escape, icon, isImeKey } from './dom';
+import { openChoiceMenu } from './choice-menu';
+import { mountMoodboardPresentation } from './extensions/moodboard-host';
 
 export interface Moodboard { id: string; projectId: string; name: string; imageCount: number; updatedAt: number }
 export interface MoodboardImage { id: string; name: string; caption: string; width: number; height: number; createdAt: number }
 export interface MoodboardDetail extends Moodboard { images: MoodboardImage[] }
-export interface MoodboardOptions { projectId: string; initialBoardId?: string; onAttach?(board: Moodboard): void }
+/** `destination` names the task captured when the library opened; attach always goes to it through `onAttach`. */
+export interface MoodboardOptions { projectId: string; initialBoardId?: string; destination?: string; onAttach?(board: Moodboard): void }
 
 const MAX_FILE = 12 * 1024 * 1024;
 const supported = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -33,7 +36,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   const nameInput = createForm.querySelector<HTMLInputElement>('input')!, status = find<HTMLElement>('.moodboard-status');
   const fileInput = find<HTMLInputElement>('.moodboard-file-input'), confirmDelete = find<HTMLElement>('.moodboard-delete-confirm');
   let disposed = false, boards: Moodboard[] = [], selected: MoodboardDetail | undefined;
-  let loading = 0, busy = false, nativeUnlisten: (() => void) | undefined;
+  let loading = 0, loads = 0, busy = false, nativeUnlisten: (() => void) | undefined, previewImage = '', closeEntry: (() => void) | undefined, renaming: string | undefined;
   let thumbnailQueue: HTMLImageElement[] = [], activeThumbnails = 0;
   const observer = new IntersectionObserver(entries => {
     for (const entry of entries) if (entry.isIntersecting) {
@@ -91,12 +94,14 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   async function select(id: string): Promise<void> {
     if (disposed) return;
     const request = ++loading;
-    report('Loading moodboard…');
-    await Promise.all([...captionWrites.values()]);
-    if (disposed || request !== loading) return;
-    const detail = await call<MoodboardDetail>('read_moodboard', { projectId: options.projectId, boardId: id });
-    if (disposed || request !== loading) return;
-    selected = detail; renderImages(); report('');
+    loads++; report('Loading moodboard…');
+    try {
+      await Promise.all([...captionWrites.values()]);
+      if (disposed || request !== loading) return;
+      const detail = await call<MoodboardDetail>('read_moodboard', { projectId: options.projectId, boardId: id });
+      if (disposed || request !== loading) return;
+      selected = detail; renderImages(); report('');
+    } finally { loads--; }
   }
   async function reload(id?: string): Promise<void> {
     const items = await call<Moodboard[]>('list_moodboards', { projectId: options.projectId });
@@ -149,7 +154,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   async function expand(imageId: string): Promise<void> {
     if (!selected) return;
     const boardId = selected.id, image = selected.images.find(item => item.id === imageId); if (!image) return;
-    host.querySelector('.moodboard-lightbox')?.remove();
+    host.querySelector('.moodboard-lightbox')?.remove(); previewImage = imageId;
     const box = document.createElement('div'); box.className = 'moodboard-lightbox'; box.tabIndex = -1;
     box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', 'Image preview'); box.setAttribute('aria-modal', 'true');
     find<HTMLElement>('.moodboard-workspace').inert = true;
@@ -160,7 +165,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
       if (!disposed && host.contains(box)) box.querySelector('img')!.src = result.dataUrl;
     } catch (error) { closePreview(); report(error, true); }
   }
-  function closePreview(): void { host.querySelector('.moodboard-lightbox')?.remove(); find<HTMLElement>('.moodboard-workspace').inert = false; canvas.focus(); }
+  function closePreview(): void { previewImage = ''; host.querySelector('.moodboard-lightbox')?.remove(); find<HTMLElement>('.moodboard-workspace').inert = false; canvas.focus(); }
   function click(event: MouseEvent): void {
     const button = (event.target as Element).closest<HTMLButtonElement>('button'); if (!button || !host.contains(button)) return;
     if (button.dataset.moodBoard) { if (!busy) void select(button.dataset.moodBoard).catch(error => report(error, true)); return; }
@@ -191,10 +196,13 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     if (!selected || title.value.trim() === selected.name) return;
     const boardId = selected.id, name = title.value.trim();
     if (!name) { title.value = selected.name; return; }
+    // Enter saves and then blurs, whose change event asks again: one rename per board and name in flight.
+    const request = `${boardId}\n${name}`; if (renaming === request) return; renaming = request;
     try {
       const board = await call<Moodboard>('rename_moodboard', { projectId: options.projectId, boardId, name });
       if (!disposed && selected?.id === boardId) { Object.assign(selected, board); updateBoard(board); report('Board renamed.'); }
     } catch (error) { report(error, true); if (selected?.id === boardId) title.value = selected.name; }
+    finally { if (renaming === request) renaming = undefined; }
   }
   function saveCaption(boardId: string, imageId: string, caption: string): void {
     // Keep writes ordered even when a user quickly edits, switches boards, then
@@ -230,6 +238,25 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     else if (event.key === 'Escape' && !createForm.hidden) { event.preventDefault(); event.stopPropagation(); createForm.hidden = true; }
     else if (event.key === 'Enter' && event.target === title && !isImeKey(event)) { event.preventDefault(); void saveTitle(); title.blur(); }
   }
+  /** Unsaved input the host would lose on a redraw: a typed create name, board name or caption not yet saved. */
+  function draft(): boolean {
+    if (!createForm.hidden && nameInput.value.trim()) return true;
+    if (!selected) return false;
+    if (title.value !== selected.name) return true;
+    const board = selected;
+    return [...canvas.querySelectorAll<HTMLTextAreaElement>('[data-mood-caption]')].some(field => { const image = board.images.find(image => image.id === field.dataset.moodCaption); return Boolean(image && image.caption !== field.value); });
+  }
+  /** An extension request for the file chooser, a removal or an attach runs only after this fresh user choice. */
+  function confirmEntry(anchor: HTMLElement, label: string, proceed: () => void): void {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeEntry?.();
+    closeEntry = openChoiceMenu({ anchor, title: 'Extension requested a moodboard action', items: [{ id: 'continue', label: `Continue: ${label}`, icon: 'images' }], onSelect: id => { if (id === 'continue' && !disposed) proceed(); }, onClose: () => { closeEntry = undefined; if (!disposed && previous?.isConnected && !previous.closest('[inert]')) previous.focus({ preventScroll: true }); } });
+  }
+  const presentation = mountMoodboardPresentation(host, () => ({
+    project: options.projectId, destination: options.onAttach ? options.destination ?? '' : '', board: selected?.id ?? '', image: host.querySelector('.moodboard-lightbox') ? previewImage : '',
+    boardName: selected?.name ?? '', boardCount: boards.length, imageCount: selected?.images.length ?? 0, loading: loads > 0, busy, error: status.dataset.error === 'true', draft: draft(),
+    create: !createForm.hidden, confirm: !confirmDelete.hidden, preview: Boolean(host.querySelector('.moodboard-lightbox')), attach: Boolean(options.onAttach && selected),
+  }), message => report(message), confirmEntry);
   host.addEventListener('click', click); host.addEventListener('change', change); host.addEventListener('paste', paste); host.addEventListener('keydown', key);
   createForm.addEventListener('submit', createBoard); canvas.addEventListener('dragover', drag); canvas.addEventListener('dragleave', leave); canvas.addEventListener('drop', drop);
   if (!preview) void import('@tauri-apps/api/webview').then(module => module.getCurrentWebview().onDragDropEvent(event => {
@@ -247,7 +274,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
       }
       if (title.value.trim() && title.value.trim() !== selected.name) void saveTitle();
     }
-    disposed = true; loading++; observer.disconnect(); thumbnailQueue = []; nativeUnlisten?.();
+    disposed = true; loading++; observer.disconnect(); thumbnailQueue = []; nativeUnlisten?.(); closeEntry?.(); presentation.dispose();
     host.removeEventListener('click', click); host.removeEventListener('change', change); host.removeEventListener('paste', paste); host.removeEventListener('keydown', key);
     createForm.removeEventListener('submit', createBoard); canvas.removeEventListener('dragover', drag); canvas.removeEventListener('dragleave', leave); canvas.removeEventListener('drop', drop);
     host.querySelectorAll('img').forEach(image => image.removeAttribute('src'));

@@ -387,7 +387,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "selectOptions" { distinct(value.as_array().unwrap(), "value", "$")?; }
@@ -449,6 +449,35 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
+    #[test]
+    fn moodboard_component_state_action_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/moodboards/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/moodboards/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/moodboards/action.json")).unwrap();
+        assert_eq!(super::validate_contract("moodboardPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("moodboardAction", &action)["ok"], true);
+        // No file path, image bytes, caption, name, selector or IPC crosses the contract.
+        for field in ["selector", "ipc", "path", "paths", "dataUrl", "bytes", "caption", "name", "credentials"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("moodboardAction", &forged)["ok"], false);
+        }
+        for field in ["selector", "ipc", "path", "dataUrl", "caption", "credentials"] {
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("moodboardPresentation", &raw)["ok"], false);
+        }
+        // Create submit, delete confirmation, file chooser and drop are host-owned: no public control can name them.
+        for control in ["create-confirm", "delete-confirm", "file-picker", "file-drop", "import"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("moodboardAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 257]);
+        assert_eq!(super::validate_contract("moodboardPresentation", &oversized)["ok"], false);
+        let mut long = state.clone(); long["boardName"] = json!("x".repeat(121));
+        assert_eq!(super::validate_contract("moodboardPresentation", &long)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.moodboards.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+    }
     #[test]
     fn worktree_component_state_action_share_native_schema() {
         let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/worktree/extension.json")).unwrap();

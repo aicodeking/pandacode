@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.moodboards",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.moodboards/images-first", "title": "Images first", "slot": "panda.moodboards", "contractVersion": 1, "presentation": "viewer-first", "capabilities": ["host-boards", "host-images", "original-actions"] }],
+    "commands": [{ "id": "sample.moodboards/tools", "title": "Reference tools", "action": { "kind": "showMessage", "message": "Boards, images and attachments stay with PandaCode." } }],
+    "menus": [
+      { "id": "sample.moodboards/actions", "command": "sample.moodboards/tools", "location": "panda.moodboards.actions" },
+      { "id": "sample.moodboards/context", "command": "sample.moodboards/tools", "location": "panda.moodboards.context" }
+    ],
+    "layouts": [{ "id": "sample.moodboards/delete-first", "title": "Delete before adding", "location": "panda.moodboards.controls", "rules": [{ "id": "panda.moodboards.controls/board-delete", "target": "panda.moodboards.controls/image-add", "side": "before" }] }]
+  }
+}

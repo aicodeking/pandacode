@@ -518,6 +518,14 @@ if (new URLSearchParams(location.search).has('worktree-coverage')) {
   (window as any).__previewWorktreeVanish = (sessionId: string) => { const path = sessions.find(item => item.id === sessionId)?.worktreePath; if (path) worktreeGit.delete(path); };
   (window as any).__previewWorktreeSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
+// Explicit moodboard extension fixture only: the mounted library's captured presentation and
+// safe mode while a board, preview or draft is open. Images live in the in-memory preview store.
+if (new URLSearchParams(location.search).has('moodboards-coverage')) {
+  const host = () => import('./extensions/moodboard-host');
+  (window as any).__previewMoodboard = async () => (await host()).activeMoodboard()?.presentation();
+  (window as any).__previewMoodboardAction = async (input: unknown) => (await host()).activeMoodboard()?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+  (window as any).__previewMoodboardSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 /** A pretend iOS Simulator: two devices and a drawn home screen that answers taps. */
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();

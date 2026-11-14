@@ -5,6 +5,22 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Images-first visual move on the original moodboard library: no load, thumbnail, file, form or attach change.
+ * Returns false only when the selected provider faults now (built-in layout restored), so the host reports it once. */
+export function applyMoodboardPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.moodboard-library') || !host.querySelector('.moodboard-content')) throw Error('Incomplete moodboard host');
+}): boolean {
+  const provider = componentSelection.resolve('panda.moodboards', componentProviders());
+  if (!provider) { delete host.dataset.moodboardProvider; return true; }
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.moodboardProvider = provider.id; return true;
+  } catch {
+    const fresh = !faults.has(identity(provider));
+    faults.add(identity(provider)); delete host.dataset.moodboardProvider;
+    return !fresh;
+  }
+}
 /** The selected, unfaulted branch/worktree provider. The host composer markup carries it, so a
  * context-bar redraw keeps the same presentation without remounting chips, menus or forms. */
 export function worktreeProvider(): ComponentProvider | undefined {
