@@ -103,14 +103,29 @@ html .turn-changes.turn-card-foot{display:flex;flex-direction:row;align-items:ce
 .turn-card-foot>.turn-changes-run{flex:none;min-height:32px;margin-right:2px;border-radius:var(--ds-radius-control);background:transparent;color:var(--ds-success)}
 .turn-card-foot>.turn-changes-run:hover{background:var(--ds-row-hover)}
 
-/* ---------- Over a scene (sky or wallpaper): the card itself is a dense glass, not the text behind it ---------- */
-html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:color-mix(in srgb,var(--bg) 92%,transparent);
-  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25);text-shadow:none}
-html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .icon{filter:none}
+/* ---------- Over a scene (sky or wallpaper): the card itself is a dense glass, not the text behind it ----------
+ * Over the sky the glass is a plain fill, never a backdrop blur: the sky is a canvas painting every frame (and moving under
+ * the card on every scroll step), so a blur here re-blurs its backdrop on each one. 92% `--bg` is dense enough to carry the
+ * card without one, and no rule re-adds a filter to the card's icons (the icon kill switch that used to sit here lost to
+ * the sky's drop-shadow on specificity, so the sky rule is gone
+ * instead). A wallpaper keeps the frost (the rule below): `data-scene` is `"wallpaper"` there (src/sky-window.ts
+ * `syncScene`, from `data-wallpaper`, src/wallpapers.ts), and that scene is one decoded `<img>` with no frame loop, so its
+ * blur costs a re-blur per scroll step at worst and never a canvas frame.
+ * Both card rules below put the scene in `:where()`, so they keep the card's own weight (.conversation-pane .turn-card, 0,2,0),
+ * while the reduced-transparency and contrast blocks further down still name the whole `html[data-theme]
+ * .workspace[data-scene] …` chain (0,5,1): those guards win on specificity, not on where a line sits, so a later scene rule
+ * written the same `:where()` way cannot outrank them — the old icon kill switch here lost to exactly that, a heavier sky
+ * rule placed after it. */
+:where(html[data-theme] .workspace[data-scene]) .conversation-pane .turn-card{background:color-mix(in srgb,var(--bg) 92%,transparent);
+  -webkit-backdrop-filter:none;backdrop-filter:none;text-shadow:none}
+/* The static scene keeps the glass it had: no canvas animates behind a wallpaper, so the blur is paid on scroll alone. */
+:where(.workspace[data-scene="wallpaper"]) .conversation-pane .turn-card{
+  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25)}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card :is(.message,.turn-activity,.turn-activity-summary,.message-content){background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;text-shadow:none}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .turn-activity-summary:hover{background:var(--ds-row-hover)}
 
 @media(prefers-reduced-transparency:reduce){
+  /* `[data-scene]` matches `"wallpaper"` too, so this flattens the frost above as well (0,5,1 against its 0,2,0). */
   html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
 }
 @media(prefers-contrast:more){
