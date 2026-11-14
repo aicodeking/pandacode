@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.board",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.board/review", "title": "Review first", "slot": "panda.board", "contractVersion": 1, "presentation": "review-first", "capabilities": ["host-tasks", "host-details", "original-actions"] }],
+    "commands": [{ "id": "sample.board/tools", "title": "Board tools", "action": { "kind": "showMessage", "message": "Task stages, drafts and running agents remain host-owned." } }],
+    "menus": [
+      { "id": "sample.board/header", "command": "sample.board/tools", "location": "panda.board.header" },
+      { "id": "sample.board/card", "command": "sample.board/tools", "location": "panda.board.card" },
+      { "id": "sample.board/detail", "command": "sample.board/tools", "location": "panda.board.detail" },
+      { "id": "sample.board/context", "command": "sample.board/tools", "location": "panda.board.context" }
+    ],
+    "layouts": [{ "id": "sample.board/add-first", "title": "Add before import", "location": "panda.board.header", "rules": [{ "id": "panda.board.header/add", "target": "panda.board.header/import", "side": "before" }] }]
+  }
+}

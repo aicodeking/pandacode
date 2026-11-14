@@ -4,6 +4,7 @@ import type { ExtensionSnapshot } from './manager';
 import { DESIGN_ACTION_SURFACES, DESIGN_CONTROLS, VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS, BROWSER_ACTION_SURFACES, BROWSER_CONTROLS, TERMINAL_ACTION_SURFACES, TERMINAL_CONTROLS, SIMULATOR_ACTION_SURFACES, SIMULATOR_CONTROLS, VM_ACTION_SURFACES, VM_CONTROLS } from './surfaces.ts';
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from './window-surfaces.ts';
 import { BTW_ACTION_SURFACES, BTW_CONTROLS } from './surfaces.ts';
+import { BOARD_ACTION_SURFACES, BOARD_CONTROLS } from './surfaces.ts';
 import { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } from './views-state.ts';
 import { INSPECTOR_VIEWS } from '../inspector-tabs.ts';
 
@@ -23,6 +24,7 @@ export class CatalogError extends Error {
 }
 
 const coreItems: ItemMetadata[] = [
+  ...Object.entries(BOARD_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(BTW_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: id === 'stop' || id === 'focus' ? ['inspect'] : ['inspect', 'hide', 'show', 'reorder'], available: true }))),
   ...Object.entries(VM_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(DESIGN_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
@@ -59,6 +61,9 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
+      { id: 'panda.board', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.board', label: 'Host Board presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['review-first'], windows: ['main'], available: true },
+      ...Object.keys(BOARD_CONTROLS).filter(location => !BOARD_ACTION_SURFACES.includes(location as typeof BOARD_ACTION_SURFACES[number])).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'declarative-data-slot', location, label: location, supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
+      ...BOARD_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
       { id: 'panda.btw', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.btw', label: 'Host BTW presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['composer-first'], windows: ['main'], available: true },
       ...Object.keys(BTW_CONTROLS).map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: location === 'panda.btw.header' ? 'action-slot' : 'declarative-data-slot', location, label: location, supportedOperations: location === 'panda.btw.header' ? ['inspect', 'contribute', 'hide', 'show', 'reorder'] : ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true })),
       ...BTW_ACTION_SURFACES.filter(location => location !== 'panda.btw.header').map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),

@@ -5,6 +5,30 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Reorder original stage sections; never mutate task stages or remount details. */
+export function applyBoardPresentation(host: HTMLElement, qualify = () => {
+  if (host.querySelectorAll('.board-column').length !== 4) throw Error('Incomplete Board host');
+}): void {
+  delete host.dataset.boardProvider;
+  const columns = [...host.querySelectorAll<HTMLElement>('.board-column')];
+  columns.forEach(column => { column.style.order = ''; });
+  const status = host.querySelector<HTMLElement>('[data-board-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.board', componentProviders());
+  if (!provider) return;
+  try {
+    if (faults.has(identity(provider))) throw Error('Faulted provider');
+    qualify(); host.dataset.boardProvider = provider.id;
+    const review = columns.find(column => column.dataset.stage === 'review');
+    if (review) review.style.order = '-1';
+  } catch {
+    faults.add(identity(provider));
+    const notice = status ?? document.createElement('p');
+    notice.dataset.boardPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Board replacement failed. Built-in board remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  }
+}
 /** BTW reorders the original composer, never its editor/history/controller. */
 export function applyBtwPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.btw-input') || !host.querySelector('.btw-stream-region') || !host.querySelector('.btw-above')) throw Error('Incomplete BTW host');

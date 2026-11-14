@@ -1,4 +1,7 @@
 .component-replacement { display: flex; flex-direction: column; gap: var(--ds-row-pad-y, 4px); padding: var(--ds-row-pad-y, 4px); }
+/* Board accessories and consent stay reachable beside a narrow live detail pane. */
+[data-board-provider] .board-heading { flex-wrap: wrap; }
+[data-board-provider] .board-heading-actions { flex-wrap: wrap; max-width: 100%; }
 /* Closed host recipe: same form, draft, pending operation and diff nodes. */
 [data-changes-provider] > .cv-commit { order: -1; }
 [data-changes-provider] .cv-file-body .diff-viewer-toolbar { display: flex; }

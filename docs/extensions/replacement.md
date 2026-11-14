@@ -3,6 +3,10 @@
 Document tabs and live viewers have their own [document presentation v1](documents.md)
 contract (`panda.documents`); `panda.files` below is the Files tree, not a document viewer.
 
+The [Board presentation v1](board.md) contract (`panda.board`) offers an explicitly
+selected `review-first` host recipe, bounded captured task actions and independent
+host-user task-control consent. It never replaces task lifecycle or the core editor.
+
 Install the `tests/fixtures/extensions/replacement` package as a local archive. In Settings →
 Extensions → Surface explorer choose **Project presentation** or **File presentation** explicitly.
 Enable alone does not replace anything. Competing providers never win by installation order.

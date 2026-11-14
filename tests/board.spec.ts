@@ -1,6 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 // The workspace view (Conversation, Board, GitHub) is picked from the sidebar's view menu.
-const showView = async (page: Page, name: string) => { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name, exact: true }).click(); };
+const showView = async (page: Page, name: string) => {
+  // Initial task selection closes transient menus. Do not click a shell trigger before
+  // that real selection has landed (reload and source-seeded scenarios start here too).
+  await page.locator('#navigation .task-item.selected, #composer-area .board-completed-note').first().waitFor({ state: 'attached' });
+  await page.getByRole('button', { name: /^Workspace view: / }).click();
+  await page.getByRole('menuitemradio', { name, exact: true }).click();
+};
 
 const board = (page: Page) => page.getByRole('region', { name: 'Project board', exact: true });
 const column = (page: Page, name: string) => board(page).getByRole('region', { name, exact: true });
@@ -163,7 +169,9 @@ test.describe('project board', () => {
     expect(completed.taskStage).toBe('completed');
     expect(completed.completedAt).toBeGreaterThan(Date.now() - 10_000);
     expect(completed.archived).toBe(false);
-    await expect(page.locator(`.task-item[data-id="${task.id}"]`)).toHaveCount(0);
+    // Settled tasks remain in their core-owned section, never Active/Finished.
+    await expect(page.locator(`.task-item[data-id="${task.id}"]:not(.completed-group .task-item)`)).toHaveCount(0);
+    await expect(page.locator('#navigation .completed-group')).toHaveCount(1);
     await details(page).getByRole('button', { name: 'Reopen task', exact: true }).click();
     await expect(column(page, 'Review').getByRole('button', { name: `Open task: ${title}`, exact: true })).toBeVisible();
     expect(await savedTask(page, title)).toMatchObject({ taskStage: 'review', completedAt: null, archived: false });

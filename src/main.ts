@@ -550,6 +550,7 @@ const extensionContextListeners = new Set<() => void>();
 let extensionSidebarHidden = () => false;
 let applyExtensionVisibility = () => {};
 let refreshExtensionInspectorActions = () => {};
+let boardPresentation: ReturnType<typeof import('./extensions/board-host').mountBoardPresentation> | undefined;
 // Extension failure must never gate built-in startup; native safe mode precedes package loading.
 void import('./extensions/header').then(async ({ mountExtensionHeader, mountExtensionActions }) => {
   const context = () => ({ revision: 0, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) });
@@ -665,6 +666,30 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     'panda.ui/toggle-theme': () => toggleTheme(),
   });
   const { loadExtensions, extensionsSnapshot, onExtensionsChanged, extensionIdentity } = await import('./extensions/manager');
+  const { mountBoardPresentation } = await import('./extensions/board-host');
+  boardPresentation = mountBoardPresentation($('#project-board'), $('#task-details-heading'), {
+    state: () => { const boardProject = state.projectFilter || project()?.id || state.projects[0]?.id || ''; return { project: boardProject, task: state.sessionId, filter: state.projectFilter, visible: state.view === 'board', detail: state.boardPanel, loading: state.messagesLoading || Boolean(state.messagesError), importable: github.connected(boardProject), tasks: listedSessions() }; },
+    running: id => isRunning(id), busy: id => configuringSessions.has(id) || startingBoardTasks.has(id) || finishingStreams.has(id), notify,
+    execute: async (control, id) => {
+      switch (control) {
+        case 'open': await selectSession(id); break;
+        case 'start': case 'retry': await startBoardTask(id); break;
+        case 'edit': await editBoardTask(); break;
+        case 'settle': await changeBoardStage('completed'); break;
+        case 'reopen': await changeBoardStage('review'); break;
+        case 'add': showBoardTaskForm(); break;
+        case 'open-project': showOpenProject(); break;
+        case 'filter': await showProjectFilter($('#board-project-filter')); break;
+        case 'import': github.showImport(state.projectFilter || project()?.id || state.projects[0]?.id || ''); break;
+        case 'close': await action('board-close', $('#task-details-heading')); break;
+      }
+    },
+  });
+  boardPresentation.refresh();
+  if (preview && new URLSearchParams(location.search).has('board-coverage')) {
+    (window as any).__previewBoard = () => boardPresentation?.presentation();
+    (window as any).__previewBoardAction = (input: unknown) => boardPresentation?.dispatch(input);
+  }
   extensionViewIdentity = extensionIdentity;
   function syncExtensionViews() {
     const focused = document.activeElement instanceof HTMLElement && $('#inspector').contains(document.activeElement) ? document.activeElement : undefined;
@@ -3255,6 +3280,7 @@ function renderBoardView(): void {
   const boardNow = Date.now(), boardSignal = (s: Session) => ({ ...taskSignal(s, boardNow), unread: Boolean(unreviewed?.has(s.id)) && s.id !== state.sessionId });
   renderTaskBoard($('#project-board'), listedSessions(), state.projects, state.boardPanel ? state.sessionId : '', state.projectFilter, isRunning, github.connected(boardProject), boardSignal);
   renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), state.messagesLoading || Boolean(state.messagesError));
+  boardPresentation?.refresh();
 }
 /** The GitHub view, mounted the first time it is shown and refreshed with the workspace. */
 let githubHub: import('./github-hub').HubView | undefined;
@@ -3447,6 +3473,9 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
     if (stage !== 'completed' && s.archived) await call('update_session', { sessionId: s.id, archived: false });
     const changed = await call<Session>('set_task_stage', { sessionId: s.id, stage });
     const index = state.sessions.findIndex(task => task.id === s.id); if (index >= 0) state.sessions[index] = changed;
+    // Board actions have no sidebar row under the pointer. Do not retain its old
+    // Active/Finished hold after an explicit stage change; sidebar tick holds stay unchanged.
+    if (state.view === 'board' && sectionHold?.id === s.id) sectionHold = undefined;
     if (s.id === state.sessionId) renderComposer();
   } finally { configuringSessions.delete(s.id); renderNavigation(); renderBoardView(); }
 }

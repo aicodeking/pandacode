@@ -1,0 +1,5 @@
+{
+  "contractVersion": 1, "window": "main", "context": "board-context", "project": "project-a", "task": "task-a", "filter": "", "revision": 1,
+  "visible": true, "loading": false, "busy": false, "detail": true, "importable": false, "truncated": false,
+  "rows": [{ "id": "task-a", "project": "project-a", "revision": 2, "stage": "pending", "title": "Bounded task", "running": false, "busy": false, "archived": false }]
+}
