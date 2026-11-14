@@ -1373,6 +1373,7 @@ impl Store {
             "muse",
             "devin",
             "zcode",
+            "omniroute",
             "hermes",
             "cursor",
         ]
@@ -1561,6 +1562,7 @@ impl Store {
             "muse",
             "devin",
             "zcode",
+            "omniroute",
             "hermes",
             "cursor",
         ]
@@ -2205,6 +2207,7 @@ fn handoff_from_provider(content: &str) -> Option<String> {
                 | "muse"
                 | "devin"
                 | "zcode"
+                | "omniroute"
                 | "hermes"
                 | "cursor"
         )
@@ -4311,6 +4314,7 @@ mod tests {
                 "muse",
                 "devin",
                 "zcode",
+                "omniroute",
                 "hermes",
                 "cursor",
             ] {

@@ -1293,6 +1293,7 @@ mod tests {
             "commandcode",
             "kilo",
             "zcode",
+            "omniroute",
         ] {
             assert!(crate::skill_manager::console_arguments(id, &disabled).is_empty());
         }
