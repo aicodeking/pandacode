@@ -229,6 +229,9 @@ test.describe('thread tiles', () => {
     await expect.poll(paints, { intervals: [50], timeout: 4000 }).toBeGreaterThan(sampled);
     // Past the tile sky's growth window, same reason as `burstOverTranscript` in tests/sky.spec.ts.
     await page.waitForTimeout(400);
+    // A tile stuck to the bottom re-pins when the pad grows (`stick` in thread-tiles.ts), which scrolls the pad
+    // above the mirror. Put it back on screen after that pin; a scroll position is not reader intent, so it holds nothing.
+    await rows.evaluate(node => { node.scrollTop = 0; });
     const pad = (await tile(page, first).locator('#tile-hold-open').boundingBox())!;
     await page.mouse.move(pad.x + 24, pad.y + Math.min(120, Math.max(24, pad.height / 3)));
     await expect(layer).toHaveAttribute('data-sky-state', 'moving');
