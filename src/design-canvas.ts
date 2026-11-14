@@ -1,5 +1,12 @@
 import './design-canvas.css';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
+import { createDesignPresentation, snapshotDesign, type DesignPresentation, type DesignControl, type DesignAction } from './extensions/design';
+import { applyDesignPresentation, componentSelection, componentProviders } from './extensions/replacement';
+import { extensionsSnapshot, onExtensionsChanged } from './extensions/manager';
+import { applyControlOrder, applyControlVisibility, layout as extensionLayout } from './extensions/layout-host';
+import { DESIGN_CONTROLS } from './extensions/surfaces';
+import { mountExtensionActions } from './extensions/header';
+import { openContextActions } from './extensions/context-actions';
 
 /* The inspector's Design view: a pan/zoom canvas of the task's artboards
  * (`.pandacode/design/*.html`), each in a sandboxed iframe that runs no scripts.
@@ -70,10 +77,22 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   let boards: Board[] = [], comments: DesignComment[] = [], view = { x: 40, y: 60, z: 0.5 }, fitted = false;
   let visible = false, stale = true, contextKey = '', commenting = false, pick: Pick | null = null, loading: Promise<void> | null = null;
   let drag: { x: number; y: number; vx: number; vy: number; moved: boolean } | null = null;
+  let revision = 0, selection = '', pickVersion = '', busy = false, savingKey = '', disposed = false, draftVersion = 0, commentsEpoch = 0;
+  const context = crypto.randomUUID(), handles = new Map<string, string>(), applied = new Set<string>();
+  const handle = (key: string): string => { if (!handles.has(key)) handles.set(key, crypto.randomUUID()); return handles.get(key)!; };
+  const versions = new Map<string, { signature: string; revision: string }>();
+  const resourceVersion = (key: string, signature: string): string => {
+    if (versions.get(key)?.signature !== signature) versions.set(key, { signature, revision: crypto.randomUUID() });
+    return versions.get(key)!.revision;
+  };
+  let closeContext: (() => void) | undefined;
+  const lifetime = new AbortController(), listener = { signal: lifetime.signal };
+  const currentKey = () => { const c = host.context(); return c ? `${c.projectId}:${c.sessionId ?? ''}` : ''; };
 
   const args = (): Record<string, unknown> | null => { const c = host.context(); return c && { projectId: c.projectId, sessionId: c.sessionId }; };
   const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
   function place(): void {
+    revision++;
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
     world.style.setProperty('--inverse', String(1 / view.z));
     tool('fit').textContent = `${Math.round(view.z * 100)}%`;
@@ -109,7 +128,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     el.innerHTML = `<header class="design-board-name">${escape(name)}</header><div class="design-board-body"><iframe sandbox="allow-same-origin" referrerpolicy="no-referrer" tabindex="-1" title="${escape(name)}"></iframe><div class="design-hit" data-board="${escape(name)}"></div></div>`;
     const frame = el.querySelector('iframe')!;
     const made: Board = { name, size: -1, modified: -1, html: '', x: 0, width: WIDTH, height: HEIGHT, el, frame };
-    frame.addEventListener('load', () => measure(made));
+    frame.addEventListener('load', () => measure(made), listener);
     if (!visible) frame.remove();
     world.append(el);
     return made;
@@ -122,11 +141,12 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   async function load(): Promise<void> {
     const context = args();
     const key = context ? `${context.projectId}:${context.sessionId ?? ''}` : '';
-    if (key !== contextKey) { contextKey = key; boards.forEach(b => b.el.remove()); boards = []; comments = []; pick = null; fitted = false; }
+    const epoch = commentsEpoch, pending = busy && savingKey === key;
+    if (key !== contextKey) { contextKey = key; boards.forEach(b => b.el.remove()); boards = []; comments = []; pick = null; selection = ''; list.replaceChildren(); fitted = false; revision++; }
     if (!context) { say('Open a project to see its designs.'); renderComments(); return; }
     try {
       const [listed, saved] = await Promise.all([host.call<Artboard[]>('design_list', context), host.call<DesignComment[]>('design_comments', context)]);
-      if (key !== contextKey) return;
+      if (disposed || key !== contextKey || key !== currentKey()) return;
       const keep = new Map(boards.map(b => [b.name, b]));
       boards.filter(b => !listed.some(a => a.name === b.name)).forEach(b => b.el.remove());
       boards = listed.map(a => keep.get(a.name) ?? board(a.name));
@@ -134,18 +154,20 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
         const target = boards[i];
         if (target.modified === artboard.modified && target.size === artboard.size) return;
         const html = await host.call<string>('design_read', { ...context, name: artboard.name });
+        if (disposed || key !== contextKey || key !== currentKey()) return;
         Object.assign(target, { modified: artboard.modified, size: artboard.size });
         if (html === target.html) return;
         target.html = html; target.width = artboardWidth(html);
         target.frame.srcdoc = html;
       }));
-      if (key !== contextKey) return;
-      comments = saved;
+      if (disposed || key !== contextKey || key !== currentKey()) return;
+      if (epoch === commentsEpoch && !pending && (!busy || savingKey !== key)) comments = saved;
+      revision++;
       layout();
       if (!fitted && boards.length) { fitted = true; fit(); }
       say(boards.length ? '' : 'No artboards yet. Ask the agent to design a screen; it saves HTML artboards in .pandacode/design/.');
-    } catch (error) { say(failure(error)); }
-    renderComments();
+    } catch (error) { if (!disposed && key === contextKey && key === currentKey()) say(failure(error)); }
+    if (key === contextKey && key === currentKey()) renderComments();
   }
   function say(text: string): void { empty.textContent = text; empty.hidden = !text; }
 
@@ -163,6 +185,9 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     world.insertAdjacentHTML('beforeend', marks.join('') + (picked ? boxHtml('design-pick', picked, pick!.bbox) : ''));
   }
   function renderComments(): void {
+    if (disposed) return;
+    const previous = list.querySelector<HTMLFormElement>('.design-new');
+    const retain = previous?.dataset.selection === selection && Boolean(pick);
     const open = comments.filter(c => c.status === 'open');
     tool('send').disabled = !open.length;
     tool('send').textContent = open.length ? `Send ${open.length} comment${open.length === 1 ? '' : 's'} to agent` : 'Send comments to agent';
@@ -174,15 +199,32 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
       <div><p>${escape(c.text)}</p><small>${escape(c.artboard)} · <code>${escape(c.selector)}</code></small>${c.note ? `<small class="design-note">${escape(c.note)}</small>` : ''}</div>
       <button type="button" class="icon-button" data-design="toggle" data-index="${i}" aria-label="${c.status === 'open' ? 'Resolve' : 'Reopen'} comment" title="${c.status === 'open' ? 'Resolve' : 'Reopen'}">${icon(c.status === 'open' ? 'check' : 'refresh')}</button>
       <button type="button" class="icon-button" data-design="delete" data-index="${i}" aria-label="Delete comment" title="Delete">${icon('trash')}</button></li>`).join('');
-    list.innerHTML = form + (rows ? `<ol>${rows}</ol>` : commenting || pick ? '' : '<p class="design-hint">Turn on comment mode and click an element to comment on it.</p>');
-    list.querySelector('textarea')?.focus();
+    const content = rows ? `<ol>${rows}</ol>` : commenting || pick ? '' : '<p class="design-hint">Turn on comment mode and click an element to comment on it.</p>';
+    if (retain && previous) { [...list.children].filter(node => node !== previous).forEach(node => node.remove()); list.insertAdjacentHTML('beforeend', content); }
+    else list.innerHTML = form + content;
+    const nextForm = list.querySelector<HTMLFormElement>('.design-new');
+    if (nextForm) nextForm.dataset.selection = selection;
+    if (!retain) list.querySelector('textarea')?.focus();
+    list.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = busy; });
+    const submit = list.querySelector<HTMLButtonElement>('[type="submit"]');
+    if (submit && !validPick()) { submit.disabled = true; submit.title = 'Artboard changed; select an element again. Your draft is retained.'; }
+    configureControls();
     paintMarks();
   }
-  async function save(next: DesignComment[]): Promise<void> {
+  async function save(next: DesignComment[], added = false): Promise<void> {
     const context = args();
-    if (!context) return;
-    try { await host.call('design_save_comments', { ...context, comments: next }); comments = next; }
-    catch (error) { host.notify(`Could not save design comments: ${failure(error)}`); }
+    if (!context || busy || currentKey() !== contextKey) return;
+    const key = contextKey, selected = selection, version = draftVersion;
+    busy = true; savingKey = key; commentsEpoch++; renderComments();
+    try {
+      await host.call('design_save_comments', { ...context, comments: next });
+      if (key === contextKey && key === currentKey()) {
+        comments = next; revision++; commentsEpoch++;
+        if (added && selection === selected && version === draftVersion) { pick = null; selection = ''; }
+      }
+    }
+    catch (error) { if (!disposed) host.notify(`Could not save design comments: ${failure(error)}`); }
+    finally { busy = false; savingKey = ''; }
     renderComments();
   }
 
@@ -192,17 +234,29 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     if (!target || !doc) return;
     const rect = hit.getBoundingClientRect();
     const x = (event.clientX - rect.left) / view.z, y = (event.clientY - rect.top) / view.z;
-    const element = doc.elementFromPoint(x, y);
+    chooseAt(target, x, y);
+  }
+  function chooseAt(target: Board, x: number, y: number): void {
+    if (busy || x < 0 || x > target.width || y < 0 || y > target.height) return;
+    const element = target.frame.contentDocument?.elementFromPoint(x, y);
     if (!element) return;
     const box = element.getBoundingClientRect();
     pick = { artboard: target.name, selector: selectorPath(element), bbox: { x: box.x, y: box.y, width: box.width, height: box.height } };
+    selection = crypto.randomUUID(); revision++;
+    pickVersion = `${target.modified}:${target.size}`;
     renderComments();
   }
+  function validPick(): boolean {
+    const b = boards.find(b => b.name === pick?.artboard);
+    return Boolean(b && pickVersion === `${b.modified}:${b.size}`);
+  }
   function setCommenting(on: boolean): void {
+    if (busy) return;
+    revision++;
     commenting = on;
     tool('comment').setAttribute('aria-pressed', String(on));
     viewport.classList.toggle('design-commenting', on);
-    if (!on) pick = null;
+    if (!on) { pick = null; selection = ''; }
     renderComments();
   }
 
@@ -210,64 +264,134 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     if (event.button !== 0) return;
     drag = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y, moved: false };
     viewport.setPointerCapture(event.pointerId);
-  });
+  }, listener);
   viewport.addEventListener('pointermove', event => {
-    if (!drag) return;
+    if (!drag || !controlVisible('pan')) return;
     const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
     drag.moved = true; viewport.classList.add('design-panning');
     view = { ...view, x: drag.vx + dx, y: drag.vy + dy }; place();
-  });
+  }, listener);
   viewport.addEventListener('pointerup', event => {
     const moved = drag?.moved; drag = null; viewport.classList.remove('design-panning');
-    if (moved || !commenting) return;
+    if (moved || !commenting || !controlVisible('select')) return;
     // Captured pointers report the viewport; find what lies under the pointer.
     const hit = document.elementsFromPoint(event.clientX, event.clientY).find(el => el.classList.contains('design-hit')) as HTMLElement | undefined;
     if (hit) choose(event, hit);
-  });
+  }, listener);
   viewport.addEventListener('wheel', event => {
     event.preventDefault();
     const rect = viewport.getBoundingClientRect();
+    if (!controlVisible(event.ctrlKey || event.metaKey ? event.deltaY < 0 ? 'in' : 'out' : 'pan')) return;
     if (event.ctrlKey || event.metaKey) zoom(Math.exp(-event.deltaY / 300), event.clientX - rect.left, event.clientY - rect.top);
     else if (event.shiftKey) { view = { ...view, x: view.x - (event.deltaX || event.deltaY) }; place(); }
     else { view = { ...view, x: view.x - event.deltaX, y: view.y - event.deltaY }; place(); }
-  }, { passive: false });
-  root.addEventListener('keydown', event => { if (event.key === 'Escape' && (pick || commenting)) { event.stopPropagation(); if (pick) { pick = null; renderComments(); } else setCommenting(false); } });
+  }, { ...listener, passive: false });
+  root.addEventListener('keydown', event => { if (!isImeKey(event) && !busy && event.key === 'Escape' && (pick || commenting)) { event.stopPropagation(); if (pick) { pick = null; selection = ''; revision++; renderComments(); } else setCommenting(false); } }, listener);
+  list.addEventListener('input', () => { draftVersion++; revision++; }, listener);
   list.addEventListener('submit', event => {
     event.preventDefault();
     const text = list.querySelector('textarea')?.value.trim();
-    if (!pick || !text) return;
+    if (!pick || !text || busy || !validPick()) return;
     const comment: DesignComment = { id: crypto.randomUUID(), ...pick, text, status: 'open', createdAt: Date.now() };
-    pick = null;
-    void save([...comments, comment]);
-  });
+    void save([...comments, comment], true);
+  }, listener);
   root.addEventListener('click', event => {
     const el = (event.target as Element).closest<HTMLElement>('[data-design]');
     if (!el) return;
-    const index = Number(el.dataset.index);
-    switch (el.dataset.design) {
+    perform(el.dataset.design!, Number(el.dataset.index));
+  }, listener);
+  function perform(id: string, index = -1): void {
+    if (busy && !['in', 'out', 'fit'].includes(id)) return;
+    switch (id) {
       case 'comment': setCommenting(!commenting); break;
       case 'in': zoom(1.25); break;
       case 'out': zoom(0.8); break;
       case 'fit': fit(); break;
       case 'refresh': void refresh(); break;
-      case 'cancel': pick = null; renderComments(); break;
+      case 'cancel': pick = null; selection = ''; revision++; renderComments(); break;
       case 'send': { const prompt = commentPrompt(comments); if (prompt) host.compose(prompt); break; }
       case 'toggle': void save(comments.map((c, i) => i === index ? { ...c, status: c.status === 'open' ? 'resolved' : 'open' } : c)); break;
       case 'delete': void save(comments.filter((_, i) => i !== index)); break;
     }
-  });
+  }
 
   /** Reloads changed artboards and comments; hidden canvases wait until shown. */
   function refresh(): Promise<void> {
+    if (disposed) return Promise.resolve();
     if (!visible) { stale = true; return Promise.resolve(); }
     stale = false;
-    return loading ??= load().finally(() => { loading = null; });
+    return loading ??= load().finally(() => { loading = null; if (visible && !disposed && contextKey !== currentKey()) void refresh(); });
   }
+  function authority() {
+    const provider = componentSelection.resolve('panda.design', componentProviders());
+    const owner = extensionsSnapshot().packages.find(item => item.manifest.id === provider?.id.split('/')[0]);
+    return { owner: provider?.id ?? '', active: !disposed && Boolean(provider && root.dataset.designProvider === provider.id), granted: Boolean(owner?.manifest.permissions?.includes('ui.contribute')), metadata: Boolean(owner?.manifest.permissions?.includes('projects.summary')) };
+  }
+  function presentation(): DesignPresentation {
+    const c = host.context();
+    const controls = DESIGN_CONTROLS['panda.design.controls'].map(([id]) => {
+      const available = id === 'save' ? validPick() && Boolean(list.querySelector<HTMLTextAreaElement>('textarea')?.value.trim())
+        : id === 'draft' || id === 'cancel' ? Boolean(pick)
+        : id === 'select' ? commenting && boards.length > 0
+        : id === 'compose' ? comments.some(c => c.status === 'open')
+        : ['resolve', 'reopen', 'delete'].includes(id) ? comments.length > 0 : true;
+      return { id, enabled: controlVisible(id) && available };
+    });
+    return snapshotDesign({
+      contractVersion: 1, context, project: c ? handle(`project:${c.projectId}`) : '', session: c?.sessionId ? handle(`session:${c.sessionId}`) : '',
+      revision, selection, visible: visible && !disposed && contextKey === currentKey(), busy, loading: Boolean(loading),
+      error: empty.hidden ? '' : 'Design unavailable or empty', commenting, draft: Boolean(list.querySelector<HTMLTextAreaElement>('textarea')?.value),
+      artboards: boards.slice(0, 100).map(b => ({ id: handle(`board:${contextKey}:${b.name}`), revision: resourceVersion(`board:${contextKey}:${b.name}`, `${b.modified}:${b.size}`), label: authority().metadata ? b.name.slice(0, 256) : '' })),
+      comments: comments.slice(0, 500).map(c => ({ id: handle(`comment:${contextKey}:${c.id}`), revision: resourceVersion(`comment:${contextKey}:${c.id}`, JSON.stringify(c)), artboard: handle(`board:${contextKey}:${c.artboard}`), status: c.status })), controls,
+    });
+  }
+  function dispatch(input: unknown) {
+    const auth = authority(), slot = createDesignPresentation(presentation(), auth.owner, presentation, authority, executeAction, applied);
+    const result = slot.dispatch(input); slot.dispose(); return result;
+  }
+  function executeAction(action: DesignAction): void {
+    const index = comments.findIndex(c => handle(`comment:${contextKey}:${c.id}`) === action.comment);
+    switch (action.controlId) {
+      case 'select': { const b = boards.find(b => handle(`board:${contextKey}:${b.name}`) === action.artboard); if (b) chooseAt(b, action.x, action.y); break; }
+      case 'pan': view = { ...view, x: view.x + (action.value === 'left' ? 80 : action.value === 'right' ? -80 : 0), y: view.y + (action.value === 'up' ? 80 : action.value === 'down' ? -80 : 0) }; place(); break;
+      case 'draft': list.querySelector('textarea')?.focus(); break;
+      case 'save': list.querySelector<HTMLFormElement>('form')?.requestSubmit(); break;
+      case 'resolve': case 'reopen': perform('toggle', index); break;
+      case 'compose': perform('send'); break;
+      default: perform(action.controlId, index);
+    }
+  }
+  const controlVisible = (id: string) => extensionsSnapshot().safeMode || !extensionLayout.isHidden(`panda.design.controls/${id}`, host.context()?.projectId);
+  function configureControls(): void {
+    const bindings: [string, HTMLElement][] = [];
+    root.querySelectorAll<HTMLElement>('[data-design], .design-new textarea, .design-new button[type="submit"]').forEach(node => {
+      const id = node.matches('textarea') ? 'draft' : node.matches('[type="submit"]') ? 'save' : node.dataset.design === 'send' ? 'compose' : node.dataset.design === 'toggle' ? comments[Number(node.dataset.index)]?.status === 'open' ? 'resolve' : 'reopen' : node.dataset.design!;
+      bindings.push([`panda.design.controls/${id}`, node]);
+    });
+    applyControlOrder('panda.design.controls', bindings); applyControlVisibility(bindings, () => viewport);
+  }
+  function configure(): void { if (disposed) return; revision++; closeContext?.(); applyDesignPresentation(root); configureControls(); }
+  const stopExtensions = onExtensionsChanged(configure), stopLayout = extensionLayout.subscribe(configure);
+  window.addEventListener('pandacode-components-change', configure);
+  const actionContext = () => ({ projectId: host.context()?.projectId ?? '', sessionId: host.context()?.sessionId ?? '', revision, selection: { kind: 'design', ids: selection ? [selection] : [] } });
+  const stopActions = mountExtensionActions($('.design-toolbar'), 'panda.design.actions', actionContext, host.notify);
+  const hasContext = () => !extensionsSnapshot().safeMode && extensionsSnapshot().packages.some(item => item.enabled && item.manifest.permissions?.includes('ui.contribute') && item.manifest.contributes.menus?.some(menu => menu.location === 'panda.design.context'));
+  function openContext(anchor: HTMLElement, point?: { x: number; y: number }, comment?: string): void {
+    closeContext?.(); const captured = revision, key = currentKey();
+    const context = actionContext();
+    if (comment) context.selection.ids = [handle(`comment:${contextKey}:${comment}`)];
+    closeContext = openContextActions(anchor, 'panda.design.context', context, { title: 'Design', items: [], onSelect() {}, notify: host.notify, point, isAlive: () => visible && !disposed && captured === revision && key === currentKey() });
+  }
+  root.addEventListener('contextmenu', event => { if (hasContext() && (event.target as Element).closest('.design-toolbar, .design-comments')) { event.preventDefault(); openContext(tool('comment'), { x: event.clientX, y: event.clientY }, (event.target as Element).closest<HTMLElement>('[data-comment]')?.dataset.comment); } }, listener);
+  tool('comment').addEventListener('keydown', event => { if (!isImeKey(event) && hasContext() && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openContext(tool('comment')); } }, listener);
+  configure();
   place();
   return {
-    show(): void { visible = true; root.hidden = false; attachFrames(true); if (stale || contextKey !== (args() ? `${args()!.projectId}:${args()!.sessionId ?? ''}` : '')) void refresh(); },
-    hide(): void { visible = false; root.hidden = true; attachFrames(false); },
+    presentation, dispatch,
+    show(): void { if (disposed) return; visible = true; root.hidden = false; attachFrames(true); if (stale || contextKey !== (args() ? `${args()!.projectId}:${args()!.sessionId ?? ''}` : '')) void refresh(); },
+    hide(): void { visible = false; root.hidden = true; attachFrames(false); closeContext?.(); },
     refresh,
+    dispose(): void { disposed = true; lifetime.abort(); stopExtensions(); stopLayout(); stopActions(); closeContext?.(); window.removeEventListener('pandacode-components-change', configure); attachFrames(false); },
   };
 }

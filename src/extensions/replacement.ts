@@ -5,6 +5,27 @@ import { createComponentSelection, createComponentSlot, type ComponentProvider, 
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
+/** Visual movement only: reparenting iframe ancestors would reload live documents. */
+export function applyDesignPresentation(host: HTMLElement, qualify = () => {
+  if (!host.querySelector('.design-comments') || !host.querySelector('.design-viewport')) throw Error('Incomplete Design host');
+}): void {
+  delete host.dataset.designProvider;
+  const comments = host.querySelector<HTMLElement>('.design-comments');
+  if (comments) comments.style.order = '';
+  const status = host.querySelector<HTMLElement>('[data-design-presentation-status]');
+  if (status) status.hidden = true;
+  const provider = componentSelection.resolve('panda.design', componentProviders());
+  if (!provider) return;
+  const failed = () => {
+    const notice = status ?? document.createElement('p');
+    notice.dataset.designPresentationStatus = ''; notice.setAttribute('role', 'status');
+    notice.textContent = 'Design replacement failed. Built-in canvas remains active.'; notice.hidden = false;
+    if (!notice.parentElement) host.append(notice);
+  };
+  if (faults.has(identity(provider))) { failed(); return; }
+  try { qualify(); host.dataset.designProvider = provider.id; if (comments) comments.style.order = '-1'; }
+  catch { faults.add(identity(provider)); failed(); }
+}
 /** VM v1 keeps the original canvas/input/frame controller and changes dock placement only. */
 export function applyVmPresentation(host: HTMLElement, qualify = () => {
   if (!host.querySelector('.vm-dock') || !host.querySelector('.vm-stage')) throw Error('Incomplete VM host');

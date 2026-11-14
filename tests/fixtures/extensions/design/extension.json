@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.design",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "projects.summary"],
+  "contributes": {
+    "components": [{ "id": "sample.design/comments", "title": "Comments first", "slot": "panda.design", "contractVersion": 1, "presentation": "comments-first", "capabilities": ["host-artboards", "host-comments", "original-actions"] }],
+    "commands": [{ "id": "sample.design/tools", "title": "Design tools", "action": { "kind": "showMessage", "message": "Artboards, comments and drafts remain host-owned." } }],
+    "menus": [
+      { "id": "sample.design/action", "command": "sample.design/tools", "location": "panda.design.actions" },
+      { "id": "sample.design/context", "command": "sample.design/tools", "location": "panda.design.context" }
+    ],
+    "layouts": [{ "id": "sample.design/fit-first", "title": "Fit before zoom", "location": "panda.design.controls", "rules": [{ "id": "panda.design.controls/fit", "target": "panda.design.controls/out", "side": "before" }] }]
+  }
+}

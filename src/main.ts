@@ -830,6 +830,11 @@ if (preview && new URLSearchParams(location.search).has('vm-coverage')) {
   (window as any).__previewVm = () => vmPanel?.presentation();
   (window as any).__previewVmAction = (action: unknown) => vmPanel?.dispatch(action);
 }
+if (preview && new URLSearchParams(location.search).has('design-coverage')) {
+  (window as any).__previewDesign = () => designPanel?.presentation();
+  (window as any).__previewDesignAction = (action: unknown) => designPanel?.dispatch(action);
+  (window as any).__previewDesignRefresh = () => designPanel?.refresh();
+}
 $('#inspector-content').addEventListener('contextmenu', event => {
   if (state.inspectorTab !== 'files') return;
   const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');

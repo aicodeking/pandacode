@@ -1,7 +1,7 @@
 /** Public JSON-only discovery. Definitions are logical locations, not selectors or DOM handles. */
 import { createDeclarativeActivation } from './activation.ts';
 import type { ExtensionSnapshot } from './manager';
-import { VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS, BROWSER_ACTION_SURFACES, BROWSER_CONTROLS, TERMINAL_ACTION_SURFACES, TERMINAL_CONTROLS, SIMULATOR_ACTION_SURFACES, SIMULATOR_CONTROLS, VM_ACTION_SURFACES, VM_CONTROLS } from './surfaces.ts';
+import { DESIGN_ACTION_SURFACES, DESIGN_CONTROLS, VIEW_ACTION_SURFACES, DOCUMENT_ACTION_SURFACES, THREAD_ACTION_SURFACES, SETTINGS_ACTION_SURFACES, SETTINGS_DATA_SURFACES, CONTEXT_COMMANDS, CHANGES_ACTION_SURFACES, CHANGES_CONTROLS, SEARCH_CONTROLS, BROWSER_ACTION_SURFACES, BROWSER_CONTROLS, TERMINAL_ACTION_SURFACES, TERMINAL_CONTROLS, SIMULATOR_ACTION_SURFACES, SIMULATOR_CONTROLS, VM_ACTION_SURFACES, VM_CONTROLS } from './surfaces.ts';
 import { WINDOW_ACTION_SURFACES, surfaceWindow } from './window-surfaces.ts';
 import { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } from './views-state.ts';
 import { INSPECTOR_VIEWS } from '../inspector-tabs.ts';
@@ -23,6 +23,7 @@ export class CatalogError extends Error {
 
 const coreItems: ItemMetadata[] = [
   ...Object.entries(VM_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
+  ...Object.entries(DESIGN_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(SIMULATOR_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(TERMINAL_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
   ...Object.entries(BROWSER_CONTROLS).flatMap(([location, controls]) => controls.map(([id, label]): ItemMetadata => ({ id: `${location}/${id}`, owner: 'panda.core', type: 'button', location, label, supportedOperations: ['inspect'], available: true }))),
@@ -56,6 +57,9 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
   const list = <T extends SurfaceMetadata | ItemMetadata>(kind: 'surfaces' | 'items', query: CatalogQuery = {}): CatalogPage<T> => {
     const q = queryChecked(query), state = snapshot();
     const surfaces: SurfaceMetadata[] = [
+      { id: 'panda.design', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.design', label: 'Host Design presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['comments-first'], windows: ['main'], available: true },
+      { id: 'panda.design.controls', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.design.controls', label: 'Design controls', supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true },
+      ...DESIGN_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),
       { id: 'panda.vm', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.vm', label: 'Host VM presentation v1', supportedOperations: ['inspect', 'replace', 'move'], supportedItemTypes: ['controls-first'], windows: ['main'], available: true },
       { id: 'panda.vm.controls', owner: 'panda.core', type: 'declarative-data-slot', location: 'panda.vm.controls', label: 'VM controls', supportedOperations: ['inspect', 'hide', 'show', 'reorder'], supportedItemTypes: ['button'], windows: ['main'], available: true },
       ...VM_ACTION_SURFACES.map((location): SurfaceMetadata => ({ id: location, owner: 'panda.core', type: 'action-slot', location, label: location, supportedOperations: ['inspect', 'contribute', 'hide', 'show', 'reorder'], supportedItemTypes: ['button', 'menu-trigger'], windows: ['main'], available: true })),

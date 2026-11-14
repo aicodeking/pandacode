@@ -1020,6 +1020,18 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn design_presentation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/design/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.design", true).unwrap();
+        assert_eq!(storage.packages(false).snapshot().packages[0].manifest["contributes"]["components"][0]["slot"], "panda.design");
+        packages.enable("sample.design", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
+    #[test]
     fn simulator_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/simulator/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

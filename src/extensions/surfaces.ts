@@ -11,6 +11,8 @@ export const CHANGES_ACTION_SURFACES = ['panda.changes.actions'] as const;
 export const BROWSER_ACTION_SURFACES = ['panda.browser.actions', 'panda.browser.context'] as const;
 export const SIMULATOR_ACTION_SURFACES = ['panda.simulator.actions', 'panda.simulator.context'] as const;
 export const VM_ACTION_SURFACES = ['panda.vm.actions', 'panda.vm.context'] as const;
+export const DESIGN_ACTION_SURFACES = ['panda.design.actions', 'panda.design.context'] as const;
+export const DESIGN_CONTROLS = { 'panda.design.controls': [['comment', 'Comment mode'], ['in', 'Zoom in'], ['out', 'Zoom out'], ['fit', 'Fit artboards'], ['refresh', 'Reload artboards'], ['pan', 'Pan canvas'], ['select', 'Select element'], ['draft', 'Comment draft'], ['save', 'Add comment'], ['cancel', 'Cancel comment'], ['resolve', 'Resolve comment'], ['reopen', 'Reopen comment'], ['delete', 'Delete comment'], ['compose', 'Compose comments']] } as const;
 export const VM_CONTROLS = { 'panda.vm.controls': [['select', 'Choose VM'], ['new', 'New VM'], ['delete', 'Delete VM'], ['setup', 'Set up VMs'], ['desktop', 'Add a desktop'], ['power', 'Start / stop VM'], ['suspend', 'Suspend VM'], ['input', 'VM input'], ['share', 'Share project read-only']] } as const;
 export const SIMULATOR_CONTROLS = { 'panda.simulator.controls': [
   ['device', 'Choose simulator'], ['pose', 'Device pose'], ['finish', 'Device finish'], ['appearance', 'Light / dark'], ['power', 'Boot / shut down'], ['back', 'Back'], ['recents', 'Recent apps'], ['reset', 'Face forward'], ['home', 'Home'], ['lock', 'Lock'], ['capture', 'Copy screenshot'], ['copy-axe', 'Copy AXe install command'], ['add-duo', 'Add iPhone Duo'], ['android-setup', 'Set up Android emulator'],
@@ -38,7 +40,7 @@ export const THREAD_ACTION_SURFACES = [
 export type ThreadActionLocation = typeof THREAD_ACTION_SURFACES[number];
 export const SETTINGS_ACTION_SURFACES = ['panda.status.items', 'panda.dialog.colors.actions', 'panda.dialog.wallpapers.actions'] as const;
 export const SETTINGS_DATA_SURFACES = ['panda.settings.pages', 'panda.commands', 'panda.shortcuts', 'panda.dialog.colors.bodyExtras', 'panda.dialog.wallpapers.bodyExtras'] as const;
-export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+export type ActionLocation = 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | 'panda.dialog.colors.actions' | 'panda.dialog.wallpapers.actions' | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

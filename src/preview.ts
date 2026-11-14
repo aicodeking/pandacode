@@ -502,6 +502,7 @@ const previewGithub = (() => {
 /** A pretend iOS Simulator: two devices and a drawn home screen that answers taps. */
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
+if (new URLSearchParams(location.search).has('design-coverage')) (window as any).__previewDesignWrite = (name: string, html: string) => previewDesign.write(name, html);
 const previewSkills = createPreviewSkills();
 const previewSkillManager = createPreviewSkillManager({ library: previewSkills, dynamicHarnesses: () => packageDiscoveryHarnesses(previewExtensionSnapshot()) });
 const previewCloud = createPreviewCloud();
