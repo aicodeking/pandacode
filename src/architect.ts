@@ -10,6 +10,7 @@ import { streamMarkdown } from './streaming-markdown';
 import { captureTranscriptAnchor, preserveTranscriptPosition } from './transcript-scroll';
 import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './file-links';
 import { createAgentInput, type AgentInput } from './agent-input';
+import { cancelRequest } from './notifications';
 import { TailText } from './tail-text';
 import { decodeToolActivity, renderToolActivity } from './tool-activity';
 import { attachToolImages } from './tool-image-viewer';
@@ -346,7 +347,7 @@ export class ArchitectView {
     if (event.kind === 'approval_cancelled' && event.requestId) live.approvals.delete(event.requestId);
     if (event.kind === 'input_request' && event.requestId && !live.inputs.has(event.requestId)) {
       const requestId = event.requestId, current = live;
-      current.inputs.set(requestId, createAgentInput(event.sessionId, requestId, event.data, () => { current.inputs.get(requestId)?.dispose(); current.inputs.delete(requestId); this.schedule(); }));
+      current.inputs.set(requestId, createAgentInput(event.sessionId, requestId, event.data, () => { cancelRequest('input', event.sessionId, requestId); current.inputs.get(requestId)?.dispose(); current.inputs.delete(requestId); this.schedule(); }));
     }
     if (event.kind === 'input_cancelled' && event.requestId) { live.inputs.get(event.requestId)?.dispose(); live.inputs.delete(event.requestId); }
     if (event.kind === 'done') {
@@ -605,6 +606,7 @@ export class ArchitectView {
     buttons.forEach(button => { button.disabled = true; });
     try {
       await call('respond_approval', { sessionId, requestId, approved });
+      cancelRequest('approval', sessionId, requestId);
       this.live.get(sessionId)?.approvals.delete(requestId);
       // The answered request leaves; focus moves to its worker's row (or the transcript's back button), never to the page.
       if (focused) {

@@ -34,7 +34,7 @@ export function notifyEvent(kind: NotificationEventKind, sessionId: string, titl
   // Finished and failed tasks never coalesce; requests wait out the window together, and a
   // cancellation during it takes its request back out.
   if (kind === 'approval' || kind === 'input') requests.add(kind, sessionId, title, requestId);
-  else show({ ...notice(kind, title, on.hideDetails), sessionId }, on);
+  else show({ ...notice(kind, title, on.hideDetails), sessionId }, on, false);
 }
 
 /** A cancelled request must not be counted by the batch that is still waiting. */
@@ -59,9 +59,9 @@ function flushRequests(batch: PendingRequest[]): void {
     void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: true, soundWhenFocused: on.soundWhenFocused }).catch(warn);
     return;
   }
-  show(text, on);
+  show(text, on, on.soundWhenFocused);
 }
 
-function show(text: Notice, on: NotificationSettings): void {
-  void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: false, soundWhenFocused: on.soundWhenFocused }).catch(warn);
+function show(text: Notice, on: NotificationSettings, soundWhenFocused: boolean): void {
+  void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: false, soundWhenFocused }).catch(warn);
 }

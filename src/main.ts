@@ -352,11 +352,12 @@ function onArchitect(team: TeamEvent): void {
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
-  // A lead's held finished or failed notice fires once its team settles (workers done, the team at rest).
+  // Ready also rests a finished answer without delegation, but Council asking is not a finish.
   const heldEnd = pendingTeamEnds.get(team.sessionId);
-  if (heldEnd && !teamActive(team) && !team.workers.some(worker => workerActive(worker))) {
+  if (heldEnd && (team.status === 'paused' || team.status === 'interrupted' || team.councilStatus?.state === 'asking')) pendingTeamEnds.delete(team.sessionId);
+  else if (heldEnd && (team.status === 'ready' || team.status === 'completed' || team.status === 'failed') && !state.streams.has(team.sessionId) && !team.workers.some(worker => workerActive(worker))) {
     pendingTeamEnds.delete(team.sessionId);
-    notifyEvent(heldEnd.kind, team.sessionId, heldEnd.title);
+    notifyEvent(team.status === 'failed' ? 'failed' : heldEnd.kind, team.sessionId, heldEnd.title);
   }
   // Council's ask is an architect event, not an agent input: it follows the input preference and
   // coalescing here, and its end withdraws a still-waiting entry.
@@ -5893,22 +5894,23 @@ function onAgent(event: AgentEvent): void {
   if (tiles.has(event.sessionId)) queueMicrotask(() => tiles.event(event.sessionId));
   if (deletedSessions.has(event.sessionId)) return;
   const s = state.sessions.find(item => item.id === event.sessionId);
+  if (event.kind === 'done') cancelSession(event.sessionId);
+  if (event.kind === 'approval_cancelled' && event.requestId) cancelRequest('approval', event.sessionId, event.requestId);
+  if (event.kind === 'input_cancelled' && event.requestId) cancelRequest('input', event.sessionId, event.requestId);
   // Managed workers are deliberately absent from sidebar/board task summaries.
   // Route their live output and approval forms to the team's worker inspector.
   if (!s) {
+    // Queue synchronously so a cancellation cannot overtake the lazy-loaded worker view.
+    if (event.kind === 'approval' || event.kind === 'input_request') {
+      const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
+      if (workerActive(owner)) {
+        notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
+        notifyEvent(event.kind === 'approval' ? 'approval' : 'input', event.sessionId, 'A worker', event.requestId);
+      }
+    }
     void ensureArchitectView().then(view => {
       if (deletedSessions.has(event.sessionId)) return;
       view.receive(event);
-      // Worker questions are auto-answered and approvals auto-granted; current hosts never leave either pending, but an
-      // older or unusual host can still forward one. It notifies only while that worker is still at work, by the
-      // panel's own definition (a worker not yet in any team snapshot counts as active).
-      if (event.kind === 'approval' || event.kind === 'input_request') {
-        const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
-        if (workerActive(owner)) {
-          notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
-          notifyEvent(event.kind === 'approval' ? 'approval' : 'input', event.sessionId, 'A worker', event.requestId);
-        }
-      }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
     }).catch(report);
     return;
@@ -5959,7 +5961,7 @@ function onAgent(event: AgentEvent): void {
   // Keep the final response intact until its persisted changes boundary arrives.
   if (event.kind === 'turn_complete') return;
   if (event.kind === 'turn_changes') { if (event.sessionId === state.sessionId) void projectRunner.refresh(); completeTurnChanges(event); return; }
-  if (event.kind === 'turn_start') return;
+  if (event.kind === 'turn_start') { pendingTeamEnds.delete(event.sessionId); return; }
   if (event.kind === 'commands_changed') { if (event.sessionId === state.sessionId) slashPicker?.refresh(true); return; }
   if (event.kind === 'subagent') { subagents.receive(event.sessionId, event.data); return; }
   // Hosts send `team` (a changed worker row) only for mirrors; it is not a local event kind.
@@ -5991,16 +5993,14 @@ function onAgent(event: AgentEvent): void {
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
-    // Any request still waiting in a notification is answered or gone once the run ends.
-    cancelSession(event.sessionId);
-    // The run's own outcome is authoritative (a stop from the phone, a mirror that ended while
-    // this window was away); without it, the ending this window recorded decides.
+    // A usage limit is silent even when the host reports the run as failed.
     const outcome = (event.data as { outcome?: string } | null)?.outcome;
-    const kind: 'done' | 'failed' | null = outcome ? (outcome === 'failed' ? 'failed' : outcome === 'successful' ? 'done' : null)
+    const kind: 'done' | 'failed' | null = ending === 'limited' || ending === 'stopped' ? null : outcome ? (outcome === 'failed' ? 'failed' : outcome === 'successful' ? 'done' : null)
       : ending === 'failed' ? 'failed' : !ending ? 'done' : null;
-    // A lead whose workers still run is not done: the notice waits for the team to settle (onArchitect).
-    if (kind && teams.get(event.sessionId)?.workers.some(worker => workerActive(worker))) pendingTeamEnds.set(event.sessionId, { kind, title: (s?.title ?? 'Task').replace(/ · You$/, '') });
-    else if (kind) notifyEvent(kind, event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''));
+    const team = teams.get(event.sessionId);
+    if (!kind || team?.status === 'paused' || team?.status === 'interrupted') pendingTeamEnds.delete(event.sessionId);
+    else if (teamActive(team) || team?.workers.some(worker => workerActive(worker))) pendingTeamEnds.set(event.sessionId, { kind, title: (s.title ?? 'Task').replace(/ · You$/, '') });
+    else notifyEvent(kind, event.sessionId, (s.title ?? 'Task').replace(/ · You$/, ''));
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
