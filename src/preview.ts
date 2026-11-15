@@ -508,6 +508,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
   }
 }
 // Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+// Explicit composer controls extension fixture only: safe mode while a turn runs and a draft is open.
+if (new URLSearchParams(location.search).has('composer-controls')) {
+  (window as any).__previewComposerSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit action dock extension fixture only: safe mode while a team runs and a draft is open.
 if (new URLSearchParams(location.search).has('dock-coverage')) {
   (window as any).__previewDockSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();

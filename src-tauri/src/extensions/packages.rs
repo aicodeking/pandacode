@@ -1314,6 +1314,28 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]
+    fn composer_controls_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/composer-controls/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.composer-controls", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        assert_eq!(contributes["components"][0]["slot"], "panda.composer");
+        assert_eq!(contributes["menus"][0]["location"], "panda.composer.model.actions");
+        assert_eq!(contributes["menus"][1]["location"], "panda.composer.permissions.actions");
+        assert_eq!(contributes["menus"][2]["location"], "panda.composer.steering.actions");
+        assert_eq!(contributes["layouts"][1]["location"], "panda.composer.model.entries");
+        packages.enable("sample.composer-controls", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.composer-controls", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn action_dock_presentation_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/action-dock/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

@@ -1,0 +1,132 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.composer-controls",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.composer-controls/toolbar",
+        "title": "Toolbar-first controls",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.composer-controls/model-notes",
+        "title": "Model notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "The model choice stays with PandaCode."
+        }
+      },
+      {
+        "id": "sample.composer-controls/mode-notes",
+        "title": "Permission notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Approval modes stay host authority."
+        }
+      },
+      {
+        "id": "sample.composer-controls/steer-notes",
+        "title": "Steer notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Steering keeps the running turn and its draft."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.composer-controls/model",
+        "command": "sample.composer-controls/model-notes",
+        "location": "panda.composer.model.actions",
+        "presentation": "button",
+        "text": "Model notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "model"
+        }
+      },
+      {
+        "id": "sample.composer-controls/permissions",
+        "command": "sample.composer-controls/mode-notes",
+        "location": "panda.composer.permissions.actions",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "approval-mode"
+        }
+      },
+      {
+        "id": "sample.composer-controls/steer",
+        "command": "sample.composer-controls/steer-notes",
+        "location": "panda.composer.steering.actions",
+        "presentation": "button",
+        "text": "Steer notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "draft"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.composer-controls/council-first",
+        "title": "Model picker after Council",
+        "location": "panda.composer.tray.controls",
+        "rules": [
+          {
+            "id": "panda.composer.tray.controls/council",
+            "target": "panda.composer.tray.controls/model",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-controls/codex-first",
+        "title": "Claude Code after Codex",
+        "location": "panda.composer.model.entries",
+        "rules": [
+          {
+            "id": "panda.composer.model.entries/codex",
+            "target": "panda.composer.model.entries/claude",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-controls/clear-first",
+        "title": "Edit draft after Clear",
+        "location": "panda.composer.steering.controls",
+        "rules": [
+          {
+            "id": "panda.composer.steering.controls/steer-clear",
+            "target": "panda.composer.steering.controls/steer-edit",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

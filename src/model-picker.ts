@@ -23,6 +23,11 @@ type ModelPickerOptions = {
   recent?: (provider: ProviderId) => string[] | null;
   onClose?: () => void;
   placement?: 'above' | 'below';
+  /** The user's order and visibility of the rail's entries ('recent', 'teams' and harness IDs). Hidden entries leave the
+   * rail only: search still covers every harness. The task's harness and a selected team are never hidden. */
+  entries?: (keys: readonly string[]) => { order: readonly string[]; hidden: ReadonlySet<string> };
+  /** Mounts a host-drawn row of contributed actions under the list; returns its disposer. */
+  mountActions?: (host: HTMLElement) => (() => void) | undefined;
 };
 
 const RECENT_LIMIT = 5;
@@ -61,13 +66,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p><div class="model-menu-extensions"></div>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const rail = panel.querySelector<HTMLElement>('.model-menu-rail')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
   const settings = panel.querySelector<HTMLElement>('.model-menu-settings')!;
   const error = panel.querySelector<HTMLElement>('.model-menu-error')!;
   const pendingStatus = panel.querySelector<HTMLElement>('.model-menu-pending')!;
+  const extensions = panel.querySelector<HTMLElement>('.model-menu-extensions')!;
+  let disposeActions: (() => void) | undefined;
   const anchorId = anchor.id;
   const anchorAction = anchor.dataset.action;
   const originalExpanded = anchor.getAttribute('aria-expanded');
@@ -100,6 +107,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     window.removeEventListener('scroll', schedulePosition, true);
     window.visualViewport?.removeEventListener('resize', schedulePosition);
     window.visualViewport?.removeEventListener('scroll', schedulePosition);
+    disposeActions?.(); disposeActions = undefined;
     hidePopover(panel);
     if (originalExpanded === null) anchor.removeAttribute('aria-expanded');
     else anchor.setAttribute('aria-expanded', originalExpanded);
@@ -139,6 +147,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   }
 
   // ----- Data -----
+
+  /** The rail's entries in the user's order, and the ones the user hid; identity without an arrangement. */
+  function arrangement(all: Group[]): { order: readonly string[]; hidden: ReadonlySet<string> } {
+    const keys = ['recent', 'teams', ...all.map(group => group.provider.id)];
+    const arranged = options.entries?.(keys);
+    if (!arranged) return { order: keys, hidden: new Set() };
+    // The task's harness and a selected team always show, whatever the arrangement says.
+    return { order: arranged.order, hidden: new Set([...arranged.hidden].filter(key => key !== current.provider && !(key === 'teams' && teamSelected))) };
+  }
 
   /** Uninstalled harnesses stay out of the picker unless the task already uses one. */
   function groups(): Group[] {
@@ -224,9 +241,13 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     if (closed) return;
     const query = search.value.trim();
     const normalized = query.toLowerCase();
-    const all = groups();
+    const { order, hidden } = arrangement(groups());
+    const rank = (key: string) => { const index = order.indexOf(key); return index < 0 ? order.length : index; };
+    const all = groups().sort((a, b) => rank(a.provider.id) - rank(b.provider.id));
     const recent = recentRows(all);
-    const railKeys = [...(recent.length ? ['recent'] : []), ...(teams.length ? ['teams'] : []), ...all.map(group => group.key)];
+    const lead = [...(recent.length && !hidden.has('recent') ? ['recent'] : []), ...(teams.length && !hidden.has('teams') ? ['teams'] : [])].sort((a, b) => rank(a) - rank(b));
+    const railGroups = all.filter(group => !hidden.has(group.provider.id));
+    const railKeys = [...lead, ...railGroups.map(group => group.key)];
     if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
     const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail, 'team'], normalized)) : teams;
     const namedHarness = all.some(group => [group.provider.id, group.provider.name, group.name].some(name => name.toLowerCase() === normalized));
@@ -240,10 +261,12 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     // Rail: a tab per view; while searching it is a hit map.
     const inUse = (key: string) => !teamSelected && key === `h:${current.provider}`;
     let railHtml = '';
-    if (recent.length) railHtml += railItem('recent', icon('undo'), 'Recent', '', query ? ' is-dim' : '', !query && view === 'recent');
-    if (teams.length) railHtml += railItem('teams', icon('team'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
-    if (all.length) railHtml += '<div class="model-menu-rail-heading" role="presentation">Harnesses</div>';
-    railHtml += all.map(group => {
+    for (const key of lead) {
+      if (key === 'recent') railHtml += railItem('recent', icon('undo'), 'Recent', '', query ? ' is-dim' : '', !query && view === 'recent');
+      else railHtml += railItem('teams', icon('team'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
+    }
+    if (railGroups.length) railHtml += '<div class="model-menu-rail-heading" role="presentation">Harnesses</div>';
+    railHtml += railGroups.map(group => {
       const count = query ? hits.get(group.key)!.length : 0;
       const classes = `${inUse(group.key) ? ' has-current' : ''}${group.locked || group.unavailable || (query && !count) ? ' is-dim' : ''}`;
       return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key, group.name, group.failure);
@@ -475,7 +498,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** Tab cycles search → rail → effort inside the picker and never leaves it. */
   function cycleFocus(back: boolean): void {
-    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), settings.hidden ? null : settings.querySelector<HTMLElement>('.selected:not(:disabled)')].filter((stop): stop is HTMLElement => Boolean(stop));
+    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), settings.hidden ? null : settings.querySelector<HTMLElement>('.selected:not(:disabled)'), [...extensions.querySelectorAll<HTMLElement>('button:not(:disabled)')].find(button => !button.hidden && button.getClientRects().length > 0) ?? null].filter((stop): stop is HTMLElement => Boolean(stop));
     const index = stops.findIndex(stop => stop.contains(document.activeElement));
     stops[(index + (back ? -1 : 1) + stops.length) % stops.length].focus({ preventScroll: true });
   }
@@ -543,6 +566,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   anchor.setAttribute('aria-expanded', 'true');
   // Keep a picker opened from a modal inside that modal's interactive top layer.
   (anchor.closest('dialog[open]') ?? document.body).append(panel);
+  disposeActions = options.mountActions?.(extensions);
   renderChoices();
   showPopover(panel, anchor);
   search.focus({ preventScroll: true });

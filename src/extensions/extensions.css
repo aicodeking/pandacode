@@ -15,6 +15,9 @@
 [data-extension-location="panda.actionDock.actions"] { flex-direction: column; }
 @media (forced-colors: active) { .extension-action-badge { border-color: CanvasText; color: CanvasText; background: Canvas; } }
 .extension-sidebar-actions { flex-wrap: wrap; padding: 4px 7px; }
+/* The model picker's contributed action row: one hairline-separated row under the list, only while it has an action. */
+.model-menu-extensions { flex: none; }
+.model-menu-extensions > .extension-header-actions:not([hidden]) { flex-wrap: wrap; padding: 6px 8px; border-top: 1px solid var(--ds-border); }
 [data-layout-hidden] { display: none !important; }
 .extension-dialog-field { display: grid; gap: var(--space-2); margin-block: 12px; }
 .extension-dialog-field > label { color: var(--text); font-size: var(--text-sm); }

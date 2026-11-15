@@ -1,5 +1,6 @@
 /** Stable host-owned locations; these are not selectors or dynamic inspector view IDs. */
 import type { WindowActionLocation } from './window-surfaces';
+import { BUILTIN_PROVIDER_IDS } from './provider-identity.ts';
 /** Execution host and machine coordination. `panda.machines.context` is the lineage row, waiting line and
  * fixed remote chip context menu; `panda.machines.protected` is inspect-only: the fixed task computer, the
  * behind-GitHub continue, the remote start send, the Link a machine submit with its access choice, pairing
@@ -358,7 +359,52 @@ export const STATUS_PROTECTED = [
   ['usage-reads', 'Usage reads', 'Usage is read when the panel opens and on an explicit Refresh; no package reads providers, polls or starts a timer.'],
   ['usage-account', 'Account details and sign-in', 'Emails, plans, messages, costs, dashboard links and sign-in stay host-drawn and host-run.'],
 ] as const;
-export type ActionLocation = typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Composer tray controls, model picker entries, the Permissions menu and the steer bar (docs/extensions/composer.md).
+ * `panda.composer.model.actions` is the model picker's action row, `panda.composer.permissions.actions` the
+ * Permissions menu's contributed rows and `panda.composer.steering.actions` the steer bar's slot; composer-host.ts
+ * mounts each one. Drafts, the selected model, the approval mode, Send, Stop and approvals stay in
+ * main.ts, model-picker.ts and approval-modes.ts. */
+export const COMPOSER_ACTION_SURFACES = ['panda.composer.model.actions', 'panda.composer.permissions.actions', 'panda.composer.steering.actions'] as const;
+export const COMPOSER_TRAY_LOCATION = 'panda.composer.tray.controls';
+export const COMPOSER_MODEL_LOCATION = 'panda.composer.model.entries';
+export const COMPOSER_STEER_LOCATION = 'panda.composer.steering.controls';
+export const COMPOSER_PERMISSIONS_LOCATION = 'panda.composer.permissions.actions';
+export const COMPOSER_PROTECTED_LOCATION = 'panda.composer.protected';
+/** Original composer tray controls: [id, label]. Order inside the tray's tool row and reversible hide on the original nodes. */
+export const COMPOSER_TRAY_CONTROLS = [
+  ['model', 'Model picker'], ['mode', 'Approval mode'], ['team', 'Agent team'], ['saver', 'Token saver'], ['council', 'Council'], ['run-target', 'Run on'],
+] as const;
+export type ComposerTrayControl = typeof COMPOSER_TRAY_CONTROLS[number][0];
+/** Tray controls that never hide, with the reason. They still reorder. */
+export const COMPOSER_TRAY_PINNED: Readonly<Partial<Record<ComposerTrayControl, string>>> = {
+  model: 'The model picker is the composer\'s only view of the task\'s harness and model, and provider recovery opens it.',
+  mode: 'The approval mode is the visible indicator of what the agent may do without asking.',
+};
+/** Tray controls that hide but keep their place, with the reason. */
+export const COMPOSER_TRAY_FIXED: Readonly<Partial<Record<ComposerTrayControl, string>>> = {
+  'run-target': 'Run on sits with the checkout and branch chips, not among the tray tools; it hides in place.',
+};
+/** Model picker rail entries: [id, label]. Recent and Teams, then every built-in harness; package harnesses follow
+ * in their catalog order and keep their entry (their identities are not layout item ids). */
+export const COMPOSER_MODEL_ENTRIES: readonly (readonly [string, string])[] = [['recent', 'Recent models'], ['teams', 'Agent teams'], ...BUILTIN_PROVIDER_IDS.map(id => [id, `Harness ${id}`] as const)];
+/** Steer bar parts: [id, label]. Order inside the bar and reversible hide on the original nodes. */
+export const COMPOSER_STEER_PARTS = [['steer-edit', 'Edit draft'], ['steer', 'Steer'], ['steer-clear', 'Clear draft']] as const;
+export type ComposerSteerPart = typeof COMPOSER_STEER_PARTS[number][0];
+export const COMPOSER_STEER_PINNED: Readonly<Partial<Record<ComposerSteerPart, string>>> = {
+  steer: 'Steer is how a draft reaches the running turn without stopping it; it never hides while a turn runs.',
+};
+/** Approval modes in the Permissions menu: [id, label]. Every mode row is pinned: the menu is host authority. */
+export const COMPOSER_PERMISSION_MODES = [['ask', 'Standard'], ['auto', 'Accept edits'], ['review', 'Approve for me'], ['plan', 'Plan mode'], ['full', 'Full access']] as const;
+export const COMPOSER_PERMISSION_REASON = 'Approval modes keep their rows and order; only the user\'s choice in this menu changes the mode.';
+/** Protected composer behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const COMPOSER_PROTECTED = [
+  ['mode-change', 'Change approval mode', 'Only the user\'s own choice in the original Permissions menu changes a task\'s approval mode; a package request is refused.'],
+  ['model-select', 'Change harness, model, effort or team', 'Only the user\'s own choice in the original model picker changes them; a package request is refused.'],
+  ['send-stop', 'Send and Stop', 'Send, queue and Stop stay host-owned keys and buttons; no package control sends or stops.'],
+  ['draft', 'Draft text and attachments', 'The draft, its undo history and attachments never cross the boundary; packages see only whether a draft exists.'],
+  ['approvals', 'Approval answers', 'Allow, deny and answers stay host-drawn above the composer.'],
+] as const;
+export type ActionLocation = typeof COMPOSER_ACTION_SURFACES[number] | typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

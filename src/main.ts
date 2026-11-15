@@ -761,6 +761,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     dock: $('#action-dock'), root: $('.workspace'), flyout: $('#agents-flyout'), onContextChanged, notify,
     state: () => ({ project: state.projectId || undefined, task: state.sessionId || undefined, team: state.sessionId ? teams.get(state.sessionId) : undefined, needsInput: id => architectView?.needsInput(id) ?? false }),
   });
+  // Composer tray tools, the model picker's rail and action row, the Permissions menu's contributed rows and the steer
+  // bar: presentation only. The draft, the selected model, the approval mode, Send, Stop and approvals stay here.
+  composerAdoption = (await import('./extensions/composer-host')).mountComposerAdoption({
+    area: $('#composer-area'), onContextChanged, notify,
+    state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, running: isRunning(), mode: s?.mode ?? 'ask', busy: Boolean(modelPickerCleanup) || Boolean(s && configuringSessions.has(s.id)), generation: state.generation }; },
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -831,6 +837,8 @@ let unreviewed: Set<string> | undefined;
 let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mountSidebarAdoption> | undefined;
 /** Bots panel adoption (docs/extensions/sidebar.md#bots-panel), mounted once extensions load. */
 let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mountSidebarBotsAdoption> | undefined;
+/** Composer controls adoption (docs/extensions/composer.md), mounted once extensions load. */
+let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
 let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
 /** Agent roster adoption (docs/extensions/agent-roster.md), mounted once extensions load. */
@@ -1005,6 +1013,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('composer-controls')) {
+  (window as any).__previewComposer = () => composerAdoption?.presentation();
+  (window as any).__previewComposerAction = (input: unknown) => composerAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('dock-coverage')) {
   (window as any).__previewDock = () => dockAdoption?.presentation();
   (window as any).__previewDockAction = (input: unknown) => dockAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
@@ -3343,7 +3355,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><div class="extension-action-slot" data-composer-steer-actions></div><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -3428,6 +3440,8 @@ function renderComposer(): void {
   syncRemoteConnection();
   renderedRemoteKey = remoteComposerKey(s);
   applyComposerPresentation($('#composer'));
+  // Tray tools and steer bar parts: the user's order and reversible visibility on the nodes this draw made.
+  composerAdoption?.apply();
   syncProviderRecovery();
 }
 function syncProviderRecovery(): void {
@@ -6041,6 +6055,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
+    // The user's order and visibility of the rail's entries, and contributed actions captured for this task and model.
+    entries: composerAdoption ? keys => composerAdoption!.modelEntries(keys, { provider: selected.provider, team: Boolean(named.some(profile => isTeam(teams.get(selected.id)?.config, profile))) }) : undefined,
+    mountActions: composerAdoption ? host => composerAdoption?.modelActions(host, { projectId: selected.projectId || undefined, sessionId: selected.id }, `${selected.provider}:${selected.model || 'default'}`, generation) : undefined,
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
@@ -6245,7 +6262,9 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
-  await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
+  // Contributed rows follow the pinned modes; the mode itself changes only through the user's choice here.
+  const extensionSurface = composerAdoption?.permissionsSurface({ projectId: s.projectId || undefined, sessionId: s.id }, s.mode, generation, () => current() && generation === state.generation && !isRunning(s.id));
+  await showChoices(anchor, { title: 'Permissions', width: 320, ...(extensionSurface ? { extensionSurface } : {}), items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
     if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
     if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
