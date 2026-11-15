@@ -149,7 +149,7 @@ fn key_with_disabled(
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "fastMode": super::claude_fast_mode(config),
-        "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
+        "mode": config.mode, "autoWrites": config.auto_writes, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
         "disabledSkills": disabled,
         // The login a process starts with (API key or subscription) is fixed at spawn.
@@ -512,6 +512,7 @@ mod tests {
         for different in [
             changed(|c| c.model = "claude-sonnet-5-5".into()),
             changed(|c| c.mode = "full".into()),
+            changed(|c| c.auto_writes = true),
             changed(|c| c.reasoning_effort = Some("high".into())),
             changed(|c| c.codex_settings = Some(json!({"serviceTier": "fast"}))),
             changed(|c| c.resume_id = Some("another".into())),

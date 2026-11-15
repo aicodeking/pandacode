@@ -1796,7 +1796,7 @@ fn workers_keep_full_access_across_retry_and_failed_work_can_be_abandoned() {
         .store
         .lock()
         .unwrap()
-        .update(&sid, None, None, None, Some("ask".into()))
+        .update(&sid, None, None, None, Some("ask".into()), None)
         .unwrap();
     control_state(&state, &sid, "resume").unwrap();
     let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();

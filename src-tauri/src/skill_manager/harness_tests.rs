@@ -129,6 +129,7 @@ fn skill_manager_switchable_and_off_explicit_invocation() {
         goal: None,
         codex_settings: None,
         images: vec![],
+        auto_writes: false,
     };
     apply_instructions(&mut config, &BTreeSet::from(["off".into()]));
     assert!(config.skill.is_none());
