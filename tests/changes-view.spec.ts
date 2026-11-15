@@ -41,6 +41,7 @@ const DIFFS = {
   'src/both.ts': patch('src/both.ts', 1, 1),
 };
 
+test.describe('changes view', () => {
 test('stacks every changed file with totals, pills and inline diffs', async ({ page }) => {
   test.slow();
   await mount(page, FILES, DIFFS);
@@ -513,4 +514,425 @@ test('Changes patch budget evicts the least recent collapsed text, preserves hei
   await page.evaluate(() => (window as any).harness.pending.get('b.ts')());
   await expect(first.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
   await expect(first.locator('.cv-stat')).toHaveText('+3-1');
+});
+
+function longPatch(path: string, lines = 8): string {
+  return patch(path, lines, lines).replace(/(const (?:added|removed)\d+ = \d+);/g, '$1 + "' + 'long code '.repeat(100) + '";');
+}
+
+for (const virtualized of [false, true]) for (const layout of ['unified', 'split'] as const) for (const suspension of ['fold', 'inspector', 'document'] as const) {
+  test(`Changes ${virtualized ? 'virtualized ' : ''}${layout} long-line position survives ${suspension} suspension`, async ({ page }) => {
+    await mount(page, [{ path: 'a.ts', index: ' ', working: 'M' }], { 'a.ts': virtualized ? virtualLongPatch() : longPatch('a.ts') });
+    const viewer = page.locator('.diff-viewer');
+    const code = viewer.locator('diffs-container').first().locator('[data-code]');
+    await expect(viewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+    if (layout === 'split') {
+      await page.locator('#host').evaluate(el => { el.style.width = '1000px'; });
+      const split = viewer.getByRole('button', { name: 'Split diff', exact: true, includeHidden: true });
+      await expect(split).toBeEnabled();
+      await split.evaluate((el: HTMLButtonElement) => el.click());
+      await expect(viewer).toHaveAttribute('data-diff-layout', 'split');
+    }
+    if (virtualized) await expect(viewer.locator('diffs-container')).toHaveCount(3);
+    const top = await page.locator('.cv-body').evaluate(el => el.scrollTop);
+    const positions = layout === 'split' ? [250, 250] : [250];
+    await expect(code).toHaveCount(positions.length);
+    await code.evaluateAll(nodes => nodes.forEach(node => { node.scrollLeft = 250; }));
+    await expect.poll(() => code.evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual(positions);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const height = (await page.locator('.cv-file-body').boundingBox())!.height;
+    if (suspension === 'fold') {
+      await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+      await expect(viewer).toHaveCount(0);
+      await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+    } else if (suspension === 'inspector') {
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>('#host')!.hidden = true;
+        (window as any).harness.view.setVisible(false);
+      });
+      await expect(viewer).toHaveCount(0);
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>('#host')!.hidden = false;
+        (window as any).harness.view.setVisible(true);
+      });
+    } else {
+      await page.clock.install();
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await page.clock.runFor(1_100);
+      await expect(viewer).toHaveAttribute('data-diff-state', 'suspended');
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await page.clock.resume();
+    }
+    await expect(viewer).toHaveAttribute('data-diff-state', 'ready');
+    await expect(viewer).toHaveAttribute('data-diff-layout', layout);
+    await expect.poll(() => code.evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual(positions);
+    await expect.poll(() => page.locator('.cv-body').evaluate(el => el.scrollTop)).toBe(top);
+    expect((await page.locator('.cv-file-body').boundingBox())!.height).toBeCloseTo(height, 0);
+    expect(await loads(page)).toEqual(['a.ts:false']);
+  });
+}
+
+test('split diff long-line positions survive document suspension with a clamped side', async ({ page }) => {
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  await page.evaluate(async patch => {
+    const host = document.querySelector<HTMLElement>('#host')!;
+    host.style.width = '1000px';
+    const { mountDiffViewer } = await import(/* @vite-ignore */ `${location.origin}/src/diff-viewer.ts`);
+    await mountDiffViewer(host, { patch, path: 'a.ts', layout: 'split' }).ready;
+  }, longPatch('a.ts', 80).replace(/^-const removed.*$/gm, '-const removed = "' + 'x'.repeat(45) + '";'));
+  const viewer = page.locator('.diff-viewer');
+  const code = viewer.locator('[data-code]');
+  await expect(viewer).toHaveAttribute('data-diff-layout', 'split');
+  await expect(code).toHaveCount(2);
+  await code.last().evaluate(node => { node.scrollLeft = 250; });
+  await expect.poll(() => code.last().evaluate(node => node.scrollLeft)).toBe(250);
+  await expect.poll(() => code.first().evaluate(node => node.scrollLeft)).toBeGreaterThan(0);
+  const positions = await code.evaluateAll(nodes => nodes.map(node => node.scrollLeft));
+  expect(positions[0]).toBeLessThan(250);
+  const content = page.locator('.diff-viewer-content');
+  await content.evaluate(el => { el.style.maxHeight = '160px'; el.scrollTop = 180; });
+  const top = await content.evaluate(el => el.scrollTop);
+  expect(top).toBeGreaterThan(0);
+  await page.clock.install();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.runFor(1_100);
+  await expect(viewer).toHaveAttribute('data-diff-state', 'suspended');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.resume();
+  await expect(viewer).toHaveAttribute('data-diff-state', 'ready');
+  await expect(viewer).toHaveAttribute('data-diff-layout', 'split');
+  await expect.poll(() => code.evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual(positions);
+  await expect.poll(() => content.evaluate(el => el.scrollTop)).toBe(top);
+});
+
+test('an evicted diff reload failure clears reserved height and Retry succeeds', async ({ page }) => {
+  await page.route('**/src/changes-view.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace('16 * 1024 * 1024', '900') });
+  });
+  await mount(page, [{ path: 'a.ts', index: ' ', working: 'M' }], { 'a.ts': patch('a.ts', 80, 1) });
+  const body = page.locator('.cv-file-body');
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  expect((await body.boundingBox())!.height).toBeGreaterThan(1000);
+  await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+  await page.evaluate(() => { (window as any).harness.diffs['a.ts'] = new Error('Evicted patch unavailable'); });
+  await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+  await expect(page.locator('.cv-error')).toContainText('Evicted patch unavailable');
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  expect((await body.boundingBox())!.height).toBeLessThan(100);
+  await page.evaluate(text => { (window as any).harness.diffs['a.ts'] = text; }, patch('a.ts', 80, 1));
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
+  expect((await body.boundingBox())!.height).toBeGreaterThan(1000);
+  expect(await loads(page)).toEqual(['a.ts:false', 'a.ts:false', 'a.ts:false']);
+});
+
+test('Changes keeps Wrap through fold and inspector suspension', async ({ page }) => {
+  await mount(page, [{ path: 'a.ts', index: ' ', working: 'M' }], { 'a.ts': patch('a.ts', 8, 1) });
+  const viewer = page.locator('.diff-viewer');
+  await expect(viewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  const wrap = viewer.getByRole('button', { name: 'Wrap lines', exact: true, includeHidden: true });
+  await wrap.evaluate((el: HTMLButtonElement) => el.click());
+  await expect(wrap).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Collapse a.ts', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand a.ts', exact: true }).click();
+  await expect(viewer).toHaveAttribute('data-diff-state', 'ready');
+  await expect(wrap).toHaveAttribute('aria-pressed', 'true');
+  await page.evaluate(() => (window as any).harness.view.setVisible(false));
+  await expect(viewer).toHaveCount(0);
+  await page.evaluate(() => (window as any).harness.view.setVisible(true));
+  await expect(viewer).toHaveAttribute('data-diff-state', 'ready');
+  await expect(wrap).toHaveAttribute('aria-pressed', 'true');
+});
+
+function virtualLongPatch(): string {
+  const [header, hunk] = longPatch('a.ts', 10).split('@@ -1,11 +1,11 @@');
+  const lines = hunk.trim().split('\n').slice(1);
+  const changes = Array.from({ length: 10 }, (_, i) => `${lines[i]}\n${lines[i + 10]}\n`).join('');
+  return header + Array.from({ length: 40 }, (_, i) => `@@ -${i * 30 + 1},10 +${i * 30 + 1},10 @@\n${changes}`).join('');
+}
+
+function deepPatch(path = 'a.ts'): string {
+  let text = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n`;
+  for (let hunk = 0; hunk < 40; hunk++) {
+    text += `@@ -${hunk * 30 + 1},10 +${hunk * 30 + 1},10 @@\n`;
+    for (let line = 0; line < 10; line++) {
+      text += `-old_h${hunk}_l${line} ${'x'.repeat(220)}\n`;
+      text += `+new_h${hunk}_l${line} ${'y'.repeat(300)}\n`;
+    }
+  }
+  return text;
+}
+
+type ReaderPosition = {
+  top: number;
+  height: number;
+  anchor: { container: number; side: number; index: string; line: string; text: string; offset: number } | null;
+};
+
+async function stableReaderPosition(page: Page, rootSelector: string): Promise<ReaderPosition> {
+  const read = () => page.evaluate(selector => {
+    const root = document.querySelector<HTMLElement>(selector)!;
+    const viewport = root.getBoundingClientRect();
+    const visible: ReaderPosition['anchor'][] = [];
+    document.querySelectorAll('diffs-container').forEach((container, containerIndex) => {
+      container.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach((code, side) => {
+        code.querySelectorAll<HTMLElement>('[data-line][data-line-index]').forEach(line => {
+          const rect = line.getBoundingClientRect();
+          if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) return;
+          visible.push({
+            container: containerIndex,
+            side,
+            index: line.dataset.lineIndex!,
+            line: line.dataset.line ?? '',
+            text: line.textContent?.trim().slice(0, 40) ?? '',
+            offset: Math.round((rect.top - viewport.top) * 1_000) / 1_000,
+          });
+        });
+      });
+    });
+    visible.sort((a, b) => a!.offset - b!.offset || a!.container - b!.container || a!.side - b!.side);
+    return { top: root.scrollTop, height: root.scrollHeight, anchor: visible[0] ?? null } satisfies ReaderPosition;
+  }, rootSelector);
+  let previous = '', stable = 0;
+  await expect.poll(async () => {
+    const position = await read();
+    const { offset: _offset, ...identity } = position.anchor ?? { offset: 0 };
+    const key = JSON.stringify(identity);
+    stable = key === previous ? stable + 1 : 0;
+    previous = key;
+    return stable;
+  }, { timeout: 15_000, intervals: [100] }).toBeGreaterThanOrEqual(5);
+  return read();
+}
+
+async function waitForDeepExtent(page: Page, rootSelector: string): Promise<void> {
+  await expect(page.locator('diffs-container')).toHaveCount(3, { timeout: 15_000 });
+  await expect.poll(() => page.locator(rootSelector).evaluate(el => el.scrollHeight),
+    { timeout: 15_000, intervals: [100] }).toBeGreaterThan(7_000);
+}
+
+function expectSameReaderAnchor(before: ReaderPosition, after: ReaderPosition): void {
+  expect(before.anchor).not.toBeNull();
+  expect(after.anchor).not.toBeNull();
+  const { offset: beforeOffset, ...beforeIdentity } = before.anchor!;
+  const { offset: afterOffset, ...afterIdentity } = after.anchor!;
+  expect(afterIdentity).toEqual(beforeIdentity);
+  expect(afterOffset).toBeCloseTo(beforeOffset, 0);
+}
+
+for (const layout of ['unified', 'split'] as const) {
+  test(`standalone deep ${layout} diff preserves its semantic line through document suspension`, async ({ page }) => {
+    test.slow();
+    await page.goto('/tests/fixtures/changes-view.html');
+    await page.waitForFunction(() => (window as any).harnessReady);
+    await page.evaluate(async ({ patch, layout }) => {
+      const host = document.querySelector<HTMLElement>('#host')!;
+      host.style.width = '1000px';
+      const { mountDiffViewer } = await import(/* @vite-ignore */ `${location.origin}/src/diff-viewer.ts`);
+      const viewer = (window as any).deepViewer = mountDiffViewer(host, { patch, path: 'a.ts', layout });
+      await viewer.ready;
+      const content = host.querySelector<HTMLElement>('.diff-viewer-content')!;
+      content.style.height = content.style.maxHeight = '500px';
+    }, { patch: deepPatch(), layout });
+    const viewer = page.locator('.diff-viewer');
+    await expect(viewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+    await expect(viewer).toHaveAttribute('data-diff-layout', layout);
+    await waitForDeepExtent(page, '.diff-viewer-content');
+    await stableReaderPosition(page, '.diff-viewer-content');
+    await page.locator('.diff-viewer-content').evaluate(el => { el.scrollTop = 10_000; });
+    await page.waitForTimeout(1_800);
+    const before = await stableReaderPosition(page, '.diff-viewer-content');
+    expect(before.anchor).not.toBeNull();
+    const expectedCodeScroll = layout === 'split' ? [250, 250] : [250];
+    const anchorCode = viewer.locator('diffs-container').nth(before.anchor!.container).locator('[data-code]');
+    await anchorCode.evaluateAll(nodes => nodes.forEach(node => { node.scrollLeft = 250; }));
+    await expect.poll(() => anchorCode.evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual(expectedCodeScroll);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(1_100);
+    await expect(viewer).toHaveAttribute('data-diff-state', 'suspended');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect(viewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+    await page.waitForTimeout(5_000);
+    const after = await stableReaderPosition(page, '.diff-viewer-content');
+
+    expectSameReaderAnchor(before, after);
+    await expect.poll(() => anchorCode.evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual(expectedCodeScroll);
+  });
+}
+
+for (const layout of ['unified', 'split'] as const) {
+  test(`Changes deep ${layout} diff preserves one outer-list semantic anchor for both inspector hide orders`, async ({ page }) => {
+    test.slow();
+    await mount(page, [{ path: 'a.ts', index: ' ', working: 'M' }], { 'a.ts': deepPatch() });
+    const host = page.locator('#host');
+    await host.evaluate(el => { el.style.width = '1000px'; });
+    const viewer = page.locator('.diff-viewer');
+    await expect(viewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+    if (layout === 'split') {
+      const split = viewer.getByRole('button', { name: 'Split diff', exact: true, includeHidden: true });
+      await expect(split).toBeEnabled();
+      await split.evaluate((el: HTMLButtonElement) => el.click());
+    }
+    await expect(viewer).toHaveAttribute('data-diff-layout', layout);
+    await waitForDeepExtent(page, '.cv-body');
+    await stableReaderPosition(page, '.cv-body');
+    await page.locator('.cv-body').evaluate(el => { el.scrollTop = 10_000; });
+    await page.waitForTimeout(1_800);
+
+    for (const hideHostFirst of [true, false]) {
+      const before = await stableReaderPosition(page, '.cv-body');
+      await page.evaluate(hideFirst => {
+        const host = document.querySelector<HTMLElement>('#host')!;
+        if (hideFirst) host.hidden = true;
+        (window as any).harness.view.setVisible(false);
+        host.hidden = true;
+      }, hideHostFirst);
+      await expect(viewer).toHaveCount(0);
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>('#host')!.hidden = false;
+        (window as any).harness.view.setVisible(true);
+      });
+      await expect(viewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+      await expect(viewer).toHaveAttribute('data-diff-layout', layout);
+      await page.waitForTimeout(5_000);
+      const after = await stableReaderPosition(page, '.cv-body');
+      expectSameReaderAnchor(before, after);
+    }
+  });
+}
+
+test('virtualized split diff restores horizontal positions after document layout and later chunk mounts', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/tests/fixtures/changes-view.html');
+  await page.waitForFunction(() => (window as any).harnessReady);
+  await page.evaluate(async patch => {
+    const host = document.querySelector<HTMLElement>('#host')!;
+    host.style.width = '1000px';
+    const { mountDiffViewer } = await import(/* @vite-ignore */ `${location.origin}/src/diff-viewer.ts`);
+    const viewer = (window as any).virtualViewer = mountDiffViewer(host, { patch, path: 'a.ts', layout: 'split' });
+    await viewer.ready;
+    const content = host.querySelector<HTMLElement>('.diff-viewer-content')!;
+    content.style.height = content.style.maxHeight = '500px';
+    content.scrollTop = 10000;
+  }, virtualLongPatch());
+  const viewer = page.locator('.diff-viewer');
+  const content = viewer.locator('.diff-viewer-content');
+  const chunks = viewer.locator('diffs-container');
+  await expect(chunks).toHaveCount(3);
+  await expect.poll(() => chunks.last().locator('[data-code]').evaluateAll(nodes => nodes.length === 2 && nodes.every(node => node.scrollWidth > node.clientWidth + 250))).toBe(true);
+  let previousGeometry = '', stableGeometry = 0;
+  await expect.poll(async () => {
+    const geometry = await content.evaluate(el => `${el.scrollTop}:${el.scrollHeight}`);
+    stableGeometry = geometry === previousGeometry ? stableGeometry + 1 : 0;
+    previousGeometry = geometry;
+    return stableGeometry;
+  }, { intervals: [100] }).toBeGreaterThanOrEqual(5);
+  await viewer.locator('[data-code]').evaluateAll(nodes => nodes.forEach(node => { if (node.clientWidth) node.scrollLeft = 250; }));
+  await expect.poll(() => chunks.last().locator('[data-code]').evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual([250, 250]);
+  const offsets = () => chunks.evaluateAll(nodes => nodes.map(node => Array.from(node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]') ?? [], code => code.clientWidth ? code.scrollLeft : null)));
+  await expect.poll(offsets).toContainEqual([250, 250]);
+  const before = await offsets();
+  const top = await content.evaluate(el => el.scrollTop);
+  expect(top).toBeGreaterThan(1000);
+  // The first chunk is now a placeholder. Its saved offset must survive two
+  // releases without forcing its code to mount, then apply when scrolled into view.
+  await expect(chunks.first().locator('[data-code] [data-line]')).toHaveCount(0);
+  await page.evaluate(() => {
+    const viewer = (window as any).virtualViewer;
+    const state = viewer.getReaderState();
+    state.code[0] = [250, 250];
+    viewer.restoreReaderState(state);
+  });
+  for (let i = 0; i < 2; i++) {
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.clock.runFor(1_100);
+    await expect(viewer).toHaveAttribute('data-diff-state', 'suspended');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.clock.resume();
+    await expect(viewer).toHaveAttribute('data-diff-state', 'ready');
+    await expect.poll(() => content.evaluate(el => el.scrollTop)).toBe(top);
+    await expect.poll(offsets).toEqual(before);
+    await expect(viewer).toHaveAttribute('data-diff-layout', 'split');
+  }
+
+  await content.evaluate(el => { el.scrollTop = 0; });
+  await expect.poll(() => chunks.first().locator('[data-code]').evaluateAll(nodes => nodes.map(node => node.scrollLeft))).toEqual([250, 250]);
+  // Disposal must cancel a queued layout restore as well as the virtualizer.
+  await page.evaluate(() => {
+    const viewer = (window as any).virtualViewer;
+    viewer.restoreReaderState(viewer.getReaderState());
+    viewer.dispose();
+  });
+  await expect(viewer).toHaveCount(0);
+});
+
+test('Collapse all and Expand all preserve the outer list reader position across multiple files', async ({ page }) => {
+  test.slow();
+  const files: File[] = [
+    { path: 'src/a.ts', index: ' ', working: 'M' },
+    { path: 'src/b.ts', index: ' ', working: 'M' },
+    { path: 'src/c.ts', index: ' ', working: 'M' },
+  ];
+  await mount(page, files, {
+    'src/a.ts': patch('src/a.ts', 60, 10),
+    'src/b.ts': deepPatch('src/b.ts'),
+    'src/c.ts': patch('src/c.ts', 40, 5),
+  });
+  await page.locator('#host').evaluate(el => { el.style.width = '1000px'; });
+  const targetViewer = page.locator('.cv-file[data-path="src/b.ts"] .diff-viewer');
+  await expect(targetViewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  await expect(targetViewer.locator('diffs-container')).toHaveCount(3, { timeout: 15_000 });
+  await expect.poll(() => page.locator('.cv-body').evaluate(el => el.scrollHeight), { timeout: 15_000 }).toBeGreaterThan(8_000);
+
+  await page.locator('.cv-body').evaluate(el => {
+    const bTop = document.querySelector<HTMLElement>('.cv-file[data-path="src/b.ts"]')!.offsetTop;
+    el.scrollTop = bTop + 4_500;
+  });
+  await page.waitForTimeout(1_800);
+  const before = await stableReaderPosition(page, '.cv-body');
+  expect(before.top).toBeGreaterThan(3_000);
+  expect(before.anchor).not.toBeNull();
+
+  await page.getByRole('button', { name: 'Collapse all', exact: true }).click();
+  await expect(page.locator('.cv-file.collapsed')).toHaveCount(3);
+  await expect(page.locator('.diff-viewer')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Expand all', exact: true }).click();
+  await expect(page.locator('.cv-file.collapsed')).toHaveCount(0);
+  await expect(targetViewer).toHaveAttribute('data-diff-state', 'ready', { timeout: 15_000 });
+  await page.waitForTimeout(2_500);
+  const after = await stableReaderPosition(page, '.cv-body');
+  expect(after.anchor).not.toBeNull();
+  expect(after.anchor!.line).toBe(before.anchor!.line);
+  expect(after.anchor!.text).toBe(before.anchor!.text);
+  expect(after.anchor!.offset).toBeCloseTo(before.anchor!.offset, 0);
+});
 });

@@ -740,6 +740,8 @@ fn create_task_worktree(store: &Arc<StdMutex<crate::storage::Store>>, session_id
     let store = store.lock().map_err(|e| e.to_string())?;
     if attach {
         let task = store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display()))?;
+        drop(store);
+        crate::providers::discard_warm_agent(&source.id);
         return Ok((task, true));
     }
     let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
@@ -1376,6 +1378,7 @@ mod tests {
         assert_eq!(moved.id, fresh.id);
         assert_eq!(moved.worktree_branch.as_deref(), Some("pandacode/fresh-one"));
         assert!(Path::new(moved.worktree_path.as_ref().unwrap()).is_dir());
+        assert_eq!(crate::providers::warm_epoch(&fresh.id), 1, "attaching a worktree discards any warm spare");
         let again = create_task_worktree(&store, &fresh.id, "fresh-two", Trust::phone(false)).unwrap_err();
         assert!(again.contains("already has a worktree"), "{again}");
 
@@ -1385,6 +1388,7 @@ mod tests {
         assert_eq!(created.provider, "claude");
         assert_eq!(created.worktree_branch.as_deref(), Some("pandacode/started-one"));
         assert!(store.lock().unwrap().session(&started.id).unwrap().worktree_path.is_none(), "the source keeps the main checkout");
+        assert_eq!(crate::providers::warm_epoch(&started.id), 0);
 
         let taken = create_task_worktree(&store, &started.id, "started-one", Trust::Desktop).unwrap_err();
         assert!(taken.contains("already exists"), "{taken}");

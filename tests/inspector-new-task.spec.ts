@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 
+test.describe('inspector new task', () => {
 test('a new task keeps the inspector closed when the user closed it', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.task-item[data-id="session-1"]')).toHaveAttribute('aria-current', 'page');
@@ -92,4 +93,63 @@ test('closing the inspector suspends diffs without losing the reader folds', asy
   await page.locator('#inspector-toggle').click();
   await expect(toggles.first()).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('#inspector .diff-viewer[data-diff-state="ready"]').first()).toBeVisible({ timeout: 15_000 });
+});
+
+test('New task opens and focuses #prompt immediately without redundant history, task, team, or fresh-workspace IPCs', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const body = (await response.text()).replace(/switch \(command\) \{/, `
+      (window.__bootAndNewTaskCalls ??= []).push({ command, sessionId: args?.sessionId ?? null });
+      switch (command) {`);
+    await route.fulfill({ response, body });
+  });
+  await page.goto('/');
+  await expect(page.locator('.task-item[data-id="session-1"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('#prompt')).toBeEnabled();
+  await expect(page.locator('#inspector .changes-view')).toBeVisible();
+
+  const bootOrder = await page.evaluate(() => {
+    const calls = ((window as any).__bootAndNewTaskCalls as Array<{ command: string; sessionId: string | null }>).map(item => item.command);
+    return {
+      projectsAt: calls.indexOf('list_projects'),
+      sessionsAt: calls.indexOf('list_sessions'),
+      providersAt: calls.indexOf('list_providers'),
+    };
+  });
+  expect(bootOrder.projectsAt).toBeGreaterThanOrEqual(0);
+  expect(bootOrder.sessionsAt).toBeGreaterThanOrEqual(0);
+  expect(bootOrder.providersAt).toBeGreaterThan(bootOrder.projectsAt);
+  expect(bootOrder.providersAt).toBeGreaterThan(bootOrder.sessionsAt);
+
+  await page.evaluate(() => { (window as any).__bootAndNewTaskCalls = []; });
+  await page.locator('.new-task-button').click();
+  await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
+  await expect(page.locator('#prompt')).toBeEnabled();
+  await expect(page.locator('#prompt')).toBeFocused();
+  const createdId = await page.locator('#prompt').getAttribute('data-session-id');
+  expect(createdId).toBeTruthy();
+  expect(createdId).not.toBe('session-1');
+
+  const newTaskCalls = await page.evaluate(id => {
+    const calls = (window as any).__bootAndNewTaskCalls as Array<{ command: string; sessionId: string | null }>;
+    return {
+      forCreated: calls.filter(item => item.sessionId === id).map(item => item.command),
+      gitStatusCalls: calls.filter(item => item.command === 'git_status').length,
+    };
+  }, createdId);
+  expect(newTaskCalls.forCreated).not.toContain('messages_page');
+  expect(newTaskCalls.forCreated).not.toContain('get_messages');
+  expect(newTaskCalls.forCreated).not.toContain('get_task');
+  expect(newTaskCalls.forCreated).not.toContain('architect_get');
+  expect(newTaskCalls.forCreated).not.toContain('prewarm_draft_session');
+  expect(newTaskCalls.gitStatusCalls).toBe(0);
+
+  await page.locator('#prompt').fill('h');
+  await page.locator('#prompt').fill('hello');
+  const prewarmCalls = await page.evaluate(id => {
+    const calls = (window as any).__bootAndNewTaskCalls as Array<{ command: string; sessionId: string | null }>;
+    return calls.filter(item => item.command === 'prewarm_draft_session' && item.sessionId === id).length;
+  }, createdId);
+  expect(prewarmCalls).toBe(1);
+});
 });

@@ -7,6 +7,8 @@ html[data-theme="dark"] .thread-sky::after{background:rgb(0 0 0 / .62)}
 .thread-sky[data-gl]::after{content:none}
 .thread-sky>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0}
 .thread-sky[data-gl]>canvas{opacity:1}
+.thread-sky>canvas.thread-sky-still{opacity:1}
+.thread-sky>canvas.thread-sky-still[hidden]{display:none}
 .thread-sky>canvas.thread-sky-fade{opacity:1}
 .thread-sky>canvas.thread-sky-fade[hidden]{display:none}
 .thread-sky[hidden],.workspace:is(.board-view,.github-view,[data-wallpaper]) .thread-sky{display:none}
@@ -31,7 +33,7 @@ html[data-theme] .workspace[data-scene="sky"] .conversation-pane .composer-area 
   border-radius:var(--ds-radius-card);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
 /* A soft halo in the page tone under text and icons on the scene: no edge, it only steadies glyphs over cloud texture. */
 html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.new-task-welcome,.workspace-header){text-shadow:0 0 6px color-mix(in srgb,var(--bg) 55%,transparent)}
-html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.workspace-header) .icon{filter:drop-shadow(0 0 3px color-mix(in srgb,var(--bg) 50%,transparent))}
+html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.workspace-header) .icon:not(:where(details:not([open])>:not(summary),details:not([open])>:not(summary) *)){filter:drop-shadow(0 0 3px color-mix(in srgb,var(--bg) 50%,transparent))}
 html[data-theme] .workspace[data-scene="sky"] .main-pane :is(.composer,.user-message .message-content,pre,code){text-shadow:none}
 
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more),(forced-colors:active){

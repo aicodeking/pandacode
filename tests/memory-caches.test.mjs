@@ -46,15 +46,18 @@ test('a deferred Markdown builder does not retain its detached target or scroll 
   assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
 });
 
-test('file cache counts UTF-16 text and binary bytes together, preserving the shown tab', () => {
+test('file cache counts UTF-16 text and binary bytes together, preserving the shown tab and office reader state', () => {
   const { trimDocumentCache } = load('file-tabs');
+  const office = { aspectRatios: [0.75], anchor: { page: 4, fraction: 0.25 }, actual: true, imageScrollLeft: 120 };
   const shown = { content: 'shown'.repeat(100), used: 1 };
-  const oldest = { content: 'abc', used: 2 };
+  const oldest = { content: 'abc', used: 2, office };
   const recent = { content: new ArrayBuffer(4), used: 3 };
   const newest = { content: '😀x', used: 4 };
   trimDocumentCache([shown, oldest, recent, newest], shown, 10);
   assert.equal(shown.content.length, 500);
   assert.equal(oldest.content, undefined);
+  assert.equal(oldest.evictedBytes, 6);
+  assert.equal(oldest.office, office);
   assert.equal(recent.content.byteLength, 4);
   assert.equal(newest.content, '😀x');
 });

@@ -1,5 +1,5 @@
 import type { GitFile, GitStatus } from './types';
-import type { DiffViewerController } from './diff-viewer';
+import type { DiffViewerController, DiffViewerReaderState } from './diff-viewer';
 import { escape, fileIcon, icon } from './dom';
 import './changes-view.css';
 import { errorText } from './error-text';
@@ -32,7 +32,7 @@ interface Entry {
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
-  near: boolean; refresh: boolean; used: number; height?: number; scroll?: { top: number; left: number };
+  near: boolean; refresh: boolean; used: number; height?: number; reader?: DiffViewerReaderState;
   viewer?: DiffViewerController; slot?: HTMLElement; shown?: string;
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
@@ -40,6 +40,7 @@ interface Entry {
 
 const REFETCH_GAP = 1_000;
 const PATCH_CACHE_BYTES = 16 * 1024 * 1024;
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 // Added to each diff's shadow root (by the viewer, also for hunk groups that mount later): long lines scroll with a visible bar; wrapped code may break anywhere (so indentation never
 // sits alone on a row), and hunk headers are one slim muted line.
 const SHADOW_CSS = `
@@ -91,6 +92,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let order: string[] = [];
   let viewerModule: Promise<typeof import('./diff-viewer')> | undefined;
   let lastRefetch = 0, refetchTimer = 0, fitFrame = 0;
+  let listReader: { path: string; state: DiffViewerReaderState } | undefined;
+  let lastBodyScrollTop = 0;
+  let pendingListScrollTop: number | undefined;
+  let foldScrollTop: number | undefined;
 
   host.classList.add('changes-view');
   host.innerHTML = `
@@ -122,7 +127,14 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     }
     trimPatches();
   }, { root: body, rootMargin: '800px 0px' });
-  const resizer = new ResizeObserver(() => scheduleFit());
+  const resizer = new ResizeObserver(() => {
+    if (pendingListScrollTop !== undefined && body.clientHeight > 0) {
+      body.scrollTop = pendingListScrollTop;
+      lastBodyScrollTop = body.scrollTop;
+      pendingListScrollTop = undefined;
+    }
+    scheduleFit();
+  });
   resizer.observe(body);
 
   const files = (): GitFile[] => status?.isRepo ? status.files : [];
@@ -222,11 +234,28 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function drop(entry: Entry): void {
-    const content = entry.slot?.querySelector<HTMLElement>('.diff-viewer-content');
-    if (content) entry.scroll = { top: content.scrollTop, left: content.scrollLeft };
+    if (entry.viewer) entry.reader = entry.viewer.getReaderState();
     entry.viewer?.dispose();
     for (const old of entry.stale.splice(0)) old.viewer.dispose();
     entry.viewer = entry.slot = entry.shown = undefined;
+  }
+
+  /** The Changes list owns its one outer scroll position; individual entries never do. */
+  function captureListReader(path?: string): void {
+    const scrollTop = body.clientHeight > 0 ? body.scrollTop : lastBodyScrollTop;
+    if (!path) pendingListScrollTop = scrollTop;
+    listReader = undefined;
+    for (const entry of entries.values()) {
+      if (path && entry.path !== path) continue;
+      if (entry.viewer) {
+        if (body.clientHeight > 0) entry.height = entry.body.getBoundingClientRect().height || entry.height;
+        entry.reader = entry.viewer.getReaderState();
+      }
+      const state = entry.reader;
+      if (state?.anchor && Math.abs(state.top - scrollTop) <= 1 && (!listReader || state.anchor.offset < listReader.state.anchor!.offset)) {
+        listReader = { path: entry.path, state };
+      }
+    }
   }
 
   /** Keep an offscreen diff's extent, so releasing its renderer does not move the list's scroll. */
@@ -301,6 +330,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     } catch (reason) {
       if (disposed || token !== entry.token || (quiet && entry.load === 'loaded')) return;
       drop(entry);
+      entry.body.style.minHeight = '';
+      entry.height = undefined;
       entry.load = 'error';
       entry.body.innerHTML = `<div class="cv-placeholder cv-error">${icon('alert')}<span>${escape(reason instanceof Error ? reason.message : String(reason || 'Unable to load diff'))}</span><button type="button" class="cv-link" data-cv-action="retry-file">Retry</button></div>`;
     }
@@ -320,16 +351,28 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         slot.classList.add('cv-diff-next');
         entry.body.append(slot);
       } else entry.body.replaceChildren(slot);
-      const viewer = mountDiffViewer(slot, { patch: entry.patch, path: entry.path, layout: 'unified', truncated: entry.el.dataset.truncated === 'true', scrollRoot: body, shadowCSS: SHADOW_CSS });
+      const saved = listReader?.path === entry.path ? listReader.state : entry.reader;
+      const viewer = mountDiffViewer(slot, {
+        patch: entry.patch,
+        path: entry.path,
+        layout: saved?.layout ?? 'unified',
+        wrap: saved?.wrap,
+        truncated: entry.el.dataset.truncated === 'true',
+        scrollRoot: body,
+        shadowCSS: SHADOW_CSS,
+        hunkSeparatorHeight: 20,
+        blockGap: 0,
+      });
       Object.assign(entry, { viewer, slot, shown: raw });
       void viewer.ready.then(() => {
         if (disposed || entry.viewer !== viewer) return;
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
-        const content = slot.querySelector<HTMLElement>('.diff-viewer-content');
-        if (content && entry.scroll) { content.scrollTop = entry.scroll.top; content.scrollLeft = entry.scroll.left; }
         entry.body.style.minHeight = '';
-        entry.height = entry.body.getBoundingClientRect().height;
+        const restore = listReader?.path === entry.path ? listReader : undefined;
+        if (entry.reader || restore) viewer.restoreReaderState(restore?.state ?? entry.reader!, { vertical: Boolean(restore) });
+        if (restore) { listReader = undefined; pendingListScrollTop = undefined; }
+        entry.height = entry.body.getBoundingClientRect().height || entry.height;
       });
     }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
   }
@@ -419,7 +462,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     } else mountViewer(entry);
   }
 
-  function toggle(path: string, folded = !collapsed.has(path)): void {
+  function toggle(path: string, folded = !collapsed.has(path), captureAnchor = true): void {
+    if (folded && captureAnchor) captureListReader(path);
     if (folded) collapsed.add(path); else collapsed.delete(path);
     const entry = entries.get(path);
     if (entry) {
@@ -500,8 +544,40 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         break;
       case 'fold-all': {
         const fold = ![...entries.keys()].every(p => collapsed.has(p));
-        for (const p of entries.keys()) toggle(p, fold);
-        totals();
+        if (fold) {
+          captureListReader();
+          foldScrollTop = pendingListScrollTop;
+          pendingListScrollTop = undefined;
+          for (const p of entries.keys()) toggle(p, true, false);
+          totals();
+        } else {
+          const savedReader = listReader;
+          const savedTop = savedReader?.state.top ?? foldScrollTop;
+          foldScrollTop = undefined;
+          for (const p of entries.keys()) toggle(p, false, false);
+          totals();
+          listReader = savedReader;
+          if (savedTop !== undefined) {
+            const rounded = Math.round(savedTop);
+            if (body.clientHeight > 0) {
+              body.scrollTop = rounded;
+              lastBodyScrollTop = body.scrollTop;
+            } else {
+              pendingListScrollTop = rounded;
+            }
+          }
+          const target = savedReader ? entries.get(savedReader.path) : undefined;
+          if (target && savedReader) {
+            if (target.viewer) {
+              target.viewer.restoreReaderState(savedReader.state, { vertical: true });
+              listReader = undefined;
+              pendingListScrollTop = undefined;
+            } else {
+              target.near = true;
+              show(target);
+            }
+          }
+        }
         break;
       }
       case 'menu': {
@@ -531,6 +607,30 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   const listeners = new AbortController();
   host.addEventListener('click', onClick, { signal: listeners.signal });
+  const cancelListReader = () => { listReader = undefined; pendingListScrollTop = undefined; foldScrollTop = undefined; };
+  body.addEventListener('scroll', () => {
+    if (body.clientHeight > 0) lastBodyScrollTop = body.scrollTop;
+  }, { passive: true, signal: listeners.signal });
+  body.addEventListener('wheel', cancelListReader, { passive: true, signal: listeners.signal });
+  body.addEventListener('touchstart', cancelListReader, { passive: true, signal: listeners.signal });
+  body.addEventListener('pointerdown', event => {
+    if (!(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) cancelListReader();
+  }, { passive: true, signal: listeners.signal });
+  body.addEventListener('keydown', event => {
+    if (SCROLL_KEYS.has(event.key) && !(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) cancelListReader();
+  }, { signal: listeners.signal });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) captureListReader();
+    else if (listReader) {
+      const restore = listReader;
+      const viewer = entries.get(restore.path)?.viewer;
+      if (viewer) {
+        viewer.restoreReaderState(restore.state, { vertical: true });
+        listReader = undefined;
+        pendingListScrollTop = undefined;
+      }
+    }
+  }, { signal: listeners.signal });
   commitBar.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void submitCommit(); }, { signal: listeners.signal });
   commitInput.addEventListener('input', totals, { signal: listeners.signal });
   commitInput.addEventListener('keydown', event => {
@@ -550,7 +650,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     },
     setVisible(visible) {
       if (disposed || showing === visible) return;
+      if (!visible) captureListReader();
       showing = visible;
+      if (showing && pendingListScrollTop !== undefined && body.clientHeight > 0) {
+        body.scrollTop = pendingListScrollTop;
+        lastBodyScrollTop = body.scrollTop;
+        pendingListScrollTop = undefined;
+      }
       for (const entry of entries.values()) {
         if (showing) show(entry); else suspend(entry);
       }

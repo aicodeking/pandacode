@@ -192,6 +192,25 @@ const state = {
   sharedChannelLimits: new Map<string, number>(), sharedChannelFromBottom: null as number | null, sharedChannelScrollTop: 0, sharedChannelAtBottom: true, sharedChannelPosting: new Set<string>(),
 };
 let renderFrame = 0;
+const PROMPT_TYPING_YIELD_MS = 28, STREAM_DEFER_MS = 16;
+let lastPromptInputAt = -Infinity, deferredStreamTimer = 0;
+function cancelStreamRender(): void {
+  if (deferredStreamTimer) { window.clearTimeout(deferredStreamTimer); deferredStreamTimer = 0; }
+  if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
+}
+function scheduleStreamRender(): void {
+  if (renderFrame || deferredStreamTimer || !transcriptVisible()) return;
+  if (performance.now() - lastPromptInputAt < PROMPT_TYPING_YIELD_MS) {
+    deferredStreamTimer = window.setTimeout(() => {
+      deferredStreamTimer = 0;
+      if (!renderFrame && state.streams.has(state.sessionId) && transcriptVisible()) {
+        renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
+      }
+    }, STREAM_DEFER_MS);
+    return;
+  }
+  renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
+}
 /** Shows the open thread's scene behind the conversation (set once the sky mounts; `renderTranscript` calls it). */
 let showThreadScene: (id: string | null) => void = () => {};
 let navigationFrame = 0;
@@ -223,6 +242,7 @@ let pendingDismiss: PendingDismiss | null = null;
 const lastErrorToasts = new Map<string, number>();
 // Ignore late snapshots/events for IDs removed during this window's lifetime.
 const deletedSessions = new Set<string>();
+const prewarmedDrafts = new Set<string>();
 let inspectorRequest = 0;
 let fileRequest = 0;
 let selectedFileContext: FileLinkContext | undefined;
@@ -286,7 +306,7 @@ async function ensureArchitectView(): Promise<ArchitectView> {
 }
 function onArchitect(team: TeamEvent): void {
   if (deletedSessions.has(team.sessionId)) return;
-  if ('removed' in team) { teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
+  if ('removed' in team) { prewarmedDrafts.delete(team.sessionId); teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
@@ -301,7 +321,7 @@ function onArchitect(team: TeamEvent): void {
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
   // A snapshot that only moved its revision shows nothing new: no composer, thread or sidebar paint.
   if (current && teamSignature(current) === teamSignature(team) && taskState === `${task?.status}:${task?.taskStage}`) return;
-  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team)); if (!current) syncTeamRows(); }
+  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team) || (!current && classicTeamSetup())); if (!current) syncTeamRows(); }
   scheduleNavigation();
 }
 /** Team snapshots can arrive many times a frame: the composer (and thread worker lines) paint once per frame. */
@@ -310,7 +330,7 @@ function scheduleTeamRender(composer: boolean): void {
   teamComposer ||= composer;
   teamFrame ||= requestAnimationFrame(() => {
     const full = teamComposer; teamFrame = 0; teamComposer = false;
-    if (full) renderComposer(); else refreshModelLabels();
+    if (full) renderComposer(); else { syncTeamButton(); refreshModelLabels(); }
   });
 }
 async function loadTeam(id: string): Promise<TeamSnapshot | null> {
@@ -749,6 +769,7 @@ const worktrees = createWorktrees({
   computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice, cloudTargets, remoteChoiceName) + botTaskControl(task, fresh),
   running: () => isRunning(),
   afterAttach: async (saved, live) => {
+    prewarmedDrafts.delete(saved.id);
     const index = state.sessions.findIndex(s => s.id === saved.id); if (index >= 0) state.sessions[index] = saved;
     if (live) closeModal();
     if (saved.id === state.sessionId) { clearWorkspaceInspector(); render(); terminalPanel.minimize(); await refreshInspector(); renderHeader(); if (live) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); }
@@ -1207,14 +1228,16 @@ function saveThreadPanel(): void {
   if (!state.sessionId || deletedSessions.has(state.sessionId)) return;
   threadPanels.set(state.sessionId, { workspace: workspaceKey(), open: state.inspector, tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
 }
-function restoreThreadPanel(task?: Session): void {
-  clearWorkspaceInspector(false);
+function restoreThreadPanel(task?: Session, keepFreshWorkspace = false): void {
+  if (keepFreshWorkspace) ++fileRequest;
+  else clearWorkspaceInspector(false);
   const saved = task && threadPanels.get(task.id);
   const sameWorkspace = saved?.workspace === workspaceKey();
   // Without saved state the conversation opens the panel on the selected tab, unless the user closed it or it would cover the chat.
   state.inspector = saved?.open ?? (state.view === 'conversation' && inspectorChosen && !matchMedia('(max-width: 920px)').matches);
   state.inspectorTab = saved?.tab && (saved.tab === 'file' || inspectorTabs.open.includes(saved.tab)) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
+  if (keepFreshWorkspace) state.selectedContent = '';
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
   fileTabs.show(state.sessionId, workspaceKey());
   state.filePreviewLoading = Boolean(state.selectedKind);
@@ -1262,6 +1285,7 @@ function saveCollapsedFolders(): void { try { localStorage.setItem('pandacode.co
 function listedSessions(): Session[] { return state.sessions.filter(task => !task.draft); }
 /** Leaving an untouched draft discards it; one with typed text, attachments or a worktree stays hidden and New task reopens it. */
 function leaveDraft(nextId: string): void {
+  state.drafts.flush();
   if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
   if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || draft.worktreePath) return;
@@ -1270,6 +1294,7 @@ function leaveDraft(nextId: string): void {
   if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
   state.sessions = state.sessions.filter(task => task.id !== draft.id);
   state.drafts.delete(draft.id);
+  prewarmedDrafts.delete(draft.id);
   void call<boolean>('discard_draft', { sessionId: draft.id }).catch(() => undefined);
 }
 function lastActivity(s: Session): number | null { return s.lastPromptAt == null ? s.lastResponseAt : Math.max(s.lastPromptAt, s.lastResponseAt ?? 0); }
@@ -1741,6 +1766,7 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
   }
   if (!choice || state.sessionId !== task.id || remoteChoice !== deviceId) return;
   const updated = await call<Session>('configure_session', { sessionId: task.id, provider: choice.provider, model: choice.model });
+  prewarmedDrafts.delete(task.id);
   const index = state.sessions.findIndex(item => item.id === task.id); if (index >= 0) state.sessions[index] = updated;
   renderComposer(); renderHeader();
   if (notice) notify(notice);
@@ -2677,21 +2703,27 @@ function userContent(content: string, messageId: number): string {
   const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
   return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, thumbnails) + details;
 }
-// Sent attachments share a byte budget; only onscreen thumbnails pin their payloads.
+// Encoded payloads share a byte budget; decoded sources belong only to intersecting chips.
+const visibleSentImages = new WeakSet<HTMLImageElement>();
+function sentImageInView(image: HTMLImageElement): boolean {
+  // A not-yet-loaded image is hidden; its chip still marks the visible place it will occupy.
+  const rect = (image.hidden ? image.parentElement! : image).getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+}
+function releaseSentImage(image: HTMLImageElement): void {
+  visibleSentImages.delete(image);
+  // Keep the chip's geometry while releasing both its data URL and decoded pixels.
+  const rect = image.getBoundingClientRect();
+  if (rect.width && rect.height) { image.width = Math.round(rect.width); image.height = Math.round(rect.height); }
+  image.removeAttribute('src');
+}
 const imageCache = new ImageCache(32 * 1024 * 1024, () => new Set(
-  Array.from(document.querySelectorAll<HTMLImageElement>('img[data-prompt-image]')).filter(image => {
-    // A not-yet-loaded image is hidden; its chip still marks the visible place it will occupy.
-    const rect = (image.hidden ? image.parentElement! : image).getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
-  }).map(image => 'sent:' + image.dataset.promptImage),
+  Array.from(document.querySelectorAll<HTMLImageElement>('img[data-prompt-image]')).filter(sentImageInView).map(image => 'sent:' + image.dataset.promptImage),
 ), key => {
   if (!key.startsWith('sent:')) return;
   turnInputs.bump();
   for (const image of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(key.slice(5))}"]`)) {
-    // Keep the chip's geometry while releasing both its data URL and decoded pixels.
-    const rect = image.getBoundingClientRect();
-    if (rect.width && rect.height) { image.width = Math.round(rect.width); image.height = Math.round(rect.height); }
-    image.removeAttribute('src');
+    releaseSentImage(image);
     // A quick scroll away and back can precede the observer's offscreen record.
     const chip = image.parentElement!;
     sentImageObserver.unobserve(chip); sentImageObserver.observe(chip);
@@ -2699,9 +2731,11 @@ const imageCache = new ImageCache(32 * 1024 * 1024, () => new Set(
 });
 // Observe the chip: an image with no payload is hidden until its first successful load.
 const sentImageObserver = new IntersectionObserver(records => {
-  for (const record of records) if (record.isIntersecting) {
+  for (const record of records) {
     for (const image of record.target.querySelectorAll<HTMLImageElement>('img[data-prompt-image]')) {
-      if (!image.hasAttribute('src')) void loadSentImage(image.dataset.promptImage!);
+      if (!record.isIntersecting || !image.isConnected) { releaseSentImage(image); continue; }
+      visibleSentImages.add(image);
+      if (!image.hasAttribute('src')) void loadSentImage(image.dataset.promptImage!, image);
     }
   }
 });
@@ -2710,8 +2744,8 @@ new MutationObserver(records => {
     // Cached rows keep their DOM for fast switching, but never keep image payloads or decoded pixels.
     // Reattachment below observes the chip again and reloads through ImageCache.
     releaseToolImages(removed);
-    const images = removed.matches('img[data-prompt-image]') ? [removed] : removed.querySelectorAll('img[data-prompt-image]');
-    for (const image of images) image.removeAttribute('src');
+    const images = removed instanceof HTMLImageElement && removed.matches('[data-prompt-image]') ? [removed] : removed.querySelectorAll<HTMLImageElement>('img[data-prompt-image]');
+    for (const image of images) releaseSentImage(image);
     // IntersectionObserver holds targets strongly; detached transcript rows must be released.
     for (const chip of [removed, ...removed.querySelectorAll('.prompt-chip-image')]) {
       sentImageObserver.unobserve(chip);
@@ -2728,14 +2762,15 @@ new MutationObserver(records => {
   imageCache.trim();
 }).observe(document.body, { childList: true, subtree: true });
 document.addEventListener('scroll', () => imageCache.trim(), { capture: true, passive: true });
-function loadSentImage(id: string): Promise<string | null> {
+function loadSentImage(id: string, image?: HTMLImageElement): Promise<string | null> {
   const previous = imageCache.get('sent:' + id);
   return imageCache.load('sent:' + id, () => call<string | null>('prompt_image', { id })).then(url => {
     const retained = imageCache.get('sent:' + id) === url;
     if (url && retained && url !== previous) turnInputs.bump();
-    if (url && retained) for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(id)}"]`)) {
-      img.src = url; img.hidden = false;
-      if (img.nextElementSibling?.matches('svg.icon')) img.nextElementSibling.remove();
+    // Shared requests may finish after a scroll or detach; never hydrate another copy of the same ID.
+    if (url && retained && image?.isConnected && visibleSentImages.has(image) && sentImageInView(image)) {
+      image.src = url; image.hidden = false;
+      if (image.nextElementSibling?.matches('svg.icon')) image.nextElementSibling.remove();
     }
     return url;
   });
@@ -3540,7 +3575,7 @@ function renderComposer(): void {
   const voiceFocus = document.activeElement?.closest<HTMLElement>('[data-voice]')?.dataset.voice;
   const voiceStatusFocus = document.activeElement?.matches('.voice-pill');
   const oldPrompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (oldPrompt?.dataset.sessionId && !deletedSessions.has(oldPrompt.dataset.sessionId)) state.drafts.set(oldPrompt.dataset.sessionId, oldPrompt.value);
+  if (oldPrompt?.dataset.sessionId && !deletedSessions.has(oldPrompt.dataset.sessionId)) state.drafts.set(oldPrompt.dataset.sessionId, oldPrompt.value, false);
   // Re-rendering replaces the textarea; keep typing focus and the caret, since people type while agents work.
   const typing = oldPrompt && document.activeElement === oldPrompt ? { id: oldPrompt.dataset.sessionId, start: oldPrompt.selectionStart, end: oldPrompt.selectionEnd } : null;
   // The swap below would drop focus on Steer, its ✕ and pencil, or Stop to <body>.
@@ -4140,6 +4175,13 @@ async function editAtMessage(sessionId: string, messageId: number): Promise<void
 const THREAD_PAGES = 24;
 const THREAD_PAGES_CHARS = 4_000_000, THREAD_PAGE_CHARS = 1_000_000;
 const threadPages = new Map<string, MessagePage & { chars: number }>();
+const freshSessions = new Set<string>();
+function seedFreshSession(id: string): void {
+  threadPages.delete(id);
+  threadPages.set(id, { messages: [], hasOlder: false, chars: 0 });
+  if (!teams.has(id)) teams.set(id, null);
+  freshSessions.add(id);
+}
 function rememberThread(id: string): void {
   const messages = state.messages.filter(message => message.id > 0);
   // Only a page that really is this thread's: other paths can switch tasks without a reload.
@@ -4165,13 +4207,14 @@ function selectSession(id: string, focusComposer = false, restoring = false): Pr
 /** What a thread's load sends from its queue once the team is known (transcript-host.ts dispatchHeld). */
 const heldQueue: HeldQueueHost = { queued: id => queueOf(id).length > 0, hasTeam: id => teams.has(id), loadTeam, dispatch: id => dispatchQueue(id), run };
 async function openThread(id: string, focusComposer: boolean): Promise<void> {
+  const freshCreated = freshSessions.delete(id);
   if (deletedSessions.has(id)) return;
   const s = state.sessions.find(s => s.id === id); if (!s) return;
   closeMenus();
   if (document.querySelector('#dialog')?.classList.contains('change-review-dialog')) closeModal();
   const previousTask = session(), changingTask = previousTask?.id !== id;
   // A first load left before its details landed never clears its own wait: its page, remembered, must not come back disabled.
-  if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); }
+  if (changingTask) { cancelStreamRender(); if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); }
   // However it is opened (click, ⌘1…9, ⌘⇧[ / ], board, palette), the thread holds the sidebar
   // section its row is in while it stays open, so the row never jumps from under the pointer.
   if (changingTask) {
@@ -4185,20 +4228,27 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (state.view !== 'conversation') state.boardPanel = true;
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
-  state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
+  const nextWorkspaceKey = `${s.projectId}:${s.worktreePath ?? ''}`;
+  const keepFreshWorkspace = freshCreated && changingTask && state.projectId === s.projectId && inspectorLoaded?.key === nextWorkspaceKey && Date.now() - inspectorLoaded.at < INSPECTOR_FRESH_MS && !state.inspectorLoading && Boolean(state.git) && !state.gitError && !state.filesError;
+  state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s, keepFreshWorkspace); state.attachments = [];
   // Marked until it has painted, however it is opened: one that takes the app down is held back at the next boot.
   beginThreadRestore(localStorage, id);
   // The thread boot kept closed is open now, by the crash notice's button or any other way.
   // Any thread or New task open: "no thread was opened" is no longer true, and the notice says so.
   const openedNothing = bootOpenedNothing; bootOpenedNothing = false;
   if (heldBackThread?.id === id) { heldBackThread = undefined; heldBackOpened(); } else if (openedNothing) tasksChanged();
-  const remembered = changingTask ? threadPages.get(id) : undefined;
+  const remembered = changingTask || freshCreated ? threadPages.get(id) : undefined;
   state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
   const generation = ++state.generation;
   // What acts on the task waits for this load's details and team. A remembered page whose team is already known has
   // been usable since it was left; one left before its team landed waits again, so a send never goes out as a plain
   // message to what turns out to be a team thread.
   taskDetailsPending = remembered && teams.has(id) ? undefined : { id, generation };
+  if (freshCreated) {
+    const freshTeam = teams.get(id) ?? null;
+    if (freshTeam) void ensureArchitectView().then(view => { if (state.sessionId === id) view.setTask(id, teams.get(id) ?? null, state.providers); }).catch(report);
+    else architectView?.setTask(id, null, state.providers);
+  }
   renderInspector();
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
@@ -4210,12 +4260,34 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   const settle = changingTask && Boolean(previousTask);
   if (settle && remembered) settleIn($('#transcript'));
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+  if (freshCreated && remembered) {
+    rememberOpenThread(localStorage, id, s.draft);
+    finishThreadRestoreAfterPaint(localStorage, id);
+    fullTaskDescription = { id, value: s.taskDescription ?? '' };
+    if (queueOf(id).length) run(dispatchQueue(id));
+    if (provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+    if (generation !== state.generation) return;
+    await refreshInspectorIfStale();
+    if (generation === state.generation) renderHeader();
+    return;
+  }
   // The rows draw the moment the page is in; the task's details and team land after, and a failure of theirs is met below.
   // The task as it was when its details were asked for: a field changed here since (a rename, a model picked, a run
   // starting) is newer than what the details say.
   const askedTask = state.sessions.find(task => task.id === id), asked = askedTask ? { ...askedTask } : undefined;
+  let pageSettled = false;
   const taskLoad = Promise.all([call<Session>('get_task', { sessionId: id }), loadTeam(id)]);
-  taskLoad.catch(() => undefined);
+  taskLoad.then(([details]) => {
+    if (generation !== state.generation) return;
+    taskDetailsPending = undefined;
+    if (!pageSettled && !state.messagesLoading) {
+      rememberOpenThread(localStorage, id, details.draft);
+      fullTaskDescription = { id, value: details.taskDescription ?? '' };
+      applyTaskDetails(id, details, asked, false);
+      renderHeader(); renderComposer();
+      if (queueOf(id).length) run(dispatchQueue(id));
+    }
+  }, () => undefined);
   /* A load another one took over (a switch, the same thread opened again) never reaches its own dispatch, while a
    * dispatch made meanwhile waited for it (dispatchQueue): what the queue holds goes once the team is known. If this
    * thread is the open one loading again, dispatchQueue leaves it to that load. */
@@ -4239,6 +4311,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   let page: MessagePage;
   try { page = await latestMessagePage(id); }
   catch (error) { if (failLoad(error, requestedMessages)) throw error; return; }
+  finally { pageSettled = true; }
   if (generation !== state.generation) { superseded(); return; }
   // A send or completed turn can replace the transcript while this earlier
   // history request is in flight. Keep that newer state instead of erasing it.
@@ -4284,7 +4357,7 @@ function applyTaskDetails(id: string, details: Session, asked: Session | undefin
   if (loaded && mergeTaskDetails(loaded, details, asked, steady, state.streams.has(id))) renderTranscript(); else syncTeamRows();
 }
 /** Nothing selected; the next launch opens the newest thread of the current project, not the last one. */
-function clearOpenSession(): void { state.sessionId = ''; rememberOpenThread(localStorage, ''); }
+function clearOpenSession(): void { cancelStreamRender(); state.sessionId = ''; rememberOpenThread(localStorage, ''); }
 async function selectProject(id: string): Promise<void> {
   const first = listedSessions().find(s => s.projectId === id && !s.archived);
   if (first) { await selectSession(first.id); return; }
@@ -4337,7 +4410,7 @@ function removeDeletedSessions(ids: string[]): void {
   terminalPanel.forget(ids);
   const removed = new Set(ids);
   for (const id of removed) {
-    deletedSessions.add(id); writeLink(localStorage, id, null);
+    deletedSessions.add(id); prewarmedDrafts.delete(id); writeLink(localStorage, id, null);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -4461,6 +4534,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : Boolean(settings?.serviceTier);
       const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
       const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
+      prewarmedDrafts.delete(task.id);
       notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
       if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
       break;
@@ -4529,6 +4603,7 @@ async function enqueueFromComposer(forceQueue = false): Promise<void> {
   await enqueueDraft(forceQueue);
 }
 async function enqueueDraft(forceQueue: boolean): Promise<void> {
+  state.drafts.flush();
   if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -4673,6 +4748,7 @@ async function steerFromComposer(): Promise<void> {
   await steerDraft();
 }
 async function steerDraft(): Promise<void> {
+  state.drafts.flush();
   if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -4986,6 +5062,7 @@ async function send(): Promise<void> {
   await sendDraft();
 }
 async function sendDraft(): Promise<void> {
+  state.drafts.flush();
   if (btwFromComposer()) return;
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
@@ -5231,9 +5308,9 @@ async function applyBtwDraft(mainId: string, side: Session): Promise<Session> {
     try { return await work(); } catch (error) { throw new Error(`The side thread could not use the ${setting} you picked. ${errorText(error)}`); }
   };
   let current = side;
-  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model }));
-  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null }));
-  if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); current = { ...current, mode: draft.mode }; }
+  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) { current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model })); prewarmedDrafts.delete(current.id); }
+  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) { current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null })); prewarmedDrafts.delete(current.id); }
+  if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); prewarmedDrafts.delete(current.id); current = { ...current, mode: draft.mode }; }
   return current;
 }
 /** The side thread the By the way panel shows for the open thread. */
@@ -5383,6 +5460,7 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     setMessagePage(saved); state.messagesLoading = false; state.messagesError = ''; mirrorPrompts.delete(sessionId);
     // The composer lets go of the steer row's space (held since the run ended) in the task the saved card arrives,
     // whose bridge absorbs it (handOffCard), so a pinned thread does not move at the swap.
+    cancelStreamRender();
     handoffRect = document.querySelector('#stream-region .turn-card.is-live')?.getBoundingClientRect();
     renderComposer(); renderTranscript();
     await refreshInspector();
@@ -5472,16 +5550,18 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
 function onAgent(event: AgentEvent): void {
+  const plainDelta = event.kind === 'text' || (event.kind as string) === 'thinking';
   remoteStartAttached(event.sessionId);
-  queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
+  if (btwPanel.shownId() === event.sessionId) queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
   if (botsView) queueMicrotask(() => botsView?.agent(event.sessionId, event.kind));
-  if ((event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
+  if (!plainDelta && (event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
   if (event.kind === 'done') tilePages.delete(event.sessionId);
-  queueMicrotask(() => tiles.event(event.sessionId));
+  if (tiles.has(event.sessionId)) queueMicrotask(() => tiles.event(event.sessionId));
   if (deletedSessions.has(event.sessionId)) return;
+  const s = state.sessions.find(item => item.id === event.sessionId);
   // Managed workers are deliberately absent from sidebar/board task summaries.
   // Route their live output and approval forms to the team's worker inspector.
-  if (!state.sessions.some(s => s.id === event.sessionId)) {
+  if (!s) {
     void ensureArchitectView().then(view => {
       if (deletedSessions.has(event.sessionId)) return;
       view.receive(event);
@@ -5496,13 +5576,47 @@ function onAgent(event: AgentEvent): void {
     }).catch(report);
     return;
   }
-  onAccountPoolSwitch(event);
-  if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
+  if (event.data) onAccountPoolSwitch(event);
+  if (plainDelta) {
+    const pendingChanges = state.streams.get(event.sessionId)?.pendingChanges;
+    if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
+    const firstEvent = !state.streams.has(event.sessionId);
+    const current = stream(event.sessionId);
+    s.status = 'running'; s.taskStage = 'in_progress';
+    if (firstEvent) loadWakeExchange(event.sessionId, current);
+    let becameActive = false;
+    if (event.kind === 'text') {
+      if (event.text && current.retainedMessageKey) {
+        current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
+      }
+      current.body.append(event.text);
+      if (event.text.trim()) {
+        updateStreamStatus(current, 'Generating response');
+        current.lastResponseAt = Date.now();
+        becameActive = !activeTask(s);
+        s.lastResponseAt = current.lastResponseAt;
+      }
+    } else {
+      current.thought.append(event.text);
+    }
+    if (firstEvent || becameActive) {
+      if (firstEvent && event.sessionId === state.sessionId && !document.hidden) {
+        renderHeader();
+        if (document.querySelector<HTMLTextAreaElement>('#prompt')?.disabled === false || threadLoading()) renderComposer();
+      }
+      scheduleNavigation();
+    }
+    if (event.sessionId !== state.sessionId) return;
+    if (firstEvent && !wakeHolds.has(event.sessionId)) renderTranscript();
+    scheduleStreamRender();
+    return;
+  }
+  if (event.kind === 'task_settings') { s.codexSettings = event.data as Session['codexSettings']; return; }
   if (event.kind === 'goal_ready') return;
   if (event.kind === 'goal_input') { const current = state.streams.get(event.sessionId); if (current) { finishLiveMessage(current, event.sessionId); current.tools.push({ key: 'goal:' + transientId--, content: 'Goal updated: ' + event.text, commentary: true }); current.revision++; if (event.sessionId === state.sessionId) renderStream(); } return; }
   if (event.kind === 'goal') {
-    const task = state.sessions.find(s => s.id === event.sessionId);
-    if (task) { task.goalState = event.data as GoalState | null; if (task.id === state.sessionId) goalBanner.update(task.goalState ?? null); }
+    s.goalState = event.data as GoalState | null;
+    if (s.id === state.sessionId) goalBanner.update(s.goalState ?? null);
     return;
   }
   // Keep the final response intact until its persisted changes boundary arrives.
@@ -5513,14 +5627,13 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'subagent') { subagents.receive(event.sessionId, event.data); return; }
   // Hosts send `team` (a changed worker row) only for mirrors; it is not a local event kind.
   const workerRow = (event.kind as string) === 'team';
-  if ((workerRow || event.kind === 'done' && teams.get(event.sessionId)) && state.sessions.find(task => task.id === event.sessionId)?.remoteDevice) refreshMirrorTeam(event.sessionId);
+  if ((workerRow || event.kind === 'done' && teams.get(event.sessionId)) && s.remoteDevice) refreshMirrorTeam(event.sessionId);
   if (workerRow) return;
   // Native reports each steer's pending, delivered or failed state.
   if (event.kind === 'steer') { steerEvent(event); return; }
-  const s = state.sessions.find(s => s.id === event.sessionId);
   if (event.kind === 'usage') {
     const usage = parseContextUsage(event.data);
-    if (s && usage) {
+    if (usage) {
       s.contextUsage = usage;
       const current = state.streams.get(s.id); if (current) current.contextUsage = usage;
     }
@@ -5528,16 +5641,16 @@ function onAgent(event: AgentEvent): void {
   }
   if (event.kind === 'done') {
     subagents.runEnded(event.sessionId);
-    if (s) refreshFileLinks(workspaceContext(s));
+    refreshFileLinks(workspaceContext(s));
     void detectPullRequest(event.sessionId);
-    if (s && botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
+    if (botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
     for (const [id, item] of steers) if (item.sessionId === event.sessionId) steers.delete(id);
     const finishing = { stream: state.streams.get(event.sessionId) ?? stream(event.sessionId), finishedAt: Date.now() };
     clearAgentInputs(finishing.stream);
     finishingStreams.set(event.sessionId, finishing);
-    state.streams.delete(event.sessionId); if (s) s.status = 'idle';
+    state.streams.delete(event.sessionId); s.status = 'idle';
     // A turn that finished out of view (another thread, the board, another app) shows unread until opened.
-    if (s && (s.id !== state.sessionId || !transcriptVisible() || !document.hasFocus())) { (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(s.id); saveUnreviewed(); }
+    if (s.id !== state.sessionId || !transcriptVisible() || !document.hasFocus()) { (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(s.id); saveUnreviewed(); }
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
@@ -5546,12 +5659,20 @@ function onAgent(event: AgentEvent): void {
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
     if (first?.stopping && ending === 'stopped') { if (first.hold) state.queueHolds.set(event.sessionId, first.hold); else state.queueHolds.delete(event.sessionId); }
     else if (ending) state.queueHolds.set(event.sessionId, ending);
-    if (s && botProjects.has(s.projectId)) {
+    if (botProjects.has(s.projectId)) {
       if (ending === 'failed') failedBotProjects.add(s.projectId);
       else if (!ending) failedBotProjects.delete(s.projectId);
     }
     if (!ending) void maybeTurnChecks(event.sessionId);
-    if (event.sessionId === state.sessionId) { renderStream(); renderComposer(); }
+    if (event.sessionId === state.sessionId) {
+      cancelStreamRender();
+      const restoreDoneAnchor = !stickToBottom && transcriptVisible() ? captureTranscriptAnchor(transcriptScroller) : undefined;
+      renderStream(); renderComposer();
+      if (restoreDoneAnchor) { restoreDoneAnchor(); lastTranscriptTop = transcriptScroller.scrollTop; }
+      void designPanel?.refresh();
+      progressPip?.refresh(event.sessionId);
+      if (document.hasFocus()) markTraySeen(event.sessionId);
+    }
     void applyNextBotModel(event.sessionId);
     void finishResponse(event.sessionId, finishing).finally(() => run(dispatchQueue(event.sessionId))); return;
   }
@@ -5559,17 +5680,17 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'limited') {
     // The account is out for now: remember the reset, hold any queue, and say when it resets.
     const until = (event.data as { resetsAt?: number | null } | undefined)?.resetsAt ?? null;
-    if (s) { s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false; }
+    s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false;
     runEndings.set(event.sessionId, 'limited');
     // A bot's limit already shows as its sidebar chip and above its composer.
-    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
+    if (!sidebarBots.some(bot => bot.projectId === s.projectId)) notify(`${s.title || 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
     return;
   }
   if ((event.kind === 'approval_cancelled' || event.kind === 'input_cancelled') && !state.streams.has(event.sessionId)) return;
   const pendingChanges = state.streams.get(event.sessionId)?.pendingChanges;
   if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
-  const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); if (s) { s.status = 'running'; s.taskStage = 'in_progress'; }
+  const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); s.status = 'running'; s.taskStage = 'in_progress';
   if (firstEvent) loadWakeExchange(event.sessionId, current);
   if ((event.kind as string) === 'note') {
     const pool = (event.data as { accountPool?: { connectionId?: unknown } } | undefined)?.accountPool;
@@ -5584,21 +5705,8 @@ function onAgent(event: AgentEvent): void {
       if (event.sessionId === state.sessionId) announce('Account switched');
     }
   }
-  let becameActive = false;
+  const becameActive = false;
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
-  if (event.kind === 'text') {
-    if (event.text && current.retainedMessageKey) {
-      current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
-    }
-    current.body.append(event.text);
-    if (event.text.trim()) {
-      updateStreamStatus(current, 'Generating response');
-      current.lastResponseAt = Date.now();
-      if (s) { becameActive = !activeTask(s); s.lastResponseAt = current.lastResponseAt; }
-    }
-  }
-  // Not saved with the transcript, so the fold lives only while the turn streams.
-  if ((event.kind as string) === 'thinking') current.thought.append(event.text);
   if (event.kind === 'tool') {
     const tool = event.tool;
     const key = tool ? 'tool:' + tool.id : 'live:' + transientId--;
@@ -5616,7 +5724,7 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
   }
@@ -5628,9 +5736,9 @@ function onAgent(event: AgentEvent): void {
       if (event.sessionId === state.sessionId) renderStream();
       btwPanel.event(event.sessionId, 'input');
       scheduleNavigation();
-    }, Boolean(s?.remoteDevice)));
+    }, Boolean(s.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
-    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
+    if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
@@ -5646,7 +5754,7 @@ function onAgent(event: AgentEvent): void {
     scheduleNavigation();
   }
   if (firstEvent && event.sessionId === state.sessionId && !wakeHolds.has(event.sessionId)) renderTranscript();
-  if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
+  if (event.sessionId === state.sessionId) scheduleStreamRender();
 }
 
 /** A thread switch within the workspace whose status loaded this long ago (ms) reuses it rather than reloading the
@@ -6200,6 +6308,7 @@ async function changeTaskProject(projectId: string): Promise<void> {
   configuringSessions.add(selected.id);
   try {
     const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
+    prewarmedDrafts.delete(selected.id);
     const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
     if (chatTask(selected)) await forgetChat(selected.projectId);
     if (selected.id !== state.sessionId) { renderNavigation(); return; }
@@ -6296,6 +6405,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
+        prewarmedDrafts.delete(selected.id);
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         if (inPanel) btwPanel.refresh();
         else if (selected.id === state.sessionId) {
@@ -6310,6 +6420,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
+        prewarmedDrafts.delete(selected.id);
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         if (inPanel) btwPanel.refresh();
         else if (selected.id === state.sessionId) refreshModelLabels();
@@ -6337,6 +6448,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           onArchitect(saved ?? { sessionId: selected.id, removed: true });
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+        prewarmedDrafts.delete(selected.id);
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         // Same-harness model choices keep the account and its resumable conversation.
         if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
@@ -6415,6 +6527,7 @@ async function startTask(projectId: string): Promise<void> {
     created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
+  seedFreshSession(created.id);
   if (generation !== state.generation) { renderNavigation(); return; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
@@ -6440,7 +6553,7 @@ async function createChat(from?: Session): Promise<void> {
   let created: Session;
   try {
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
-    if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
+    if (from?.reasoningEffort) { created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort }); prewarmedDrafts.delete(created.id); }
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
     const connection = from && !pooled && taskConnection(from)?.id;
@@ -6449,6 +6562,7 @@ async function createChat(from?: Session): Promise<void> {
   } finally { creatingTask = false; }
   // chat_create announces the new row, so the refresh may already have listed it.
   upsertSession(created);
+  seedFreshSession(created.id);
   if (from) {
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
     const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
@@ -6500,6 +6614,7 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     configuringSessions.add(s.id);
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });
+      prewarmedDrafts.delete(s.id);
       const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
       architectView?.modeChanged();
       if (inPanel) btwPanel.refresh();
@@ -7162,7 +7277,7 @@ async function assignTaskBot(task: Session, botId: string | null): Promise<void>
     if (bot) {
       taskBots.set(task.id, bot.id);
       // The bot's harness and model become the task's defaults; the picker can still change them.
-      if (bot.provider !== task.provider || bot.model !== task.model) upsertSession(await call<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model }));
+      if (bot.provider !== task.provider || bot.model !== task.model) { upsertSession(await call<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model })); prewarmedDrafts.delete(task.id); }
     } else taskBots.delete(task.id);
   } finally { configuringSessions.delete(task.id); }
   if (state.sessionId === task.id) render();
@@ -7809,6 +7924,7 @@ async function applyNextBotModel(sessionId: string): Promise<void> {
   if (!next || isRunning(sessionId)) return;
   try {
     const updated = await call<Session>('configure_session', { sessionId, provider: next.provider, model: next.model });
+    prewarmedDrafts.delete(sessionId);
     botThread.setNextModel(sessionId, undefined);
     state.sessions = state.sessions.map(task => task.id === sessionId ? updated : task);
     if (sessionId === state.sessionId) { renderComposer(); renderHeader(); }
@@ -8127,23 +8243,83 @@ document.addEventListener('submit', event => {
     } finally { if (submitter?.isConnected) submitter.disabled = false; }
   })());
 });
-/** The prompt last sized while empty: an empty prompt is one line at any width, so sizing it again changes nothing
- *  and would only lay out the page (every composer render asks). */
-let emptySized: HTMLTextAreaElement | undefined;
+/** The prompt last sized while empty or guaranteed single-line: sizing it again while short and single-line
+ *  changes nothing and would force a synchronous layout reflow on every keystroke. */
+let emptySized: HTMLTextAreaElement | undefined, emptyWidth = -1;
+let singleLinePrompt: HTMLTextAreaElement | undefined, singleLineWidth = 0, singleLineHeight = '';
+function invalidatePromptSizing(): void {
+  emptySized = undefined; emptyWidth = -1;
+  singleLinePrompt = undefined; singleLineWidth = 0; singleLineHeight = '';
+}
 function resizePrompt(): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (!prompt) return;
-  if (!prompt.value && emptySized === prompt) return;
+  const width = prompt.clientWidth;
+  if (width !== singleLineWidth) {
+    singleLinePrompt = undefined; singleLineWidth = 0; singleLineHeight = '';
+  }
+  if (!prompt.value && emptySized === prompt && width === emptyWidth) return;
+  const scale = Number.parseFloat(document.documentElement.style.getPropertyValue('--ui-scale')) || 1;
+  const guaranteedSingleLine =
+    singleLineHeight !== '' &&
+    width > 160 &&
+    !prompt.value.includes('\n') &&
+    (prompt.value.length === 0 || (/^[\x20-\x7e]*$/.test(prompt.value) && prompt.value.length * Math.ceil(15 * scale) < width - 64));
+  if (
+    guaranteedSingleLine &&
+    prompt === singleLinePrompt &&
+    prompt.style.height === singleLineHeight &&
+    prompt.style.overflowY === 'hidden'
+  ) {
+    emptySized = prompt.value ? undefined : prompt;
+    emptyWidth = prompt.value ? -1 : width;
+    return;
+  }
   emptySized = prompt.value ? undefined : prompt;
+  emptyWidth = prompt.value ? -1 : width;
   prompt.style.height = 'auto';
   const natural = prompt.scrollHeight;
-  prompt.style.height = Math.min(natural, 180) + 'px';
+  const nextHeight = Math.min(natural, 180) + 'px';
+  prompt.style.height = nextHeight;
   // Use the same measurement; a pixel of rounding at the cap must not show a scroll bar.
   const overflow = natural > 181 ? 'auto' : 'hidden';
   if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
+  if (prompt.value.length === 0 && overflow === 'hidden') {
+    singleLinePrompt = prompt;
+    singleLineWidth = width;
+    singleLineHeight = nextHeight;
+  } else if (overflow === 'hidden' && singleLineHeight !== '' && nextHeight === singleLineHeight) {
+    singleLinePrompt = prompt;
+    singleLineWidth = width;
+  } else {
+    singleLinePrompt = undefined;
+  }
 }
-window.addEventListener('pandacode-ui-scale-change', () => { emptySized = undefined; resizePrompt(); });
-document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') { resizePrompt(); if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value); } if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
+window.addEventListener('pandacode-ui-scale-change', () => { invalidatePromptSizing(); resizePrompt(); });
+document.addEventListener('input', event => {
+  const input = event.target as HTMLInputElement;
+  if (input.id === 'command-query') renderCommands(input.value);
+  if (input.id === 'prompt') {
+    lastPromptInputAt = performance.now();
+    if (renderFrame && state.streams.has(state.sessionId)) {
+      cancelAnimationFrame(renderFrame);
+      renderFrame = 0;
+      scheduleStreamRender();
+    }
+    resizePrompt();
+    if (input.value.length > 0) {
+      const currentSession = state.sessions.find(s => s.id === state.sessionId);
+      const anyRunning = state.streams.size > 0 || state.sessions.some(s => isRunning(s.id) && !teamHeld(s.id));
+      if (currentSession?.draft && !prewarmedDrafts.has(currentSession.id) && !anyRunning && !teams.get(currentSession.id)) {
+        prewarmedDrafts.add(currentSession.id);
+        void call('prewarm_draft_session', { sessionId: currentSession.id }).catch(() => {});
+      }
+    }
+    if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value, false);
+  }
+  if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value);
+  if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); }
+});
 document.addEventListener('scroll', event => {
   if (!state.sharedChannelId) return;
   const history = (event.target as Element | null)?.closest?.('.bc-history') as HTMLElement | null;
@@ -8271,26 +8447,104 @@ function refreshFileIcons(): void { if (state.inspector && state.inspectorTab ==
 /** Read before anything else marks this page alive. */
 const windowDied = windowContentDied(localStorage);
 async function boot(): Promise<void> {
-  // Asked first: paused crash restarts skip reopening the last thread.
-  const crashRecovery = takeCrashRecovery();
-  await subscribe('agent-event', onAgent);
-  await subscribe('provider-models-changed', event => invalidateModels(event.provider));
-  await subscribe('architect-event', onArchitect);
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
-  await subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds));
-  await subscribe('sessions-changed', () => run(reloadSessions()));
-  await subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event)));
-  // An agent booted or asked to show a simulator: bring the panel forward.
-  // An agent started or asked to show a VM: bring the panel forward.
+  document.addEventListener('click', event => {
+    (event.target as Element).closest('.turn-changes summary')?.parentElement?.setAttribute('data-opened', '');
+  });
+  // Core listeners and initial state run concurrently ahead of CLI probes and secondary integrations.
+  const [queuedEntries, recovery] = await Promise.all([
+    call<QueuedMessage[]>('queue_list').catch(() => [] as QueuedMessage[]),
+    takeCrashRecovery(),
+    (async () => {
+      [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
+    })(),
+    subscribe('agent-event', onAgent),
+    subscribe('provider-models-changed', event => invalidateModels(event.provider)),
+    subscribe('architect-event', onArchitect),
+    subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
+    subscribe('sessions-changed', () => run(reloadSessions())),
+    subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
+    // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
+    subscribe('queue-changed', payload => run((async () => {
+      const id = payload?.sessionId; if (!id) return;
+      setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
+      if (id === state.sessionId) renderComposer();
+      await dispatchQueue(id);
+    })())),
+    subscribe('overlay-open-task', event => run((async () => {
+      const request = ++overlayOpenRequest, initialGeneration = state.generation;
+      await reloadSessions();
+      if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
+      if (state.view !== 'conversation') state.boardPanel = true;
+      await selectSession(event.sessionId, true);
+      if (request !== overlayOpenRequest || state.sessionId !== event.sessionId) return;
+      const generation = state.generation;
+      subagents.close(false); architectView?.close();
+      if (event.workerId) {
+        const view = await ensureArchitectView();
+        if (request !== overlayOpenRequest || generation !== state.generation) return;
+        await view.openWorker(event.workerId, event.subagentId);
+      } else if (event.subagentId) {
+        await subagents.showAgent(event.subagentId);
+      }
+    })())),
+    connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction),
+  ]);
+  projectsListed = true;
+  // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
+  void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
+  // New task text of projects removed some other way than this window's Remove (a failed list throws above).
+  if (Array.isArray(state.projects)) dropRemovedProjectDrafts(state.drafts, state.projects.map(project => project.id));
+  replayDismissals();
+  // Queues from an earlier launch wait for an explicit Resume.
+  for (const entry of queuedEntries) {
+    state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
+    state.queueHolds.set(entry.sessionId, 'restart');
+  }
+  scheduleLimitResumes();
+  if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');
+  const savedProject = localStorage.getItem('pandacode.project');
+  // The thread open at the last exit (clean or a crash) comes back; otherwise the newest one.
+  const { task: reopened, stuck, stuckNotLast, newTask: lastNewTask, fallback, windowDiedAgain } = threadToReopen(localStorage, state.sessions.filter(s => state.projects.some(p => p.id === s.projectId)), { crashed: Boolean(recovery), paused: recovery?.restartsPaused ?? false, windowDied });
+  windowDeath = windowDiedAgain ? windowDied ? 'again' : 'before' : windowDied ? 'reloaded' : undefined;
+  // A thread whose opening took the app down last time is not opened by itself again.
+  const candidates = state.sessions.filter(s => !s.archived && s.id !== stuck);
+  heldBackThread = stuck ? state.sessions.find(s => s.id === stuck && !s.archived) : undefined;
+  heldBackNotLast = Boolean(stuckNotLast);
+  const recent = candidates[0];
+  // A New task open at exit comes back with its kept text, even when boot holds threads back (it has
+  // no transcript to suspect); otherwise, after repeated crashes, nothing opens by itself.
+  const newTask = lastNewTask ? state.projects.find(p => p.id === savedProject)?.id : undefined;
+  bootOpenedNothing = !fallback && !newTask;
+  activateProject(reopened?.projectId ?? newTask ?? state.projects.find(p => p.id === savedProject)?.id ?? recent?.projectId ?? state.projects[0]?.id ?? '');
+  // A remembered New task whose project is gone (removed elsewhere) falls back like any launch.
+  const first = reopened ?? (fallback && !newTask ? candidates.find(s => s.projectId === state.projectId) : undefined);
+  if (newTask) run(createTask(newTask));
+  // selectSession bumps the generation before its first await; a later bump means the user picked a task meanwhile.
+  const selecting = first ? selectSession(first.id, false, true) : undefined, bootGeneration = state.generation;
+  showCrashNotice();
+  // CLI version probes start behind the initial thread's own IPCs and must not hold the task list, thread or composer.
+  const providerGeneration = settingsDiscoveryGeneration;
+  const providersReady = providerDiscovery = call<Provider[]>('list_providers').then(providers => {
+    if (providerGeneration !== settingsDiscoveryGeneration) return;
+    state.providers = providers;
+    render(); refreshModelLabels(); slashPicker?.refresh(true);
+    if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+  });
+  run(providersReady.finally(() => { providerDiscovery = undefined; }));
+  // openThread marks the thread until it has painted and clears the mark when it fails.
+  let selectionError: unknown;
+  let selectionFailed = false;
+  try {
+    if (selecting) await selecting; else { render(); await refreshInspector(); }
+  } catch (error) {
+    selectionError = error;
+    selectionFailed = true;
+  }
+  // Secondary background listeners and integrations start once the usable screen is up.
+  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
-  run(subscribe('agent-event', (event: AgentEvent) => {
-    if (event.kind !== 'done') return;
-    if (event.sessionId !== state.sessionId) return;
-    void designPanel?.refresh();
-    progressPip?.refresh(event.sessionId);
-    if (document.hasFocus()) markTraySeen(event.sessionId);
-  }).then(() => undefined));
   run((subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('tray-open-session', sessionId => run((async () => {
     if (typeof sessionId !== 'string') return;
     if (!state.sessions.some(s => s.id === sessionId)) await reloadSessions();
@@ -8325,97 +8579,23 @@ async function boot(): Promise<void> {
     void refreshBotThreadMeta(bot, sessionId, true);
   }).then(() => undefined));
   // Bots appear in the sidebar once loaded; startup does not wait for them.
-  botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
+  run(ensureBotProjects());
   run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`, undefined, { important: true }); }).then(() => undefined));
   // Wake-ups for the open thread and the sidebar's clocks; refreshed on schedules-changed.
-  // Motion only when the user opens these: a remembered thread or a redraw restores them still.
-  document.addEventListener('click', event => {
-    const target = event.target as Element;
-    target.closest('.turn-changes summary')?.parentElement?.setAttribute('data-opened', '');
-    // schedules-thread.ts paints synchronously in its own click listener, so the body exists by the next frame.
-    if (target.closest('[data-wake="expand"]')) requestAnimationFrame(() => { const body = document.querySelector<HTMLElement>('#wake-body'); if (body) settleUnfolded(body); });
-  });
   run(initWakeups({
     sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
-  // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
-  await subscribe('queue-changed', payload => run((async () => {
-    const id = payload?.sessionId; if (!id) return;
-    setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
-    if (id === state.sessionId) renderComposer();
-    await dispatchQueue(id);
-  })()));
-  await subscribe('overlay-open-task', event => run((async () => {
-    const request = ++overlayOpenRequest, initialGeneration = state.generation;
-    await reloadSessions();
-    if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
-    if (state.view !== 'conversation') state.boardPanel = true;
-    await selectSession(event.sessionId, true);
-    if (request !== overlayOpenRequest || state.sessionId !== event.sessionId) return;
-    const generation = state.generation;
-    subagents.close(false); architectView?.close();
-    if (event.workerId) {
-      const view = await ensureArchitectView();
-      if (request !== overlayOpenRequest || generation !== state.generation) return;
-      await view.openWorker(event.workerId, event.subagentId);
-    } else if (event.subagentId) {
-      await subagents.showAgent(event.subagentId);
-    }
-  })()));
-  await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
-  // CLI version probes must not hold the task list, thread or composer behind discovery.
-  const providerGeneration = settingsDiscoveryGeneration;
-  const providersReady = providerDiscovery = call<Provider[]>('list_providers').then(providers => {
-    if (providerGeneration !== settingsDiscoveryGeneration) return;
-    state.providers = providers;
-    render(); refreshModelLabels(); slashPicker?.refresh(true);
-    if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+  // schedules-thread.ts registers its own click listener synchronously above, so #wake-body exists by the next frame.
+  document.addEventListener('click', event => {
+    if ((event.target as Element).closest('[data-wake="expand"]')) requestAnimationFrame(() => { const body = document.querySelector<HTMLElement>('#wake-body'); if (body) settleUnfolded(body); });
   });
-  run(providersReady.finally(() => { providerDiscovery = undefined; }));
-  [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
-  projectsListed = true;
-  // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
-  void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
-  // New task text of projects removed some other way than this window's Remove (a failed list throws above).
-  if (Array.isArray(state.projects)) dropRemovedProjectDrafts(state.drafts, state.projects.map(project => project.id));
-  replayDismissals();
-  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
-  // Queues from an earlier launch wait for an explicit Resume.
-  for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
-    state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
-    state.queueHolds.set(entry.sessionId, 'restart');
-  }
-  scheduleLimitResumes();
-  if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');
-  const savedProject = localStorage.getItem('pandacode.project');
-  // The thread open at the last exit (clean or a crash) comes back; otherwise the newest one.
-  const recovery = await crashRecovery;
-  const { task: reopened, stuck, stuckNotLast, newTask: lastNewTask, fallback, windowDiedAgain } = threadToReopen(localStorage, state.sessions.filter(s => state.projects.some(p => p.id === s.projectId)), { crashed: Boolean(recovery), paused: recovery?.restartsPaused ?? false, windowDied });
-  windowDeath = windowDiedAgain ? windowDied ? 'again' : 'before' : windowDied ? 'reloaded' : undefined;
-  // A thread whose opening took the app down last time is not opened by itself again.
-  const candidates = state.sessions.filter(s => !s.archived && s.id !== stuck);
-  heldBackThread = stuck ? state.sessions.find(s => s.id === stuck && !s.archived) : undefined;
-  heldBackNotLast = Boolean(stuckNotLast);
-  const recent = candidates[0];
-  // A New task open at exit comes back with its kept text, even when boot holds threads back (it has
-  // no transcript to suspect); otherwise, after repeated crashes, nothing opens by itself.
-  const newTask = lastNewTask ? state.projects.find(p => p.id === savedProject)?.id : undefined;
-  bootOpenedNothing = !fallback && !newTask;
-  activateProject(reopened?.projectId ?? newTask ?? state.projects.find(p => p.id === savedProject)?.id ?? recent?.projectId ?? state.projects[0]?.id ?? '');
-  // A remembered New task whose project is gone (removed elsewhere) falls back like any launch.
-  const first = reopened ?? (fallback && !newTask ? candidates.find(s => s.projectId === state.projectId) : undefined);
-  if (newTask) run(createTask(newTask));
-  // selectSession bumps the generation before its first await; a later bump means the user picked a task meanwhile.
-  const selecting = first ? selectSession(first.id, false, true) : undefined, bootGeneration = state.generation;
-  showCrashNotice();
-  // openThread marks the thread until it has painted and clears the mark when it fails.
-  if (selecting) await selecting; else { render(); await refreshInspector(); }
   run(fileIconsReady.then(refreshFileIcons));
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
-  if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
+  if (!selectionFailed && state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
   // New-task actions await bootPending; keep their catalog wait after the usable screen.
   await providersReady.catch(() => undefined);
+  if (selectionFailed) throw selectionError;
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify, notifyError }));
@@ -8445,7 +8625,7 @@ function showCrashNotice(): void {
 }
 // An orderly unload (reload, quit that reaches the page) is never a thread that took the app down.
 // WKWebView may not fire pagehide on Cmd+Q, so a committed quit's native `app-quitting` event does the same.
-const leave = () => leavePage(localStorage);
+const leave = () => leavePage(localStorage, state.drafts);
 window.addEventListener('pagehide', leave);
 void subscribe('app-quitting', leave).catch(error => console.warn('Could not listen for quitting:', error));
 // A page that outlives the native reload budget is stable: an earlier window death is forgotten.

@@ -7,7 +7,8 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * fallback) behind the conversation, picked per thread by `setThread` and crossfaded (~300 ms) on a switch.
  * Wind follows the open thread's run (`#transcript[data-running]`), the pointer parts the clouds, and it renders
  * only while visible: ambient scenes use 8 fps until rest settles and 4 during steady runs; fast scenes use 15,
- * with 30 during the wind ramp and 60 while the pointer moves.
+ * with 30 during the wind ramp and 60 while the pointer moves. Settled, static and long-paused skies snapshot onto a
+ * 2D canvas and park WebGL so WebKit.GPU releases its ANGLE/Metal swapchain at rest.
  * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
@@ -31,7 +32,7 @@ export interface SkyController {
 const FADE_MS = 300;
 
 const css = (c: Rgb): string => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
-const IDLE_FPS = 8, RUN_FPS = 4, WIND_FPS = 30, TILE_FPS = 2, FAST_FPS = 15, FAST_TILE_FPS = 6, SETTLE_MS = 8000, CLOCK_MS = 3 * 60_000;
+const IDLE_FPS = 8, RUN_FPS = 4, WIND_FPS = 30, TILE_FPS = 2, FAST_FPS = 15, FAST_TILE_FPS = 6, SETTLE_MS = 8000, PAUSE_PARK_MS = 10_000, CLOCK_MS = 3 * 60_000;
 /** Render scale (of device pixels) and the governor's budget: paint time averaged over SAMPLE frames above BUDGET_MS drops
  * to LOW_SCALE; it goes back up only after QUIET_MS of averages under half the budget. */
 const SCALE = .6, LOW_SCALE = .45, BUDGET_MS = 8, SAMPLE = 30, QUIET_MS = 60_000;
@@ -99,18 +100,22 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   layer.className = 'thread-sky';
   layer.setAttribute('aria-hidden', 'true');
   let canvas = document.createElement('canvas');
+  // Settled, static and long-paused skies copy the last WebGL frame here so the WebGL context can be released at rest.
+  const stillCanvas = document.createElement('canvas');
+  stillCanvas.className = 'thread-sky-still';
+  stillCanvas.hidden = true; stillCanvas.width = 0; stillCanvas.height = 0;
   // The outgoing scene's last frame, copied here on a thread switch and faded out over the new one (opacity only).
   const fade = document.createElement('canvas');
   fade.className = 'thread-sky-fade';
   fade.hidden = true; fade.width = 0; fade.height = 0;
-  layer.append(canvas, fade);
+  layer.append(canvas, stillCanvas, fade);
   pane.prepend(layer);
   const pointerRoot = options.tileRoot ?? pane;
   const transcript = (): HTMLElement | null => pane.querySelector('#transcript');
   // One WebGL context; each scene's program compiles on first use (`programFor`).
   let ctx: Context | null | undefined, bound: Program | null = null, fades = 0;
   let scene: Scene = sceneById(options.pinnedScene) ?? sceneFor(null), hadThread = false, fading: Animation | null = null;
-  let frame = 0, timer = 0, last = 0, frames = 0, disposed = false, shown = false, visible = true, focused = true;
+  let frame = 0, timer = 0, pauseParkTimer = 0, stillKey = '', stillShape = '', settled = false, woken = false, last = 0, frames = 0, disposed = false, shown = false, visible = true, focused = true;
   // Size from the ResizeObserver, so a paint never reads layout.
   let paneWidth = 0, paneHeight = 0;
   // The governor: recent paint times (GPU timer query where the driver has one, else the rAF interval past a 60 Hz frame).
@@ -127,11 +132,13 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   const setData = (key: string, value: string): void => { if (layer.dataset[key] !== value) layer.dataset[key] = value; };
   const running = (): boolean => transcript()?.hasAttribute('data-running') ?? pane.hasAttribute('data-running');
   const covered = (): boolean => workspace.matches('.settings-open,.board-view,.github-view') || pane.querySelector('.conversation-pane')?.hasAttribute('inert') === true;
-  const active = (): boolean => shown && visible && !document.hidden && focused && !covered() && !(options.tileRoot && pane.hasAttribute('data-focused'));
+  const active = (): boolean => shown && visible && !document.hidden && focused && !covered();
   const minutes = (): number => options.fixedMinutes ?? minutesOf(new Date());
+  const currentStillShape = (): string => `${scene.id}:${document.documentElement.dataset.theme ?? ''}:${Math.round(paneWidth)}x${Math.round(paneHeight)}`;
+  const currentStillKey = (): string => `${scene.id}:${options.fixedMinutes ?? Math.floor(minutes() / (CLOCK_MS / 60_000))}:${document.documentElement.dataset.theme ?? ''}:${Math.round(paneWidth)}x${Math.round(paneHeight)}`;
 
-  function paint(): void {
-    const m = minutes(), colors = skyColorsAt(m), sun = sunPosition(m), moon = moonPosition(m);
+  function syncFallback(m = minutes()): ReturnType<typeof skyColorsAt> {
+    const colors = skyColorsAt(m);
     // Style writes only on change: each one would cost a style recalc on every frame.
     const [top, mid, bottom] = scene.fallback(colors).map(css);
     const gradient = [top, mid, bottom].join();
@@ -143,13 +150,21 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     }
     setData('night', String(colors.night > .5));
     setData('threadScene', scene.id);
+    return colors;
+  }
+
+  function paint(count = true): void {
+    const m = minutes(), colors = syncFallback(m), sun = sunPosition(m), moon = moonPosition(m);
+    let freshContext = false;
+    if (shown && ctx === undefined) { ctx = context(canvas); freshContext = ctx !== null; }
     const program = ctx ? programFor(ctx, scene) ?? null : null;
-    if (!ctx || !program) { layer.removeAttribute('data-gl'); return; }
+    if (!ctx || !program) { clearStill(); layer.removeAttribute('data-gl'); return; }
     const { gl } = ctx, u = program.locations;
     if (bound !== program) { gl.useProgram(program.program); bound = program; }
     // Quiet skies and background tiles need a smaller backing store; the scene and its grade stay the same.
     const renderScale = options.tileRoot || (!running() && windVelocity === 0 && !stirring) ? LOW_SCALE : scale;
     const ratio = Math.max(.75, Math.min(devicePixelRatio || 1, 2) * renderScale);
+    if (!paneWidth || !paneHeight) { paneWidth = layer.clientWidth; paneHeight = layer.clientHeight; }
     const width = Math.max(1, Math.round(paneWidth * ratio)), height = Math.max(1, Math.round(paneHeight * ratio));
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
     gl.viewport(0, 0, width, height);
@@ -164,14 +179,16 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     gl.uniform3f(u.moon, moon.x, moon.y, moon.visible ? Math.min(1, Math.max(0, moon.elevation * 3)) * colors.night : 0);
     gl.uniform2f(u.ptr, pointer.x, pointer.y); gl.uniform2f(u.ptrVel, pointer.vx, pointer.vy);
     gl.uniform1f(u.ptrAmt, pointer.amt);
-    const ext = ctx.timer;
+    const ext = count ? ctx.timer : null;
     if (ext) readQuery(ext);
     const measure = ext && !query ? ext.createQueryEXT() : null;
     if (ext && measure) ext.beginQueryEXT(ext.TIME_ELAPSED_EXT, measure);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     if (ext && measure) { ext.endQueryEXT(ext.TIME_ELAPSED_EXT); query = measure; }
-    frames++;
-    if (!layer.hasAttribute('data-gl')) { layer.setAttribute('data-gl', ''); precompile(); }
+    if (count) frames++;
+    clearStill();
+    if (!layer.hasAttribute('data-gl')) { layer.setAttribute('data-gl', ''); freshContext = true; }
+    if (freshContext && count) precompile();
   }
   /** Warm only the neighboring scene, while active and clear of input. With
    * KHR_parallel_shader_compile the driver compiles in the background and a later slot only collects the result. */
@@ -276,50 +293,125 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     if (idle) cancelIdleCallback(idle);
     window.clearTimeout(idleTimer); idle = 0; idleTimer = 0;
   }
+  function clearPausePark(): void {
+    if (pauseParkTimer) { window.clearTimeout(pauseParkTimer); pauseParkTimer = 0; }
+  }
+  function clearStill(): void {
+    stillKey = ''; stillShape = ''; settled = false;
+    if (stillCanvas.hidden && !stillCanvas.width && !stillCanvas.height) return;
+    stillCanvas.hidden = true; stillCanvas.width = 0; stillCanvas.height = 0;
+  }
   function clearFade(): void {
     fading?.cancel(); fading = null;
     fade.hidden = true; fade.width = 0; fade.height = 0;
     delete layer.dataset.fading;
   }
-  function releaseContext(): void {
-    stopPrecompile(); clearFade();
-    (ctx?.gl.getExtension('WEBGL_lose_context') as { loseContext(): void } | null)?.loseContext();
-    ctx = undefined; bound = null; query = null; costs = []; gpuCosts = []; gpuMs = null; timing = 'frame';
-    layer.removeAttribute('data-gl');
+  function loseWebglCanvas(): void {
+    stopPrecompile();
+    const oldContext = ctx, old = canvas;
+    ctx = undefined; bound = null; query = null;
+    if (oldContext === undefined && !old.width && !old.height) return;
+    old.removeEventListener('webglcontextlost', contextLost);
     // A lost context cannot be reused until asynchronously restored; a fresh canvas enables immediately.
-    const old = canvas;
     canvas = document.createElement('canvas'); canvas.width = 0; canvas.height = 0;
     canvas.addEventListener('webglcontextlost', contextLost);
-    old.replaceWith(canvas); old.width = 0; old.height = 0;
+    old.replaceWith(canvas);
+    (oldContext?.gl.getExtension('WEBGL_lose_context') as { loseContext(): void } | null)?.loseContext();
+    old.width = 0; old.height = 0;
+  }
+  function snapshotAndPark(): boolean {
+    if (!ctx || canvas.width <= 0 || canvas.height <= 0) {
+      if (ctx) { loseWebglCanvas(); if (stillCanvas.hidden) layer.removeAttribute('data-gl'); }
+      return !stillCanvas.hidden;
+    }
+    const g = stillCanvas.getContext('2d', { alpha: false });
+    if (!g) return false;
+    if (stillCanvas.width !== canvas.width || stillCanvas.height !== canvas.height) {
+      stillCanvas.width = canvas.width;
+      stillCanvas.height = canvas.height;
+    }
+    g.drawImage(canvas, 0, 0);
+    stillCanvas.hidden = false;
+    stillKey = currentStillKey();
+    stillShape = currentStillShape();
+    layer.setAttribute('data-gl', '');
+    loseWebglCanvas();
+    return true;
+  }
+  function releaseContext(): void {
+    clearPausePark(); clearFade(); clearStill();
+    loseWebglCanvas();
+    costs = []; gpuCosts = []; gpuMs = null; timing = 'frame';
+    layer.removeAttribute('data-gl');
   }
   function still(state: 'static' | 'settled'): void {
     last = 0;
+    const parked = ctx ? snapshotAndPark() : true;
     setData('skyState', state);
-    timer = window.setInterval(() => { if (active()) paint(); }, CLOCK_MS);
+    timer = window.setInterval(() => {
+      if (active()) {
+        paint();
+        settled = (!ctx || snapshotAndPark()) && state === 'settled';
+      }
+    }, CLOCK_MS);
+    if (!parked) return;
+    settled = state === 'settled';
   }
   function stop(): void {
+    clearPausePark();
     window.clearTimeout(timer); window.clearInterval(timer); timer = 0;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
   }
   function schedule(): void {
+    const wasWoken = woken;
+    woken = false;
     stop(); stopPrecompile();
     last = 0;
     if (!shown) { setData('skyState', 'off'); return; }
-    if (!active()) { clearFade(); setData('skyState', 'paused'); return; }
-    activityAt = performance.now();
-    precompile();
+    if (!active()) {
+      clearFade();
+      setData('skyState', 'paused');
+      if (ctx) {
+        pauseParkTimer = window.setTimeout(() => {
+          pauseParkTimer = 0;
+          if (disposed || !shown || active() || !ctx) return;
+          if (paneWidth > 0 && paneHeight > 0) {
+            paint(false);
+            snapshotAndPark();
+          } else {
+            clearStill();
+            loseWebglCanvas();
+            layer.removeAttribute('data-gl');
+          }
+        }, PAUSE_PARK_MS);
+      }
+      return;
+    }
     if (reducedMotion.matches) {
       // One still frame for the current time, refreshed every few minutes.
       wind = 0; windVelocity = 0; pointer.amt = 0; setData('wind', '0');
-      clearFade(); paint(); still('static');
+      clearFade();
+      if (stillCanvas.hidden || stillKey !== currentStillKey()) paint();
+      still('static');
       return;
     }
+    if (settled && !wasWoken && !running() && wind === 0 && windVelocity === 0 && pointer.amt === 0 && pointer.target === 0 && fading === null && fade.hidden && !stillCanvas.hidden && stillShape === currentStillShape()) {
+      if (stillKey !== currentStillKey()) paint();
+      still('settled');
+      return;
+    }
+    settled = false;
+    activityAt = performance.now();
+    if (!ctx && (stillCanvas.hidden || stillShape !== currentStillShape())) paint();
+    precompile();
     frame = requestAnimationFrame(tick);
   }
   /** Wakes the loop at once (pointer, wind); a frame already queued on rAF is left alone. */
   function wake(): void {
     activityAt = performance.now();
+    settled = false;
     if (frame || !active() || reducedMotion.matches) return;
+    woken = true;
     setData('skyState', 'moving');
     // Rescheduling a live timer must retain the elapsed part of its slot; still/paused clocks are already zero.
     const previous = last;
@@ -360,13 +452,21 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     if (next === scene) return;
     const animate = !first && shown && active() && !reducedMotion.matches && layer.hasAttribute('data-gl') && document.documentElement.hasAttribute('data-ready');
     clearFade();
-    if (animate && ctx) {
-      // The drawing buffer is still the last frame within this task: paint it once more and copy it before it is gone.
-      paint();
+    let fadeSource: HTMLCanvasElement | null = null;
+    if (animate) {
+      if (ctx) {
+        // The drawing buffer is still the last frame within this task: paint it once more and copy it before it is gone.
+        paint();
+        if (canvas.width > 0 && canvas.height > 0) fadeSource = canvas;
+      } else if (!stillCanvas.hidden && stillCanvas.width > 0 && stillCanvas.height > 0) {
+        fadeSource = stillCanvas;
+      }
+    }
+    if (fadeSource) {
       const g = fade.getContext('2d');
       if (g) {
-        if (fade.width !== canvas.width || fade.height !== canvas.height) { fade.width = canvas.width; fade.height = canvas.height; }
-        g.drawImage(canvas, 0, 0);
+        if (fade.width !== fadeSource.width || fade.height !== fadeSource.height) { fade.width = fadeSource.width; fade.height = fadeSource.height; }
+        g.drawImage(fadeSource, 0, 0);
         fade.hidden = false;
         setData('fading', 'true'); fades++;
         fading = fade.animate([{ opacity: 1 }, { opacity: 0 }], { duration: FADE_MS, easing: 'cubic-bezier(.33,0,.2,1)' });
@@ -377,9 +477,18 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     } else delete layer.dataset.fading;
     scene = next;
     shownGradient = '';
-    // Paused: the loop paints the new scene when it resumes.
-    if (shown && (active() || !ctx)) paint();
-    wake(); precompile();
+    if (shown && active()) {
+      if (reducedMotion.matches) { schedule(); return; }
+      paint();
+      wake();
+      precompile();
+    } else if (shown) {
+      syncFallback();
+      clearStill();
+      if (!ctx) layer.removeAttribute('data-gl');
+    } else {
+      clearStill();
+    }
   }
   function move(event: PointerEvent): void {
     if (!shown || reducedMotion.matches || event.pointerType === 'touch') return;
@@ -400,7 +509,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     for (const record of records) {
       if (record.attributeName === 'data-running') windChanged();
       if (record.attributeName === 'class' || record.attributeName === 'inert' || record.attributeName === 'data-wallpaper' || record.attributeName === 'data-focused') { syncScene(); schedule(); return; }
-      if (record.attributeName === 'data-theme' && active()) { paint(); wake(); }
+      if (record.attributeName === 'data-theme' && active()) { paint(); if (reducedMotion.matches) snapshotAndPark(); else wake(); }
     }
   });
   observer.observe(workspace, { attributes: true, attributeFilter: ['class', 'data-wallpaper'] });
@@ -410,14 +519,18 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   intersection.observe(layer);
   const resize = new ResizeObserver(entries => {
     const box = entries.at(-1)?.contentRect;
-    if (box) { paneWidth = box.width; paneHeight = box.height; }
-    if (active()) { paint(); wake(); }
+    if (!box || (!box.width && !box.height)) return;
+    const changed = box.width !== paneWidth || box.height !== paneHeight;
+    paneWidth = box.width; paneHeight = box.height;
+    if (!changed && !stillCanvas.hidden) return;
+    if (active()) { paint(); if (reducedMotion.matches) snapshotAndPark(); else wake(); }
   });
   resize.observe(layer);
   function contextLost(event: Event): void {
     event.preventDefault();
     if (event.target !== canvas) return;
-    stopPrecompile(); ctx = null; bound = null; query = null; layer.removeAttribute('data-gl');
+    stopPrecompile(); ctx = null; bound = null; query = null;
+    if (stillCanvas.hidden) layer.removeAttribute('data-gl');
   }
   canvas.addEventListener('webglcontextlost', contextLost);
   for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.addEventListener(type, input, { capture: true, passive: true });
@@ -439,7 +552,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     dispose(): void {
       disposed = true;
       stop();
-      stopPrecompile(); clearFade();
+      stopPrecompile(); clearFade(); clearStill();
       for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.removeEventListener(type, input, { capture: true });
       observer.disconnect(); intersection.disconnect(); resize.disconnect();
       pointerRoot.removeEventListener('pointermove', move);
@@ -449,7 +562,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       window.removeEventListener('blur', onFocus);
       reducedMotion.removeEventListener('change', schedule);
       lessTransparency.removeEventListener('change', refresh);
-      (ctx?.gl.getExtension('WEBGL_lose_context') as { loseContext(): void } | null)?.loseContext();
+      loseWebglCanvas();
       layer.remove();
     },
   };

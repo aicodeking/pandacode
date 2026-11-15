@@ -19,6 +19,7 @@ pub fn has_capacity(running: usize) -> bool {
 
 pub(super) struct Spare {
     key: String,
+    cwd: PathBuf,
     pub(super) child: Child,
     pub(super) group: ProcessGroup,
     pub(super) server: Option<mcp_host::Server>,
@@ -125,9 +126,45 @@ fn miss(alive: bool, spare_key: &str, key: &str, age: Duration) -> Option<String
     Some(format!("changed: {}", changed.join(", ")))
 }
 
-/// Drop a task's warm agent (its settings changed, or it was deleted).
+/// Drop a task's warm agent (its settings changed, or it was deleted) and cancel any prewarm in flight.
 pub fn discard(session_id: &str) {
+    launched(session_id);
     spares().remove(session_id);
+}
+
+/// Drop every warm agent running inside `folder` (worktree or chat folder removal) and cancel in-flight prewarms.
+pub fn discard_in(folder: &Path) {
+    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_owned());
+    let removed: Vec<Spare> = {
+        let mut spares = spares();
+        RETIREMENTS.fetch_add(1, Ordering::SeqCst);
+        let keys: Vec<String> = spares
+            .iter()
+            .filter(|(_, spare)| spare.cwd.starts_with(&folder))
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|session_id| {
+                launched(&session_id);
+                spares.remove(&session_id)
+            })
+            .collect()
+    };
+    drop(removed);
+}
+
+/// Drop a deleted task's warm agent and remove its launch counter so deleted tasks/drafts leave no map entry.
+pub fn forget_session(session_id: &str) {
+    discard(session_id);
+    {
+        let mut spares = spares();
+        RETIREMENTS.fetch_add(1, Ordering::SeqCst);
+        spares.remove(session_id);
+    }
+    LAUNCHES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(session_id);
 }
 
 /// Called under the agents lock after admission; a matching spare is still adoptable.
@@ -208,6 +245,9 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     if !can_start() || epoch(&config.session_id) != launch {
         return Ok(());
     }
+    let cwd = PathBuf::from(&config.cwd)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&config.cwd));
     let born = std::time::Instant::now();
     let session_id = config.session_id.clone();
     {
@@ -220,7 +260,7 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         make_room(&mut spares);
         let child = command.spawn().map_err(|e| format!("Could not start Claude Code: {e}"))?;
         let group = ProcessGroup::register(child.id());
-        spares.insert(session_id.clone(), Spare { key, child, group, server, born });
+        spares.insert(session_id.clone(), Spare { key, cwd, child, group, server, born });
     }
     tokio::spawn(async move {
         tokio::time::sleep(IDLE).await;
@@ -248,6 +288,9 @@ pub(super) fn waiting(session_id: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    static TEST_SPARES_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn warm_policy_skips_busy_agents_and_expires_after_ninety_seconds() {
         assert!(has_capacity(0));
@@ -265,7 +308,7 @@ mod tests {
         let mut child = Command::new("sleep");
         child.arg("30").kill_on_drop(true);
         let mut spares = HashMap::from([("previous".into(), Spare {
-            key: "same".into(), child: child.spawn().unwrap(), group: ProcessGroup::register(None),
+            key: "same".into(), cwd: std::env::temp_dir(), child: child.spawn().unwrap(), group: ProcessGroup::register(None),
             server: None, born: std::time::Instant::now(),
         })]);
         make_room(&mut spares);
@@ -278,6 +321,7 @@ mod tests {
     #[tokio::test]
     async fn admission_retires_unrelated_warm_process_trees_under_load() {
         use tokio::io::AsyncBufReadExt;
+        let _guard = TEST_SPARES_LOCK.lock().await;
         let store = crate::Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let owner = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
@@ -292,7 +336,7 @@ mod tests {
         let pid = child.id().unwrap();
         let descendant: i32 = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines().next_line().await.unwrap().unwrap().parse().unwrap();
         spares().insert(owner.id.clone(), Spare {
-            key: "same".into(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(),
+            key: "same".into(), cwd: std::env::temp_dir(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(),
         });
         let mut waiting_after_admission = Vec::new();
         for task in &others {
@@ -306,7 +350,7 @@ mod tests {
         command.arg("30").kill_on_drop(true).process_group(0);
         let child = command.spawn().unwrap();
         let group = ProcessGroup::register(child.id());
-        spares().insert(owner.id.clone(), Spare { key: "same".into(), child, group, server: None, born: std::time::Instant::now() });
+        spares().insert(owner.id.clone(), Spare { key: "same".into(), cwd: std::env::temp_dir(), child, group, server: None, born: std::time::Instant::now() });
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         crate::prepare_task_run(&state, owner.id.clone(), Some("hello".into()), vec![], tx, Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
         let adopted = take(&owner.id, "same");
@@ -409,6 +453,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_mismatched_or_exited_warm_agent_is_discarded() {
+        let _guard = TEST_SPARES_LOCK.lock().await;
         let spawn = || {
             let mut command = Command::new("sleep");
             command.arg("30").kill_on_drop(true);
@@ -417,18 +462,141 @@ mod tests {
             (child, group)
         };
         let (child, group) = spawn();
-        spares().insert("warm-test".into(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now() });
+        spares().insert("warm-test".into(), Spare { key: "launch-a".into(), cwd: std::env::temp_dir(), child, group, server: None, born: std::time::Instant::now() });
         assert!(take("warm-test", "launch-b").is_none(), "a different launch starts cold");
         assert!(!waiting("warm-test"), "and the stale agent is gone");
         let (child, group) = spawn();
-        spares().insert("warm-test".into(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now() });
+        spares().insert("warm-test".into(), Spare { key: "launch-a".into(), cwd: std::env::temp_dir(), child, group, server: None, born: std::time::Instant::now() });
         let mut adopted = take("warm-test", "launch-a").expect("the matching agent is adopted");
         adopted.child.kill().await.unwrap();
         let (mut child, group) = spawn();
         child.kill().await.unwrap();
         child.wait().await.unwrap();
-        spares().insert("warm-test".into(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now() });
+        spares().insert("warm-test".into(), Spare { key: "launch-a".into(), cwd: std::env::temp_dir(), child, group, server: None, born: std::time::Instant::now() });
         assert!(take("warm-test", "launch-a").is_none(), "an agent that exited is never adopted");
-        discard("warm-test");
+        forget_session("warm-test");
+    }
+
+    #[test]
+    fn discarding_a_warm_agent_invalidates_in_flight_prewarm_epoch() {
+        let before = epoch("warm-epoch-discard");
+        discard("warm-epoch-discard");
+        assert!(epoch("warm-epoch-discard") > before, "discard bumps the launch epoch so in-flight prewarm cancels");
+        forget_session("warm-epoch-discard");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discard_in_reaps_spares_inside_target_folder_and_keeps_unrelated_spares() {
+        let _guard = TEST_SPARES_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!("pandacode-warm-discard-in-{}", uuid::Uuid::new_v4()));
+        let target = root.join("worktree-a");
+        let nested = target.join("sub");
+        let unrelated = root.join("worktree-b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+
+        let spawn_in = |cwd: &Path| {
+            let mut command = Command::new("sleep");
+            command.arg("30").kill_on_drop(true).process_group(0);
+            let child = command.spawn().unwrap();
+            let pid = child.id().unwrap();
+            let group = ProcessGroup::register(Some(pid));
+            let spare = Spare {
+                key: "launch".into(),
+                cwd: cwd.canonicalize().unwrap(),
+                child,
+                group,
+                server: None,
+                born: std::time::Instant::now(),
+            };
+            (spare, pid)
+        };
+
+        let (target_spare, target_pid) = spawn_in(&target);
+        let (nested_spare, nested_pid) = spawn_in(&nested);
+        let (other_spare, other_pid) = spawn_in(&unrelated);
+
+        spares().insert("warm-in-target".into(), target_spare);
+        spares().insert("warm-in-nested".into(), nested_spare);
+        spares().insert("warm-unrelated".into(), other_spare);
+
+        let target_epoch_before = epoch("warm-in-target");
+        let nested_epoch_before = epoch("warm-in-nested");
+        let other_epoch_before = epoch("warm-unrelated");
+        let retirements_before = RETIREMENTS.load(Ordering::SeqCst);
+
+        discard_in(&target);
+
+        assert!(!waiting("warm-in-target"), "spare directly in target folder is removed");
+        assert!(!waiting("warm-in-nested"), "spare in nested subfolder is removed");
+        assert!(waiting("warm-unrelated"), "unrelated spare outside target folder stays warm");
+        assert!(epoch("warm-in-target") > target_epoch_before);
+        assert!(epoch("warm-in-nested") > nested_epoch_before);
+        assert_eq!(epoch("warm-unrelated"), other_epoch_before);
+        assert!(RETIREMENTS.load(Ordering::SeqCst) > retirements_before);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (unsafe { libc::kill(target_pid as i32, 0) } == 0
+            || unsafe { libc::kill(nested_pid as i32, 0) } == 0)
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(unsafe { libc::kill(target_pid as i32, 0) }, -1);
+        assert_eq!(unsafe { libc::kill(nested_pid as i32, 0) }, -1);
+        assert_eq!(unsafe { libc::kill(other_pid as i32, 0) }, 0);
+
+        forget_session("warm-in-target");
+        forget_session("warm-in-nested");
+        forget_session("warm-unrelated");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn forget_session_removes_task_from_spares_and_launches() {
+        let _guard = TEST_SPARES_LOCK.lock().await;
+        let mut command = Command::new("sleep");
+        command.arg("30").kill_on_drop(true).process_group(0);
+        let child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let group = ProcessGroup::register(Some(pid));
+
+        spares().insert(
+            "warm-forget-target".into(),
+            Spare {
+                key: "launch".into(),
+                cwd: std::env::temp_dir(),
+                child,
+                group,
+                server: None,
+                born: std::time::Instant::now(),
+            },
+        );
+        launched("warm-forget-target");
+        launched("warm-forget-keep");
+        assert!(waiting("warm-forget-target"));
+        assert!(LAUNCHES.lock().unwrap().contains_key("warm-forget-target"));
+
+        let retirements_before = RETIREMENTS.load(Ordering::SeqCst);
+        forget_session("warm-forget-target");
+
+        assert!(!waiting("warm-forget-target"), "spare is removed from SPARES");
+        assert!(
+            !LAUNCHES.lock().unwrap().contains_key("warm-forget-target"),
+            "launch counter is removed from LAUNCHES"
+        );
+        assert_eq!(epoch("warm-forget-target"), 0);
+        assert!(RETIREMENTS.load(Ordering::SeqCst) > retirements_before);
+        assert!(LAUNCHES.lock().unwrap().contains_key("warm-forget-keep"));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid as i32, 0) } == 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+
+        forget_session("warm-forget-keep");
     }
 }

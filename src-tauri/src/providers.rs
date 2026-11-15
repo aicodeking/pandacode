@@ -23,7 +23,33 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{retire_unrelated as retire_unrelated_warm_agents, discard as discard_warm_agent, epoch as warm_epoch, has_capacity as warm_has_capacity, prewarm as prewarm_agent, supported as warms};
+pub use warm::{
+    discard as discard_warm_agent, discard_in as discard_warm_agents_in, epoch as warm_epoch,
+    forget_session as forget_warm_session, has_capacity as warm_has_capacity,
+    prewarm as prewarm_agent, retire_unrelated as retire_unrelated_warm_agents, supported as warms,
+};
+
+#[cfg(test)]
+pub(crate) fn warm_spare_and_cold_keys_for_test(
+    mut spare: RunConfig,
+    mut cold: RunConfig,
+    tools: &[Value],
+) -> Result<(String, String), String> {
+    spare.cwd = external_path(&spare.cwd);
+    let spare_disabled = crate::skill_manager::disabled_for(&spare.session_id);
+    crate::skill_manager::apply_instructions(&mut spare, &spare_disabled);
+    let spare_key = warm::key(&spare, tools);
+
+    let cold_disabled = crate::skill_manager::launch_disabled(
+        &cold.provider,
+        &cold.cwd,
+        crate::skill_manager::disabled_for(&cold.session_id),
+    );
+    crate::skill_manager::prepare_turn(&mut cold, &cold_disabled)?;
+    cold.cwd = external_path(&cold.cwd);
+    let cold_key = warm::key(&cold, tools);
+    Ok((spare_key, cold_key))
+}
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
@@ -580,19 +606,64 @@ pub type Sink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 
 /// How long streamed text may wait before it reaches the window (about one frame at 30 Hz).
 pub const COALESCE_WINDOW: Duration = Duration::from_millis(33);
+/// Coalesce window when two or more agents stream concurrently, capping IPC pressure on WKWebView.
+pub const MULTI_AGENT_COALESCE_WINDOW: Duration = Duration::from_millis(60);
 const COALESCE_BYTES: usize = 8 * 1024;
 
+pub fn coalesce_window(running_agents: usize) -> Duration {
+    if running_agents >= 2 {
+        MULTI_AGENT_COALESCE_WINDOW
+    } else {
+        COALESCE_WINDOW
+    }
+}
+
 /// Merges consecutive plain `text`/`thinking` deltas into one event, so a long reply is a
-/// few dozen window events instead of thousands. Any other event flushes the buffer first,
-/// so ordering is preserved.
+/// few dozen window events instead of thousands. The first non-empty `text` delta of each
+/// assistant message segment flushes immediately (`0 ms`); any non-plain event flushes the
+/// buffer first so ordering is preserved.
 #[derive(Default)]
 pub struct Coalescer {
     pending: Option<(AgentEvent, std::time::Instant)>,
+    text_emitted: bool,
+    text_session: String,
 }
 impl Coalescer {
-    /// Events to emit now, in order. A buffered delta waits until the window or size limit
+    /// Events to emit now, in order. The first non-empty `text` delta of an assistant message
+    /// segment emits immediately; subsequent deltas wait until `COALESCE_WINDOW` or size limit
     /// passes, the next event of another kind, or `flush`.
+    #[cfg(test)]
     pub fn push(&mut self, event: AgentEvent, now: std::time::Instant) -> Vec<AgentEvent> {
+        self.push_with_window(event, now, COALESCE_WINDOW)
+    }
+
+    pub fn push_with_window(
+        &mut self,
+        event: AgentEvent,
+        now: std::time::Instant,
+        window: Duration,
+    ) -> Vec<AgentEvent> {
+        if self.text_session != event.session_id {
+            self.text_emitted = false;
+        }
+        if event.kind == "thinking"
+            || event.tool.is_some()
+            || matches!(
+                event.kind.as_str(),
+                "message_start"
+                    | "tool"
+                    | "turn_start"
+                    | "turn_complete"
+                    | "done"
+                    | "goal_input"
+                    | "note"
+                    | "error"
+                    | "approval"
+                    | "input_request"
+            )
+        {
+            self.text_emitted = false;
+        }
         let plain = matches!(event.kind.as_str(), "text" | "thinking")
             && event.request_id.is_none()
             && event.data.is_none()
@@ -611,10 +682,21 @@ impl Coalescer {
                 self.pending = Some((event, now));
             }
         }
-        if self.pending.as_ref().is_some_and(|(buffered, since)| {
-            buffered.text.len() >= COALESCE_BYTES || now.duration_since(*since) >= COALESCE_WINDOW
-        }) {
-            out.extend(self.flush());
+        let immediate_first_text = self.pending.as_ref().is_some_and(|(buffered, _)| {
+            buffered.kind == "text" && !buffered.text.is_empty() && !self.text_emitted
+        });
+        if immediate_first_text
+            || self.pending.as_ref().is_some_and(|(buffered, since)| {
+                buffered.text.len() >= COALESCE_BYTES || now.duration_since(*since) >= window
+            })
+        {
+            if let Some(flushed) = self.flush() {
+                if flushed.kind == "text" && !flushed.text.is_empty() {
+                    self.text_emitted = true;
+                    self.text_session.clone_from(&flushed.session_id);
+                }
+                out.push(flushed);
+            }
         }
         out
     }
@@ -3408,6 +3490,7 @@ pub(crate) async fn end_lingering(session_id: &str) {
 /// is removed: on Windows a process's working directory cannot be deleted.
 pub(crate) async fn end_lingering_in(folder: &Path) {
     let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_owned());
+    discard_warm_agents_in(&folder);
     let tasks: Vec<String> = lingering()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -4233,32 +4316,84 @@ mod coalesce_tests {
             }
             let delta = format!("{}", i % 10);
             sent.push_str(&delta);
-            // All within one 33 ms window.
+            // All within one 33 ms window; first token of each segment emits at 0 ms.
             out.extend(c.push(ev("text", &delta), start + Duration::from_micros(i)));
         }
         out.extend(c.flush());
         eprintln!("coalesced 2000 text deltas into {} emits (was 2001)", out.len());
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[1].kind, "tool");
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0].text, &sent[..1]);
+        assert_eq!(out[1].text, &sent[1..1000]);
+        assert_eq!(out[2].kind, "tool");
+        assert_eq!(out[3].text, &sent[1000..1001]);
+        assert_eq!(out[4].text, &sent[1001..]);
         let text: String = out.iter().filter(|e| e.kind == "text").map(|e| e.text.as_str()).collect();
         assert_eq!(text, sent);
-        assert_eq!(out[0].text, sent[..1000]);
     }
     #[test]
     fn window_size_and_kind_changes_flush() {
         let start = std::time::Instant::now();
         let mut c = Coalescer::default();
-        assert!(c.push(ev("text", "a"), start).is_empty());
+        // First non-empty text delta flushes immediately with zero delay.
+        let first = c.push(ev("text", "a"), start);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "a");
+        assert!(c.started_at().is_none());
+        // Subsequent text deltas coalesce over COALESCE_WINDOW.
+        assert!(c.push(ev("text", "b"), start).is_empty());
         assert_eq!(c.started_at(), Some(start));
-        let late = c.push(ev("text", "b"), start + COALESCE_WINDOW);
+        let late = c.push(ev("text", "c"), start + COALESCE_WINDOW);
         assert_eq!(late.len(), 1);
-        assert_eq!(late[0].text, "ab");
+        assert_eq!(late[0].text, "bc");
+        // Thinking still buffers, then flushes in strict order before immediate first text.
         assert!(c.push(ev("thinking", "x"), start).is_empty());
         let switched = c.push(ev("text", "y"), start);
+        assert_eq!(switched.len(), 2);
         assert_eq!((switched[0].kind.as_str(), switched[0].text.as_str()), ("thinking", "x"));
+        assert_eq!((switched[1].kind.as_str(), switched[1].text.as_str()), ("text", "y"));
+        assert!(c.push(ev("text", "1"), start).is_empty());
         let big = c.push(ev("text", &"z".repeat(COALESCE_BYTES)), start);
         assert_eq!(big[0].text.len(), COALESCE_BYTES + 1);
         assert!(c.flush().is_none());
+    }
+    #[test]
+    fn first_text_ignores_empty_deltas_resets_on_message_start_and_scales_window_under_load() {
+        let start = std::time::Instant::now();
+        let mut c = Coalescer::default();
+        assert_eq!(coalesce_window(0), COALESCE_WINDOW);
+        assert_eq!(coalesce_window(1), COALESCE_WINDOW);
+        assert_eq!(coalesce_window(2), MULTI_AGENT_COALESCE_WINDOW);
+        assert_eq!(coalesce_window(5), MULTI_AGENT_COALESCE_WINDOW);
+
+        // An empty text chunk must not consume the zero-delay first-token slot.
+        assert!(c.push(ev("text", ""), start).is_empty());
+        let first = c.push(ev("text", "Hello"), start + Duration::from_millis(1));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "Hello");
+        assert!(c.started_at().is_none());
+
+        // Under >=2 concurrent agents, 33 ms is still inside the 60 ms window.
+        let t1 = start + Duration::from_millis(2);
+        assert!(c.push_with_window(ev("text", " world"), t1, coalesce_window(5)).is_empty());
+        assert!(c.push_with_window(ev("text", "!"), t1 + COALESCE_WINDOW, coalesce_window(5)).is_empty());
+        let multi = c.push_with_window(ev("text", "?"), t1 + MULTI_AGENT_COALESCE_WINDOW, coalesce_window(5));
+        assert_eq!(multi.len(), 1);
+        assert_eq!(multi[0].text, " world!?");
+
+        // Usage/status flush pending text in order without resetting the current segment.
+        assert!(c.push(ev("text", "tail"), start).is_empty());
+        let usage = c.push(ev("usage", ""), start);
+        assert_eq!(usage.len(), 2);
+        assert_eq!((usage[0].kind.as_str(), usage[1].kind.as_str()), ("text", "usage"));
+        assert!(c.push(ev("text", "still-same-segment"), start).is_empty());
+
+        // `message_start` flushes the previous segment and resets zero-delay for the new reply.
+        let boundary = c.push(ev("message_start", ""), start);
+        assert_eq!(boundary.len(), 2);
+        assert_eq!((boundary[0].text.as_str(), boundary[1].kind.as_str()), ("still-same-segment", "message_start"));
+        let next = c.push(ev("text", "Fresh"), start);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].text, "Fresh");
     }
 }
 

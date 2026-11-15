@@ -17,6 +17,7 @@ async function open(page: Page, time = '12:00', theme: 'light' | 'dark' = 'light
   await expect(page.locator('#transcript .message').first()).toBeVisible();
 }
 
+test.describe('thread sky', () => {
 test('the sky is the default scene and the Wallpapers switch starts off', async ({ page }) => {
   await open(page);
   await expect(sky(page)).toBeVisible();
@@ -350,9 +351,10 @@ for (const scene of ['rain', 'lagoon', 'dunes', 'ocean']) for (const tile of [fa
   });
 }
 
-test('a quiet sky settles, refreshes its clock slowly and wakes on input, theme, resize and runs', async ({ page }) => {
+for (const tile of [false, true]) test(`a quiet ${tile ? 'focused tile' : 'sky'} settles, refreshes its clock slowly and wakes on input, theme, resize and runs`, async ({ page }) => {
   await freezeClock(page);
-  await host(page);
+  await host(page, tile);
+  if (tile) await page.locator('#pane').evaluate(node => node.setAttribute('data-focused', ''));
   await page.clock.runFor(8500);
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
   const still = await frames(page);
@@ -380,12 +382,21 @@ test('a quiet sky settles, refreshes its clock slowly and wakes on input, theme,
   const running = await frames(page);
   await page.clock.runFor(2000);
   const paints = (await frames(page)) - running;
-  expect(paints).toBeGreaterThanOrEqual(7);
-  expect(paints).toBeLessThanOrEqual(9);
+  expect(paints).toBeGreaterThanOrEqual(tile ? 3 : 7);
+  expect(paints).toBeLessThanOrEqual(tile ? 5 : 9);
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+  const reduced = await frames(page);
+  await page.clock.runFor(2000);
+  expect(await frames(page)).toBe(reduced);
+  for (const covered of [true, false]) {
+    await page.locator('#workspace').evaluate((node, covered) => node.classList.toggle('settings-open', covered), covered);
+    await expect(sky(page)).toHaveAttribute('data-sky-state', covered ? 'paused' : 'static');
+  }
 });
 
-test('background tiles run at 2 fps after the ramp and pause behind the focused pane', async ({ page }) => {
+test('tiles keep painting at 2 fps after the ramp, including beneath the focused pane', async ({ page }) => {
   await freezeClock(page);
   await host(page, true);
   await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
@@ -394,13 +405,14 @@ test('background tiles run at 2 fps after the ramp and pause behind the focused 
   await page.clock.runFor(2000);
   expect((await frames(page)) - start).toBeLessThanOrEqual(5);
   await page.locator('#pane').evaluate(node => node.setAttribute('data-focused', ''));
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
-  const paused = await frames(page);
   await page.clock.runFor(2000);
-  expect(await frames(page)).toBe(paused);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  const focused = await frames(page);
+  expect(focused - start).toBeGreaterThanOrEqual(7);
+  expect(focused - start).toBeLessThanOrEqual(9);
   await page.locator('#pane').evaluate(node => node.removeAttribute('data-focused'));
   await page.clock.runFor(100);
-  expect(await frames(page)).toBeGreaterThan(paused);
+  expect(await frames(page)).toBeGreaterThan(focused);
 });
 
 test('disable releases the context and cancelled fade, and enable creates a fresh canvas', async ({ page }) => {
@@ -431,17 +443,24 @@ test('disable releases the context and cancelled fade, and enable creates a fres
   await expect.poll(() => frames(page)).toBeGreaterThan(start);
 });
 
-test('precompile stops while inactive and resumes with just one neighbor', async ({ page }) => {
+test('precompile respects native idle support and preserves the live scene across pauses', async ({ page }) => {
   await host(page);
+  const nativeIdle = await page.evaluate(() => typeof requestIdleCallback === 'function');
+  const scene = await page.evaluate(() => (window as any).__sky.scene);
   await page.evaluate(() => { document.querySelector('#workspace')!.classList.add('settings-open'); });
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
   const compiled = await page.evaluate(() => (window as any).__sky.compiled.length);
   await page.waitForTimeout(1500);
   expect(await page.evaluate(() => (window as any).__sky.compiled.length)).toBe(compiled);
+  const paused = await frames(page);
   await page.evaluate(() => { document.querySelector('#workspace')!.classList.remove('settings-open'); });
-  await expect.poll(() => page.evaluate(() => (window as any).__sky.compiled.length)).toBe(2);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await expect.poll(() => frames(page)).toBeGreaterThan(paused);
+  await expect.poll(() => page.evaluate(() => (window as any).__sky.compiled.length)).toBe(nativeIdle ? 2 : 1);
   await page.waitForTimeout(1000);
-  expect(await page.evaluate(() => (window as any).__sky.compiled.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__sky.compiled.length)).toBe(nativeIdle ? 2 : 1);
+  expect(await page.evaluate(() => (window as any).__sky.scene)).toBe(scene);
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
 });
 
 
@@ -459,4 +478,209 @@ test('the fallback governor measures paints on timers without a GPU timing exten
   await host(page);
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
   await expect.poll(() => page.evaluate(() => (window as any).__sky.scale), { timeout: 7000 }).toBe(.45);
+});
+
+test('when the sky settles or pauses long, it snapshots onto the still canvas and parks WebGL', async ({ page }) => {
+  await freezeClock(page);
+  await host(page);
+  await page.evaluate(() => (window as any).skyHost.controller.setThread('first'));
+  const glSize = () => page.locator('.thread-sky>canvas').first().evaluate(node => [(node as HTMLCanvasElement).width, (node as HTMLCanvasElement).height]);
+  const stillState = () => page.locator('.thread-sky-still').evaluate(node => {
+    const c = node as HTMLCanvasElement;
+    const pixel = c.width > 0 ? [...c.getContext('2d')!.getImageData(2, 2, 1, 1).data] : [0, 0, 0, 0];
+    return { hidden: c.hidden, width: c.width, height: c.height, nonBlack: pixel.slice(0, 3).some(v => v > 0) };
+  });
+  const initialGl = await page.locator('.thread-sky>canvas').first().elementHandle();
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+
+  // 1. Settling at 8500ms snapshots onto .thread-sky-still, keeps data-gl="", and loses + zeroes WebGL.
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
+  expect(await initialGl!.evaluate(node => [node.width, node.height, node.getContext('webgl')!.isContextLost()])).toEqual([0, 0, true]);
+  expect(await glSize()).toEqual([0, 0]);
+  await expect(page.locator('.thread-sky-still')).toBeVisible();
+  const settledStill = await stillState();
+  expect(settledStill.hidden).toBe(false);
+  expect(settledStill.width).toBeGreaterThan(0);
+  expect(settledStill.height).toBeGreaterThan(0);
+  expect(settledStill.nonBlack).toBe(true);
+
+  // 2. Advancing 180_000ms refreshes the still snapshot (frames + 1) and immediately re-parks WebGL.
+  const beforeClock = await frames(page);
+  await page.clock.runFor(180_000);
+  expect(await frames(page)).toBe(beforeClock + 1);
+  expect(await glSize()).toEqual([0, 0]);
+  await expect(page.locator('.thread-sky-still')).toBeVisible();
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
+  expect((await stillState()).nonBlack).toBe(true);
+
+  // 3a. Pointer wake resumes live WebGL and clears .thread-sky-still ([0, 0], hidden).
+  await page.mouse.move(400, 400);
+  await page.clock.runFor(50);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+
+  // 3b. Settling again and waking via data-running clears .thread-sky-still cleanly.
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  expect(await glSize()).toEqual([0, 0]);
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+  await page.clock.runFor(50);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+  await page.locator('#pane').evaluate(node => node.removeAttribute('data-running'));
+  await page.clock.runFor(10_500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+
+  // 3c. setThread crossfade from settled state copies stillCanvas to .thread-sky-fade and resumes live WebGL.
+  expect(await glSize()).toEqual([0, 0]);
+  const beforeFades = await page.evaluate(() => (window as any).__sky.fades as number);
+  const fadeInfo = await page.evaluate(() => {
+    const host = (window as any).skyHost, current = (window as any).__sky.scene;
+    for (let i = 0; i < 40 && (window as any).__sky.scene === current; i++) host.controller.setThread(`settled-fade-${i}`);
+    const fade = document.querySelector('.thread-sky-fade') as HTMLCanvasElement;
+    return [fade.hidden, fade.width, fade.height] as const;
+  });
+  expect(await page.evaluate(() => (window as any).__sky.fades as number)).toBe(beforeFades + 1);
+  expect(fadeInfo[0]).toBe(false);
+  expect(fadeInfo[1]).toBeGreaterThan(0);
+  expect(fadeInfo[2]).toBeGreaterThan(0);
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+  await page.locator('.thread-sky-fade').evaluate(node => node.getAnimations().forEach(animation => animation.finish()));
+  await expect(sky(page)).not.toHaveAttribute('data-fading');
+
+  // 3d. wanted = false -> true from settled state clears .thread-sky-still and restores live WebGL cleanly.
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  await page.evaluate(() => { const host = (window as any).skyHost; host.wanted = false; host.controller.refresh(); });
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'off');
+  await expect(sky(page)).not.toHaveAttribute('data-gl');
+  expect(await glSize()).toEqual([0, 0]);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+  await page.evaluate(() => { const host = (window as any).skyHost; host.wanted = true; host.controller.refresh(); });
+  await expect(sky(page)).toHaveAttribute('data-gl', '');
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+
+  // Brief pause (1.5s) preserves live WebGL; continuous 10s pause snapshots and parks WebGL until resumed.
+  await page.locator('#workspace').evaluate(node => node.classList.add('settings-open'));
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  await page.clock.runFor(1500);
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  await page.clock.runFor(9000);
+  expect(await glSize()).toEqual([0, 0]);
+  const pausedStill = await stillState();
+  expect(pausedStill.hidden).toBe(false);
+  expect(pausedStill.width).toBeGreaterThan(0);
+  expect(pausedStill.nonBlack).toBe(true);
+  await page.locator('#workspace').evaluate(node => node.classList.remove('settings-open'));
+  await page.clock.runFor(50);
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await stillState()).toEqual({ hidden: true, width: 0, height: 0, nonBlack: false });
+
+  // Closed <details> bodies skip the .icon drop-shadow filter while open/summary icons keep it.
+  const filters = await page.evaluate(() => {
+    document.documentElement.style.setProperty('--bg', '#ffffff');
+    const workspace = document.querySelector('#workspace')!;
+    workspace.className = 'workspace';
+    const pane = document.querySelector('#pane')!;
+    pane.className = 'main-pane';
+    const probe = document.createElement('div');
+    probe.id = 'transcript';
+    probe.innerHTML = '<details id="outer"><summary><svg class="icon" id="sum-icon"></svg></summary><div><details id="inner"><summary><svg class="icon" id="trace-sum-icon"></svg></summary><div><svg class="icon" id="trace-body-icon"></svg></div></details></div></details>';
+    pane.append(probe);
+    const sumFilter = getComputedStyle(probe.querySelector('#sum-icon')!).filter;
+    const closedFilter = getComputedStyle(probe.querySelector('#trace-sum-icon')!).filter;
+    (probe.querySelector('#outer') as HTMLDetailsElement).open = true;
+    const openedTraceSumFilter = getComputedStyle(probe.querySelector('#trace-sum-icon')!).filter;
+    const closedTraceBodyFilter = getComputedStyle(probe.querySelector('#trace-body-icon')!).filter;
+    probe.remove();
+    return { sumFilter, closedFilter, openedTraceSumFilter, closedTraceBodyFilter };
+  });
+  expect(filters.sumFilter).toContain('drop-shadow');
+  expect(filters.closedFilter).toBe('none');
+  expect(filters.openedTraceSumFilter).toContain('drop-shadow');
+  expect(filters.closedTraceBodyFilter).toBe('none');
+});
+
+test('a settled sky stays settled without recreating WebGL across focus, visibility and view switches, and wakes on pointer or run', async ({ page }) => {
+  await freezeClock(page);
+  await host(page);
+  const glSize = () => page.locator('.thread-sky>canvas').first().evaluate(node => [(node as HTMLCanvasElement).width, (node as HTMLCanvasElement).height]);
+  const compiledCount = () => page.evaluate(() => ((window as any).__sky.compiled as string[]).length);
+
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  expect(await glSize()).toEqual([0, 0]);
+  expect(await compiledCount()).toBe(0);
+  const settledFrames = await frames(page);
+
+  // 1. Settings / Board / GitHub view cover and return keep settled state without spinning up WebGL.
+  for (const cls of ['settings-open', 'board-view', 'github-view']) {
+    await page.locator('#workspace').evaluate((node, c) => node.classList.add(c), cls);
+    await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+    await page.clock.runFor(200);
+    await page.locator('#workspace').evaluate((node, c) => node.classList.remove(c), cls);
+    await page.clock.runFor(200);
+    await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+    expect(await glSize()).toEqual([0, 0]);
+    expect(await compiledCount()).toBe(0);
+    expect(await frames(page)).toBe(settledFrames);
+  }
+
+  // 2. Document hidden -> visible and blur -> focus keep settled state without spinning up WebGL.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.runFor(200);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  expect(await glSize()).toEqual([0, 0]);
+  expect(await frames(page)).toBe(settledFrames);
+
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.clock.runFor(200);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  expect(await glSize()).toEqual([0, 0]);
+  expect(await frames(page)).toBe(settledFrames);
+
+  // 2b. Crossing a >3 min clock bucket while covered repaints 1 frame on return and immediately re-parks to settled.
+  await page.locator('#workspace').evaluate(node => node.classList.add('settings-open'));
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'paused');
+  await page.clock.runFor(200_000);
+  await page.locator('#workspace').evaluate(node => node.classList.remove('settings-open'));
+  await page.clock.runFor(200);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  expect(await glSize()).toEqual([0, 0]);
+  expect(await compiledCount()).toBe(0);
+  expect(await frames(page)).toBe(settledFrames + 1);
+
+  // 3. Moving the pointer over the sky wakes WebGL immediately.
+  await page.mouse.move(320, 260);
+  await page.clock.runFor(50);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  expect((await glSize())[0]).toBeGreaterThan(0);
+  expect(await frames(page)).toBeGreaterThan(settledFrames + 1);
+
+  // Settle again, then verify starting a run wakes WebGL immediately.
+  await page.clock.runFor(8500);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'settled');
+  expect(await glSize()).toEqual([0, 0]);
+  await page.locator('#pane').evaluate(node => node.setAttribute('data-running', ''));
+  await page.clock.runFor(50);
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  expect((await glSize())[0]).toBeGreaterThan(0);
+});
 });

@@ -512,7 +512,13 @@ pub async fn connection_assign(
             fresh_context(&store, &session_id)?;
         }
     }
-    crate::blocking(move || save_assignment(session_id, connection_id)).await
+    let snapshot = crate::blocking({
+        let session_id = session_id.clone();
+        move || save_assignment(session_id, connection_id)
+    })
+    .await?;
+    crate::providers::discard_warm_agent(&session_id);
+    Ok(snapshot)
 }
 
 fn save_assignment(session_id: String, connection_id: Option<String>) -> Result<Snapshot> {

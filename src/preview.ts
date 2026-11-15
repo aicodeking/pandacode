@@ -2014,6 +2014,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       sessions = sessions.filter(item => item.id !== task.id); delete messages[task.id]; architect.remove([task.id]);
       result = true; break;
     }
+    case 'prewarm_draft_session': result = null; break;
     case 'pin_session': {
       const task = session(args.sessionId);
       if (typeof args.pinned !== 'boolean') throw new Error('Choose whether to pin this task.');
@@ -2083,7 +2084,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) architect.inherit(s.id); result = s; break; }
+    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) { architect.inherit(s.id); const inherited = architect.get(s.id); if (inherited) emit('architect-event', inherited); } result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
       result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
