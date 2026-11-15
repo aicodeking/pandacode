@@ -246,7 +246,7 @@ fn store(session_id: &str, generation: u64, launch: u64, spare: Option<Spare>) -
     kept
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn claim(session_id: &str, key: &str, provider: &str) -> Option<u64> {
     claim_thread(session_id, Claim { key, provider, thread: None, ticket: None, launch: warm::epoch(session_id) })
 }
