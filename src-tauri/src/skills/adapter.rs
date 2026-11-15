@@ -575,14 +575,24 @@ pub fn write_link(dir: &Path, id: &str, target: &Path, hash: &str, previous: &[W
 }
 
 /// Remove the links PandaCode wrote; returns the ones replaced on disk, which stay.
-pub fn remove_link(written: &[Written]) -> Vec<String> {
+pub fn remove_link(written: &[Written], project: Option<&Path>) -> Vec<String> {
     let mut kept = Vec::new();
     for file in written {
         let path = Path::new(&file.path);
+        // The leaf is the managed link; only its parents must stay inside the project.
+        if project.is_some_and(|root| path.parent().is_none_or(|parent| parent_inside(root, parent).is_err())) {
+            kept.push(file.path.clone());
+            continue;
+        }
         match fs::symlink_metadata(path) {
-            Ok(meta) if meta.is_symlink() => { let _ = fs::remove_file(path); }
+            Ok(meta) if meta.is_symlink() => {
+                if fs::remove_file(path).is_err() {
+                    kept.push(file.path.clone());
+                }
+            }
             Ok(_) => kept.push(file.path.clone()),
-            Err(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => kept.push(file.path.clone()),
         }
     }
     kept

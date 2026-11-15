@@ -1872,6 +1872,75 @@ fn a_failed_file_replaced_meanwhile_is_left_and_named() {
     assert!(held.ends_with(&theirs[theirs.len() / 2..]) && held != SKILL, "{held}");
 }
 
+#[cfg(unix)]
+mod link_ownership_regressions {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn linked_skill_records_reject_sources_descendants_and_other_surfaces() {
+        let fx = Fixture::new();
+        let source = fx.folder("release", &[("SKILL.md", SKILL)]);
+        let outside = fx.folder("outside", &[("keep.md", "mine")]);
+        symlink(outside.join("keep.md"), source.join("alias.md")).unwrap();
+        fx.library.import_as(Kind::Skill, read_local(&source).unwrap(), "release", link_source(&source), true).unwrap();
+        fx.library.activate("release-notes", "claude", Scope::User, None, false).unwrap();
+        let link = fx.home.join(".claude/skills/release-notes");
+        let foreign = fx.home.join(".codex/skills/release-notes");
+        fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        symlink(&source, &foreign).unwrap();
+        let paths = [source.clone(), link.join("alias.md"), foreign];
+        let mut meta = fx.library.load("release-notes").unwrap();
+        let activation = &mut meta.activations[0];
+        activation.files = paths.iter().map(|path| Written { path: path.to_string_lossy().into_owned(), sha256: meta.sha256.clone() }).collect();
+        fx.library.save(&meta).unwrap();
+
+        let change = fx.library.deactivate("release-notes", "claude", Scope::User, None).unwrap();
+        assert_eq!(change.kept, paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>());
+        assert!(link.symlink_metadata().unwrap().is_symlink());
+        assert!(source.join("alias.md").symlink_metadata().unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(outside.join("keep.md")).unwrap(), "mine");
+        assert!(paths[2].symlink_metadata().unwrap().is_symlink());
+    }
+
+    #[test]
+    fn linked_skill_deactivation_keeps_a_replacement_folder() {
+        let fx = Fixture::new();
+        let source = fx.folder("release", &[("SKILL.md", SKILL)]);
+        fx.library.import_as(Kind::Skill, read_local(&source).unwrap(), "release", link_source(&source), true).unwrap();
+        fx.library.activate("release-notes", "claude", Scope::User, None, false).unwrap();
+        let link = fx.home.join(".claude/skills/release-notes");
+        fs::remove_file(&link).unwrap();
+        fs::create_dir(&link).unwrap();
+        fs::write(link.join("keep.md"), "mine").unwrap();
+
+        let change = fx.library.deactivate("release-notes", "claude", Scope::User, None).unwrap();
+        assert_eq!(change.kept, [link.to_string_lossy()]);
+        assert_eq!(fs::read_to_string(link.join("keep.md")).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), SKILL);
+    }
+
+    #[test]
+    fn linked_skill_deactivation_keeps_links_behind_redirected_project_parents() {
+        let fx = Fixture::new();
+        let source = fx.folder("release", &[("SKILL.md", SKILL)]);
+        fx.library.import_as(Kind::Skill, read_local(&source).unwrap(), "release", link_source(&source), true).unwrap();
+        let root = fx.repo();
+        fx.library.activate("release-notes", "codex", Scope::Project, Some(&root), false).unwrap();
+        let parent = root.join(".agents/skills");
+        let outside = fx.base.join("outside-skills");
+        fs::rename(&parent, &outside).unwrap();
+        symlink(&outside, &parent).unwrap();
+        let link = parent.join("release-notes");
+
+        let change = fx.library.deactivate("release-notes", "codex", Scope::Project, Some(&root)).unwrap();
+        assert_eq!(change.kept, [link.to_string_lossy()]);
+        assert!(outside.join("release-notes").symlink_metadata().unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(source.join("SKILL.md")).unwrap(), SKILL);
+    }
+}
+
+#[cfg(unix)]
 fn link_source(path: &Path) -> Source {
     Source { kind: "link".into(), location: path.to_string_lossy().into_owned(), git_ref: None, commit: None }
 }

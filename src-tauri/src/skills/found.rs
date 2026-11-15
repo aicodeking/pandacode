@@ -34,15 +34,18 @@ pub struct FoundSkill {
 /// which also feeds the Tools & add-ons inventory), plus the shared `~/.agents/skills`
 /// convention and ZCode's own folder. Duplicated roots (GLM and MiMo read Claude's) collapse.
 pub(crate) fn roots(home: &Path) -> Vec<(PathBuf, String)> {
+    roots_with_homes(home, &crate::skill_manager::roots::Homes::for_scan())
+}
+
+fn roots_with_homes(home: &Path, homes: &crate::skill_manager::roots::Homes) -> Vec<(PathBuf, String)> {
     let mut roots: Vec<(PathBuf, String)> = Vec::new();
     let mut push = |path: PathBuf, label: String| {
         if !roots.iter().any(|(known, _)| *known == path) {
             roots.push((path, label));
         }
     };
-    let homes = crate::skill_manager::roots::Homes::for_scan();
     for harness in ["claude", "codex", "opencode", "kimi", "pi", "cline"] {
-        for (path, label) in crate::skill_manager::roots::skill_roots(harness, home, None, &homes) {
+        for (path, label) in crate::skill_manager::roots::skill_roots(harness, home, None, homes) {
             push(path, label);
         }
     }
@@ -107,10 +110,30 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn roots_include_configured_and_account_homes_without_duplicates() {
+        let home = std::env::temp_dir().join("pandacode-found-home");
+        let account = home.join("accounts/claude");
+        let config = home.join("config");
+        let homes = crate::skill_manager::roots::Homes {
+            claude: Some(account.clone()),
+            xdg_config: Some(config.clone()),
+            configured: std::collections::BTreeMap::from([
+                ("claude".into(), vec![account.clone(), home.join("accounts/other")]),
+            ]),
+            ..Default::default()
+        };
+        let roots = roots_with_homes(&home, &homes);
+        assert_eq!(roots.iter().filter(|(path, _)| *path == account.join("skills")).count(), 1);
+        assert!(roots.iter().any(|(path, _)| *path == home.join("accounts/other/skills")));
+        assert!(roots.iter().any(|(path, _)| *path == config.join("opencode/skills")));
+        assert!(roots.iter().any(|(path, _)| *path == config.join("opencode/skill")));
+    }
+
+    #[test]
     fn roots_cover_every_known_harness_once() {
         let base = std::env::temp_dir().join(format!("pandacode-skills-roots-{}", uuid::Uuid::new_v4()));
         let home = &base;
-        let labels: Vec<String> = roots(home).into_iter().map(|(_, label)| label).collect();
+        let labels: Vec<String> = roots_with_homes(home, &crate::skill_manager::roots::Homes::default()).into_iter().map(|(_, label)| label).collect();
         let expect = [
             "~/.claude/skills",
             "~/.codex/skills",
