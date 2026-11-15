@@ -1,14 +1,25 @@
 /* Settings → Agents → Cloud sandboxes. */
 .cloud-form{display:flex;flex-direction:column;gap:8px;padding:2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 12px}
-.cloud-form label{display:flex;align-items:center;gap:10px;font-size:var(--ds-text-ui)}
-.cloud-form label>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-form>label{display:flex;align-items:center;gap:10px;font-size:var(--ds-text-ui)}
+.cloud-form>label>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-form>label[hidden]{display:none}
 .cloud-form input{flex:1;min-width:0;height:32px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
 .cloud-form input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .cloud-note{margin:0;font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted)}
 .cloud-progress{margin:0;font-size:var(--ds-text-meta);color:var(--text)}
 .cloud-error{margin:0;font-size:var(--ds-text-meta);color:var(--ds-danger)}
 .cloud-actions{display:flex;justify-content:flex-end;gap:8px}
-@media(max-width:560px){.cloud-form label{flex-direction:column;align-items:stretch;gap:4px}.cloud-form label>span{width:auto}}
+@media(max-width:560px){.cloud-form>label{flex-direction:column;align-items:stretch;gap:4px}.cloud-form>label>span{width:auto}.cloud-engine{flex-direction:column;align-items:stretch;gap:4px}.cloud-engine>span{width:auto}.cloud-engine-hint{margin-left:0}}
+.cloud-engine{display:flex;align-items:center;gap:10px;font-size:var(--ds-text-ui)}
+.cloud-engine>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-engine-picker{position:relative;display:inline-flex;flex-wrap:wrap;gap:2px;padding:2px;border-radius:var(--ds-radius-control);background:var(--ds-card-inset)}
+.cloud-engine-option{position:relative;display:inline-flex}
+.cloud-engine-option input{position:absolute;inset:0;margin:0;opacity:0;pointer-events:none}
+.cloud-engine-option span{display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:calc(var(--ds-radius-control) - 2px);font-size:var(--ds-text-meta);color:var(--muted);cursor:pointer}
+.cloud-engine-option input:checked+span{color:var(--text)}
+.cloud-engine-option input:focus-visible+span{outline:2px solid var(--focus);outline-offset:1px}
+.cloud-engine-picker>.segment-thumb{border-radius:calc(var(--ds-radius-control) - 2px);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+.cloud-engine-hint{margin:0 0 0 calc(7.5rem + 10px);font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted)}
 .cloud-buttons{display:flex;gap:6px;align-items:center}
 .cloud-row-status{margin:-2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px;font-size:var(--ds-text-meta);color:var(--muted)}
 .cloud-row-status.cloud-error{color:var(--ds-danger)}
@@ -27,3 +38,19 @@
 .cloud-image-error{margin:0;font-size:var(--ds-text-meta);color:var(--ds-danger)}
 .cloud-form input,.cloud-image select{background:var(--ds-card-inset)}
 /* The unconnected keyed long tail sits in a fold. */
+/* Each provider folds into its own dropdown, like the agent cards (settings.css .provider-diagnostic).
+ * The Connect/Test buttons sit on the summary row and click without folding; the chevron marks the fold. */
+.cloud-provider summary{display:flex;align-items:center;gap:.6rem;list-style:none;padding:.85rem var(--ds-row-pad-x);cursor:pointer;border-radius:var(--ds-radius-control)}
+.cloud-provider summary::-webkit-details-marker{display:none}
+.cloud-provider summary:hover{background:var(--ds-row-hover)}
+.cloud-provider summary:focus-visible{outline:2px solid var(--focus);outline-offset:-3px}
+.cloud-provider summary>strong{font-size:var(--ds-text-ui);font-weight:var(--weight-medium);min-width:0}
+.cloud-provider summary .cloud-detail{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cloud-provider summary .provider-availability{display:inline-flex;align-items:center}
+.cloud-provider summary>.icon{width:.8rem;height:.8rem;color:var(--muted);flex:none;transition:transform 130ms}
+.cloud-provider[open] summary>.icon{transform:rotate(90deg)}
+.cloud-test{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:0 var(--ds-row-pad-x) 12px;font-size:var(--ds-text-meta);color:var(--muted)}
+.cloud-test button{font-size:var(--ds-text-meta);min-height:30px;padding:0 10px}
+.cloud-test [role=status]{min-width:0;overflow-wrap:anywhere}
+@media(max-width:560px){.cloud-provider summary{gap:.45rem}.cloud-provider summary .cloud-detail{white-space:normal}}
+@media(prefers-reduced-motion:no-preference){.cloud-provider summary{transition:background-color 140ms ease-out,color 140ms ease-out}.cloud-provider[open]>:not(summary){animation:mi-fade 160ms ease-out}}

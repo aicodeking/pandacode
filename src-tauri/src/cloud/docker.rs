@@ -343,6 +343,23 @@ pub fn disconnect() -> Result<()> {
     settings.providers.remove("docker");
     super::save_settings(&settings)
 }
+
+/// The Settings quick test: the saved engine's daemon answers its version call.
+pub fn test() -> Result<String> {
+    let docker = Docker::connected()?;
+    docker.version()?;
+    Ok(format!("The {} engine answered.", docker.label()))
+}
+
+/// The CLI binary of the engine saved in Settings (default Docker), for install status.
+pub fn saved_binary(options: Option<&std::collections::BTreeMap<String, String>>) -> &'static str {
+    match options.and_then(|o| o.get("engine").map(String::as_str)) {
+        Some("apple") => "container",
+        Some("lxc") => "lxc",
+        Some("podman") => "podman",
+        _ => "docker",
+    }
+}
 pub fn sandbox() -> Result<Box<dyn Sandbox>> {
     Ok(Box::new(Docker::connected()?))
 }
@@ -524,6 +541,18 @@ mod tests {
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o777, 0o600);
         assert!(write_private(&file, b"other").is_err());
         std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn saved_binary_matches_the_stored_engine() {
+        use std::collections::BTreeMap;
+        assert_eq!(saved_binary(None), "docker");
+        let mut options = BTreeMap::new();
+        assert_eq!(saved_binary(Some(&options)), "docker");
+        for (engine, binary) in [("docker", "docker"), ("podman", "podman"), ("apple", "container"), ("lxc", "lxc"), ("unknown", "docker")] {
+            options.insert("engine".into(), engine.into());
+            assert_eq!(saved_binary(Some(&options)), binary, "{engine}");
+        }
     }
 
 

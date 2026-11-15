@@ -129,6 +129,7 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
 
   await settings.locator('#settings-panel-cloud details.settings-fold:not(.cloud-more)>summary').click();
   const claude = settings.getByRole('form', { name: 'Claude login for cloud agents' });
+  await settings.locator('.cloud-claude > summary').click();
   await claude.getByRole('button', { name: 'Save token' }).click();
   await expect(claude.getByRole('alert')).toHaveText('Paste the token from claude setup-token.');
   await claude.getByLabel('Claude token for cloud agents').fill('sk-ant-oat01-preview');
