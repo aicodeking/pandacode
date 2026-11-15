@@ -17,6 +17,7 @@ fn config(provider: &str, prompt: &str) -> crate::providers::RunConfig {
         codex_settings: None,
         images: Vec::new(),
         no_fresh_resume_fallback: false,
+        extra_dirs: Vec::new(),
     }
 }
 

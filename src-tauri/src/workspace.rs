@@ -1322,6 +1322,7 @@ fn parse_status_limited(output: Capture, limit: usize) -> Result<GitStatus, Stri
     })
 }
 
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoStatus {
     pub label: String,
@@ -4807,6 +4808,7 @@ mod tests {
             }
         }
         assert!(checked_calls >= 15, "the scan found the phone's Git calls ({checked_calls})");
+    }
     // Multi-folder resolution: resolve_in_folders maps an agent- or user-supplied
     // path onto one folder of a task's folder set (storage::RepoFolder as
     // Store::workspace_folders builds it: path is the effective root, worktree
@@ -5166,8 +5168,8 @@ mod tests {
             "the same branch name in every repository"
         );
 
-        assert_eq!(git_status(&primary_worktree).unwrap().branch, "pandacode/multi");
-        assert_eq!(git_status(&lib_worktree).unwrap().branch, "pandacode/multi");
+        assert_eq!(git_status(&primary_worktree, Trust::Desktop).unwrap().branch, "pandacode/multi");
+        assert_eq!(git_status(&lib_worktree, Trust::Desktop).unwrap().branch, "pandacode/multi");
         assert_eq!(
             fs::read_to_string(lib_worktree.join("lib.txt")).unwrap(),
             "initial\n",
@@ -5557,29 +5559,29 @@ mod tests {
         assert_eq!(folder.path, lib_worktree);
         fs::write(folder.path.join("note.txt"), "qualified\n").unwrap();
         assert!(
-            git_diff(&folder.path, Some("note.txt".into()), false)
+            git_diff(&folder.path, Some("note.txt".into()), false, Trust::Desktop)
                 .unwrap()
                 .contains("+qualified")
         );
         assert!(
-            git_diff(&lib, Some("note.txt".into()), false)
+            git_diff(&lib, Some("note.txt".into()), false, Trust::Desktop)
                 .unwrap()
                 .is_empty(),
             "the repository's main checkout has no such change"
         );
-        git_stage(&folder.path, vec!["note.txt".into()], true).unwrap();
-        git_commit(&folder.path, "Qualified commit".into()).unwrap();
-        assert!(git_status(&folder.path).unwrap().files.is_empty());
+        git_stage(&folder.path, vec!["note.txt".into()], true, Trust::Desktop).unwrap();
+        git_commit(&folder.path, "Qualified commit".into(), Trust::Desktop).unwrap();
+        assert!(git_status(&folder.path, Trust::Desktop).unwrap().files.is_empty());
         assert!(
-            git_status(&lib).unwrap().files.is_empty(),
+            git_status(&lib, Trust::Desktop).unwrap().files.is_empty(),
             "the main checkout stays clean"
         );
         assert_eq!(
-            git_status(&lib).unwrap().branch,
+            git_status(&lib, Trust::Desktop).unwrap().branch,
             "main",
             "the repository's own branch never moved"
         );
-        git_push(&folder.path).unwrap();
+        git_push(&folder.path, Trust::Desktop).unwrap();
         let shown = Command::new("git")
             .arg("-C")
             .arg(&lib)
@@ -5593,9 +5595,9 @@ mod tests {
         );
         let primary_worktree =
             fs::canonicalize(f.base.join("project-worktrees/pandacode-multi")).unwrap();
-        assert_eq!(git_status(&primary_worktree).unwrap().branch, "pandacode/multi");
+        assert_eq!(git_status(&primary_worktree, Trust::Desktop).unwrap().branch, "pandacode/multi");
         assert!(
-            git_status(&primary_worktree).unwrap().files.is_empty(),
+            git_status(&primary_worktree, Trust::Desktop).unwrap().files.is_empty(),
             "the primary checkout is untouched"
         );
     }
