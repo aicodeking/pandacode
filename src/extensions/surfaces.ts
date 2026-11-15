@@ -628,7 +628,42 @@ export const TASK_MENUS_PROTECTED = [
   ['bot-rows', 'The listed bots', 'Bots are the user\'s own: their order is the bots list\'s, and creating, editing or deleting one stays in the Bots panel and settings.'],
   ['bot-credentials', 'Bot credentials and settings', 'A bot\'s accounts, messaging services and secrets are never visible to a package.'],
 ] as const;
-export type ActionLocation = typeof TASK_MENUS_ACTION_SURFACES[number] | typeof COMMANDS_ACTION_SURFACES[number] |typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** The Workspace view menu, the sidebar Sort and view menu and the Filter projects menu (docs/extensions/window-menus.md).
+ * Each menu passes an extension surface with the captured window and revision: packages contribute items (a contributed
+ * main view opens through the existing view navigation), and the entries below hide and reorder in place. The open
+ * view, the selected sort and count, the filter's selection and the entries marked pinned keep their place. Changing
+ * the view, the sort, the count or the project filter stays a host setting: only the user's choice, or a package
+ * request that passes a fresh host choice, runs the original handler in main.ts. */
+export const WINDOW_MENUS_ACTION_SURFACES = ['panda.workspace.view.menu', 'panda.sidebar.sort.menu', 'panda.projects.filter.menu'] as const;
+export type WindowMenusActionLocation = typeof WINDOW_MENUS_ACTION_SURFACES[number];
+export const WINDOW_MENUS_PROTECTED_LOCATION = 'panda.menus.window.protected';
+/** Entries that hide and reorder in each menu, as [id, label]: the id is the menu item's own id in main.ts. The project
+ * rows of Filter projects are the user's own projects, in the projects list's order, so that menu has none. */
+export const WINDOW_MENUS_ENTRIES: Readonly<Record<WindowMenusActionLocation, readonly (readonly [string, string])[]>> = {
+  'panda.workspace.view.menu': [['conversation', 'Conversation'], ['board', 'Board'], ['github', 'GitHub']],
+  'panda.sidebar.sort.menu': [['recent', 'Recent activity'], ['created', 'Created'], ['per-3', '3 tasks'], ['per-6', '6 tasks'], ['per-10', '10 tasks'], ['per-15', '15 tasks']],
+  'panda.projects.filter.menu': [],
+};
+/** Menu items that keep their place and never hide, by `<location>/<id>` with the reason. The open view, the selected
+ * sort and count and the selected project are pinned while they are selected. */
+export const WINDOW_MENUS_PINNED: Readonly<Record<string, string | undefined>> = {
+  'panda.sidebar.sort.menu/manual': 'Manual is the sort that keeps drag-to-arrange; it leads the Sort tasks group and never leaves the menu.',
+  'panda.projects.filter.menu/all-projects': 'All projects is how the filter is cleared; it never leaves the menu.',
+};
+/** Protected behavior of these menus: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const WINDOW_MENUS_PROTECTED = [
+  ['view-current', 'The open workspace view', 'The view that is open stays listed and checked, so the user can always see where they are; hiding applies only to the other views.'],
+  ['view-change', 'Switching the workspace view', 'A package request to switch to Conversation, Board, GitHub or a contributed view needs a fresh host choice that runs the original view navigation once.'],
+  ['view-github', 'GitHub view availability', 'The GitHub view is listed only while the GitHub integration is on; a package never turns it on or off.'],
+  ['sort-manual', 'Manual sort', WINDOW_MENUS_PINNED['panda.sidebar.sort.menu/manual']!],
+  ['sort-selected', 'The selected sort and tasks per section', 'The sort and the count in use stay listed while they are selected, so hiding never changes what the sidebar shows.'],
+  ['sort-change', 'Changing the sort or the tasks per section', 'The sort and the count are saved per window and change only by the user\'s own choice; a package request needs a fresh host choice that runs the original handler once.'],
+  ['filter-all', 'All projects', WINDOW_MENUS_PINNED['panda.projects.filter.menu/all-projects']!],
+  ['filter-selected', 'The project filter selection', 'The selected project stays listed; the filter is a host setting and the menu never reorders the user\'s projects.'],
+  ['filter-change', 'Changing the project filter', 'A package request to filter by a project or clear the filter needs a fresh host choice that runs the original handler once, and it never carries a project name or path.'],
+  ['filter-project-actions', 'Project row actions', 'The right-click menu of a project row (rename, remove, reveal) stays in the host; nothing in a request carries a project path.'],
+] as const;
+export type ActionLocation = typeof WINDOW_MENUS_ACTION_SURFACES[number] | typeof TASK_MENUS_ACTION_SURFACES[number] |typeof COMMANDS_ACTION_SURFACES[number] |typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

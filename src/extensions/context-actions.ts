@@ -7,10 +7,11 @@ import { extensionChoices, extensionIcon } from './menu-choices';
 import { openExtensionDialog } from './dialogs';
 import { openProjectContext } from './context-inspector';
 import { openExecutableCommand } from './executable';
+import { requestInspectorView } from './view-navigation';
 import { boundedContextActions, type ActionLocation } from './surfaces';
 
 /** One clicked object, one bounded lifetime. No callback resolves a later active task. */
-export function openContextActions(anchor: HTMLElement, location: ActionLocation, context: Record<string, Json>, options: { title: string; items: ChoiceItem[]; onSelect: (id: string) => void | Promise<void>; point?: { x: number; y: number }; notify: (message: string) => void; onClose?: () => void; isAlive?: () => boolean; width?: number; pinned?: readonly string[] }): () => void {
+export function openContextActions(anchor: HTMLElement, location: ActionLocation, context: Record<string, Json>, options: { title: string; items: ChoiceItem[]; onSelect: (id: string) => void | Promise<void>; point?: { x: number; y: number }; notify: (message: string) => void; onClose?: () => void; isAlive?: () => boolean; width?: number; pinned?: readonly string[]; searchPlaceholder?: string; onContextMenu?: (id: string, point?: { x: number; y: number }) => void }): () => void {
   const captured: Record<string, Json> = structuredClone({ ...context, schemaVersion: 1, windowId: 'main', surfaceId: location });
   const activation = extensionGeneration(), owned = createDeclarativeActivation(extensionsSnapshot(), activation);
   let ended = false, openingDialog = false, closeDialog: (() => void) | undefined, closeMenu: (() => void) | undefined;
@@ -48,13 +49,17 @@ export function openContextActions(anchor: HTMLElement, location: ActionLocation
   const visible = ids.filter(id => pinned.has(id) || extensionsSnapshot().safeMode || !layout.isHidden(id, typeof captured.projectId === 'string' ? captured.projectId : undefined));
   let first = true;
   const choices = visible.map(id => { const item = { ...items.get(id)! }; if (first) item.separator = false; first = false; return item; });
-  closeMenu = openChoiceMenu({ anchor, title: options.title, point: options.point, width: options.width ?? 280, actions: true, items: choices, itemLimit: 128, onSelect: id => {
+  closeMenu = openChoiceMenu({ anchor, title: options.title, point: options.point, width: options.width ?? 280, actions: true, items: choices, itemLimit: 128, searchPlaceholder: options.searchPlaceholder,
+    // The host's own right-click row actions apply to the host rows only.
+    onContextMenu: options.onContextMenu && ((id, point) => { if (core.some(item => item.id === id)) options.onContextMenu?.(id.slice(location.length + 1), point); }), onSelect: id => {
     if (!valid()) { dispose(); return; }
     const legacy = core.find(item => item.id === id);
     if (legacy) { closeMenu?.(); return options.onSelect(id.slice(location.length + 1)); }
     const action = owned.actionFor(id, captured);
     dialogOwner = id.split('/')[0]; dialogIdentity = extensionIdentity(dialogOwner);
     if (action?.kind === 'showMessage') options.notify(action.message);
+    // A contributed view opens through the existing view navigation, which only opens declared views.
+    if (action?.kind === 'openView') { closeMenu?.(); requestInspectorView(action.view); }
     if (action?.kind === 'runCommand') {
       openingDialog = true; closeMenu?.();
       const command = owned.commands.find(entry => entry.owner.extensionId === id.split('/')[0]);

@@ -1,0 +1,91 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.window-menus",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.window-menus/toolbar",
+        "title": "Toolbar-first window menus",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "views": [
+      {
+        "id": "sample.window-menus/notes",
+        "title": "Window notes",
+        "text": "A contributed main view opened from the Workspace view menu."
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.window-menus/open-notes",
+        "title": "Window notes",
+        "action": { "kind": "openView", "view": "sample.window-menus/notes" }
+      },
+      {
+        "id": "sample.window-menus/sort-notes",
+        "title": "Sort notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Sort notes",
+            "successMessage": "Sort notes kept.",
+            "cancelMessage": "The sort stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Sort tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.window-menus/filter-notes",
+        "title": "Filter notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Filter notes",
+            "successMessage": "Filter notes kept.",
+            "cancelMessage": "The filter stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Filter tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      }
+    ],
+    "menus": [
+      { "id": "sample.window-menus/view", "command": "sample.window-menus/open-notes", "location": "panda.workspace.view.menu", "presentation": "button", "text": "Window notes", "visible": { "op": "eq", "key": "selection.kind", "value": "workspace-view" } },
+      { "id": "sample.window-menus/sort", "command": "sample.window-menus/sort-notes", "location": "panda.sidebar.sort.menu", "presentation": "button", "text": "Sort notes", "visible": { "op": "eq", "key": "selection.kind", "value": "sidebar-sort" } },
+      { "id": "sample.window-menus/filter", "command": "sample.window-menus/filter-notes", "location": "panda.projects.filter.menu", "presentation": "button", "text": "Filter notes", "visible": { "op": "eq", "key": "selection.kind", "value": "project-filter" } }
+    ],
+    "layouts": [
+      {
+        "id": "sample.window-menus/github-first",
+        "title": "GitHub before Board",
+        "location": "panda.workspace.view.menu",
+        "rules": [{ "id": "panda.workspace.view.menu/github", "target": "panda.workspace.view.menu/board", "side": "before" }]
+      },
+      {
+        "id": "sample.window-menus/created-first",
+        "title": "Created before Recent activity",
+        "location": "panda.sidebar.sort.menu",
+        "rules": [{ "id": "panda.sidebar.sort.menu/created", "target": "panda.sidebar.sort.menu/recent", "side": "before" }]
+      }
+    ]
+  }
+}

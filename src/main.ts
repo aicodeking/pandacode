@@ -4,7 +4,7 @@ import { ACCOUNT_SWITCH_PREFIX, accountSwitchDetail } from './account-switch-not
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
-import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
+import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, sortAfterChoice, taskComparator, type SidebarSort } from './sidebar-sort';
 import type { SidebarModel } from './extensions/sidebar-host';
 import type { SidebarSectionId } from './extensions/surfaces';
 import './styles.css';
@@ -867,6 +867,27 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       else if (request.controlId === 'bot-assign') run(assignTaskBot(s, id === NO_BOT ? null : id));
     },
   });
+  // The Workspace view, Sort and view and Filter projects menus: contributed items, order and visibility of the eligible
+  // entries, and captured actions that run the original handlers. The open view, the sort, the tasks per section and
+  // the project filter stay host settings changed here.
+  windowMenus = (await import('./extensions/window-menus-host')).mountWindowMenusAdoption({
+    state: () => ({
+      view: state.view, views: listedWorkspaceViews().map(view => ({ id: view.id, label: view.label })),
+      tasks: sidebarSort.tasks, perProject: sidebarSort.perProject, counts: [...PER_PROJECT],
+      filter: state.projectFilter, projects: userProjects().map(p => ({ id: p.id, name: p.name })),
+      project: state.projectId || undefined, menu: windowMenuOpen, busy: false, generation: state.generation,
+    }),
+    // The board has no sidebar: its project heading opens the same Filter projects menu.
+    anchor: menu => { const trigger = document.querySelector<HTMLElement>({ view: '#view-menu', sort: '#sidebar-sort', filter: '#project-filter' }[menu]); return menu === 'filter' && !trigger?.getClientRects().length ? document.querySelector<HTMLElement>('#board-project-filter') ?? trigger : trigger; },
+    execute: (request, alive) => {
+      const id = request.key.slice(request.key.indexOf(':') + 1);
+      if (!alive()) return;
+      if (request.controlId === 'view-open') { if (listedWorkspaceViews().some(view => view.id === id)) setWorkspaceView(id as WorkspaceView); }
+      else if (request.controlId === 'sort-set') chooseSidebarSort(id);
+      else if (request.controlId === 'scope-set') chooseSidebarSort(`per-${id}`);
+      else if (request.controlId === 'filter-set') { if (!id || id === 'all') run(chooseProjectFilter('')); else if (userProjects().some(p => p.id === id)) run(chooseProjectFilter(id)); }
+    },
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -1136,6 +1157,10 @@ if (preview && new URLSearchParams(location.search).has('commands-extras')) {
 if (preview && new URLSearchParams(location.search).has('task-menus')) {
   (window as any).__previewTaskMenus = () => taskMenus?.presentation();
   (window as any).__previewTaskMenusAction = (input: unknown) => taskMenus?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
+if (preview && new URLSearchParams(location.search).has('window-menus')) {
+  (window as any).__previewWindowMenus = () => windowMenus?.presentation();
+  (window as any).__previewWindowMenusAction = (input: unknown) => windowMenus?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
 if (preview && new URLSearchParams(location.search).has('tiles-picker')) {
   (window as any).__previewTiles = () => tilesPicker?.tilesPresentation();
@@ -3791,13 +3816,25 @@ function toggleSidebar(): void {
   window.dispatchEvent(new Event('resize'));
 }
 const WORKSPACE_VIEWS: { id: WorkspaceView; label: string; icon: string }[] = [{ id: 'conversation', label: 'Conversation', icon: 'thread' }, { id: 'board', label: 'Board', icon: 'kanban' }, { id: 'github', label: 'GitHub', icon: 'github' }];
+/** The views the Workspace view menu lists: GitHub only while its integration is on. */
+const listedWorkspaceViews = (): typeof WORKSPACE_VIEWS => WORKSPACE_VIEWS.filter(view => view.id !== 'github' || githubEnabled());
+/** The Workspace view, Sort and view and Filter projects menus adoption (docs/extensions/window-menus.md), mounted once extensions load. */
+let windowMenus: ReturnType<typeof import('./extensions/window-menus-host').mountWindowMenusAdoption> | undefined;
+/** The host menu of that adoption that is open. */
+let windowMenuOpen: import('./extensions/window-menus-core').WindowMenusOpen = 'none';
 async function showViewMenu(anchor: HTMLElement): Promise<void> {
   // In the sidebar the menu ends at the trigger's right edge, so it stays inside the sidebar; in the header it starts at its left edge.
   if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
   const width = 200, rect = anchor.getBoundingClientRect();
   const inSidebar = Boolean(anchor.closest('.sidebar'));
   const point = { x: inSidebar ? Math.max(8, rect.right - width) : rect.left, y: rect.bottom };
-  await showChoices(anchor, { title: 'Workspace view', width, point, items: WORKSPACE_VIEWS.filter(view => view.id !== 'github' || githubEnabled()).map(view => ({ id: view.id, label: view.label, icon: view.icon, selected: view.id === state.view })), onSelect: id => setWorkspaceView(id as WorkspaceView) });
+  const items = listedWorkspaceViews().map(view => ({ id: view.id, label: view.label, icon: view.icon, selected: view.id === state.view }));
+  // Radios keep their role when contributed rows or the user's arrangement bring the extension surface in.
+  const open = state.view, generation = state.generation;
+  const extension = windowMenus?.surface('panda.workspace.view.menu', { kind: 'workspace-view', ids: [open] }, () => state.view === open && generation === state.generation, []);
+  windowMenuOpen = 'view';
+  await showChoices(anchor, { title: 'Workspace view', width, point, items: extension ? items.map(item => ({ ...item, kind: 'radio' as const })) : items, ...(extension ? { extensionSurface: { ...extension, width } } : {}), afterClose: () => { if (windowMenuOpen === 'view') windowMenuOpen = 'none'; }, onSelect: id => setWorkspaceView(id as WorkspaceView) });
+  if (!choiceMenuCleanup && windowMenuOpen === 'view') windowMenuOpen = 'none';
 }
 function setWorkspaceView(view: WorkspaceView): void {
   if (state.view === view) return;
@@ -6440,7 +6477,7 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   if (options.extensionSurface) {
     const { openContextActions } = await import('./extensions/context-actions');
     if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
-    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, pinned: options.extensionSurface.pinned, width: options.extensionSurface.width, notify, onClose: () => {
+    choiceMenuCleanup = openContextActions(anchor, options.extensionSurface.location, options.extensionSurface.context, { title: options.title, items: options.items, point: options.point, onSelect: options.onSelect, isAlive: options.extensionSurface.isAlive, pinned: options.extensionSurface.pinned, width: options.extensionSurface.width, searchPlaceholder: options.searchPlaceholder, onContextMenu: options.onContextMenu, notify, onClose: () => {
       choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
       if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
       options.afterClose?.();
@@ -6643,20 +6680,27 @@ function reorderFolders(ids: string[], focus: string): void {
   $('#navigation').querySelector<HTMLElement>(`.folder-heading[data-project="${CSS.escape(focus)}"]`)?.focus({ preventScroll: true });
 }
 /** Sort and view: task order and tasks per section. Saved per window. */
+/** The Sort and view menu's own choice, shared with captured actions: a task order or the tasks shown per section. */
+function chooseSidebarSort(id: string): void {
+  const next = sortAfterChoice(sidebarSort, id);
+  if (!next) return;
+  sidebarSort = readSort({ getItem: () => JSON.stringify(next) });
+  try { localStorage.setItem(SORT_KEY, JSON.stringify(sidebarSort)); } catch { /* per-launch preference only */ }
+  renderNavigation();
+}
 async function showSidebarSort(anchor: HTMLElement): Promise<void> {
   const sort = sidebarSort;
-  await showChoices(anchor, { title: 'Sort and view', width: 280, items: [
-    { id: 'tasks:manual', label: 'Manual', description: 'drag to arrange', heading: 'Sort tasks', selected: sort.tasks === 'manual' },
-    { id: 'tasks:recent', label: 'Recent activity', selected: sort.tasks === 'recent' },
-    { id: 'tasks:created', label: 'Created', selected: sort.tasks === 'created' },
-    ...PER_PROJECT.map(count => ({ id: `perProject:${count}`, label: `${count} tasks`, short: String(count), segment: 'Show per section', selected: sort.perProject === count })),
-  ], onSelect: id => {
-    const [key, value] = id.split(':');
-    const next: SidebarSort = key === 'perProject' ? { ...sidebarSort, perProject: Number(value) } : { ...sidebarSort, [key]: value };
-    sidebarSort = readSort({ getItem: () => JSON.stringify(next) });
-    try { localStorage.setItem(SORT_KEY, JSON.stringify(sidebarSort)); } catch { /* per-launch preference only */ }
-    renderNavigation();
-  } });
+  const items = [
+    { id: 'manual', label: 'Manual', description: 'drag to arrange', heading: 'Sort tasks', selected: sort.tasks === 'manual' },
+    { id: 'recent', label: 'Recent activity', selected: sort.tasks === 'recent' },
+    { id: 'created', label: 'Created', selected: sort.tasks === 'created' },
+    ...PER_PROJECT.map(count => ({ id: `per-${count}`, label: `${count} tasks`, short: String(count), segment: 'Show per section', selected: sort.perProject === count })),
+  ];
+  const generation = state.generation;
+  const extension = windowMenus?.surface('panda.sidebar.sort.menu', { kind: 'sidebar-sort', ids: [sort.tasks, `per-${sort.perProject}`] }, () => sidebarSort === sort && generation === state.generation, []);
+  windowMenuOpen = 'sort';
+  await showChoices(anchor, { title: 'Sort and view', width: 280, items: extension ? items.map(item => ({ ...item, kind: 'radio' as const })) : items, ...(extension ? { extensionSurface: { ...extension, width: 280 } } : {}), afterClose: () => { if (windowMenuOpen === 'sort') windowMenuOpen = 'none'; }, onSelect: chooseSidebarSort });
+  if (!choiceMenuCleanup && windowMenuOpen === 'sort') windowMenuOpen = 'none';
 }
 /** Rows in the order they are drawn, skipping closed folders and sections. */
 function visibleSidebarRows(): HTMLElement[] {
@@ -6701,14 +6745,23 @@ function sidebarShortcut(event: KeyboardEvent): boolean {
 function projectAppIcon(projectId: string, name: string): string {
   return projectIconHtml(projectId, name, id => call<string | null>('project_icon', { projectId: id }), () => renderNavigation());
 }
+/** The Filter projects menu's own choice, shared with captured actions: one project, or all of them with ''. */
+async function chooseProjectFilter(id: string): Promise<void> {
+  setProjectFilter(id);
+  if (id) await selectProject(id); else renderNavigation();
+}
+const PROJECT_ROW = 'project:';
 async function showProjectFilter(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: [
-    { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
-    ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
-  ], onContextMenu: (id, point) => { if (id) run(showProjectRowActions(anchor, id, point)); }, onSelect: async id => {
-    setProjectFilter(id);
-    if (id) await selectProject(id); else renderNavigation();
-  } });
+  const items = [
+    { id: 'all-projects', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
+    ...userProjects().map(p => ({ id: `${PROJECT_ROW}${p.id}`, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
+  ];
+  const filter = state.projectFilter, generation = state.generation, projectId = (id: string) => id.startsWith(PROJECT_ROW) ? id.slice(PROJECT_ROW.length) : '';
+  // Every row is the user's own: the surface contributes items and keeps the rows (and the search) as drawn.
+  const extension = windowMenus?.surface('panda.projects.filter.menu', { kind: 'project-filter', ids: [filter || 'all-projects'] }, () => state.projectFilter === filter && generation === state.generation, items.map(item => item.id));
+  windowMenuOpen = 'filter';
+  await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: extension ? items.map(item => ({ ...item, kind: 'radio' as const })) : items, ...(extension ? { extensionSurface: { ...extension, width: 300 } } : {}), afterClose: () => { if (windowMenuOpen === 'filter') windowMenuOpen = 'none'; }, onContextMenu: (id, point) => { const project = projectId(id); if (project) run(showProjectRowActions(anchor, project, point)); }, onSelect: id => chooseProjectFilter(projectId(id)) });
+  if (!choiceMenuCleanup && windowMenuOpen === 'filter') windowMenuOpen = 'none';
 }
 async function showDefaultProvider(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Default agent', items: state.providers.map(p => ({ id: p.id, label: p.name, provider: p.id, selected: state.defaultProvider === p.id })), onSelect: id => {

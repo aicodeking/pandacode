@@ -304,6 +304,19 @@ export interface TaskMenusAction { readonly contractVersion: 1; readonly window:
 export type TaskMenusAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
 /** `selection.kind` of these menus' contexts: `team` (ids = [task]), `task` (ids = [task]), `connection` (ids = the connected deploy platforms) and `bot` (ids = [the bots listed, or the task's bot]). */
 export type TaskMenusSelectionKind = 'team' | 'task' | 'connection' | 'bot';
+/** Experimental Workspace view, Sort and view and Filter projects menus (owner: the selected `panda.composer` provider; docs/extensions/window-menus.md).
+ * The open view, the sort, the tasks per section and the project filter are host settings: a captured action changes one
+ * only after a fresh host choice, which runs the original handler once. Hiding the open view, reordering tasks by hand,
+ * a project's own actions, adding or removing a project and turning GitHub on are never public. */
+export type WindowMenusControl = 'view-open' | 'sort-set' | 'scope-set' | 'filter-set';
+/** Named but never run: refused with `PermissionDenied`. */
+export type WindowMenusProtectedControl = 'view-hide-current' | 'sort-reorder' | 'project-actions' | 'project-remove' | 'project-add' | 'github-enable';
+/** `view`, `sort` and `filter` are opaque handles of the open view, the sort with its count and the project filter. `menu` is the host menu that is open. Any change of view, sort, count or filter, or a redraw, changes `revision`. */
+export interface WindowMenusPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly view: string; readonly sort: string; readonly filter: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly menu: 'none' | 'view' | 'sort' | 'filter'; readonly controls: readonly { readonly id: string; readonly controlId: WindowMenusControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface WindowMenusAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly view: string; readonly sort: string; readonly filter: string; readonly revision: number; readonly control: string; readonly controlId: WindowMenusControl; readonly resource: string; readonly requestId: string }
+export type WindowMenusAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of these menus' contexts: `workspace-view` (ids = [the open view]), `sidebar-sort` (ids = [the task order, `per-<count>`]) and `project-filter` (ids = [the filtered project, or `all-projects`]). */
+export type WindowMenusSelectionKind = 'workspace-view' | 'sidebar-sort' | 'project-filter';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

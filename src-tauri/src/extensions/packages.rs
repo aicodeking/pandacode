@@ -1384,6 +1384,28 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]
+    fn window_menus_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/window-menus/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.window-menus", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        let locations: Vec<&str> = contributes["menus"].as_array().unwrap().iter().map(|menu| menu["location"].as_str().unwrap()).collect();
+        assert_eq!(locations, ["panda.workspace.view.menu", "panda.sidebar.sort.menu", "panda.projects.filter.menu"]);
+        assert_eq!(contributes["views"][0]["id"], "sample.window-menus/notes");
+        assert_eq!(contributes["layouts"][0]["location"], "panda.workspace.view.menu");
+        assert_eq!(contributes["layouts"][1]["location"], "panda.sidebar.sort.menu");
+        packages.enable("sample.window-menus", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.window-menus", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn tiles_picker_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/tiles-picker/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

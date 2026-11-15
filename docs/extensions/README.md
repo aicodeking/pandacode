@@ -163,7 +163,7 @@ window and host fallbacks; it is generated from the tested catalog. Per-surface 
 controls, protected items and examples: [contracts](contracts.md) (header, sidebar footer,
 inspector, views, layouts), [sidebar](sidebar.md), [settings](settings.md),
 [settings actions](settings-actions.md), [core dialogs](core-dialogs.md),
-[owned dialogs](owned-dialogs.md), [dialogs](dialogs.md), [composer controls](composer.md), [composer panels](composer-panels.md), [Attach menu, recipes and wake-ups](composer-attach.md), [transcript extras](thread-extras.md), [thread tiles and the draft project picker](tiles-picker.md), [slash commands and the harness command center](commands-extras.md), [Team, Task actions, Deploy and Bot menus](task-menus.md), [action dock](action-dock.md),
+[owned dialogs](owned-dialogs.md), [dialogs](dialogs.md), [composer controls](composer.md), [composer panels](composer-panels.md), [Attach menu, recipes and wake-ups](composer-attach.md), [transcript extras](thread-extras.md), [thread tiles and the draft project picker](tiles-picker.md), [slash commands and the harness command center](commands-extras.md), [Team, Task actions, Deploy and Bot menus](task-menus.md), [Workspace view, Sort and view and Filter projects menus](window-menus.md), [action dock](action-dock.md),
 [agent roster](agent-roster.md), [status](status.md), [windows](windows.md), [documents](documents.md),
 [diff](diff.md), [search](search.md), [browser](browser.md), [terminal](terminal.md),
 [simulator](simulator.md), [VM](vm.md), [design](design.md), [BTW](btw.md), [board](board.md),

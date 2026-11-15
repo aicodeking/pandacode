@@ -593,6 +593,10 @@ if (new URLSearchParams(location.search).has('vm-coverage') && !new URLSearchPar
 }
 // Explicit Team, Task actions, Deploy and Bot assignment menus fixture only: two deploy platforms connected with preview-only keys (no
 // provider call, spend or deployment) and safe mode while a menu is open.
+// Explicit Workspace view, Sort and view and Filter projects menus fixture only: safe mode while a menu is open.
+if (new URLSearchParams(location.search).has('window-menus')) {
+  (window as any).__previewWindowMenusSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 if (new URLSearchParams(location.search).has('task-menus')) {
   previewCloud.connect('vercel', 'preview-only', {});
   previewCloud.connect('netlify', 'preview-only', {});

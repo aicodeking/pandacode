@@ -28,6 +28,14 @@ export function readSort(storage: Pick<Storage, 'getItem'>): SidebarSort {
   };
 }
 
+/** The sort a Sort and view menu choice makes: `manual`, `recent` and `created` pick the task order and `per-<count>` the
+ * tasks shown per section; anything else changes nothing. Shared by the menu and by captured extension actions. */
+export function sortAfterChoice(sort: SidebarSort, id: string): SidebarSort | undefined {
+  const count = /^per-(\d+)$/.exec(id);
+  if (count) return PER_PROJECT.includes(Number(count[1]) as 6) ? { ...sort, perProject: Number(count[1]) } : undefined;
+  return TASK_SORTS.includes(id as TaskSort) ? { ...sort, tasks: id as TaskSort } : undefined;
+}
+
 /** The saved folder order: unique string ids only, anything else is dropped. */
 export function readProjectOrder(storage: Pick<Storage, 'getItem'>): string[] {
   try {

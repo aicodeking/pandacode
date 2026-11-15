@@ -420,7 +420,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["taskMenusPresentation", "taskMenusAction", "commandsPresentation", "commandsAction", "tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["windowMenusPresentation", "windowMenusAction", "taskMenusPresentation", "taskMenusAction", "commandsPresentation", "commandsAction", "tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "projectScope" {
@@ -802,6 +802,36 @@ mod tests {
         assert_eq!(super::validate_contract("context", &credential)["ok"], false);
         let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 65]);
         assert_eq!(super::validate_contract("taskMenusPresentation", &oversized)["ok"], false);
+    }
+    #[test]
+    fn window_menus_state_action_locations_and_selection_kinds_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/window-menus/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/window-menus/state.json")).unwrap();
+        let request: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/window-menus/action.json")).unwrap();
+        assert_eq!(super::validate_contract("windowMenusPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("windowMenusAction", &request)["ok"], true);
+        for field in ["selector", "ipc", "text", "query", "project", "path", "name"] {
+            let mut forged = request.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("windowMenusAction", &forged)["ok"], false, "{field}");
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("windowMenusPresentation", &raw)["ok"], false, "{field}");
+        }
+        // Hiding the open view, manual order, project actions, adding or removing a project and turning GitHub on have no public control id.
+        for control in ["view-hide-current", "sort-reorder", "project-actions", "project-remove", "project-add", "github-enable"] {
+            let mut forged = request.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("windowMenusAction", &forged)["ok"], false, "{control}");
+        }
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.menus.window.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        for (surface, kind, ids) in [("panda.workspace.view.menu", "workspace-view", json!(["board"])), ("panda.sidebar.sort.menu", "sidebar-sort", json!(["recent", "per-6"])), ("panda.projects.filter.menu", "project-filter", json!(["all-projects"]))] {
+            let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": surface, "revision": 1, "selection": {"kind": kind, "ids": ids}});
+            assert_eq!(super::validate_contract("context", &context)["ok"], true, "{surface}");
+        }
+        let credential = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.projects.filter.menu", "revision": 1, "selection": {"kind": "project-path", "ids": ["x"]}});
+        assert_eq!(super::validate_contract("context", &credential)["ok"], false);
+        let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 65]);
+        assert_eq!(super::validate_contract("windowMenusPresentation", &oversized)["ok"], false);
     }
     #[test]
     fn commands_slash_declarations_state_action_and_selection_kinds_share_native_schema() {
