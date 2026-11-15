@@ -957,6 +957,7 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
         reasoning_effort: session.reasoning_effort.clone(),
         mode: session.mode.clone(),
         cwd,
+        github_pin: github_accounts::pinned_login(&session.project_id),
         resume_id: None,
         prompt: String::new(),
         instructions,
