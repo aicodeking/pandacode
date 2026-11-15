@@ -42,6 +42,8 @@ export async function subscribe(name: 'terminal-event', callback: (event: Termin
 export async function subscribe(name: 'browser-state', callback: (event: BrowserStatus) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
+/** A notification click (notifications.rs) reopening its task. */
+export async function subscribe(name: 'open-task', callback: (event: { sessionId?: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
   if (preview) return (await import('./preview')).listen(name, callback);
   return (await import('@tauri-apps/api/event')).listen(name, event => callback(event.payload));

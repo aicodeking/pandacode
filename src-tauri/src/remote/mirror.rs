@@ -672,7 +672,9 @@ fn finish(app: &tauri::AppHandle, local: &str, successful: bool, stopped: bool, 
         Ok(false) => return,
         Err(error) => eprintln!("PandaCode Connect: could not end a remote task's turn: {error}"),
     }
-    let done = AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: text.to_owned(), request_id: None, data: None, tool: None };
+    // The window's notifications classify this end from the outcome: nothing local recorded it.
+    let outcome = if stopped { "stopped" } else if successful { "successful" } else { "failed" };
+    let done = AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: text.to_owned(), request_id: None, data: Some(serde_json::json!({ "outcome": outcome })), tool: None };
     let _ = app.emit("agent-event", done);
     let _ = app.emit("sessions-changed", ());
     super::orchestrate::child_settled(app, local);
@@ -1901,7 +1903,7 @@ fn not_started(app: &tauri::AppHandle, state: &AppState, local: &str, created: b
         Ok(true) => finish(app, local, false, true, "Turn stopped"),
         Ok(false) if error != super::start::CANCELLED => {
             eprintln!("Machine orchestration: a thread did not start: {error}");
-            let _ = app.emit("agent-event", AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: "Turn failed".into(), request_id: None, data: None, tool: None });
+            let _ = app.emit("agent-event", AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: "Turn failed".into(), request_id: None, data: Some(serde_json::json!({ "outcome": "failed" })), tool: None });
             let _ = app.emit("sessions-changed", ());
             super::orchestrate::child_settled(app, local);
         }

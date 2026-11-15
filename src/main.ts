@@ -43,6 +43,7 @@ import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCom
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
+import { cancelRequest, cancelSession, notifyEvent } from './notifications';
 import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
@@ -341,7 +342,7 @@ async function ensureArchitectView(): Promise<ArchitectView> {
 }
 function onArchitect(team: TeamEvent): void {
   if (deletedSessions.has(team.sessionId)) return;
-  if ('removed' in team) { prewarmedDrafts.delete(team.sessionId); teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
+  if ('removed' in team) { prewarmedDrafts.delete(team.sessionId); teams.set(team.sessionId, null); pendingTeamEnds.delete(team.sessionId); cancelRequest('input', team.sessionId); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
@@ -351,6 +352,17 @@ function onArchitect(team: TeamEvent): void {
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
+  // Ready also rests a finished answer without delegation, but Council asking is not a finish.
+  const heldEnd = pendingTeamEnds.get(team.sessionId);
+  if (heldEnd && (team.status === 'paused' || team.status === 'interrupted' || team.councilStatus?.state === 'asking')) pendingTeamEnds.delete(team.sessionId);
+  else if (heldEnd && (team.status === 'ready' || team.status === 'completed' || team.status === 'failed') && !state.streams.has(team.sessionId) && !team.workers.some(worker => workerActive(worker))) {
+    pendingTeamEnds.delete(team.sessionId);
+    notifyEvent(team.status === 'failed' ? 'failed' : heldEnd.kind, team.sessionId, heldEnd.title);
+  }
+  // Council's ask is an architect event, not an agent input: it follows the input preference and
+  // coalescing here, and its end withdraws a still-waiting entry.
+  if (team.councilStatus?.state === 'asking' && current?.councilStatus?.state !== 'asking') notifyEvent('input', team.sessionId, (task?.title ?? 'Task').replace(/ · You$/, ''));
+  if (current?.councilStatus?.state === 'asking' && team.councilStatus?.state !== 'asking') cancelRequest('input', team.sessionId);
   if (task && teamActive(team)) { task.status = 'running'; task.taskStage = 'in_progress'; }
   if (task && !teamActive(team) && !state.streams.has(task.id)) task.status = 'idle';
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
@@ -3722,6 +3734,8 @@ async function respondApproval(sessionId: string, id: string, approved: boolean)
   try {
     await call('respond_approval', { sessionId, requestId: id, approved });
     current.approvals.delete(id); approvalDetails.delete(approvalKey); current.revision++;
+    // Answered here: the native cancellation event may never reach this window.
+    cancelRequest('approval', sessionId, id);
     if (!current.approvals.size && current.status === 'Waiting for approval') current.status = 'Continuing task';
   } finally { pendingApprovals.delete(approvalKey); current.revision++; renderStream(); renderNavigation(); renderApprovalBar(); btwPanel.event(sessionId, 'approval'); }
 }
@@ -4701,6 +4715,7 @@ function removeDeletedSessions(ids: string[]): void {
   const removed = new Set(ids);
   for (const id of removed) {
     deletedSessions.add(id); prewarmedDrafts.delete(id); writeLink(localStorage, id, null);
+    cancelSession(id); pendingTeamEnds.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -4864,6 +4879,8 @@ async function performSlashAction(action: string, argumentsText: string, task: S
 }
 
 const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
+/** A finished or failed notice for a lead whose team still ran: it fires when the team settles. */
+const pendingTeamEnds = new Map<string, { kind: 'done' | 'failed'; title: string }>();
 /** Entries picked with Send now: delivered before the rest, even past a hold. While the run they
  * stopped is ending, `stopping` keeps the hold from before, so the stop does not pause the others. */
 const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
@@ -5877,19 +5894,23 @@ function onAgent(event: AgentEvent): void {
   if (tiles.has(event.sessionId)) queueMicrotask(() => tiles.event(event.sessionId));
   if (deletedSessions.has(event.sessionId)) return;
   const s = state.sessions.find(item => item.id === event.sessionId);
+  if (event.kind === 'done') cancelSession(event.sessionId);
+  if (event.kind === 'approval_cancelled' && event.requestId) cancelRequest('approval', event.sessionId, event.requestId);
+  if (event.kind === 'input_cancelled' && event.requestId) cancelRequest('input', event.sessionId, event.requestId);
   // Managed workers are deliberately absent from sidebar/board task summaries.
   // Route their live output and approval forms to the team's worker inspector.
   if (!s) {
+    // Queue synchronously so a cancellation cannot overtake the lazy-loaded worker view.
+    if (event.kind === 'approval' || event.kind === 'input_request') {
+      const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
+      if (workerActive(owner)) {
+        notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
+        notifyEvent(event.kind === 'approval' ? 'approval' : 'input', event.sessionId, 'A worker', event.requestId);
+      }
+    }
     void ensureArchitectView().then(view => {
       if (deletedSessions.has(event.sessionId)) return;
       view.receive(event);
-      // Worker questions are auto-answered and approvals auto-granted; current hosts never leave either pending, but an
-      // older or unusual host can still forward one. It notifies only while that worker is still at work, by the
-      // panel's own definition (a worker not yet in any team snapshot counts as active).
-      if (event.kind === 'approval' || event.kind === 'input_request') {
-        const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
-        if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
-      }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
     }).catch(report);
     return;
@@ -5940,7 +5961,7 @@ function onAgent(event: AgentEvent): void {
   // Keep the final response intact until its persisted changes boundary arrives.
   if (event.kind === 'turn_complete') return;
   if (event.kind === 'turn_changes') { if (event.sessionId === state.sessionId) void projectRunner.refresh(); completeTurnChanges(event); return; }
-  if (event.kind === 'turn_start') return;
+  if (event.kind === 'turn_start') { pendingTeamEnds.delete(event.sessionId); return; }
   if (event.kind === 'commands_changed') { if (event.sessionId === state.sessionId) slashPicker?.refresh(true); return; }
   if (event.kind === 'subagent') { subagents.receive(event.sessionId, event.data); return; }
   // Hosts send `team` (a changed worker row) only for mirrors; it is not a local event kind.
@@ -5972,6 +5993,14 @@ function onAgent(event: AgentEvent): void {
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
+    // A usage limit is silent even when the host reports the run as failed.
+    const outcome = (event.data as { outcome?: string } | null)?.outcome;
+    const kind: 'done' | 'failed' | null = ending === 'limited' || ending === 'stopped' ? null : outcome ? (outcome === 'failed' ? 'failed' : outcome === 'successful' ? 'done' : null)
+      : ending === 'failed' ? 'failed' : !ending ? 'done' : null;
+    const team = teams.get(event.sessionId);
+    if (!kind || team?.status === 'paused' || team?.status === 'interrupted') pendingTeamEnds.delete(event.sessionId);
+    else if (teamActive(team) || team?.workers.some(worker => workerActive(worker))) pendingTeamEnds.set(event.sessionId, { kind, title: (s.title ?? 'Task').replace(/ · You$/, '') });
+    else notifyEvent(kind, event.sessionId, (s.title ?? 'Task').replace(/ · You$/, ''));
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
@@ -6042,14 +6071,17 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); notifyEvent('approval', event.sessionId, (s.title || 'Task').replace(/ · You$/, ''), event.requestId); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
+    cancelRequest('approval', event.sessionId, event.requestId);
   }
   if (event.kind === 'input_request' && event.requestId && current.status !== 'Stopping agent' && !current.inputs.has(event.requestId)) {
     const requestId = event.requestId;
     current.inputs.set(requestId, createAgentInput(event.sessionId, requestId, event.data, () => {
       current.inputs.get(requestId)?.dispose(); current.inputs.delete(requestId); current.revision++;
+      // Answered here: the native cancellation event may never reach this window.
+      cancelRequest('input', event.sessionId, requestId);
       if (!current.inputs.size && current.status === 'Waiting for your answer') updateStreamStatus(current, 'Continuing task');
       if (event.sessionId === state.sessionId) renderStream();
       btwPanel.event(event.sessionId, 'input');
@@ -6057,10 +6089,12 @@ function onAgent(event: AgentEvent): void {
     }, Boolean(s.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
     if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
+    notifyEvent('input', event.sessionId, (s.title || 'Task').replace(/ · You$/, ''), requestId);
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
     if (!current.inputs.size && current.status === 'Waiting for your answer') updateStreamStatus(current, 'Continuing task');
+    cancelRequest('input', event.sessionId, event.requestId);
   }
   // Tokens and tool snapshots do not change task navigation. Four busy agents
   // share one navigation frame only when a running/recency/approval state changes.
@@ -8771,6 +8805,7 @@ async function boot(): Promise<void> {
     subscribe('provider-models-changed', event => invalidateModels(event.provider)),
     subscribe('architect-event', onArchitect),
     subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
+    subscribe('open-task', event => { if (event?.sessionId) run(openThread(event.sessionId, true)); }),
     subscribe('sessions-changed', () => run(reloadSessions())),
     subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
     // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.

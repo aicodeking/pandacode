@@ -17,6 +17,7 @@ mod memory;
 mod app_menu;
 mod app_updates;
 mod appearance;
+mod notifications;
 mod architect;
 mod bots;
 mod chats;
@@ -3329,7 +3330,13 @@ async fn launch_operation_admitted(
         let (ended_stopped, done) = run_end(successful, was_stopped, unresolved.is_some());
         // Before `done`, so the window's tray_seen for the open task lands after it.
         tray::finished(&app, &session_id, ended_stopped, successful);
-        let _ = app.emit("agent-event", event(&session_id, "done", done));
+        // The window's notifications classify the end from this outcome, not from what it
+        // happened to have recorded: a stop from the phone and a mirror's end both arrive
+        // without the local window having seen the failure first.
+        let outcome = if ended_stopped { "stopped" } else if successful { "successful" } else { "failed" };
+        let mut end = event(&session_id, "done", done);
+        end.data = Some(serde_json::json!({ "outcome": outcome }));
+        let _ = app.emit("agent-event", end);
         remote::run_finished(&app, &session_id, successful, ended_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).
         let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
@@ -5017,6 +5024,7 @@ pub fn run() {
             tray::show(app)
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // Updates come only from GitHub Releases, verified against the public key in tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -5041,6 +5049,9 @@ pub fn run() {
                 crash_guard::desktop_startup_failed(&error);
             }
             vm::watch_idle(app.handle().clone());
+            // Before the first notification shows: the plugin reports clicks only for
+            // notifications shown while its action handler exists.
+            notifications::setup(app.handle());
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("Menu bar item is unavailable: {error}");
             }
@@ -5355,6 +5366,7 @@ pub fn run() {
                 task_controls::start_harness_terminal,
                 list_projects,
                 add_project,
+                notifications::notifications_show,
                 remove_project,
                 relink_project,
                 list_sessions,
