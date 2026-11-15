@@ -1526,6 +1526,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return { on: previewStartAhead } as T;
   }
   if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
+  // Desktop notifications are a no-op here; specs read the banner arguments from __notificationsShow.
+  if (command === 'notifications_show') {
+    ((window as any).__notificationsShow ??= []).push(args);
+    return undefined as T;
+  }
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {

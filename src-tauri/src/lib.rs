@@ -17,6 +17,7 @@ mod memory;
 mod app_menu;
 mod app_updates;
 mod appearance;
+mod notifications;
 mod architect;
 mod bots;
 mod chats;
@@ -5017,6 +5018,7 @@ pub fn run() {
             tray::show(app)
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // Updates come only from GitHub Releases, verified against the public key in tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -5041,6 +5043,9 @@ pub fn run() {
                 crash_guard::desktop_startup_failed(&error);
             }
             vm::watch_idle(app.handle().clone());
+            // Before the first notification shows: the plugin reports clicks only for
+            // notifications shown while its action handler exists.
+            notifications::setup(app.handle());
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("Menu bar item is unavailable: {error}");
             }
@@ -5355,6 +5360,7 @@ pub fn run() {
                 task_controls::start_harness_terminal,
                 list_projects,
                 add_project,
+                notifications::notifications_show,
                 remove_project,
                 relink_project,
                 list_sessions,
