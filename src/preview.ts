@@ -1029,6 +1029,15 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
   };
 }
 /** The Running agents widget's commands (header and pinned window). */
+/** Settings → Notifications: the native banner is a no-op in the browser preview; specs read
+ * the banner arguments from __notificationsShow. */
+function previewNotifications<T>(command: string, args: Record<string, any>): T {
+  if (command === 'notifications_show') {
+    ((window as any).__notificationsShow ??= []).push(args);
+    return undefined as T;
+  }
+  throw new Error(`Unknown notifications command: ${command}`);
+}
 function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
   if (command === 'agents_dock_snapshot') {
     // Tests push a native change event with this, as the app does when a run's state changes.
@@ -1526,11 +1535,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return { on: previewStartAhead } as T;
   }
   if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
-  // Desktop notifications are a no-op here; specs read the banner arguments from __notificationsShow.
-  if (command === 'notifications_show') {
-    ((window as any).__notificationsShow ??= []).push(args);
-    return undefined as T;
-  }
+  if (command.startsWith('notifications_')) return previewNotifications<T>(command, args);
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
