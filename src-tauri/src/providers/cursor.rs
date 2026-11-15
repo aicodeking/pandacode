@@ -144,6 +144,7 @@ pub(super) fn catalog(listed: &Value) -> Vec<ModelInfo> {
             default_reasoning_effort,
             context_window: context_window(entry),
             speed_tiers: Vec::new(),
+            ..ModelInfo::default()
         });
     }
     models

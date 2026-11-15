@@ -129,6 +129,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             reasoning_efforts,
             default_reasoning_effort,
             context_window: None,
+            ..ModelInfo::default()
         }
     })
     .collect()
