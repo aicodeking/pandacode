@@ -245,7 +245,6 @@ pub(super) async fn switch(mut spare: Spare, requests: &[Value], key: &str, gene
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     fn spare(key: String, generation: u64, (child, group): (Child, ProcessGroup)) -> Spare {
         Spare { key, child, group, server: None, born: std::time::Instant::now(), generation, pending: Vec::new(), unanswered: HashSet::new() }
     }

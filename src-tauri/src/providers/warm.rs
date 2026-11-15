@@ -22,7 +22,7 @@ pub(super) use state::*;
 #[path = "warm_switch.rs"]
 mod switch;
 pub use switch::retarget;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use switch::retargeted;
 
 /// Rapid switches (clicking through models or efforts) start only the last one's agent.
