@@ -41,6 +41,7 @@ import { Icon } from './Icon.tsx';
 import { modelLabel } from './model-label.ts';
 import { MODES } from './status.tsx';
 import { TRAY_GAP, TRAY_ICON_WIDTH, trayFit, type TrayWidths } from './tray-fit.ts';
+import { useT } from './language.ts';
 
 export const SIZE = 36;
 const TRAY_HEIGHT = 44;
@@ -128,6 +129,7 @@ function TrayMeasure({ children, onWidth }: { children: ReactNode; onWidth: (wid
 
 export function Composer({ deviceId, sessionId, running, waiting, bot }: { deviceId: string; sessionId: string; running: boolean; waiting?: boolean; bot?: Pick<Bot, 'id' | 'name'> }) {
   const botId = bot?.id;
+  const t = useT();
   const colors = useColors();
   // The text lives in the draft store, so generative UI can fill it (fillDraft) and it survives leaving the task.
   const key = draftKey(deviceId, sessionId);

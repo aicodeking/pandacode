@@ -2,6 +2,7 @@
  * boundary (types, lengths, counts, depth) and is pure, so Node tests can run it; `renderBlock`
  * draws a fence's view. Interactivity is local (tabs, sort, toggles) or fills the composer;
  * nothing here executes agent code or fetches a remote URL. */
+import { t } from './i18n.ts';
 
 export const LIMITS = { source: 64 * 1024, depth: 4, nodes: 120, text: 4000, prompt: 4000, css: 16 * 1024, rows: 200, columns: 12, items: 40 } as const;
 
@@ -94,9 +95,9 @@ class Budget { nodes = 0; }
 export function normalize(value: unknown, depth = 0, budget = new Budget()): View {
   const raw = obj(value);
   const type = typeof raw.type === 'string' ? raw.type : '';
-  if (!type) throw new Error('A view needs a "type".');
-  if (++budget.nodes > LIMITS.nodes) throw new Error(`A view may hold at most ${LIMITS.nodes} parts.`);
-  if (depth > LIMITS.depth) throw new Error(`Views nest at most ${LIMITS.depth} deep.`);
+  if (!type) throw new Error(t('A view needs a "type".'));
+  if (++budget.nodes > LIMITS.nodes) throw new Error(t`A view may hold at most ${LIMITS.nodes} parts.`);
+  if (depth > LIMITS.depth) throw new Error(t`Views nest at most ${LIMITS.depth} deep.`);
   const children = (entries: unknown) => list(entries, 24).map(child => normalize(child, depth + 1, budget));
   const title = str(raw.title, 200);
   switch (type) {
@@ -120,13 +121,13 @@ export function normalize(value: unknown, depth = 0, budget = new Budget()): Vie
       const rows = list(raw.rows, LIMITS.rows).map(row => Array.isArray(row)
         ? row.slice(0, columns.length).map(cell => str(cell, 400) ?? '')
         : columns.map(column => str(obj(row)[column.key], 400) ?? ''));
-      if (!columns.length) throw new Error('A table needs "columns".');
+      if (!columns.length) throw new Error(t('A table needs "columns".'));
       return { type: 'table', title, columns: columns.map(({ label, align }) => ({ label, align })), rows, sortable: raw.sortable !== false };
     }
     case 'chart': {
       const labels = list(raw.labels, 48).map(label => str(label, 40) ?? '');
       const series = list(raw.series, 6).map(entry => { const item = obj(entry); return { name: str(item.name, 60), values: list(item.values, labels.length || 60).map(v => num(v) ?? 0) }; });
-      if (!series.some(entry => entry.values.length)) throw new Error('A chart needs at least one series of "values".');
+      if (!series.some(entry => entry.values.length)) throw new Error(t('A chart needs at least one series of "values".'));
       const chart = pick(raw.chart ?? raw.kind, ['bar', 'line', 'pie', 'area', 'sparkline'] as const, 'bar');
       return { type: 'chart', chart, title, labels: labels.length ? labels : series[0].values.map((_, i) => String(i + 1)), series };
     }
@@ -142,7 +143,7 @@ export function normalize(value: unknown, depth = 0, budget = new Budget()): Vie
         const item = obj(entry), label = str(item.label ?? item.title, 80);
         return label ? [{ label, body: str(item.body, LIMITS.text), children: children(item.children), open: item.open === true }] : [];
       });
-      if (!items.length) throw new Error(`${type === 'tabs' ? 'Tabs need "tabs"' : 'An accordion needs "items"'} with a label.`);
+      if (!items.length) throw new Error(t`${type === 'tabs' ? t('Tabs need "tabs"') : t('An accordion needs "items"')} with a label.`);
       return { type, items };
     }
     case 'tree': case 'files': return { type: 'tree', title, items: Array.isArray(raw.paths) ? treeFromPaths(list(raw.paths, 200).map(path => str(path, 300) ?? '').filter(Boolean)) : tree(raw.items, 0) };
@@ -160,7 +161,7 @@ export function normalize(value: unknown, depth = 0, budget = new Budget()): Vie
     }) };
     case 'actions': case 'buttons': return { type: 'actions', label: str(raw.label, 120), buttons: actions(raw.buttons ?? raw.actions) };
     case 'chips': return { type: 'chips', label: str(raw.label, 120), options: actions(raw.options) };
-    case 'followups': return { type: 'chips', label: str(raw.label, 120) ?? 'Suggested follow-ups', options: actions(raw.items ?? raw.options) };
+    case 'followups': return { type: 'chips', label: str(raw.label, 120) ?? t('Suggested follow-ups'), options: actions(raw.items ?? raw.options) };
     case 'form': {
       const fields = list(raw.fields, 12).flatMap(entry => {
         const field = obj(entry), name = str(field.name, 40)?.replace(/[^\w-]/g, '');
@@ -168,14 +169,14 @@ export function normalize(value: unknown, depth = 0, budget = new Budget()): Vie
         const options = list(field.options, 30).map(option => str(option, 120)).filter((text): text is string => Boolean(text));
         return [{ name, label: str(field.label, 120) ?? name, type: pick(field.type, ['text', 'textarea', 'number', 'select', 'checkbox'] as const, options.length ? 'select' : 'text'), options, placeholder: str(field.placeholder, 120), value: str(field.value, 400), required: field.required === true }];
       });
-      if (!fields.length) throw new Error('A form needs "fields" with a "name".');
-      return { type: 'form', title, fields, submit: str(raw.submit, 40) ?? 'Add to prompt', prompt: str(raw.prompt, LIMITS.prompt) };
+      if (!fields.length) throw new Error(t('A form needs "fields" with a "name".'));
+      return { type: 'form', title, fields, submit: str(raw.submit, 40) ?? t('Add to prompt'), prompt: str(raw.prompt, LIMITS.prompt) };
     }
     case 'stack': case 'grid': return { type, columns: Math.min(4, Math.max(1, Math.round(num(raw.columns) ?? 2))), children: children(raw.children) };
     case 'custom': {
       const html = typeof raw.html === 'string' ? raw.html : '';
-      if (!html.trim()) throw new Error('A custom view needs "html".');
-      if (html.length > LIMITS.source) throw new Error('A custom view may hold at most 64 KB of HTML.');
+      if (!html.trim()) throw new Error(t('A custom view needs "html".'));
+      if (html.length > LIMITS.source) throw new Error(t('A custom view may hold at most 64 KB of HTML.'));
       const state: Record<string, string> = {};
       for (const [key, entry] of Object.entries(obj(raw.state)).slice(0, 40)) { const text = str(entry, 400); if (/^[\w-]{1,40}$/.test(key) && text !== undefined) state[key] = text; }
       return { type: 'custom', html, css: scrubCss(typeof raw.css === 'string' ? raw.css : ''), state, height: Math.min(900, Math.max(80, num(raw.height) ?? 480)) };
@@ -186,9 +187,9 @@ export function normalize(value: unknown, depth = 0, budget = new Budget()): Vie
 
 /** Parses a fence's JSON and validates it. */
 export function parseSpec(source: string): View {
-  if (source.length > LIMITS.source) throw new Error('This view is larger than 64 KB.');
+  if (source.length > LIMITS.source) throw new Error(t('This view is larger than 64 KB.'));
   let value: unknown;
-  try { value = JSON.parse(source); } catch { throw new Error('This view is not valid JSON.'); }
+  try { value = JSON.parse(source); } catch { throw new Error(t('This view is not valid JSON.')); }
   return normalize(value);
 }
 
@@ -232,7 +233,7 @@ export async function renderBlock(kind: string, source: string): Promise<HTMLEle
   const host = h('div', { class: 'gu' });
   if (kind === 'mermaid') {
     // No diagram renderer ships with PandaCode: show the source, labelled and copyable.
-    host.append(codeView('Diagram · Mermaid', source));
+    host.append(codeView(t('Diagram · Mermaid'), source));
     return host;
   }
   if (kind !== 'ui') {
@@ -244,7 +245,7 @@ export async function renderBlock(kind: string, source: string): Promise<HTMLEle
   }
   let spec: View;
   try { spec = parseSpec(source); }
-  catch (error) { host.append(failure(error instanceof Error ? error.message : 'This view could not be shown.', source)); return host; }
+  catch (error) { host.append(failure(error instanceof Error ? error.message : t('This view could not be shown.'), source)); return host; }
   host.append(await view(spec));
   return host;
 }
@@ -255,7 +256,7 @@ function failure(message: string, source: string): HTMLElement {
 
 function workspaceImage(path: string): Promise<string> {
   const sessionId = document.querySelector<HTMLElement>('#prompt')?.dataset.sessionId;
-  if (!sessionId) return Promise.reject(new Error('No task is open.'));
+  if (!sessionId) return Promise.reject(new Error(t('No task is open.')));
   return import('./bridge').then(bridge => bridge.call<string>('workspace_image', { sessionId, path }));
 }
 
@@ -303,20 +304,20 @@ async function view(spec: View): Promise<HTMLElement> {
     case 'chart': return chart(spec);
     case 'progress': {
       const percent = Math.round((spec.value / spec.max) * 100);
-      return h('div', { class: 'gu-progress' }, h('div', { class: 'gu-progress-head' }, h('span', {}, spec.label ?? 'Progress'), h('span', {}, `${percent}%`)),
-        h('div', { class: 'gu-bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': spec.max, 'aria-valuenow': spec.value, 'aria-label': spec.label ?? 'Progress' }, h('span', { style: `width:${percent}%` })),
+      return h('div', { class: 'gu-progress' }, h('div', { class: 'gu-progress-head' }, h('span', {}, spec.label ?? t('Progress')), h('span', {}, `${percent}%`)),
+        h('div', { class: 'gu-bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': spec.max, 'aria-valuenow': spec.value, 'aria-label': spec.label ?? t('Progress') }, h('span', { style: `width:${percent}%` })),
         spec.note ? h('div', { class: 'gu-hint' }, spec.note) : undefined);
     }
     case 'steps': case 'plan': case 'timeline': {
       const items = await Promise.all(spec.items.map(async step => h('li', { class: `gu-step gu-s-${step.status}` },
         h('span', { class: 'gu-dot', 'aria-hidden': 'true' }),
         h('div', {}, step.time ? h('div', { class: 'gu-hint' }, step.time) : undefined, h('div', { class: 'gu-step-title' }, step.title, h('span', { class: 'sr-only' }, ` (${step.status})`)), await md(step.detail, 'gu-md gu-step-detail')))));
-      return h('section', { class: `gu-flow gu-${spec.type}` }, heading(spec.title ?? (spec.type === 'plan' ? 'Plan' : undefined)), await md(spec.summary), h(spec.type === 'timeline' ? 'ul' : 'ol', { class: 'gu-steps' }, ...items), actionRow(spec.actions));
+      return h('section', { class: `gu-flow gu-${spec.type}` }, heading(spec.title ?? (spec.type === 'plan' ? t('Plan') : undefined)), await md(spec.summary), h(spec.type === 'timeline' ? 'ul' : 'ol', { class: 'gu-steps' }, ...items), actionRow(spec.actions));
     }
     case 'checklist': {
       const done = spec.items.filter(item => item.done).length;
       return h('section', { class: 'gu-checklist' }, heading(spec.title ? `${spec.title} · ${done}/${spec.items.length}` : undefined),
-        h('ul', {}, ...spec.items.map(item => h('li', { class: item.done ? 'gu-done' : '' }, h('span', { class: 'gu-check', role: 'img', 'aria-label': item.done ? 'Done' : 'Not done' }), item.text))));
+        h('ul', {}, ...spec.items.map(item => h('li', { class: item.done ? 'gu-done' : '' }, h('span', { class: 'gu-check', role: 'img', 'aria-label': item.done ? t('Done') : t('Not done') }), item.text))));
     }
     case 'tabs': return tabs(spec.items);
     case 'accordion': return h('div', { class: 'gu-accordion' }, ...(await Promise.all(spec.items.map(async item => h('details', { open: item.open }, h('summary', {}, item.label), h('div', { class: 'gu-panel' }, await md(item.body), ...(await Promise.all(item.children.map(view)))))))));
@@ -324,11 +325,11 @@ async function view(spec: View): Promise<HTMLElement> {
     case 'diff': return h('figure', { class: 'gu-code gu-diff' }, codeHead(spec.file, spec.diff), h('pre', {}, ...spec.diff.split('\n').slice(0, 600).map(line =>
       h('span', { class: line.startsWith('+') && !line.startsWith('+++') ? 'gu-add' : line.startsWith('-') && !line.startsWith('---') ? 'gu-del' : line.startsWith('@@') ? 'gu-hunk' : '' }, `${line}\n`))));
     case 'code': return codeView(spec.file ?? spec.language, spec.code);
-    case 'terminal': return h('figure', { class: 'gu-code gu-terminal' }, codeHead(spec.exitCode === undefined ? 'Terminal' : `Exit ${spec.exitCode}`, spec.output),
+    case 'terminal': return h('figure', { class: 'gu-code gu-terminal' }, codeHead(spec.exitCode === undefined ? t('Terminal') : t`Exit ${spec.exitCode}`, spec.output),
       h('pre', {}, spec.command ? h('span', { class: 'gu-command' }, `$ ${spec.command}\n`) : undefined, spec.output));
     case 'compare': return h('section', {}, heading(spec.title), h('div', { class: 'gu-compare' }, ...spec.items.map(item => h('div', { class: 'gu-card' }, heading(item.title),
-      item.pros.length ? h('ul', { class: 'gu-pros', 'aria-label': 'Pros' }, ...item.pros.map(text => h('li', {}, text))) : undefined,
-      item.cons.length ? h('ul', { class: 'gu-cons', 'aria-label': 'Cons' }, ...item.cons.map(text => h('li', {}, text))) : undefined,
+      item.pros.length ? h('ul', { class: 'gu-pros', 'aria-label': t('Pros') }, ...item.pros.map(text => h('li', {}, text))) : undefined,
+      item.cons.length ? h('ul', { class: 'gu-cons', 'aria-label': t('Cons') }, ...item.cons.map(text => h('li', {}, text))) : undefined,
       item.verdict ? h('footer', { class: 'gu-footer' }, item.verdict) : undefined))));
     case 'gallery': {
       const box = h('div', { class: 'gu-gallery' });
@@ -341,15 +342,15 @@ async function view(spec: View): Promise<HTMLElement> {
     case 'form': return form(spec);
     case 'stack': case 'grid': return h('div', { class: `gu-${spec.type}`, style: spec.type === 'grid' ? `--gu-columns:${spec.columns}` : undefined }, ...(await Promise.all(spec.children.map(view))));
     case 'custom': return custom(spec);
-    case 'unknown': return h('div', { class: 'gu-failed' }, h('p', { class: 'gu-error' }, `PandaCode has no “${spec.name}” view. Showing its data instead.`), h('pre', {}, h('code', {}, spec.raw)));
+    case 'unknown': return h('div', { class: 'gu-failed' }, h('p', { class: 'gu-error' }, t`PandaCode has no “${spec.name}” view. Showing its data instead.`), h('pre', {}, h('code', {}, spec.raw)));
   }
 }
 
 const codeView = (label: string | undefined, code: string) => h('figure', { class: 'gu-code' }, codeHead(label, code), h('pre', {}, h('code', {}, code)));
 
 function codeHead(label: string | undefined, text: string): HTMLElement {
-  const copy = h('button', { type: 'button', class: 'gu-copy', 'aria-label': `Copy ${label ?? 'code'}` }, 'Copy');
-  copy.addEventListener('click', () => void navigator.clipboard?.writeText(text).then(() => { copy.textContent = 'Copied'; }, () => { copy.textContent = 'Copy failed'; }));
+  const copy = h('button', { type: 'button', class: 'gu-copy', 'aria-label': t`Copy ${label ?? t('code')}` }, t('Copy'));
+  copy.addEventListener('click', () => void navigator.clipboard?.writeText(text).then(() => { copy.textContent = t('Copied'); }, () => { copy.textContent = t('Copy failed'); }));
   return h('figcaption', { class: 'gu-code-head' }, h('span', {}, label ?? ''), copy);
 }
 
@@ -394,7 +395,7 @@ function svg(tag: string, attrs: Record<string, string | number>): SVGElement {
 function sparkline(values: number[], width = 120, height = 28): SVGElement {
   const min = Math.min(...values), span = Math.max(...values) - min || 1;
   const points = values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * width},${height - 2 - ((v - min) / span) * (height - 4)}`).join(' ');
-  const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, class: 'gu-spark', role: 'img', 'aria-label': `Trend from ${values[0]} to ${values[values.length - 1]}` });
+  const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, class: 'gu-spark', role: 'img', 'aria-label': t`Trend from ${values[0]} to ${values[values.length - 1]}` });
   root.append(svg('polyline', { points, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
   return root;
 }

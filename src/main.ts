@@ -80,6 +80,7 @@ import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, 
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
+import { COMPOSER_DRAFT_PREFIX, languagePref, setBeforeLanguageReload, t, tBackend } from './i18n.ts';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
@@ -216,6 +217,14 @@ function scheduleStreamRender(): void {
 }
 /** Shows the open thread's scene behind the conversation (set once the sky mounts; `renderTranscript` calls it). */
 let showThreadScene: (id: string | null) => void = () => {};
+// A language switch reloads the window: carry every session's unsent text across it.
+setBeforeLanguageReload(() => {
+  try {
+    for (const [id, text] of state.drafts) {
+      if (text.trim()) sessionStorage.setItem(COMPOSER_DRAFT_PREFIX + id, text);
+    }
+  } catch { /* best effort */ }
+});
 let navigationFrame = 0;
 let settledDock: HTMLElement | null = null;
 const settledResize = new ResizeObserver(() => { if (settledDock) $('#navigation').style.setProperty('--settled-height', `${settledDock.offsetHeight}px`); });
@@ -454,7 +463,7 @@ function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
   return classicTeamSetup()
-    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy || !state.providers.length ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
+    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="${t('Architect & workers')}" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy || !state.providers.length ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">${t('Team')}</span></button>`
     : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${!state.providers.length ? 'disabled' : ''} ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
@@ -1574,6 +1583,8 @@ const toastCountHtml = (count: number): string => `<span class="toast-count" ari
  * marks a notice raised by a failure. An identical notice while it shows only bumps its count, so a screen reader hears
  * "Repeated N times" rather than the whole message again. */
 function notify(text: string, undo?: (() => void) | ToastAction | readonly ToastAction[], options: ToastOptions = {}): void {
+  // Backend-originated text (tool and stream failures) translates at the toast boundary.
+  text = tBackend(text);
   const toast = $('#toast'), wasVisible = toastVisible(toast), plain = !undo && !options.settle;
   const queued = queueToast({ holding: wasVisible && Boolean(toastSettle), queue: toastQueue }, { text, tone: options.tone, important: options.important, undo, options }, Boolean(options.settle));
   toastQueue = queued.queue;
@@ -1942,6 +1953,12 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
 }
 
 /** Whether a task needs you, as its sidebar row and board card say it: a state, its full label, and the word shown. */
+const STREAM_STATUSES = new Set(['Starting agent', 'Stopping agent', 'Generating response', 'Working…', 'Continuing task', 'Waiting for approval', 'Waiting for your answer', 'Waiting for response']);
+function statusLabel(status: string): string {
+  if (STREAM_STATUSES.has(status)) return t(status);
+  return status;
+}
+
 function taskSignal(s: Session, now: number): { status: string; statusLabel: string; word: string } {
   const live = state.streams.get(s.id), answer = Boolean(live?.inputs.size);
   const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) && !teamHeld(s.id) ? 'running' : limitActive(s, now) ? 'limited' : FAILED_STATUS.has(s.status) ? 'failed' : '';
@@ -3091,7 +3108,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (appeared && message.parentElement?.classList.contains('turn-card-reply-content')) fadeInReply(message);
   const card = region.querySelector<HTMLElement>('.turn-card.is-live');
   if (card && card.hasAttribute('data-done') !== Boolean(finishing)) card.toggleAttribute('data-done', Boolean(finishing));
-  const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
+  const label = current.status || t('Working…'); if (status.textContent !== label) status.textContent = label;
   setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
   const bot = main ? botForThread() : undefined;
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
@@ -3572,7 +3589,7 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
     // A tool-only turn folds to its summary mid-answer (a card's as the answer starts); a narrated one keeps its steps until it ends.
     mode = 'folded';
     // In a card the time stands on the right, so the label is the steps' summary; bot rows keep `Worked for`.
-    html = allTools.length && (!narrated || carded) ? foldedLabelHtml(allTools) : carded ? escape('Replied') : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+    html = allTools.length && (!narrated || carded) ? foldedLabelHtml(allTools) : carded ? escape(t('Replied')) : escape(t`Worked for ${formatDuration(workedMs ?? 0)}`);
   } else if (last && !status && carded && (last.status !== 'running' || last.output)) {
     // In a card, once the step the header mirrored finishes or prints, its own row shows it: the header moves on
     // to the turn's running summary (`Ran 1 command`), so header and rows never say the same thing.
@@ -3668,7 +3685,7 @@ function updateWorkTimer(): void {
   workTimer = window.setTimeout(() => {
     workTimer = 0;
     const current = state.streams.get(state.sessionId), summary = document.querySelector<HTMLElement>('#stream-region .live-activity:not([data-folded]) .turn-activity-summary');
-    if (current && summary && !summary.closest('.turn-card')) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+    if (current && summary && !summary.closest('.turn-card')) summary.title = t`Working for ${formatDuration(Date.now() - current.startedAt)}`;
     const time = document.querySelector<HTMLElement>('#stream-region .turn-card-time[data-live]');
     if (current && time) time.textContent = formatDuration(Date.now() - workStart(current));
     const now = Date.now();
@@ -4825,7 +4842,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
       const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
       prewarmedDrafts.delete(task.id);
-      notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
+      notify(t`${action === 'plan' ? t('Plan mode') : t('Fast service tier')} ${enabled ? t('enabled') : t('disabled')}`);
       if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
       break;
     }
@@ -6001,7 +6018,7 @@ function onAgent(event: AgentEvent): void {
     s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false;
     runEndings.set(event.sessionId, 'limited');
     // A bot's limit already shows as its sidebar chip and above its composer.
-    if (!sidebarBots.some(bot => bot.projectId === s.projectId)) notify(`${s.title || 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
+    if (!sidebarBots.some(bot => bot.projectId === s.projectId)) notify(t`${s.title || t('Task')}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
     return;
   }
@@ -6463,8 +6480,8 @@ function renderInspector(): void {
   }
   if (state.selectedKind) {
     if (!visible) return;
-    if (state.filePreviewLoading) { target.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
-    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file', 'copy')}${button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div><div class="inspector-diff-host"></div>`;
+    if (state.filePreviewLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${t('Loading file…')}</div>`; return; }
+    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} ${t('Back')}</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', t('Preview in browser'), 'globe') : ''}${button('copy-file', t('Copy file'), 'copy')}${button('toggle-diff-stage', state.selectedStaged ? t('Unstage file') : t('Stage file'), state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div><div class="inspector-diff-host"></div>`;
     if (state.selectedKind === 'diff' && state.inspector) {
       const host = target.querySelector<HTMLElement>('.inspector-diff-host')!;
       const patch = state.selectedContent, path = state.selectedFile;
@@ -6490,7 +6507,7 @@ function renderInspector(): void {
     });
     return;
   }
-  if (!state.git?.isRepo) { target.innerHTML = '<div class="inspector-empty">'+icon('branch')+'<h3>No Git repository</h3><p>Open a Git repository to review changes.</p></div>'; return; }
+  if (!state.git?.isRepo) { target.innerHTML = '<div class="inspector-empty">'+icon('branch')+`<h3>${t('No Git repository')}</h3><p>${t('Open a Git repository to review changes.')}</p></div>`; return; }
   showChangesView(target, changesKey, visible);
 }
 async function openRunPreview(url: string, context: { projectId: string; sessionId?: string }): Promise<void> {
@@ -7314,7 +7331,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
       theme: currentTheme(), preview, section, discover: discoverSettingsProviders,
       projects: { list: userProjects, remove: removeProject },
-      turnChecks: turnChecksEnabled(),
+      turnChecks: turnChecksEnabled(), language: languagePref(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
@@ -8838,7 +8855,7 @@ async function boot(): Promise<void> {
     if (providerGeneration !== settingsDiscoveryGeneration) return;
     state.providers = providers;
     render(); refreshModelLabels(); slashPicker?.refresh(true);
-    if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+    if (!preview && !providers.some(p => p.installed)) notify(t('Open Settings to check your installed agent CLIs.'));
   });
   run(providersReady.finally(() => { providerDiscovery = undefined; }));
   // openThread marks the thread until it has painted and clears the mark when it fails.

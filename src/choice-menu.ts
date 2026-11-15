@@ -1,5 +1,6 @@
 import type { ProviderId } from './types';
 import { escape, icon, isImeKey } from './dom';
+import { t } from './i18n.ts';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
 import { trackSegment } from './motion';
@@ -159,7 +160,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
         ? `<span id="${descriptionId}" class="choice-menu-description">${escape(item.description)}</span>`
         : `<span id="${descriptionId}" class="sr-only">${escape(item.description)}</span>` : '';
       // In an action menu a selected row is the current state (the branch checked out): checked, never re-run.
-      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? item.selected ? 'aria-current="true"' : '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description, undefined, true) : ''}${item.selected ? icon('check') : ''}</button>`;
+      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? item.selected ? 'aria-current="true"' : '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description) : ''}${item.selected ? icon('check') : ''}</button>`;
     }).join('') + (open ? '</div>' : '');
     buttons = [...list.querySelectorAll<HTMLButtonElement>('.choice-menu-option')];
     for (const group of list.querySelectorAll<HTMLElement>('.choice-menu-segment-list')) trackSegment(group, group.querySelector<HTMLElement>(':scope>.selected'));
@@ -172,7 +173,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     buttons.forEach((button, index) => { button.disabled = pending || Boolean(items[index].disabled); });
     if (search) search.disabled = pending;
     list.setAttribute('aria-busy', String(pending));
-    status.textContent = pending ? 'Applying…' : !items.length ? search?.value.trim() ? 'No matching options.' : 'No options available.' : matches > items.length ? `Showing ${items.length} of ${matches} options.${search ? ' Search to narrow the list.' : ''}` : '';
+    status.textContent = pending ? t('Applying…') : !items.length ? search?.value.trim() ? t('No matching options.') : t('No options available.') : matches > items.length ? t`Showing ${items.length} of ${matches} options.` + (search ? t(' Search to narrow the list.') : '') : '';
     status.hidden = !status.textContent;
     position();
   }

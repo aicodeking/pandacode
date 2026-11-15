@@ -3,13 +3,15 @@ import { Image } from 'expo-image';
 import { useFocusEffect } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, AppState, Linking, StyleSheet } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Linking, Pressable, StyleSheet, Text } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { connect } from '../../../connect/client.ts';
 import { useStatus } from '../../../store/index.ts';
 import { clearLocal } from '../../../store/local.ts';
 import { APPEARANCES, setAppearance, useAppearance, type AppearanceChoice } from '../../../ui/appearance.ts';
+import { setLanguage, useLanguage, useT } from '../../../ui/language.ts';
+import { LANGUAGES } from '../../../i18n/core.ts';
 import { useColors } from '../../../ui/theme.ts';
 import { Button, Chip, Group, geometry, Row, Segmented, useScrollEdge, useStagger, type IconName } from '../../../ui/ds/index.ts';
 import { Glyph, Note } from '../../../ui/FormParts.tsx';
@@ -48,6 +50,7 @@ export default function Settings() {
   const edge = useScrollEdge();
   const sections: ReactNode[] = [
     <AccountSection key="account" />, <NotificationsSection key="notifications" />, <AppearanceSection key="appearance" />,
+    <LanguageSection key="language" />,
     <AboutSection key="about" />, <LeaveSection key="leave" />,
   ];
   return (
@@ -124,6 +127,26 @@ function AppearanceSection() {
   );
 }
 
+function LanguageSection() {
+  const colors = useColors();
+  const t = useT();
+  const language = useLanguage(s => s.choice);
+  return (
+    <Group title={t('Language')} footer={<Note>{t('Follows the system language until you pick one here.')}</Note>}>
+      <Pressable onPress={() => setLanguage('system')} accessibilityRole="radio" accessibilityState={{ selected: language === 'system' }} style={styles.languageRow}>
+        <Text style={{ color: colors.text }}>{t('System default')}</Text>
+        {language === 'system' && <Text style={{ color: colors.tint }}>✓</Text>}
+      </Pressable>
+      {LANGUAGES.map(l => (
+        <Pressable key={l.id} onPress={() => setLanguage(l.id)} accessibilityRole="radio" accessibilityState={{ selected: language === l.id }} style={styles.languageRow}>
+          <Text style={{ color: colors.text }}>{l.native}</Text>
+          {language === l.id && <Text style={{ color: colors.tint }}>✓</Text>}
+        </Pressable>
+      ))}
+    </Group>
+  );
+}
+
 function AboutSection() {
   const colors = useColors();
   return (
@@ -142,9 +165,9 @@ function LeaveSection() {
   const colors = useColors();
   const status = useStatus();
   const [deleting, setDeleting] = useState(false);
-  const signOut = () => Alert.alert('Sign out?', 'This phone stops seeing your computers until you sign in again.', [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Sign out', style: 'destructive', onPress: () => void connect.signOut() },
+  const signOut = () => Alert.alert(t('Sign out?'), t('This phone stops seeing your computers until you sign in again.'), [
+    { text: t('Cancel'), style: 'cancel' },
+    { text: t('Sign out'), style: 'destructive', onPress: () => void connect.signOut() },
   ]);
   const remove = async () => {
     setDeleting(true);
@@ -153,13 +176,13 @@ function LeaveSection() {
       await clearLocal();
     } catch (error) {
       setDeleting(false);
-      Alert.alert('Could not delete the account', (error as Error).message);
+      Alert.alert(t('Could not delete the account'), (error as Error).message);
     }
   };
   const deleteAccount = () => Alert.alert(
-    'Delete your account?',
-    'This removes your account and every device signed in to it, phones and computers, from the PandaCode Connect relay, and erases this phone\'s keys and saved data. Your computers then need to sign in to PandaCode Connect again. Tasks on your computers and your GitHub account are not affected.',
-    [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete account', style: 'destructive', onPress: () => void remove() }],
+    t('Delete your account?'),
+    t('This removes your account and every device signed in to it, phones and computers, from the PandaCode Connect relay, and erases this phone\'s keys and saved data. Your computers then need to sign in to PandaCode Connect again. Tasks on your computers and your GitHub account are not affected.'),
+    [{ text: t('Cancel'), style: 'cancel' }, { text: t('Delete account'), style: 'destructive', onPress: () => void remove() }],
   );
   if (status.demo) {
     return (
@@ -180,5 +203,6 @@ function LeaveSection() {
 const styles = StyleSheet.create({
   page: { paddingTop: 4, paddingBottom: BOTTOM_PADDING, gap: geometry.sectionGap },
   avatar: { width: AVATAR, height: AVATAR, borderRadius: AVATAR / 2 },
+  languageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 },
   segmented: { marginHorizontal: 8, marginVertical: 4 },
 });

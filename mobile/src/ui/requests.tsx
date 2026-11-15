@@ -12,6 +12,7 @@ import { Glass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
 import { type Colors, mono, useColors } from './theme.ts';
+import { useT } from './language.ts';
 
 interface Question { id: string; header?: string; question: string; options?: { label: string; description?: string }[]; isOther?: boolean; isSecret?: boolean; multiSelect?: boolean }
 type Input = { kind: 'questions'; questions: Question[] } | { kind: 'form'; message: string; schema: unknown } | { kind: 'url'; message: string; url: string };
@@ -115,6 +116,7 @@ export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: strin
 }
 
 export function InputCard({ deviceId, sessionId, request }: { deviceId: string; sessionId: string; request: PendingRequest }) {
+  const t = useT();
   const colors = useColors();
   const [pending, send] = useSend();
   const input = request.data as Input | undefined;
@@ -222,10 +224,10 @@ function Form({ message, schema, pending, colors, onSubmit, onDecline, onCancel 
   const [error, setError] = useState('');
   let fields: Field[] = [];
   let unsupported = '';
-  try { fields = parseSchema(schema); } catch (e) { unsupported = (e as Error).message; }
+  try { fields = parseSchema(schema, t); } catch (e) { unsupported = (e as Error).message; }
   const set = (name: string, value: unknown) => { setValues(v => ({ ...v, [name]: value })); setError(''); };
   const submit = () => {
-    try { onSubmit(readForm(fields, values)); } catch (e) { setError((e as Error).message); }
+    try { onSubmit(readForm(fields, values, t)); } catch (e) { setError((e as Error).message); }
   };
   const field = { color: colors.text, backgroundColor: colors.fill, borderColor: colors.border };
   return (

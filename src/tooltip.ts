@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 
 /** One shared tooltip for `[data-tip]` elements: details live behind a small info

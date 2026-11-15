@@ -3,6 +3,7 @@ import { accountSignedOut, accountEmail, accountStatusIcon, accountPlan, account
 import { call, preview } from './bridge';
 import type { ConnectionSnapshot } from './connections';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
@@ -87,7 +88,7 @@ function accountHeading(id: string, name: string): string {
 }
 function pricingNote(ledger: Ledger): string {
   const when = ledger.pricing.fetchedAt ? new Date(ledger.pricing.fetchedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-  return { live: `Prices: LiteLLM public price list, updated ${when}.`, saved: `Prices: saved LiteLLM price list from ${when}.`, bundled: 'Prices: the list bundled with PandaCode (offline).' }[ledger.pricing.source];
+  return { live: t`Prices: LiteLLM public price list, updated ${when}.`, saved: t`Prices: saved LiteLLM price list from ${when}.`, bundled: t('Prices: the list bundled with PandaCode (offline).') }[ledger.pricing.source];
 }
 
 /** Keeps keyboard focus on the same control when a section re-renders. */
@@ -112,14 +113,14 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   let summaryCache: { ledger: Ledger; range: Range; summary: Summary } | null = null;
 
   host.classList.add('agent-usage');
-  const tabs = [{ id: 'overview' as Tab, label: 'Overview', logo: icon('activity') }, ...installed.map(provider => ({ id: provider.id as Tab, label: shortNames[provider.id] ?? provider.name, logo: providerLogo(provider.id) }))];
-  host.innerHTML = `<div class="usage-toolbar"><div class="usage-tabs" role="tablist" aria-label="Usage views">${tabs.map(entry => `<button type="button" role="tab" id="usage-tab-${entry.id}" aria-controls="usage-panel-${entry.id}" aria-selected="${entry.id === 'overview'}" tabindex="${entry.id === 'overview' ? 0 : -1}" data-tab="${entry.id}" aria-label="${escape(entry.label)}" title="${escape(entry.label)}">${entry.logo}<span>${escape(entry.label)}</span></button>`).join('')}</div>
-      <button type="button" class="icon-button usage-refresh" aria-label="Refresh usage" title="Refresh">${icon('refresh')}</button></div>
+  const tabs = [{ id: 'overview' as Tab, label: t('Overview'), logo: icon('activity') }, ...installed.map(provider => ({ id: provider.id as Tab, label: shortNames[provider.id] ?? provider.name, logo: providerLogo(provider.id) }))];
+  host.innerHTML = `<div class="usage-toolbar"><div class="usage-tabs" role="tablist" aria-label="${t('Usage views')}">${tabs.map(entry => `<button type="button" role="tab" id="usage-tab-${entry.id}" aria-controls="usage-panel-${entry.id}" aria-selected="${entry.id === 'overview'}" tabindex="${entry.id === 'overview' ? 0 : -1}" data-tab="${entry.id}" aria-label="${escape(entry.label)}" title="${escape(entry.label)}">${entry.logo}<span>${escape(entry.label)}</span></button>`).join('')}</div>
+      <button type="button" class="icon-button usage-refresh" aria-label="${t('Refresh usage')}" title="${t('Refresh')}">${icon('refresh')}</button></div>
     <div class="usage-panel usage-overview" role="tabpanel" id="usage-panel-overview" aria-labelledby="usage-tab-overview">
       <div class="usage-heroes"><div class="usage-hero usage-cost-hero"></div><div class="usage-hero usage-limit-hero"></div></div>
-      <div class="usage-range-row"><span class="usage-caption">Agents ${infoMark(help, 'About agent usage')}</span><div class="usage-segmented usage-range" role="group" aria-label="Period">${RANGES.map(([id, label]) => `<button type="button" data-range="${id}" aria-pressed="${id === range}">${label}</button>`).join('')}</div></div>
+      <div class="usage-range-row"><span class="usage-caption">${t('Agents ')}${infoMark(help, t('About agent usage'))}</span><div class="usage-segmented usage-range" role="group" aria-label="${t('Period')}">${RANGES.map(([id, label]) => `<button type="button" data-range="${id}" aria-pressed="${id === range}">${label}</button>`).join('')}</div></div>
       <div class="usage-agents"></div><div class="usage-cost-details"></div>
-    </div><p class="usage-footer" role="status"></p>${preview ? '<p class="usage-preview">Browser preview · sample limits and costs</p>' : ''}`;
+    </div><p class="usage-footer" role="status"></p>${preview ? `<p class="usage-preview">${t('Browser preview · sample limits and costs')}</p>` : ''}`;
   const toolbarTabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
   const overview = host.querySelector<HTMLElement>('.usage-overview')!;
   const costHero = host.querySelector<HTMLElement>('.usage-cost-hero')!;
@@ -238,9 +239,9 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     for (const [id, card] of cards) {
       const slot = card.querySelector<HTMLElement>('.usage-card-calendar')!;
       const calendar = calendarFor(id, ledger, prompts);
-      if (!calendar) { slot.innerHTML = ledger || prompts ? '<p class="usage-calendar-empty">No activity recorded for this agent yet.</p>' : ''; continue; }
-      const heatmap = usageHeatmap(calendar.daily, { unit: calendar.unit, label: `${nameOf(id)} daily ${calendar.unit}` });
-      if (calendar.unit === 'prompts') heatmap.querySelector('.heatmap-heading h3')?.insertAdjacentHTML('beforeend', ` ${infoMark('This agent does not keep token logs PandaCode can read, so the calendar counts prompts you sent from PandaCode.', 'About this calendar')}`);
+      if (!calendar) { slot.innerHTML = ledger || prompts ? `<p class="usage-calendar-empty">${t('No activity recorded for this agent yet.')}</p>` : ''; continue; }
+      const heatmap = usageHeatmap(calendar.daily, { unit: calendar.unit, label: calendar.unit === 'prompts' ? t`${nameOf(id)} daily prompts` : t`${nameOf(id)} daily tokens` });
+      if (calendar.unit === 'prompts') heatmap.querySelector('.heatmap-heading h3')?.insertAdjacentHTML('beforeend', ` ${infoMark(t('This agent does not keep token logs PandaCode can read, so the calendar counts prompts you sent from PandaCode.'), t('About this calendar'))}`);
       slot.replaceChildren(heatmap);
     }
   }
@@ -361,7 +362,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       ledger = nextLedger; prompts = nextPrompts; ledgerError = null;
     } catch (cause) {
       if (disposed) return;
-      ledgerError = ledger ? null : cause instanceof Error && cause.message ? cause.message : 'Could not read local agent logs.';
+      ledgerError = ledger ? null : cause instanceof Error && cause.message ? cause.message : t('Could not read local agent logs.');
     } finally { ledgerPending = false; }
     renderOverview(); renderCalendars();
   }
@@ -369,7 +370,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     if (pending || disposed || !installed.length) return;
     const restoreRefreshFocus = document.activeElement === refresh;
     pending = true; refresh.disabled = true; refresh.setAttribute('aria-busy', 'true');
-    footer.textContent = 'Checking account limits…';
+    footer.textContent = t('Checking account limits…');
     const estimate = loadLedger(force);
     if (force) await refreshMembers();
     await loadLimits(force);
@@ -514,6 +515,6 @@ function dashboardLink(value?: string | null): string {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password) return '';
-    return `<button type="button" class="usage-dashboard" data-action="open-url" data-url="${escape(url.href)}">View account ${icon('forward')}</button>`;
+    return `<button type="button" class="usage-dashboard" data-action="open-url" data-url="${escape(url.href)}">${t('View account')} ${icon('forward')}</button>`;
   } catch { return ''; }
 }

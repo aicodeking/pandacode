@@ -15,6 +15,7 @@ import { ImageViewerHost } from './ImageViewer.tsx';
 import { Icon } from './Icon.tsx';
 import { FindContext, FindMark, type FindMarks } from './ThreadFind.tsx';
 import { FreshContext, IOS_27, LiveRun, Pending, Row, SentBubbles } from './transcript-rows.tsx';
+import { useT } from './language.ts';
 
 /** How far from the newest message (pt) before the jump-to-latest button shows. */
 const AWAY = 240;
@@ -36,6 +37,7 @@ function Skeleton() {
 /** The message copy: a skeleton until anything (cached or fetched) shows, then nothing while it
  * refreshes; a failure with Retry ("Couldn't refresh" over cached or older messages). */
 function History({ deviceId, sessionId, empty }: { deviceId: string; sessionId: string; empty: boolean }) {
+  const t = useT();
   const colors = useColors();
   const history = useHistory(deviceId, sessionId);
   const loaded = useLoaded(deviceId, sessionId);
@@ -76,7 +78,7 @@ function Older({ deviceId, sessionId, onRetry }: { deviceId: string; sessionId: 
   }
   if (older !== 'loading') return null;
   return (
-    <View style={[styles.activity, styles.older]} accessibilityLabel="Loading older messages">
+    <View style={[styles.activity, styles.older]} accessibilityLabel={t('Loading older messages')}>
       <ActivityIndicator size="small" style={styles.small} />
       <Text style={[textStyle.subhead, { color: colors.muted }]}>Loading older messages…</Text>
     </View>

@@ -170,7 +170,7 @@ async fn write_response(stream: &mut tokio::net::TcpStream, response: Response) 
 async fn route(app: &tauri::AppHandle, request: Request) -> Response {
     let segments: Vec<&str> = request.path.trim_matches('/').split('/').collect();
     match segments.as_slice() {
-        ["chat", channel] => web::page(channel),
+        ["chat", channel] => web::page(channel, request.header("accept-language")),
         ["api", "chat", channel, action] => web::api(app, channel, action, &request).await,
         ["whatsapp", channel] => whatsapp::webhook(app, channel, &request).await,
         ["assets", "md4c.js"] => Response::markdown_engine(),

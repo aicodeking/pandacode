@@ -4,13 +4,14 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import * as i18n from '../src/i18n.ts';
 
 // These modules import browser UI; exercise their real cache logic with inert imports.
 function load(name, globals = {}) {
   const source = readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8');
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
   const exports = {};
-  new Function('exports', 'require', ...Object.keys(globals), outputText)(exports, () => ({}), ...Object.values(globals));
+  new Function('exports', 'require', ...Object.keys(globals), outputText)(exports, name => name === './i18n.ts' ? i18n : {}, ...Object.values(globals));
   return exports;
 }
 

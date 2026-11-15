@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { markupCache } from '../src/transcript-rows.ts';
+import * as i18n from '../src/i18n.ts';
+import zhHans from '../src/locales/zh-Hans.ts';
+import ts from 'typescript';
 
 /* The open thread serves each saved turn's markup from a cache (savedTurnHtml in src/main.ts) that holds while the
  * turn's `parts` and `markupEnv` are unchanged. A new input to turnHtml that is in neither would serve stale rows
@@ -23,8 +26,8 @@ const PINNED = {
   'src/turn-card.ts': ['replyHtml', 'timeHtml'],
   'src/transcript-host.ts': ['lastHandoff', 'turnMessages', 'markupShared'],
 };
-// userContent leaves image sources to the observer, so cached markup cannot retain evicted payloads.
-const RECORDED = '0475c8a9900db58c';
+// Translated message actions and changes cards read the active UI locale through markupShared.
+const RECORDED = '185ec93aac4703f7';
 
 /** A top-level function's text in `file`, from its declaration to the next top-level statement. */
 function functionText(file, name) {
@@ -52,6 +55,42 @@ test('the markup cache holds while parts and env are the same, and only then', (
   assert.equal(cache(head, [{}, 2], 'other', render), '<p>4</p>', 'a changed env redraws');
   assert.equal(cache(head, [{}, 2, 3], 'other', render), '<p>5</p>', 'a part added redraws');
   assert.equal(cache({}, [], 'other', render), '<p>6</p>', 'another turn has its own entry');
+});
+
+test('saved markup redraws when the UI language changes without a system clock change', async () => {
+  const source = readFileSync(new URL('../src/transcript-host.ts', import.meta.url), 'utf8');
+  const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const exports = {}, document = { documentElement: { dataset: { theme: 'dark' } } };
+  const require = name => name === './i18n.ts' ? i18n : name === './dom' ? { fileIconsReady: Promise.resolve() } : {};
+  new Function('exports', 'require', 'document', 'addEventListener', outputText)(exports, require, document, () => {});
+  const shared = exports.markupShared();
+  await Promise.resolve();
+  const originalDocument = globalThis.document, originalLocale = i18n.currentLocale();
+  globalThis.document = document;
+  i18n.registerCatalog('zh-Hans', zhHans);
+  try {
+    const cache = markupCache(), head = {}, message = {};
+    let renders = 0;
+    const render = () => { renders++; return i18n.t('Copy message'); };
+    const draw = () => cache(head, [message], JSON.stringify(shared.inputs()), render);
+    i18n.setActiveLocale('en-US');
+    const englishEnv = shared.inputs();
+    assert.equal(draw(), 'Copy message');
+    assert.equal(draw(), 'Copy message');
+    assert.equal(renders, 1, 'unchanged inputs reuse the saved markup');
+    i18n.setActiveLocale('zh-Hans');
+    assert.notDeepEqual(shared.inputs(), englishEnv, 'UI locale belongs in the markup environment independently of Intl');
+    assert.equal(draw(), zhHans['Copy message']);
+    assert.equal(draw(), zhHans['Copy message']);
+    assert.equal(renders, 2, 'the language change invalidates once');
+    i18n.setActiveLocale('en-US');
+    assert.equal(draw(), 'Copy message');
+    assert.equal(renders, 3, 'switching back cannot reuse translated markup');
+  } finally {
+    i18n.setActiveLocale(originalLocale);
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
 });
 
 test('markupEnv holds what the changes cards read besides the turn: whether the thread is the open one, and the runner', () => {

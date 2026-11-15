@@ -1,4 +1,5 @@
 import './file-tabs.css';
+import { t } from './i18n.ts';
 import { renderDocument } from './document-viewer';
 import { escape, fileIcon, icon, isImeKey } from './dom';
 import { createFileWindow } from './file-window';
