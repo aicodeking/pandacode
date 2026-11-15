@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 // The pure half of desktop notifications: what an event may do given the settings and focus,
 // and how a batch of requests within the window becomes one notice.
-const { DEFAULT_SETTINGS, COALESCE_MS, gate, soundOf, notice, batchNotice, createCoalescer, readSettings, saveSetting } = await import('../src/notifications-model.ts');
+const { DEFAULT_SETTINGS, COALESCE_MS, gate, flushGate, soundOf, notice, batchNotice, createCoalescer, readSettings, saveSetting } = await import('../src/notifications-model.ts');
 
 /** Fake clock and timer queue: a coalescer driven by hand, no real waits. */
 function fakeHost() {
@@ -105,6 +105,39 @@ test('three rapid approvals for one task coalesce into one counted notice', () =
   assert.deepEqual(batchNotice(mixed, false), { title: 'Tasks need your attention', body: '2 requests waiting' });
 });
 
+test('privacy hides the task name but a batch for one task still carries its click payload', () => {
+  const one = [
+    { kind: 'approval', sessionId: 's1', title: 'Fix the flaky test', at: 0 },
+    { kind: 'input', sessionId: 's1', title: 'Fix the flaky test', at: 1_000 },
+  ];
+  assert.deepEqual(batchNotice(one, true), { title: 'PandaCode needs you', body: '2 requests waiting', sessionId: 's1' });
+  const across = [
+    { kind: 'approval', sessionId: 's1', title: 'Fix the flaky test', at: 0 },
+    { kind: 'approval', sessionId: 's2', title: 'Pick a name', at: 1_000 },
+  ];
+  const notice2 = batchNotice(across, true);
+  assert.equal(notice2.sessionId, undefined);
+  assert.ok(!('sessionId' in notice2), 'a multi-task batch has no task to open');
+});
+
+test('the batch is gated again when its window ends, not only when it was queued', () => {
+  const batch = [{ kind: 'approval', sessionId: 's1', title: 'Fix the flaky test', at: 0 }];
+  // Unfocused at both ends: the banner shows.
+  assert.equal(flushGate(batch, DEFAULT_SETTINGS, false), 'banner');
+  // The app was focused by the time the window ended: downgraded to the chosen sound alone,
+  // or dropped when that switch is off.
+  assert.equal(flushGate(batch, DEFAULT_SETTINGS, true), null);
+  assert.equal(flushGate(batch, { ...DEFAULT_SETTINGS, soundWhenFocused: true }, true), 'sound');
+  // Notifications were turned off while the requests waited: nothing shows.
+  assert.equal(flushGate(batch, { ...DEFAULT_SETTINGS, enabled: false }, false), null);
+  // A kind switched off mid-window does not keep the batch alive on the back of the others.
+  const both = [
+    { kind: 'approval', sessionId: 's1', title: 'A', at: 0 },
+    { kind: 'input', sessionId: 's2', title: 'B', at: 1_000 },
+  ];
+  assert.equal(flushGate(both, { ...DEFAULT_SETTINGS, approval: false, input: false }, false), null);
+});
+
 test('a batch holds its requests until the window passes, then sends one flush', () => {
   const fake = fakeHost();
   const coalescer = createCoalescer(fake.host, COALESCE_MS);
@@ -142,4 +175,24 @@ test('flushNow sends what is pending at once and nothing after it', () => {
   assert.equal(fake.pending(), 0);
   coalescer.flushNow();
   assert.equal(fake.flushed.length, 1, 'an empty flush sends nothing');
+});
+
+test('a cancelled request leaves the batch before the window ends, and the count follows', () => {
+  const fake = fakeHost();
+  const coalescer = createCoalescer(fake.host, COALESCE_MS);
+  coalescer.add('approval', 's1', 'A', 'r-1');
+  coalescer.add('approval', 's1', 'A', 'r-2');
+  coalescer.cancel('approval', 's1', 'r-1');
+  coalescer.cancel('approval', 's2', 'r-9');
+  fake.tick(COALESCE_MS);
+  assert.equal(fake.flushed.length, 1, 'the surviving request still notifies');
+  assert.equal(fake.flushed[0].length, 1);
+  assert.equal(fake.flushed[0][0].requestId, 'r-2');
+  // Cancelling every request empties the batch, and the timer then sends nothing.
+  const quiet = fakeHost();
+  const alone = createCoalescer(quiet.host, COALESCE_MS);
+  alone.add('approval', 's1', 'A', 'r-1');
+  alone.cancel('approval', 's1', 'r-1');
+  quiet.tick(COALESCE_MS);
+  assert.equal(quiet.flushed.length, 0);
 });

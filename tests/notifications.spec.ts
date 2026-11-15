@@ -97,3 +97,27 @@ test('focused with the sound switch on, a suppressed notification arrives with i
   expect(call.sound).toBe('Tink');
   expect(String(call.title)).toContain('needs approval');
 });
+
+test("a finished task's notification names its task in the click payload too", async ({ page }) => {
+  await open(page, { 'pandacode.notifications.finished': 'true' });
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await page.evaluate(() => (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '' }));
+  await expect.poll(async () => (await shown(page)).length).toBe(1);
+  const call = (await shown(page))[0];
+  expect(call.suppressBanner).toBe(false);
+  expect(call.sessionId).toBe('session-1');
+  expect(String(call.title)).toContain('finished');
+});
+
+test('a cancelled request no longer counts in the waiting notification batch', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await approval(page, 'r-1');
+  await approval(page, 'r-2');
+  await approval(page, 'r-3');
+  await page.evaluate(() => (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'approval_cancelled', requestId: 'r-1', text: '' }));
+  await expect.poll(() => shown(page).then(calls => calls.length), { timeout: 10_000 }).toBe(1);
+  const call = (await shown(page))[0];
+  expect(String(call.body)).toContain('2 approvals waiting');
+  expect(String(call.body)).not.toContain('3 approvals');
+});
