@@ -130,10 +130,7 @@ pub(crate) fn run_gh(root: &Path, args: &[&str], timeout: Duration) -> Result<Ca
 }
 /// `gh` with the call's `trust`: for an untrusted phone the `git` that `gh` runs in the
 /// checkout gets the closed gate's overrides ([`tool_git_env`]); Desktop adds nothing.
-fn gh_trusted_command(root: &Path, args: &[&str], trust: Trust) -> Command {
-    gh_token_command(root, None, args, trust)
-}
-/// [`gh_trusted_command`] with a pinned project's token riding as `GH_TOKEN`.
+/// A pinned project's token rides as `GH_TOKEN`.
 fn gh_token_command(root: &Path, token: Option<&str>, args: &[&str], trust: Trust) -> Command {
     let mut command = gh_command(root, args, token);
     command.envs(tool_git_env(trust));
@@ -561,13 +558,10 @@ pub(crate) fn pull_create_repo(root: &Path, trust: Trust) -> Result<Option<Strin
     crate::github_hub::base_repo(root).map(Some).ok_or_else(|| crate::github_pull::NO_GITHUB_REMOTE.to_owned())
 }
 
-/// Open a pull request for an already pushed branch, with the project's pinned account.
-pub fn create_pull_request(root: &Path, token: Option<&str>, title: &str, body: &str, base: &str, head: &str) -> Result<PullRequest, String> {
-    create_pull_request_as(root, token, title, body, base, head, false, Trust::Desktop)
-}
 /// Open a pull request (a draft with `draft`) for an already pushed branch, with the caller's
 /// trust (see [`run_gh_as`]): the phone's `pull.create` must not let `gh` run the checkout's git
 /// hooks or filters with desktop trust; the desktop passes `Trust::Desktop` (plain `run_gh`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_pull_request_as(root: &Path, token: Option<&str>, title: &str, body: &str, base: &str, head: &str, draft: bool, trust: Trust) -> Result<PullRequest, String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 256 {
@@ -678,17 +672,20 @@ mod tests {
     fn phone_gh_calls_carry_the_hardened_git_env_and_desktop_calls_do_not() {
         use crate::workspace::Trust;
         let root = std::path::Path::new("/tmp");
-        let desktop = super::gh_trusted_command(root, &["issue", "list"], Trust::Desktop);
+        let desktop = super::gh_token_command(root, None, &["issue", "list"], Trust::Desktop);
         assert_eq!(env_of(&desktop, "GIT_CONFIG_COUNT"), None);
-        let trusted_phone = super::gh_trusted_command(root, &["issue", "list"], Trust::phone(true));
+        let trusted_phone = super::gh_token_command(root, None, &["issue", "list"], Trust::phone(true));
         assert_eq!(env_of(&trusted_phone, "GIT_CONFIG_COUNT"), None, "Full access on keeps Desktop trust");
-        let phone = super::gh_trusted_command(root, &["issue", "list"], Trust::phone(false));
+        let phone = super::gh_token_command(root, None, &["issue", "list"], Trust::phone(false));
         let count: usize = env_of(&phone, "GIT_CONFIG_COUNT").expect("hardened env").parse().unwrap();
         assert!(count > 0);
         for (key, value) in crate::workspace::tool_git_env(Trust::phone(false)) {
             assert_eq!(env_of(&phone, &key).as_deref(), Some(value.as_str()), "{key}");
         }
         assert_eq!(env_of(&phone, "GH_PROMPT_DISABLED").as_deref(), Some("1"), "keeps the base gh env");
+        let pinned = super::gh_token_command(root, Some("tok"), &["issue", "list"], Trust::phone(false));
+        assert_eq!(env_of(&pinned, "GH_TOKEN").as_deref(), Some("tok"), "the pinned account rides as GH_TOKEN");
+        assert_eq!(env_of(&pinned, "GH_ENTERPRISE_TOKEN").as_deref(), Some("tok"), "and as GH_ENTERPRISE_TOKEN");
     }
 
     #[test]
