@@ -74,6 +74,21 @@ test('Resume at reset continues the task when the limit resets', async ({ page }
   await expect.poll(() => sent(page)).toEqual(['Build the feature', 'Continue where you left off.']);
 });
 
+test('a passed reset releases the queue hold without auto-sending', async ({ page }) => {
+  await page.clock.install();
+  await open(page);
+  await startRunWithQueue(page);
+  const resetsAt = await page.evaluate(() => Date.now() + 60_000);
+  await hitLimit(page, resetsAt);
+  await expect(queue(page)).toContainText('Paused until the usage limit resets');
+  await page.clock.fastForward(61_000);
+  // The banner says the limit has reset and the queue offers Resume again, but nothing sends by itself.
+  await expect(banner(page)).toContainText('The usage limit has reset');
+  await expect(queue(page)).not.toContainText('Paused until the usage limit resets');
+  await expect(queue(page).getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+  expect(await sent(page)).toEqual(['Build the feature']);
+});
+
 test('an overdue resume continues right after a restart', async ({ page }) => {
   await open(page, "Object.assign(sessions[0], { limitedAt: now - 7200000, limitedUntil: now - 1000, resumeAtReset: true });");
   await expect.poll(() => sent(page)).toEqual(['Continue where you left off.']);
