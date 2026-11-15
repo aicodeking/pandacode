@@ -3966,7 +3966,7 @@ async fn git_stage(
     staged: bool,
     folder: Option<String>,
 ) -> Result<()> {
-    stage_files(&state, &project_id, session_id.as_deref(), paths, staged, None, workspace::Trust::Desktop).await
+    stage_files(&state, &project_id, session_id.as_deref(), paths, staged, folder.as_deref(), workspace::Trust::Desktop).await
 }
 /// `git_stage`, and the phone's `git.stage` with its [`workspace::Trust`]. `folder`
 /// qualifies the repository an additional folder's task stages in.
@@ -4646,7 +4646,7 @@ async fn git_switch_branch(
     branch: String,
     folder: Option<String>,
 ) -> Result<workspace::BranchList> {
-    switch_branch(&state, &project_id, session_id.as_deref(), branch, None, workspace::Trust::Desktop).await
+    switch_branch(&state, &project_id, session_id.as_deref(), branch, folder.as_deref(), workspace::Trust::Desktop).await
 }
 
 /// `git_switch_branch`, and the phone's `git.switchBranch` with its [`workspace::Trust`].
