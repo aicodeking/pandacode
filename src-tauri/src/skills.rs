@@ -592,7 +592,7 @@ impl Library {
                     if switching && previous_surface == Some("folder") {
                         // A link cannot be written over the folder it replaces; the copy's
                         // files were snapshotted above, so a failed link puts them back.
-                        kept.extend(adapter::remove_folder(&old_files, &[dir.clone()], checkout));
+                        kept.extend(adapter::remove_folder(&old_files, std::slice::from_ref(&dir), checkout));
                     }
                     match adapter::write_link(&dir, id, Path::new(&meta.source.location), &meta.sha256, previous_files) {
                         Ok(written) => written,
