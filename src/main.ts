@@ -80,7 +80,7 @@ import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, 
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
-import { languagePref, t, tBackend } from './i18n.ts';
+import { COMPOSER_DRAFT_PREFIX, languagePref, setBeforeLanguageReload, t, tBackend } from './i18n.ts';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
@@ -6142,7 +6142,6 @@ async function refreshInspector(): Promise<void> {
   const git = results[0].status === 'fulfilled' ? results[0].value : null;
   state.git = git && state.git && JSON.stringify(git) === JSON.stringify(state.git) ? state.git : git;
   inspectorLoaded = results.every(result => result.status === 'fulfilled') ? { key, at: Date.now() } : undefined;
-  if (state.git) noteChangedPaths(state.git.files.map(file => file.path));
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
