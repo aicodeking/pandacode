@@ -1282,6 +1282,7 @@ fn launch_config(session: &Session, cwd: std::path::PathBuf) -> RunConfig {
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),
+        extra_dirs: Vec::new(),
     }
 }
 

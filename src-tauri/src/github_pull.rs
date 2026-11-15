@@ -395,6 +395,8 @@ fn pull_refs<'a>(text: &str, repos: &'a [String]) -> Vec<(&'a str, i64)> {
     }
     found.sort_by_key(|(start, ..)| *start);
     found.into_iter().map(|(_, repo, number)| (repo, number)).collect()
+}
+
 /// The turn's candidate PRs for one repository, newest first, each read in the
 /// LINK_FIELDS shape; candidates gh cannot resolve are skipped.
 pub(crate) fn turn_candidates(root: &Path, name_with_owner: &str, turn: &[String]) -> Vec<serde_json::Value> {

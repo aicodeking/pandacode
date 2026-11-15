@@ -618,6 +618,8 @@ pub(crate) fn review_pull_as(root: &Path, repo: &str, number: i64, event: Review
     let args = pr_review_args(repo, number, event, body);
     run_gh_as(root, &args.iter().map(String::as_str).collect::<Vec<_>>(), TIMEOUT, trust)?;
     Ok(())
+}
+
 /// The task_links repo key of one folder: the primary always keeps the legacy
 /// empty key (whatever remote it has, or none), an additional folder keys by
 /// its origin's `owner/name` read at its effective checkout, and a folder

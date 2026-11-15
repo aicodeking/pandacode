@@ -888,6 +888,7 @@ fn only_a_real_write_dates_a_turn() {
     assert_eq!(tracker.last_write(), 0);
     write_tool(&mut tracker, "reported:capture", "running", &[]);
     assert!(tracker.last_write() > 0, "a track_files capture is a real write");
+}
 
 // REGRESSION PIN: this test exercises today's single-root Tracker::start and must
 // pass before any multi-root work lands. A one-folder task keeps bare change
