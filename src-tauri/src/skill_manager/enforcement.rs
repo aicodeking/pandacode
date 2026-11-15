@@ -741,6 +741,8 @@ mod behavior_tests {
                 goal: None,
                 codex_settings: None,
                 images: Vec::new(),
+                team_environment: Default::default(),
+                team_use_global_environment: true,
             };
             apply_instructions(&mut config, &BTreeSet::from(["review".into()]));
             assert_eq!(config.prompt, "User text");

@@ -15,6 +15,8 @@ fn protocol() -> Protocol {
         goal: None,
         codex_settings: None,
         images: Vec::new(),
+        team_environment: Default::default(),
+        team_use_global_environment: true,
     });
     protocol.remote_id = "main".into();
     protocol.turn_id = "turn-main".into();

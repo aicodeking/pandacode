@@ -946,6 +946,8 @@ fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState
                 summary_limit: 2000,
                 lead_guidance: None,
                 council: None,
+                environment: Default::default(),
+                use_global_environment: true,
             },
         );
         team.status = status.into();

@@ -35,6 +35,23 @@ html[data-theme="dark"] .agent-team-lead:has(input:checked){color:var(--accent)}
 .agent-team-loading{margin:6px 0;font-size:var(--ds-text-meta);color:var(--muted)}
 .agent-team-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .agent-team-count{margin-right:auto;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+/* Team environment variables: the names-only list, the inheritance toggle and the
+ * write-only add row, mirroring the provider environment cards. */
+.agent-team-env{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:var(--ds-radius-control);background:var(--ds-card-inset)}
+.agent-team-env[hidden]{display:none}
+.agent-team-env h4{margin:0;font-size:var(--ds-text-meta);font-weight:var(--weight-strong);color:var(--muted)}
+.agent-team-env-note{margin:0;font-size:var(--ds-text-meta);color:var(--muted);line-height:1.5}
+.agent-team-env-global{display:flex;align-items:center;gap:.45rem;font-size:var(--ds-text-meta);cursor:pointer}
+.agent-team-env-global input{width:auto;flex:none;accent-color:var(--accent);margin:0}
+.agent-team-env-list{display:flex;flex-wrap:wrap;gap:.35rem}
+.agent-team-env-list:empty{display:none}
+.agent-team-env-var{display:inline-flex;align-items:center;gap:.4rem}
+.agent-team-env-var code{font-size:var(--ds-text-meta);padding:.15rem .4rem;border-radius:var(--ds-radius-control);background:var(--ds-card-inset)}
+.agent-team-env-var .secondary-button{font-size:var(--ds-text-meta);padding:.2rem .5rem}
+.agent-team-env-row{display:flex;gap:.4rem;align-items:center}
+.agent-team-env-row input{flex:1;min-width:0;height:30px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
+.agent-team-env-row input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.agent-team-env-row .secondary-button{flex-shrink:0;font-size:var(--ds-text-meta);padding:.5rem .7rem}
 .agent-team-error{margin:0 var(--ds-row-pad-x) 10px;font-size:var(--ds-text-meta);color:var(--ds-danger)}
 .agent-guidance,.agent-team-editor input[type=text],.agent-team-filter{background:var(--ds-card-inset)}
 .agent-guidance:focus,.agent-team-editor input[type=text]:focus{box-shadow:0 0 0 2px var(--focus)}

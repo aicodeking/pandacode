@@ -89,7 +89,7 @@ pub async fn discover(cwd: PathBuf) -> Result<Catalog, String> {
         .try_acquire()
         .map_err(|_| "Integration discovery is already running".to_owned())?;
     let path = executable("codex").ok_or("Install Codex to inspect its configured integrations")?;
-    let mut command = crate::providers::provider_command("codex", &path)?;
+    let mut command = crate::providers::provider_command("codex", &path, true)?;
     command.arg("app-server");
     discover_process(command, &cwd, Limits::default()).await
 }
@@ -99,7 +99,7 @@ pub(crate) async fn discover_skills(cwd: &Path) -> Result<Value, String> {
         .try_acquire()
         .map_err(|_| "Integration discovery is already running".to_owned())?;
     let path = executable("codex").ok_or("Install Codex to inspect its skills")?;
-    let mut command = crate::providers::provider_command("codex", &path)?;
+    let mut command = crate::providers::provider_command("codex", &path, true)?;
     command.arg("app-server");
     discover_skills_process(
         command,
@@ -146,7 +146,7 @@ impl ControlClient {
             .try_acquire()
             .map_err(|_| "Codex command discovery is busy. Try again in a moment.".to_owned())?;
         let path = executable("codex").ok_or("Install Codex to use this command")?;
-        let mut command = crate::providers::provider_command("codex", &path)?;
+        let mut command = crate::providers::provider_command("codex", &path, true)?;
         command.arg("app-server").envs(env.iter().map(|(k, v)| (k, v)));
         if goals {
             command.args(["--enable", "goals"]);

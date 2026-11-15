@@ -4,7 +4,7 @@ use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
@@ -308,6 +308,13 @@ pub struct RunConfig {
     pub codex_settings: Option<Value>,
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
+    /// The team's pre-merged environment (its own values plus the shared global set
+    /// it did not opt out of), decided once at spawn prep. Applied after the
+    /// provider's saved variables, so a team value wins over a shared name.
+    pub team_environment: BTreeMap<String, String>,
+    /// Whether the launch still receives the shared global environment set: the
+    /// team's choice AND the provider card's, decided at spawn prep.
+    pub team_use_global_environment: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -984,10 +991,15 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
 /// Everything else a launch adds (credentials, endpoints, a named connection)
-/// is applied later and wins.
-pub(crate) fn provider_command(provider: &str, path: &Path) -> Result<Command, String> {
+/// is applied later and wins. `include_global` drops the shared global set for a
+/// team that opted out of it.
+pub(crate) fn provider_command(
+    provider: &str,
+    path: &Path,
+    include_global: bool,
+) -> Result<Command, String> {
     let mut command = command(path)?;
-    crate::provider_settings::apply_environment(provider, &mut command);
+    crate::provider_settings::apply_provider_environment(provider, include_global, &mut command);
     Ok(command)
 }
 
@@ -1655,7 +1667,7 @@ async fn read_claude_models(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) ->
 }
 
 async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = provider_command("claude", path)?;
+    let mut command = provider_command("claude", path, true)?;
     claude_auth::configure(&mut command, "claude");
     command
         .args([
@@ -1699,7 +1711,7 @@ async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn codex_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = provider_command("codex", path)?;
+    let mut command = provider_command("codex", path, true)?;
     command
         .arg("app-server")
         .current_dir(std::env::temp_dir())
@@ -4062,7 +4074,9 @@ fn local_command(
     opencode_agents: &crate::skill_manager::OpenCodeAgents,
     mut connection: Option<&mut crate::connections::Launch>,
 ) -> Result<(Command, Option<String>), String> {
-    let mut command = provider_command(&config.provider, path)?;
+    let mut command = provider_command(&config.provider, path, config.team_use_global_environment)?;
+    // The team's own variables, after the provider's saved ones so they win.
+    crate::provider_settings::apply_team_environment(&config.team_environment, &mut command);
     configure_command_with_agents(&mut command, config, disabled, opencode_agents);
     connect_command(&mut command, &config.provider, disabled, connection.as_deref());
     if config.provider == "opencode" && !disabled.is_empty() {
@@ -4801,6 +4815,8 @@ mod tests {
             goal: None,
             codex_settings: None,
             images: Vec::new(),
+            team_environment: BTreeMap::new(),
+            team_use_global_environment: true,
         }
     }
 
@@ -6744,6 +6760,8 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
                 goal: None,
                 codex_settings: None,
                 images: Vec::new(),
+                team_environment: Default::default(),
+                team_use_global_environment: true,
             };
             let mut task = tokio::spawn(run(cfg, sink, receiver));
             let outcome = match tokio::time::timeout(Duration::from_secs(90), &mut task).await {

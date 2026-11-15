@@ -1241,7 +1241,8 @@ for await (const line of createInterface({input: process.stdin})) {
                 });
                 let config = RunConfig { session_id: uuid::Uuid::new_v4().to_string(), provider: provider.into(), mode: mode.into(),
                     model: "default".into(), reasoning_effort: None, cwd: root.clone(), resume_id: None, prompt: "Check tools".into(),
-                    instructions: String::new(), skill: None, goal: None, codex_settings: None, images: vec![] };
+                    instructions: String::new(), skill: None, goal: None, codex_settings: None, images: vec![],
+                    team_environment: Default::default(), team_use_global_environment: true };
                 tokio::time::timeout(Duration::from_secs(20), crate::providers::run_with_tools(config, sink, receive, Some(host), Default::default()))
                     .await.expect(&context).unwrap_or_else(|error| panic!("{context}: {error}"));
                 let report: Value = serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();

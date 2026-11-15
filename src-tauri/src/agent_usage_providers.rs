@@ -632,7 +632,7 @@ fn antigravity_command(
     limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, ()> {
-    let mut command = crate::providers::provider_command("antigravity", path).map_err(|_|())?.into_std();
+    let mut command = crate::providers::provider_command("antigravity", path, true).map_err(|_|())?.into_std();
     command.args(args).current_dir(cwd);
     let output = crate::workspace::run_process(command, "Antigravity usage", limit, timeout)
         .map_err(|_| ())?;
