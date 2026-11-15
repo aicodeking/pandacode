@@ -5172,6 +5172,7 @@ fn effort_model(id: &str, levels: &[&str]) -> crate::providers::ModelInfo {
         default_reasoning_effort: None,
         context_window: None,
         speed_tiers: Vec::new(),
+        ..crate::providers::ModelInfo::default()
     }
 }
 #[test]
