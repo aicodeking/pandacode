@@ -6489,7 +6489,7 @@ diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-x\n+y\n";
         }
         let host = include_str!("host.rs");
         assert!(body(host, "async fn send_prompt(").contains("drivable_task(app, from, &session_id, full_access)"), "task.send");
-        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::Configure { session_id, model, effort, mode } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
+        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::Configure { session_id, model, effort, mode, auto_writes } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
             let code = arm(host, call);
             assert!(code.contains("drivable_task(app, from, &session_id, full_access)"), "{call}");
             assert!(!code.contains("local_task("), "{call}");
