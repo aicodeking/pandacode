@@ -9,7 +9,7 @@ export type SettingsSection = SettingsPage | 'connections';
  * id, so `show('providers')` and any older deep link land on it. Schedules stays its own section because it is
  * the one page of live work (runs, history, pause) rather than preferences. */
 export const SECTIONS: { id: SettingsSection; label: string; icon: string; pages: { id: SettingsPage; label: string; keywords?: string }[] }[] = [
-  { id: 'recommended', label: 'Recommended', icon: 'spark', pages: [{ id: 'recommended', label: 'Recommended', keywords: 'suggested suggestions setup checklist get started' }] },
+  { id: 'recommended', label: t('Recommended'), icon: 'spark', pages: [{ id: 'recommended', label: t('Recommended'), keywords: 'suggested suggestions setup checklist get started' }] },
   { id: 'general', label: t('General'), icon: 'settings', pages: [{ id: 'general', label: t('General'), keywords: 'interface size zoom text size font shortcut keyboard launcher density compact crash restart recovery report unsent messages drafts keep unsent drafts clear saved drafts secret' }] },
   { id: 'appearance', label: t('Appearance'), icon: 'sun', pages: [{ id: 'appearance', label: t('Appearance'), keywords: 'wallpaper theme dark light accent color colour vsix vs code theme' }] },
   { id: 'voice', label: 'Voice', icon: 'mic', pages: [{ id: 'voice', label: 'Voice', keywords: 'voice dictation dictate microphone mic speech STT speech-to-text transcription transcribe model whisper parakeet download language shortcut' }] },
