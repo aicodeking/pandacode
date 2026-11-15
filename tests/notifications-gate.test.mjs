@@ -123,11 +123,11 @@ test('privacy hides the task name but a batch for one task still carries its cli
 test('the batch is gated again when its window ends, not only when it was queued', () => {
   const batch = [{ kind: 'approval', sessionId: 's1', title: 'Fix the flaky test', at: 0 }];
   // Unfocused at both ends: the banner shows.
-  assert.equal(flushGate(batch, DEFAULT_SETTINGS, false), 'banner');
+  assert.deepEqual(flushGate(batch, DEFAULT_SETTINGS, false), { action: 'banner', batch });
   // The app was focused by the time the window ended: downgraded to the chosen sound alone,
   // or dropped when that switch is off.
   assert.equal(flushGate(batch, DEFAULT_SETTINGS, true), null);
-  assert.equal(flushGate(batch, { ...DEFAULT_SETTINGS, soundWhenFocused: true }, true), 'sound');
+  assert.deepEqual(flushGate(batch, { ...DEFAULT_SETTINGS, soundWhenFocused: true }, true), { action: 'sound', batch });
   // Notifications were turned off while the requests waited: nothing shows.
   assert.equal(flushGate(batch, { ...DEFAULT_SETTINGS, enabled: false }, false), null);
   // A kind switched off mid-window does not keep the batch alive on the back of the others.
@@ -136,6 +136,15 @@ test('the batch is gated again when its window ends, not only when it was queued
     { kind: 'input', sessionId: 's2', title: 'B', at: 1_000 },
   ];
   assert.equal(flushGate(both, { ...DEFAULT_SETTINGS, approval: false, input: false }, false), null);
+});
+
+test('a kind switched off mid-window leaves the batch with only what still waits', () => {
+  const approval = { kind: 'approval', sessionId: 's1', title: 'Fix the flaky test', at: 0 };
+  const input = { kind: 'input', sessionId: 's2', title: 'Pick a name', at: 1_000 };
+  const gated = flushGate([approval, input], { ...DEFAULT_SETTINGS, approval: false }, false);
+  assert.deepEqual(gated, { action: 'banner', batch: [input] });
+  // The disabled approval no longer turns the batch multi-task: the survivor keeps its click.
+  assert.deepEqual(batchNotice(gated.batch, false), { title: 'Pick a name needs your answer', body: 'Reply in PandaCode.', sessionId: 's2' });
 });
 
 test('a batch holds its requests until the window passes, then sends one flush', () => {
@@ -175,6 +184,18 @@ test('flushNow sends what is pending at once and nothing after it', () => {
   assert.equal(fake.pending(), 0);
   coalescer.flushNow();
   assert.equal(fake.flushed.length, 1, 'an empty flush sends nothing');
+});
+
+test('clearing a session takes every kind of its request out of the batch', () => {
+  const fake = fakeHost();
+  const coalescer = createCoalescer(fake.host, COALESCE_MS);
+  coalescer.add('approval', 's1', 'A', 'r-1');
+  coalescer.add('input', 's1', 'A', 'r-2');
+  coalescer.add('approval', 's2', 'B', 'r-3');
+  coalescer.clear('s1');
+  fake.tick(COALESCE_MS);
+  assert.equal(fake.flushed.length, 1);
+  assert.deepEqual(fake.flushed[0].map(item => item.sessionId), ['s2']);
 });
 
 test('a cancelled request leaves the batch before the window ends, and the count follows', () => {

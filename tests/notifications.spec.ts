@@ -121,3 +121,34 @@ test('a cancelled request no longer counts in the waiting notification batch', a
   expect(String(call.body)).toContain('2 approvals waiting');
   expect(String(call.body)).not.toContain('3 approvals');
 });
+
+/** A Council snapshot: `asking` rests the team on the user, anything else moves on. */
+const council = (page: Page, asking: boolean, revision: number) => page.evaluate(([asking, revision]) => {
+  (window as any).__previewEmit('architect-event', {
+    sessionId: 'session-1',
+    config: { workers: [], maxParallel: 1, maxRounds: 1, maxAssignments: 1, workspace: 'shared', summaryLimit: 0 },
+    status: 'ready', round: 1, revision, workers: [], error: null, updatedAt: Date.now(),
+    councilStatus: { state: asking ? 'asking' : 'passed', round: 1, lowest: null, target: 1, stale: false },
+  });
+}, [asking, revision]);
+
+test('Council asking follows the input preference, once per ask', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await council(page, true, 1);
+  await council(page, true, 2);
+  await expect.poll(() => shown(page).then(calls => calls.length), { timeout: 10_000 }).toBe(1);
+  const call = (await shown(page))[0];
+  expect(call.suppressBanner).toBe(false);
+  expect(call.sessionId).toBe('session-1');
+  expect(String(call.title)).toContain('needs your answer');
+});
+
+test('the end of a Council ask withdraws its still-waiting notification', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await council(page, true, 1);
+  await council(page, false, 2);
+  await page.waitForTimeout(6_500);
+  expect(await shown(page)).toEqual([]);
+});
