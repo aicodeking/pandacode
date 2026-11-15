@@ -64,11 +64,13 @@ export function soundOf(on: Pick<NotificationSettings, 'sound'>): string | undef
 }
 
 /** The batch is re-gated when its window ends: the app may have been focused (or the
- * notifications turned off) since the requests arrived. A focused flush downgrades to the
- * chosen sound alone; a batch nothing wants is dropped. */
-export function flushGate(batch: PendingRequest[], on: NotificationSettings, focused: boolean): GateAction | null {
-  if (!batch.some(item => gate(item.kind, on, focused))) return null;
-  return focused ? 'sound' : 'banner';
+ * notifications turned off) since the requests arrived. Each request passes its own kind's
+ * gate (a kind switched off mid-window stops counting), a focused flush downgrades to the
+ * chosen sound alone, and a batch nothing wants is dropped. */
+export function flushGate(batch: PendingRequest[], on: NotificationSettings, focused: boolean): { action: GateAction; batch: PendingRequest[] } | null {
+  const kept = batch.filter(item => gate(item.kind, on, focused));
+  if (!kept.length) return null;
+  return { action: focused ? 'sound' : 'banner', batch: kept };
 }
 
 export interface Notice { title: string; body: string; sessionId?: string }
@@ -117,6 +119,8 @@ export interface Coalescer {
   add(kind: 'approval' | 'input', sessionId: string, title: string, requestId?: string): void;
   /** Takes a cancelled request back out, so the batch never counts what no longer waits. */
   cancel(kind: 'approval' | 'input', sessionId: string, requestId?: string): void;
+  /** Takes every request of a session back out (its run ended, or the session is gone). */
+  clear(sessionId: string): void;
   /** Sends what is pending at once (nothing arrives later for a closed task). */
   flushNow(): void;
 }
@@ -139,6 +143,9 @@ export function createCoalescer(host: CoalescerHost, windowMs = COALESCE_MS): Co
     cancel(kind, sessionId, requestId) {
       batch = batch.filter(item => !(item.kind === kind && item.sessionId === sessionId
         && (item.requestId ?? null) === (requestId ?? null)));
+    },
+    clear(sessionId) {
+      batch = batch.filter(item => item.sessionId !== sessionId);
     },
     flushNow() {
       if (handle !== undefined) host.cancel(handle);

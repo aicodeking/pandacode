@@ -28,7 +28,7 @@ export function notifyEvent(kind: NotificationEventKind, sessionId: string, titl
   if (action === 'sound') {
     // Focused: the banner stays suppressed; only the chosen sound plays.
     const text = notice(kind, title, on.hideDetails);
-    void call('notifications_show', { title: text.title, body: text.body, sessionId, sound: soundOf(on), suppressBanner: true }).catch(warn);
+    void call('notifications_show', { title: text.title, body: text.body, sessionId, sound: soundOf(on), suppressBanner: true, soundWhenFocused: on.soundWhenFocused }).catch(warn);
     return;
   }
   // Finished and failed tasks never coalesce; requests wait out the window together, and a
@@ -42,21 +42,26 @@ export function cancelRequest(kind: 'approval' | 'input', sessionId: string, req
   requests.cancel(kind, sessionId, requestId);
 }
 
+/** Every request of a session leaves the batch: its run ended, or the session is gone. */
+export function cancelSession(sessionId: string): void {
+  requests.clear(sessionId);
+}
+
 /** The window has ended. The gate is re-checked here, because the app may have been focused
  * (or the notifications turned off) since the requests arrived. */
 function flushRequests(batch: PendingRequest[]): void {
   const on = readSettings(localStorage), focused = document.hasFocus();
-  const action = flushGate(batch, on, focused);
-  if (!action) return;
-  const text = batchNotice(batch, on.hideDetails);
-  if (action === 'sound') {
+  const gated = flushGate(batch, on, focused);
+  if (!gated) return;
+  const text = batchNotice(gated.batch, on.hideDetails);
+  if (gated.action === 'sound') {
     // Downgraded while it waited: the banner stays hidden, only the chosen sound plays.
-    void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: true }).catch(warn);
+    void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: true, soundWhenFocused: on.soundWhenFocused }).catch(warn);
     return;
   }
   show(text, on);
 }
 
 function show(text: Notice, on: NotificationSettings): void {
-  void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: false }).catch(warn);
+  void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: false, soundWhenFocused: on.soundWhenFocused }).catch(warn);
 }
