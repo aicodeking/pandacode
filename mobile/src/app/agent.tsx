@@ -22,6 +22,7 @@ import { PUSHED_HEADER, PushedScroll, usePushedScroll } from '../ui/PushedScroll
 import { modelLabel } from '../ui/models.ts';
 import { useNames, useTeamLoad } from '../ui/useTeam.ts';
 import { StateMark, WorkerMark } from './agents.tsx';
+import { HeaderActions } from '../ui/HeaderActions.tsx';
 
 const REFRESH_MS = 5000;
 const SHOWN_ROLES = new Set(['user', 'assistant', 'tool', 'system']);
@@ -62,6 +63,8 @@ const Transcript = memo(function Transcript({ deviceId, sessionId, worker, team 
   const [loadingOlder, setLoadingOlder] = useState(false);
   // The newest id held, across refreshes (the component is keyed by worker).
   const last = useRef(0);
+  /** Bumped by Retry: runs the load (and its polling) again. */
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let alive = true;
     const load = () => {
@@ -79,7 +82,7 @@ const Transcript = memo(function Transcript({ deviceId, sessionId, worker, team 
     void load();
     const timer = running ? setInterval(load, REFRESH_MS) : undefined;
     return () => { alive = false; if (timer) clearInterval(timer); };
-  }, [deviceId, sessionId, worker.id, running]);
+  }, [deviceId, sessionId, worker.id, running, attempt]);
   const loadOlder = () => {
     const first = messages?.[0]?.id;
     if (!first || loadingOlder) return;
@@ -98,13 +101,14 @@ const Transcript = memo(function Transcript({ deviceId, sessionId, worker, team 
   }, [messages, failure]);
   const stored = useMemo(() => new Set(rows.filter(m => m.role === 'tool').map(m => parseToolMessage(m.content).id).filter(Boolean)), [rows]);
   const liveTools = useMemo(() => live.filter(i => !stored.has(i.tool.id)), [live, stored]);
-  if (error && !messages) return <Plain value={error} tone="muted" />;
+  const retry = () => { setError(''); setAttempt(a => a + 1); };
+  if (error && !messages) return <View style={styles.failed}><Plain value={error} tone="muted" /><Button variant="plain" size="small" label="Retry" onPress={retry} /></View>;
   if (!messages) return <View style={styles.inner}><Skeleton width="80%" /><Skeleton width="60%" /></View>;
   if (!rows.length && !liveTools.length) return <Plain value="No messages yet." tone="muted" />;
   return (
     <>
       {hasOlder && <Button variant="plain" size="small" label="Load older messages" loading={loadingOlder} onPress={loadOlder} />}
-      {!!error && <Plain value={error} tone="muted" />}
+      {!!error && <View style={styles.failed}><Plain value={error} tone="muted" /><Button variant="plain" size="small" label="Retry" onPress={retry} /></View>}
       {rows.map(m => <TranscriptRow key={m.id} message={m} />)}
       {liveTools.map(i => <ToolRow key={i.tool.id} tool={i.tool} startedAt={i.startedAt} endedAt={i.endedAt} />)}
       {hasMore && <Plain value="Newer messages were left out. Open this task on the computer to see them." tone="muted" />}
@@ -139,7 +143,6 @@ function WorkerDetail({ deviceId, sessionId, worker, team }: { deviceId: string;
   const models = useModels(deviceId, worker.provider);
   return (
     <>
-      <Stack.Screen options={{ title: worker.name }} />
       <StatusCard failed={worker.status === 'failed'} model={worker.model ? modelLabel(worker.model, models) : harnessName(worker.provider)}
         label={[workerLabel(worker, team), elapsed, worker.attempt > 1 && `attempt ${worker.attempt}`].filter(Boolean).join(' · ')}
         leading={<><HarnessLogo id={worker.provider} size={20} /><WorkerMark worker={worker} team={team} /></>} error={worker.error ?? undefined} />
@@ -172,7 +175,6 @@ function SubagentDetail({ agent }: { agent: Subagent }) {
   const elapsed = agent.startedAt ? elapsedLabel((active ? now : agent.updatedAt || now) - agent.startedAt) : '';
   return (
     <>
-      <Stack.Screen options={{ title: subagentName(agent) }} />
       <StatusCard failed={agent.status === 'failed'} label={[agent.status, elapsed].filter(Boolean).join(' · ')}
         leading={<StateMark status={agent.status} active={active} />} />
       {!!agent.prompt && <Section title="Prompt"><Plain value={agent.prompt} /></Section>}
@@ -189,9 +191,12 @@ export default function AgentScreen() {
   const worker = team && team !== 'outdated' ? team.workers.find(w => w.id === id) : undefined;
   const agent = useConnect(s => (kind === 'subagent' ? s.live[taskKey(device, session)]?.subagents?.find(a => a.id === id) : undefined));
   const asked = kind === 'worker' && team === undefined;
+  // One Stack.Screen for every return path, next to its HeaderActions.
+  const title = worker?.name ?? (agent ? subagentName(agent) : undefined);
   return (
     <PushedScroll scroll={scroll}>
-      <Stack.Screen options={PUSHED_HEADER} />
+      <Stack.Screen options={title === undefined ? PUSHED_HEADER : { ...PUSHED_HEADER, title }} />
+      <HeaderActions />
       {worker && team && team !== 'outdated' && <WorkerDetail deviceId={device} sessionId={session} worker={worker} team={team} />}
       {agent && <SubagentDetail agent={agent} />}
       {!worker && !agent && (
@@ -204,10 +209,11 @@ export default function AgentScreen() {
 }
 
 const styles = StyleSheet.create({
-  empty: { marginTop: 48 },
-  inner: { paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
-  status: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: geometry.rowHeight, paddingHorizontal: 12, paddingVertical: 6 },
-  statusError: { paddingHorizontal: 12, paddingBottom: 10 },
+  empty: { marginTop: geometry.emptyTop },
+  inner: { paddingHorizontal: geometry.rowInset, paddingVertical: 10, gap: 8 },
+  failed: { gap: 4, alignItems: 'flex-start' },
+  status: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: geometry.rowHeight, paddingHorizontal: geometry.rowInset, paddingVertical: 6 },
+  statusError: { paddingHorizontal: geometry.rowInset, paddingBottom: 10 },
   statusText: { flex: 1, fontVariant: ['tabular-nums'], textTransform: 'capitalize' },
   model: { alignSelf: 'center', flexShrink: 1, maxWidth: '45%' },
   prompt: { borderRadius: geometry.innerRadius, borderCurve: 'continuous', padding: 12 },

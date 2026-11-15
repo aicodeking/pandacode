@@ -1,6 +1,7 @@
 import './jev-live.css';
 import { call, subscribe } from './bridge';
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 import type { JevReport } from './jev';
 
 export interface JevFrame {
@@ -18,7 +19,6 @@ type Options = { session(): string | undefined; changed(watching: boolean, avail
 const active = (report?: JevReport) => report?.status === 'starting' || report?.status === 'running';
 const statuses: Record<JevReport['status'], string> = { starting: 'Starting browser', running: 'Testing', done: 'Finished', blocked: 'Blocked', failed: 'Test failed', cancelled: 'Cancelled', limit: 'Limit reached' };
 const duration = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms % 60_000 / 1000)}s`;
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 function validImage(value: unknown, live = false): value is string {
   return typeof value === 'string' && value.length <= (live ? 350_000 : 2_800_000)
     && (live ? /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/ : /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/).test(value);

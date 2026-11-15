@@ -1,6 +1,7 @@
 import './github.css';
 import { escape, icon } from './dom';
 import type { FileEntry, GithubIssue, GithubItem, GithubReference, GithubStatus, Project, Session, TaskLink } from './types';
+import { errorText } from './error-text';
 
 /* GitHub through the user's signed-in `gh`. Everything here is optional: when the
  * switch is off or the project has no GitHub remote, nothing runs and nothing shows. */
@@ -17,6 +18,7 @@ export type GithubHost = {
   modal(title: string, body: string, cls?: string): HTMLDialogElement;
   closeModal(): void;
   notify(text: string): void;
+  notifyError?(text: string): void;
   sessions(): Session[];
   project(id: string): Project | undefined;
   /** Harness and model for tasks created by an import. */
@@ -203,7 +205,7 @@ export function createGithub(host: GithubHost) {
       const relinked = await host.call<Session>('set_task_link', { sessionId: saved.id, kind: 'issue', link: { kind: 'issue', number: issue.number, url: issue.url, title: issue.title, state: issue.state, checkedAt: 0 } });
       host.upsert(relinked); host.changed();
       button.replaceWith(Object.assign(document.createElement('span'), { className: 'github-issue-badge', textContent: 'Updated' }));
-    } catch (error) { button.disabled = false; host.notify(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { button.disabled = false; (host.notifyError ?? host.notify)(errorText(error)); }
   }
   async function submitImport(form: HTMLFormElement, data: FormData): Promise<void> {
     const projectId = form.dataset.projectId!;

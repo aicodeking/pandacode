@@ -10,25 +10,25 @@ const tool = (name, input, extra = {}) => ({ name, status: 'completed', input: t
 
 test('describes each kind as a verb, chip and object', () => {
   const cases = [
-    [tool('Bash', { command: 'npm test -- --runInBand' }), 'shell', 'Ran', 'npm', 'test -- --runInBand'],
-    [tool('Command', '/bin/zsh -lc "git status --short"\nWorking directory: /repo'), 'shell', 'Ran', 'git', 'status --short'],
-    [tool('pandacode_vm_exec', { name: 'vm', command: 'uname -a' }), 'shell', 'Ran', 'uname', '-a · on vm'],
+    [tool('Bash', { command: 'npm test -- --runInBand' }), 'shell', 'Ran tests', 'npm test', ''],
+    [tool('Command', '/bin/zsh -lc "git status --short"\nWorking directory: /repo'), 'shell', 'Checked', 'git status', ''],
+    [tool('pandacode_vm_exec', { name: 'vm', command: 'uname -a' }), 'shell', 'Ran', 'uname', '· on vm'],
     [tool('Read', { file_path: '/repo/src/main.ts' }), 'read', 'Read', 'main.ts', ''],
     [tool('read', { path: 'src/dom.ts' }), 'read', 'Read', 'dom.ts', ''],
-    [tool('Write', { file_path: 'a/b.md', content: 'one\ntwo' }), 'write', 'Wrote', 'b.md', '2 lines'],
-    [tool('Grep', { pattern: 'icon\\(', path: 'src' }), 'search', 'Searched', 'src', 'for icon\\('],
-    [tool('Glob', { pattern: '**/*.ts' }), 'search', 'Searched', 'workspace', 'for files matching **/*.ts'],
-    [tool('WebSearch', { query: 'tauri updater' }), 'web', 'Searched', 'Web', 'for tauri updater'],
-    [tool('WebFetch', { url: 'https://www.example.com/a', prompt: 'Summarize' }), 'fetch', 'Fetched', 'example.com', 'Summarize'],
+    [tool('Write', { file_path: 'a/b.md', content: 'one\ntwo' }), 'write', 'Wrote', 'b.md', '· 2 lines'],
+    [tool('Grep', { pattern: 'icon\\(', path: 'src' }), 'search', 'Searched', 'src', 'for “icon\\(” in'],
+    [tool('Glob', { pattern: '**/*.ts' }), 'search', 'Found', undefined, 'files matching “**/*.ts”'],
+    [tool('WebSearch', { query: 'tauri updater' }), 'web', 'Searched the web', undefined, 'for “tauri updater”'],
+    [tool('WebFetch', { url: 'https://www.example.com/a', prompt: 'Summarize' }), 'fetch', 'Fetched', 'example.com', ''],
     [tool('TodoWrite', { todos: [{ content: 'a', status: 'pending' }, { content: 'b', status: 'completed' }] }), 'todo', 'Updated', undefined, 'the plan · 2 steps'],
     [tool('Task', { description: 'Find callers', subagent_type: 'Explore' }), 'agent', 'Started', 'Explore', 'Find callers'],
     [tool('Skill', { skill: 'hyperframes' }), 'skill', 'Loaded skill', 'hyperframes', ''],
     [tool('Skill', { skill: 'simplify', args: 'src/lib' }), 'skill', 'Loaded skill', 'simplify', 'src/lib'],
     [tool('mcp__github__list_issues', {}), 'mcp', 'Read the', 'GitHub', 'issues'],
-    [tool('mcp__slack__search_messages', { query: 'messages since yesterday' }), 'mcp', 'Searched', 'Slack', 'for messages since yesterday'],
+    [tool('mcp__slack__search_messages', { query: 'messages since yesterday' }), 'mcp', 'Searched', 'Slack', 'for “messages since yesterday”'],
     [tool('mcp__claude_ai_Granola__get_meetings', { query: 'notes from today’s calls' }, { status: 'running' }), 'mcp', 'Read the', 'Granola', 'notes from today’s calls'],
     [tool('mcp__acme__deploy_site', {}), 'mcp', 'Used', 'acme', 'deploy site'],
-    [tool('docs · search', { query: 'x' }), 'mcp', 'Searched', 'docs', 'for x'],
+    [tool('docs · search', { query: 'x' }), 'mcp', 'Searched', 'docs', 'for “x”'],
     // PandaCode's own tools come from the catalog (tool-trace-pandacode.ts).
     [tool('pandacode_dispatch_workers', { workers: [{}, {}] }), 'mcp', 'Dispatched', undefined, '2 workers'],
     [tool('pandacode_architect_pandacode_title', { title: 'Traces' }), 'mcp', 'Named', undefined, 'the task “Traces”'],
@@ -38,7 +38,7 @@ test('describes each kind as a verb, chip and object', () => {
     [tool('pandacode_schedule_message', { taskId: 't', text: 'Rebase', kind: 'weekdays', timeOfDay: '09:00' }), 'mcp', 'Scheduled', undefined, 'a message · weekdays at 09:00 · Rebase'],
     [tool('pandacode_schedule_wakeup', { title: 'Deploy check', note: 'x', at: '18:30' }), 'mcp', 'Scheduled', undefined, 'a wake-up · at 18:30 · Deploy check'],
     [tool('pandacode_mystery_tool', {}), 'mcp', 'Used', 'PandaCode', 'mystery tool'],
-    [tool('Write', { file_path: 'one.md', content: 'x' }), 'write', 'Wrote', 'one.md', '1 line'],
+    [tool('Write', { file_path: 'one.md', content: 'x' }), 'write', 'Wrote', 'one.md', '· 1 line'],
     [tool('Frobnicate', { path: 'x/y' }), 'tool', 'Used', 'Frobnicate', 'x/y'],
   ];
   for (const [input, kind, verb, chip, object] of cases) {
@@ -58,13 +58,13 @@ test('describes each kind as a verb, chip and object', () => {
   assert.equal(describeTool(tool('mcp__linear__list_issues', {})).icon, 'file');
   assert.match(describeTool(tool('mcp__slack__search_messages', {})).chip.svg, /brand-icon/);
   assert.deepEqual(['search_messages', 'slack_search_public', 'list_pull_requests', 'get_meetings', 'deploy_site'].map(mcpAction), ['search', 'search', 'read', 'read', undefined]);
-  assert.match(traceRowHtml(describeTool(tool('mcp__gmail__search_threads', { query: 'unread threads' }))), /tool-trace-verb">Searched<\/span><span class="tool-trace-chip" title="mcp__gmail__search_threads"><svg class="brand-icon"[^]*<b>Gmail<\/b><\/span><span class="tool-trace-object">for unread threads</);
+  assert.match(traceRowHtml(describeTool(tool('mcp__gmail__search_threads', { query: 'unread threads' }))), /tool-trace-verb">Searched<\/span><span class="tool-trace-chip" title="mcp__gmail__search_threads"><svg class="brand-icon"[^]*<b>Gmail<\/b><\/span><span class="tool-trace-object">for “unread threads”</);
 });
 
 test('rows read as finished sentences even while running; failures lead with Couldn\'t', () => {
-  assert.equal(describeTool(tool('Bash', { command: 'ls' }, { status: 'running' })).verb, 'Ran');
+  assert.equal(describeTool(tool('Bash', { command: 'ls' }, { status: 'running' })).verb, 'Listed');
   assert.equal(describeTool(tool('Read', { file_path: 'a' }, { status: 'running' })).verb, 'Read');
-  assert.equal(describeTool(tool('WebSearch', { query: 'q' }, { status: 'running' })).verb, 'Searched');
+  assert.equal(describeTool(tool('WebSearch', { query: 'q' }, { status: 'running' })).verb, 'Searched the web');
   assert.equal(describeTool(tool('Skill', { skill: 's' }, { status: 'running' })).verb, 'Loaded skill');
   assert.equal(describeTool(tool('Read', { file_path: 'a' }, { status: 'failed' })).verb, "Couldn't read");
   assert.equal(describeTool(tool('Skill', { skill: 's' }, { status: 'failed' })).verb, "Couldn't load skill");
@@ -76,21 +76,21 @@ test('rows read as finished sentences even while running; failures lead with Cou
 test('summaries pluralise, merge verbs and report running and failures', () => {
   const bash = tool('Bash', { command: 'ls' }), read = tool('Read', { file_path: 'a' });
   // Two counts at most, then `and N more`, so the folded summary stays on one line.
-  assert.equal(summarizeTools([bash, bash, bash, read, read, tool('Edit', {})]), 'Ran 3 commands, read 2 files and 1 more step');
-  assert.equal(summarizeTools([tool('Grep', {}), tool('WebSearch', {}), read, read, read]), 'Ran 2 searches and read 3 files');
-  // Completed calls lead; running and failed are counted apart. Only a live turn has running calls.
+  assert.equal(summarizeTools([bash, bash, bash, read, read, tool('Edit', {})]), 'Ran 3 commands, read 2 files and edited 1 file');
+  assert.equal(summarizeTools([tool('Grep', {}), tool('WebSearch', {}), read, read, read]), 'Ran 1 search, searched the web and read 3 files');
+  // Every call counts in the sentence; running and failed are tallied after it. Only a live turn has running calls.
   assert.equal(summarizeTools([{ ...bash, status: 'running' }, { ...bash, status: 'running' }], { live: true }), 'Running 2 commands…');
-  assert.equal(summarizeTools([{ ...bash, status: 'running' }, bash], { live: true }), 'Ran 1 command · 1 running');
+  assert.equal(summarizeTools([{ ...bash, status: 'running' }, bash], { live: true }), 'Ran 2 commands · 1 running');
   // A saved record stuck at `running` still reads as finished.
   assert.equal(summarizeTools([{ ...bash, status: 'running' }, bash]), 'Ran 2 commands');
   assert.equal(summarizeTools([bash, { ...read, status: 'failed' }]), 'Ran 1 command · 1 failed');
-  assert.equal(summarizeTools([{ ...read, status: 'failed' }, { ...bash, status: 'failed' }]), "Couldn't read 1 file and couldn't run 1 command · 2 failed");
-  assert.equal(summarizeTools([bash, { ...bash, status: 'running' }, { ...read, status: 'failed' }], { live: true }), 'Ran 1 command · 1 running · 1 failed');
+  assert.equal(summarizeTools([{ ...read, status: 'failed' }, { ...bash, status: 'failed' }]), "Couldn't read 1 file and couldn't run 1 command");
+  assert.equal(summarizeTools([bash, { ...bash, status: 'running' }, { ...read, status: 'failed' }], { live: true }), 'Ran 2 commands · 1 running · 1 failed');
   assert.equal(summarizeTools([undefined]), 'Used 1 tool');
   assert.equal(summarizeTools([tool('TodoWrite', {})]), 'Updated the plan');
   const brief = ['mcp__slack__search_messages', 'mcp__granola__get_meetings', 'mcp__gmail__search_threads', 'mcp__github__list_pull_requests', 'mcp__linear__list_issues'].map(name => tool(name, {}));
   assert.equal(summarizeTools(brief), 'Ran 2 searches and read 3 sources');
-  assert.equal(summarizeTools([...brief, read]), 'Ran 2 searches, read 3 sources and 1 more step');
+  assert.equal(summarizeTools([...brief, read]), 'Ran 2 searches, read 3 sources and 1 file');
   assert.equal(summarizeTools([{ ...brief[0], status: 'running' }, { ...brief[1], status: 'running' }], { live: true }), 'Running 1 search and reading 1 source…');
   const marks = summaryIcons(brief);
   assert.equal(marks.length, 3);
@@ -196,10 +196,10 @@ test('PandaCode rows read as sentences', () => {
     return [t.verb, t.chip?.label, t.object].filter(Boolean).join(' ');
   };
   assert.equal(row('mcp__pandacode_architect__pandacode_dispatch_workers', { assignments: [{}, {}, {}] }), 'Dispatched 3 workers');
-  assert.equal(row('pandacode_send_team_message', { recipient: 'worker-2', message: 'hi' }), 'Sent message to worker-2');
-  assert.equal(row('pandacode_vm_screenshot', { name: 'macos-vm' }), 'Took screenshot of macos-vm');
-  assert.equal(row('pandacode_vm_screenshot', { name: 'macos-vm' }, '', 'running'), 'Took screenshot of macos-vm');
-  assert.equal(row('pandacode_design_write', { name: 'Login.html', html: '<p>\n</p>' }), 'Wrote artboard Login 2 lines');
+  assert.equal(row('pandacode_send_team_message', { recipient: 'worker-2', message: 'hi' }), 'Messaged worker-2');
+  assert.equal(row('pandacode_vm_screenshot', { name: 'macos-vm' }), 'Took a screenshot of macos-vm');
+  assert.equal(row('pandacode_vm_screenshot', { name: 'macos-vm' }, '', 'running'), 'Took a screenshot of macos-vm');
+  assert.equal(row('pandacode_design_write', { name: 'Login.html', html: '<p>\n</p>' }), 'Wrote artboard Login · 2 lines');
   assert.equal(row('pandacode_cloud_cli', { tool: 'wrangler', args: 'deploy' }), 'Ran wrangler deploy');
   assert.equal(row('pandacode_open_browser', { url: 'http://127.0.0.1:1420/' }), 'Opened preview :1420');
   assert.equal(row('pandacode_open_browser', { url: 'https://example.com/x' }), 'Opened example.com');
@@ -208,10 +208,10 @@ test('PandaCode rows read as sentences', () => {
   assert.equal(row('pandacode_vm_manage', { action: 'create', name: 'box', image: 'ubuntu' }), 'Created box from ubuntu');
   assert.equal(row('pandacode_vm_manage', { action: 'create', name: 'fedora-box', image: 'fedora' }, 'No disk', 'failed'), "Couldn't create fedora-box from fedora");
   assert.equal(row('pandacode_track_files', { action: 'complete', paths: ['a', 'b', 'c'] }), 'Tracked 3 files');
-  assert.equal(row('pandacode_track_files', { action: 'begin', paths: ['a'] }, '', 'running'), 'Tracking changes to 1 file');
+  assert.equal(row('pandacode_track_files', { action: 'begin', paths: ['a'] }, '', 'running'), 'Tracked changes to 1 file');
   assert.equal(row('pandacode_pin_task', { taskId: 'abc', pinned: false }), 'Unpinned abc');
-  assert.equal(row('pandacode_track_files', { action: 'begin', paths: ['a', 'b'] }), 'Tracking changes to 2 files');
-  assert.equal(row('pandacode_code_search', { query: 'icon(' }), 'Searched code for icon(');
+  assert.equal(row('pandacode_track_files', { action: 'begin', paths: ['a', 'b'] }), 'Tracked changes to 2 files');
+  assert.equal(row('pandacode_code_search', { query: 'icon(' }), 'Searched code for “icon(”');
   assert.equal(row('pandacode_read_team_mailbox', {}, '{"messages":[{"message":"x"}]}'), 'Checked mailbox · 1 message');
   assert.equal(row('Task', { subagent_type: 'Explore', description: 'Find callers' }), 'Started Explore Find callers');
   assert.deepEqual(summaryIcons([tool('pandacode_vm_list', {}), tool('pandacode_design_list', {})]), [icon('monitor'), icon('sketch')]);
@@ -324,14 +324,15 @@ test('cards do not repeat the row, and full data appears only when the card is p
 
 test('summaries keep finished work in past tense, name PandaCode families and count nonzero exits', () => {
   const bash = tool('Bash', { command: 'ls' });
-  assert.equal(summarizeTools([bash, { ...bash, status: 'running' }], { live: true }), 'Ran 1 command · 1 running');
-  assert.equal(summarizeTools([tool('pandacode_send_team_message', {}), tool('pandacode_read_team_mailbox', {}), tool('pandacode_vm_list', {})]), 'Coordinated 2 team steps and operated 1 VM action');
+  assert.equal(summarizeTools([bash, { ...bash, status: 'running' }], { live: true }), 'Ran 2 commands · 1 running');
+  assert.equal(summarizeTools([tool('pandacode_send_team_message', {}), tool('pandacode_read_team_mailbox', {}), tool('pandacode_vm_list', {})]), 'Coordinated with the team twice and used the VM');
   assert.equal(summarizeTools([tool('pandacode_cloud_cli', {}), bash]), 'Ran 1 cloud command and 1 command');
   const failing = tool('Bash', { command: 'npm test' }, { output: 'Exit code: 1\nOutput:\nfail' });
-  assert.equal(summarizeTools([failing, bash]), 'Ran 1 command · 1 failed');
+  assert.equal(summarizeTools([failing, bash]), 'Ran tests and 1 other command · 1 failed');
   const trace = describeTool(failing);
-  assert.equal(trace.exit, 1);
-  assert.match(traceRowHtml(trace), /is-failed">exit 1</);
+  // `Tests failed` already says it: no exit badge.
+  assert.equal(trace.exit, undefined);
+  assert.doesNotMatch(traceRowHtml(trace), /exit 1/);
   assert.match(renderToolActivity({ id: '1', ...failing }, 'k'), /data-tool-failed/);
   assert.ok(!renderToolActivity({ id: '1', ...bash, output: 'Exit code: 0\nOutput:\nok' }, 'k').includes('data-tool-failed'));
 });
@@ -363,7 +364,124 @@ test('subagent cards: compact while running, result first with the prompt behind
 test('vm_exec rows name their machine; created tasks keep the input description', async () => {
   const { toolPreview } = await import('../src/tool-trace.ts');
   const vm = describeTool(tool('pandacode_vm_exec', { name: 'ubuntu-dev', command: 'uname -a' }));
-  assert.equal(vm.object, '-a · on ubuntu-dev');
+  assert.equal(vm.object, '· on ubuntu-dev');
   const created = toolPreview(tool('pandacode_create_task', { title: 'Polish', description: 'Tighten the onboarding copy' }, { output: JSON.stringify({ task: { id: 't1', title: 'Polish' } }) }));
   assert.match(created, /Tighten the onboarding copy/);
+});
+
+// --- Row wording pass: hook refusals, diff gutters, quotes, Codex web actions, OpenCode titles ---------------------------
+import { readFileSync } from 'node:fs';
+import { notRunParts } from '../src/tool-trace-shell.ts';
+const rowText = trace => traceRowHtml(trace).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+const failedBash = (command, output) => tool('Bash', { command }, { status: 'failed', output });
+
+test('a Claude Code PreToolUse hook refusal reads Blocked, names the refused command and is no failure', () => {
+  const hook = failedBash('git commit -m "fix: x"', 'PreToolUse:Bash hook error: [~/.claude/hooks/guard.sh]: Blocked: commits need a review first');
+  const trace = describeTool(hook);
+  assert.equal(trace.verb, 'Blocked:');
+  assert.equal(trace.blocked, true);
+  assert.equal(trace.chip?.label, 'git');
+  assert.match(trace.object, /^commit -m/);
+  assert.equal(summarizeTools([hook, tool('Bash', { command: 'ls' })]), 'Ran 1 command · 1 blocked');
+  const card = toolPreview(hook);
+  assert.match(card, /commits need a review first/i);
+  assert.doesNotMatch(card, /PreToolUse|guard\.sh/);
+  const blockedEdit = tool('Edit', { file_path: '/repo/a.ts', old_string: 'a', new_string: 'b' }, { status: 'failed', output: '<tool_use_error>PreToolUse:Edit hook blocked this edit: generated file</tool_use_error>' });
+  assert.equal(describeTool(blockedEdit).verb, 'Blocked: edit');
+  assert.equal(summarizeTools([blockedEdit]), 'Blocked 1 call');
+});
+
+test('diff and code gutters size to their widest line number', () => {
+  const diff = 'diff --git a/src/main.ts b/src/main.ts\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -3413,3 +3413,4 @@\n a\n-b\n+c\n+d\n e';
+  const card = toolPreview(tool('Bash', { command: 'git diff src/main.ts' }, { output: diff }));
+  assert.match(card, /<pre class="tc-diff" data-digits="4"/);
+  const small = toolPreview(tool('Bash', { command: 'git diff a.ts' }, { output: diff.replace(/3413/g, '12') }));
+  assert.doesNotMatch(small, /data-digits/);
+  const css = readFileSync(new URL('../src/tool-cards.css', import.meta.url), 'utf8');
+  assert.match(css, /\[data-digits="4"\]\{--tc-gutter:4\.4ch\}/);
+  assert.match(css, /grid-template-columns:var\(--tc-gutter\) var\(--tc-gutter\)/);
+});
+
+test('`+N more commands` gives way only after the object; folded tallies carry their separator apart so a wrapped one never starts with ·', () => {
+  const css = readFileSync(new URL('../src/tool-trace.css', import.meta.url), 'utf8');
+  assert.match(css, /\.tool-trace-more-steps\{flex:0 \d+ auto;min-width:0;overflow:hidden;text-overflow:ellipsis/);
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /<span class="tool-group-sep"/);
+});
+
+test('a compound diff never repeats its verb in a chip', () => {
+  const trace = describeTool(tool('Bash', { command: 'git diff src/main.ts; git status' }));
+  assert.equal(trace.verb, 'Diffed');
+  assert.notEqual(trace.chip?.label, 'git diff');
+  assert.equal(trace.chip?.label, 'main.ts');
+});
+
+test('timeouts read a clean duration and a capitalized doing', () => {
+  const trace = describeTool(failedBash('npm test', 'Command timed out after 2m 0.0s'));
+  assert.equal(trace.verb, 'Timed out after 2m · Running tests…');
+  assert.equal(describeTool(failedBash('npm test', 'Command timed out after 45.0s')).verb, 'Timed out after 45s · Running tests…');
+  assert.equal(describeTool(failedBash('npm test', 'Command timed out after 1m 30.4s')).verb, 'Timed out after 1m 30s · Running tests…');
+});
+
+test('a program the shell could not find reads `Couldn\'t start [x]` with no exit badge, in every harness', () => {
+  const codex = tool('Command', "/bin/zsh -lc 'pnpm install'\nWorking directory: /repo", { output: 'Exit code: 127\nOutput:\nzsh:1: command not found: pnpm' });
+  for (const call of [codex, failedBash('pnpm install', 'Exit code 127\n(eval):1: command not found: pnpm')]) {
+    const trace = describeTool(call);
+    assert.equal(trace.verb, "Couldn't start");
+    assert.equal(trace.chip?.label, 'pnpm');
+    assert.equal(trace.exit, undefined);
+  }
+});
+
+test('summaries name failed edits in the sentence', () => {
+  const failedEdit = tool('Edit', { file_path: '/repo/a.ts', old_string: 'x', new_string: 'y' }, { status: 'failed', output: '<tool_use_error>String to replace not found in file.</tool_use_error>' });
+  assert.equal(summarizeTools([tool('Bash', { command: 'ls' }), failedEdit]), "Ran 1 command and couldn't edit 1 file");
+  assert.equal(summarizeTools([tool('Bash', { command: 'ls' }), failedEdit, failedBash('git push', 'Exit code 1\nrejected')]), "Ran 1 command and couldn't edit 1 file · 1 failed");
+});
+
+test('shell searches chip their location like Grep; web queries and commit messages read with curly quotes', () => {
+  const rg = describeTool(tool('Bash', { command: 'rg -n "foo" src-tauri/src' }, { output: 'a.rs:1:foo' }));
+  assert.equal(rg.chip?.label, 'src-tauri/src');
+  assert.equal(rg.chipLast, true);
+  assert.equal(rg.object, 'for “foo” in');
+  assert.equal(rowText(describeTool(tool('WebSearch', { query: 'tauri "drag drop" macos' }))), 'Searched the web for “tauri "drag drop" macos”');
+  assert.equal(describeTool(tool('Bash', { command: 'git commit -m "fix: the thing"' }, { output: '[main abc] fix' })).chip?.label, '“fix: the thing”');
+});
+
+test('a Devin edit cut before its new text labels what it shows as Before', () => {
+  const devin = tool('Edit file', `/repo/src/a.css\n--- Before\n.a { color: red; }\n${'x'.repeat(4000)}`);
+  assert.match(toolPreview(devin), /Before \(after was not recorded\)/);
+});
+
+test('a screenshot names its device before the thumbnail', () => {
+  const shot = describeTool(tool('mcp__pandacode_architect__pandacode_simulator_screenshot', { udid: 'Simulator', path: '/tmp/sim2.png' }, { output: 'Saved' }));
+  const html = traceRowHtml(shot);
+  assert.ok(html.indexOf('tool-trace-chip') < html.indexOf('tool-trace-image'), html);
+});
+
+test('Codex web_search actions read what they did', () => {
+  const web = action => describeTool(tool('web_search', { action }));
+  assert.equal(rowText(web({ type: 'openPage', url: 'https://example.com/path' })), 'Opened example.com /path');
+  assert.equal(rowText(web({ type: 'findInPage', url: 'https://example.com/path', pattern: 'foo' })), 'Searched example.com for “foo”');
+  assert.equal(rowText(web({ type: 'search', queries: ['q1', 'q2'] })), 'Searched the web for “q1” +1 more query');
+  assert.equal(rowText(web({ type: 'search', query: 'q' })), 'Searched the web for “q”');
+  assert.equal(rowText(describeTool(tool('webSearch', ''))), 'Searched the web');
+});
+
+test('OpenCode title-named rows read as their tools', () => {
+  const t = (name, input, output = '') => rowText(describeTool(tool(name, input, { output })));
+  assert.equal(t('.flint-tests/game/index.html', { content: '<!DOCTYPE html>\n<html>' }, 'Wrote file successfully.'), 'Wrote index.html · 2 lines');
+  assert.equal(t('Loaded skill: using-superpowers', { name: 'using-superpowers' }, '<skill_content name="using-superpowers">'), 'Loaded skill using-superpowers');
+  const todos = Array.from({ length: 6 }, (_, i) => ({ content: `step ${i}`, status: 'pending', priority: 'high' }));
+  assert.equal(t('6 todos', { todos }), 'Updated the plan · 6 steps');
+  const task = t('List teammate IDs for coordination', { description: 'List teammate IDs for coordination', prompt: 'List all teammates', subagent_type: 'general' }, '<task id="ses_x" state="completed">');
+  assert.equal(task, 'Started general List teammate IDs for coordination');
+});
+
+test('a destructive step that never ran (notRun) reads Didn\'t …, without the destructive badge', () => {
+  const parts = notRunParts({ notRun: true, verb: 'Deleted', destructive: true }, { nonzero: true, code: 1, output: '' });
+  assert.equal(parts?.verb, "Didn't delete");
+  assert.equal(parts?.destructive, undefined);
+  assert.equal(parts?.exit, 1);
+  assert.equal(notRunParts({ verb: 'Deleted', destructive: true }, { nonzero: true, code: 1, output: '' }), undefined);
 });

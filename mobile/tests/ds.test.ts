@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lastActiveLabel } from '../src/ui/ds/when.ts';
 import { STAGGER_CAP, springParams, staggerDelay } from '../src/ui/ds/motion-math.ts';
-import { alpha, contrast, edgeGradient, mix, paletteFor, type Scheme } from '../src/ui/ds/palette.ts';
+import { alpha, contrast, edgeGradient, mix, paletteFor, VIEWER, type Scheme } from '../src/ui/ds/palette.ts';
 
 const AA = 4.5;
 
@@ -91,4 +91,11 @@ test('Increase Contrast drops shadows and turns hairlines solid', () => {
     assert.equal(colors.shadowCard, undefined);
     assert.ok(colors.border.startsWith('#'));
   }
+});
+
+test('image viewers: white text reads on the black page and on the dimmed chrome over a white image', () => {
+  assert.ok(contrast(VIEWER.text, VIEWER.page) >= AA);
+  // The chrome is translucent: over the brightest image it is the chrome mixed onto white.
+  assert.ok(contrast(VIEWER.text, mix(VIEWER.page, 0.55, '#ffffff')) >= 3);
+  assert.match(VIEWER.chrome, /^rgba\(0, 0, 0, 0\.55\)$/);
 });

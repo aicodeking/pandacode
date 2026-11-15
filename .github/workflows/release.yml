@@ -36,14 +36,22 @@ jobs:
         run: |
           # Only push runs on main count: a pull request or branch run of the same commit
           # did not test what main ships.
-          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
-            --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url)
+          lookup_failed="::error::The CI lookup for $GITHUB_SHA failed: gh did not return a list of runs. This is usually a transient GitHub API problem; re-run this workflow."
+          if ! runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url); then
+            echo "$lookup_failed"
+            exit 1
+          fi
           if [ -z "$runs" ] || ! jq -e 'type == "array"' <<<"$runs" >/dev/null 2>&1; then
-            echo "::error::The CI lookup for $GITHUB_SHA failed: gh did not return a list of runs. This is usually a transient GitHub API problem; re-run this workflow."
+            echo "$lookup_failed"
             exit 1
           fi
           if [ "$(jq length <<<"$runs")" -eq 0 ]; then
             echo "::error::No CI run from a push to main found for $GITHUB_SHA. The commit must be on main and pushed; wait for its CI to pass before tagging (docs/releasing.md step 3)."
+            exit 1
+          fi
+          if ! jq -e '.[0] | type == "object"' <<<"$runs" >/dev/null 2>&1; then
+            echo "$lookup_failed"
             exit 1
           fi
           # gh lists the newest run first; that run decides. Read each field on its own:
@@ -51,6 +59,7 @@ jobs:
           status=$(jq -r '.[0].status // ""' <<<"$runs")
           conclusion=$(jq -r '.[0].conclusion // "" | if . == "" then "none" else . end' <<<"$runs")
           url=$(jq -r '.[0].url // ""' <<<"$runs")
+          run_id=$(jq -r '.[0].databaseId // ""' <<<"$runs")
           if [ "$status" != completed ]; then
             echo "::error::CI for $GITHUB_SHA is still ${status:-pending} ($url). Wait for it to pass, then re-run this workflow."
             exit 1
@@ -60,11 +69,11 @@ jobs:
               echo "CI passed for $GITHUB_SHA: $url"
               ;;
             cancelled)
-              echo "::error::CI for $GITHUB_SHA was cancelled ($url). Re-run CI for this commit (and push nothing newer to main until it completes), then re-run this workflow."
+              echo "::error::CI for $GITHUB_SHA was cancelled (run $run_id, $url). Re-run CI for this commit with 'gh run rerun $run_id' (and push nothing newer to main until it completes), then re-run this workflow."
               exit 1
               ;;
             *)
-              echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). Fix it in a new commit and release a higher version."
+              echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). If the failure was flaky or infrastructure (for example a job the runner never picked up), re-run its failed jobs with 'gh run rerun $run_id --failed' and re-run this workflow once that CI run is green; otherwise fix it in a new commit and release a higher version."
               exit 1
               ;;
           esac

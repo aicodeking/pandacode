@@ -148,6 +148,7 @@ fn key_with_disabled(
     json!({
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
+        "fastMode": super::claude_fast_mode(config),
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
         "disabledSkills": disabled,
@@ -512,6 +513,7 @@ mod tests {
             changed(|c| c.model = "claude-sonnet-5-5".into()),
             changed(|c| c.mode = "full".into()),
             changed(|c| c.reasoning_effort = Some("high".into())),
+            changed(|c| c.codex_settings = Some(json!({"serviceTier": "fast"}))),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
             key(&base, &[]),
@@ -529,7 +531,9 @@ mod tests {
         }
         // Relays, goals and skills always start cold.
         assert!(supported(&base));
-        assert!(!supported(&crate::providers::tests::config("glm")));
+        for relay in ["glm", "mimo", "alibaba"] {
+            assert!(!supported(&crate::providers::tests::config(relay)), "{relay}");
+        }
         assert!(!supported(&RunConfig { skill: Some(("review".into(), PathBuf::from("/skills/review"))), ..base.clone() }));
     }
 

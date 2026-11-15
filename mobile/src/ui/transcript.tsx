@@ -10,9 +10,10 @@ import { useLocal } from '../store/local.ts';
 import { reuseRows, turnRows, type TurnRow } from '../store/turns.ts';
 import { ThreadContext } from './Attachments.tsx';
 import { useColors } from './theme.ts';
-import { Button, EmptyState, geometry, Skeleton as Bone, type as textStyle } from './ds/index.ts';
+import { Button, EmptyState, geometry, Skeleton as Bone, type as textStyle, useMotion } from './ds/index.ts';
 import { ImageViewerHost } from './ImageViewer.tsx';
 import { Icon } from './Icon.tsx';
+import { FindContext, FindMark, type FindMarks } from './ThreadFind.tsx';
 import { FreshContext, IOS_27, LiveRun, Pending, Row, SentBubbles } from './transcript-rows.tsx';
 
 /** How far from the newest message (pt) before the jump-to-latest button shows. */
@@ -106,7 +107,10 @@ const ANCHOR = { minIndexForVisible: 0, autoscrollToTopThreshold: AWAY };
 // autoscrollToTopThreshold scrolls to offset 0, the oldest row in the chronological list; following
 // the newest is done by hand there (Transcript). minIndexForVisible skips the Older header by itself.
 const CHRONOLOGICAL_ANCHOR = { minIndexForVisible: 0 };
-const render = ({ item }: { item: TurnRow }) => <Row row={item} />;
+const render = ({ item }: { item: TurnRow }) => <FindMark id={item.id}><Row row={item} /></FindMark>;
+const NO_FIND: FindMarks = { hits: new Set() };
+/** A find jump that missed (the row wasn't measured yet) tries again once from the estimated offset. */
+const FIND_RETRY_MS = 120;
 
 /** Jumps to the newest message: offset 0 in the inverted list, the end of the chronological one.
  * The scroll view's own scrollToEnd, because FlatList's leaves out the padding that clears the composer. */
@@ -117,8 +121,10 @@ export function scrollToNewest(list: FlatList<TurnRow> | null, animated = true) 
 
 /** Newest at the bottom, the live run and unsent messages below the last stored message: an inverted
  * list, or on iOS 27 a chronological one (IOS_27). `onAway` hears only when the list crosses AWAY from the newest message. */
-export const Transcript = memo(function Transcript({ deviceId, sessionId, top, bottom, listRef, onAway }: {
+export const Transcript = memo(function Transcript({ deviceId, sessionId, top, bottom, listRef, onAway, find = NO_FIND }: {
   deviceId: string; sessionId: string; top: number; bottom: number; listRef?: RefObject<FlatList<TurnRow> | null>; onAway?: (away: boolean) => void;
+  /** Find in thread (ThreadFind.tsx): rows to mark, and the current match, which the list scrolls to. */
+  find?: FindMarks;
 }) {
   const messages = useMessages(deviceId, sessionId);
   const ownRef = useRef<FlatList<TurnRow>>(null);
@@ -163,6 +169,22 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
     onAway?.(away);
   }, [onAway]);
   const thread = useMemo(() => ({ deviceId, sessionId }), [deviceId, sessionId]);
+  // Find (and a search hit's jump): brings the current match to the middle of the window, in either
+  // list direction; with Reduce Motion it's there at once.
+  const { reduced } = useMotion();
+  const target = find.current;
+  const index = target ? data.findIndex(row => row.id === target) : -1;
+  useEffect(() => {
+    if (index < 0) return;
+    // Reading a match is reading away from the newest: the chronological list must not pull back.
+    following.current = false;
+    dragged.current = true;
+    list.current?.scrollToIndex({ index, viewPosition: 0.5, animated: !reduced });
+  }, [index, target, list, reduced]);
+  const onScrollToIndexFailed = ({ index: missed, averageItemLength }: { index: number; averageItemLength: number }) => {
+    list.current?.scrollToOffset({ offset: averageItemLength * missed, animated: false });
+    setTimeout(() => list.current?.scrollToIndex({ index: missed, viewPosition: 0.5, animated: !reduced }), FIND_RETRY_MS);
+  };
   const older = <Older deviceId={deviceId} sessionId={sessionId} onRetry={onOlder} />;
   const newest = <><History deviceId={deviceId} sessionId={sessionId} empty={!messages.length} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before /><LiveRun deviceId={deviceId} sessionId={sessionId} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before={false} /><Pending deviceId={deviceId} sessionId={sessionId} /></>;
   const direction = IOS_27 ? {
@@ -198,6 +220,7 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
       keyboardDismissMode="interactive"
       keyboardShouldPersistTaps="handled"
       onScroll={onScroll}
+      onScrollToIndexFailed={onScrollToIndexFailed}
       scrollEventThrottle={100}
       initialNumToRender={IOS_27 ? CHRONOLOGICAL_FIRST_RENDER : 10}
       maxToRenderPerBatch={8}
@@ -209,8 +232,10 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
   return (
     <ThreadContext.Provider value={thread}>
     <FreshContext.Provider value={fresh}>
+    <FindContext.Provider value={find}>
     <ImageViewerHost />
     {ScrollViewMarker ? <ScrollViewMarker scrollEdgeEffects={NO_EDGE_EFFECTS} style={styles.fill}>{listView}</ScrollViewMarker> : listView}
+    </FindContext.Provider>
     </FreshContext.Provider>
     </ThreadContext.Provider>
   );

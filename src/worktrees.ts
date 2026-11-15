@@ -3,6 +3,7 @@ import { escape, icon } from './dom';
 import { toned } from './approval-modes';
 import { githubEnabled } from './github';
 import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
+import { errorText } from './error-text';
 
 /* One branch control for every task. The chip above the prompt names the checkout
  * and opens the only worktree menu; dialogs convert an unstarted task in place,
@@ -14,6 +15,7 @@ export type WorktreeHost = {
   modal(title: string, body: string, cls?: string): HTMLDialogElement;
   closeModal(): void;
   notify(text: string): void;
+  notifyError?(text: string): void;
   showChoices(anchor: HTMLElement, options: { title: string; items: ChoiceItem[]; actions?: boolean; width?: number; onSelect: (id: string) => void | Promise<void> }): Promise<void>;
   session(): Session | undefined;
   project(): Project | undefined;
@@ -137,7 +139,7 @@ export function createWorktrees(host: WorktreeHost) {
       // Refresh once the menu has closed: an open menu keeps the context bar from redrawing its chip.
       window.setTimeout(() => void host.branchChanged(), 0);
     } catch (cause) {
-      host.notify(`Couldn’t switch branches: ${cause instanceof Error ? cause.message : String(cause)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t switch branches: ${errorText(cause)}`);
     }
   }
 
@@ -247,7 +249,7 @@ export function createWorktrees(host: WorktreeHost) {
     try {
       merged = await host.call<WorktreeMerge>('merge_worktree', { sessionId: session.id });
     } catch (cause) {
-      host.notify(`Couldn’t merge: ${cause instanceof Error ? cause.message : String(cause)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t merge: ${errorText(cause)}`);
       return;
     }
     const moved = merged.switchedFrom ? ` (the project checkout moved from ${merged.switchedFrom})` : '';

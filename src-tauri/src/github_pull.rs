@@ -1,11 +1,20 @@
 //! A task's pull request: the detail view in the inspector, its diff, the PR an
 //! agent opened during a turn, and manual linking. Everything runs through the
 //! signed-in `gh` from the task's checkout, like the rest of `github.rs`.
+//!
+//! Each entry point has an `_as` variant taking the caller's [`Trust`]: the desktop keeps
+//! `Trust::Desktop` through the plain names, and every PandaConnect path passes
+//! `Trust::phone(full_access)` so the `git` that `gh` runs in the checkout gets the hardened
+//! environment while "Full access for remote tasks" is off (docs/remote-access.md, Round-9 gates).
+//! The `_as` variants also take the repository to pin (`owner/name`, passed as `--repo=…`):
+//! phone paths must give one ([`pinned_repo`]), so in a fork checkout `gh` never picks
+//! `upstream` or a `gh-resolved` remote (Round 21); the desktop passes `None`.
 use serde::Serialize;
 use std::{path::Path, time::Duration};
 
-use crate::github::{excerpt, json, names, run_gh, state_of, text, view, Repository, TIMEOUT};
+use crate::github::{excerpt, flag, json, names, run_gh_as, state_of, text, view_in_as, Repository, TIMEOUT};
 use crate::storage::TaskLink;
+use crate::workspace::Trust;
 
 const DETAIL_FIELDS: &str = "number,title,body,state,isDraft,url,author,baseRefName,headRefName,additions,deletions,changedFiles,createdAt,updatedAt,mergedAt,mergeable,reviewDecision,labels,statusCheckRollup,files,commits,comments,reviews";
 const LINK_FIELDS: &str = "number,title,state,url,isDraft,headRefName,createdAt";
@@ -192,13 +201,67 @@ pub fn parse_detail(value: &serde_json::Value) -> Result<PullDetail, String> {
     })
 }
 
+/// Refused when a phone's pull request call has no GitHub repository to pin.
+pub(crate) const NO_GITHUB_REMOTE: &str = "This project has no GitHub remote.";
+
+/// The repository (`owner/name`) a phone's pull request call pins with `--repo=…`: the one in
+/// the task's pull request link when it names one, else the checkout's base repository as `gh`
+/// resolves it (Round 22, [`crate::github_hub::base_repo`]: the `gh-resolved` remote, then
+/// `upstream`, then `origin`; it runs no Git). Refused without either.
+pub(crate) fn pinned_repo(root: &Path, link_url: Option<&str>) -> Result<String, String> {
+    link_url.and_then(repo_of_pull_url).or_else(|| crate::github_hub::base_repo(root)).ok_or_else(|| NO_GITHUB_REMOTE.to_owned())
+}
+
+/// `owner/name` of a `https://github.com/owner/name/pull/12` URL.
+fn repo_of_pull_url(url: &str) -> Option<String> {
+    let (repo, rest) = url.trim().split_once("/pull/")?;
+    let number = rest.split(['/', '#', '?']).next()?;
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    crate::github_hub::repo_from_remote(repo)
+}
+
+/// The repository to pass: a phone (any [`Trust::Phone`]) must name one, so no phone path can
+/// leave `gh` to pick a remote; the desktop's `None` keeps its old behaviour.
+fn pin(repo: Option<&str>, trust: Trust) -> Result<Option<&str>, String> {
+    let repo = repo.map(str::trim).filter(|repo| !repo.is_empty());
+    if repo.is_none() && trust != Trust::Desktop {
+        return Err(NO_GITHUB_REMOTE.into());
+    }
+    Ok(repo)
+}
+
+/// `gh pr <command> <number> [extra…] [--repo=<repo>]`.
+fn pr_args(command: &str, number: i64, extra: &[&str], repo: Option<&str>) -> Vec<String> {
+    let mut args = vec!["pr".to_owned(), command.to_owned(), number.to_string()];
+    args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+    args.extend(repo.map(|repo| flag("repo", repo)));
+    args
+}
+
+fn gh_pr(root: &Path, args: &[String], timeout: Duration, trust: Trust) -> Result<crate::workspace::Capture, String> {
+    run_gh_as(root, &args.iter().map(String::as_str).collect::<Vec<_>>(), timeout, trust)
+}
+
 pub fn detail(root: &Path, number: i64) -> Result<PullDetail, String> {
-    parse_detail(&view(root, "pull", number, DETAIL_FIELDS)?)
+    detail_as(root, None, number, Trust::Desktop)
+}
+
+/// [`detail`] with the caller's trust, in repository `repo` (required for a phone).
+pub(crate) fn detail_as(root: &Path, repo: Option<&str>, number: i64, trust: Trust) -> Result<PullDetail, String> {
+    parse_detail(&view_in_as(root, pin(repo, trust)?, "pull", number, DETAIL_FIELDS, trust)?)
 }
 
 /// The PR's unified diff; a very large one is cut and flagged rather than refused.
 pub fn diff(root: &Path, number: i64) -> Result<PullDiff, String> {
-    let output = run_gh(root, &["pr", "diff", &number.to_string(), "--color=never"], Duration::from_secs(60))?;
+    diff_as(root, None, number, Trust::Desktop)
+}
+
+/// [`diff`] with the caller's trust, in repository `repo` (required for a phone).
+pub(crate) fn diff_as(root: &Path, repo: Option<&str>, number: i64, trust: Trust) -> Result<PullDiff, String> {
+    let args = pr_args("diff", number, &["--color=never"], pin(repo, trust)?);
+    let output = gh_pr(root, &args, Duration::from_secs(60), trust)?;
     Ok(PullDiff { patch: String::from_utf8_lossy(&output.bytes).into_owned(), truncated: output.truncated })
 }
 
@@ -263,6 +326,13 @@ fn belongs_to_turn(value: &serde_json::Value, branch: &str, turn_started: i64) -
 /// The PR a turn opened: mentioned in its output (newest first), and either on the
 /// checkout's branch or created after the turn began.
 pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
+    detect_as(root, repo, None, turn, branch, turn_started, Trust::Desktop)
+}
+
+/// [`detect`] with the caller's trust; each candidate is viewed in repository `pinned`
+/// (required for a phone).
+pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
+    let pinned = pin(pinned, trust)?;
     let mut candidates: Vec<i64> = Vec::new();
     for message in turn {
         for number in pull_numbers(message, &repo.name_with_owner).into_iter().rev() {
@@ -272,7 +342,7 @@ pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, tur
         }
     }
     for number in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view(root, "pull", number, LINK_FIELDS) else { continue };
+        let Ok(value) = view_in_as(root, pinned, "pull", number, LINK_FIELDS, trust) else { continue };
         if belongs_to_turn(&value, branch, turn_started) {
             return Ok(link_from(&value));
         }
@@ -280,9 +350,62 @@ pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, tur
     Ok(None)
 }
 
+/// Round 22: the phone's [`detect_as`] over every GitHub repository of the checkout (`repos`,
+/// from [`crate::github_hub::github_remotes`]): a pull request link in any of them is a
+/// candidate, newest mention first, and each lookup is pinned to the repository in its URL.
+/// Refused with no repository (no phone path leaves `gh` to pick one).
+pub(crate) fn detect_in_as(root: &Path, repos: &[String], turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
+    if repos.iter().all(|repo| repo.trim().is_empty()) {
+        return Err(NO_GITHUB_REMOTE.into());
+    }
+    let mut candidates: Vec<(&str, i64)> = Vec::new();
+    for message in turn {
+        for (repo, number) in pull_refs(message, repos).into_iter().rev() {
+            if !candidates.contains(&(repo, number)) {
+                candidates.push((repo, number));
+            }
+        }
+    }
+    for (repo, number) in candidates.into_iter().take(MAX_CANDIDATES) {
+        let Ok(value) = view_in_as(root, pin(Some(repo), trust)?, "pull", number, LINK_FIELDS, trust) else { continue };
+        if belongs_to_turn(&value, branch, turn_started) {
+            return Ok(link_from(&value));
+        }
+    }
+    Ok(None)
+}
+
+/// Pull request links to any of `repos` in `text`, in order of appearance.
+fn pull_refs<'a>(text: &str, repos: &'a [String]) -> Vec<(&'a str, i64)> {
+    let haystack = text.to_ascii_lowercase();
+    let mut found: Vec<(usize, &'a str, i64)> = Vec::new();
+    for repo in repos.iter().map(|repo| repo.trim()).filter(|repo| !repo.is_empty()) {
+        let needle = format!("github.com/{}/pull/", repo.to_ascii_lowercase());
+        for (start, _) in haystack.match_indices(&needle) {
+            if haystack[..start].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+                continue;
+            }
+            let digits: String = haystack[start + needle.len()..].chars().take_while(char::is_ascii_digit).take(9).collect();
+            if let Ok(number) = digits.parse::<i64>() {
+                if number > 0 {
+                    found.push((start, repo, number));
+                }
+            }
+        }
+    }
+    found.sort_by_key(|(start, ..)| *start);
+    found.into_iter().map(|(_, repo, number)| (repo, number)).collect()
+}
+
 /// Look a pull request up so a manual link carries its real title and state.
 pub fn lookup(root: &Path, number: i64) -> Result<TaskLink, String> {
-    let value = run_gh(root, &["pr", "view", &number.to_string(), "--json", LINK_FIELDS], TIMEOUT)
+    lookup_as(root, None, number, Trust::Desktop)
+}
+
+/// [`lookup`] with the caller's trust, in repository `repo` (required for a phone).
+pub(crate) fn lookup_as(root: &Path, repo: Option<&str>, number: i64, trust: Trust) -> Result<TaskLink, String> {
+    let args = pr_args("view", number, &["--json", LINK_FIELDS], pin(repo, trust)?);
+    let value = gh_pr(root, &args, TIMEOUT, trust)
         .map_err(|error| if error.to_ascii_lowercase().contains("could not resolve") { format!("Pull request #{number} was not found.") } else { error })?;
     link_from(&json(&value)?).ok_or_else(|| "GitHub returned an unexpected pull request.".into())
 }
@@ -300,14 +423,151 @@ pub fn merge_flag(method: &str) -> Result<&'static str, String> {
 /// Merge the pull request on GitHub, then read it back so the task's link shows it merged.
 /// Local branches and worktrees are left alone; GitHub's branch settings decide the rest.
 pub fn merge(root: &Path, number: i64, method: &str) -> Result<TaskLink, String> {
-    let flag = merge_flag(method)?;
-    run_gh(root, &["pr", "merge", &number.to_string(), flag], Duration::from_secs(60))?;
-    lookup(root, number)
+    merge_as(root, None, number, method, Trust::Desktop)
+}
+
+/// [`merge`] with the caller's trust. `gh pr merge` may run `git` in the checkout (it updates
+/// the local branch when it can), so a phone with the switch off is refused first when the
+/// checkout's config names a program or it has submodules, as for the phone's own merges.
+/// `repo` (required for a phone) pins the repository for the merge and the read-back.
+pub(crate) fn merge_as(root: &Path, repo: Option<&str>, number: i64, method: &str, trust: Trust) -> Result<TaskLink, String> {
+    let method_flag = merge_flag(method)?;
+    let repo = pin(repo, trust)?;
+    crate::workspace::refuse_untrusted_programs(root, trust)?;
+    gh_pr(root, &pr_args("merge", number, &[method_flag], repo), Duration::from_secs(60), trust)?;
+    lookup_as(root, repo, number, trust)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call's arguments: `rest` (after the opening parenthesis) up to its matching `)`.
+    fn call_args(rest: &str) -> &str {
+        let mut depth = 0usize;
+        for (at, c) in rest.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' if depth == 0 => return &rest[..at],
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        rest
+    }
+
+    /// Round 9: every PandaConnect path reaches a pull request with the phone's trust. The
+    /// plain names keep `Trust::Desktop`, so `remote/` must call only the `_as` variants, and
+    /// each of those calls must pass a trust.
+    #[test]
+    fn remote_code_reaches_pull_requests_only_with_a_trust() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.join("remote/host.rs"), src.join("remote/start.rs")];
+        for entry in std::fs::read_dir(src.join("remote/methods")).unwrap() {
+            files.push(entry.unwrap().path());
+        }
+        let mut checked = 0;
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let code = text.find("\n#[cfg(test)]\nmod tests {").map_or(text.as_str(), |end| &text[..end]);
+            let name = file.display().to_string();
+            for plain in ["detail", "diff", "detect", "lookup", "merge"] {
+                assert!(!code.contains(&format!("github_pull::{plain}(")), "{name} calls github_pull::{plain} with the desktop's trust");
+            }
+            for variant in ["detail_as(", "diff_as(", "detect_as(", "lookup_as(", "merge_as(", "detect_in_as("] {
+                let needle = format!("github_pull::{variant}");
+                for (at, _) in code.match_indices(&needle) {
+                    let args = call_args(&code[at + needle.len()..]);
+                    assert!(args.to_ascii_lowercase().contains("trust"), "{name}: github_pull::{variant}{args}) passes no Trust");
+                    assert!(!args.contains("Trust::Desktop"), "{name}: github_pull::{variant}{args}) passes the desktop's trust");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 4, "the scan found the phone's pull request calls ({checked})");
+    }
+
+    #[test]
+    fn a_merge_with_the_switch_off_refuses_a_checkout_that_names_a_program() {
+        let dir = std::env::temp_dir().join(format!("pandacode-pull-merge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap().success());
+        std::fs::write(dir.join(".gitmodules"), "[submodule \"x\"]\n\tpath = x\n\turl = https://example.com/x\n").unwrap();
+        // Refused before `gh` runs at all, so this needs no network or sign-in.
+        let refused = merge_as(&dir, Some("o/r"), 1, "squash", Trust::phone(false)).unwrap_err();
+        assert!(refused.contains("submodules"), "{refused}");
+        assert!(merge_as(&dir, Some("o/r"), 1, "bogus", Trust::phone(false)).unwrap_err().contains("squash"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 21: the phone's `task.pull`, `task.pullDiff`, `task.pullMerge` and
+    /// `task.pullDetect` pin the repository: from the task's link, else the project's origin;
+    /// without either they are refused before `gh` runs. The desktop's plain names are unchanged.
+    #[test]
+    fn phone_pull_requests_pin_the_repository() {
+        assert_eq!(pr_args("diff", 4, &["--color=never"], Some("o/r")), ["pr", "diff", "4", "--color=never", "--repo=o/r"]);
+        assert_eq!(pr_args("view", 4, &["--json", "url"], Some("o/r")), ["pr", "view", "4", "--json", "url", "--repo=o/r"]);
+        assert_eq!(pr_args("merge", 4, &["--squash"], Some("o/r")), ["pr", "merge", "4", "--squash", "--repo=o/r"]);
+        assert!(!pr_args("merge", 4, &["--squash"], None).iter().any(|arg| arg.starts_with("--repo")), "desktop calls are unchanged");
+        assert_eq!(pin(None, Trust::Desktop), Ok(None));
+        for trust in [Trust::phone(false), Trust::phone(true)] {
+            assert_eq!(pin(None, trust).unwrap_err(), NO_GITHUB_REMOTE);
+            assert_eq!(pin(Some("  "), trust).unwrap_err(), NO_GITHUB_REMOTE);
+            assert_eq!(pin(Some("o/r"), trust), Ok(Some("o/r")));
+        }
+        // Refused before any `gh` (no network or sign-in needed).
+        let dir = std::env::temp_dir().join(format!("pandacode-pull-pin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(diff_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(detail_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(lookup_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(merge_as(&dir, None, 1, "squash", Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        let repo = Repository { name_with_owner: "o/r".into(), default_branch: String::new(), url: String::new() };
+        assert_eq!(detect_as(&dir, &repo, None, &[], "", 0, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        // The link's repository wins; then the project's origin; else refused.
+        assert_eq!(pinned_repo(&dir, Some("https://github.com/up/stream/pull/12")), Ok("up/stream".into()));
+        assert_eq!(pinned_repo(&dir, Some("https://example.com/x")).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(pinned_repo(&dir, None).unwrap_err(), NO_GITHUB_REMOTE);
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap().success());
+        assert!(std::process::Command::new("git").args(["remote", "add", "origin", "git@github.com:me/fork.git"]).current_dir(&dir).status().unwrap().success());
+        assert_eq!(pinned_repo(&dir, None), Ok("me/fork".into()));
+        assert_eq!(pinned_repo(&dir, Some("https://github.com/me/fork/pull/x")), Ok("me/fork".into()), "a malformed link falls back to origin");
+        assert_eq!(pinned_repo(&dir, Some("https://github.com/up/stream/pull/3#top")), Ok("up/stream".into()));
+        // Round 22: a fork checkout pins what the desktop's `gh` resolves: `upstream`, unless a
+        // `gh-resolved` remote says otherwise; the link's repository still wins.
+        assert!(std::process::Command::new("git").args(["remote", "add", "upstream", "https://github.com/up/stream.git"]).current_dir(&dir).status().unwrap().success());
+        assert_eq!(pinned_repo(&dir, None), Ok("up/stream".into()));
+        assert_eq!(pinned_repo(&dir, Some("https://github.com/me/fork/pull/9")), Ok("me/fork".into()));
+        assert!(std::process::Command::new("git").args(["config", "remote.origin.gh-resolved", "base"]).current_dir(&dir).status().unwrap().success());
+        assert_eq!(pinned_repo(&dir, None), Ok("me/fork".into()));
+        assert_eq!(detect_in_as(&dir, &[], &[], "", 0, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        let repos = ["up/stream".to_owned(), "me/fork".to_owned()];
+        let text = "Opened https://github.com/me/fork/pull/7, then https://github.com/Up/Stream/pull/12 and notgithub.com/up/stream/pull/5 or https://github.com/other/x/pull/3";
+        assert_eq!(pull_refs(text, &repos), [("me/fork", 7), ("up/stream", 12)], "any remote's links, in order");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 21 source scan: every phone pull request call in `remote/` passes a pinned repo.
+    #[test]
+    fn remote_pull_request_calls_pass_a_pinned_repo() {
+        let host = include_str!("remote/host.rs");
+        let code = host.find("\n#[cfg(test)]\nmod tests {").map_or(host, |end| &host[..end]);
+        let mut checked = 0;
+        for variant in ["detail_as(", "diff_as(", "detect_as(", "lookup_as(", "merge_as("] {
+            let needle = format!("github_pull::{variant}");
+            for (at, _) in code.match_indices(&needle) {
+                let args = call_args(&code[at + needle.len()..]);
+                assert!(args.contains("Some(&repo)") || args.contains("Some(&pinned)"), "github_pull::{variant}{args}) pins no repository");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 3, "{checked}");
+        // Round 22: `task.pullDetect` looks in every GitHub remote, each lookup pinned to its URL's repo.
+        let detect = &code[code.find("github_pull::detect_in_as(").expect("task.pullDetect")..];
+        assert!(call_args(&detect["github_pull::detect_in_as(".len()..]).contains("&repos"));
+        assert!(code.contains("github_hub::github_remotes(&root)"));
+        assert!(code.matches("github_pull::pinned_repo(").count() >= 3, "the repo comes from the link or origin");
+    }
 
     #[test]
     fn merge_accepts_only_known_methods() {

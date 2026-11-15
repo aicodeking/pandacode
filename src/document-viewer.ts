@@ -96,7 +96,7 @@ function toolbar(kind: Kind, view: DocumentView, wrap: boolean, content: string)
 }
 
 /** Renders a file into the inspector: prose as a reading column (Rendered | Raw), code with line numbers. */
-export function renderDocument(host: HTMLElement, path: string, content: string, image?: ImageLoader): void {
+export function renderDocument(host: HTMLElement, path: string, content: string, image?: ImageLoader): () => void {
   const kind = kindOf(path);
   const view = kind === 'code' ? 'raw' : views.get(kind) ?? 'rendered';
   const wrap = wraps.get(kind) ?? kind !== 'code';
@@ -106,6 +106,13 @@ export function renderDocument(host: HTMLElement, path: string, content: string,
     : '<article class="doc-reader markdown"></article>';
   host.innerHTML = `<div class="document-viewer" data-kind="${kind}" data-view="${view}"${wrap ? ' data-wrap' : ''}>${toolbar(kind, view, wrap, content)}${body}</div>`;
   const viewer = host.firstElementChild as HTMLElement;
+  let disposed = false, disposeCode = () => {}, nextCleanup = () => {};
+  const cleanup = () => { disposed = true; disposeCode(); };
+  const code = viewer.querySelector<HTMLElement>('.code-preview');
+  if (code) void import('./diff-viewer').then(({ mountCodeFile }) => {
+    if (disposed || !code.isConnected) return;
+    return mountCodeFile(code, path, content.split('\n', LINE_LIMIT).join('\n'), wrap);
+  }).then(dispose => { if (dispose) { if (disposed) dispose(); else disposeCode = dispose; } }).catch(() => {});
   const reader = viewer.querySelector<HTMLElement>('.doc-reader.markdown');
   if (reader && RAW_HTML.test(withoutCode(content))) void renderHtmlDocument(reader, path, content, image).catch(() => markdown(reader, content));
   else if (reader) void markdown(reader, content);
@@ -116,6 +123,7 @@ export function renderDocument(host: HTMLElement, path: string, content: string,
     if (!target) return;
     if (target.dataset.docView) views.set(kind, target.dataset.docView as DocumentView);
     else wraps.set(kind, !wrap);
-    renderDocument(host, path, content, image);
+    cleanup(); nextCleanup = renderDocument(host, path, content, image);
   });
+  return () => { cleanup(); nextCleanup(); viewer.remove(); };
 }

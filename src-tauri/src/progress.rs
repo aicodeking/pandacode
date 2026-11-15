@@ -238,6 +238,7 @@ pub fn read_image(root: &Path, path: &str) -> Result<(Vec<u8>, &'static str)> {
     let file = options.open(&target).map_err(|_| format!("Could not open {path}; links are not followed."))?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() { return Err(format!("{path} is not a file.")); }
+    if hard_linked(&meta) { return Err(format!("{path} is hard-linked elsewhere; save the screenshot as its own file.")); }
     if meta.len() > MAX_IMAGE { return Err("Screenshots are limited to 8 MB.".into()); }
     let mut bytes = Vec::new();
     file.take(MAX_IMAGE + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -250,6 +251,22 @@ pub fn read_image(root: &Path, path: &str) -> Result<(Vec<u8>, &'static str)> {
     };
     if !sniffed { return Err(format!("{path} is not a valid .{ext} image.")); }
     Ok((bytes, ext))
+}
+
+/// Round 17: whether the opened file has another name (a hard link to `~/.ssh/id_rsa` or any
+/// file outside the checkout would otherwise be copied into progress history and on to a
+/// phone). Checked on the opened handle's metadata, so the name cannot be swapped in between.
+fn hard_linked(meta: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        meta.nlink() > 1
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        false
+    }
 }
 
 fn session_name(session_id: &str) -> Result<&str> {
@@ -555,6 +572,25 @@ mod tests {
         fs::write(t.0.join("real.png"), PNG).unwrap();
         std::os::unix::fs::symlink(t.0.join("real.png"), t.0.join("inside.png")).unwrap();
         for bad in ["leak.png", "dir/secret.png", "inside.png"] { assert!(read_image(&t.0, bad).is_err(), "{bad}"); }
+    }
+
+    /// Round 17: a hard link has no symlink to refuse, so the opened file's link count decides.
+    #[cfg(unix)]
+    #[test]
+    fn images_refuse_hard_links() {
+        let (t, outside) = (temp(), temp());
+        fs::write(outside.0.join("secret.png"), PNG).unwrap();
+        fs::hard_link(outside.0.join("secret.png"), t.0.join("shot.png")).unwrap();
+        let refused = read_image(&t.0, "shot.png").unwrap_err();
+        assert!(refused.contains("hard-linked"), "{refused}");
+        // Once the other name is gone, the file is its own again.
+        fs::remove_file(outside.0.join("secret.png")).unwrap();
+        assert_eq!(read_image(&t.0, "shot.png").unwrap(), (PNG.to_vec(), "png"));
+        let source = include_str!("progress.rs");
+        let body = &source[source.find("pub fn read_image(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let (opened, checked) = (body.find("let meta = file.metadata()").unwrap(), body.find("if hard_linked(&meta)").unwrap());
+        assert!(opened < checked && checked < body.find("read_to_end").unwrap(), "checked on the opened handle before reading");
     }
 
     #[test]

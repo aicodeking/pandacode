@@ -1,6 +1,7 @@
 import './theme-settings.css';
 import { escape, icon } from './dom';
 import { CLASSIC, SWATCHES, palette, type AccentChoice, type VsixTheme } from './palette';
+import { errorText } from './error-text';
 
 /* Colors: the accent (wallpaper, classic, a swatch or any color) and VS Code themes
  * imported from a .vsix or installed from Open VSX by extension ID. */
@@ -81,7 +82,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
   }
   async function load(): Promise<void> {
     try { themes = await options.call<VsixTheme[]>('themes_list'); }
-    catch (error) { say(error instanceof Error ? error.message : String(error)); }
+    catch (error) { say(errorText(error)); }
     if (!disposed) renderThemes();
   }
   async function added(promise: Promise<VsixTheme[]>, source: string): Promise<void> {
@@ -94,7 +95,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
       palette.setVsix(fresh[0]);
       say(`Added ${fresh.length === 1 ? fresh[0].name : `${fresh.length} themes from ${fresh[0].extension}`}. Using ${fresh[0].name}.`);
       renderThemes(); renderAccents();
-    } catch (error) { say(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { say(errorText(error)); }
     finally { busy = false; host.querySelectorAll<HTMLButtonElement>('.vsix-actions button').forEach(button => { button.disabled = false; }); }
   }
 
@@ -111,7 +112,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
         themes = themes.filter(theme => theme.id !== id);
         if (palette.vsix?.id === id) palette.setVsix(null);
         renderThemes(); renderAccents(); say('Theme removed.');
-      }).catch(error => say(error instanceof Error ? error.message : String(error)));
+      }).catch(error => say(errorText(error)));
       return;
     }
     if (target.closest('[data-colors="import"]')) {

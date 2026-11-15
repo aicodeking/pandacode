@@ -177,7 +177,7 @@ fn watch(app: tauri::AppHandle, session_id: String, path: PathBuf) {
         loop {
             ticks += 1;
             tokio::time::sleep(Duration::from_millis(700)).await;
-            let running = app.state::<crate::AppState>().agents.lock().is_ok_and(|agents| agents.contains_key(&session_id));
+            let running = crate::run_requests::lock_agents(&app.state::<crate::AppState>().agents).is_ok_and(|agents| agents.contains_key(&session_id));
             let status = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<Status>(&bytes).ok());
             if let Some(status) = status.filter(|status| last.as_ref() != Some(status)) {
                 let _ = super::update(&app, &session_id, |state| {

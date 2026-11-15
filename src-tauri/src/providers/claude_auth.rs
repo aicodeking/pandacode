@@ -41,6 +41,7 @@ pub(crate) const RELAY_SCRUB: &[&str] = &[
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ZAI_API_KEY",
     "MIMO_API_KEY",
+    "ALIBABA_TOKEN_PLAN_API_KEY",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -49,14 +50,20 @@ pub(crate) const RELAY_SCRUB: &[&str] = &[
 pub(crate) fn removed_environment(provider: &str) -> &'static [&'static str] {
     match provider {
         "claude" if crate::provider_settings::claude_connection_mode() == Mode::Subscription => OVERRIDES,
-        "glm" | "mimo" => RELAY_SCRUB,
+        "glm" | "mimo" | "alibaba" => RELAY_SCRUB,
         _ => &[],
     }
 }
 
+/// The variables `configure` removes from a Claude process in `mode`; usage
+/// checks read the launch environment through the same list.
+pub(crate) fn stripped(mode: Mode) -> &'static [&'static str] {
+    if mode == Mode::Subscription { OVERRIDES } else { &[] }
+}
+
 fn apply_mode(command: &mut Command, provider: &str, mode: Mode) {
-    if provider == "claude" && mode == Mode::Subscription {
-        for name in OVERRIDES { command.env_remove(name); }
+    if provider == "claude" {
+        for name in stripped(mode) { command.env_remove(name); }
     }
 }
 

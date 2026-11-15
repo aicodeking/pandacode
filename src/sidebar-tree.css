@@ -242,9 +242,8 @@ html[data-theme=dark] .choice-menu .choice-menu-option.choice-menu-segment[aria-
 .choice-menu-separator{flex:none;height:0;margin:4px 6px;background:none}
 .icon.icon-down{rotate:180deg}
 /* A toast that can be undone carries its Undo; ⌘Z does the same. */
-.toast-undo{flex:none;height:24px;margin:-4px -8px -4px 4px;padding:0 9px;border-radius:var(--radius-sm);font-size:var(--text-xs);font-weight:var(--weight-strong);color:var(--accent-ink);--press:.96}
-.toast-undo:hover{background:rgb(var(--accent-rgb) / .18);color:var(--text)}
-html[data-theme=dark] .toast-undo{color:var(--accent)}
+.toast-undo{flex:none;height:24px;margin:-4px -8px -4px 4px;padding:0 9px;border-radius:var(--radius-sm);font-size:var(--text-xs);font-weight:var(--weight-strong);color:var(--text);text-decoration:underline;text-underline-offset:2px;--press:.96}
+.toast-undo:hover{background:rgb(var(--accent-rgb) / .18)}
 
 /* Flat list: each row names its project after the title, while there is room. Titles come first:
    in a narrow sidebar only the project icon stays (the name is in the row's tooltip). */

@@ -11,6 +11,12 @@ type Options = {
   select?(file: MentionEntry): void;
 };
 type Token = { start: number; end: number; query: string };
+/** What one `refresh()` saw of the draft, and what `token()` then decided for it. Every field is a cheap read: the text and
+ * caret, the context, and the flags `token()` itself and the picker's guard look at (composition, focus, a disabled or
+ * read-only field, a dismissal). Nothing here reads layout, which is what a repeat event is spared. */
+type Read = { value: string; start: number; end: number; key: string; composing: boolean; focused: boolean; editable: boolean; dismissed: string };
+const sameRead = (a: Read, b: Read): boolean => a.value === b.value && a.start === b.start && a.end === b.end && a.key === b.key
+  && a.composing === b.composing && a.focused === b.focused && a.editable === b.editable && a.dismissed === b.dismissed;
 let pickerId = 0;
 
 /** Plain references survive draft edits and work across harnesses without loading file contents. */
@@ -58,14 +64,23 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
   const cache = new Map<string, { files: MentionEntry[]; at: number }>();
   let context = '', query: string | undefined, files: MentionEntry[] = [], active = '';
   let opened = false, disposed = false, composing = false, loading = false, dismissed = '';
+  let read: Read | undefined;
   let generation = 0, searchTimer = 0, positionFrame = 0, rowId = 0, error = '';
 
   function token(): Token | undefined {
     if (composing || textarea.disabled || textarea.readOnly || document.activeElement !== textarea) return;
+    // The picker only exists behind an `@`: a message without one never pays for the text scans mentionToken does, nor for
+    // the line-box measurement below, which reads layout. Upstream's order is kept — the token is parsed first, and only a
+    // token the draft really holds is checked against the box.
+    if (!textarea.value.includes('@')) return;
     const found = mentionToken(textarea);
     return found && textarea.getClientRects().length ? found : undefined;
   }
   function invalidate(): void { generation++; clearTimeout(searchTimer); searchTimer = 0; loading = false; query = undefined; }
+  /** Drops the remembered read of the draft for a close the draft cannot explain — a blur, a composition start, the
+   * composer going out of sight: the text, the caret and the context may all come back unchanged, so only a fresh read
+   * can decide to open again. */
+  function reread(): void { read = undefined; }
   function close(suppress = false): void {
     if (suppress) dismissed = textarea.value;
     invalidate();
@@ -82,7 +97,7 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
   function position(): void {
     positionFrame = 0;
     if (!opened) return;
-    if (!textarea.isConnected || !textarea.getClientRects().length) { close(); return; }
+    if (!textarea.isConnected || !textarea.getClientRects().length) { reread(); close(); return; }
     const viewport = window.visualViewport;
     const left = (viewport?.offsetLeft ?? 0) + 12, top = (viewport?.offsetTop ?? 0) + 12;
     const width = Math.max(0, (viewport?.width ?? innerWidth) - 24), height = Math.max(0, (viewport?.height ?? innerHeight) - 24);
@@ -155,10 +170,20 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
       if (!disposed && ticket === generation && key === options.contextKey()) { loading = false; render(); }
     }
   }
+  // One keystroke fires input, keyup and selectionchange against the same draft, and an event cannot decide differently
+  // from the last one unless one of the cheap reads in `read` moved: a repeat costs a comparison instead of a token scan,
+  // its line-box measurement and a render. Both paths are covered, not just the open one — a closed composer holding an
+  // `@` in an ordinary word or an email address scans once per keystroke, where every event used to. What the key cannot
+  // see is layout, and a close the draft cannot explain (blur, composition start, the composer hidden), so `reread()`
+  // drops it there: a panel closed by a blur still opens again on the refocus that restores the same text and caret.
   function refresh(): void {
     if (disposed) return;
     const key = options.contextKey();
     if (key !== context) { close(); context = key; cache.clear(); files = []; active = ''; error = ''; dismissed = ''; }
+    const now: Read = { value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd, key,
+      composing, focused: document.activeElement === textarea, editable: !textarea.disabled && !textarea.readOnly, dismissed };
+    if (read && sameRead(read, now)) return;
+    read = now;
     const current = key ? token() : undefined;
     if (!current || dismissed === textarea.value) { close(); return; }
     const entering = !opened;
@@ -214,8 +239,8 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
   textarea.addEventListener('input', input, { signal }); textarea.addEventListener('focus', input, { signal });
   textarea.addEventListener('keydown', keydown, { signal, capture: true });
   for (const name of ['click', 'keyup']) textarea.addEventListener(name, refresh, { signal });
-  textarea.addEventListener('blur', () => close(), { signal });
-  textarea.addEventListener('compositionstart', () => { composing = true; close(); }, { signal });
+  textarea.addEventListener('blur', () => { reread(); close(); }, { signal });
+  textarea.addEventListener('compositionstart', () => { composing = true; reread(); close(); }, { signal });
   textarea.addEventListener('compositionend', () => { composing = false; input(); }, { signal });
   document.addEventListener('selectionchange', refresh, { signal });
   document.addEventListener('pointerdown', event => {

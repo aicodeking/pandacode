@@ -1,11 +1,14 @@
 // Changed files, as in the desktop's changed-files tree: name, +/− counts, status chip, under flat
-// folder subheads. Used by Changes and the pull request; a row opens its diff.
+// folder subheads. Used by Changes and the pull request; a row opens its diff. `StageFiles` is Changes'
+// list for hosts with the git methods: a switch per file to stage it and, with `onDiscard`, a long press
+// (or the VoiceOver action) that offers Discard changes.
 import { router } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import Animated, { ReduceMotion, useAnimatedStyle, useSharedValue, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import type { StageRow } from '../store/git.ts';
 import { countParts } from '../store/pull-summary.ts';
-import { Card, Chip, CHROME_FONT_SCALE, EXIT_MS, springs, useMotion, useStagger, InnerCard, Row, type as text, type Tone } from './ds/index.ts';
+import { Card, Chip, CHROME_FONT_SCALE, EXIT_MS, springs, Toggle, useMotion, useStagger, InnerCard, Row, type as text, type Tone } from './ds/index.ts';
 import { groupByFolder } from './file-groups.ts';
 import { Icon } from './Icon.tsx';
 import { mono, useColors } from './theme.ts';
@@ -45,7 +48,7 @@ export interface ListedFile {
   note?: string;
 }
 
-type DiffTarget = { device: string; session: string; source: 'pull' | 'changes'; staged?: string };
+type DiffTarget = { device: string; session: string; source: 'pull' | 'changes' | 'turn'; staged?: string; turn?: string };
 
 function FileRow({ file, diff }: { file: ListedFile; diff: DiffTarget }) {
   const status = file.letter ? STATUS[file.letter] : undefined;
@@ -109,6 +112,44 @@ export function FileGroups({ files, diff, refreshed = 0 }: { files: readonly Lis
         </InnerCard>
       </Card>
     </Animated.View>
+  );
+}
+
+const STAGE_LABEL: Record<StageRow['stage'], string> = { all: 'Staged', none: 'Not staged', partial: 'Partly staged' };
+const DISCARD_ACTION = 'discard';
+const folderOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+
+/** Each changed file with its status and a switch that stages or unstages it; tapping the row opens its diff.
+ * `onDiscard` (only where the host serves git.discard) adds a long press and a VoiceOver action for it. */
+export function StageFiles({ rows, device, session, pending, disabled, onToggle, onDiscard }: {
+  rows: readonly StageRow[]; device: string; session: string; pending: ReadonlySet<string>; disabled?: boolean;
+  onToggle: (path: string, staged: boolean) => void; onDiscard?: (path: string) => void;
+}) {
+  const enter = useStagger();
+  const { layout, exit } = useMotion();
+  return (
+    <Card>
+      <InnerCard>
+        {rows.map((row, i) => {
+          const folder = folderOf(row.path);
+          // A partly staged file opens its unstaged half, the part still to decide on.
+          const staged = row.stage === 'all' ? '1' : '0';
+          const discard = onDiscard && !pending.has(row.path) ? () => onDiscard(row.path) : undefined;
+          return (
+            <Animated.View key={row.path} entering={enter(i)} exiting={exit} layout={layout}>
+              <Row title={row.path.slice(row.path.lastIndexOf('/') + 1)} subtitle={[folder, row.stage === 'partial' ? STAGE_LABEL.partial : ''].filter(Boolean).join(' · ') || undefined}
+                leading={<StatusChip letter={row.letter} />}
+                trailing={<Toggle value={row.stage !== 'none'} disabled={disabled || pending.has(row.path)} accessibilityLabel={`Stage ${row.path}`} onValueChange={value => onToggle(row.path, value)} />}
+                onPress={() => router.push({ pathname: '/diff', params: { device, session, source: 'changes', staged, path: row.path } })}
+                onLongPress={discard}
+                accessibilityActions={discard ? [{ name: DISCARD_ACTION, label: 'Discard changes' }] : undefined}
+                onAccessibilityAction={discard ? event => { if (event.nativeEvent.actionName === DISCARD_ACTION) discard(); } : undefined}
+                accessibilityHint={discard ? 'Shows the diff. Long press to discard its changes' : 'Shows the diff'} accessibilityLabel={`${row.path}, ${STAGE_LABEL[row.stage]}`} />
+            </Animated.View>
+          );
+        })}
+      </InnerCard>
+    </Card>
   );
 }
 

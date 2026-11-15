@@ -52,12 +52,12 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
         // Kimi: https://agentclientprotocol.com/protocol/v1/content#image-content
         images.push(match provider {
             "codex" => json!({"type":"localImage","path":path}),
-            "claude" | "glm" | "mimo" => json!({"type":"image","source":{
+            "claude" | "glm" | "mimo" | "alibaba" => json!({"type":"image","source":{
                 "type":"base64","media_type":"image/png","data":STANDARD.encode(&bytes)
             }}),
             // Cline's ACP prompt keeps only text blocks; its read_files tool opens images.
             "cline" => json!({"type":"text","text":super::cline::image_reference(path)}),
-            "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" | "devin" | "hermes" => {
+            "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" | "devin" | "hermes" | "cursor" => {
                 json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)})
             }
             // MSP TurnInputPart (`muse schema generate-ts`): an inline base64 image part.
@@ -109,7 +109,7 @@ mod tests {
         for provider in ["glm", "mimo", "opencode", "kilo", "antigravity", "grok"] {
             let blocks = load(provider, &paths).await.unwrap();
             assert_eq!(blocks[0]["type"], "image");
-            if matches!(provider, "glm" | "mimo") {
+            if matches!(provider, "glm" | "mimo" | "alibaba") {
                 assert_eq!(blocks[0]["source"]["media_type"], "image/png");
             } else {
                 assert_eq!(blocks[0]["mimeType"], "image/png");

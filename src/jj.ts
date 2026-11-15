@@ -2,6 +2,7 @@
 // and a short log. A non-colocated jj repo gets this panel instead of the Git one; a
 // colocated repo keeps the Git UI and shows `jjChip()` beside the branch. Native side: jj.rs.
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 
 export interface JjChange { changeId: string; commitId: string; description: string; bookmarks: string[]; author: string; when: string; conflict: boolean; empty: boolean; current: boolean; }
 export interface JjFile { status: string; path: string; }
@@ -13,6 +14,7 @@ export interface JjCallbacks {
   /** Show a file's patch (git format) in the inspector's diff viewer. */
   openDiff(path: string, patch: string): void;
   notify(message: string): void;
+  notifyError?(message: string): void;
   /** The status after an action, so the caller's copy stays current. */
   changed?(status: JjStatus): void;
 }
@@ -64,7 +66,7 @@ export function showJjPanel(container: HTMLElement, initial: JjStatus, callbacks
   };
   const loadLog = async () => {
     const key = keyOf(status);
-    try { log = await callbacks.call<JjChange[]>('jj_log', { ...context, limit: LOG_LIMIT }); cachedLog = { key, log }; } catch (error) { log = []; callbacks.notify(text(error)); }
+    try { log = await callbacks.call<JjChange[]>('jj_log', { ...context, limit: LOG_LIMIT }); cachedLog = { key, log }; } catch (error) { log = []; (callbacks.notifyError ?? callbacks.notify)(errorText(error)); }
     if (target.isConnected) draw();
   };
   const act = async (command: 'jj_describe' | 'jj_new' | 'jj_commit', message?: string) => {
@@ -74,7 +76,7 @@ export function showJjPanel(container: HTMLElement, initial: JjStatus, callbacks
       busy = false; log = null;
       // A new change starts with an empty description.
       target.innerHTML = jjPanelHtml(status, log); callbacks.changed?.(status); void loadLog();
-    } catch (error) { busy = false; draw(); callbacks.notify(text(error)); }
+    } catch (error) { busy = false; draw(); (callbacks.notifyError ?? callbacks.notify)(errorText(error)); }
   };
   target.onclick = event => {
     const button = (event.target as Element).closest<HTMLElement>('[data-jj]');
@@ -89,7 +91,7 @@ export function showJjPanel(container: HTMLElement, initial: JjStatus, callbacks
         void act('jj_commit', message); break;
       case 'diff': {
         const path = button.dataset.path ?? '';
-        callbacks.call<string>('jj_diff', { ...context, path }).then(patch => callbacks.openDiff(path, patch), error => callbacks.notify(text(error)));
+        callbacks.call<string>('jj_diff', { ...context, path }).then(patch => callbacks.openDiff(path, patch), error => (callbacks.notifyError ?? callbacks.notify)(errorText(error)));
         break;
       }
     }
@@ -99,4 +101,3 @@ export function showJjPanel(container: HTMLElement, initial: JjStatus, callbacks
   if (!log) void loadLog();
 }
 
-function text(error: unknown): string { return error instanceof Error ? error.message : String(error); }

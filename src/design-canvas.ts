@@ -1,5 +1,6 @@
 import './design-canvas.css';
 import { escape, icon } from './dom';
+import { errorText } from './error-text';
 
 /* The inspector's Design view: a pan/zoom canvas of the task's artboards
  * (`.pandacode/design/*.html`), each in a sandboxed iframe that runs no scripts.
@@ -13,6 +14,7 @@ export type DesignContext = { projectId: string; sessionId: string | null };
 export type DesignHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   /** The selected project and task, or null when none is open. */
   context(): DesignContext | null;
   /** Put a prompt in the composer without sending it. */
@@ -72,7 +74,6 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   let drag: { x: number; y: number; vx: number; vy: number; moved: boolean } | null = null;
 
   const args = (): Record<string, unknown> | null => { const c = host.context(); return c && { projectId: c.projectId, sessionId: c.sessionId }; };
-  const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
   function place(): void {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
     world.style.setProperty('--inverse', String(1 / view.z));
@@ -144,7 +145,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
       layout();
       if (!fitted && boards.length) { fitted = true; fit(); }
       say(boards.length ? '' : 'No artboards yet. Ask the agent to design a screen; it saves HTML artboards in .pandacode/design/.');
-    } catch (error) { say(failure(error)); }
+    } catch (error) { say(errorText(error)); }
     renderComments();
   }
   function say(text: string): void { empty.textContent = text; empty.hidden = !text; }
@@ -182,7 +183,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     const context = args();
     if (!context) return;
     try { await host.call('design_save_comments', { ...context, comments: next }); comments = next; }
-    catch (error) { host.notify(`Could not save design comments: ${failure(error)}`); }
+    catch (error) { (host.notifyError ?? host.notify)(`Could not save design comments: ${errorText(error)}`); }
     renderComments();
   }
 

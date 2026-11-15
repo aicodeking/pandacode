@@ -644,7 +644,7 @@ pub(crate) fn reconcile(app: &tauri::AppHandle) {
     if !links::on() {
         return;
     }
-    let running = app.state::<AppState>().agents.lock().map(|agents| agents.keys().cloned().collect()).unwrap_or_default();
+    let running = crate::run_requests::lock_agents(&app.state::<AppState>().agents).map(|agents| agents.keys().cloned().collect()).unwrap_or_default();
     match store(app).and_then(|db| Ok((recover_wakes(&db, &running)?, threads::unreported_parents(&db)?))) {
         Ok((links, parents)) => {
             links.into_iter().for_each(|session| wake_link(app, session));

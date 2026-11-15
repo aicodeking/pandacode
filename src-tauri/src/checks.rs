@@ -25,7 +25,7 @@ pub(crate) struct Plan {
 /// The npm `test` script when package.json declares one, otherwise `cargo
 /// check` for a Rust checkout. Nothing is invented beyond the manifests.
 pub(crate) fn plan(root: &Path) -> Option<Plan> {
-    if let Ok(package) = std::fs::read_to_string(root.join("package.json")) {
+    if let Some(package) = read_manifest(&root.join("package.json")) {
         let declares_test = serde_json::from_str::<Value>(&package)
             .ok()
             .is_some_and(|package| {
@@ -42,6 +42,31 @@ pub(crate) fn plan(root: &Path) -> Option<Plan> {
         return Some(Plan { name: "cargo check".into(), program: "cargo".into(), args: vec!["check".into()] });
     }
     None
+}
+
+/// Largest package.json [`plan`] reads.
+const MANIFEST_LIMIT: u64 = 1024 * 1024;
+
+/// A manifest's text, only when it is a regular file of at most [`MANIFEST_LIMIT`]. Round 23:
+/// the phone's `checks.plan` (View) reads it, and a FIFO named package.json once hung that read,
+/// so the open never blocks (`O_NONBLOCK`) and the type is checked on the opened handle.
+fn read_manifest(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MANIFEST_LIMIT {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MANIFEST_LIMIT).read_to_string(&mut text).ok()?;
+    Some(text)
 }
 
 /// Runs the checkout's declared check and reports the outcome as data for the
@@ -184,6 +209,28 @@ mod tests {
         let plan = Plan { name: "npm test".into(), program: "/nonexistent/pandacode-npm".into(), args: vec![] };
         let report = run(temp.path(), &plan).unwrap_err();
         assert!(report.contains("Could not start"), "{report}");
+    }
+
+    /// Round 23: a FIFO (or folder) named package.json is skipped, never read, so `checks.plan`
+    /// cannot hang on it.
+    #[test]
+    fn a_fifo_manifest_is_skipped_without_blocking() {
+        let temp = Scratch::new("fifo");
+        let root = temp.path();
+        let fifo = root.join("package.json");
+        let path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let (done, wait) = std::sync::mpsc::channel();
+        let scan = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(plan(&scan).map(|plan| plan.name));
+        });
+        assert_eq!(wait.recv_timeout(Duration::from_secs(5)).expect("plan did not hang"), None);
+        fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(plan(root).map(|plan| plan.name).as_deref(), Some("cargo check"), "falls through to Cargo.toml");
+        fs::remove_file(&fifo).unwrap();
+        fs::create_dir(&fifo).unwrap();
+        assert!(read_manifest(&fifo).is_none(), "a folder is not a manifest");
     }
 
     #[test]

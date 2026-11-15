@@ -237,3 +237,29 @@ test('the light meter warn fill clears 3:1 on its track for every accent, scene 
     }
   }
 });
+
+test('toast Undo text clears 4.5:1 on the glass toast, resting and hovered, in every scene and recorded theme', async () => {
+  const css = readFileSync(new URL('../src/sidebar-tree.css', import.meta.url), 'utf8');
+  assert.match(css, /\.toast-undo\{[^}]*;color:var\(--text\)/, 'Undo is drawn in the text colour, not an accent ink');
+  const { wallpaperAccents } = await import('../src/wallpaper-accents.ts');
+  const accents = ['#ffd43b', ...Object.values(wallpaperAccents)];
+  const glass = { light: '#fffefa', dark: '#222222' };
+  // The toast's fill is --glass-warm at 72% over whatever is behind it; the hover fill is the accent at 18% over that.
+  const check = (label, kind, text, backdrops, accentList) => {
+    for (const backdrop of backdrops) {
+      const resting = toHex(mix(rgb(backdrop), rgb(glass[kind]), 0.72));
+      assert.ok(ratio(text, resting) >= 4.5, `${label} on ${resting}: ${ratio(text, resting).toFixed(2)}`);
+      for (const accent of accentList) {
+        const hover = toHex(mix(rgb(resting), rgb(accent), 0.18));
+        assert.ok(ratio(text, hover) >= 4.5, `${label} hovered over accent ${accent}: ${ratio(text, hover).toFixed(2)}`);
+      }
+    }
+  };
+  // Darkest light scene and a white page; brightest dark scene and the darkest page.
+  check('light', 'light', '#242423', ['#dedfdf', '#ffffff'], accents);
+  check('dark', 'dark', '#e2e2e2', ['#343632', '#0e0e0e'], accents);
+  for (const theme of themes) {
+    const { tokens } = vsixTokens({ id: 'x', name: theme.name, extension: 'x', kind: theme.kind, colors: theme.colors });
+    check(theme.name, theme.kind === 'dark' ? 'dark' : 'light', tokens['--text'], [tokens['--bg']], [tokens['--accent']]);
+  }
+});

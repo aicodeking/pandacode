@@ -2,10 +2,32 @@
 // mirrors src-tauri/src/remote/client.rs.
 import { randomBytes, uuid } from './crypto.ts';
 
-export const METHODS = ['subscribe', 'tasks.list', 'providers.list', 'providers.models', 'task.start', 'task.messages', 'task.send', 'task.stop', 'task.steer', 'task.configure', 'approval.respond', 'input.respond', 'projects.icons',
-  'task.pull', 'task.pullDiff', 'task.pullMerge', 'task.pullDetect', 'task.changes', 'task.diff', 'bots.list', 'bot.thread', 'bot.message', 'bot.pause',
-  'task.attachment', 'task.workspaceImage', 'task.team', 'task.teamResume', 'task.workerMessages', 'task.startStatus', 'task.cancelStart'] as const;
-export type Method = (typeof METHODS)[number];
+/** The host's built-in methods (`METHODS` in src-tauri/src/remote/host.rs; tests/rpc.test.ts
+ * keeps them in sync) plus `host.hello`. Feature methods from the host's `methods/` registry are
+ * declared by their src/connect/api/<feature>.ts file with `registerMethods`, so this list never
+ * needs editing for them. */
+export const METHODS = ['subscribe', 'tasks.list', 'projects.icons', 'providers.list', 'providers.models', 'task.start', 'task.startStatus', 'task.cancelStart',
+  'task.messages', 'task.team', 'task.workerMessages', 'task.attachment', 'task.workspaceImage', 'task.send', 'task.stop', 'task.teamResume', 'task.steer',
+  'task.configure', 'approval.respond', 'input.respond', 'task.pull', 'task.pullDiff', 'task.pullMerge', 'task.pullDetect', 'task.changes', 'task.diff',
+  'bots.list', 'bot.thread', 'bot.message', 'bot.pause', 'image.put', 'batch', 'pair.redeem', 'host.hello'] as const;
+export type CoreMethod = (typeof METHODS)[number];
+/** A core method (autocompleted) or one a feature file registered. */
+export type Method = CoreMethod | (string & {});
+
+const METHOD_NAME = /^[a-z][A-Za-z0-9]*(\.[a-z][A-Za-z0-9]*)+$/;
+const known = new Set<string>(METHODS);
+
+/** Declares registry methods a feature file calls (src/connect/api/*.ts), once at module load;
+ * `request` refuses any method neither listed above nor registered. Returns the names, typed. */
+export function registerMethods<const T extends readonly string[]>(names: T): T {
+  for (const name of names) {
+    if (name.length > 64 || !METHOD_NAME.test(name)) throw new Error(`Invalid method name: ${name}`);
+    known.add(name);
+  }
+  return names;
+}
+
+export const isKnownMethod = (method: string) => known.has(method);
 
 export const TIMEOUT_MS = 20_000;
 /** The host's worst case for task.start is about 9.5 minutes; wait 3 minutes longer. */
@@ -22,6 +44,18 @@ export const maybeRan = (error: unknown) => {
   const message = error instanceof Error ? error.message : error;
   return message === TIMED_OUT || message === LOST;
 };
+/** A newer host's refusal of a request that waited too long in its queue: it never ran, and
+ * neither did an earlier copy with its `sendId` (that one is answered instead). */
+export const NOT_RUN = 'This request waited too long on the other computer and did not run. Try again.';
+/** An older host's refusal of a request that waited too long. This copy never ran, but an
+ * earlier copy with the same `sendId` may have, so a prompt refused this way may have gone. */
+export const DROPPED = 'This request waited too long on the other computer and was dropped. Try again.';
+/** Whether a prompt sent with a `sendId` (`task.send`, `task.steer`, `bot.message`) may have
+ * run despite this error: a lost reply, or an older host's queue expiry. */
+export const promptMaybeRan = (error: unknown) => {
+  const message = error instanceof Error ? error.message : error;
+  return maybeRan(error) || message === DROPPED;
+};
 /** An older desktop's answer to a method it doesn't have. */
 export const UNKNOWN_METHOD = 'Unknown method.';
 export const outdated = (computer: string) => `Update PandaCode on ${computer} to use this.`;
@@ -30,7 +64,7 @@ export const outdated = (computer: string) => `Update PandaCode on ${computer} t
 export interface Request { type: 'req'; id: string; method: Method; params: unknown; ts: number; nonce: string; z: 1 }
 
 export function request(method: Method, params: unknown, now = Date.now()): Request {
-  if (!METHODS.includes(method)) throw new Error('Unknown remote method.');
+  if (!known.has(method)) throw new Error('Unknown remote method.');
   if (JSON.stringify(params).length > MAX_PARAMS) throw new Error('That request is too large.');
   // `ts` and a fresh `nonce` let the host refuse replays.
   const nonce = Array.from(randomBytes(16), b => b.toString(16).padStart(2, '0')).join('');

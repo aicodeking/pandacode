@@ -785,13 +785,14 @@ async fn conversation_messages_with_on(
     Ok(messages.into())
 }
 
-/// Fast is a catalog capability, never an invented model setting.
-pub async fn fast_service_tier(cwd: &Path, model: &str) -> Result<String, String> {
+/// A speed is a catalog capability, never an invented model setting. `wanted`
+/// matches a tier's id or name, so `/fast` finds the tier Codex calls Fast.
+pub async fn service_tier(cwd: &Path, model: &str, wanted: &str) -> Result<String, String> {
     if model.len() > 200 || model.chars().any(char::is_control) {
         return Err("Invalid Codex model.".into());
     }
     let mut client = ControlClient::start(cwd).await?;
-    let result = fast_tier_with(&mut client, model).await;
+    let result = tier_with(&mut client, model, wanted).await;
     client.finish().await;
     result
 }
@@ -807,23 +808,23 @@ pub async fn resolved_model(cwd: &Path, model: &str) -> Result<String, String> {
     nonempty(&item["model"], 200).ok_or_else(|| "Codex did not return the model identifier.".into())
 }
 
-async fn fast_tier_with(client: &mut impl Transport, model: &str) -> Result<String, String> {
+async fn tier_with(client: &mut impl Transport, model: &str, wanted: &str) -> Result<String, String> {
     let item = model_metadata(client, model).await?;
     let tier = item["serviceTiers"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|tier| {
-            tier["id"].as_str() == Some("fast")
+            tier["id"].as_str() == Some(wanted)
                 || tier["name"]
                     .as_str()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("fast"))
+                    .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
         });
     tier.and_then(|tier| tier["id"].as_str())
-        .filter(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control))
+        .filter(|id| crate::providers::valid_service_tier(id))
         .map(str::to_owned)
         .ok_or_else(|| {
-            "Fast mode is not available for this model in the installed Codex catalog.".into()
+            "This speed is not available for this model in the installed Codex catalog.".into()
         })
 }
 
@@ -947,14 +948,24 @@ mod tests {
             json!({"data":[{"id":"one","model":"model-one","serviceTiers":[{"id":"priority","name":"Fast"}]},{"id":"two","model":"model-two","serviceTiers":[]}],"nextCursor":null}),
         )]);
         assert_eq!(
-            fast_tier_with(&mut fake, "model-one").await.unwrap(),
+            tier_with(&mut fake, "model-one", "fast").await.unwrap(),
             "priority"
         );
         let mut fake = Fake::new(vec![(
             "model/list",
+            json!({"data":[{"id":"one","model":"model-one","serviceTiers":[{"id":"priority","name":"Fast"},{"id":"ultrafast","name":"Ultra Fast"}]}],"nextCursor":null}),
+        )]);
+        assert_eq!(tier_with(&mut fake, "model-one", "ultrafast").await.unwrap(), "ultrafast");
+        let mut fake = Fake::new(vec![(
+            "model/list",
+            json!({"data":[{"id":"one","model":"model-one","serviceTiers":[{"id":"priority","name":"Fast"}]}],"nextCursor":null}),
+        )]);
+        assert!(tier_with(&mut fake, "model-one", "ultrafast").await.is_err());
+        let mut fake = Fake::new(vec![(
+            "model/list",
             json!({"data":[{"id":"two","model":"model-two","serviceTiers":[]}],"nextCursor":null}),
         )]);
-        assert!(fast_tier_with(&mut fake, "model-two").await.is_err());
+        assert!(tier_with(&mut fake, "model-two", "fast").await.is_err());
     }
     #[tokio::test]
     async fn imported_transcript_uses_bounded_pages_in_chronological_order() {

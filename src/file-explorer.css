@@ -1,0 +1,6 @@
+.file-explorer{display:flex;flex-direction:column;height:100%;min-height:0}
+.file-explorer .file-folder-path{flex:none;padding:8px 12px}
+.file-explorer .file-folder-path>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-explorer-tools{display:flex;align-items:center;gap:4px}
+.file-explorer .file-list{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.file-row:focus-within .file-attach{opacity:1}

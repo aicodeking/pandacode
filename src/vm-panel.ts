@@ -1,6 +1,7 @@
 import './vm-panel.css';
 import { escape, icon } from './dom';
 import { cloudName, createOptions, machines, type CloudConnection, type CloudMachine, type Machine } from './vm-machines';
+import { errorText } from './error-text';
 
 /* The inspector's VM panel: one local macOS or Linux VM's live screen, which you can
  * click, scroll and type into. Agents reach the same machines through pandacode_vm_*. */
@@ -56,7 +57,7 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   const live = () => Boolean(current()?.live);
   const anyCloud = () => connections.some(c => c.connected);
   function say(text: string): void { statusLine.textContent = text; statusLine.hidden = !text; }
-  const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
+  const failure = (error: unknown) => errorText(error);
 
   function emptyState(): string {
     if (!status) return '<p>Loading machines…</p>';

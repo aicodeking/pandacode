@@ -45,6 +45,7 @@ pub fn retarget(session: &crate::storage::Session) -> bool {
         config.reasoning_effort = session.reasoning_effort.clone();
         config.mode = session.mode.clone();
         config.resume_id = session.resume_id.clone();
+        config.codex_settings = session.codex_settings.clone();
     });
     let Some(job) = job else { return false };
     if let Some(job) = job {
@@ -83,7 +84,16 @@ pub(super) fn retargeted(session_id: &str, apply: impl FnOnce(&mut RunConfig)) -
     }
     let mut config = target.config.clone();
     apply(&mut config);
-    let launch_of = |c: &RunConfig| (c.provider.clone(), c.model.clone(), c.reasoning_effort.clone(), c.mode.clone(), c.resume_id.clone());
+    let launch_of = |c: &RunConfig| {
+        (
+            c.provider.clone(),
+            c.model.clone(),
+            c.reasoning_effort.clone(),
+            c.mode.clone(),
+            c.resume_id.clone(),
+            super::claude_fast_mode(c),
+        )
+    };
     // The same settings picked again: keep the agent that already has them.
     if launch_of(&config) == launch_of(&target.config) {
         return Some(None);
@@ -267,6 +277,7 @@ mod tests {
             to(|c| c.model = "default".into()),
             to(|c| c.mode = "full".into()),
             to(|c| c.resume_id = Some("other".into())),
+            to(|c| c.codex_settings = Some(json!({"serviceTier": "fast"}))),
         ] {
             assert_eq!(respawn, None);
         }

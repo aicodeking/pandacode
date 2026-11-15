@@ -1,6 +1,7 @@
 import './command-center.css';
 import { icon } from './dom';
 import { usageHeatmap } from './usage-heatmap';
+import { errorText } from './error-text';
 
 export interface GoalState {
   threadId: string;
@@ -27,7 +28,7 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', con
 function button(label: string, className = 'secondary-button'): HTMLButtonElement {
   const element = node('button', className, label); element.type = 'button'; return element;
 }
-function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+const message = (error: unknown): string => errorText(error);
 const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 const goalLabels: Record<GoalState['status'], string> = { active: 'Working toward goal', paused: 'Paused', blocked: 'Needs attention', usageLimited: 'Usage limit reached', budgetLimited: 'Token budget reached', complete: 'Goal completed' };
 function goalUsage(goal: GoalState): string {

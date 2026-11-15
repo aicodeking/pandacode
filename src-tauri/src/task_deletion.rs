@@ -59,7 +59,7 @@ fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
 pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSessions> {
     // Agent, harness, team and Jev admissions share this lock. No process or
     // filesystem operations happen here; running work must be stopped first.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is closing. Try again when it finishes.".into());
     }

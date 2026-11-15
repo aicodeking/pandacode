@@ -1,5 +1,8 @@
-//! Legacy Keychain reads run in a short-lived process whose UI is disabled.
-//! The application process never changes the global Keychain interaction flag.
+//! Keychain access for usage limits. Reads run first in a short-lived process
+//! whose UI is disabled (the application process never changes the global
+//! Keychain interaction flag). Claude Code's own item trusts Apple's
+//! `security` tool, not PandaCode; how it is then read (never written) and
+//! when it is never asked about again is in `usage_keychain_claude.rs`.
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -7,8 +10,9 @@ mod mac {
     use serde::{Deserialize, Serialize};
     use std::{
         process::Command,
-        sync::{Mutex, PoisonError},
-        time::Duration,
+        collections::{HashMap, HashSet},
+        sync::{Mutex, OnceLock, PoisonError},
+        time::{Duration, Instant},
     };
 
     const FLAG: &str = "--pandacode-usage-keychain";
@@ -16,7 +20,22 @@ mod mac {
     const TARGET: &str = "PANDACODE_USAGE_KEYCHAIN_TARGET";
     const MARKER: &[u8] = b"PANDACODE_USAGE_KEYCHAIN:";
     const LIMIT: usize = 32 * 1024;
-    const ERR_INTERACTION_NOT_ALLOWED: i32 = -25308;
+    /// Largest item read or written: Claude Code's item grows with MCP OAuth
+    /// entries. Matches the credential-file and stored-login limits.
+    pub(crate) const ITEM_LIMIT: usize = 256 * 1024;
+    /// The reader's reply is base64 of the item plus its frame.
+    const CHILD_OUTPUT_LIMIT: usize = ITEM_LIMIT / 3 * 4 + 8 * 1024;
+    /// `security -g` prints the secret as `password: 0x<hex>  "<escaped copy>"`:
+    /// two characters per byte, plus up to four (`\303`) in the copy.
+    const SECURITY_OUTPUT_LIMIT: usize = ITEM_LIMIT * 6 + 4096;
+    /// `security` exits with the low byte of the failing status. These mean a
+    /// dialog was refused or would have been needed: errSecInteractionNotAllowed
+    /// (36), errSecAuthFailed (51) and userCanceled (128).
+    const DENIALS: [i32; 3] = [36, 51, 128];
+    /// The refusals that mean "this item's access list does not include the
+    /// reader": errSecInteractionNotAllowed, and errSecAuthFailed, which
+    /// current macOS returns for Claude Code's items.
+    const ACCESS_REFUSALS: [i32; 2] = [-25308, -25293];
 
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "status", content = "data", rename_all = "camelCase")]
@@ -30,7 +49,7 @@ mod mac {
         Probe(bool),
     }
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     enum Failure {
         Refused,
         Other,
@@ -141,7 +160,7 @@ mod mac {
         let mut output = crate::workspace::run_process(
             command(target)?,
             "Usage credential reader",
-            LIMIT,
+            CHILD_OUTPUT_LIMIT,
             timeout,
         )
         .map_err(|_| ())?;
@@ -163,73 +182,7 @@ mod mac {
         result
     }
 
-    pub(crate) fn read_claude(service: &str) -> Result<Option<Vec<u8>>, ()> {
-        static TOOL_FAILED: Mutex<bool> = Mutex::new(false);
-        match read(service) {
-            Err(Failure::Refused) if service != "glm" => {
-                until_first_failure(&TOOL_FAILED, || read_with_security_tool(service))
-            }
-            result => result.map_err(|_| ()),
-        }
-    }
-
-    /// `security` runs without our disabled-interaction flag, so an item whose
-    /// access list does not trust it may raise a dialog. The first failure
-    /// (denied, or killed at the deadline) therefore stops it for this launch,
-    /// and the lock is held across the read so concurrent checks cannot stack
-    /// dialogs. Every tray open re-reads usage, so this must not repeat.
-    // ponytail: one latch for all Claude profiles, per-service if anyone needs a retry without a restart.
-    fn until_first_failure(
-        failed: &Mutex<bool>,
-        read: impl FnOnce() -> Result<Option<Vec<u8>>, ()>,
-    ) -> Result<Option<Vec<u8>>, ()> {
-        let mut failed = failed.lock().unwrap_or_else(PoisonError::into_inner);
-        if *failed {
-            return Err(());
-        }
-        let result = read();
-        *failed = result.is_err();
-        result
-    }
-
-    /// Claude Code writes its login with Apple's `security` tool, so the
-    /// item's access list trusts `/usr/bin/security` and not PandaCode. The
-    /// direct read is then refused without a prompt; asking the trusted tool
-    /// for the same exact item succeeds without one.
-    fn read_with_security_tool(service: &str) -> Result<Option<Vec<u8>>, ()> {
-        let account = account_name().ok_or(())?;
-        let mut command = Command::new("/usr/bin/security");
-        command.args(["find-generic-password", "-s", service, "-a", &account, "-w"]);
-        let mut output = crate::workspace::run_process(
-            command,
-            "Usage credential reader",
-            LIMIT,
-            Duration::from_secs(3),
-        )
-        .map_err(|_| ())?;
-        output.stderr.bytes.fill(0);
-        security_output(
-            output.status.code(),
-            output.stdout.truncated,
-            std::mem::take(&mut output.stdout.bytes),
-        )
-    }
-
-    fn security_output(
-        code: Option<i32>,
-        truncated: bool,
-        mut stdout: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, ()> {
-        if truncated || code != Some(0) {
-            stdout.fill(0);
-            // 44: the item does not exist.
-            return if !truncated && code == Some(44) { Ok(None) } else { Err(()) };
-        }
-        while stdout.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
-            stdout.pop();
-        }
-        Ok((!stdout.is_empty()).then_some(stdout))
-    }
+    include!("usage_keychain_claude.rs");
 
     pub(crate) fn read_glm() -> Result<Option<Vec<u8>>, ()> {
         read("glm").map_err(|_| ())
@@ -239,18 +192,43 @@ mod mac {
     /// answers with the same code, but there the tool would ask for the
     /// Keychain password.
     fn may_ask_security_tool(code: i32, unlocked: impl FnOnce() -> bool) -> bool {
-        code == ERR_INTERACTION_NOT_ALLOWED && unlocked()
+        ACCESS_REFUSALS.contains(&code) && unlocked()
     }
 
-    fn default_keychain_unlocked() -> bool {
+    /// Whether the keychains that may hold Claude Code's item are unlocked:
+    /// the default keychain (where `security add-generic-password` saves it)
+    /// and the login keychain (where it is when the default was changed).
+    /// Reads state flags only, never an item, so nothing can prompt.
+    fn keychains_unlocked() -> bool {
+        use std::ffi::c_void;
         #[link(name = "Security", kind = "framework")]
         extern "C" {
-            fn SecKeychainGetStatus(keychain: *const std::ffi::c_void, status: *mut u32) -> i32;
+            fn SecKeychainGetStatus(keychain: *const c_void, status: *mut u32) -> i32;
+            fn SecKeychainOpen(path: *const std::ffi::c_char, keychain: *mut *const c_void) -> i32;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            fn CFRelease(object: *const c_void);
         }
         const UNLOCKED: u32 = 1; // kSecUnlockStateStatus
-        let mut status = 0;
-        // Null is the default keychain; this reads a state flag, never an item.
-        unsafe { SecKeychainGetStatus(std::ptr::null(), &mut status) == 0 && status & UNLOCKED != 0 }
+        let unlocked = |keychain: *const c_void| {
+            let mut status = 0;
+            unsafe { SecKeychainGetStatus(keychain, &mut status) == 0 && status & UNLOCKED != 0 }
+        };
+        // Null is the default keychain.
+        if !unlocked(std::ptr::null()) {
+            return false;
+        }
+        // Opening only names the file (it never prompts); a missing one is skipped.
+        let login = crate::agent_usage_providers::home().map(|home| home.join("Library/Keychains/login.keychain-db")).filter(|path| path.exists());
+        let Some(path) = login.and_then(|path| std::ffi::CString::new(path.into_os_string().into_encoded_bytes()).ok()) else { return true };
+        let mut keychain = std::ptr::null();
+        if unsafe { SecKeychainOpen(path.as_ptr(), &mut keychain) } != 0 || keychain.is_null() {
+            return false;
+        }
+        let open = unlocked(keychain);
+        unsafe { CFRelease(keychain) };
+        open
     }
 
     fn reply(target: &str) -> Reply {
@@ -285,17 +263,15 @@ mod mac {
         let (service, account) = if target == "glm" {
             ("app.pandacode.providers", "zai-coding-plan".into())
         } else {
-            let Some(account) = account_name() else {
-                return Reply::Blocked;
-            };
+            let account = claude_account();
             (target, account)
         };
         match find_generic_password(None, service, &account) {
-            Ok((password, _item)) if password.len() <= 16 * 1024 => {
+            Ok((password, _item)) if password.len() <= ITEM_LIMIT => {
                 Reply::Found(STANDARD.encode(password.as_ref()))
             }
             Err(error) if error.code() == -25300 => Reply::Missing,
-            Err(error) if may_ask_security_tool(error.code(), default_keychain_unlocked) => {
+            Err(error) if may_ask_security_tool(error.code(), keychains_unlocked) => {
                 Reply::Refused
             }
             _ => Reply::Blocked,
@@ -323,135 +299,18 @@ mod mac {
         true
     }
 
+    // Kept in its own file to keep this module short; `include!` resolves
+    // beside this file, which `#[path]` in an inline module does not.
     #[cfg(test)]
     mod tests {
-        use super::*;
-
-        #[test]
-        fn only_exact_provider_credential_targets_are_allowed() {
-            assert!(valid_target("glm"));
-            assert!(valid_target("Claude Code-credentials"));
-            assert!(valid_target("Claude Code-credentials-ab12cd34"));
-            for invalid in [
-                "",
-                "Slack",
-                "Claude Code-credentials-extra",
-                "Claude Code-credentials-AB12CD34",
-                "../Claude Code-credentials",
-            ] {
-                assert!(!valid_target(invalid));
-            }
-        }
-
-        #[test]
-        fn helper_protocol_rejects_missing_or_multiple_responses() {
-            assert!(decode(b"unrelated stdout").is_err());
-            assert!(decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"blocked\"}").is_err());
-            assert_eq!(decode(b"\nrunning 1 test\nPANDACODE_USAGE_KEYCHAIN:{\"status\":\"found\",\"data\":\"dGVzdA==\"}\n").ok().flatten(), Some(b"test".to_vec()));
-            assert!(decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"missing\"}\nPANDACODE_USAGE_KEYCHAIN:{\"status\":\"missing\"}").is_err());
-        }
-
-        #[test]
-        fn only_an_unlocked_keychain_refusal_reaches_the_security_tool() {
-            assert_eq!(
-                decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"refused\"}"),
-                Err(Failure::Refused)
-            );
-            assert_eq!(
-                decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"blocked\"}"),
-                Err(Failure::Other)
-            );
-            assert!(may_ask_security_tool(-25308, || true));
-            assert!(!may_ask_security_tool(-25308, || false), "locked keychain");
-            assert!(!may_ask_security_tool(-25293, || true));
-        }
-
-        #[test]
-        fn security_tool_output_is_parsed_and_failures_keep_nothing() {
-            let parse = |code, truncated, out: &[u8]| security_output(code, truncated, out.to_vec());
-            assert_eq!(parse(Some(0), false, b"{\"a\":1}\r\n"), Ok(Some(b"{\"a\":1}".to_vec())));
-            assert_eq!(parse(Some(0), false, b"\n"), Ok(None));
-            assert_eq!(parse(Some(44), false, b""), Ok(None));
-            assert_eq!(parse(Some(51), false, b"secret"), Err(()));
-            assert_eq!(parse(None, false, b"secret"), Err(()));
-            assert_eq!(parse(Some(0), true, b"sec"), Err(()));
-            assert_eq!(parse(Some(44), true, b"sec"), Err(()));
-        }
-
-        #[test]
-        fn a_failed_security_read_never_runs_again() {
-            let failed = Mutex::new(false);
-            assert_eq!(until_first_failure(&failed, || Ok(None)), Ok(None));
-            assert_eq!(until_first_failure(&failed, || Ok(Some(vec![1]))), Ok(Some(vec![1])));
-            assert_eq!(until_first_failure(&failed, || Err(())), Err(()));
-            let mut ran = false;
-            let again = until_first_failure(&failed, || {
-                ran = true;
-                Ok(None)
-            });
-            assert_eq!(again, Err(()));
-            assert!(!ran);
-        }
-
-        #[test]
-        fn interaction_is_disabled_only_in_the_child_process() {
-            use security_framework::os::macos::keychain::SecKeychain;
-            let before = SecKeychain::user_interaction_allowed().unwrap();
-            let bytes = capture("probe", Duration::from_secs(3)).unwrap();
-            assert!(bytes
-                .windows(b"\"data\":false".len())
-                .any(|w| w == b"\"data\":false"));
-            assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), before);
-        }
-
-        #[test]
-        fn a_shell_cannot_use_the_app_as_a_credential_exporter() {
-            let direct = command("probe").unwrap();
-            let mut shell = Command::new("/bin/sh");
-            shell
-                .args(["-c", "\"$@\" & wait", "usage-parent-check"])
-                .arg(direct.get_program())
-                .args(direct.get_args());
-            for (name, value) in direct.get_envs() {
-                if let Some(value) = value {
-                    shell.env(name, value);
-                }
-            }
-            let result =
-                crate::workspace::run_process(shell, "Usage test", LIMIT, Duration::from_secs(3))
-                    .unwrap();
-            assert!(result
-                .stdout
-                .bytes
-                .windows(b"\"status\":\"blocked\"".len())
-                .any(|w| w == b"\"status\":\"blocked\""));
-            assert!(!result
-                .stdout
-                .bytes
-                .windows(b"\"data\":false".len())
-                .any(|w| w == b"\"data\":false"));
-        }
-
-        #[test]
-        fn a_stalled_reader_is_killed_at_the_deadline() {
-            let started = std::time::Instant::now();
-            assert!(capture("hang", Duration::from_millis(200)).is_err());
-            assert!(started.elapsed() < Duration::from_secs(3));
-        }
-
-        #[test]
-        #[ignore = "Internal isolated helper; inert without the explicit parent sentinel"]
-        fn internal_helper() {
-            if std::env::var(CHILD).ok().as_deref() != Some("1") {
-                return;
-            }
-            emit(&std::env::var(TARGET).unwrap_or_default());
-        }
+        include!("usage_keychain_tests.rs");
     }
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use mac::{read_claude, read_glm};
+pub(crate) use mac::{claude_item_stamp, clear_backoff, keychain_unlocked, read_claude, read_glm, ReadError};
+#[cfg(all(target_os = "macos", test))]
+pub(crate) use mac::fake_backend;
 
 pub fn handle_usage_keychain_helper() -> bool {
     #[cfg(target_os = "macos")]

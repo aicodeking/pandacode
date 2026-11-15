@@ -77,7 +77,8 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 /// Harnesses whose launch holds nothing per-launch and that are sent `initialize` first.
 /// Not here: Antigravity (a per-launch temp folder in its environment, and its process
 /// lingers for the next turn), Cline (each run's MCP settings file is in its environment),
-/// ZCode, Muse, Pi and OMP (no `initialize` handshake), the Claude family (`warm.rs`).
+/// Cursor (its own config and login files are not keyed), ZCode, Muse, Pi and OMP (no
+/// `initialize` handshake), the Claude family (`warm.rs`).
 const PROVIDERS: [&str; 10] = ["codex", "kimi", "opencode", "grok", "deepseek", "commandcode", "kilo", "github-copilot", "devin", "hermes"];
 
 pub fn provider(provider: &str) -> bool {
@@ -91,7 +92,7 @@ pub fn supported(config: &RunConfig) -> bool {
 
 /// The first request the harness gets; the run replays the spare's reply to it.
 fn initialize_request(provider: &str) -> Value {
-    if provider == "codex" { codex_initialize() } else { acp_initialize() }
+    if provider == "codex" { codex_initialize() } else { acp_initialize(provider) }
 }
 
 /// The command `run_inner` builds for this task's launch, its key and its folder.
@@ -491,9 +492,9 @@ done"#;
     fn acp_harnesses_with_nothing_per_launch_are_warmed() {
         for warmed in ["kimi", "opencode", "grok", "deepseek", "commandcode", "kilo", "github-copilot", "devin", "hermes"] {
             assert!(supported(&crate::providers::tests::config(warmed)), "{warmed}");
-            assert_eq!(initialize_request(warmed), acp_initialize());
+            assert_eq!(initialize_request(warmed), acp_initialize(warmed));
         }
-        for cold in ["antigravity", "cline", "zcode", "muse", "pi", "omp", "claude", "glm", "mimo"] {
+        for cold in ["antigravity", "cline", "cursor", "zcode", "muse", "pi", "omp", "claude", "glm", "mimo", "alibaba"] {
             assert!(!supported(&crate::providers::tests::config(cold)), "{cold}");
         }
         assert_eq!(initialize_request("codex"), codex_initialize());

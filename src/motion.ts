@@ -315,10 +315,12 @@ export function cascade(elements: Iterable<HTMLElement>, stepMs = 16, maxDelayMs
 
 /* Toast: drifts up into the bottom-right corner and eases out toward the edge it came from. */
 let toastGeneration = 0;
-export function showToast(toast: HTMLElement): void {
+/** `instant`: it returns as it was (a notice coming back after another toast), with no entrance. */
+export function showToast(toast: HTMLElement, instant = false): void {
   toastGeneration++;
   const visible = !toast.hidden && !running.has(toast);
   toast.hidden = false;
+  if (instant) { running.get(toast)?.cancel(); return; }
   if (!canAnimate(toast) || visible) return;
   if (reducedMotion()) { play(toast, [{ opacity: 0 }, { opacity: 1 }], 120, 'ease-out'); return; }
   materializeIn(toast, { scale: 0.98, x: 6, y: 10, spring: { response: 0.3 }, origin: '100% 100%' });

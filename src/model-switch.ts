@@ -134,14 +134,14 @@ export function switchModel(id: string, save: () => Promise<boolean>, after: (sa
 
 /** A model pick: `warm` asks native to start it ahead (a main thread's own pick only); `local`: on this computer. */
 export type ModelChoice = { provider: ProviderId; model: string; warm: boolean; local: boolean };
-/** A plain model leaves a named team; ZCode only supports single-agent tasks. Runs before the configure, which refuses a
+/** A plain model leaves a named team. Runs before the configure, which refuses a
  *  task its team manages, and describes the team it left ("team Reviewers", "its team"), if any. */
-async function leaveTeam(id: string, provider: ProviderId): Promise<string | null> {
+async function leaveTeam(id: string): Promise<string | null> {
   const team = hooks.team(id);
-  if (!team?.rosterOnly && !(provider === 'zcode' && team)) return null;
+  if (!team?.rosterOnly) return null;
   await call<TeamSnapshot | null>('architect_configure', { sessionId: id, config: null, architect: null, profileId: null });
   hooks.teamChanged({ sessionId: id, removed: true });
-  return team?.name ? `team ${team.name}` : 'its team';
+  return team.name ? `team ${team.name}` : 'its team';
 }
 /** After the durable configure: the account binding a new harness can't use, the automatic team's roster, the default. */
 async function settlePick(id: string, choice: ModelChoice, harness: boolean): Promise<void> {
@@ -172,11 +172,11 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     }
     let left: string | null = null;
     try {
-      left = await leaveTeam(id, choice.provider);
+      left = await leaveTeam(id);
       hooks.put(await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) }));
     } catch (error) {
       console.error(error);
-      const restored = { ...(hooks.task(id) ?? previous), provider: previous.provider, model: previous.model, reasoningEffort: previousEffort };
+      const restored = { ...(hooks.task(id) ?? previous), provider: previous.provider, model: previous.model, reasoningEffort: previousEffort, codexSettings: previous.codexSettings, contextUsage: previous.contextUsage };
       hooks.put(restored);
       hooks.notify(`Model not changed — still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}: ${message(error)}`);
       refused.set(id, { what: 'model', reason: message(error) });
@@ -188,7 +188,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
   // Shown once the save is registered, so the repaint already marks the trigger busy.
   // A new harness or model starts at its default effort; the same model keeps its effort, as native does.
   const sameModel = !harness && (choice.model || 'default') === (previous.model || 'default');
-  hooks.put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null });
+  hooks.put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings: harness ? null : previous.codexSettings, contextUsage: sameModel ? previous.contextUsage : null });
   ui.show();
   return run;
 }

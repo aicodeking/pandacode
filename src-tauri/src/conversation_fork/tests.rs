@@ -320,7 +320,10 @@ fn running_team_and_worker_forks_preserve_preferences_without_execution_state() 
         assert_eq!(fork.provider, original.provider);
         assert_eq!(fork.model, original.model);
         assert_eq!(fork.reasoning_effort, original.reasoning_effort);
-        assert_eq!(fork.mode, original.mode);
+        // A worker's fork takes its lead's mode (its full access never carries into a user's
+        // chat); the lead's own fork keeps its mode.
+        let expected_mode = if *source_id == child.id { store.session(&source.id).unwrap().mode } else { original.mode.clone() };
+        assert_eq!(fork.mode, expected_mode);
         assert_eq!(fork.codex_settings, original.codex_settings);
         assert_eq!(fork.status, "idle");
         assert_eq!(fork.task_stage, "in_progress");

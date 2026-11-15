@@ -80,7 +80,7 @@ pub async fn agents_dock_snapshot(state: State<'_, AppState>) -> crate::Result<A
 }
 
 fn snapshot(state: &AppState) -> crate::Result<AgentsDockSnapshot> {
-    let agents = state.agents.lock().map_err(|error| error.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|error| error.to_string())?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
     let projects: HashMap<_, _> = store
         .projects()?

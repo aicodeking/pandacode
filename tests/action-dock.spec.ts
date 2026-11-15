@@ -257,12 +257,11 @@ test.describe('action dock', () => {
     await expect(page.locator('#terminal-drawer')).toBeVisible();
     await expect.poll(async () => (await rect(page, '#composer-area')).top - (await rect(page, '#action-dock')).bottom).toBeGreaterThanOrEqual(12);
     await page.locator('#terminal-toggle').click();
-    // File tabs open in the inspector, so the dock keeps its place in the conversation.
     await openInspectorTab(page, 'Files');
     await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.locator('#inspector [data-action="open-file"][data-path="README.md"]').click();
-    await expect(page.locator('#inspector #file-tabs')).toBeVisible();
-    await expect.poll(async () => Math.round((await rect(page, '#action-dock')).top - header.bottom)).toBe(Math.round(box.top - header.bottom));
+    await expect(page.locator('#file-tabs')).toBeVisible();
+    await expect.poll(async () => { const dock = await rect(page, '#action-dock'); return Math.abs((dock.top - header.bottom) - ((await rect(page, '#composer-area')).top - dock.bottom)); }).toBeLessThan(2);
     // A shared bot channel's header row sits below the workspace header, clear of the dock.
     await page.goto('/?bots=sample');
     const bar = page.locator('.sidebar-bots-bar');

@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 /// Largest login file read; `.claude.json` also holds project history.
-const MAX_FILE: u64 = 32 << 20;
+const MAX_FILE: u64 = 64 << 20;
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,7 +110,7 @@ pub(crate) fn local(provider: &str, env: &[(String, String)]) -> Identity {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
         _ => return Identity::default(),
     };
-    if crate::agent_usage::claude_override(true, |name| crate::account_config::var(env, name), &settings) {
+    if crate::agent_usage_claude::override_source(true, |name| crate::account_config::var(env, name), &settings).is_some() {
         return Identity::default();
     }
     claude_json(env).map(|file| claude(&file)).unwrap_or_default()

@@ -11,6 +11,18 @@ export const MAX_HELD = 4096;
 
 export interface Held { entries: { epoch: unknown; events: AgentEvent[] }[]; overflow: boolean }
 
+/** `Cursors.check`: the events to show, and the tasks whose events show an earlier one never
+ * arrived (their events from there on are dropped and their positions kept, for a resubscribe). */
+export interface Checked { events: AgentEvent[]; gaps: string[] }
+
+/** Saved positions per host (resume tokens): its journal epoch and the newest `seq` per task. */
+export type SavedCursors = Record<string, { epoch: string; seqs: Record<string, number> }>;
+/** Saved positions older than this are not used: the host's journal has dropped them by then. */
+export const CURSORS_MAX_AGE_MS = 60 * 60_000;
+const MAX_SAVED_HOSTS = 64;
+const MAX_SAVED_TASKS = 500;
+const ID = /^[\x21-\x7e]{1,200}$/;
+
 export class Cursors {
   /** Per host: its journal epoch (new with every host launch) and the newest `seq` seen per task. */
   private known = new Map<string, { epoch: string; seqs: Map<string, number> }>();
@@ -30,14 +42,47 @@ export class Cursors {
 
   /** Drops events already seen, advancing past the rest. Older hosts send no `seq`. */
   fresh(host: string, epoch: unknown, list: AgentEvent[]): AgentEvent[] {
+    return this.check(host, epoch, list).events;
+  }
+
+  /** `fresh`, and a gap where an event's `prev` (newer hosts) is past this viewer's position in its
+   * task: that task's events stop there, unadvanced, so a subscribe replays them. A task with no
+   * position yet, or an event without `prev` (older hosts), is never a gap. */
+  check(host: string, epoch: unknown, list: AgentEvent[]): Checked {
     const known = this.at(host, epoch);
-    if (!known) return list;
-    return list.filter(event => {
+    if (!known) return { events: list, gaps: [] };
+    const gaps = new Set<string>();
+    const events = list.filter(event => {
       if (typeof event?.seq !== 'number' || typeof event.sessionId !== 'string') return true;
-      if (event.seq <= (known.seqs.get(event.sessionId) ?? 0)) return false;
+      if (gaps.has(event.sessionId)) return false;
+      const seen = known.seqs.get(event.sessionId);
+      if (seen !== undefined && typeof event.prev === 'number' && event.prev > seen) {
+        gaps.add(event.sessionId);
+        return false;
+      }
+      if (event.seq <= (seen ?? 0)) return false;
       known.seqs.set(event.sessionId, event.seq);
       return true;
     });
+    return { events, gaps: [...gaps] };
+  }
+
+  /** Every host's epoch and positions, to save (bounded). */
+  snapshot(): SavedCursors {
+    const out: SavedCursors = {};
+    for (const [host, known] of [...this.known].slice(0, MAX_SAVED_HOSTS)) {
+      out[host] = { epoch: known.epoch, seqs: Object.fromEntries([...known.seqs].slice(-MAX_SAVED_TASKS)) };
+    }
+    return out;
+  }
+
+  /** Saved positions after a relaunch; a host this run already knows keeps its own. A subscribe
+   * then sends them with the epoch, and the host replays from them only if it was not restarted. */
+  restore(saved: SavedCursors) {
+    for (const [host, { epoch, seqs }] of Object.entries(saved)) {
+      if (this.known.has(host)) continue;
+      this.known.set(host, { epoch, seqs: new Map(Object.entries(seqs)) });
+    }
   }
 
   /** `subscribe` params: the tasks, and where this viewer left off in each it has seen. */
@@ -78,6 +123,27 @@ export class Cursors {
     return { entries: held?.entries ?? [], overflow: held?.overflow ?? false };
   }
 }
+
+/** Validates saved cursors (file content is untrusted input); too old or malformed → none. */
+export function parseCursors(raw: string | null, now: number, maxAgeMs = CURSORS_MAX_AGE_MS): SavedCursors {
+  try {
+    const value = JSON.parse(raw ?? 'null');
+    if (!value || typeof value !== 'object' || typeof value.savedAt !== 'number' || now - value.savedAt > maxAgeMs || now < value.savedAt - 60_000) return {};
+    const hosts = value.hosts && typeof value.hosts === 'object' ? Object.entries(value.hosts as Record<string, any>) : [];
+    const out: SavedCursors = {};
+    for (const [host, entry] of hosts.slice(0, MAX_SAVED_HOSTS)) {
+      if (!ID.test(host) || typeof entry?.epoch !== 'string' || !ID.test(entry.epoch) || !entry.seqs || typeof entry.seqs !== 'object') continue;
+      const seqs = Object.entries(entry.seqs as Record<string, unknown>).slice(0, MAX_SAVED_TASKS)
+        .filter((e): e is [string, number] => ID.test(e[0]) && typeof e[1] === 'number' && Number.isSafeInteger(e[1]) && e[1] >= 0);
+      if (seqs.length) out[host] = { epoch: entry.epoch, seqs: Object.fromEntries(seqs) };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export const encodeCursors = (cursors: SavedCursors, now: number) => JSON.stringify({ savedAt: now, hosts: cursors });
 
 export interface Followed {
   /** The first page's reply (its epoch), or null when the first call failed. */

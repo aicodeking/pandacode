@@ -84,6 +84,7 @@ pub(super) fn parse_models(data: &Value) -> Result<Vec<ModelInfo>, String> {
             continue;
         }
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             name: model_text(entry["name"].as_str(), model, 160),
             description: model_text(Some(provider), "", 200),
             id,

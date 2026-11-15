@@ -51,7 +51,7 @@ test('global and per-provider environment variables are added, toggled, removed,
   expect(errors).toEqual([]);
 });
 
-test('every harness has environment settings, and all but GLM and MiMo an executable location', async ({ page }) => {
+test('every harness has environment settings, and all but GLM, MiMo and Alibaba an executable location', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -66,10 +66,10 @@ test('every harness has environment settings, and all but GLM and MiMo an execut
     executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable!),
   }));
   // Mirrors providers::PROVIDERS, so a new harness has to show up here too.
-  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
+  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
   expect([...editors.toggles].sort()).toEqual([...roster].sort());
   expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
-  expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo').sort());
+  expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo' && id !== 'alibaba').sort());
 
   // A generated card works like a hand-written one, and never echoes a value.
   const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
@@ -184,6 +184,38 @@ test('provider connections show Claude credential conflicts and let users prefer
   await expect(card.getByRole('status')).toContainText('Environment API key');
 });
 
+test('the Claude Code card lets PandaCode run Claude Code to refresh an expired login, on by default', async ({ page }) => {
+  const calls: unknown[] = [];
+  await page.exposeFunction('__refreshCall', (args: unknown) => { calls.push(args); });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_set_claude_cli_refresh') { await window.__refreshCall(args); await new Promise(resolve => setTimeout(resolve, 400)); }
+      switch(command) {`) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#claude-connection');
+  await card.locator(':scope > summary').click();
+  const refresh = card.getByRole('switch', { name: 'Let PandaCode ask Claude Code for usage when it can’t read it' });
+  await expect(refresh).toBeChecked(); // on by default
+  await expect(refresh).toHaveAccessibleDescription(/^On by default\..*an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over.*no model call.*never writes Claude Code credentials/);
+  await expect(card.getByRole('img', { name: 'About asking Claude Code for usage' })).toBeVisible();
+  await refresh.click();
+  await expect(refresh).toBeDisabled(); // while saving, like the other controls
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).not.toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('PandaCode no longer runs Claude Code.');
+  await refresh.click();
+  await expect(refresh).toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('PandaCode asks Claude Code for usage when it can’t read it.');
+  expect(calls).toEqual([{ enabled: false }, { enabled: true }]);
+});
+
 async function delayedConnections(page: Page): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
@@ -209,6 +241,7 @@ async function delayedConnections(page: Page): Promise<void> {
 test('provider connections preserve other drafts and edits made during a save', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await delayedConnections(page);
+  await expect(page.locator('#settings-panel-providers')).toContainText('agy acp --process-per-session');
   const opencode = page.getByLabel('OpenCode executable', { exact: true });
   const antigravity = page.getByLabel('Antigravity ACP executable', { exact: true });
   await antigravity.fill('/draft/agy_acp_server.par');
@@ -320,6 +353,22 @@ test('the MiMo Token Plan card offers the documented clusters and keeps the key 
   expect(errors).toEqual([]);
 });
 
+test('the Alibaba Token Plan card shows the Singapore endpoint and keeps the key native-only', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  const card = page.locator('.connection-card', { hasText: 'Alibaba Token Plan' });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic');
+  await expect(card).toContainText('401');
+  await expect(card.getByRole('link', { name: /Token Plan setup/ })).toHaveAttribute('href', 'https://www.alibabacloud.com/help/en/model-studio/claude-code-token-plan');
+  await expect(card.getByLabel('Alibaba Token Plan API key', { exact: true })).toBeDisabled();
+  await expect(card.locator('#alibaba-key-status')).toContainText('ALIBABA_TOKEN_PLAN_API_KEY');
+  expect(errors).toEqual([]);
+});
+
 test('a delayed configuration fills the saved MiMo cluster and its URL', async ({ page }) => {
   await delayedConnections(page);
   await page.evaluate(() => (window as any).releaseProviderConfiguration());
@@ -342,7 +391,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {

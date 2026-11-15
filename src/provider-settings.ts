@@ -5,11 +5,13 @@ import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { ConnectionSnapshot } from './connections';
 import type { ProviderId } from './types';
+import { errorText } from './error-text';
 
 type ClaudeMode = 'inherit' | 'subscription';
 interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables: string[]; endpoint: string | null; savedLogin: 'signedIn' | 'notSignedIn' | 'otherCredentials' | 'unknown'; conflict: boolean; }
-const howProvidersWork = 'Each sign-in, key or plan here is used only by the agent it belongs to — the global environment variables are the one thing every harness gets. GLM Coding Plan and MiMo Token Plan run through your installed Claude Code, and you pick them in the model selector. Named connections are extra setups of one agent. PandaCode needs no provider of its own: titles come from the agent running the task, project checks run your own test command, and Jev uses its own keys. Codex, when installed, also lists integrations and imports Codex conversations.';
+const howProvidersWork = 'Each sign-in, key or plan here is used only by the agent it belongs to — the global environment variables are the one thing every harness gets. GLM Coding Plan, MiMo Token Plan and Alibaba Token Plan run through your installed Claude Code, and you pick them in the model selector. Named connections are extra setups of one agent. PandaCode needs no provider of its own: titles come from the agent running the task, project checks run your own test command, and Jev uses its own keys. Codex, when installed, also lists integrations and imports Codex conversations.';
 const claudeHelp = 'Use current environment preserves your existing Claude setup. Prefer saved Claude login removes inherited API credentials, endpoints, and model routing overrides from new Claude processes in PandaCode. Claude settings, credential helpers, profiles, and organization policies can still affect authentication. Check /status in Claude to confirm.';
+const refreshHelp = 'On by default. When PandaCode can’t read Claude usage — an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over — it runs your own Claude Code at most once every 15 minutes (claude -p /usage, a local command: no model call, nothing billed). This lets Claude Code refresh and save its own login if it needs to, as when you open it, and PandaCode shows the usage it prints. PandaCode never writes Claude Code credentials. Off: an expired login shows the last saved usage until you open Claude Code.';
 const globalEnvHelp = 'These variables are added to every agent harness PandaCode starts — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Each provider can leave the global set out in its own card, and provider sign-in and endpoint settings always win. Values are saved on this computer and never shown again.';
 const envHelp = 'These variables are added whenever PandaCode starts this harness — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Provider sign-in and endpoint settings always win, and a named connection adds its own environment on top. Values are saved on this computer and never shown again.';
 
@@ -27,17 +29,22 @@ interface Configuration {
   commandcodeKeyFromEnvironment: boolean;
   mimoKeySaved: boolean;
   mimoKeyFromEnvironment: boolean;
+  alibabaKeySaved: boolean;
+  alibabaKeyFromEnvironment: boolean;
   mimoEndpoint: string | null;
   mimoEndpoints: { id: string; url: string; label: string }[];
   secureStorageAvailable: boolean;
   credentialStorageError?: string | null;
   claudeConnectionMode?: ClaudeMode;
+  /** Usage checks may run Claude Code to refresh an expired login (on by default). */
+  claudeCliRefresh?: boolean;
 }
 
 /** Key-based connections share one form/status/remove pattern; the native side owns the secret. */
 const keyed = {
   glm: { env: 'ZAI_API_KEY', save: 'provider_save_glm_key', remove: 'provider_remove_glm_key', saved: 'GLM key saved. Choose GLM Coding Plan in the model selector.', savedFlag: 'glmKeySaved', envFlag: 'glmKeyFromEnvironment' },
   mimo: { env: 'MIMO_API_KEY', save: 'provider_save_mimo_key', remove: 'provider_remove_mimo_key', saved: 'MiMo key saved. Choose MiMo Token Plan in the model selector.', savedFlag: 'mimoKeySaved', envFlag: 'mimoKeyFromEnvironment' },
+  alibaba: { env: 'ALIBABA_TOKEN_PLAN_API_KEY', save: 'provider_save_alibaba_key', remove: 'provider_remove_alibaba_key', saved: 'Alibaba Token Plan key saved. Choose Alibaba Token Plan in the model selector.', savedFlag: 'alibabaKeySaved', envFlag: 'alibabaKeyFromEnvironment' },
   deepseek: { env: 'DEEPSEEK_API_KEY', save: 'provider_save_deepseek_key', remove: 'provider_remove_deepseek_key', saved: 'DeepSeek key saved. Choose DeepSeek in the model selector.', savedFlag: 'deepseekKeySaved', envFlag: 'deepseekKeyFromEnvironment' },
   commandcode: { env: 'COMMAND_CODE_API_KEY', save: 'provider_save_commandcode_key', remove: 'provider_remove_commandcode_key', saved: 'Command Code key saved. Choose Command Code in the model selector.', savedFlag: 'commandcodeKeySaved', envFlag: 'commandcodeKeyFromEnvironment' },
 } as const;
@@ -81,6 +88,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     <details class="connection-card" id="claude-connection"><summary><h3>${providerLogo('claude')}Claude Code</h3><span class="connection-state"></span>${icon('chevron')}</summary>
       <div class="connection-auth-label"><label for="claude-connection-mode">Claude connection</label><span class="sr-only" id="claude-connection-help">${escape(claudeHelp)}</span></div>
       <div class="connection-select"><select id="claude-connection-mode" aria-describedby="claude-connection-help"><option value="inherit">Use current environment</option><option value="subscription">Prefer saved Claude login</option></select>${infoMark(claudeHelp, 'About Claude connection')}</div>
+      <div class="ds-row connection-renew-row"><span class="ds-row-main"><label class="ds-row-title" for="claude-cli-refresh">Let PandaCode ask Claude Code for usage when it can’t read it</label><span class="sr-only" id="claude-cli-refresh-help">${escape(refreshHelp)}</span></span><span class="ds-row-trail">${infoMark(refreshHelp, 'About asking Claude Code for usage')}<input type="checkbox" role="switch" class="ds-toggle" id="claude-cli-refresh" aria-describedby="claude-cli-refresh-help" checked></span></div>
       <div class="connection-key-status"><span class="claude-auth-source" role="status">Checking Claude login…</span><button type="button" class="secondary-button" data-check-claude>Check login</button><span class="claude-auth-details"></span></div>
       <p class="claude-auth-endpoint" hidden></p><p class="claude-auth-conflict" hidden>Environment credentials can override your saved Claude login.</p><p class="claude-auth-login" hidden></p>
       <a href="https://code.claude.com/docs/en/authentication" target="_blank" rel="noopener noreferrer">Claude sign-in help ${icon('forward')}</a>
@@ -101,8 +109,15 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       <a href="https://platform.xiaomimimo.com/token-plan" target="_blank" rel="noopener noreferrer">Token Plan ${icon('forward')}</a>
       ${envDetails('mimo')}
     </details>
+    <details class="connection-card"><summary><h3>${providerLogo('alibaba')}Alibaba Token Plan<small>Model Studio, via Claude Code</small></h3><span class="connection-state"></span>${icon('chevron')}</summary>
+      <p>Use your Model Studio Token Plan key (it starts with <code>sk-sp-</code>) with your installed Claude Code. A Coding Plan or pay-as-you-go key is rejected with 401.</p>
+      <small class="connection-endpoint-hint">https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic</small>
+      ${keyForm('alibaba', 'Alibaba Token Plan API key')}
+      <a href="https://www.alibabacloud.com/help/en/model-studio/claude-code-token-plan" target="_blank" rel="noopener noreferrer">Token Plan setup ${icon('forward')}</a>
+      ${envDetails('alibaba')}
+    </details>
     <details class="connection-card"><summary><h3>${providerLogo('opencode')}OpenCode</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the accounts and models configured in OpenCode. Sign in once with <code>opencode auth login</code>.</p><p>Choose which OpenCode models appear in the model selector in Settings → Agents.</p><a href="https://opencode.ai/docs/" target="_blank" rel="noopener noreferrer">Install & sign in ${icon('forward')}</a>${pathForm('opencode', 'OpenCode executable', '/path/to/opencode')}${envDetails('opencode')}</details>
-    <details class="connection-card"><summary><h3>${providerLogo('antigravity')}Antigravity</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Connect the official Google Antigravity ACP server. Without it, PandaCode uses the <code>agy</code> CLI's <code>agy acp</code> server.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP server ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>
+    <details class="connection-card"><summary><h3>${providerLogo('antigravity')}Antigravity</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Connect the official Google Antigravity ACP server. Without it, PandaCode uses the <code>agy</code> CLI's <code>agy acp --process-per-session</code> server.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP server ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('grok')}Grok Build<small>xAI, via ACP</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses your Grok sign-in and models. Install with <code>curl -fsSL https://x.ai/cli/install.sh | bash</code>, then run <code>grok login</code> once; PandaCode talks to <code>grok agent stdio</code>.</p><a href="https://docs.x.ai/build/overview" target="_blank" rel="noopener noreferrer">Grok Build docs ${icon('forward')}</a>${pathForm('grok', 'Grok executable', '/path/to/grok')}${envDetails('grok')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('pi')}Pi</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the accounts, models and extensions configured in Pi. Install Pi and sign in from its CLI before starting a task.</p><a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener noreferrer">Install Pi ${icon('forward')}</a>${pathForm('pi', 'Pi executable', '/path/to/pi')}${envDetails('pi')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('omp')}Oh My Pi<small>omp</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>A Pi fork with its own accounts and models. Install it with <code>bun install -g @oh-my-pi/pi-coding-agent</code>, then sign in from the <code>omp</code> CLI before starting a task.</p><a href="https://github.com/can1357/oh-my-pi" target="_blank" rel="noopener noreferrer">Install omp ${icon('forward')}</a>${pathForm('omp', 'omp executable', '/path/to/omp')}${envDetails('omp')}</details>
@@ -119,6 +134,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     <details class="connection-card"><summary><h3>${providerLogo('muse')}Muse Code<small>Meta, via MSP</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Install Muse Code, then run <code>muse login</code> once in a terminal. PandaCode talks to <code>muse serve</code> and uses that sign-in.</p>${pathForm('muse', 'Muse Code executable', '/path/to/muse')}${envDetails('muse')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('zcode')}ZCode<small>via app-server</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Run <code>zcode</code> in a terminal and sign in. PandaCode talks to it over its app-server protocol.</p><a href="https://github.com/zai-org/ZCode" target="_blank" rel="noopener noreferrer">ZCode docs ${icon('forward')}</a>${pathForm('zcode', 'ZCode executable', '/path/to/zcode')}${envDetails('zcode')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('hermes')}Hermes Agent<small>Nous Research, via ACP</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Install with <code>curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash</code>, then run <code>hermes acp --setup</code> or configure <code>~/.hermes/config.yaml</code>. PandaCode talks to <code>hermes acp</code>.</p><div class="connection-model-actions"><a href="https://hermes-agent.org" target="_blank" rel="noopener noreferrer">Hermes docs ${icon('forward')}</a><a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener noreferrer">GitHub repository ${icon('forward')}</a></div>${pathForm('hermes', 'Hermes Agent executable', '/path/to/hermes')}${envDetails('hermes')}</details>
+    <details class="connection-card"><summary><h3>${providerLogo('cursor')}Cursor CLI<small>Cursor, via ACP</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Install with <code>curl https://cursor.com/install -fsS | bash</code>, then run <code>agent login</code> once in a terminal (or set <code>CURSOR_API_KEY</code> below). PandaCode talks to <code>agent acp</code> with that sign-in and your Cursor plan’s models.</p><div class="connection-model-actions"><a href="https://cursor.com/docs/cli/overview" target="_blank" rel="noopener noreferrer">Install and sign in ${icon('forward')}</a><a href="https://cursor.com/docs/cli/acp" target="_blank" rel="noopener noreferrer">ACP details ${icon('forward')}</a></div>${pathForm('cursor', 'Cursor CLI executable', '/path/to/agent')}${envDetails('cursor')}</details>
     <p class="connection-feedback" role="status" hidden></p>${preview ? '<p class="settings-preview-note">Browser preview · keys are never saved here.</p>' : ''}`;
   const feedback = host.querySelector<HTMLElement>('.connection-feedback')!;
   const keyInput = (provider: KeyedProvider) => host.querySelector<HTMLInputElement>(`#${provider}-key`)!;
@@ -126,6 +142,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const endpoint = host.querySelector<HTMLSelectElement>('#mimo-endpoint')!;
   const endpointHint = host.querySelector<HTMLElement>('#mimo-endpoint-hint')!;
   const claudeMode = host.querySelector<HTMLSelectElement>('#claude-connection-mode')!;
+  const claudeRefresh = host.querySelector<HTMLInputElement>('#claude-cli-refresh')!;
   const claudeSource = host.querySelector<HTMLElement>('.claude-auth-source')!;
   const claudeCheck = host.querySelector<HTMLButtonElement>('[data-check-claude]')!;
   let claudeEdited = false, claudeRevision = 0;
@@ -173,6 +190,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       feedback.insertAdjacentHTML('beforebegin', cards);
     }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
+    claudeRefresh.checked = config.claudeCliRefresh ?? true;
     for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {
       const id = input.dataset.executable!;
       if (!editedPaths.has(input)) input.value = config.executablePaths[id] ?? '';
@@ -224,7 +242,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     if (pending || disposed) return false;
     const submittedValue = submittedInput?.value;
     pending = true; host.setAttribute('aria-busy', 'true');
-    claudeMode.disabled = true;
+    claudeMode.disabled = true; claudeRefresh.disabled = true;
     host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = true);
     host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = true);
     try {
@@ -238,10 +256,10 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       render(configuration); message(success);
       await saved();
       return true;
-    } catch (error) { if (!disposed) { message(String(error), true); onFailure?.(); } return false; }
+    } catch (error) { if (!disposed) { message(errorText(error), true); onFailure?.(); } return false; }
     finally {
       pending = false;
-      if (!disposed) { claudeMode.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
+      if (!disposed) { claudeMode.disabled = false; claudeRefresh.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
     }
   }
   const submit = (event: Event) => {
@@ -299,7 +317,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
           const input = host.querySelector<HTMLInputElement>(`[data-executable="${target.dataset.chooseExecutable}"]`)!;
           input.value = path; editedPaths.add(input);
         }
-      } catch (error) { if (!disposed) message(String(error), true); }
+      } catch (error) { if (!disposed) message(errorText(error), true); }
     }
   };
   const input = (event: Event) => {
@@ -321,6 +339,16 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       );
       return;
     }
+    if (event.target === claudeRefresh) {
+      const enabled = claudeRefresh.checked;
+      void perform(
+        () => call<Configuration>('provider_set_claude_cli_refresh', { enabled }),
+        enabled ? 'PandaCode asks Claude Code for usage when it can’t read it.' : 'PandaCode no longer runs Claude Code. Open Claude Code to refresh an expired login.',
+        undefined,
+        () => { claudeRefresh.checked = !enabled; },
+      );
+      return;
+    }
     if (event.target === claudeMode) {
       if (pending) return;
       claudeEdited = true; claudeRevision++;
@@ -337,7 +365,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     void perform(() => call('provider_set_mimo_endpoint', { endpoint: chosen }), 'MiMo endpoint saved.').finally(() => { endpointEdited = false; });
   };
   host.addEventListener('submit', submit); host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', change);
-  void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(String(error), true); });
+  void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(errorText(error), true); });
   void checkClaude();
   if (named) void import('./connections').then(({ mountConnections }) => { if (!disposed) unmountNamed = mountConnections(host.querySelector<HTMLElement>('#named-connections')!, named.harnesses, named.saved); });
   return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };

@@ -239,58 +239,33 @@ test('teams: picking one sets the team, a plain model clears it', async ({ page 
   await expect(trigger(page).locator('.model-menu-stack')).toHaveCount(0);
 });
 
-test('an installed ZCode harness does not block model changes in an automatic team', async ({ page }) => {
+test('a ZCode model joins an automatic team instead of leaving it', async ({ page }) => {
   await page.addInitScript(() => {
     const worker = { id: 'codex-default', name: 'Codex', provider: 'codex', model: 'default', reasoningEffort: null };
     localStorage.setItem('pandacode.preview.architect-configs', JSON.stringify({ 'session-1': {
       auto: true, workers: [worker], catalog: [worker], maxParallel: 0, maxRounds: 8, maxAssignments: 24, workspace: 'shared', summaryLimit: 3072,
     } }));
   });
-  await page.route('**/src/preview.ts*', async route => {
-    const response = await route.fetch(), source = await response.text();
-    const marker = /switch\s*\(command\)\s*\{/;
-    expect(source).toMatch(marker);
-    // Native rejects ZCode team profiles until its host-tools bridge is supported.
-    await route.fulfill({ response, body: `${source.replace(marker, `
-      if (command === 'architect_configure' && [...(args.config?.workers ?? []), ...(args.config?.catalog ?? [])].some(profile => profile.provider === 'zcode')) {
-        throw new Error('Worker profiles need unique IDs and an installed harness type.');
-      }
-      switch (command) {`)}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
-  });
-  await gotoApp(page, '/');
+  await open(page, '/');
   await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
-  for (const [harness, label, provider, model] of [
-    ['Codex', 'GPT-6-Astra', 'codex', 'gpt-6-astra'], ['Claude Code', 'Claude Opus 5', 'claude', 'opus'],
-  ]) {
-    await trigger(page).click();
-    await picker(page).getByRole('tab', { name: 'ZCode', exact: true }).click();
-    await expect(picker(page).getByRole('option', { name: 'ZCode · zcproxy/GLM-5.3', exact: true })).toBeVisible();
-    await picker(page).getByRole('tab', { name: harness, exact: true }).click();
-    await picker(page).getByRole('option', { name: `${harness} · ${label}`, exact: true }).click();
-    await expect(picker(page)).toHaveCount(0);
-    await expect.poll(() => task(page)).toMatchObject({ provider, model });
-    const team = await page.evaluate(async () => {
-      const { invoke } = await import((window as any).__pandacodePreviewUrl);
-      return invoke('architect_get', { sessionId: 'session-1' });
-    });
-    expect(team.config.auto).toBe(true);
-    expect([...team.config.workers, ...team.config.catalog].every(profile => profile.provider !== 'zcode')).toBe(true);
-  }
-  await trigger(page).click();
+  // A redraw while the team loads can close a freshly opened menu, so try again until one stays.
+  await expect(async () => {
+    if (!(await picker(page).isVisible())) await trigger(page).click();
+    await expect(picker(page).getByRole('tab', { name: 'ZCode', exact: true })).toBeVisible();
+  }).toPass();
+  // ZCode carries the team tools now, so its model keeps the automatic team.
   await picker(page).getByRole('tab', { name: 'ZCode', exact: true }).click();
   await picker(page).getByRole('option', { name: 'ZCode · zcproxy/GLM-5.3', exact: true }).click();
   await expect(picker(page)).toHaveCount(0);
   await expect.poll(() => task(page)).toMatchObject({ provider: 'zcode', model: 'zcproxy/GLM-5.3' });
-  await expect(page.locator('#team-trigger')).not.toHaveAttribute('data-on');
-  expect(await page.evaluate(async () => {
-    const { invoke } = await import((window as any).__pandacodePreviewUrl);
-    return invoke('architect_get', { sessionId: 'session-1' });
-  })).toBeNull();
-  await trigger(page).click();
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
-  await expect(picker(page)).toHaveCount(0);
-  await expect.poll(() => task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
+  await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
+  await expect.poll(async () => {
+    const team = await page.evaluate(async () => {
+      const { invoke } = await import((window as any).__pandacodePreviewUrl);
+      return invoke('architect_get', { sessionId: 'session-1' });
+    });
+    return team?.config?.auto === true && [...team.config.workers, ...team.config.catalog].some((profile: any) => profile.provider === 'zcode');
+  }).toBe(true);
 });
 
 test('Esc clears the query first, then closes and returns focus to the trigger', async ({ page }) => {
@@ -1514,3 +1489,44 @@ for (const control of ['Model', 'Permissions']) for (const changed of ['model', 
     await expect(page.getByRole('dialog', { name: 'Permissions', exact: true })).toHaveCount(0);
   });
 }
+
+const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });
+
+async function pick(page: Page, query: string, name: string): Promise<void> {
+  await trigger(page).click();
+  await expect(picker(page)).toBeVisible();
+  await picker(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill(query);
+  await picker(page).getByRole('option', { name, exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+}
+
+test('the Speed row lists a model\'s tiers and saves the choice', async ({ page }) => {
+  // Claude Sonnet reports no fast mode.
+  await open(page, '/');
+  await expect(picker(page).getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
+  await expect(speed(page)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+
+  await pick(page, 'astra', 'Codex · GPT-6-Astra');
+  await trigger(page).click();
+  await expect(picker(page)).toBeVisible();
+  await expect(speed(page).getByRole('radio')).toHaveText(['Standard', 'Fast', 'Ultra Fast']);
+  await expect(speed(page).getByRole('radio', { name: 'Standard', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await speed(page).getByRole('radio', { name: 'Ultra Fast', exact: true }).click();
+  await expect(speed(page).getByRole('radio', { name: 'Ultra Fast', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect.poll(async () => (await task(page)).codexSettings?.serviceTier).toBe('ultrafast');
+  await expect(trigger(page).locator('.model-effort')).toHaveText('Ultra Fast');
+  // Arrow keys stay inside the Speed group and save.
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(async () => (await task(page)).codexSettings?.serviceTier).toBe('priority');
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+
+  // A Codex model without tiers has no Speed row.
+  await pick(page, 'sol', 'Codex · GPT-5.6-Sol');
+  await trigger(page).click();
+  await expect(picker(page)).toBeVisible();
+  await expect(picker(page).getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
+  await expect(speed(page)).toHaveCount(0);
+});

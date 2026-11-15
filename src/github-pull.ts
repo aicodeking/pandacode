@@ -3,6 +3,7 @@ import { escape, icon, markdownHtml } from './dom';
 import { trackSegment } from './motion';
 import type { DiffViewerController } from './diff-viewer';
 import type { Session } from './types';
+import { errorText } from './error-text';
 
 /* The task's pull request as a view in the inspector: state, checks, reviews,
  * description, files with their diffs, and commits — read through the user's `gh`. */
@@ -27,6 +28,7 @@ export type PullHost = {
   /** The task came back with its link marked merged. */
   merged(session: Session): void;
   notify(message: string): void;
+  notifyError?(message: string): void;
 };
 
 type Section = 'overview' | 'files' | 'commits';
@@ -107,7 +109,7 @@ export function createPullView(host: PullHost) {
     } catch (error) {
       if (mounted !== view || view.request !== request) return;
       const url = view.session.pullRequest?.url ?? '';
-      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(error instanceof Error ? error.message : String(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
+      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(errorText(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
     } finally { if (mounted === view && view.request === request) view.root.removeAttribute('aria-busy'); }
   }
 
@@ -138,7 +140,7 @@ export function createPullView(host: PullHost) {
     } catch (error) {
       if (mounted !== view) return;
       view.merge = 'confirm'; await render(view, detail);
-      host.notify(`Couldn’t merge #${detail.number}: ${error instanceof Error ? error.message : String(error)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t merge #${detail.number}: ${errorText(error)}`);
     }
   }
 
@@ -253,7 +255,7 @@ export function createPullView(host: PullHost) {
       if (!section) { diffHost.innerHTML = `<p class="pull-muted pull-pad">${truncated ? 'This diff is too large to show here; open it on GitHub.' : 'No textual changes (binary or renamed file).'}</p>`; return; }
       diffHost.replaceChildren();
       view.viewers.set(path, mountDiffViewer(diffHost, { patch: section, path, layout: 'unified', truncated: false }));
-    } catch (error) { if (diffHost.isConnected) diffHost.innerHTML = `<p class="pull-error pull-pad" role="alert">${escape(error instanceof Error ? error.message : String(error))}</p>`; }
+    } catch (error) { if (diffHost.isConnected) diffHost.innerHTML = `<p class="pull-error pull-pad" role="alert">${escape(errorText(error))}</p>`; }
   }
 
   async function onClick(event: MouseEvent): Promise<void> {

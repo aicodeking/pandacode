@@ -1,7 +1,9 @@
 // The inbox (home): every computer's tasks in one list, one card per section: Running, Needs you,
 // Recent, Unsent (the outbox), Bots (every computer's bots; their conversations stay out of the
-// other sections), then Snoozed and Settled folded away. `?computer=` (from Computers) shows one
-// computer's rows. Logic in src/store/inbox.ts.
+// other sections), then Snoozed, Settled and Archived (Unarchive in a row's menu) folded away. An archive
+// shows a toast with Undo under the bar. `?computer=` (from Computers) shows one
+// computer's rows. A search also lists conversation text matches (src/ui/SearchResults.tsx). Logic in
+// src/store/inbox.ts.
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { FlatList, Platform, RefreshControl, StyleSheet, View, type NativeSyntheticEvent, type TextInputChangeEvent } from 'react-native';
@@ -16,6 +18,7 @@ import { CardSlice, ComputerFilter, InboxNotices, InboxSkeleton, SectionHead, Tr
 import { InboxRow } from '../../../ui/InboxRow.tsx';
 import { Menu, type MenuItem } from '../../../ui/Menu.tsx';
 import { NewThread } from '../../../ui/NewThread.tsx';
+import { SearchResults, useThreadSearch } from '../../../ui/SearchResults.tsx';
 import { useSplit } from '../../../ui/split.tsx';
 import { useColors } from '../../../ui/theme.ts';
 import { useInbox } from '../../../ui/useInbox.ts';
@@ -46,6 +49,9 @@ function Inbox() {
     const shown = filterInbox(inbox, bots, { query, computer });
     return inboxItems(shown.inbox, shown.bots, query.trim() ? 'all' : JSON.parse(foldsShown) as Record<SectionId, boolean>);
   }, [inbox, bots, query, computer, foldsShown]);
+  // Conversation text from computers that search it, under the title matches (not repeating them).
+  const titled = useMemo(() => new Set(items.flatMap(item => (item.type === 'row' ? [item.row.key] : []))), [items]);
+  const conversations = useThreadSearch(query, computer, titled);
   // On a cold launch the intro's hand-off brings the whole list in (contentShown), so rows don't stagger
   // in a second time.
   const [underIntro] = useState(() => !useIntro.getState().done);
@@ -127,7 +133,8 @@ function Inbox() {
             <InboxNotices connected={connected} updating={updating} hasRows={items.length > 0} hosts={hosts} problems={problems} retry={refresh} style={styles.notices} />
           </>
         }
-        ListEmptyComponent={loading && !query.trim() ? <InboxSkeleton /> : (
+        ListFooterComponent={query.trim() ? <SearchResults hits={conversations.hits} query={query} searching={conversations.searching} /> : undefined}
+        ListEmptyComponent={loading && !query.trim() ? <InboxSkeleton /> : conversations.hits.length || conversations.searching ? undefined : (
           <EmptyState icon={{ ios: query.trim() ? 'magnifyingglass' : 'tray', android: query.trim() ? 'search' : 'inbox' }} title={empty.title} body={empty.body}
             action={!query.trim() && !computer && hosts.some(h => h.online) ? { label: 'New task', onPress: newTask } : undefined} style={styles.empty} />
         )}
@@ -145,5 +152,5 @@ const styles = StyleSheet.create({
   more: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   list: { paddingTop: 4, paddingBottom: geometry.sectionGap },
   notices: { marginBottom: geometry.sectionGap },
-  empty: { marginTop: 40 },
+  empty: { marginTop: geometry.emptyTop },
 });

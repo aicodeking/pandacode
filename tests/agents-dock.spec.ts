@@ -123,3 +123,36 @@ test('toggling the widget setting with Space keeps focus on the switch', async (
   await expect(toggle).toBeChecked();
   await expect(toggle).toBeFocused();
 });
+
+test('the pinned window keeps one live region and shows a failed action in it', async ({page}) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const marker = /if \(command === ["']agents_dock_unpin["']\) \{/;
+    expect(source).toMatch(marker);
+    await route.fulfill({response, body: source.replace(marker, match => `${match} if (window.__dockFail) throw new Error('The widget window is busy');`)});
+  });
+  await page.goto('/agents-dock.html');
+  // Present in the DOM from the start (inside the collapsed panel), empty, and already a live region.
+  const row = page.locator('.agents-dock-window-error-row'), live = page.getByRole('alert', {includeHidden: true});
+  await expect(row).toHaveCount(1);
+  await expect(row).not.toHaveAttribute('role', 'alert');
+  await expect(live).toHaveCount(1);
+  await expect(live).toBeEmpty();
+  await page.locator('.agents-dock-orb').click();
+  await expect(page.getByRole('dialog', {name: 'Running agents'})).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(1);
+  await page.evaluate(() => { (window as any).__dockFail = true; });
+  await page.getByRole('button', {name: 'Unpin widget'}).click();
+  await expect(live).toHaveText('The widget window is busy');
+  expect(await live.textContent()).not.toContain('Dismiss');
+  expect(await live.evaluate(node => node.closest('button') === null && !node.querySelector('button'))).toBe(true);
+  const dismiss = row.getByRole('button', {name: 'Dismiss error'});
+  expect((await dismiss.boundingBox())!.height).toBe(28);
+  await expect(row.locator('[data-state-tone="danger"]')).toHaveCount(1);
+  expect(await dismiss.evaluate(el => ({press: getComputedStyle(el).getPropertyValue('--press').trim(), icon: getComputedStyle(el.querySelector('.icon')!).width, radius: getComputedStyle(el).borderTopLeftRadius}))).toEqual({press: '.9', icon: '15px', radius: '6px'});
+  await dismiss.click();
+  await expect(live).toBeEmpty();
+  await expect(live).toHaveCount(1);
+  const focused = await page.evaluate(() => document.activeElement?.closest('button,[data-agent-id]') !== null);
+  expect(focused).toBe(true);
+});

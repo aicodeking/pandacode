@@ -58,10 +58,11 @@ test.describe('browser workspace', () => {
     await expect(page.locator('#inspector')).toBeVisible();
   });
 
-  test('HTML previews in the browser with a separate source action, and images open in a tab that can preview them', async ({ page }) => {
+  test('HTML opens in the editor with a browser preview action, and images open in a tab that can preview them', async ({ page }) => {
     await openInspectorTab(page, 'Files');
     await page.getByRole('tab', { name: 'Files', exact: true }).click();
-    await page.getByRole('button', { name: 'View source of index.html', exact: true }).click();
+    await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
+    await expect(page.locator('#file-panel').getByRole('textbox', { name: 'index.html', exact: true })).toBeVisible();
     await expect(page.locator('.file-view-path')).toHaveText('index.html');
     await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect(browserUrl(page)).toHaveValue(/\/index\.html$/);
@@ -89,6 +90,7 @@ test.describe('browser workspace', () => {
     await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.evaluate(() => { (window as any).__failFilePreview = true; });
     await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
+    await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect(page.locator('#toast')).toContainText('File no longer exists');
     await expect(page.locator('.file-list')).toBeVisible();
     expect(await commandCalls(page, 'browser_open')).toEqual([]);
@@ -103,6 +105,7 @@ test.describe('browser workspace', () => {
     await response.getByRole('button', { name: 'src/main.ts', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('src/main.ts');
     await expect(response.getByRole('button', { name: 'missing.html', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
     await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
     await page.locator('.board-card').filter({ hasText: 'Make search feel instant' }).click();
     await page.locator('.message-content').getByRole('button', { name: 'public/favicon.svg', exact: true }).click();
@@ -115,6 +118,7 @@ test.describe('browser workspace', () => {
     await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.evaluate(() => { (window as any).__delayFilePreview = true; });
     await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
+    await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect.poll(async () => (await commandCalls(page, 'prepare_file_preview')).length).toBe(1);
     await page.locator('.task-item[data-id="session-2"]').click();
     await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-2');
@@ -128,6 +132,7 @@ test.describe('browser workspace', () => {
     await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.evaluate(() => { (window as any).__delayFilePreview = true; });
     await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
+    await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect.poll(async () => (await commandCalls(page, 'prepare_file_preview')).length).toBe(1);
     await page.getByRole('tab', { name: /^Changes/ }).click();
     await page.evaluate(() => { (window as any).__releaseFilePreview(); });
