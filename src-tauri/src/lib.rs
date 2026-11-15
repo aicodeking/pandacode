@@ -1066,6 +1066,7 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
         prompt: String::new(),
         instructions,
         images: Vec::new(),
+        extra_dirs: Vec::new(),
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),

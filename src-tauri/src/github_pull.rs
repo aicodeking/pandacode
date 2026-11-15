@@ -12,7 +12,7 @@
 use serde::Serialize;
 use std::{path::Path, time::Duration};
 
-use crate::github::{excerpt, flag, json, names, run_gh_as, state_of, text, view_in_as, Repository, TIMEOUT};
+use crate::github::{excerpt, flag, json, names, run_gh_as, state_of, text, view_in_as, TIMEOUT};
 use crate::storage::TaskLink;
 use crate::workspace::Trust;
 
@@ -323,34 +323,7 @@ fn belongs_to_turn(value: &serde_json::Value, branch: &str, turn_started: i64) -
     same_branch || created_during_turn
 }
 
-/// The PR a turn opened: mentioned in its output (newest first), and either on the
-/// checkout's branch or created after the turn began.
-pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
-    detect_as(root, repo, None, turn, branch, turn_started, Trust::Desktop)
-}
-
-/// [`detect`] with the caller's trust; each candidate is viewed in repository `pinned`
-/// (required for a phone).
-pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
-    let pinned = pin(pinned, trust)?;
-    let mut candidates: Vec<i64> = Vec::new();
-    for message in turn {
-        for number in pull_numbers(message, &repo.name_with_owner).into_iter().rev() {
-            if !candidates.contains(&number) {
-                candidates.push(number);
-            }
-        }
-    }
-    for number in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view_in_as(root, pinned, "pull", number, LINK_FIELDS, trust) else { continue };
-        if belongs_to_turn(&value, branch, turn_started) {
-            return Ok(link_from(&value));
-        }
-    }
-    Ok(None)
-}
-
-/// Round 22: the phone's [`detect_as`] over every GitHub repository of the checkout (`repos`,
+/// Round 22: the phone's PR detection over every GitHub repository of the checkout (`repos`,
 /// from [`crate::github_hub::github_remotes`]): a pull request link in any of them is a
 /// candidate, newest mention first, and each lookup is pinned to the repository in its URL.
 /// Refused with no repository (no phone path leaves `gh` to pick one).
@@ -522,7 +495,7 @@ mod tests {
             for plain in ["detail", "diff", "detect", "lookup", "merge"] {
                 assert!(!code.contains(&format!("github_pull::{plain}(")), "{name} calls github_pull::{plain} with the desktop's trust");
             }
-            for variant in ["detail_as(", "diff_as(", "detect_as(", "lookup_as(", "merge_as(", "detect_in_as("] {
+            for variant in ["detail_as(", "diff_as(", "lookup_as(", "merge_as(", "detect_in_as("] {
                 let needle = format!("github_pull::{variant}");
                 for (at, _) in code.match_indices(&needle) {
                     let args = call_args(&code[at + needle.len()..]);
@@ -570,8 +543,6 @@ mod tests {
         assert_eq!(detail_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
         assert_eq!(lookup_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
         assert_eq!(merge_as(&dir, None, 1, "squash", Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
-        let repo = Repository { name_with_owner: "o/r".into(), default_branch: String::new(), url: String::new() };
-        assert_eq!(detect_as(&dir, &repo, None, &[], "", 0, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
         // The link's repository wins; then the project's origin; else refused.
         assert_eq!(pinned_repo(&dir, Some("https://github.com/up/stream/pull/12")), Ok("up/stream".into()));
         assert_eq!(pinned_repo(&dir, Some("https://example.com/x")).unwrap_err(), NO_GITHUB_REMOTE);
@@ -601,7 +572,7 @@ mod tests {
         let host = include_str!("remote/host.rs");
         let code = host.find("\n#[cfg(test)]\nmod tests {").map_or(host, |end| &host[..end]);
         let mut checked = 0;
-        for variant in ["detail_as(", "diff_as(", "detect_as(", "lookup_as(", "merge_as("] {
+        for variant in ["detail_as(", "diff_as(", "lookup_as(", "merge_as("] {
             let needle = format!("github_pull::{variant}");
             for (at, _) in code.match_indices(&needle) {
                 let args = call_args(&code[at + needle.len()..]);

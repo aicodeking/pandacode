@@ -97,6 +97,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   const collapsed = new Set<string>();
   let order: string[] = [];
   let viewerModule: Promise<typeof import('./diff-viewer')> | undefined;
+  let lastRefetch = 0, refetchTimer = 0, fitFrame = 0;
   let listReader: { key: string; state: DiffViewerReaderState } | undefined;
   let lastBodyScrollTop = 0;
   let pendingListScrollTop: number | undefined;
