@@ -111,6 +111,39 @@ test('a reset that passes before the run ends releases the hold when the run end
   expect(await sent(page)).toEqual(['Build the feature']);
 });
 
+test('each task resolves at its own reset time, never another task\'s', async ({ page }) => {
+  await page.clock.install();
+  await open(page);
+  // The second task runs and holds a queue; then both tasks get limits half a second apart.
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await startRunWithQueue(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 5_000));
+  const resets = await page.evaluate(() => ({ first: Date.now() + 60_000, second: Date.now() + 60_500 }));
+  // Both limits live on the mock's sessions, so a background reload keeps them.
+  await page.evaluate(resets => {
+    const task = (window as any).__limitSession('session-1');
+    Object.assign(task, { limitedAt: Date.now(), limitedUntil: resets.first, resumeAtReset: false });
+    (window as any).__limitEmit('agent-event', { sessionId: 'session-1', kind: 'limited', text: '5-hour usage limit reached', data: { resetsAt: resets.first, window: 'five_hour' } });
+  }, resets);
+  await page.evaluate(resets => {
+    const task = (window as any).__limitSession('session-2');
+    Object.assign(task, { limitedAt: Date.now(), limitedUntil: resets.second, resumeAtReset: false, status: 'idle' });
+    const emit = (event: object) => (window as any).__limitEmit('agent-event', { sessionId: 'session-2', ...event });
+    emit({ kind: 'limited', text: '5-hour usage limit reached', data: { resetsAt: resets.second, window: 'five_hour' } });
+    emit({ kind: 'error', text: 'Claude AI usage limit reached' });
+    emit({ kind: 'done', text: '' });
+  }, resets);
+  await expect(queue(page)).toContainText('Paused until the usage limit resets');
+  // Advance to just past the first reset but short of the second: the second task's hold waits for its own time.
+  await page.clock.fastForward(60_100);
+  await expect(queue(page)).toContainText('Paused until the usage limit resets');
+  await expect(queue(page).getByRole('button', { name: 'Resume', exact: true })).toHaveCount(0);
+  await page.clock.fastForward(1_000);
+  await expect(queue(page)).toContainText('The usage limit has reset');
+  await expect(queue(page).getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+  expect(await sent(page)).toEqual(['Build the feature']);
+});
+
 test('an overdue resume continues right after a restart', async ({ page }) => {
   await open(page, "Object.assign(sessions[0], { limitedAt: now - 7200000, limitedUntil: now - 1000, resumeAtReset: true });");
   await expect.poll(() => sent(page)).toEqual(['Continue where you left off.']);

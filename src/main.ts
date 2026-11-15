@@ -5230,7 +5230,8 @@ function scheduleLimitResumes(): void {
   if (!future.length) return;
   const next = Math.min(...future.map(task => task.limitedUntil!));
   limitTimer = window.setTimeout(() => {
-    for (const task of state.sessions.filter(item => item.limitedAt && item.limitedUntil && item.limitedUntil! <= Date.now() + 1000 && !item.archived)) resolvePassedLimit(task);
+    // Each timer resolves only the tasks whose own reset has passed; a task resetting later waits for its own timer.
+    for (const task of state.sessions.filter(item => item.limitedAt && item.limitedUntil && item.limitedUntil! <= Date.now() && !item.archived)) resolvePassedLimit(task);
     scheduleLimitResumes();
   }, Math.min(next - now, 2147483647));
 }
