@@ -319,10 +319,6 @@ impl SharedTracker {
         Self(Arc::new(Mutex::new(TrackerSlot::Starting(rx))))
     }
 
-    pub(crate) fn start_background(root: PathBuf, cache: PathBuf) -> Self {
-        Self::spawn(move || Tracker::start(root, cache))
-    }
-
     #[cfg(test)]
     pub(crate) fn ready(tracker: Tracker) -> Self {
         Self(Arc::new(Mutex::new(TrackerSlot::Ready(Some(Box::new(tracker))))))
