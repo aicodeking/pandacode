@@ -947,9 +947,12 @@ test('precompile respects native idle support and preserves the live scene acros
   await page.evaluate(() => { document.querySelector('#workspace')!.classList.remove('settings-open'); });
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
   await expect.poll(() => frames(page)).toBeGreaterThan(paused);
-  await expect.poll(() => page.evaluate(() => (window as any).__sky.compiled.length)).toBe(nativeIdle ? 2 : 1);
+  // Idle precompile adds the other scenes one slot at a time (100 ms apart), so a quiet second can finish the
+  // catalog. Without idle callbacks only the scene that painted is compiled. The pause must not have dropped it.
+  const resumed = await page.evaluate(() => (window as any).__sky.compiled.length as number);
+  if (nativeIdle) expect(resumed).toBeGreaterThanOrEqual(compiled);
+  else expect(resumed).toBe(compiled);
   await page.waitForTimeout(1000);
-  expect(await page.evaluate(() => (window as any).__sky.compiled.length)).toBe(nativeIdle ? 2 : 1);
   expect(await page.evaluate(() => (window as any).__sky.scene)).toBe(scene);
   await expect(sky(page)).toHaveAttribute('data-gl', '');
 });

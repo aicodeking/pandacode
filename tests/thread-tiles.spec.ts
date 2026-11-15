@@ -287,7 +287,7 @@ test.describe('thread tiles', () => {
       node.scrollTop = 0;
     });
     expect(await rows.evaluate(node => node.scrollHeight - node.clientHeight), 'the tile’s rows scroll').toBeGreaterThan(200);
-    const canvas = layer.locator(':scope>canvas:not(.thread-sky-fade)');
+    const canvas = layer.locator(':scope>canvas:not(.thread-sky-fade):not(.thread-sky-still)');
     const paints = () => canvas.evaluate(node => (window as any).__paints(node) as number);
     const sampled = await paints();
     await expect.poll(paints, { intervals: [50], timeout: 4000 }).toBeGreaterThan(sampled);

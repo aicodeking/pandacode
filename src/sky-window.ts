@@ -321,12 +321,12 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       const v = velocity + (k * (target - value) - c * velocity) * h;
       return [value + v * h, v];
     };
-    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, or a slow frame —
-    // and that is past what explicit Euler can take on the parting spring's rising branch (k = 280, c = 33: stable to
-    // about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8 where the scene contract is 0..1,
-    // and from mid-ramp it inverts the velocity). So the frame is split into equal substeps of at most 1/60 s — six at
-    // most, since `tick` clamps `dt` at .1 s — which advances the scene by exactly `dt` (each substep is `dt / substeps`,
-    // so no time is lost and none is counted twice). Everything that is per frame rather than per step (the `data-wind`
+    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, or a slow
+    // cadence frame up to .5 s — and that is past what explicit Euler can take on the parting spring's rising branch
+    // (k = 280, c = 33: stable to about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8
+    // where the scene contract is 0..1, and from mid-ramp it inverts the velocity). So the frame is split into equal
+    // substeps of at most 1/60 s, which advances the scene by exactly `dt` (each substep is `dt / substeps`, so no
+    // time is lost and none is counted twice). Everything that is per frame rather than per step (the `data-wind`
     // write, `drift`/`time`, the settling reset, `stirring`) stays below the loop and runs once.
     const substeps = Math.max(1, Math.ceil(dt / FIXED_DT - 1e-9));
     const h = dt / substeps;
@@ -391,7 +391,10 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     sampleGrowth(now);
     const churn = churning(now);
     const interval = now - (last || now);
-    const dt = Math.min(.1, interval / 1000);
+    // Only the frame that ends a reader hold is clamped at .1 s: that wait is not scene time. A slow cadence
+    // (4 fps, 2 on a tile) still advances the shader clock with the wall gap, capped at .5 s so a backgrounded
+    // tab does not integrate a long stall. `step` splits either span into 1/60 s substeps.
+    const dt = Math.min(resumeIn ? .1 : .5, interval / 1000);
     last = now;
     // A held tick returned above, before `paint()` and this sample; its wait is never sampled. A timer frame is costed by
     // how long the paint itself took, not by the intentional gap between idle ticks, so a quiet sky does not trip the governor.
@@ -542,6 +545,9 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     activityAt = performance.now();
     settled = false;
     if (frame || !active() || reducedMotion.matches) return;
+    // A parked snapshot stays on top of the live canvas until it is cleared. A run wakes through the churn path
+    // below, which does not go through `schedule`, so the still has to come down here.
+    if (!stillCanvas.hidden) clearStill();
     if (holding()) { armResume(); return; }
     if (churning(performance.now())) {
       if (!urgent) {

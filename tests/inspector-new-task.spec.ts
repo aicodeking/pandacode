@@ -148,7 +148,7 @@ test('New task opens and focuses #prompt immediately without redundant history, 
   await page.locator('#prompt').fill('hello');
   const prewarmCalls = await page.evaluate(id => {
     const calls = (window as any).__bootAndNewTaskCalls as Array<{ command: string; sessionId: string | null }>;
-    return calls.filter(item => item.command === 'prewarm_draft_session' && item.sessionId === id).length;
+    return calls.filter(item => item.command === 'warm_task' && item.sessionId === id).length;
   }, createdId);
   expect(prewarmCalls).toBe(1);
 });
