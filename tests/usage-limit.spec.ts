@@ -13,6 +13,7 @@ async function open(page: Page, seed = ''): Promise<void> {
       // Like native storage, a saved prompt clears the task's usage limit.
       if (command === 'send_message' && window.__holdAgent) { Object.assign(session(args.sessionId), { status: 'running', limitedAt: null, limitedUntil: null, resumeAtReset: false }); return; }
       if (command === 'queue_add' && window.__slowQueue) await new Promise(resolve => setTimeout(resolve, 400));
+      if (command === 'list_sessions' && window.__failList) throw new Error('preview: listing failed');
       switch (command) {`);
     await route.fulfill({ response, body: body + '\nwindow.__limitEmit = emit; window.__limitSession = session;\n' });
   });
@@ -85,6 +86,27 @@ test('a passed reset releases the queue hold without auto-sending', async ({ pag
   // The banner says the limit has reset and the queue offers Resume again, but nothing sends by itself.
   await expect(banner(page)).toContainText('The usage limit has reset');
   await expect(queue(page)).not.toContainText('Paused until the usage limit resets');
+  await expect(queue(page).getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+  expect(await sent(page)).toEqual(['Build the feature']);
+});
+
+test('a reset that passes before the run ends releases the hold when the run ends', async ({ page }) => {
+  await page.clock.install();
+  await open(page);
+  await startRunWithQueue(page);
+  const resetsAt = await page.evaluate(() => Date.now() + 60_000);
+  await page.evaluate(resetsAt => {
+    const task = (window as any).__limitSession('session-1');
+    Object.assign(task, { limitedAt: Date.now(), limitedUntil: resetsAt, resumeAtReset: false });
+    const emit = (event: object) => (window as any).__limitEmit('agent-event', { sessionId: 'session-1', ...event });
+    emit({ kind: 'limited', text: '5-hour usage limit reached', data: { resetsAt, window: 'five_hour' } });
+  }, resetsAt);
+  // The reset passes while the run is still going: the ending hold does not exist yet to release.
+  await page.clock.fastForward(61_000);
+  // The run then ends with the limit's ending (with the task list failing, no reload can re-check either):
+  // the hold it installs must be re-checked at once.
+  await page.evaluate(() => { (window as any).__failList = true; (window as any).__limitSession('session-1').status = 'idle'; (window as any).__limitEmit('agent-event', { sessionId: 'session-1', kind: 'error', text: 'Claude AI usage limit reached' }); (window as any).__limitEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '' }); });
+  await expect(banner(page)).toContainText('The usage limit has reset');
   await expect(queue(page).getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
   expect(await sent(page)).toEqual(['Build the feature']);
 });
