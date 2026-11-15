@@ -26,12 +26,12 @@ function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object') { Object.values(value).forEach(deepFreeze); Object.freeze(value); }
   return value;
 }
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers', 'slashCommands'];
 const capabilities = ['btw.content', 'btw.taskControl', 'services.call', 'connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read'];
 /** Every manifest permission/capability this validator accepts; author documentation is checked against it. */
 export const MANIFEST_CAPABILITIES: readonly string[] = Object.freeze([...capabilities]);
 export const MANIFEST_CONTRIBUTIONS: readonly string[] = Object.freeze([...knownContributions]);
-const publicShapes = ['tilesPresentation', 'tilesAction', 'projectPickerPresentation', 'projectPickerAction', 'threadExtrasPresentation', 'threadExtrasAction', 'composerAttachPresentation', 'composerAttachAction', 'composerPanelsPresentation', 'composerPanelsAction', 'composerPresentation', 'composerAction', 'statusPresentation', 'statusAction', 'rosterPresentation', 'rosterAction', 'dockPresentation', 'dockAction', 'sidebarPresentation', 'sidebarAction', 'sidebarBotsPresentation', 'sidebarBotsAction', 'settingsPresentation', 'settingsAction', 'dialogAccessory', 'machinesPresentation', 'machinesAction', 'cloudPresentation', 'cloudAction', 'moodboardPresentation', 'moodboardAction', 'worktreePresentation', 'worktreeAction', 'pullPresentation', 'pullAction', 'githubHubPresentation', 'githubHubAction', 'boardPresentation', 'boardAction', 'btwPresentation', 'btwAction', 'designPresentation', 'designAction', 'command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction', 'searchPresentation', 'searchAction', 'browserPresentation', 'browserAction', 'terminalPresentation', 'terminalAction', 'simulatorPresentation', 'simulatorAction', 'vmPresentation', 'vmAction', 'projectScope'];
+const publicShapes = ['commandsPresentation', 'commandsAction', 'tilesPresentation', 'tilesAction', 'projectPickerPresentation', 'projectPickerAction', 'threadExtrasPresentation', 'threadExtrasAction', 'composerAttachPresentation', 'composerAttachAction', 'composerPanelsPresentation', 'composerPanelsAction', 'composerPresentation', 'composerAction', 'statusPresentation', 'statusAction', 'rosterPresentation', 'rosterAction', 'dockPresentation', 'dockAction', 'sidebarPresentation', 'sidebarAction', 'sidebarBotsPresentation', 'sidebarBotsAction', 'settingsPresentation', 'settingsAction', 'dialogAccessory', 'machinesPresentation', 'machinesAction', 'cloudPresentation', 'cloudAction', 'moodboardPresentation', 'moodboardAction', 'worktreePresentation', 'worktreeAction', 'pullPresentation', 'pullAction', 'githubHubPresentation', 'githubHubAction', 'boardPresentation', 'boardAction', 'btwPresentation', 'btwAction', 'designPresentation', 'designAction', 'command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction', 'searchPresentation', 'searchAction', 'browserPresentation', 'browserAction', 'terminalPresentation', 'terminalAction', 'simulatorPresentation', 'simulatorAction', 'vmPresentation', 'vmAction', 'projectScope'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
   detail: ContractError;
@@ -324,6 +324,15 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if ((page.fields as ObjectValue[]).some(field => field.async === true)) error('UnsupportedContribution', `${path}/contributes/settings`, [page.id as string]);
     }
     for (const binding of (contributions.keybindings ?? []) as ObjectValue[]) reference('commands', binding.command, 'keybindings');
+    // A slash command runs exactly one target: a contributed command, or one of this package's own providers (whose
+    // send path receives it as typed). Names are unique per package; conflicts across owners resolve in the host.
+    const slashNames = new Set<Json>();
+    for (const slash of (contributions.slashCommands ?? []) as ObjectValue[]) {
+      if (('command' in slash) === ('provider' in slash)) error('InvalidShape', `${path}/contributes/slashCommands`, [slash.id as string]);
+      if ('command' in slash) reference('commands', slash.command, 'slashCommands'); else reference('providers', slash.provider, 'slashCommands');
+      if (slashNames.has(slash.name)) error('DuplicateId', `${path}/contributes/slashCommands`, [slash.name as string]);
+      slashNames.add(slash.name);
+    }
     for (const menu of (contributions.menus ?? []) as ObjectValue[]) {
       reference('commands', menu.command, 'menus');
       if (menu.icon) reference('icons', menu.icon, 'menus');

@@ -801,6 +801,19 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     projects: () => [NO_PROJECT, ...userProjects().map(project => project.id)],
     choose: (task, projectId) => { const s = session(); if (s?.id === task && newTaskView()) void chooseTaskProject(s, state.generation, projectId).catch(report); },
   });
+  // The composer slash menu's entries and package slash commands, and the harness command center's actions:
+  // presentation only. Typing, resolving and sending a command, the draft and the command center's panels stay here
+  // and in slash-commands.ts, command-center.ts and slash_commands.rs.
+  commandsAdoption = (await import('./extensions/commands-host')).mountCommandsAdoption({
+    notify,
+    state: () => {
+      const s = session(), prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = Boolean(document.querySelector('#dialog.command-center-dialog[open]'));
+      return { task: s?.id || undefined, project: s?.projectId || undefined, provider: s?.provider, panel: s && open && activeCommandPanel?.task === s.id ? activeCommandPanel.kind : 'none', draft: s && prompt?.dataset.sessionId === s.id ? prompt.value : '', busy: Boolean(modelPickerCleanup), generation: state.generation };
+    },
+    openPanel: (task, panel) => { const s = session(); if (s?.id !== task) return; try { if (panel === 'goal') openGoal(s); else openCommandPanel(s, panel); } catch (error) { report(error); } },
+    refresh: () => slashPicker?.refresh(true),
+  });
+  onContextChanged(() => commandsAdoption?.watchProject());
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -875,6 +888,8 @@ let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mou
 let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
 /** Queue, token saver and council panels adoption (docs/extensions/composer-panels.md), mounted once extensions load. */
 let composerPanels: ReturnType<typeof import('./extensions/composer-panels-host').mountComposerPanelsAdoption> | undefined;
+/** Slash menu and harness command center adoption (docs/extensions/commands-extras.md), mounted once extensions load. */
+let commandsAdoption: ReturnType<typeof import('./extensions/commands-host').mountCommandsAdoption> | undefined;
 /** Thread tiles and draft project picker adoption (docs/extensions/tiles-picker.md), mounted once extensions load. */
 let tilesPicker: ReturnType<typeof import('./extensions/tiles-picker-host').mountTilesPickerAdoption> | undefined;
 /** Transcript extras adoption (docs/extensions/thread-extras.md), mounted once extensions load. */
@@ -1057,6 +1072,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('commands-extras')) {
+  (window as any).__previewCommands = () => commandsAdoption?.presentation();
+  (window as any).__previewCommandsAction = (input: unknown) => commandsAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('tiles-picker')) {
   (window as any).__previewTiles = () => tilesPicker?.tilesPresentation();
   (window as any).__previewTilesAction = (input: unknown) => tilesPicker?.dispatchTiles(input) ?? { ok: false, reason: 'Revoked' };
@@ -1333,9 +1352,13 @@ async function updateGoal(task: Session, request: GoalAction): Promise<GoalState
   }
   scheduleNavigation(); return goal;
 }
+/** The command center panel last opened, and its task (a package's command center context reads it). */
+let activeCommandPanel: { task: string; kind: 'goal' | 'usage' | 'hooks' | 'preferences' | 'imports' | 'conversations' | 'plugins' | 'jobs' } | undefined;
 function openGoal(task: Session, initialObjective?: string): void {
-  activeCommandView = showGoalDialog(commandDialog(), {
+  const dialog = commandDialog(); activeCommandPanel = { task: task.id, kind: 'goal' };
+  activeCommandView = showGoalDialog(dialog, {
     taskId: task.id, initialObjective, target: { task: task.id, project: task.projectId, revision: state.generation },
+    extension: commandsAdoption?.centerExtension({ task: task.id, project: task.projectId, provider: task.provider, panel: 'goal', revision: state.generation }),
     load: () => call('task_goal', { sessionId: task.id, request: { action: 'get' } }),
     execute: request => updateGoal(task, request),
   });
@@ -1346,7 +1369,9 @@ function openCommandPanel(task: Session, kind: string, argumentsText = ''): void
   const load = (cursor?: string) => kind === 'jobs'
     ? call<CommandPanel>('codex_jobs', { sessionId: task.id })
     : call<CommandPanel>('codex_command', { sessionId: task.id, request: { action: kind, ...(kind === 'conversations' ? { cursor: cursor ?? null, search: argumentsText || null } : {}) } });
-  activeCommandView = showCommandCenter(commandDialog(), { title: titles[kind] ?? kind, initialSearch: kind === 'conversations' ? argumentsText : undefined, initialSection: kind === 'usage' && argumentsText === 'daily' ? 'daily' : undefined, target: { task: task.id, project: task.projectId, revision: state.generation }, load, execute: async (action, payload) => {
+  const dialog = commandDialog(), panel = (['usage', 'hooks', 'preferences', 'imports', 'conversations', 'plugins', 'jobs'] as const).find(item => item === kind);
+  activeCommandPanel = panel ? { task: task.id, kind: panel } : undefined;
+  activeCommandView = showCommandCenter(dialog, { title: titles[kind] ?? kind, initialSearch: kind === 'conversations' ? argumentsText : undefined, initialSection: kind === 'usage' && argumentsText === 'daily' ? 'daily' : undefined, target: { task: task.id, project: task.projectId, revision: state.generation }, extension: panel ? commandsAdoption?.centerExtension({ task: task.id, project: task.projectId, provider: task.provider, panel, revision: state.generation }) : undefined, load, execute: async (action, payload) => {
     if (action === 'set_preferences') {
       for (const [id, value] of Object.entries(payload.values as Record<string, unknown>)) await call('codex_command', { sessionId: task.id, request: { action: 'setPreference', id, value } });
       slashPicker?.refresh(); return load();
@@ -3488,8 +3513,8 @@ function renderComposer(): void {
     slashPicker = mountSlashCommands(prompt, {
       contextKey: () => `${state.sessionId}:${session()?.provider}:${workspacePath()}`,
       provider: () => session()?.provider ?? s.provider,
-      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }).then(withWake),
-      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }).then(withWake),
+      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }).then(withWake).then(catalog => commandsAdoption?.slashCatalog(catalog, s.id) ?? catalog),
+      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }).then(withWake).then(catalog => commandsAdoption?.slashCatalog(catalog, s.id) ?? catalog),
       select: () => state.drafts.set(s.id, prompt.value),
     });
     fileMentionPicker = mountFileMentions(prompt, {
@@ -4758,6 +4783,18 @@ async function sendDraft(): Promise<void> {
   if (councilFirstSends.has(s.id)) return;
   if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
   clearComposerNote(s);
+  // A package slash command runs its package command with the captured task, harness and arguments; nothing is sent to
+  // the harness. A refusal (arguments, a conflict, a disabled or faulted extension) keeps the draft and the caret.
+  const packageSlash = commandsAdoption?.slashCommand(text, s.id);
+  if (packageSlash) {
+    const result = commandsAdoption!.runSlash(packageSlash, text);
+    if (!result.ok) { showComposerNote(s, result.reason); return; }
+    const finishSubmit = voiceDictation.beginSubmit(s.id);
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (prompt?.value === draft) { prompt.value = ''; resizePrompt(); }
+    state.drafts.delete(s.id); finishSubmit?.();
+    return;
+  }
   if (remoteOffline(s)) { renderComposer(); return; }
   const fresh = !s.remoteDevice && newTaskView();
   const target = fresh ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;

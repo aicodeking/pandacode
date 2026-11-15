@@ -21,7 +21,7 @@ export function openExtensionDialog(definition: DialogDefinition, context: Dialo
   // A dialog accessory (the shared modal or a directly mounted dialog) stacks its form above the open host
   // dialog; the host keeps its fields and focus target.
   const hostDialog = trigger.closest<HTMLDialogElement>('dialog[open]');
-  const element = hostDialog && hostDialog.id !== 'extension-nested-dialog' && trigger.closest('.dialog-extension-extras') && hostDialog.contains(trigger) ? nestedDialog() : shared;
+  const element = hostDialog && hostDialog.id !== 'extension-nested-dialog' && trigger.closest('.dialog-extension-extras, .command-center-extensions') && hostDialog.contains(trigger) ? nestedDialog() : shared;
   if (!element || element.open) return { result: Promise.resolve({ kind: 'cancelled', reason: 'busy' }), close() {} };
   const dialog = element;
   const state = createDialogState(definition, context, callbacks);

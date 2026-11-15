@@ -17,9 +17,13 @@ export type GoalAction = { action: 'set'; objective: string; tokenBudget: number
 export interface CommandView { refresh(): Promise<void>; dispose(): void; }
 /** The task this panel was opened for; extension extras capture it once (docs/extensions/owned-dialogs.md). */
 export type CommandTarget = { task: string; project?: string; revision?: number };
+/** Contributed command center actions (docs/extensions/commands-extras.md), mounted in the footer only when a package
+ * contributes; they go with the panel. */
+export type CommandCenterExtension = { mount(footer: HTMLElement): () => void };
 interface GoalOptions {
   taskId: string;
   target?: CommandTarget;
+  extension?: CommandCenterExtension;
   initialObjective?: string;
   load(): Promise<GoalState | null>;
   execute(action: GoalAction): Promise<GoalState | null>;
@@ -79,7 +83,7 @@ export function createGoalBanner(options: { open(): void; pause(): Promise<void>
   return { element, update, dispose() { disposed = true; current = null; pending.clear(); element.remove(); } };
 }
 
-function shell(dialog: HTMLDialogElement, title: string, description?: string, target?: CommandTarget) {
+function shell(dialog: HTMLDialogElement, title: string, description?: string, target?: CommandTarget, extension?: CommandCenterExtension) {
   const host = node('section', 'command-center');
   const header = node('header', 'command-center-heading'); const heading = node('h2', '', title);
   const close = button('', 'command-center-close'); close.innerHTML = icon('close'); close.setAttribute('aria-label', 'Close');
@@ -94,7 +98,8 @@ function shell(dialog: HTMLDialogElement, title: string, description?: string, t
   const live = () => !disposed && dialog.open && host.parentElement === dialog;
   // Opt-in extension band after the panel, captured for this panel's own task; it goes with the panel.
   const detachExtras = target ? attachDialogExtras(dialog, { dialog: 'command-center', ...target }, { owner: host, alive: () => !disposed }) : () => {};
-  const onClose = () => { disposed = true; detachExtras(); dialog.removeEventListener('close', onClose); };
+  let detachExtension = extension?.mount(footer);
+  const onClose = () => { disposed = true; detachExtras(); detachExtension?.(); detachExtension = undefined; dialog.removeEventListener('close', onClose); };
   dialog.addEventListener('close', onClose);
   close.addEventListener('click', () => { if (live()) dialog.close(); });
   done.addEventListener('click', () => { if (live()) dialog.close(); });
@@ -105,7 +110,7 @@ function shell(dialog: HTMLDialogElement, title: string, description?: string, t
 }
 
 export function showGoalDialog(dialog: HTMLDialogElement, options: GoalOptions): CommandView {
-  const view = shell(dialog, 'Goal', 'Keep working across turns until the objective is reached, paused, or a limit is reached.', options.target);
+  const view = shell(dialog, 'Goal', 'Keep working across turns until the objective is reached, paused, or a limit is reached.', options.target, options.extension);
   view.host.dataset.taskId = options.taskId;
   const status = node('div', 'goal-overview'); status.setAttribute('role', 'status'); status.textContent = 'Loading goal…';
   const form = node('form', 'goal-form');
@@ -184,12 +189,13 @@ export interface CommandCenterOptions {
   initialSearch?: string;
   initialSection?: 'daily';
   target?: CommandTarget;
+  extension?: CommandCenterExtension;
   load(cursor?: string): Promise<CommandPanel>;
   execute(action: string, payload: Record<string, unknown>): Promise<CommandPanel | void>;
 }
 
 export function showCommandCenter(dialog: HTMLDialogElement, options: CommandCenterOptions): CommandView {
-  const view = shell(dialog, options.title, options.description, options.target);
+  const view = shell(dialog, options.title, options.description, options.target, options.extension);
   view.content.append(node('p', 'command-empty', 'Loading…'));
   let revision = 0, pending = false;
   const selected = new Set<string>(); let searchText = options.initialSearch ?? '';

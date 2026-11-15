@@ -12,7 +12,7 @@ type Result<T> = std::result::Result<T, Value>;
 pub fn primitive_limit(family: &str, name: &str) -> u64 {
     SCHEMA["x-primitives"]["families"][family]["limits"][name]["value"].as_u64().expect("declared primitive limit")
 }
-const CONTRIBUTIONS: [&str; 14] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services", "providers"];
+const CONTRIBUTIONS: [&str; 15] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services", "providers", "slashCommands"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -346,6 +346,15 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             if items(page, "fields").iter().any(|field| field["async"] == true) { return Err(fail("UnsupportedContribution", &format!("{path}/contributes/settings"), vec![text(page, "id").to_owned()])); }
         }
         for binding in items(contributions, "keybindings") { reference(contributions, "commands", &binding["command"], &format!("{path}/contributes/keybindings"))?; }
+        // A slash command runs exactly one target: a contributed command, or one of this package's own providers (whose
+        // send path receives it as typed). Names are unique per package; conflicts across owners resolve in the host.
+        let mut slash_names = BTreeSet::new();
+        for slash in items(contributions, "slashCommands") {
+            let slash_path = format!("{path}/contributes/slashCommands");
+            if slash.get("command").is_some() == slash.get("provider").is_some() { return Err(fail("InvalidShape", &slash_path, vec![text(slash, "id").to_owned()])); }
+            if slash.get("command").is_some() { reference(contributions, "commands", &slash["command"], &slash_path)?; } else { reference(contributions, "providers", &slash["provider"], &slash_path)?; }
+            if !slash_names.insert(text(slash, "name")) { return Err(fail("DuplicateId", &slash_path, vec![text(slash, "name").to_owned()])); }
+        }
         for menu in items(contributions, "menus") {
             reference(contributions, "commands", &menu["command"], &format!("{path}/contributes/menus"))?;
             if menu.get("icon").is_some() { reference(contributions, "icons", &menu["icon"], &format!("{path}/contributes/menus"))?; }
@@ -411,7 +420,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["commandsPresentation", "commandsAction", "tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "projectScope" {
@@ -763,6 +772,55 @@ mod tests {
         assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
         let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.context", "revision": 1, "selection": {"kind": "sidebar-section", "ids": ["review"]}});
         assert_eq!(super::validate_contract("context", &context)["ok"], true);
+    }
+    #[test]
+    fn commands_slash_declarations_state_action_and_selection_kinds_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/commands-extras/extension.json")).unwrap();
+        let provider: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/commands-extras/provider.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], true);
+        // name, description and argument schema: the same refusals as schema-v1.json and the TypeScript validator.
+        for (field, value) in [("name", json!("notes")), ("name", json!("/Notes")), ("name", json!(format!("/{}", "a".repeat(33)))), ("description", json!("")), ("arguments", json!({"required": true})), ("arguments", json!({"required": false, "maxLength": 0})), ("arguments", json!({"required": false, "maxLength": 2049})), ("arguments", json!({"required": false, "maxLength": 10, "pattern": ".*"})), ("script", json!("run"))] {
+            let mut invalid = manifest.clone(); invalid["contributes"]["slashCommands"][0][field] = value;
+            assert_eq!(super::validate_contract("packages", &json!([invalid]))["ok"], false, "{field}");
+        }
+        let mut both = manifest.clone(); both["contributes"]["slashCommands"][0]["provider"] = json!("sample.commands-extras/missing");
+        assert_eq!(super::validate_contract("packages", &json!([both]))["error"]["code"], "InvalidShape");
+        let mut neither = manifest.clone(); neither["contributes"]["slashCommands"][0].as_object_mut().unwrap().remove("command");
+        assert_eq!(super::validate_contract("packages", &json!([neither]))["error"]["code"], "InvalidShape");
+        let mut unknown = manifest.clone(); unknown["contributes"]["slashCommands"][0]["command"] = json!("sample.commands-extras/missing");
+        assert_eq!(super::validate_contract("packages", &json!([unknown]))["error"]["code"], "UnknownReference");
+        let mut foreign = provider.clone(); foreign["contributes"]["slashCommands"][0]["provider"] = json!("sample.fake-harness/recorded");
+        assert_eq!(super::validate_contract("packages", &json!([foreign]))["error"]["code"], "UnknownReference");
+        let mut duplicate = manifest.clone(); duplicate["contributes"]["slashCommands"][1]["name"] = json!("/notes");
+        assert_eq!(super::validate_contract("packages", &json!([duplicate]))["error"]["code"], "DuplicateId");
+        let mut stolen = manifest.clone(); stolen["contributes"]["slashCommands"][0]["id"] = json!("other.owner/notes");
+        assert_eq!(super::validate_contract("packages", &json!([stolen]))["error"]["code"], "InvalidId");
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/commands-extras/state.json")).unwrap();
+        let request: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/commands-extras/action.json")).unwrap();
+        assert_eq!(super::validate_contract("commandsPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("commandsAction", &request)["ok"], true);
+        for field in ["selector", "ipc", "text", "draft", "command", "arguments"] {
+            let mut forged = request.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("commandsAction", &forged)["ok"], false, "{field}");
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("commandsPresentation", &raw)["ok"], false, "{field}");
+        }
+        // Sending, writing or reading the draft, panel changes and consoles have no public control id.
+        for control in ["slash-send", "slash-insert", "slash-read-draft", "harness-execute", "console-open"] {
+            let mut forged = request.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("commandsAction", &forged)["ok"], false, "{control}");
+        }
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.commands.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        let slash = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.commands.slash", "projectId": "project-1", "sessionId": "task-1", "revision": 1, "selection": {"kind": "slash-command", "ids": ["task-1"]}, "slash": {"command": "sample.commands-extras/notes", "provider": "codex", "arguments": "release notes"}});
+        assert_eq!(super::validate_contract("context", &slash)["ok"], true);
+        let harness = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.commands.harness.actions", "sessionId": "task-1", "revision": 1, "selection": {"kind": "harness-command", "ids": ["codex:usage"]}});
+        assert_eq!(super::validate_contract("context", &harness)["ok"], true);
+        let mut long = slash.clone(); long["slash"]["arguments"] = json!("x".repeat(2049));
+        assert_eq!(super::validate_contract("context", &long)["ok"], false);
+        let mut extra = slash.clone(); extra["slash"]["draft"] = json!("the rest of the composer");
+        assert_eq!(super::validate_contract("context", &extra)["ok"], false);
     }
     #[test]
     fn tiles_picker_state_action_layouts_and_selection_kinds_share_native_schema() {

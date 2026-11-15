@@ -101,6 +101,7 @@ config.testMatch.push('**/extensions-composer-panels-coverage.spec.ts');
 config.testMatch.push('**/extensions-attach-wake-coverage.spec.ts');
 config.testMatch.push('**/extensions-thread-extras-coverage.spec.ts');
 config.testMatch.push('**/extensions-tiles-picker-coverage.spec.ts');
+config.testMatch.push('**/extensions-commands-extras-coverage.spec.ts');
 export default defineConfig(config, {
   // Project read coverage is explicit, like every experimental extension surface.
   testMatch: [...config.testMatch as string[], '**/extensions-trust.spec.ts', ...(process.platform === 'win32' && process.arch === 'x64' ? ['**/extensions-runtime.spec.ts'] : []), '**/extensions-project-reads.spec.ts', '**/extensions-inventory.spec.ts', '**/extensions-context.spec.ts', '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/extensions-windows.spec.ts', '**/tray-popover.spec.ts'],

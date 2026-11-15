@@ -508,6 +508,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
   }
 }
 // Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+// Explicit slash menu and command center extension fixture only: safe mode while a draft names a package command.
+if (new URLSearchParams(location.search).has('commands-extras')) {
+  (window as any).__previewCommandsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit tiles and project picker extension fixture only: safe mode while tiles show or the picker holds a draft.
 if (new URLSearchParams(location.search).has('tiles-picker')) {
   (window as any).__previewTilesPickerSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
@@ -1110,10 +1114,20 @@ function slashCatalog(provider: ProviderId) {
   ];
   const accepts = new Set(['rename', 'btw', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
   const commands = [...local, ...(provider === 'codex' ? codex : [])].map(([name, description, action]) => ({ id: `pandacode:${name}`, name: `/${name}`, description, kind: 'action', source: 'PandaCode', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
-  if (providerOwner(provider)) return { commands: commands.map(command => command.action === 'console' ? { ...command, kind: 'unsupported', reason: CONSOLE_UNSUPPORTED } : command), warnings: [SLASH_UNSUPPORTED] };
+  if (providerOwner(provider)) {
+    // PandaCode's controls plus exactly the slash commands the provider's package advertises (sent through its own send
+    // path); the warning remains only when it advertises none.
+    const advertised = packageSlashCommands(provider).filter(command => !commands.some(local => local.name === command.name));
+    return { commands: [...commands.map(command => command.action === 'console' ? { ...command, kind: 'unsupported', reason: CONSOLE_UNSUPPORTED } : command), ...advertised], warnings: advertised.length ? [] : [SLASH_UNSUPPORTED] };
+  }
   const native = provider === 'codex' ? ['review', 'compact', 'project-guide'] : provider === 'claude' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
   const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
+}
+/** A preview package provider's advertised slash commands (`contributes.slashCommands` naming it). */
+function packageSlashCommands(provider: ProviderId) {
+  return previewExtensionSnapshot().packages.filter(item => item.enabled && (item.manifest.contributes as { providers?: { id: string }[] }).providers?.some(entry => entry.id === provider))
+    .flatMap(item => (item.manifest.contributes.slashCommands ?? []).filter(slash => slash.provider === provider).map(slash => ({ id: slash.id, name: slash.name, description: slash.description, kind: 'prompt', source: item.manifest.id, action: undefined, argumentHint: slash.arguments?.hint, schema: slash.arguments })));
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {
   const match = /^\/([\p{L}\p{N}_:.-]+|\?)(?:\s+([\s\S]*))?$/u.exec(text.trim());
@@ -1121,6 +1135,14 @@ function resolveSlash(provider: ProviderId, text: string): { action: string | nu
   const command = slashCatalog(provider).commands.find(command => command.name === `/${match[1]}`);
   if (command?.action === 'console' || command?.action?.startsWith('console:')) requireProviderConsole(provider);
   if (!command && providerOwner(provider)) throw new Error(SLASH_UNSUPPORTED);
+  const declared = providerOwner(provider) ? packageSlashCommands(provider).find(item => item.name === command?.name) : undefined;
+  if (declared) {
+    const value = (match[2] ?? '').trim();
+    if (!declared.schema && value) throw new Error(`${declared.name} does not accept arguments.`);
+    if (declared.schema?.required && !value) throw new Error(`${declared.name} needs arguments.`);
+    if (declared.schema && [...value].length > declared.schema.maxLength) throw new Error(`${declared.name} accepts at most ${declared.schema.maxLength} characters of arguments.`);
+    return { action: null, arguments: '' };
+  }
   if (!command) throw new Error(`Unknown command /${match[1]}. Type / to browse this harness’s commands, or refresh the list.`);
   if (command.action && match[2] && !command.argumentHint) throw new Error(`${command.name} opens a PandaCode control and does not accept arguments.`);
   return { action: command.action ?? null, arguments: match[2] ?? '' };

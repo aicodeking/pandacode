@@ -16,7 +16,7 @@ pub fn validate_identity(id: &str) -> Result<(), String> {
 pub const PROVIDER_RECOVERY: &str = "This extension provider is unavailable. History is preserved. Reinstall or enable its extension in Settings → Extensions, or change the provider using the model picker to continue.";
 
 pub const CONSOLE_UNSUPPORTED: &str = "UnsupportedCapability: this provider has no core-managed interactive console. Continue in PandaCode task chat.";
-pub const SLASH_UNSUPPORTED: &str = "UnsupportedCapability: extension-native slash commands are not supported. Use PandaCode controls or task chat.";
+pub const SLASH_UNSUPPORTED: &str = "UnsupportedCapability: this extension provider does not advertise this slash command; extension-native slash commands run only when its package declares them. Use PandaCode controls or task chat.";
 
 /// A conversation registration cannot authorize a PTY/executable or claim that a
 /// terminal enforces core approval policy. Only reviewed native CLI adapters can.

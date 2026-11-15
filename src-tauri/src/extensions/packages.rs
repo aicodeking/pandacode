@@ -192,6 +192,15 @@ impl Packages {
             package.manifest["contributes"]["providers"].as_array().into_iter().flatten().map(|provider| (provider.clone(), package.manifest["version"].as_str().unwrap_or_default().to_owned(), digest.clone(), source.clone())).collect::<Vec<_>>()
         }).collect()
     }
+    /// The slash commands a registered provider's own package declares for it (`contributes.slashCommands[].provider`):
+    /// none for a disabled, untrusted, draining or safe-mode package, or a provider another package registers.
+    pub(crate) fn provider_slash_commands(&self, provider: &str) -> Vec<Value> {
+        if !self.provider_registrations().iter().any(|(definition, ..)| definition["id"] == provider) { return vec![]; }
+        let Some(owner) = super::providers::extension_owner(provider) else { return vec![] };
+        self.snapshot().packages.into_iter().filter(|package| package.enabled && package.manifest["id"] == owner)
+            .flat_map(|package| package.manifest["contributes"]["slashCommands"].as_array().cloned().unwrap_or_default())
+            .filter(|command| command["provider"] == provider).take(32).collect()
+    }
     fn settings_page(&self, id: &str, page: &str) -> Result<Value> {
         if self.safe { return Err("Safe mode: extension settings are dormant.".into()); }
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
@@ -600,6 +609,24 @@ mod tests {
         assert!(packages.enable(&id, true).unwrap_err().contains("ExecutableTrustRequired"));
         let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
         packages.trust(&id, &digest, true).unwrap(); packages.enable(&id, true).unwrap();
+    }
+    #[test]
+    fn provider_slash_commands_come_only_from_the_trusted_enabled_owner_package() {
+        let manifest = include_str!("../../../tests/fixtures/extensions/commands-extras/provider.json");
+        let source = HARNESS_SOURCE.replace("sample.fake-harness", "sample.slash-harness");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        install_harness(&packages, manifest, &source);
+        let names = |packages: &Packages, provider: &str| packages.provider_slash_commands(provider).iter().map(|command| command["name"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(names(&packages, "sample.slash-harness/recorded"), ["/review", "/summary", "/rename"]);
+        // A provider id the package does not register, or another package's provider, advertises nothing.
+        assert!(names(&packages, "sample.slash-harness/other").is_empty());
+        assert!(names(&packages, "sample.fake-harness/recorded").is_empty());
+        // Disable and safe mode retire the commands; the stored enable preference survives safe mode.
+        packages.enable("sample.slash-harness", false).unwrap();
+        assert!(names(&packages, "sample.slash-harness/recorded").is_empty());
+        packages.enable("sample.slash-harness", true).unwrap();
+        assert!(names(&storage.packages(true), "sample.slash-harness/recorded").is_empty());
+        assert_eq!(names(&storage.packages(false), "sample.slash-harness/recorded").len(), 3);
     }
     #[test]
     fn ui_only_packages_never_register_workspace_execution_even_when_trusted() {
@@ -1309,6 +1336,28 @@ mod tests {
         packages.enable("sample.status-feedback", false).unwrap();
         assert!(!storage.packages(false).snapshot().packages[0].enabled);
         packages.enable("sample.status-feedback", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
+    fn commands_extras_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/commands-extras/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.commands-extras", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        assert_eq!(contributes["slashCommands"][0]["name"], "/notes");
+        assert_eq!(contributes["slashCommands"][0]["arguments"]["maxLength"], 200);
+        assert_eq!(contributes["menus"][0]["location"], "panda.commands.harness.actions");
+        assert_eq!(contributes["layouts"][0]["location"], "panda.commands.slash.entries");
+        assert_eq!(contributes["layouts"][1]["location"], "panda.commands.harness.entries");
+        packages.enable("sample.commands-extras", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.commands-extras", true).unwrap();
         // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
         assert!(storage.packages(true).snapshot().packages.is_empty());
         assert!(storage.packages(false).snapshot().packages[0].enabled);

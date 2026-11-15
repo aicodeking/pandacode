@@ -1,0 +1,153 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.commands-extras",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.commands-extras/toolbar",
+        "title": "Toolbar-first commands",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.commands-extras/slash-notes",
+        "title": "Slash notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Slash notes",
+            "successMessage": "Slash notes kept.",
+            "cancelMessage": "The draft stays with PandaCode.",
+            "fields": [
+              {
+                "id": "tags",
+                "kind": "select",
+                "label": "Slash tags",
+                "async": true,
+                "options": [
+                  {
+                    "value": "alpha",
+                    "label": "Alpha"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "sample.commands-extras/ping",
+        "title": "Ping",
+        "action": {
+          "kind": "showMessage",
+          "message": "Ping from the commands extension."
+        }
+      },
+      {
+        "id": "sample.commands-extras/harness-notes",
+        "title": "Harness notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Harness notes",
+            "successMessage": "Harness notes kept.",
+            "cancelMessage": "The command center stays with PandaCode.",
+            "fields": [
+              {
+                "id": "tags",
+                "kind": "select",
+                "label": "Harness tags",
+                "async": true,
+                "options": [
+                  {
+                    "value": "alpha",
+                    "label": "Alpha"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "slashCommands": [
+      {
+        "id": "sample.commands-extras/notes",
+        "name": "/notes",
+        "description": "Open notes for this task",
+        "command": "sample.commands-extras/slash-notes",
+        "arguments": {
+          "hint": "[topic]",
+          "required": false,
+          "maxLength": 200
+        }
+      },
+      {
+        "id": "sample.commands-extras/ping-slash",
+        "name": "/ping",
+        "description": "Say hello without arguments",
+        "command": "sample.commands-extras/ping"
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.commands-extras/harness",
+        "command": "sample.commands-extras/harness-notes",
+        "location": "panda.commands.harness.actions",
+        "presentation": "button",
+        "text": "Harness notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "harness-command"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.commands-extras/rename-first",
+        "title": "Rename before New task",
+        "location": "panda.commands.slash.entries",
+        "rules": [
+          {
+            "id": "panda.commands.slash.entries/rename",
+            "target": "panda.commands.slash.entries/new",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.commands-extras/usage-first",
+        "title": "Usage before Goal",
+        "location": "panda.commands.harness.entries",
+        "rules": [
+          {
+            "id": "panda.commands.harness.entries/usage",
+            "target": "panda.commands.harness.entries/goal",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

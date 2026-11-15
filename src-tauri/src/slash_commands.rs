@@ -36,6 +36,10 @@ pub enum Invocation {
     Native,
     Skill { name: String, path: PathBuf },
     Action(String),
+    /// A slash command a package provider's package advertises (`contributes.slashCommands`): sent as typed through
+    /// that provider's own send path, after its declared argument schema (`None`: no arguments; `Some((required,
+    /// max characters))`).
+    Package(Option<(bool, usize)>),
     Unsupported,
 }
 
@@ -353,19 +357,39 @@ fn validate_provider(provider: &str) -> Result<(), String> {
     crate::extensions::providers::validate_identity(provider)
 }
 
-/// No package command schema/transport is defined in v1. Never feed package IDs
-/// into a built-in discovery executable, infer a protocol, or trust cached frames.
+const ZCODE_UNSUPPORTED: &str = "UnsupportedCapability: ZCode does not expose native slash-command discovery. Use PandaCode controls or task chat.";
+
+/// Never feed package IDs into a built-in discovery executable, infer a protocol, or trust cached frames: a package
+/// provider lists PandaCode's controls plus exactly the commands its package declares for it.
 fn control_only_catalog(provider: &str) -> Option<Catalog> {
-    let dynamic = crate::extensions::providers::extension_owner(provider).is_some();
-    if !dynamic && provider != "zcode" { return None; }
-    let reason = if dynamic { crate::extensions::providers::SLASH_UNSUPPORTED }
-        else { "UnsupportedCapability: ZCode does not expose native slash-command discovery. Use PandaCode controls or task chat." };
-    let mut catalog = Catalog { commands: vec![], warnings: vec![reason.into()] };
-    if dynamic {
-        if let Err(reason) = crate::providers::dynamic_adapter::require_available(provider) { catalog.warnings.push(reason); }
+    if crate::extensions::providers::extension_owner(provider).is_some() {
+        return Some(package_catalog(provider, crate::providers::dynamic_adapter::slash_commands(provider), crate::providers::dynamic_adapter::require_available(provider).err()));
     }
+    if provider != "zcode" { return None; }
+    let mut catalog = Catalog { commands: vec![], warnings: vec![ZCODE_UNSUPPORTED.into()] };
     normalize(&mut catalog, provider);
     Some(catalog)
+}
+
+/// A package provider's catalog from the validated declarations of its own package. Each advertised command keeps its
+/// declaration's id (so the host can hide it) and is dispatched through the provider's send path; PandaCode's local
+/// controls keep their names. The blanket refusal remains only when the package advertises nothing.
+fn package_catalog(provider: &str, advertised: Vec<Value>, unavailable: Option<String>) -> Catalog {
+    let owner = crate::extensions::providers::extension_owner(provider).unwrap_or_default().to_owned();
+    let mut catalog = Catalog::default();
+    for declaration in advertised.iter().filter(|declaration| declaration["provider"] == provider).take(32) {
+        let (Some(id), Some(name)) = (declaration["id"].as_str(), declaration["name"].as_str()) else { continue };
+        let schema = declaration["arguments"].as_object().map(|arguments| (arguments.get("required").and_then(Value::as_bool).unwrap_or(false), arguments.get("maxLength").and_then(Value::as_u64).unwrap_or(1) as usize));
+        catalog.commands.push(SlashCommand {
+            id: id.into(), name: name.into(), description: declaration["description"].as_str().unwrap_or_default().into(),
+            argument_hint: declaration["arguments"]["hint"].as_str().map(str::to_owned), kind: "prompt".into(), source: owner.clone(), reason: None,
+            invocation: Invocation::Package(schema),
+        });
+    }
+    if catalog.commands.is_empty() { catalog.warnings.push(crate::extensions::providers::SLASH_UNSUPPORTED.into()); }
+    if let Some(reason) = unavailable { catalog.warnings.push(reason); }
+    normalize(&mut catalog, provider);
+    catalog
 }
 
 async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant) -> Result<Catalog, String> {
@@ -679,7 +703,9 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
         return resolve_from_catalog(provider, text, &Catalog::default());
     }
     if let Some(catalog) = control_only_catalog(provider) {
-        if !catalog.commands.iter().any(|command| command.name == name) { return Err(catalog.warnings[0].clone()); }
+        if !catalog.commands.iter().any(|command| command.name == name) {
+            return Err(if provider == "zcode" { ZCODE_UNSUPPORTED } else { crate::extensions::providers::SLASH_UNSUPPORTED }.into());
+        }
         return resolve_from_catalog(provider, text, &catalog);
     }
     // A switched-off skill is hidden from the catalog; typing it says so instead of "Unknown".
@@ -777,6 +803,18 @@ fn resolve_from_catalog(
             result.action = Some(action.clone());
             result.arguments = arguments.into();
         }
+        Invocation::Package(schema) => {
+            // The provider's own send path receives the command as typed, after its declared argument schema.
+            match schema {
+                None if !arguments.is_empty() => return Err(format!("{name} does not accept arguments.")),
+                Some((true, _)) if arguments.is_empty() => return Err(format!("{name} needs arguments.")),
+                Some((_, max)) if arguments.chars().count() > *max => return Err(format!("{name} accepts at most {max} characters of arguments.")),
+                _ => {}
+            }
+            result.prompt = if arguments.is_empty() { name.to_owned() } else { format!("{name} {arguments}") };
+            // Package providers take no images through the v1 conversation adapter.
+            result.accepts_attachments = false;
+        }
         Invocation::Unsupported => {
             return Err(command.reason.clone().unwrap_or_else(|| {
                 "This command is available only in the harness’s terminal interface.".into()
@@ -833,6 +871,34 @@ mod tests {
         assert!(resolve("bad/path", cwd, "ordinary prompt").await.is_err());
         assert!(!observe_runtime(provider, cwd, &json!({"type":"system","subtype":"init","slash_commands":["compact"]})));
         assert!(snapshot("zcode", cwd).await.unwrap().warnings[0].contains("ZCode"));
+    }
+
+    #[tokio::test]
+    async fn package_provider_slash_commands_dispatch_through_the_provider_send_path() {
+        let manifest: Value = serde_json::from_str(include_str!("../../tests/fixtures/extensions/commands-extras/provider.json")).unwrap();
+        assert_eq!(crate::extensions::contracts::validate_contract("packages", &json!([manifest.clone()]))["ok"], true);
+        let provider = "sample.slash-harness/recorded";
+        let declared = manifest["contributes"]["slashCommands"].as_array().unwrap().clone();
+        let catalog = package_catalog(provider, declared.clone(), None);
+        assert!(catalog.warnings.is_empty());
+        let review = command(&catalog, "/review");
+        assert_eq!((review.id.as_str(), review.kind.as_str(), review.source.as_str(), review.argument_hint.as_deref()), ("sample.slash-harness/review", "prompt", "sample.slash-harness", Some("[focus]")));
+        // PandaCode's own /rename control keeps its name over the package's declaration.
+        assert!(matches!(&command(&catalog, "/rename").invocation, Invocation::Action(action) if action == "rename"));
+        // The advertised command goes to the provider's send path as typed: no PandaCode action, no shell, no images.
+        let sent = resolve_from_catalog(provider, "/review   focus on auth; $(literal)", &catalog).unwrap();
+        assert_eq!((sent.action.as_deref(), sent.prompt.as_str(), sent.accepts_attachments, sent.skill.is_none()), (None, "/review focus on auth; $(literal)", false, true));
+        assert_eq!(resolve_from_catalog(provider, "/summary", &catalog).unwrap().prompt, "/summary");
+        assert!(resolve_from_catalog(provider, "/summary extra", &catalog).err().unwrap().contains("does not accept arguments"));
+        assert!(resolve_from_catalog(provider, &format!("/review {}", "x".repeat(121)), &catalog).err().unwrap().contains("at most 120"));
+        assert_eq!(resolve_from_catalog(provider, "/rename literal; $(no-shell)", &catalog).unwrap().arguments, "literal; $(no-shell)");
+        // Another provider's declaration is never listed; with nothing advertised the precise refusal stays.
+        let foreign = package_catalog("another.recording/recorded", declared, Some("Provider unavailable".into()));
+        assert!(!foreign.commands.iter().any(|command| command.name == "/review"));
+        assert_eq!(foreign.warnings, vec![crate::extensions::providers::SLASH_UNSUPPORTED.to_owned(), "Provider unavailable".to_owned()]);
+        // Without a configured registry nothing is advertised: an unadvertised name keeps the stable refusal.
+        let cwd = Path::new("nonexistent-project-must-not-be-probed");
+        assert_eq!(resolve(provider, cwd, "/review").await.err().unwrap(), crate::extensions::providers::SLASH_UNSUPPORTED);
     }
 
     fn native_catalog(names: &[&str]) -> Catalog {

@@ -561,7 +561,34 @@ export const TILES_PICKER_PROTECTED = [
   ['project-search', 'The picker\'s search text', 'The search field, its text and IME composition stay the user\'s own; packages never set or read it.'],
   ['project-create', 'Opening a new project folder', 'Open project… shows the host\'s own folder dialog; adding a project is the user\'s own choice there.'],
 ] as const;
-export type ActionLocation = typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Composer slash menu and harness command center (docs/extensions/commands-extras.md). Host slash entries and the
+ * harness entries that open the command center hide and reorder in the slash menu; packages declare slash commands
+ * (`contributes.slashCommands`) and contribute command center actions. Typing, resolving and sending a command, the
+ * draft and the command center's own panels stay in slash-commands.ts, command-center.ts, main.ts and slash_commands.rs. */
+export const COMMANDS_ACTION_SURFACES = ['panda.commands.harness.actions'] as const;
+export type CommandsActionLocation = typeof COMMANDS_ACTION_SURFACES[number];
+export const SLASH_LOCATION = 'panda.commands.slash.entries';
+export const HARNESS_LOCATION = 'panda.commands.harness.entries';
+/** Package slash commands (`contributes.slashCommands`) list here, owned by their package. */
+export const SLASH_PACKAGE_LOCATION = 'panda.commands.slash';
+export const COMMANDS_PROTECTED_LOCATION = 'panda.commands.protected';
+/** PandaCode's own slash entries: [id, name, label]. Hiding one only removes it from the menu: typing it still runs it. */
+export const SLASH_ENTRIES = [['new', '/new', 'New task'], ['model', '/model', 'Choose model'], ['permissions', '/permissions', 'Approval behavior'], ['settings', '/settings', 'Settings'], ['theme', '/theme', 'Theme'], ['help', '/help', 'Help'], ['skills', '/skills', 'Skills'], ['diff', '/diff', 'Changes'], ['status', '/status', 'Status'], ['context', '/context', 'Context'], ['mcp', '/mcp', 'Integrations'], ['resume', '/resume', 'Resume'], ['rename', '/rename', 'Rename task'], ['btw', '/btw', 'By the way'], ['copy', '/copy', 'Copy response'], ['pwd', '/pwd', 'Working directory'], ['console', '/console', 'Harness console'], ['wake', '/wake', 'Wake later']] as const;
+/** Harness commands that open the command center: [id, name, panel, label]. */
+export const HARNESS_ENTRIES = [['goal', '/goal', 'goal', 'Goal'], ['usage', '/usage', 'usage', 'Account usage'], ['hooks', '/hooks', 'hooks', 'Lifecycle hooks'], ['import', '/import', 'imports', 'Import agent setup'], ['plugins', '/plugins', 'plugins', 'Installed plugins'], ['ps', '/ps', 'jobs', 'Background commands']] as const;
+/** Entries that never hide, with the reason. They still reorder. */
+export const COMMANDS_PINNED: Readonly<Record<string, string | undefined>> = {
+  [`${SLASH_LOCATION}/help`]: '/help is how every other command is found again; it never leaves the menu.',
+};
+/** Protected command behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const COMMANDS_PROTECTED = [
+  ['draft', 'Draft text and caret', 'The draft, its undo history and the caret stay the user\'s own; a slash command receives only the arguments typed after its name, never the rest of the composer.'],
+  ['send', 'Sending to the harness', 'Only the user\'s own Send delivers text to the harness; a package slash command runs its package command and inserts nothing into the provider.'],
+  ['resolve', 'Resolving a typed command', 'PandaCode and the harness keep their names: a package name that collides is shown unavailable with its conflict and never runs.'],
+  ['panel-actions', 'Command center changes', 'Importing, stopping a job, resuming or forking a conversation, saving preferences and changing a goal need the user\'s own click in the command center.'],
+  ['console', 'Harness console', 'An interactive console is a built-in-only capability; packages never open one.'],
+] as const;
+export type ActionLocation = typeof COMMANDS_ACTION_SURFACES[number] | typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

@@ -41,6 +41,8 @@ export interface InvocationContext {
   readonly revision: number;
   /** Set when the command runs from a main-dialog band: the dialog it was captured in, never the current one. */
   readonly dialog?: MainDialogId;
+  /** Set when the command runs from the composer slash menu: the slash command, the task's harness and the arguments typed after the name (never the rest of the draft). */
+  readonly slash?: { readonly command: string; readonly provider: string; readonly arguments: string };
 }
 /** Eligible main-window dialogs (`panda.dialog.<id>.actions` / `.bodyExtras`): shared modals, then module-owned and directly mounted dialogs. Destructive, credential, permission and recovery dialogs have no ID. */
 export type MainDialogId = 'recipes' | 'attachment' | 'task-details' | 'subagents' | 'task-status' | 'integrations-fallback' | 'working-directory' | 'changed-files' | 'open-project' | 'rename-task' | 'colors' | 'wallpapers' | 'opencode-models' | 'moodboards' | 'integrations' | 'jev-settings' | 'jev-assist' | 'jev-tests' | 'conversation-import' | 'bots' | 'bot-settings' | 'usage' | 'command-palette'
@@ -269,6 +271,26 @@ export type TilesPickerAdmission = { readonly ok: true } | { readonly ok: false;
 /** `selection.kind` of the tile and picker contexts: `tile` (ids = [the tile's own thread], never the focused one) and
  * `draft-project` (ids = [draft]; never the draft text). */
 export type TilesPickerSelectionKind = 'tile' | 'draft-project';
+/** Experimental composer slash commands (`contributes.slashCommands`, at most 32): `name` is `/` plus 1-32 lowercase
+ * letters, digits or dashes; exactly one of `command` (a contributed command, run with the captured task, harness and
+ * arguments; nothing is typed into the harness) or `provider` (one of this package's providers, whose send path receives
+ * the command as typed). `arguments` is the argument schema; without it the command takes no arguments. A name PandaCode
+ * or the harness already has, or that two packages declare, is listed unavailable and never runs. */
+export interface SlashCommandDefinition { readonly id: string; readonly name: string; readonly description: string; readonly command?: string; readonly provider?: string; readonly arguments?: { readonly hint?: string; readonly required: boolean; readonly maxLength: number } }
+/** Experimental harness command center and slash menu (owner: the selected `panda.composer` provider). PandaCode's slash
+ * entries and the harness entries that open the command center hide and reorder in the menu; actions run the original
+ * handlers. The draft, Send, resolving a typed command and the command center's changes stay host-owned. */
+export type CommandsControl = 'harness-open' | 'harness-refresh' | 'harness-close';
+/** Named but never run: refused with `PermissionDenied`. */
+export type CommandsProtectedControl = 'slash-send' | 'slash-insert' | 'slash-read-draft' | 'harness-execute' | 'console-open';
+/** `menu` whether the slash menu is open, `panel` the open command center panel, `slash` how many package slash commands
+ * the menu offers. An edited draft, another task or harness, an opened or closed panel or any redraw changes `revision`. */
+export interface CommandsPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly provider: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly menu: boolean; readonly panel: 'none' | 'goal' | 'usage' | 'hooks' | 'preferences' | 'imports' | 'conversations' | 'plugins' | 'jobs'; readonly slash: number; readonly controls: readonly { readonly id: string; readonly controlId: CommandsControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface CommandsAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly provider: string; readonly revision: number; readonly control: string; readonly controlId: CommandsControl; readonly resource: string; readonly requestId: string }
+export type CommandsAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of the slash and command center contexts: `slash-command` (ids = [task]; the `slash` field carries the
+ * command, harness and arguments) and `harness-command` (ids = [`<harness>:<panel>`]). */
+export type CommandsSelectionKind = 'slash-command' | 'harness-command';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

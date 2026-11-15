@@ -94,6 +94,10 @@ mod metadata_tests {
     }
 }
 pub(crate) fn models(id: &str) -> Result<Vec<ModelInfo>, String> { Ok(catalog(&resolve(id)?.definition)) }
+/// The slash commands an active package provider's own package declares for it (`contributes.slashCommands`).
+pub(crate) fn slash_commands(id: &str) -> Vec<Value> {
+    HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().map(|packages| packages.provider_slash_commands(id))).unwrap_or_default()
+}
 pub(crate) fn require_available(id: &str) -> Result<(), String> {
     if crate::extensions::providers::extension_owner(id).is_some() { resolve(id).and_then(|registration| {
         let metadata = metadata(&registration.definition);

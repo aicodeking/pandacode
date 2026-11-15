@@ -57,6 +57,9 @@
 /* Main-dialog band: owner-labelled notes and secondary actions after the host content, hidden when empty. */
 .dialog-extension-extras { display: grid; gap: var(--space-2); margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--ds-border); }
 .dialog-extension-extras:not(:has([data-extension-contribution]:not([hidden]))) { display: none; }
+/* Contributed command center actions sit at the start of its footer (docs/extensions/commands-extras.md). */
+.command-center-extensions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-right: auto; }
+.command-center-extensions:not(:has([data-extension-contribution]:not([hidden]))) { display: none; }
 .dialog-extension-notes:empty { display: none; }
 .dialog-extension-notes p { margin: 0; color: var(--muted); font-size: var(--ds-text-sub); overflow-wrap: anywhere; }
 .dialog-extension-notes p + p { margin-top: 4px; }

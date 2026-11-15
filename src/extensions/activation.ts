@@ -60,7 +60,7 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
     entries: structuredClone(entries),
     commands: structuredClone(normalized.packages.flatMap(manifest => (manifest.contributes.commands ?? []).map(command => ({ owner: { extensionId: manifest.id, version: manifest.version, activationId }, command })))),
     commandAction(id: string, context: Record<string, Json>): ExtensionAction | undefined {
-      if (disposed || !['panda.commands', 'panda.shortcuts'].includes(String(context.surfaceId)) || context.windowId !== 'main' || !validateContract('context', context).ok) return;
+      if (disposed || !['panda.commands', 'panda.shortcuts', 'panda.commands.slash'].includes(String(context.surfaceId)) || context.windowId !== 'main' || !validateContract('context', context).ok) return;
       const command = normalized.packages.flatMap(manifest => manifest.contributes.commands ?? []).find(command => command.id === id);
       if (!command || !conditionAllows(command.enabled, context)) return;
       return structuredClone(command.action);

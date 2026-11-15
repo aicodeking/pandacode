@@ -68,6 +68,11 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.cloud.protected` | data | inspect | button | main | — |
 | `panda.cloud.targets` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.commands` | data | inspect, contribute | command | main | — |
+| `panda.commands.harness.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.commands.harness.entries` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.commands.protected` | data | inspect | button | main | — |
+| `panda.commands.slash` | data | inspect, contribute, hide, show | slash-command | main | — |
+| `panda.commands.slash.entries` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.composer.attach.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.attach.protected` | data | inspect | button | main | — |

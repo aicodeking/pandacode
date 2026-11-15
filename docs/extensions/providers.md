@@ -65,9 +65,14 @@ selection/history and explain reinstall/enable/change-provider recovery; no CLI
 or built-in fallback is selected.
 
 PandaCode slash controls (`/rename`, `/pwd`, `/model`, `/permissions`, etc.) remain
-available. Package-native slash discovery, skills and terminal commands are not
-defined by the v1 conversation adapter and return `UnsupportedCapability` with a
-reason. `/console` is shown unsupported for package providers. Interactive PTYs
+available. A provider package may advertise its own slash commands with
+`contributes.slashCommands` entries naming one of its providers (`provider`, plus
+`name`, `description` and an optional argument schema; see
+[slash commands](commands-extras.md)): they are listed for tasks on that provider and
+sent as typed through its own send path. PandaCode's controls keep their names.
+Unadvertised names, package-native discovery, skills and terminal commands return
+the stable `SLASH_UNSUPPORTED` reason. `/console` is shown unsupported for package
+providers. Interactive PTYs
 are an explicitly built-in-only capability: a package name or metadata can never
 be interpreted as an executable, shell command, approval policy or resume flag.
 Reviewed built-in CLI argument/environment normalization stays unchanged. ZCode
@@ -284,7 +289,7 @@ The rules' old `src-tauri/src/acp.rs` reference resolves to the current
 | Teams / architect (`architect*.rs`) | Registry readiness + explicit `metadata.teams`; core role-scoped tool dispatch/cancellation. ZCode remains unsupported; Codex tool-reset special case remains built-in. | `architect::tests::dynamic_package_team_fixture` through real-package test; architect native regressions |
 | Routing (`model_routing.rs`, `panda_router/`, frontend routing) | Validated package pools/exclusions; card aliases are scoring-only, not execution identity; built-in defaults preserved. | `package_model_alias_is_scoring_data_never_a_builtin_execution_fallback`; `provider-handoff.test.mjs`; router native regressions |
 | Terminal (`terminal.rs`) | Unsupported package PTY before any skill/executable probe; retained reviewed built-in launch/mode/resume/environment policy. | `console_admission_is_native_only_before_skill_or_executable_probes`; `harness_console_*`, `*_console_*` native tests |
-| Slash commands (`slash_commands*.rs`) | Local core controls remain usable; package-native discovery/skills/console unsupported with reasons; built-in native discovery unchanged. | `package_commands_keep_local_controls_but_cannot_infer_native_protocols_or_consoles`; real-package overlay test |
+| Slash commands (`slash_commands*.rs`) | Local core controls remain usable; a package provider's advertised `contributes.slashCommands` resolve through its send path; package-native discovery/skills/console and unadvertised names unsupported with reasons; built-in native discovery unchanged. | `package_commands_keep_local_controls_but_cannot_infer_native_protocols_or_consoles`; `package_provider_slash_commands_dispatch_through_the_provider_send_path`; `provider_slash_commands_come_only_from_the_trusted_enabled_owner_package`; real-package overlay test |
 | Provider settings / configuration / credentials (`provider_settings.rs`, `provider-settings.ts`) | Registry `extensionProviders` metadata, extension-managed auth instructions; native credentials, environment, vendor cards and pools remain built-in-only, never synthesized for packages. | `extensions-provider-consumers.test.mjs`; `provider_metadata_*`; native provider settings/environment tests |
 | Frontend ProviderId and Record maps (`types.ts`, `extensions/provider-identity.ts`) | Branded validated dynamic ID plus exhaustive BuiltinProviderId union, never unrestricted string. Native schema rejects reserved/foreign identities. | `extensions-provider-identities.test.mjs`; contract identity check; `npm run build`/tsc |
 | Model picker / catalog / efforts / modes (`model-catalog.ts`, `extensions/harnesses.ts`, `approval-modes.ts`) | Registry advertised models/efforts/modes only; historical unsupported choice readable/disabled with reason. Built-in catalog semantics unchanged. | `extensions-provider-consumers.test.mjs`; `provider_metadata_modes_readiness_and_legacy_defaults`; built-in catalog parity |

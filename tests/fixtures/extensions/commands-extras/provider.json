@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.slash-harness",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.slash-harness/recorded"] },
+  "requiredContributions": ["providers", "slashCommands"],
+  "contributes": {
+    "providers": [{ "apiVersion": 1, "id": "sample.slash-harness/recorded", "name": "Recorded slash harness", "metadata": { "modes": ["ask"], "authentication": "Offline fixture; no sign-in or API key required.", "readiness": { "state": "ready", "reason": "Ready offline through the trusted recorded adapter." }, "usage": { "context": true, "limitsReason": "Recorded harness reports context tokens, not subscription limits." } }, "models": [{ "id": "recorded-model", "name": "Recorded model", "efforts": ["low", "medium"] }] }],
+    "slashCommands": [
+      { "id": "sample.slash-harness/review", "name": "/review", "description": "Ask the recorded harness to review changes", "provider": "sample.slash-harness/recorded", "arguments": { "hint": "[focus]", "required": false, "maxLength": 120 } },
+      { "id": "sample.slash-harness/summary", "name": "/summary", "description": "Summarize the conversation", "provider": "sample.slash-harness/recorded" },
+      { "id": "sample.slash-harness/rename", "name": "/rename", "description": "A package name PandaCode's own control keeps", "provider": "sample.slash-harness/recorded", "arguments": { "required": true, "maxLength": 80 } }
+    ]
+  }
+}
