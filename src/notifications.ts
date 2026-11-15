@@ -1,8 +1,10 @@
 /** Desktop notifications when a task needs approval or input, or ends. The pure rules live in
  * notifications-model.ts; the banner and sound are drawn natively (notifications_show in
  * src-tauri/src/notifications.rs). A banner only shows while PandaCode is unfocused; while
- * focused, approval and question events may still play the chosen sound. */
-import { call } from './bridge';
+ * focused, approval and question events may still play the chosen sound.
+ * Connect phone pushes stay in remote/host.rs and the relay bridge. This module never
+ * sends relay frames, and web tabs must not produce notifications on the host. */
+import { call, webMode } from './bridge';
 import { batchNotice, createCoalescer, flushGate, gate, notice, readSettings, saveSetting, soundOf, type NotificationEventKind, type Notice, type NotificationSettings, type PendingRequest } from './notifications-model';
 
 export { DEFAULT_SETTINGS, SOUNDS, SOUND_NONE, readSettings, saveSetting } from './notifications-model';
@@ -22,6 +24,7 @@ const requests = createCoalescer({
 /** Called from onAgent for every event a notification may follow. Task titles are already
  * trimmed of the thread suffix by the callers. */
 export function notifyEvent(kind: NotificationEventKind, sessionId: string, title: string, requestId?: string): void {
+  if (webMode) return;
   const on = readSettings(localStorage);
   const action = gate(kind, on, document.hasFocus());
   if (!action) return;
@@ -34,7 +37,7 @@ export function notifyEvent(kind: NotificationEventKind, sessionId: string, titl
   // Finished and failed tasks never coalesce; requests wait out the window together, and a
   // cancellation during it takes its request back out.
   if (kind === 'approval' || kind === 'input') requests.add(kind, sessionId, title, requestId);
-  else show({ ...notice(kind, title, on.hideDetails), sessionId }, on);
+  else show({ ...notice(kind, title, on.hideDetails), sessionId }, on, false);
 }
 
 /** A cancelled request must not be counted by the batch that is still waiting. */
@@ -59,9 +62,9 @@ function flushRequests(batch: PendingRequest[]): void {
     void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: true, soundWhenFocused: on.soundWhenFocused }).catch(warn);
     return;
   }
-  show(text, on);
+  show(text, on, on.soundWhenFocused);
 }
 
-function show(text: Notice, on: NotificationSettings): void {
-  void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: false, soundWhenFocused: on.soundWhenFocused }).catch(warn);
+function show(text: Notice, on: NotificationSettings, soundWhenFocused: boolean): void {
+  void call('notifications_show', { title: text.title, body: text.body, sessionId: text.sessionId, sound: soundOf(on), suppressBanner: false, soundWhenFocused }).catch(warn);
 }

@@ -93,6 +93,7 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-page-root .setting-row>div{min-width:0;flex-wrap:wrap;align-items:center;column-gap:6px;row-gap:1px}
 .settings-page-root .setting-row strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);letter-spacing:var(--tracking-none);line-height:var(--type-subheading-leading);color:var(--ds-row-ink)}
 .settings-page-root .setting-row>div>small{flex:1 1 100%;font-size:var(--type-meta);letter-spacing:var(--tracking-none);line-height:var(--type-meta-leading);color:var(--muted)}
+.settings-page-root #notifications-settings .setting-row>div>small{white-space:normal;overflow-wrap:anywhere}
 .settings-page-root .setting-row .settings-row-actions{display:flex;flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 /* Controls: the design system's raised hairline secondaries, solid primary, bordered selects, pill toggles. */
 .settings-page-root .secondary-button{display:inline-flex;align-items:center;gap:6px;min-height:var(--ds-btn-h);padding:0 14px;border-radius:var(--ds-control-radius);font-size:var(--type-body);font-weight:var(--weight-medium);white-space:nowrap}

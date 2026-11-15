@@ -14,6 +14,7 @@ async function open(page: Page, settings?: Record<string, string>): Promise<void
     for (const [key, value] of Object.entries(stored ?? {})) localStorage.setItem(key, value);
   }, settings);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
 }
 
@@ -107,6 +108,76 @@ test("a finished task's notification names its task in the click payload too", a
   expect(call.suppressBanner).toBe(false);
   expect(call.sessionId).toBe('session-1');
   expect(String(call.title)).toContain('finished');
+});
+
+test('finished and failed payloads never permit sound while another PandaCode window is focused', async ({ page }) => {
+  await open(page, { 'pandacode.notifications.finished': 'true', 'pandacode.notifications.failed': 'true', 'pandacode.notifications.soundWhenFocused': 'true' });
+  await page.evaluate(() => {
+    document.hasFocus = () => false;
+    (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '', data: { outcome: 'successful' } });
+    (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '', data: { outcome: 'failed' } });
+  });
+  await expect.poll(async () => (await shown(page)).length).toBe(2);
+  expect((await shown(page)).map(call => call.soundWhenFocused)).toEqual([false, false]);
+});
+
+test('a usage limit stays silent despite a failed run outcome', async ({ page }) => {
+  await open(page, { 'pandacode.notifications.finished': 'true', 'pandacode.notifications.failed': 'true' });
+  await page.evaluate(() => {
+    document.hasFocus = () => false;
+    (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'limited', text: 'Usage limit' });
+    (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '', data: { outcome: 'failed' } });
+  });
+  expect(await shown(page)).toEqual([]);
+});
+
+test('a team lead waits for an explicit settled result and a pause discards its held notice', async ({ page }) => {
+  await open(page, { 'pandacode.notifications.finished': 'true', 'pandacode.notifications.failed': 'true' });
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  const publish = (status: string, revision: number) => page.evaluate(({ status, revision }) => {
+    (window as any).__previewEmit('architect-event', { sessionId: 'session-1', config: { workers: [], maxParallel: 1, maxRounds: 1, maxAssignments: 1, workspace: 'shared', summaryLimit: 0 }, status, round: 1, revision, workers: [], error: null, updatedAt: Date.now() });
+  }, { status, revision });
+  const done = () => page.evaluate(() => (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '', data: { outcome: 'successful' } }));
+  await publish('running', 100);
+  await done();
+  expect(await shown(page)).toEqual([]);
+  await publish('paused', 101);
+  await publish('completed', 102);
+  expect(await shown(page)).toEqual([]);
+  await publish('running', 103);
+  await done();
+  expect(await shown(page)).toEqual([]);
+  await publish('ready', 104);
+  await publish('ready', 105);
+  await expect.poll(async () => (await shown(page)).length).toBe(1);
+  expect(String((await shown(page))[0].title)).toContain('finished');
+});
+
+test('a Council ask discards a held completion rather than notifying it later', async ({ page }) => {
+  await open(page, { 'pandacode.notifications.finished': 'true', 'pandacode.notifications.input': 'false' });
+  await page.evaluate(() => { document.hasFocus = () => false; });
+  await page.evaluate(() => (window as any).__previewEmit('architect-event', {
+    sessionId: 'session-1', config: { workers: [], maxParallel: 1, maxRounds: 1, maxAssignments: 1, workspace: 'shared', summaryLimit: 0 },
+    status: 'running', round: 1, revision: 100, workers: [], error: null, updatedAt: Date.now(),
+  }));
+  await page.evaluate(() => (window as any).__previewEmit('agent-event', { sessionId: 'session-1', kind: 'done', text: '', data: { outcome: 'successful' } }));
+  await council(page, true, 101);
+  await council(page, false, 102);
+  expect(await shown(page)).toEqual([]);
+});
+
+test('worker cancellation and run end withdraw queued approvals before the batch flushes', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    document.hasFocus = () => false;
+    const emit = (event: object) => (window as any).__previewEmit('agent-event', event);
+    emit({ sessionId: 'worker-cancel', kind: 'approval', requestId: 'r-1', text: 'Approve?' });
+    emit({ sessionId: 'worker-cancel', kind: 'approval_cancelled', requestId: 'r-1', text: '' });
+    emit({ sessionId: 'worker-done', kind: 'approval', requestId: 'r-2', text: 'Approve?' });
+    emit({ sessionId: 'worker-done', kind: 'done', text: '' });
+  });
+  await page.waitForTimeout(6_500);
+  expect(await shown(page)).toEqual([]);
 });
 
 test('a cancelled request no longer counts in the waiting notification batch', async ({ page }) => {
