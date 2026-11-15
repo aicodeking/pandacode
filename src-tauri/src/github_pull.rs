@@ -240,11 +240,7 @@ fn pr_args(command: &str, number: i64, extra: &[&str], repo: Option<&str>) -> Ve
     args
 }
 
-fn gh_pr(root: &Path, args: &[String], timeout: Duration, trust: Trust) -> Result<crate::workspace::Capture, String> {
-    gh_pr_as(root, args, timeout, None, trust)
-}
-
-/// [`gh_pr`] with the project's pinned account's token riding as `GH_TOKEN`.
+/// `gh pr …` with the project's pinned account's token riding as `GH_TOKEN`.
 fn gh_pr_as(root: &Path, args: &[String], timeout: Duration, token: Option<&str>, trust: Trust) -> Result<crate::workspace::Capture, String> {
     run_gh_token_as(root, token, &args.iter().map(String::as_str).collect::<Vec<_>>(), timeout, trust)
 }
@@ -336,6 +332,7 @@ pub fn detect(root: &Path, token: Option<&str>, repo: &Repository, turn: &[Strin
 
 /// [`detect`] with the caller's trust; each candidate is viewed in repository `pinned`
 /// (required for a phone).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, token: Option<&str>, turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
     let pinned = pin(pinned, trust)?;
     let mut candidates: Vec<i64> = Vec::new();
