@@ -172,7 +172,7 @@ fn prepared(mut config: RunConfig, disabled: &std::collections::BTreeSet<String>
 }
 
 /// The spare's launch as it will run, its key, and the switched-off skills it was keyed with.
-fn keyed(mut config: RunConfig, tools: &[Value]) -> (RunConfig, String, std::collections::BTreeSet<String>) {
+pub(super) fn keyed(mut config: RunConfig, tools: &[Value]) -> (RunConfig, String, std::collections::BTreeSet<String>) {
     config.cwd = external_path(&config.cwd);
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
     let config = prepared(config, &disabled);

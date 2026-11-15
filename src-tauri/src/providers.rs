@@ -34,6 +34,25 @@ pub(crate) fn warm_launched(session_id: &str) {
 }
 pub use handshake_warm::{kept_across_switch as handshake_spare_kept, provider as handshake_warm_provider, supported as handshake_warms};
 
+/// The key a draft spare is stored under, and the key the first send uses to adopt it.
+/// Both sides pass through the same skill reminder and folder canonicalization as a real launch.
+#[cfg(test)]
+pub(crate) fn warm_spare_and_cold_keys_for_test(
+    spare: RunConfig,
+    mut cold: RunConfig,
+    tools: &[Value],
+) -> Result<(String, String), String> {
+    let spare_key = warm::keyed(spare, tools).1;
+    let disabled = crate::skill_manager::launch_disabled(
+        &cold.provider,
+        &cold.cwd,
+        crate::skill_manager::disabled_for(&cold.session_id),
+    );
+    crate::skill_manager::prepare_turn(&mut cold, &disabled)?;
+    cold.cwd = external_path(&cold.cwd);
+    Ok((spare_key, warm::key(&cold, tools)))
+}
+
 /// Start the next turn's warm agent: Claude's (`warm.rs`), or Codex's app-server or an ACP
 /// agent (`handshake_warm.rs`).
 pub async fn prewarm_agent(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {

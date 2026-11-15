@@ -2519,6 +2519,7 @@ struct OperationAdmission {
     command: Option<PreparedCommand>,
 }
 
+#[cfg(test)]
 fn finalize_run_config(
     store: &Mutex<Store>,
     session_id: &str,
