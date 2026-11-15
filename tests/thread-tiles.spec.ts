@@ -243,6 +243,8 @@ test.describe('thread tiles', () => {
     await expect(page.locator('.thread-tile')).toHaveCount(0);
     await page.evaluate(() => (window as any).__releaseTileHistory());
     await expect.poll(() => page.evaluate(() => (window as any).__tilePages.size)).toBe(0);
+  });
+
   test('scrolling a tile’s own rows holds that tile’s sky, and it resumes after the hold', async ({ page }) => {
     // Every tile is its own `mountSky` (src/thread-tiles.ts), with its canvas behind the whole mirror, so "that tile stopped
     // painting" has to be counted per canvas: every paint is one full-screen `drawArrays(gl.TRIANGLES, 0, 3)`. Counting the
