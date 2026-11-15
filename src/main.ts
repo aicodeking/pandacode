@@ -767,6 +767,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     area: $('#composer-area'), onContextChanged, notify,
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, running: isRunning(), mode: s?.mode ?? 'ask', busy: Boolean(modelPickerCleanup) || Boolean(s && configuringSessions.has(s.id)), generation: state.generation }; },
   });
+  // The queue, token saver and council panels: presentation only. Queued text, order and delivery, token saver packs
+  // and the council's team decisions stay here and in message-queue.ts, token-saver-panel.ts and council-panel.ts.
+  composerPanels = (await import('./extensions/composer-panels-host')).mountComposerPanelsAdoption({
+    area: $('#composer-area'), onContextChanged, notify,
+    state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, running: isRunning(), held: Boolean(s && state.queueHolds.get(s.id)), busy: Boolean(modelPickerCleanup) || Boolean(s && state.queueBusy.has(s.id)), generation: state.generation, queue: s ? queueOf(s.id) : [], councilSince: s ? teams.get(s.id)?.councilSince ?? undefined : undefined }; },
+    relayout: () => { const s = session(); if (s && queueOf(s.id).length) renderComposer(); else if (s) council.sync(s.id); tokenSaver.relayout(); },
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -839,6 +846,8 @@ let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mount
 let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mountSidebarBotsAdoption> | undefined;
 /** Composer controls adoption (docs/extensions/composer.md), mounted once extensions load. */
 let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
+/** Queue, token saver and council panels adoption (docs/extensions/composer-panels.md), mounted once extensions load. */
+let composerPanels: ReturnType<typeof import('./extensions/composer-panels-host').mountComposerPanelsAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
 let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
 /** Agent roster adoption (docs/extensions/agent-roster.md), mounted once extensions load. */
@@ -876,6 +885,7 @@ const tokenSaver = createTokenSaver({
     const s = session();
     return s && s.id === sessionId ? state.streams.get(s.id)?.contextUsage ?? s.contextUsage ?? null : null;
   },
+  extension: sessionId => composerPanels?.saverLayout(sessionId),
   changed: sessionId => {
     if (sessionId !== state.sessionId) return;
     const current = document.querySelector<HTMLElement>('.composer-saver-button');
@@ -898,6 +908,7 @@ const council = createCouncil({
   keepFixing: sessionId => councilKeepFixing(sessionId),
   classicSetup: () => classicTeamSetup(),
   openClassicSetup: anchor => run(showArchitectSetup(anchor)),
+  extension: () => composerPanels?.councilLayout(),
 });
 const searchPanel = createSearchPanel({
   call,
@@ -1013,6 +1024,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('composer-panels')) {
+  (window as any).__previewPanels = () => composerPanels?.presentation();
+  (window as any).__previewPanelsAction = (input: unknown) => composerPanels?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('composer-controls')) {
   (window as any).__previewComposer = () => composerAdoption?.presentation();
   (window as any).__previewComposerAction = (input: unknown) => composerAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
@@ -3355,7 +3370,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><div class="extension-action-slot" data-composer-steer-actions></div><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name, extension: composerPanels?.queueLayout() })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><div class="extension-action-slot" data-composer-steer-actions></div><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -3442,6 +3457,8 @@ function renderComposer(): void {
   applyComposerPresentation($('#composer'));
   // Tray tools and steer bar parts: the user's order and reversible visibility on the nodes this draw made.
   composerAdoption?.apply();
+  // Queue rows and the council strip: their extension action slots, captured for this draw's entries and cycle.
+  composerPanels?.apply();
   syncProviderRecovery();
 }
 function syncProviderRecovery(): void {

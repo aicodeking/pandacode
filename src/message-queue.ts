@@ -36,7 +36,14 @@ export interface QueueView {
   notSteered?: ReadonlyMap<string, string>;
   /** Name of the agent holding the queue, for "Waiting – {name} is working". */
   agentName?: string;
+  /** Extension presentation of the main composer's queue (composer-panels-host.ts); the By the way panel has none. */
+  extension?: QueueExtension;
 }
+/** The user's order and reversible visibility of the eligible entry controls (`steer`, `send-now`, `edit`, `resume`)
+ * and whether each row carries an extension action slot. Delete, Save and Cancel are never part of it. */
+export type QueueExtension = Readonly<{ order: readonly string[]; hidden: ReadonlySet<string>; actions: boolean }>;
+/** Marks a control hidden by the user's layout: the node stays (with its listener target), out of view and inert. */
+const hiddenBy = (view: QueueView, id: string): string => view.extension?.hidden.has(id) ? ' data-layout-hidden inert' : '';
 const SPINNER = '<span class="support-spinner" aria-hidden="true"></span>';
 
 function attachmentLabel(entry: QueuedMessage): string {
@@ -55,14 +62,19 @@ function row(entry: QueuedMessage, index: number, view: QueueView): string {
     return `<li class="queue-row steering" data-queue-id="${escape(entry.id)}" aria-busy="true"><span class="queue-index" aria-hidden="true">${icon('spark')}</span>
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span><span class="queue-status" role="status">${SPINNER}Steering…</span></li>`;
   }
-  const steer = view.running && view.steerable && !view.busy && !entry.attachments.length ? `<button type="button" class="queue-now" data-action="queue-steer" title="Steer message" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
-  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${!view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('forward')}<span>Send now</span></button>` : '';
+  const steer = view.running && view.steerable && !view.busy && !entry.attachments.length ? `<button type="button" class="queue-now" data-action="queue-steer" data-queue-control="steer"${hiddenBy(view, 'steer')} title="Steer message" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
+  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" data-queue-control="send-now"${hiddenBy(view, 'send-now')} title="${!view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('forward')}<span>Send now</span></button>` : '';
   const failure = view.notSteered?.get(entry.id);
   const badge = failure !== undefined ? `<span class="queue-badge warn" title="${escape(failure)}" tabindex="0">Not steered</span>` : '';
   const movable = !view.busy && view.entries.length > 1;
+  const edit = `<button type="button" class="icon-button" data-action="queue-edit" data-queue-control="edit"${hiddenBy(view, 'edit')} aria-label="Edit queued message ${index + 1}" title="Edit message" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button>`;
+  const controls: Record<string, string> = { steer, 'send-now': sendNow, edit };
+  // The user's order among Steer, Send now and Edit; Delete stays last. An extension slot leads when a package contributes.
+  const ordered = (view.extension?.order ?? ['steer', 'send-now', 'edit']).map(id => controls[id] ?? '').join('');
+  const slot = view.extension?.actions ? '<span class="extension-action-slot" data-queue-extension-actions></span>' : '';
   return `<li class="queue-row" data-queue-id="${escape(entry.id)}" draggable="${movable ? 'true' : 'false'}" tabindex="0" aria-label="Queued message ${index + 1}: ${preview}"${movable ? ' aria-description="Drag to reorder, or press Alt with an arrow key." aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''}><span class="queue-index" aria-hidden="true">${icon('spark')}${movable ? icon('grip', 'queue-grip') : ''}</span>
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span>${attachmentLabel(entry)}${badge}
-    <span class="queue-actions">${steer}${sendNow}<button type="button" class="icon-button" data-action="queue-edit" aria-label="Edit queued message ${index + 1}" title="Edit message" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button><button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Delete message" data-held="${view.hold ? '1' : ''}" ${view.busy ? 'disabled' : ''}>${icon('trash')}</button></span></li>`;
+    <span class="queue-actions">${slot}${ordered}<button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Delete message" data-held="${view.hold ? '1' : ''}" ${view.busy ? 'disabled' : ''}>${icon('trash')}</button></span></li>`;
 }
 
 /** Markup for the queue panel, or an empty string when nothing is queued. */
@@ -70,7 +82,7 @@ export function queuePanel(view: QueueView): string {
   if (!view.entries.length) return '';
   const count = view.entries.length;
   // A limit is resolved from its banner (Continue now or Resume at reset), so the queue offers no Resume then.
-  const resume = view.hold === 'limited' ? '' : `<button type="button" class="queue-resume" data-action="queue-resume" ${view.busy ? 'disabled' : ''}>${view.running ? 'Resume after this run' : 'Resume'}</button>`;
+  const resume = view.hold === 'limited' ? '' : `<button type="button" class="queue-resume" data-action="queue-resume" data-queue-control="resume"${hiddenBy(view, 'resume')} ${view.busy ? 'disabled' : ''}>${view.running ? 'Resume after this run' : 'Resume'}</button>`;
   const status = view.hold ? `<span class="queue-hold">${HOLD_LABEL[view.hold]}</span>${resume}`
     : `<span class="queue-next">${view.running ? (view.agentName ? `Waiting – ${escape(view.agentName)} is working` : 'Sends when the agent finishes') : `${SPINNER}Sending next…`}</span>`;
   return `<section class="queue-panel" aria-label="Queued messages"><header class="queue-heading"><strong>Queued</strong><span class="queue-count">${count}</span>${status}</header><ol class="queue-list">${view.entries.map((entry, index) => row(entry, index, view)).join('')}</ol></section>`;

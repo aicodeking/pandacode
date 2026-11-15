@@ -16,7 +16,13 @@ export type TokenSaverHost = {
   changed(sessionId: string): void;
   /** The thread's context reading, when it is the open thread; null otherwise. */
   contextUsage?(sessionId: string): { usedTokens: number; contextWindow?: number | null } | null;
+  /** Extension presentation of the panel (composer-panels-host.ts), when extensions are loaded. */
+  extension?(sessionId: string): TokenSaverExtension | undefined;
 };
+/** The user's order (`default`, `off` in the footer) and reversible visibility (`tighten`, `default`, `off`) of the
+ * panel's eligible controls, whether it carries an extension action slot, and the adapter's paint and close hooks.
+ * Pack switches, the Caveman intensity and installing RTK are never part of it. */
+export type TokenSaverExtension = Readonly<{ order: readonly string[]; hidden: ReadonlySet<string>; actions: boolean; painted(panel: HTMLElement, sessionId: string): void; closed(): void }>;
 
 /** Rough age for a measured-usage line: one precision step is enough. */
 function ago(at: number): string {
@@ -80,9 +86,10 @@ export function createTokenSaver(host: TokenSaverHost) {
     const preset = defaults();
     const sameAsDefault = Boolean(preset) && preset!.level === saver.level && preset!.packs.join() === saver.packs.join();
     const usage = host.contextUsage?.(sessionId) ?? null, fill = usage?.contextWindow ? Math.round(usage.usedTokens / usage.contextWindow * 100) : 0;
-    const tighten = suggestion(saver.packs, saver.level, usage);
+    const tighten = suggestion(saver.packs, saver.level, usage), extension = host.extension?.(sessionId);
+    const hiddenBy = (id: string) => extension?.hidden.has(id) ? ' data-layout-hidden inert' : '';
     const tightenLabel = tighten ? [tighten.level === 'ultra' ? 'Ultra' : '', ...tighten.addPacks.map(id => PACKS.find(item => item.id === id)!.title)].filter(Boolean).join(' + ') : '';
-    const hint = tighten ? `<div class="saver-hint"><span>Context <b>${fill}%</b> full.</span><button type="button" class="saver-tighten" data-tighten aria-label="Tighten the saver: ${escape(tightenLabel)}">Tighten: ${escape(tightenLabel)}</button></div>` : '';
+    const hint = tighten ? `<div class="saver-hint"><span>Context <b>${fill}%</b> full.</span><button type="button" class="saver-tighten" data-tighten${hiddenBy('tighten')} aria-label="Tighten the saver: ${escape(tightenLabel)}">Tighten: ${escape(tightenLabel)}</button></div>` : '';
     const row = (id: PackId) => {
       const pack = PACKS.find(item => item.id === id)!, missing = pack.needs === 'rtk' && !tools.rtk, active = on.has(id) && !missing;
       const about = `${pack.summary} Saves ${pack.saves}.${missing ? ` Not installed yet: turning it on installs it (${tools.rtkInstall}).` : id === 'rtk' && tools.rtkVersion ? ` rtk ${tools.rtkVersion} installed.` : ''}`;
@@ -93,10 +100,20 @@ export function createTokenSaver(host: TokenSaverHost) {
     // morph drops what trackSegment wrote on the group: put it back first, so the thumb slides from where it was.
     const track = panel.querySelector<HTMLElement>('.saver-levels');
     const thumbAt = track?.getAttribute('style') ?? null, thumbReady = track?.hasAttribute('data-segment-ready');
+    // The footer's controls in the user's order; an extension slot sits above them while a package contributes there.
+    const footer: Record<string, string> = {
+      default: `<label class="saver-default"${hiddenBy('default')}><input type="checkbox" ${sameAsDefault ? 'checked' : ''} ${saver.packs.length ? '' : 'disabled'}><span>Start new threads like this</span></label>`,
+      off: `<button type="button" class="saver-off"${hiddenBy('off')} ${saver.packs.length ? '' : 'disabled'}>Turn all off</button>`,
+    };
+    const slot = panel.querySelector<HTMLElement>('[data-saver-extension-actions]'), kept = slot ? [...slot.childNodes] : [];
+    const focused = slot?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     morph(panel, `<header class="saver-head"><strong id="saver-title" data-tip="Applies to this thread. Guidance rides along folded with your next message, then every few messages. Savings are estimates from each project's benchmarks.">Token saver</strong><span class="saver-total" aria-label="${saving ? `About ${saving}% fewer tokens` : 'Off'}">${saving ? `−${saving}%` : 'Off'}</span></header>
       ${saver.changedAt !== undefined && measured && saver.sentKey === sentKey ? `<div class="saver-measured">${escape(measuredText(saver.changedAt, measured))}</div>` : ''}
-      <ul class="saver-list">${PACKS.map(pack => row(pack.id)).join('')}</ul>${hint}
-      <footer class="saver-foot"><label class="saver-default"><input type="checkbox" ${sameAsDefault ? 'checked' : ''} ${saver.packs.length ? '' : 'disabled'}><span>Start new threads like this</span></label><button type="button" class="saver-off" ${saver.packs.length ? '' : 'disabled'}>Turn all off</button></footer>`, 6);
+      <ul class="saver-list">${PACKS.map(pack => row(pack.id)).join('')}</ul>${hint}${extension?.actions ? '<div class="extension-action-slot saver-extensions" data-saver-extension-actions></div>' : ''}
+      <footer class="saver-foot">${(extension?.order ?? ['default', 'off']).map(id => footer[id] ?? '').join('')}</footer>`, 6);
+    // morph empties the slot it redraws: the mounted extension actions go back in, with their focus.
+    const next = panel.querySelector<HTMLElement>('[data-saver-extension-actions]');
+    if (next && kept.length && !next.childNodes.length) { next.replaceChildren(...kept); if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true }); }
     // morph sets attributes; a checkbox the user has clicked only follows its property.
     panel.querySelector<HTMLInputElement>('.saver-default input')!.checked = sameAsDefault;
     const levels = panel.querySelector<HTMLElement>('.saver-levels');
@@ -105,6 +122,7 @@ export function createTokenSaver(host: TokenSaverHost) {
       if (levels === track && thumbReady) levels.setAttribute('data-segment-ready', '');
       trackSegment(levels, levels.querySelector<HTMLElement>('.selected'));
     }
+    extension?.painted(panel, sessionId);
   }
 
   function place(anchor: HTMLElement): void {
@@ -121,6 +139,7 @@ export function createTokenSaver(host: TokenSaverHost) {
     const closing = panel, session = panelSession;
     panel = undefined; panelSession = ''; cleanup?.(); cleanup = undefined;
     measured = undefined;
+    host.extension?.(session)?.closed();
     hidePopover(closing);
     host.changed(session);
   }
@@ -190,10 +209,12 @@ export function createTokenSaver(host: TokenSaverHost) {
       setDefaults(input.checked ? saver : null);
       host.notify(input.checked ? 'New threads start with these savers' : 'New threads start with savers off');
     };
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(); anchor.isConnected && anchor.focus(); } };
+    // A host choice opened over the panel (an extension request) keeps its own Escape and clicks.
+    const overPanel = (target: EventTarget | null) => Boolean((target as Element | null)?.closest?.('.choice-menu'));
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && !overPanel(event.target)) { event.preventDefault(); close(); anchor.isConnected && anchor.focus(); } };
     const onOutside = (event: PointerEvent) => {
       const target = event.target as Element;
-      if (panel && !panel.contains(target) && !target.closest('[data-action="token-saver"]')) close();
+      if (panel && !panel.contains(target) && !target.closest('[data-action="token-saver"]') && !overPanel(target)) close();
     };
     panel.addEventListener('click', onClick);
     panel.addEventListener('change', onChange);
@@ -204,6 +225,8 @@ export function createTokenSaver(host: TokenSaverHost) {
 
   return {
     button, open, close, loadTools,
+    /** Draws the open panel again after the user's extension layout changed. */
+    relayout: () => { if (panel) render(panelSession); },
     /** The folded guidance block for an outgoing message, if one is due. */
     contextFor: (sessionId: string) => contextFor(sessionId, available()),
   };

@@ -23,7 +23,18 @@ export type CouncilHost = {
   openClassicSetup(anchor: HTMLElement): void;
   /** Reads a change aloud through the composer's live region. */
   announce(text: string): void;
+  /** Extension presentation of the strip and panel (composer-panels-host.ts), when extensions are loaded. */
+  extension?(): CouncilExtension | undefined;
 };
+/** The user's order (`target`, `max-rounds`, `reviewers` in the panel) and reversible visibility (`strip-toggle`,
+ * `open-worker`, `max-rounds`, `reviewers`) of Council's eligible controls, whether the strip carries an extension
+ * action slot, and the adapter's paint hook. Keep fixing, Accept and finish, Dismiss and the settings themselves are
+ * never part of it. */
+export type CouncilExtension = Readonly<{ order: readonly string[]; hidden: ReadonlySet<string>; actions: boolean; painted(): void }>;
+let extensionOf: () => CouncilExtension | undefined = () => undefined;
+const hiddenBy = (id: string): string => extensionOf()?.hidden.has(id) ? ' data-layout-hidden inert' : '';
+/** The panel's setting rows by layout id. */
+const ROW_IDS: Readonly<Record<string, Field>> = { target: 'target', 'max-rounds': 'maxRounds', reviewers: 'reviewers' };
 
 type Field = keyof CouncilConfig;
 const FIELDS: readonly { key: Field; label: string; options: readonly number[]; name(value: number): string }[] = [
@@ -65,6 +76,7 @@ function face(native: TeamSnapshot | null): { label: string; on: boolean; cue: '
 }
 
 export function createCouncil(host: CouncilHost) {
+  extensionOf = () => host.extension?.();
   let panel: HTMLElement | undefined, panelSession = '', cleanup: (() => void) | undefined, panelCount = 0;
   /** The control that opened the panel (the composer button, or the strip's Lower target or Raise max rounds). */
   let opener: HTMLElement | undefined;
@@ -179,6 +191,7 @@ export function createCouncil(host: CouncilHost) {
     const lowestLine = panel.querySelector<HTMLElement>('.council-lowest')!;
     if (lowestLine.textContent !== lowestNote) lowestLine.textContent = lowestNote;
     panel.querySelector<HTMLInputElement>('.council-new-threads')!.checked = councilForNewThreads();
+    arrangeRows(panel);
     // The switch is busy while an automatic team starts for it.
     const sw = panel.querySelector<HTMLInputElement>('.council-switch')!, starting = pending.has(sessionId) && !host.team(sessionId);
     if (sw.getAttribute('aria-busy') !== String(starting)) sw.setAttribute('aria-busy', String(starting));
@@ -231,6 +244,7 @@ export function createCouncil(host: CouncilHost) {
     }
     const slot = document.querySelector<HTMLElement>(`#composer .council-strip-slot[data-session-id="${CSS.escape(sessionId)}"]`), team = host.team(sessionId);
     if (slot) paintStrip(slot, team);
+    extensionOf()?.painted();
     paint(sessionId);
     keepOpener();
   }
@@ -416,7 +430,7 @@ export function createCouncil(host: CouncilHost) {
     // After the composer's own redraw (a send rebuilds it), so focus lands on what stays.
     await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
     const again = pressed.isConnected ? pressed : document.querySelector<HTMLElement>(`#composer .council-strip [data-action="${pressed.dataset.action}"]`);
-    (error ? again : document.querySelector<HTMLElement>('#composer .council-strip-toggle') ?? document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
+    (error ? again : document.querySelector<HTMLElement>('#composer .council-strip-toggle:not([data-layout-hidden])') ?? document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
   }
   /** The disclosure: the reviewer rows, remembered per thread; collapsed by default. */
   function toggle(sessionId: string): void {
@@ -488,7 +502,7 @@ function shownRound(progress: CouncilProgress, team: TeamSnapshot): CouncilRound
 }
 /** One short row per reviewer (shared by the strip and the Agents flyout): mark, lens, score; first → final once settled.
  *  A row opens that reviewer, like a worker row. */
-function rowsHtml(progress: CouncilProgress, team: TeamSnapshot): string {
+function rowsHtml(progress: CouncilProgress, team: TeamSnapshot, strip = false): string {
   const round = shownRound(progress, team);
   if (!round) return '';
   const { state, status } = progress, ended = settled(state) || finishedBelow(progress, team);
@@ -496,7 +510,7 @@ function rowsHtml(progress: CouncilProgress, team: TeamSnapshot): string {
   return round.seats.map(seat => {
     const lens = seat.council.lens.trim() || seat.name, lowest = seatScore(seat) !== null && seatScore(seat) === round.lowest && !provisional(progress, round);
     const s = seatStatus(seat, status.target, teamActive(team), () => false, firsts?.get(lens), { lowest, accepted: state === 'accepted' });
-    return `<button type="button" class="council-row" data-id="${escape(seat.id)}" data-action="open-team-worker" data-worker-id="${escape(seat.id)}" aria-label="${escape(`${lens}: ${s.spoken}. Open reviewer`)}"><span class="council-row-mark"${s.tone ? ` data-state-tone="${s.tone}"` : ''}>${s.mark}</span><span class="council-row-lens">${escape(lens)}</span><span class="council-row-score"${s.scored ? ` data-scored="${formatScore(seatScore(seat)!)}"` : ''}>${s.html}</span></button>`;
+    return `<button type="button" class="council-row" data-id="${escape(seat.id)}" data-action="open-team-worker" data-worker-id="${escape(seat.id)}"${strip ? hiddenBy('open-worker') : ''} aria-label="${escape(`${lens}: ${s.spoken}. Open reviewer`)}"><span class="council-row-mark"${s.tone ? ` data-state-tone="${s.tone}"` : ''}>${s.mark}</span><span class="council-row-lens">${escape(lens)}</span><span class="council-row-score"${s.scored ? ` data-scored="${formatScore(seatScore(seat)!)}"` : ''}>${s.html}</span></button>`;
   }).join('');
 }
 /** The strip's state line: the state, then the lowest against the target ("so far" while the round is open). */
@@ -533,7 +547,23 @@ function stripHtml(native: TeamSnapshot): string {
     : halted ? '<span class="council-strip-hint">Send a message to continue.</span>' : '';
   const close = ended ? '<button type="button" class="icon-button council-strip-dismiss" data-action="council-dismiss" aria-label="Dismiss Council result" data-tip="Dismiss">' + icon('close') + '</button>' : '';
   const tone = asks || progress.state === 'limit' || finished ? 'full' : progress.state === 'passed' ? 'success' : '';
-  return `<section class="council-strip" data-session-id="${escape(id)}" data-state="${progress.state}" aria-label="Council"><div class="council-strip-head"><button type="button" class="council-strip-toggle" data-action="council-strip-toggle" aria-expanded="${open}" aria-controls="council-rows-${escape(id)}"><span class="council-glyph" aria-hidden="true">${COUNCIL_ICON}</span><span class="council-strip-state"${tone ? ` data-state-tone="${tone}"` : ''}>${escape(text)}</span><span class="council-strip-score">${score}</span>${icon('chevron')}</button>${next || close ? `<span class="council-strip-end">${next}${close}</span>` : ''}</div>${error ? `<p class="council-strip-error" role="alert">${escape(error)}</p>` : ''}<div class="council-rows" id="council-rows-${escape(id)}"${open ? '' : ' hidden'}>${open ? rowsHtml(progress, team) : ''}</div></section>`;
+  return `<section class="council-strip" data-session-id="${escape(id)}" data-state="${progress.state}" aria-label="Council"><div class="council-strip-head"><button type="button" class="council-strip-toggle" data-action="council-strip-toggle"${hiddenBy('strip-toggle')} aria-expanded="${open}" aria-controls="council-rows-${escape(id)}"><span class="council-glyph" aria-hidden="true">${COUNCIL_ICON}</span><span class="council-strip-state"${tone ? ` data-state-tone="${tone}"` : ''}>${escape(text)}</span><span class="council-strip-score">${score}</span>${icon('chevron')}</button>${extensionOf()?.actions ? '<span class="extension-action-slot" data-council-extension-actions></span>' : ''}${next || close ? `<span class="council-strip-end">${next}${close}</span>` : ''}</div>${error ? `<p class="council-strip-error" role="alert">${escape(error)}</p>` : ''}<div class="council-rows" id="council-rows-${escape(id)}"${open ? '' : ' hidden'}>${open ? rowsHtml(progress, team, true) : ''}</div></section>`;
+}
+/** The panel's setting rows in the user's order (each in one of the rows' own places) and, outside a compact panel,
+ *  reversible visibility; focus stays on the control that had it. */
+function arrangeRows(panel: HTMLElement): void {
+  const extension = extensionOf(), rows = [...panel.querySelectorAll<HTMLElement>(':scope > [data-field-row]')];
+  const byField = new Map(rows.map(row => [row.dataset.fieldRow, row])), order = (extension?.order ?? Object.keys(ROW_IDS)).map(id => byField.get(ROW_IDS[id])).filter((row): row is HTMLElement => Boolean(row));
+  if (order.length === rows.length && order.some((row, index) => row !== rows[index])) {
+    const focused = document.activeElement as HTMLElement | null, anchor = rows.at(-1)!.nextSibling;
+    for (const row of order) panel.insertBefore(row, anchor);
+    if (focused && panel.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+  }
+  for (const [id, field] of Object.entries(ROW_IDS)) {
+    const row = byField.get(field), hidden = !panel.dataset.compact && Boolean(extension?.hidden.has(id));
+    if (!row || row.hasAttribute('data-layout-hidden') === hidden) continue;
+    row.toggleAttribute('data-layout-hidden', hidden); row.inert = hidden;
+  }
 }
 const STRIP_EXIT_MS = 120;
 /** Draws the strip in place (morph keeps focus), with its motion: it enters and leaves with a short fade and a few pixels of
@@ -549,7 +579,12 @@ function paintStrip(slot: HTMLElement, team: TeamSnapshot | null): void {
     return;
   }
   if (shown?.dataset.leaving) slot.replaceChildren();
+  // morph empties the extension slot it redraws: the mounted actions go back in, with their focus.
+  const actions = slot.querySelector<HTMLElement>('[data-council-extension-actions]'), kept = actions ? [...actions.childNodes] : [];
+  const focused = actions?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
   morph(slot, html);
+  const again = slot.querySelector<HTMLElement>('[data-council-extension-actions]');
+  if (again && kept.length && !again.childNodes.length) { again.replaceChildren(...kept); if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true }); }
   const strip = slot.querySelector<HTMLElement>(':scope > .council-strip');
   if (!strip) return;
   loaded(id);

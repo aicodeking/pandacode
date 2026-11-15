@@ -70,10 +70,17 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.commands` | data | inspect, contribute | command | main | — |
 | `panda.composer.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.composer.attachments` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.composer.council.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.composer.council.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.model.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.model.entries` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.composer.panels.protected` | data | inspect | button | main | — |
 | `panda.composer.permissions.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.protected` | data | inspect | button | main | — |
+| `panda.composer.queue.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.composer.queue.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.composer.saver.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.composer.saver.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.steering.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.steering.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.tray` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |

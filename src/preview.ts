@@ -508,6 +508,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
   }
 }
 // Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+// Explicit composer panels extension fixture only: safe mode while entries are queued and the council strip shows.
+if (new URLSearchParams(location.search).has('composer-panels')) {
+  (window as any).__previewPanelsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit composer controls extension fixture only: safe mode while a turn runs and a draft is open.
 if (new URLSearchParams(location.search).has('composer-controls')) {
   (window as any).__previewComposerSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();

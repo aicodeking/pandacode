@@ -1,0 +1,134 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.composer-panels",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.composer-panels/toolbar",
+        "title": "Toolbar-first panels",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.composer-panels/queue-notes",
+        "title": "Queue notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Queued messages stay with PandaCode."
+        }
+      },
+      {
+        "id": "sample.composer-panels/saver-notes",
+        "title": "Saver notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Token saver packs stay the user's choice."
+        }
+      },
+      {
+        "id": "sample.composer-panels/council-notes",
+        "title": "Council notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Council decisions stay with the user."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.composer-panels/queue",
+        "command": "sample.composer-panels/queue-notes",
+        "location": "panda.composer.queue.actions",
+        "presentation": "button",
+        "text": "Queue notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "queue-entry"
+        }
+      },
+      {
+        "id": "sample.composer-panels/saver",
+        "command": "sample.composer-panels/saver-notes",
+        "location": "panda.composer.saver.actions",
+        "presentation": "button",
+        "text": "Saver notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "token-saver"
+        }
+      },
+      {
+        "id": "sample.composer-panels/council",
+        "command": "sample.composer-panels/council-notes",
+        "location": "panda.composer.council.actions",
+        "presentation": "button",
+        "text": "Council notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "council-cycle"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.composer-panels/edit-first",
+        "title": "Steer after Edit",
+        "location": "panda.composer.queue.controls",
+        "rules": [
+          {
+            "id": "panda.composer.queue.controls/edit",
+            "target": "panda.composer.queue.controls/steer",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-panels/off-first",
+        "title": "Start new threads after Turn all off",
+        "location": "panda.composer.saver.controls",
+        "rules": [
+          {
+            "id": "panda.composer.saver.controls/off",
+            "target": "panda.composer.saver.controls/default",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-panels/reviewers-first",
+        "title": "Target after Reviewers",
+        "location": "panda.composer.council.controls",
+        "rules": [
+          {
+            "id": "panda.composer.council.controls/reviewers",
+            "target": "panda.composer.council.controls/target",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

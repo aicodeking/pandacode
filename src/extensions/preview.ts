@@ -38,6 +38,7 @@ import settingsCoreManifest from '../../tests/fixtures/extensions/settings-core/
 import sidebarManifest from '../../tests/fixtures/extensions/sidebar/extension.json';
 import dockManifest from '../../tests/fixtures/extensions/action-dock/extension.json';
 import composerControlsManifest from '../../tests/fixtures/extensions/composer-controls/extension.json';
+import composerPanelsManifest from '../../tests/fixtures/extensions/composer-panels/extension.json';
 import rosterManifest from '../../tests/fixtures/extensions/agent-roster/extension.json';
 import statusManifest from '../../tests/fixtures/extensions/status/extension.json';
 import moodboardManifest from '../../tests/fixtures/extensions/moodboards/extension.json';
@@ -233,6 +234,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (new URLSearchParams(location.search).has('roster-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === rosterManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: rosterManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('composer-panels')) {
+      if (snapshot.packages.some(item => item.manifest.id === composerPanelsManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: composerPanelsManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('composer-controls')) {

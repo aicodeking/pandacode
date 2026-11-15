@@ -204,6 +204,20 @@ export type ComposerAdmission = { readonly ok: true } | { readonly ok: false; re
 /** `selection.kind` of the composer contexts: `draft` (steer bar, ids = [task]), `model` (model picker actions,
  * ids = ["<harness>:<model>"]) and `approval-mode` (Permissions menu, ids = [current mode]). */
 export type ComposerSelectionKind = 'draft' | 'model' | 'approval-mode';
+/** Experimental queue, token saver and council panel controls (owner: the selected `panda.composer` provider). Eligible
+ * controls reorder and hide on the original nodes; actions run the original handlers. Queued text, queue order and
+ * delivery, token saver packs and the council's team decisions stay host-owned. */
+export type ComposerPanelControl = 'queue-steer' | 'queue-send-now' | 'queue-edit' | 'queue-resume' | 'saver-tighten' | 'saver-default' | 'saver-off' | 'council-strip-toggle' | 'council-open-worker' | 'council-lower-target' | 'council-raise-rounds';
+/** Named but never run: refused with `PermissionDenied`. */
+export type ComposerPanelProtectedControl = 'queue-remove' | 'queue-save' | 'queue-cancel' | 'queue-reorder' | 'saver-pack' | 'saver-level' | 'saver-install' | 'council-accept' | 'council-dismiss' | 'council-keep-fixing' | 'council-set';
+/** `entries` are opaque entry handles in delivery order (never text); an edited, moved, sent or removed entry, a new
+ * council cycle or any redraw changes `revision`. */
+export interface ComposerPanelsPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly running: boolean; readonly held: boolean; readonly entries: readonly string[]; readonly saver: boolean; readonly council: boolean; readonly cycle: string; readonly controls: readonly { readonly id: string; readonly controlId: ComposerPanelControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface ComposerPanelsAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly control: string; readonly controlId: ComposerPanelControl; readonly resource: string; readonly requestId: string }
+export type ComposerPanelsAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of the panel contexts: `queue-entry` (queue row actions, ids = [entry]), `token-saver` (token saver
+ * panel actions, ids = [task]) and `council-cycle` (council strip actions, ids = ["<task>:<cycle start>"]). */
+export type ComposerPanelSelectionKind = 'queue-entry' | 'token-saver' | 'council-cycle';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

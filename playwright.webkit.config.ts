@@ -122,6 +122,8 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-project-scope.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions project scope`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-composer-controls-coverage.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-composer-panels-coverage.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer panels extension:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer controls extension:`);
 export default defineConfig(config, {
   testMatch: [...config.testMatch as string[], '**/extensions-trust.spec.ts', ...(process.platform === 'win32' && process.arch === 'x64' ? ['**/extensions-runtime.spec.ts'] : []), '**/extensions-project-reads.spec.ts', '**/extensions-inventory.spec.ts', '**/extensions-context.spec.ts', '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/extensions-windows.spec.ts', '**/tray-popover.spec.ts', '**/agents-dock.spec.ts', '**/generative-ui.spec.ts'],

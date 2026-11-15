@@ -1314,6 +1314,28 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]
+    fn composer_panels_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/composer-panels/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.composer-panels", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        assert_eq!(contributes["components"][0]["slot"], "panda.composer");
+        assert_eq!(contributes["menus"][0]["location"], "panda.composer.queue.actions");
+        assert_eq!(contributes["menus"][1]["location"], "panda.composer.saver.actions");
+        assert_eq!(contributes["menus"][2]["location"], "panda.composer.council.actions");
+        assert_eq!(contributes["layouts"][2]["location"], "panda.composer.council.controls");
+        packages.enable("sample.composer-panels", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.composer-panels", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn composer_controls_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/composer-controls/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

@@ -404,7 +404,45 @@ export const COMPOSER_PROTECTED = [
   ['draft', 'Draft text and attachments', 'The draft, its undo history and attachments never cross the boundary; packages see only whether a draft exists.'],
   ['approvals', 'Approval answers', 'Allow, deny and answers stay host-drawn above the composer.'],
 ] as const;
-export type ActionLocation = typeof COMPOSER_ACTION_SURFACES[number] | typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** The composer's queue, token saver and council panels (docs/extensions/composer-panels.md). Each queue row, the
+ * open token saver panel and the council strip carry an action slot mounted by composer-panels-host.ts; their eligible
+ * controls order and hide on the original nodes. Entries, packs and the council's team decisions stay in main.ts,
+ * message-queue.ts, token-saver-panel.ts and council-panel.ts. */
+export const PANEL_ACTION_SURFACES = ['panda.composer.queue.actions', 'panda.composer.saver.actions', 'panda.composer.council.actions'] as const;
+export const PANEL_QUEUE_LOCATION = 'panda.composer.queue.controls';
+export const PANEL_SAVER_LOCATION = 'panda.composer.saver.controls';
+export const PANEL_COUNCIL_LOCATION = 'panda.composer.council.controls';
+export const PANEL_PROTECTED_LOCATION = 'panda.composer.panels.protected';
+/** Main queue entry controls: [id, label]. Steer, Send now and Edit order inside each row's actions (Delete stays
+ * last); Resume sits alone in the queue's heading. */
+export const PANEL_QUEUE_CONTROLS = [['steer', 'Steer queued message'], ['send-now', 'Send queued message now'], ['edit', 'Edit queued message'], ['resume', 'Resume the held queue']] as const;
+/** Token saver panel controls: [id, label]. Start new threads like this and Turn all off order in the footer. */
+export const PANEL_SAVER_CONTROLS = [['tighten', 'Tighten suggestion'], ['default', 'Start new threads like this'], ['off', 'Turn all off']] as const;
+/** Council controls: [id, label]. The strip's disclosure and reviewer rows hide; the settings rows order in the panel. */
+export const PANEL_COUNCIL_CONTROLS = [['strip-toggle', 'Council strip disclosure'], ['open-worker', 'Reviewer rows in the strip'], ['target', 'Target score'], ['max-rounds', 'Max rounds'], ['reviewers', 'Reviewers']] as const;
+/** Panel controls that never hide, with the reason. They still reorder. */
+export const PANEL_PINNED: Readonly<Record<string, string | undefined>> = {
+  [`${PANEL_COUNCIL_LOCATION}/target`]: 'The target score is what Council works toward; its row never hides.',
+};
+/** Panel controls that hide but keep their place, with the reason. */
+export const PANEL_FIXED: Readonly<Record<string, string | undefined>> = {
+  [`${PANEL_QUEUE_LOCATION}/resume`]: 'Resume sits alone in the queue heading beside the hold reason; it hides in place.',
+  [`${PANEL_SAVER_LOCATION}/tighten`]: 'Tighten sits in the context hint line; it hides in place.',
+  [`${PANEL_COUNCIL_LOCATION}/strip-toggle`]: 'The disclosure heads the strip; hidden, the state still reads on the tray button and in the Agents flyout.',
+  [`${PANEL_COUNCIL_LOCATION}/open-worker`]: 'Reviewer rows keep the round\'s order; hidden here, they still open from the Agents flyout.',
+};
+/** Protected panel behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const PANEL_PROTECTED = [
+  ['queue-remove', 'Delete a queued message', 'Deleting a queued message (and its confirmation while the queue is held) is the user\'s own action; a package request is refused.'],
+  ['queue-edit-commit', 'Save or cancel a queue edit', 'Save and Cancel end the user\'s own edit with the user\'s own text; a package request is refused.'],
+  ['queue-order', 'Queue order and delivery', 'Drag and Alt+arrow reordering, holds and delivery order stay host-owned; packages never reorder or send entries.'],
+  ['queue-text', 'Queued text and attachments', 'Entry text and attachments never cross the boundary; packages see opaque entry handles only.'],
+  ['saver-packs', 'Token saver packs and intensity', 'Only the user\'s own switch turns a pack on or off or changes the Caveman intensity; a package request is refused.'],
+  ['saver-install', 'Install RTK', 'Installing a missing tool runs Homebrew and stays host-run; a package request is refused.'],
+  ['council-decisions', 'Keep fixing, Accept and finish, Dismiss', 'The council cycle\'s team decisions stay the user\'s own buttons; a package request is refused.'],
+  ['council-settings', 'Council on/off, target and rounds', 'Only the user\'s own choice in the Council panel changes the council; a package request is refused.'],
+] as const;
+export type ActionLocation = typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {
