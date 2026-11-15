@@ -37,6 +37,10 @@ export type WorktreeHost = {
   extraItems(session: Session): ChoiceItem[];
   /** The computer control (PandaCode Connect) for the context bar; empty when there is none. */
   computer(session: Session, fresh: boolean): string;
+  /** A New task in another computer's project (remote/browse.rs) starts in a new worktree there. */
+  remoteWorktree?(session: Session): boolean;
+  /** The branch that worktree starts from, when one was chosen. */
+  remoteBranch?(session: Session): string | undefined;
   onExtra(id: string, session: Session, anchor: HTMLElement): Promise<void> | void;
 };
 export type CleanupIntent = 'complete' | 'remove';
@@ -74,17 +78,27 @@ export function createWorktrees(host: WorktreeHost) {
     const branch = session.worktreePath && (missing || !git?.branch) ? session.worktreeBranch || '' : git?.branch || '';
     const path = session.worktreePath ?? project?.path ?? '';
     // A task on another computer has its checkout there: name the branch, offer no local actions.
+    // Its branch: the one it started on, else the host's checkout as its status reports it (remote/inspect.rs).
+    const remoteBranch = session.remoteDevice ? session.worktreeBranch || (git?.isRepo ? git.branch : '') : '';
     const chip = session.remoteDevice
-      ? `<span class="branch-chip branch-chip-fixed" data-tip="${escape(`Branch ${session.worktreeBranch || 'unknown'} · actions run on ${session.remoteDevice.name}, not here`)}">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || 'Remote checkout')}</span></span>`
+      ? `<span class="branch-chip branch-chip-fixed" data-tip="${escape(`Branch ${remoteBranch || 'unknown'} · actions run on ${session.remoteDevice.name}, not here`)}">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(remoteBranch || 'Remote checkout')}</span></span>`
       : git?.isRepo || session.worktreePath
       ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${escape(missing ? 'Worktree missing' : `Branch ${branch || 'detached HEAD'}`)}" aria-description="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(missing ? `Worktree missing · was at ${path}` : `Branch ${branch || 'detached HEAD'} · ${session.worktreePath ? 'worktree' : 'checkout'} at ${path}`)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${icon('down')}</button>`
       : '';
     const links = [session.issue, session.pullRequest].filter(Boolean).map(link => linkChip(link!, session.id)).join('');
+    // A New task in another computer's project: its checkout is chosen here and made there.
+    const remote = fresh && !session.remoteDevice ? project?.remoteDevice : undefined;
+    if (remote) {
+      const worktree = Boolean(host.remoteWorktree?.(session)), from = worktree ? host.remoteBranch?.(session) : undefined;
+      const label = worktree ? `New worktree${from ? ` from ${from}` : ''} on ${remote.name}` : `Project folder on ${remote.name}`;
+      const checkout = `<button type="button" id="remote-checkout" class="composer-local" data-checkout="${worktree ? 'worktree' : 'local'}" data-action="remote-checkout" aria-haspopup="menu" aria-expanded="false" aria-label="${escape(`Checkout: ${label}`)}" data-tip="${escape(`Runs in: ${label}`)}">${icon(worktree ? 'worktree' : 'folder')}<span class="sr-only">${escape(label)}</span></button>`;
+      return `<div class="composer-context">${host.computer(session, fresh)}${checkout}${links}</div>`;
+    }
     return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${host.computer(session, fresh)}<span class="composer-local" data-checkout="${session.worktreePath ? 'worktree' : 'local'}" role="img" tabindex="0" aria-label="${escape(`${checkoutLabel(session)}: ${path}`)}" data-tip="${escape(`${checkoutLabel(session)}: ${path}`)}">${icon(session.worktreePath ? 'worktree' : 'folder')}<span class="sr-only">${checkoutLabel(session)}</span></span>${chip}${links}</div>`;
   }
 
   async function showMenu(anchor: HTMLElement): Promise<void> {
-    const session = host.session(); if (!session || session.remoteDevice) return;
+    const session = host.session(); if (!session || session.remoteDevice || host.project()?.remoteDevice) return;
     const project = host.project(), git = host.git(), missing = worktreeMissing(session, host.gitError());
     const path = session.worktreePath ?? project?.path ?? '';
     const branch = missing ? session.worktreeBranch || 'unknown branch' : git?.branch || session.worktreeBranch || 'Detached HEAD';

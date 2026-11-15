@@ -259,8 +259,12 @@ impl Run for Hello {
 /// (hosts with only `actionSendId` would run a retried one twice).
 /// `backgroundSendId`: so did `btw.ask`, `vm.start`, `vm.stop` and `moodboards.add`, and a
 /// background call still queued past [`background_timeout`] is refused unrun.
-const BASE_FEATURES: [&str; 11] =
-    ["packedFrames", "replayAfterSeq", "pagedMessages", "imageUpload", "teams", "startId", "sendId", "actionSendId", "forkSendId", "backgroundSendId", "prevSeq"];
+/// `projectCheckout`: `task.start` with a `projectId` takes `checkout: "current"` (the project's
+/// folder as it is) and runs in a folder without `origin` or outside Git (`start.rs`); older
+/// hosts ignore `checkout` and fall back to a worktree (`remote/browse.rs` asks first).
+pub(crate) const PROJECT_CHECKOUT: &str = "projectCheckout";
+const BASE_FEATURES: [&str; 12] =
+    ["packedFrames", "replayAfterSeq", "pagedMessages", "imageUpload", "teams", "startId", "sendId", "actionSendId", "forkSendId", "backgroundSendId", "prevSeq", PROJECT_CHECKOUT];
 
 /// Methods that also need the host's "Full access for remote tasks" switch (each one checks
 /// `terminal::require_full_access*` or `ctx.full_access` itself), so a phone can explain why

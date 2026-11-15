@@ -212,6 +212,8 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
     let mut check = tokio::time::interval_at(tokio::time::Instant::now() + CHECK, CHECK);
     // The first subscription follows the first presence frame.
     let mut renew = tokio::time::interval_at(tokio::time::Instant::now() + RENEW, RENEW);
+    // Browse discovery has its own cadence; subscription renewal alone is only every nine minutes.
+    let mut browse = tokio::time::interval_at(tokio::time::Instant::now() + super::browse::REFRESH_EVERY, super::browse::REFRESH_EVERY);
     // The first tick is now: a token is checked at connect, then every 12 h.
     let mut refresh = tokio::time::interval(REFRESH);
     // An unanswered ping, and the clocks at the last check.
@@ -234,6 +236,11 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
                 }
             },
             _ = renew.tick() => mirror::subscribe_soon(app),
+            _ = browse.tick() => {
+                if !remote(app).lock().settings.browsed.is_empty() {
+                    mirror::subscribe_soon(app);
+                }
+            },
             _ = ping.tick() => {
                 if !send(&mut write, Message::text("ping")).await {
                     return closed(None);

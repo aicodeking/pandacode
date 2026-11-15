@@ -149,8 +149,9 @@ embedded editor engine.
 ### Run it anywhere
 
 - **PandaCode Connect.** Sign in with GitHub to start and control tasks on your other
-  computers over an end-to-end encrypted relay. Off until you sign in. See
-  [remote access](docs/remote-access.md).
+  computers over an end-to-end encrypted relay. Show another computer's projects and tasks
+  in your sidebar, and start tasks in its projects with its harnesses. Off until you sign in.
+  See [remote access](docs/remote-access.md).
 - **Mobile app.** Watch, steer and approve tasks from an iPhone or Android phone; tasks
   never run on the phone. Join the iPhone beta on
   [TestFlight](https://testflight.apple.com/join/TpY9PjJe), or build it from [`mobile/`](mobile/README.md).
@@ -325,7 +326,7 @@ information:
 | Jev decisions on TypeSafe (optional, the default service): sends the selected evidence with your key | TypeSafe | Only when you save a TypeSafe key in Jev's setup and run a decision check |
 | Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
 | Model routing profiler (optional): `model.int8.onnx` and `tokenizer.json`, from a pinned commit, verified by SHA-256 | `raw.githubusercontent.com` | Once, the first time you turn on a team (with routing on) or click Download or Route in Settings → Agents → Model routing; never at launch, and never on macOS older than 13.4 or on Intel Mac, x86_64 Linux and x86_64 Windows builds |
-| PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Connections → Remote access; nothing before |
+| PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Connections → Remote access; shown computers’ project and task lists refresh about every 30 seconds while connected; nothing before sign-in |
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
 | Voice input with a speech service (optional): recorded audio, selected model and optional language, authenticated with your speech key | The transcription endpoint you configure (OpenAI, Groq, Mistral or your local/custom server) | Only with that service chosen, when you stop or transcribe a recording (Stop, Enter, Transcribe recording, Retry) or when switching threads or anything else closes the prompt box mid-recording while PandaCode keeps running; automatic stops (the two-minute or 16 MiB limit, or a failing microphone) keep the audio until you press Transcribe recording; with **This device**, audio never leaves your computer |
 | Local speech models (optional): the model file you pick and, with the first one, the Silero voice-activity model (about 1 MB), from a pinned revision, verified by SHA-256 | `huggingface.co`, `*.huggingface.co` and the download CDN `*.hf.co` | Only when you click Download in Settings → Voice; nothing at launch, while browsing models or while dictating |

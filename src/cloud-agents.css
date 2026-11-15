@@ -13,3 +13,5 @@
 @media(prefers-contrast:more){.cloud-strip{box-shadow:none}}
 .task-cloud{display:inline-flex;flex-shrink:0;color:var(--muted)}
 .task-cloud .icon{width:12px;height:12px}
+/* A task whose computer is out of reach (remote/browse.rs): its mark fades. */
+.task-remote.is-offline{color:var(--ds-glyph-faint)}

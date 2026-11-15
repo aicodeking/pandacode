@@ -37,61 +37,57 @@ fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
+fn delete_owned(store: &Store, groups: &[(String, Vec<String>)]) -> Result<()> {
     let transaction =
         rusqlite::Transaction::new_unchecked(&store.db, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
-    // Revalidate inside the transaction, including any changes made while the
-    // runtime registries were inspected. Only this exact ownership set is removed.
-    if candidates(store, sid)? != expected {
-        return Err("The team changed. Review the task again before deleting it.".into());
+    // Validate the entire batch before any deletion (including parent/worker overlaps).
+    for (sid, expected) in groups {
+        if candidates(store, sid)? != *expected {
+            return Err("The team changed. Review the task again before deleting it.".into());
+        }
     }
-    // Parent deletion cascades the ownership mapping, not the worker sessions.
-    // Delete children first, preserving unrelated conversations and forks.
-    for id in expected.iter().skip(1).chain(expected.first()) {
-        transaction
-            .execute("DELETE FROM sessions WHERE id=?1", [id])
-            .map_err(|e| e.to_string())?;
+    for (_, expected) in groups {
+        for id in expected.iter().skip(1).chain(expected.first()) {
+            transaction.execute("DELETE FROM sessions WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+        }
     }
     transaction.commit().map_err(|e| e.to_string())
 }
 
 pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSessions> {
-    // Agent, harness, team and Jev admissions share this lock. No process or
-    // filesystem operations happen here; running work must be stopped first.
+    delete_states(state, &[sid.to_owned()])
+}
+
+/// All-or-nothing removal for Stop showing: a running task must leave every copy intact.
+pub(crate) fn delete_states(state: &AppState, sids: &[String]) -> Result<DeletedSessions> {
     let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is closing. Try again when it finishes.".into());
     }
-    let ids = {
+    let groups = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        candidates(&store, sid)?
+        sids.iter().map(|sid| Ok((sid.clone(), candidates(&store, sid)?))).collect::<Result<Vec<_>>>()?
     };
+    let ids: Vec<String> = groups.iter().flat_map(|(_, ids)| ids.iter().cloned()).collect();
     for id in &ids {
         if agents.contains_key(id) {
-            return Err(
-                "Stop this task and wait for its agents to finish before deleting it.".into(),
-            );
+            return Err("Stop this task and wait for its agents to finish before deleting it.".into());
         }
         if terminal::harness_running(&state.terminals, id)? {
             return Err("Close this task's harness console before deleting it.".into());
         }
     }
     if jev::active_for_tasks(&ids)? || jev_decisions::active_for_tasks(&ids)? {
-        return Err(
-            "Wait for this task's Jev browser test or assessment to finish before deleting it."
-                .into(),
-        );
+        return Err("Wait for this task's Jev browser test or assessment to finish before deleting it.".into());
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    delete_owned(&store, sid, &ids)?;
+    delete_owned(&store, &groups)?;
     drop(store);
     for id in &ids {
         crate::providers::discard_warm_agent(id);
     }
-    Ok(DeletedSessions {
-        deleted_session_ids: ids,
-    })
+    Ok(DeletedSessions { deleted_session_ids: ids })
 }
 
 /// Deletes the rows, then the app-data files of every deleted task (progress snapshots), best effort.
@@ -153,6 +149,30 @@ mod tests {
         let child = task(store, project);
         store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?2)", params![parent, child]).unwrap();
         child
+    }
+
+    #[test]
+    fn a_refused_batch_preserves_all_tasks_and_a_valid_batch_removes_only_its_members() {
+        let (state, project) = test_state();
+        let (idle, busy, other) = {
+            let store = state.store.lock().unwrap();
+            let idle = task(&store, &project);
+            let busy = task(&store, &project);
+            store.status(&busy, "waiting").unwrap();
+            (idle, busy, task(&store, &project))
+        };
+        let ids = vec![idle.clone(), busy.clone()];
+        assert!(delete_states(&state, &ids).is_err());
+        {
+            let store = state.store.lock().unwrap();
+            assert!(store.session(&idle).is_ok());
+            assert!(store.session(&busy).is_ok());
+            store.status(&busy, "idle").unwrap();
+        }
+        delete_states(&state, &ids).unwrap();
+        let store = state.store.lock().unwrap();
+        assert!(store.session(&idle).is_err() && store.session(&busy).is_err());
+        assert!(store.session(&other).is_ok());
     }
 
     #[test]
@@ -345,12 +365,12 @@ mod tests {
         let parent = task(&store, &project);
         let expected = candidates(&store, &parent).unwrap();
         let child = owned_worker(&store, &parent, &project);
-        assert!(delete_owned(&store, &parent, &expected)
+        assert!(delete_owned(&store, &[(parent.clone(), expected)])
             .unwrap_err()
             .contains("team changed"));
         let expected = candidates(&store, &parent).unwrap();
         store.status(&child, "running").unwrap();
-        assert!(delete_owned(&store, &parent, &expected).is_err());
+        assert!(delete_owned(&store, &[(parent.clone(), expected)]).is_err());
         assert!(store.session(&parent).is_ok());
         assert!(store.session(&child).is_ok());
     }

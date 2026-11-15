@@ -34,6 +34,8 @@ const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters resu
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pandacode', path: '/Users/you/Projects/pandacode' }];
 const previewExplorer = createPreviewFileExplorer();
+/** Computers whose projects are shown here (`remote_browse`). */
+const browsedComputers = new Set<string>();
 let sessions: Session[] = [
   { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
   { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
@@ -1578,6 +1580,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     const targets = await invokeRemote<{ deviceId: string; name: string; online: boolean }[]>('remote_targets', {}, emit);
     const target = targets.find(item => item.deviceId === args.deviceId && item.online);
     if (!target) throw new Error('That computer is offline.');
+    // `__remoteOlderHost`: the host lacks `projectCheckout`, so a start in a remote project's folder is refused (remote/browse.rs).
+    if ((window as any).__remoteOlderHost && projects.find(item => item.id === args.projectId)?.remoteDevice && !args.worktree) throw new Error(`${target.name} runs an older PandaCode, which would start this task in a new worktree instead of the project folder. Update PandaCode on ${target.name}, or choose Runs in → New worktree.`);
     ((window as any).__remoteStarts ??= []).push(args);
     // The host's stages (finding, downloading…), shown by src/remote-progress.ts; may fail on request.
     await previewRemoteStart({ ...args, repo: previewGithub.status(args.projectId).repo?.nameWithOwner }, emit);
@@ -1600,6 +1604,50 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     await invoke('send_message', { sessionId: s.id, text: args.prompt, imageIds: args.imageIds ?? [] });
     emit('sessions-changed', {});
     return (w.__remoteStartBusy ? { sessionId: s.id, note: w.__remoteStartBusy } : { sessionId: s.id }) as T;
+  }
+  if (command === 'remote_browsed') return [...browsedComputers] as T;
+  if (command === 'remote_project_branches') {
+    // A remote project's branches there (`git.branches` by project); `__remoteBranchesFail` is the host's refusal.
+    const w = window as any;
+    if (w.__remoteBranchesFail) { const failure = w.__remoteBranchesFail; w.__remoteBranchesFail = undefined; throw new Error(failure); }
+    if (!projects.find(item => item.id === args.projectId)?.remoteDevice) throw new Error('That project is on this computer.');
+    return { current: 'feat/upload-retry', branches: ['main', 'feat/upload-retry', 'release/2.4'], defaultBranch: 'main' } as T;
+  }
+  if (command === 'remote_browse') {
+    // Another computer's projects and tasks shown here (remote/browse.rs). Tests: `__remoteBrowses`
+    // records each call, `__remoteBrowseFail` is an error text for the next show.
+    const w = window as any, deviceId = String(args.deviceId);
+    (w.__remoteBrowses ??= []).push(args);
+    const shownHere = (projectId: string) => projects.find(item => item.id === projectId)?.remoteDevice?.id === deviceId;
+    if (!args.show) {
+      browsedComputers.delete(deviceId);
+      sessions = sessions.filter(task => !shownHere(task.projectId));
+      projects = projects.filter(item => item.remoteDevice?.id !== deviceId);
+      emit('sessions-changed', {});
+      return { projects: 0, tasks: 0 } as T;
+    }
+    // `__remoteBrowseHold` keeps the next show waiting until `__remoteBrowseRelease()`.
+    if (w.__remoteBrowseHold) await new Promise<void>(resolve => { w.__remoteBrowseRelease = () => { w.__remoteBrowseHold = false; resolve(); }; });
+    if (w.__remoteBrowseFail) { const failure = w.__remoteBrowseFail; w.__remoteBrowseFail = undefined; throw new Error(failure); }
+    const targets = await invokeRemote<{ deviceId: string; name: string; online: boolean }[]>('remote_targets', {}, emit);
+    const target = targets.find(item => item.deviceId === deviceId);
+    if (!target) throw new Error('That computer is offline.');
+    browsedComputers.add(deviceId);
+    const remoteDevice = { id: deviceId, name: target.name };
+    for (const [key, name] of [['atlas', 'atlas'], ['notes', 'field-notes']]) {
+      const id = `remote-${deviceId}-${key}`;
+      if (!projects.some(item => item.id === id)) projects.push({ id, name, path: `pandacode-remote://${deviceId}/${key}`, remoteDevice });
+    }
+    const taskId = `remote-${deviceId}-task-1`, at = Date.now() - 3_600_000;
+    if (!sessions.some(task => task.id === taskId)) {
+      sessions.push({ id: taskId, projectId: `remote-${deviceId}-atlas`, title: 'Fix the flaky upload test', provider: 'github-copilot', model: 'default', mode: 'ask', status: 'idle', createdAt: at, updatedAt: at, lastResponseAt: at, lastPromptAt: at, archived: false, resumeId: null, worktreePath: null, reasoningEffort: null, contextUsage: null, taskStage: 'review', taskDescription: '', completedAt: null, pinned: false, sidebarOrder: null, draft: false, remoteDevice } as Session);
+      messages[taskId] = [
+        { id: 1, sessionId: taskId, role: 'user', content: 'The upload test fails about one run in five. Find out why.', createdAt: at },
+        { id: 2, sessionId: taskId, role: 'assistant', content: `The test raced the upload's progress callback. It now waits for the final event, and passed 50 runs in a row on ${target.name}.`, createdAt: at + 60_000 },
+      ];
+    }
+    emit('sessions-changed', {});
+    return { projects: projects.filter(item => item.remoteDevice?.id === deviceId).length, tasks: sessions.filter(task => shownHere(task.projectId)).length } as T;
   }
   if (command.startsWith('remote_') && command !== 'remote_team' && command !== 'remote_worker_messages') return invokeRemote<T>(command, args, emit);
   if (command.startsWith('orchestration_')) installMachineChildren();
@@ -2043,6 +2091,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'pin_session': {
       const task = session(args.sessionId);
       if (typeof args.pinned !== 'boolean') throw new Error('Choose whether to pin this task.');
+      // A task on another computer is pinned there too (`thread.pin`); `__remoteChanges` records it.
+      if (task.remoteDevice) ((window as any).__remoteChanges ??= []).push({ method: 'thread.pin', sessionId: task.id, pinned: args.pinned });
       saveThreadOrder(sessions.map(item => ({ ...threadOrder(item), ...(item.id === task.id ? { pinned: args.pinned } : {}) })));
       emit('sessions-changed', undefined);
       result = task; break;
@@ -2136,6 +2186,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'set_task_stage': {
       const s = session(args.sessionId); assertIdle(s);
+      // A task on another computer is settled or reopened there too (`thread.setStage`, remote/mirror.rs).
+      // `__remoteStageFail` is the host's refusal for the next one; an offline host changes only this copy.
+      if (s.remoteDevice) {
+        const w = window as any;
+        if (w.__remoteStageFail) { const failure = w.__remoteStageFail; w.__remoteStageFail = undefined; throw new Error(failure); }
+        (w.__remoteStages ??= []).push({ sessionId: s.id, deviceId: s.remoteDevice.id, stage: args.stage });
+      }
       if (s.archived) throw new Error('Restore this task before changing its stage.');
       const stage = args.stage as TaskStage;
       // Like the native store: work in progress only by undoing the completion of a stopped run.
@@ -2150,6 +2207,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'update_session': {
       const s = session(args.sessionId);
+      // Renaming a task on another computer renames it there too (`thread.rename`).
+      if (s.remoteDevice && typeof args.title === 'string') ((window as any).__remoteChanges ??= []).push({ method: 'thread.rename', sessionId: s.id, title: args.title });
       if (args.archived === false && s.archived && s.taskStage === 'completed') s.completedAt = Date.now();
       // `warm` (optional) only asks native to restart the warm process; it is not a task field.
       Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId' && key !== 'warm')), { updatedAt: Date.now() }); break;
@@ -2260,7 +2319,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const stopped = session(args.sessionId); stopped.status = 'idle'; if (stopped.goalState?.status === 'active') { stopped.goalState.status = 'paused'; emitGoal(stopped); } syncMirror(args.sessionId); agent({ sessionId: args.sessionId, kind: 'done', text: 'Stopped' }); break;
     }
     case 'respond_approval': case 'respond_user_input': break;
-    case 'git_status': result = checkoutGit(args.sessionId); break;
+    case 'git_status': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) ((window as any).__remoteInspects ??= []).push({ command, sessionId: args.sessionId }); }
+      result = checkoutGit(args.sessionId); break;
     case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;
     case 'git_stage': checkoutGit(args.sessionId).files.forEach(file => { if (args.paths.includes(file.path)) { file.index = args.staged ? 'M' : ' '; file.working = args.staged ? ' ' : 'M'; } }); break;
     case 'git_commit': {
@@ -2459,6 +2519,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
     case 'list_files': result = previewExplorer.list(args); break;
     case 'search_files': {
+      // Another computer's project is searched there (`files.search`, remote/inspect.rs); `__remoteSearches` records it.
+      if (projects.find(item => item.id === args.projectId)?.remoteDevice) ((window as any).__remoteSearches ??= []).push({ projectId: args.projectId, query: args.query });
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
       const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
       // Folders join typed queries only, like the native index.
@@ -2556,16 +2618,20 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = await response.arrayBuffer();
       break;
     }
-    // Like `Store::workspace_root`: a task on another computer has no checkout here.
-    case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
+    // A task on another computer reads from its host (remote/inspect.rs); `__remoteInspects` records which.
+    case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) {
+        ((window as any).__remoteInspects ??= []).push({ command, sessionId: args.sessionId, path: args.path });
+        if (typeof (window as any).__remoteFileText === 'string') { result = (window as any).__remoteFileText; break; }
+      } }
       result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
-    case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
+    case 'workspace_file_stamp': result = args.sessionId && sessions.find(s => s.id === args.sessionId)?.remoteDevice ? 'remote' : previewExplorer.stamp(args); break;
     case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;
     case 'write_workspace_file': {
       const original = await invoke<string>('read_file', args);
       previewExplorer.save(args, original); result = null; break;
     }
     case 'open_workspace_file': result = null; break;
+
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;

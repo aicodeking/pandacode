@@ -39,7 +39,7 @@ fn launch(viewer: &mut Viewer) -> (String, Value) {
     let (local, created, start_id) = mirror::commit_row(&mut viewer.inner, &viewer.store, &mut request, &Arc::new(Notify::new())).unwrap();
     assert!(created);
     assert_eq!(start_id.as_deref(), Some(local.as_str()), "a machine thread's start goes by its own id");
-    (local.clone(), mirror::start_body(request, "orbit-labs/orbit", Some("main"), Some(&local), &[]))
+    (local.clone(), mirror::start_body(request, &mirror::StartAt::Repo("orbit-labs/orbit".into()), Some("main"), Some(&local), &[]))
 }
 
 struct HostComputer {

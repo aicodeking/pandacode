@@ -1,7 +1,7 @@
 export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'alibaba' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes' | 'cursor';
 export type Mode = 'ask' | 'auto' | 'review' | 'plan' | 'full';
 export type TaskStage = 'pending' | 'in_progress' | 'review' | 'completed';
-export interface Project { id: string; name: string; path: string; /** Increases with each project added (the native rowid); orders Projects: Added. */ addedOrder?: number; }
+export interface Project { id: string; name: string; path: string; /** Increases with each project added (the native rowid); orders Projects: Added. */ addedOrder?: number; /** Set for another computer's project (PandaCode Connect, `remote/browse.rs`): its tasks run there and `path` is a placeholder, never a folder here. */ remoteDevice?: { id: string; name: string } | null; }
 export interface ContextUsage { usedTokens: number; contextWindow: number | null; }
 /** Token totals for one task, summed from the harness's own local session logs. */
 export interface TaskTokenUsage { input: number; cacheRead: number; cacheWrite: number; output: number; firstUsed: number | null; lastUsed: number | null; }

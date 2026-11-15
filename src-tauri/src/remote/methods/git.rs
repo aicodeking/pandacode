@@ -565,7 +565,31 @@ impl Run for Branches {
     }
 }
 
+/// A project's branches by its id, before any task there (`projectCheckout` hosts): what a
+/// viewer offers to start a worktree from (`remote/browse.rs`).
+#[derive(Debug, PartialEq)]
+struct ProjectBranches {
+    project_id: String,
+}
+
+impl Run for ProjectBranches {
+    fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
+        Box::pin(async move {
+            // Bot workspaces are refused, as for `files.*`.
+            let (_, root) = super::files::resolve(&ctx.state(), &super::files::Target::Project(self.project_id)).await?;
+            let trust = trust_of(&ctx);
+            let list = crate::blocking(move || crate::workspace::git_branches(&root, trust)).await?;
+            branches_reply(list, false, false)
+        })
+    }
+}
+
+/// `sessionId` (a task's checkout), or `projectId` (a project's own checkout).
 fn parse_branches(params: &Value) -> Result<Box<dyn Run>> {
+    if params.get("sessionId").is_none_or(Value::is_null)
+        && params.get("projectId").is_some_and(|value| !value.is_null()) {
+        return Ok(Box::new(ProjectBranches { project_id: id_param(params, "projectId")? }));
+    }
     Ok(Box::new(Branches { session_id: session(params)? }))
 }
 
@@ -1052,6 +1076,14 @@ mod tests {
         assert!(commit.find("Ok(pushed)").unwrap() < commit.find("invalidate_pull_cache(&this.session_id)").unwrap(), "only after a push that worked");
         let push = &source[source.find("impl Run for Push").unwrap()..source.find("fn parse_push").unwrap()];
         assert!(push.find("git_push(").unwrap() < push.find("invalidate_pull_cache(&self.session_id)").unwrap());
+    }
+
+    #[test]
+    fn branches_take_a_task_or_a_project() {
+        assert!(parse_branches(&json!({"sessionId": "s1"})).is_ok());
+        assert!(parse_branches(&json!({"projectId": "p1"})).is_ok(), "a project's own checkout");
+        assert!(parse_branches(&json!({"projectId": "has space"})).is_err());
+        assert!(parse_branches(&json!({})).is_err());
     }
 
     #[test]

@@ -65,7 +65,7 @@ const sections = [
 
       <section id="connect" aria-labelledby="connect-title">
         <h2 id="connect-title">Connect and the mobile app</h2>
-        <p>PandaCode Connect is optional and off until you sign in, in the desktop app (Settings → Remote access) or in the PandaCode mobile app for iPhone and Android. It links your own devices so you can follow and answer tasks from your phone, or run a task on another of your computers. The mobile app never runs code; your computer does the work.</p>
+        <p>PandaCode Connect is optional and off until you sign in, in the desktop app (Settings → Remote access) or in the PandaCode mobile app for iPhone and Android. It links your own devices so you can follow and answer tasks from your phone, or run a task on another of your computers. The mobile app never runs code; your computer does the work. If you choose to show another computer’s projects on the desktop, its project and task lists refresh about every 30 seconds while connected, through the same encrypted relay connection.</p>
         <p>You sign in with GitHub. The sign-in asks GitHub for no permissions beyond who you are: no email, no repositories. Our relay, a Cloudflare Worker, then keeps:</p>
         <ul>
           <li>your <strong>GitHub numeric user id</strong>, which names your account. At sign-in the relay also reads your GitHub login and avatar URL and passes them to your device, which shows them in Settings;</li>

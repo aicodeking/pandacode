@@ -31,6 +31,13 @@ pub struct Project {
     pub path: String,
     /// When the project was added, as an increasing number (its rowid): the sidebar's Added sort.
     pub added_order: i64,
+    /// Set for a project that lives on another computer (PandaCode Connect, docs/remote-access.md
+    /// "Remote projects"): its tasks run there, and `path` is a placeholder never read from disk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_device: Option<RemoteDevice>,
+    /// The project's id on that computer.
+    #[serde(skip)]
+    pub remote_project: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,7 +171,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 
@@ -644,6 +651,17 @@ impl Store {
                   UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
                   PRAGMA user_version=37;").map_err(|e| e.to_string())?;
             }
+            if version < 38 {
+                // Remote projects: another computer's projects, browsed from here, and mirrors
+                // whose messages are copied only once opened (docs/remote-access.md).
+                for (table, name, definition) in [("projects", "remote_device", "TEXT"), ("projects", "remote_project", "TEXT"), ("sessions", "remote_deferred", "INTEGER NOT NULL DEFAULT 0")] {
+                    let exists: bool = migration.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1)"), [name], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    if !exists {
+                        migration.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                    }
+                }
+                migration.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS projects_remote ON projects(remote_device,remote_project) WHERE remote_device IS NOT NULL; PRAGMA user_version=38;").map_err(|e| e.to_string())?;
+            }
             migration.commit().map_err(|e| e.to_string())?;
         }
         let recovery = db.transaction().map_err(|e| e.to_string())?;
@@ -734,7 +752,14 @@ impl Store {
     }
 
     fn migrate_legacy_worktrees(db: &Connection) -> Result<()> {
-        let projects = Self::read_projects(db)?;
+        // An early migration: the remote project columns (version 38) may not exist yet.
+        let projects: Vec<Project> = {
+            let mut stmt = db.prepare("SELECT id,name,path,rowid FROM projects ORDER BY name COLLATE NOCASE").map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok(Project { id: r.get(0)?, name: r.get(1)?, path: r.get(2)?, added_order: r.get(3)?, remote_device: None, remote_project: None }))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())?
+        };
         let registered: Vec<_> = projects
             .iter()
             .map(|project| PathBuf::from(&project.path))
@@ -768,23 +793,32 @@ impl Store {
         Ok(())
     }
 
+    /// This computer's projects. Remote projects (another computer's) are left out: every
+    /// caller here reads the folder, and theirs is not on this disk.
     pub fn projects(&self) -> Result<Vec<Project>> {
+        Ok(Self::read_projects(&self.db)?.into_iter().filter(|project| project.remote_device.is_none()).collect())
+    }
+    /// Every project, remote ones included: what the sidebar lists.
+    pub fn all_projects(&self) -> Result<Vec<Project>> {
         Self::read_projects(&self.db)
+    }
+    const PROJECT_COLUMNS: &'static str = "id,name,path,rowid,remote_device,remote_project";
+    fn project_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
+        let device: Option<String> = r.get(4)?;
+        Ok(Project {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            path: r.get(2)?,
+            added_order: r.get(3)?,
+            remote_device: device.map(|id| RemoteDevice { name: crate::remote::device_label(&id), id }),
+            remote_project: r.get(5)?,
+        })
     }
     fn read_projects(db: &Connection) -> Result<Vec<Project>> {
         let mut stmt = db
-            .prepare("SELECT id,name,path,rowid FROM projects ORDER BY name COLLATE NOCASE")
+            .prepare(&format!("SELECT {} FROM projects ORDER BY name COLLATE NOCASE", Self::PROJECT_COLUMNS))
             .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(Project {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    path: r.get(2)?,
-                    added_order: r.get(3)?,
-                })
-            })
-            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], Self::project_row).map_err(|e| e.to_string())?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     }
@@ -807,34 +841,22 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         self.db
-            .query_row(
-                "SELECT id,name,path,rowid FROM projects WHERE path=?1",
-                [path_str],
-                |r| {
-                    Ok(Project {
-                        id: r.get(0)?,
-                        name: r.get(1)?,
-                        path: r.get(2)?,
-                        added_order: r.get(3)?,
-                    })
-                },
-            )
+            .query_row(&format!("SELECT {} FROM projects WHERE path=?1", Self::PROJECT_COLUMNS), [path_str], Self::project_row)
             .map_err(|e| e.to_string())
     }
+    /// One of this computer's projects. A remote project is refused, so nothing that reads
+    /// the folder ever gets its placeholder path; [`Store::project_entry`] returns either kind.
     pub fn project(&self, project_id: &str) -> Result<Project> {
+        let project = self.project_entry(project_id)?;
+        if let Some(device) = &project.remote_device {
+            return Err(format!("{} is on {}.", project.name, device.name));
+        }
+        Ok(project)
+    }
+    /// A project of either kind, for callers that never touch its folder.
+    pub fn project_entry(&self, project_id: &str) -> Result<Project> {
         self.db
-            .query_row(
-                "SELECT id,name,path,rowid FROM projects WHERE id=?1",
-                [project_id],
-                |r| {
-                    Ok(Project {
-                        id: r.get(0)?,
-                        name: r.get(1)?,
-                        path: r.get(2)?,
-                        added_order: r.get(3)?,
-                    })
-                },
-            )
+            .query_row(&format!("SELECT {} FROM projects WHERE id=?1", Self::PROJECT_COLUMNS), [project_id], Self::project_row)
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Project not found.".into())
@@ -1352,7 +1374,7 @@ impl Store {
         model: &str,
         mode: &str,
     ) -> Result<Session> {
-        self.project(project_id)?;
+        self.project_entry(project_id)?;
         if ![
             "claude",
             "codex",
@@ -1572,7 +1594,7 @@ impl Store {
             return Err("Model name is too long.".into());
         }
         if let Some(project_id) = project_id {
-            self.project(project_id)?;
+            self.project_entry(project_id)?;
         }
         let current = self.session(sid)?;
         // Queue the handoff and replace the native context atomically. Keep the

@@ -49,6 +49,98 @@ while H is still starting it) and `remote_synced_id` (the last of H's message id
   agent) goes through `Store::workspace_root`, which refuses a mirror with
   `This task runs on <name>.` and never touches the local disk.
 
+## Remote projects
+
+A computer can also be *shown* here: its projects appear in this computer's sidebar and
+project menus, its tasks are listed as mirrors, and a New task in one of its projects starts
+there (`src-tauri/src/remote/browse.rs`). Open project lists the account's other computers with
+Show projects / Stop showing; a shown project's menu offers Stop showing <computer>. The list
+of shown computers is `browsed` in `remote.json`.
+
+- **Rows (schema version 38).** Each project of a shown computer is a `projects` row with
+  `remote_device` (the computer's device id) and `remote_project` (its project id there), unique
+  per pair, and a placeholder `path` (`pandacode-remote://<device>/<project>`) that is never a
+  folder here. `Store::projects()` (this computer's) leaves them out and `Store::project()`
+  refuses them (`<name> is on <computer>.`), so nothing that reads a folder ever gets one;
+  `Store::all_projects()` (the `list_projects` command) and `Store::project_entry()` include
+  them. Hosting is unaffected: a host's `tasks.list` and `task.start` see only its own projects.
+- **Listing.** Showing a computer calls its `tasks.list` (its 200 most recent tasks, so a busy computer never crowds this one's own out of the sidebar's 500) at once, and again beside
+  each subscribe round (at most every 30 s per computer) while it is online. A dedicated 30-second socket timer schedules discovery even when presence stays unchanged. `browse::apply`
+  makes or renames its projects (bot workspaces and chats are left out) and makes a mirror for
+  each task not yet mirrored here (matched by `(remote_device, remote_session)`, so a task this
+  computer started keeps its row); a task already settled there, or a harness or mode this build doesn't know, leaves the task out.
+  A project missing from a reply goes with its copies, unless the reply was near the frame budget
+  and may have been cut. A task the host reports `missing` in a subscribe is removed here when it
+  is in a remote project (other mirrors end as before).
+- **Deferred copies.** Mirrors made by a listing have `sessions.remote_deferred = 1`: their
+  status, cards and live events follow the host as usual, but no messages are copied (not in a
+  subscribe catch-up, a reconnect's pipelined pages, or a run end), so showing a computer with
+  hundreds of tasks copies no histories. Opening the thread (`get_messages` without `beforeId`)
+  clears the flag and syncs it (newest page first, then the backfill). Listings keep title, stage, archived state and pin in step with the host even after opening;
+  `remote_deferred` only controls message downloads. Offline local metadata changes are not
+  queued and can be replaced by the next host listing.
+- **Starting.** `remote_start_task` for a remote project sends `projectId` (the host's id)
+  instead of `repo`, so no local checkout or GitHub origin is needed, and a project of another
+  computer is refused. The window skips `remote_repo_check` and its "GitHub is behind" dialog.
+  A start in the project folder also sends `checkout: "current"`: the host then runs in that
+  folder as it is (its branch and changes, nothing fetched or switched, and no fallback to a
+  worktree when it is dirty, elsewhere or busy), like a task started there (`prepare_current`).
+  Hosts before it ignore the field and apply the checks below, so this computer first asks
+  `host.hello` for the `projectCheckout` feature (kept 10 minutes per computer,
+  `browse::require_project_checkout`) and refuses such a start on an older host ("<computer> runs
+  an older PandaCode … Update PandaCode on <computer>, or choose Runs in → New worktree.").
+  An explicitly selected worktree branch uses its local `refs/heads/` ref, including unpushed
+  commits, without fetching. A removed branch is refused rather than silently replaced.
+  On the host, a `projectId` start whose folder has no `.git` (here or above) runs in place,
+  never in a worktree, while no other agent works there; a checkout without `origin` fetches
+  nothing and uses its own branches (the viewer's branch when it has it, else the one checked
+  out), with worktrees made from that local branch. Checkouts with `origin` work as before.
+- **Window.** A task in a remote project uses that computer as its Run on choice, fixed
+  (`projectRemote`/`runChoice` in `main.ts`; the chip says "This project is on <computer>, so its
+  tasks run there."), so the model picker, offline note and start progress are the mirror ones.
+  Before its task exists there, the inspector says where the project is without any git or file
+  call; the branch menu is not offered (the checkout icon is a Runs in menu instead: Project
+  folder, or New worktree, sent as `worktree: true`; choosing New worktree opens a searchable branch list at once from `remote_project_branches` / `git.branches { projectId }`. Project folder keeps the checkout as it is; `remoteWorktrees` / `remoteBranches` in `main.ts`), and menus show the project as "On <computer>". A send
+  that would run such a task here (a board task, say) is refused.
+
+- **Sidebar.** With another computer's projects shown, the project filter also lists
+  Computers (This computer, then each shown one): choosing one narrows the sidebar to tasks that
+  run there (`state.computerFilter`, saved as `pandacode.computerFilter`; a mirror's computer is
+  its host, else its project's, else this one) and asks a shown computer for its list again at
+  once. Choosing a project clears it. A computer presence lists as offline (or this computer
+  without the relay) marks its tasks' rows (`Runs on <computer> · Offline`, dimmed) and its
+  projects in menus (`On <computer> · Offline`); one missing from presence is not marked.
+- **Open project.** A computer being shown has Refresh (lists it again now; the dialog stays)
+  and Stop showing; while a computer is asked, its row is `aria-busy` and says so.
+  Stop showing validates all task copies before deleting any; if work is active, it refuses
+  without changing the rows or the saved browsing preference. Listings and hide/show are
+  serialized per computer so an earlier reply cannot restore removed rows.
+- **Rename and pin.** `update_session` and `pin_session` send `thread.rename` and `thread.pin` to the host before changing the mirror. A refusal leaves the copy unchanged. Offline changes affect only this copy and are not queued.
+- **Settle and reopen.** Changing a mirror's stage (`set_task_stage`) sends `thread.setStage` to
+  its host first (`mirror::set_stage`), so a task settled here is settled there; the host's
+  refusal is shown and nothing changes, and a host that is offline changes only this copy.
+
+## Remote inspector
+
+File @-mentions use `files.search` on the host: the task's checkout (including its worktree)
+for an existing mirror, or the project folder for a New task. Remote file tabs say
+"Read only · on <computer>" and offer no editor, save or attach action. The explorer only
+copies relative paths. File stamps are fixed so routine polling does not re-read files over
+  the relay; Refresh and completed runs force a fresh read of the open remote file. Every
+  page must carry the same content hash; a concurrent edit is reported instead of mixing versions.
+
+The Changes and Files views of a mirror (any task that runs on another computer, in a remote
+project or not) show its host's checkout, for review only (`src-tauri/src/remote/inspect.rs`).
+`git_status`, `git_diff`, `list_files` and `read_file` called with a mirror's `sessionId` ask its
+host (`git.status`, `task.diff`, `files.list`, `files.read` with the host's task id) and answer in
+this computer's shapes: the host's staged, unstaged and untracked lists become one row per path
+with its index and working-tree codes (untracked `??`), and a file is read page by page up to
+2 MiB (an image or other non-text file is refused). A diff that left out secret files (the
+device is below Full there) ends with a line counting them. Every other command (stage, commit,
+discard, branch, worktree, jj) still refuses a mirror. The Changes view is mounted `readOnly`:
+its menus offer Refresh, Open file and Copy path, but no stage, commit or worktree action. The
+composer's branch chip names the task's branch, else the host checkout's.
+
 ## Accounts
 
 Sign in with GitHub using the OAuth **device flow** (no client secret anywhere):
@@ -1030,7 +1122,7 @@ Round 24:
 | `projects.icons` | `{ projectIds: string[] }` (1..=50; use project ids from `tasks.list`) | `{ icons: { [projectId]: string \| null } }`. Known non-bot local projects map to their icon `data:` URL, or `null` when no icon exists or it exceeds 64 KiB. Icons reached through a symlink (file or folder) or with more than one hard link are skipped. Unknown ids are omitted. Icons stop being added before the result exceeds 180 KiB, so omitted ids can be requested again. |
 | `providers.list` | `{ force?: boolean }` | the host's `list_providers` result: `[{ id, name, installed, path, version, models }]`, with `path` as `~/…` or a file name (Round 19). `force` drops the same ACP catalog caches. If it would not fit one reply, the longest `models` lists are halved until it does. |
 | `providers.models` | `{ provider, force?: boolean }` | the host's `list_provider_models` result: `[{ id, name, description, reasoningEfforts, defaultReasoningEffort, contextWindow }]`, its tail dropped to fit one reply. `provider` must be a known harness id (`Unknown provider.`). |
-| `task.start` | `{ repo?: "owner/name", projectId?: string, branch?, worktree, prompt, provider, model, mode?, effort?, startId? }` (exactly one of `repo` or `projectId`) | `{ sessionId }`, or `{ sessionId, sent: false, error }` when the task was made but its first message failed. A repeated `startId` from the same device runs nothing new: it waits for (or returns) the first start's result. |
+| `task.start` | `{ repo?: "owner/name", projectId?: string, branch?, worktree, checkout?: "current", prompt, provider, model, mode?, effort?, startId? }` (exactly one of `repo` or `projectId`; `checkout: "current"`, with `projectId` only, runs in the project's folder as it is) | `{ sessionId }`, or `{ sessionId, sent: false, error }` when the task was made but its first message failed. A repeated `startId` from the same device runs nothing new: it waits for (or returns) the first start's result. |
 | `task.startStatus` | `{ startId }` | `{ state: "running" \| "done" \| "failed" \| "unknown", sessionId?, error? }`. Finished starts are remembered for an hour. |
 | `task.cancelStart` | `{ startId }` | `{ cancelled: true }` once a running start was told to stop (its callers get `Start cancelled.` at once, the clone's process group is killed); `{ cancelled: false, sessionId }` when it had already made its task. |
 | `task.messages` | `{ sessionId, afterId?, tail?, beforeId?, limit?, budget? }` (`limit` is 1..400; defaults to 100 for `tail`/`beforeId`, 400 for `afterId`; `budget` is the page's JSON bytes, see [Message copies](#message-copies)) | `{ messages: [{ id, role, content, createdAt, turnDurationMs, attachments }], hasMore, hasOlder, title, lastId }`. `attachments` is always an array; saved images include `{ id, kind: "image", name, mime, bytes, width, height }`, while document and folder context markers carry `{ id, kind, name }`. `tail: true` returns the newest page; `beforeId` returns the page immediately before that message id. Both are oldest-first. Use only one of `afterId`, `tail: true` or `beforeId`; mixing them is refused. `hasMore` means newer rows follow this page, `hasOlder` means older rows precede its first message, and `lastId` is the newest message id (or `null` for an empty thread). |
@@ -1056,7 +1148,7 @@ Round 24:
 | `bot.pause` | `{ botId, paused: boolean }` | `{}`. Pausing stops the bot's current work before recording the pause, as in Settings. |
 | `approval.respond` | `{ sessionId, requestId, approve: boolean }` | `{}` |
 | `input.respond` | `{ sessionId, requestId, response }` | `{}` (as `respond_user_input`) |
-| `host.hello` | `{}` | `{ protocol: 2, appVersion, methods: string[], limits: { maxText, pageBudget, packedPageMax, maxBatch, maxIds, maxPath, maxFrame, maxImages, maxImageBytes, imageChunk }, features: string[], access, methodAccess, fullAccessSwitch }`. `methods` is every method this host serves (built-in and registry); `limits` come from the constants that enforce them; `features` are flags a viewer cannot read from `methods` (`packedFrames`, `replayAfterSeq`, `pagedMessages`, `imageUpload`, `teams`, each [registry](#adding-a-method) group with at least one method, and `remoteFullAccess` while Full access for remote tasks is on). `access` is the calling device's grant (`view`, `control` or `full`; null if not approved), `methodAccess` maps every listed method to the narrowest grant that may call it, and `fullAccessSwitch` lists the methods that also need Full access for remote tasks on (`terminal.list/open/read/write/resize/close`, `runScript.start`, `runScript.stop`, `checks.run`, `files.write`, `skills.activate`, `cloudAgents.start`, `moodboards.add`, `projects.clone`). `view` scope, read-only. Hosts from before it (protocol 1) answer `Unknown method.`, or, to a view or control device, a grant refusal; the phone records such a host as legacy. |
+| `host.hello` | `{}` | `{ protocol: 2, appVersion, methods: string[], limits: { maxText, pageBudget, packedPageMax, maxBatch, maxIds, maxPath, maxFrame, maxImages, maxImageBytes, imageChunk }, features: string[], access, methodAccess, fullAccessSwitch }`. `methods` is every method this host serves (built-in and registry); `limits` come from the constants that enforce them; `features` are flags a viewer cannot read from `methods` (`packedFrames`, `replayAfterSeq`, `pagedMessages`, `imageUpload`, `teams`, each [registry](#adding-a-method) group with at least one method, `projectCheckout` (`task.start` takes `checkout: "current"` and runs in folders without origin or Git), and `remoteFullAccess` while Full access for remote tasks is on). `access` is the calling device's grant (`view`, `control` or `full`; null if not approved), `methodAccess` maps every listed method to the narrowest grant that may call it, and `fullAccessSwitch` lists the methods that also need Full access for remote tasks on (`terminal.list/open/read/write/resize/close`, `runScript.start`, `runScript.stop`, `checks.run`, `files.write`, `skills.activate`, `cloudAgents.start`, `moodboards.add`, `projects.clone`). `view` scope, read-only. Hosts from before it (protocol 1) answer `Unknown method.`, or, to a view or control device, a grant refusal; the phone records such a host as legacy. |
 
 A host refuses a session id that is itself a mirror, so tasks never hop twice. Attachment bytes are
 read on the blocking pool and are only served when a `message_attachments` row ties the UUID to a
@@ -1195,7 +1287,7 @@ paged replies take `offset` and answer `next`.
 | `usage.get` | view | RO | `sessionId?, refresh?` (token ledger) |
 | `usage.limits` | view | RO | `provider, refresh?`; `refresh` (asks the provider) needs control |
 | `usage.resumeAtReset` / `usage.clearLimit` | control | O | `sessionId, on` / `sessionId`. Resuming (`on: true`) or clearing a team lead's limit needs Full access for remote tasks. |
-| `git.status` / `git.branches` / `worktree.status` | view | RO | `sessionId`. Staged renames and copies carry `origPath`. |
+| `git.status` / `git.branches` / `worktree.status` | view | RO | `sessionId`; `git.branches` also accepts `projectId` (without a session) on `projectCheckout` hosts. Staged renames and copies carry `origPath`. |
 | `git.stage` | control | O | `sessionId, paths \| all, unstage?` → `{ count, skipped? }` for `all`. Named paths: up to 5,000; `all`: up to 50,000 files, folder and submodule rows skipped and counted, run over pathspec chunks. Refused while a background git call holds the checkout (`Another git change is still running on this checkout.`). `unstage` of a staged rename or copy is `origPath`-aware: unstaging its `path` also restores its `origPath` in the index, so the old name does not stay staged as a deletion. |
 | `git.discard` | control | O | `sessionId, paths, skipFolders?` (1–500 files) → `{ count, skipped? }`. With `skipFolders` (Discard all) folder and submodule rows are left out and counted in `skipped`; without it a named folder is refused. Git runs over 8 KiB pathspec chunks. Restores tracked files from HEAD and deletes only the untracked files it names; discarding a rename's new path also restores the old one; refused while any agent works in the checkout or another git change holds it; `allow_task_mode`; change gate; idempotent. |
 | `git.commit` | full | B | `sessionId, message, push?, sendId?`. Refused while the task's agent runs. Hooks run only with Full access for remote tasks on. |
@@ -1619,10 +1711,14 @@ GitHub CLI work while the inspected task state is unchanged.
 | `list_providers` | `{ force?, deviceId? }` | as without `deviceId`, from that host (see Model lists) |
 | `list_provider_models` | `{ provider, force?, deviceId? }` | as without `deviceId`, from that host |
 | `remote_start_task` | `{ deviceId, projectId, prompt, provider, model, mode?, effort?, worktree?, branch?, sessionId? }` | the mirror `Session` plus `sessionId`. `branch` defaults to the checkout's. An empty New task draft without its own worktree passed as `sessionId` becomes the mirror; otherwise a new task is made. On failure nothing is left: a new row is deleted, a draft stays a draft. With `startId`, a timeout or a dropped socket keeps the row and returns it (see Starting a task). |
+| `remote_project_branches` | `{ projectId }` | `{ current, branches, defaultBranch }` from the remote project’s host. Older hosts are refused with an update message. |
+| `remote_browse` | `{ deviceId, show }` | `{ projects, tasks }` now shown from that computer. `show: true` lists it at once (an offline or non-hosting computer is refused) and keeps it shown; `false` removes its remote projects and their copies. See Remote projects. |
+| `remote_browsed` | | `[deviceId]`: the computers shown here |
 | `remote_cancel_start` | `{ sessionId }` (the local row) | `{ cancelled }`. Cancels a start that has no host task yet and puts the row back (also when the host can't be reached); `cancelled: false` when the host had already made the task, which then runs as a mirror. |
 
-Window events: `remote://status` (status), `remote://presence` (devices), and for mirrors the
-ordinary `agent-event` and `sessions-changed`.
+Window events: `remote://status` (status), `remote://presence` (devices), for mirrors the
+ordinary `agent-event` and `sessions-changed`, and `projects-changed` when a shown computer's
+projects change.
 
 The agent-event hook in `lib.rs` clones and allocates nothing while hosting is off or nobody
 follows (or followed, since this launch) that task.
@@ -1630,4 +1726,6 @@ follows (or followed, since this launch) that task.
 ## Privacy
 
 Listed in the README privacy table: remote access contacts GitHub (sign-in only) and the relay
-(while signed in). Task content crosses the relay only encrypted end to end.
+(while signed in). Task content crosses the relay only encrypted end to end. Showing another computer's
+projects adds no destination: its task list is asked over the same relay (at most every 30 s
+while it is online), and its threads' messages are copied only when you open them.

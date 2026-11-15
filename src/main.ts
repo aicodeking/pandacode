@@ -103,7 +103,7 @@ import { installPointerDrag } from './pointer-drag';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import type { RemoteStart } from './remote-progress';
 import type { RoutingMode, RoutingStatus } from './model-routing';
-import { CONNECT_SETUP, LOCAL, behindDialog, behindText, cancelledRemoteStart, clearRemoteStart, computerControl, computerItems, lastSeenText, remoteStart, remoteStartAttached, remoteStartStrip, startStageText, trackRemoteStart } from './remote-target';
+import { CONNECT_SETUP, LOCAL, behindDialog, behindText, cancelledRemoteStart, clearRemoteStart, computerControl, computerItems, computersSection, lastSeenText, remoteStart, remoteStartAttached, remoteStartStrip, startStageText, trackRemoteStart } from './remote-target';
 import './cloud-agents.css';
 import { SETUP_CHOICE, cloudActionItems, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, type CloudStage, type CloudTarget } from './cloud-agents';
 import { botsBarHtml, botsListHtml, botsPanelHeadHtml, markAllBotsRead, moveBot, pinnedBots, setBotPinned, storedSidebarView, storeSidebarView, syncSeen, type BotSignals, type SidebarView } from './sidebar-bots';
@@ -181,7 +181,9 @@ const state = {
   view: (({ board: 'board', github: 'github' } as Record<string, 'board' | 'github'>)[localStorage.getItem('pandacode.view') ?? ''] ?? 'conversation') as WorkspaceView, boardPanel: false,
   sidebarCollapsed: localStorage.getItem('pandacode.sidebarCollapsed') === 'true',
   query: '', inspector: false, inspectorTab: threadDefault(inspectorTabs) as PanelView,
-  projectFilter: localStorage.getItem('pandacode.projectFilter') ?? '', collapsedFolders: readCollapsed(localStorage, 'pandacode.collapsedFolders'), expandedFolders: new Set<string>(),
+  projectFilter: localStorage.getItem('pandacode.projectFilter') ?? '',
+  /** The sidebar's computer scope: '' (all), `LOCAL` (this computer) or a device shown here (`remote/browse.rs`). */
+  computerFilter: localStorage.getItem('pandacode.computerFilter') ?? '', collapsedFolders: readCollapsed(localStorage, 'pandacode.collapsedFolders'), expandedFolders: new Set<string>(),
   /** Follow-ups typed while an agent works, per task, in delivery order; mirrored from native storage. */
   queues: new Map<string, QueuedMessage[]>(), queueHolds: new Map<string, HoldReason>(), queueEditing: '', queueBusy: new Set<string>(),
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
@@ -755,8 +757,10 @@ const searchPanel = createSearchPanel({
 });
 const fileTabs = createFileTabs({
   call,
-  canAttach: context => Boolean(state.sessionId) && context.sessionId === state.sessionId,
+  // A file on another computer can't be read here to attach; @-mention it instead.
+  canAttach: context => Boolean(state.sessionId) && context.sessionId === state.sessionId && !contextRemote(context),
   attach: path => attachFile(path),
+  remoteName: context => contextRemote(context),
   preview: (path, context) => previewFile(path, context),
   notify: text => notify(text),
   report: error => report(error),
@@ -798,6 +802,7 @@ const fileExplorer = createFileExplorer({
   hasChanges: (context, path) => fileTabs.hasChanges(context, path),
   refresh: async () => { fileTabs.reload(); await refreshExplorerFiles(); },
   notify, report,
+  remoteName: context => contextRemote(context),
 });
 document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('contextmenu', event => {
   const anchor = (event.target as Element).closest('.file-row')?.querySelector<HTMLElement>('button[data-path]');
@@ -859,9 +864,11 @@ const worktrees = createWorktrees({
   call, modal, closeModal, notify, notifyError, showChoices,
   session, project,
   git: () => state.git, gitError: () => state.gitError,
+  remoteWorktree: task => remoteWorktrees.has(task.id),
+  remoteBranch: task => remoteBranches.get(task.id),
   draft: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '',
   attachable: () => newTaskView(),
-  computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice, cloudTargets, remoteChoiceName) + botTaskControl(task, fresh),
+  computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice, cloudTargets, remoteChoiceName, projectRemote(task.projectId)) + botTaskControl(task, fresh),
   running: () => isRunning(),
   afterAttach: async (saved, live) => {
     prewarmedDrafts.delete(saved.id);
@@ -1387,7 +1394,8 @@ function activateProject(id: string, render = true): void {
     clearWorkspaceInspector(render);
   }
 }
-function setProjectFilter(id: string): void { state.projectFilter = id; localStorage.setItem('pandacode.projectFilter', id); }
+function setProjectFilter(id: string): void { state.projectFilter = id; localStorage.setItem('pandacode.projectFilter', id); if (id && state.computerFilter) setComputerFilter(''); }
+function setComputerFilter(id: string): void { state.computerFilter = id; localStorage.setItem('pandacode.computerFilter', id); }
 function saveCollapsedFolders(): void { try { localStorage.setItem('pandacode.collapsedFolders', JSON.stringify([...state.collapsedFolders])); } catch { /* per-launch preference only */ } }
 /** Tasks shown in lists: a New task draft appears only after its first prompt. */
 function listedSessions(): Session[] { return state.sessions.filter(task => !task.draft); }
@@ -1898,8 +1906,8 @@ function onAccountPoolSwitch(event: AgentEvent): void {
 }
 /** The computer the composer's picker lists: a mirror task's, a new task's chosen one, else undefined (local). */
 function composerDevice(): string | undefined {
-  const s = session();
-  return s?.remoteDevice?.id ?? (s && newTaskView() && remoteChoice !== LOCAL && !cloudProvider(remoteChoice) ? remoteChoice : undefined);
+  const s = session(), choice = s ? runChoice(s) : remoteChoice;
+  return s?.remoteDevice?.id ?? (s && newTaskView() && choice !== LOCAL && !cloudProvider(choice) ? choice : undefined);
 }
 function cachedFor<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
   let pending = cache.get(key);
@@ -1960,7 +1968,7 @@ function renderNavigation(): void {
   const now = Date.now();
   const filterLabel = $('#project-filter').querySelector('[data-filter-label]')!;
   const filtered = state.projects.find(p => p.id === state.projectFilter);
-  const filterName = filtered?.name ?? 'All projects';
+  const filterName = filtered?.name ?? (state.computerFilter ? computerName(state.computerFilter) : 'All projects');
   if (filterLabel.textContent !== filterName) filterLabel.textContent = filterName;
   // A chosen project leads with its own icon.
   const filterIcon = filtered ? projectAppIcon(filtered.id, filtered.name) : '';
@@ -1971,7 +1979,7 @@ function renderNavigation(): void {
   filterField.parentElement!.classList.toggle('has-query', Boolean(state.query));
   const projectName = (s: Session) => state.projects.find(p => p.id === s.projectId)?.name ?? '';
   const sidebarSessions = listedSessions().filter(s => !botProjects.has(s.projectId));
-  const inScope = sidebarSessions.filter(s => !state.projectFilter || s.projectId === state.projectFilter);
+  const inScope = sidebarSessions.filter(s => (!state.projectFilter || s.projectId === state.projectFilter) && (!state.computerFilter || taskComputer(s) === state.computerFilter));
   const matching = inScope.filter(s => matchesFilter(s, state.query, projectName(s)));
   // Opening a thread (in view, with the window focused) clears its unread mark; settling one does too.
   const seen = unreviewed ?? (state.sessions.length ? unreviewed = readCollapsed(localStorage, UNREVIEWED_KEY) : new Set<string>());
@@ -2008,7 +2016,7 @@ function renderNavigation(): void {
     // Worktree tasks show their branch; the worktree mark keeps its accessible name either way.
     const worktreeMark = (s.worktreePath ? `<span class="task-worktree" role="img" aria-label="Worktree" title="${escape(s.worktreePath)}">${icon('worktree')}</span>` : '')
       + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '')
-      + (s.remoteDevice ? `<span class="task-cloud task-remote" role="img" aria-label="Runs on ${escape(s.remoteDevice.name)}" title="Runs on ${escape(s.remoteDevice.name)}">${icon('monitor')}</span>` : '');
+      + (s.remoteDevice ? remoteMark(s.remoteDevice) : '');
     const branch = s.worktreePath || s.cloud || s.remoteDevice ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? branchLabel(s.worktreeBranch) : ''}</span>` : '';
     const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : '<span class="task-indicator" aria-hidden="true"></span>'}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}`;
     const stage = taskStage(s), done = stage === 'completed';
@@ -2148,7 +2156,7 @@ function renderHeader(): void {
   // A chat has no project: no project bar, deploy or run script.
   document.body.classList.toggle('chat-thread', chat);
   $('.conversation-pane').classList.toggle('bot-thread', Boolean(bot));
-  const crumb = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon('folder')}<button data-action="select-project" data-id="${escape(p.id)}">${escape(p.name)}</button>` : '';
+  const crumb = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon(p.remoteDevice ? 'monitor' : 'folder')}<button data-action="select-project" data-id="${escape(p.id)}"${p.remoteDevice ? ` title="On ${escape(p.remoteDevice.name)}"` : ''}>${escape(p.name)}</button>` : '';
   if (!showsHtml($('#breadcrumb'), crumb)) $('#breadcrumb').innerHTML = crumb;
   const s = session(), bar = document.querySelector<HTMLElement>('#composer-area .composer-context');
   if (s && bar) {
@@ -2509,7 +2517,7 @@ function renderTranscript(preservePosition = false): void {
   }
   if (newTaskView() && !bot) {
     const name = project()?.name ?? 'this project';
-    transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project()?.path)}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1></div><div id="stream-region"></div>`;
+    transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project() ? projectWhere(project()!) : '')}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1></div><div id="stream-region"></div>`;
     return;
   }
   const { saved, earlier, running } = shownTurns(s.id, Boolean(bot));
@@ -5384,13 +5392,15 @@ async function sendDraft(): Promise<void> {
   if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || threadLoading() || state.messagesError || configuringSessions.has(s.id)) return;
   clearComposerNote(s);
   if (remoteOffline(s)) { renderComposer(); return; }
-  const fresh = !s.remoteDevice && newTaskView();
-  const target = fresh ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
+  const fresh = !s.remoteDevice && newTaskView(), choice = runChoice(s);
+  const target = fresh ? remoteTargets.find(item => item.deviceId === choice) : undefined;
   if (target) return sendRemote(s, target, draft, text);
-  if (fresh && remoteChoice !== LOCAL && !cloudProvider(remoteChoice)) { renderComposer(); return; }
+  if (fresh && choice !== LOCAL && !cloudProvider(choice)) { renderComposer(); return; }
+  // Another computer's project never runs here, even as a board task or a reopened one.
+  if (projectRemote(s.projectId) && !s.remoteDevice) { notifyError(`${project()?.name ?? 'This project'} is on ${projectRemote(s.projectId)!.name}. Start a New task to run it there.`); return; }
   // A failed start elsewhere no longer applies once this task is sent another way.
   clearRemoteStart(s.id);
-  const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(remoteChoice)) : undefined;
+  const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(choice)) : undefined;
   if (cloud) return sendCloud(s, cloud, draft, text);
   // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
   // Enter meanwhile; a failure is shown, and the message still goes.
@@ -6107,7 +6117,9 @@ async function refreshInspectorIfStale(): Promise<void> {
 async function refreshInspector(): Promise<void> {
   void projectRunner.refresh();
   const request = ++inspectorRequest;
-  const p = project(); if (!p) { state.git = null; state.jj = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; renderInspector(); return; }
+  // Another computer's project before its task exists there: nothing to ask yet. A task running there
+  // (a mirror) asks its host (remote/inspect.rs).
+  const p = project(); if (!p || (p.remoteDevice && !session()?.remoteDevice)) { state.git = null; state.jj = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; renderInspector(); return; }
   state.inspectorLoading = true; renderInspector();
   const id = p.id, folders = [...state.openFolders], context = workspaceContext(), key = workspaceKey();
   const [results, children] = await Promise.all([
@@ -6129,7 +6141,7 @@ async function refreshInspector(): Promise<void> {
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
   state.filesError = results[1].status === 'rejected' ? errorText(results[1].reason) || 'The folder could not be read.' : '';
-  renderInspector(); renderHeader(); fileTabs.reload();
+  renderInspector(); renderHeader(); fileTabs.reload(true);
 }
 /** The simulator panel stays mounted once opened; hiding it stops its frames. */
 function syncSimulatorPanel(): void {
@@ -6362,7 +6374,8 @@ function showChangesView(target: HTMLElement, key: string, visible: boolean): vo
       refresh: () => run(refreshInspector()),
       notify, notifyError,
       choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
-      worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
+      // A task on another computer is reviewed here and committed there.
+      ...session()?.remoteDevice ? { readOnly: true } : { worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new') },
     });
     changesViewKey = key;
   }
@@ -6371,9 +6384,11 @@ function showChangesView(target: HTMLElement, key: string, visible: boolean): vo
 }
 /** Files tab rows, VS Code style: open folders list their children inline, indented by depth. */
 function fileTree(files: FileEntry[], depth: number): string {
+  // Another computer's files can't be read here to attach; they are @-mentioned instead.
+  const remoteFiles = Boolean(contextRemote(workspaceContext()));
   return files.map(file => {
     const open = file.isDir && state.openFolders.has(file.path), path = escape(file.path);
-    const row = `<div class="file-row" data-id="file:${path}" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.svg$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}${button('file-menu', 'Actions for ' + file.name, 'more', 'file-attach', `data-path="${path}" data-directory="${file.isDir}" aria-haspopup="menu"`)}</div>`;
+    const row = `<div class="file-row" data-id="file:${path}" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.svg$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir && !remoteFiles ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}${button('file-menu', 'Actions for ' + file.name, 'more', 'file-attach', `data-path="${path}" data-directory="${file.isDir}" aria-haspopup="menu"`)}</div>`;
     return row + (open ? fileTree(state.folderFiles.get(file.path) ?? [], depth + 1) : '');
   }).join('');
 }
@@ -6432,8 +6447,9 @@ function renderInspector(): void {
   $('.inspector-tabs [data-action="tab-changes"]').setAttribute('aria-label', changeCount ? `Changes, ${changeCount} changed ${changeCount === 1 ? 'file' : 'files'}` : 'Changes');
   $('#inspector-title').textContent = INSPECTOR_TITLES[state.inspectorTab];
   $('#changes-count').textContent = state.git?.files.length ? String(state.git.files.length) : '';
-  const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}`;
-  const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !session()?.remoteDevice && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
+  // A New task that starts on another computer keeps its id: the key changes with it, so the view remounts read only.
+  const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}\0${session()?.remoteDevice?.id ?? ''}`;
+  const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
   if (!keepChanges) disposeChangesView();
   else changesView?.setVisible(visible);
   syncBrowserPanel();
@@ -6447,8 +6463,10 @@ function renderInspector(): void {
   if (state.inspectorTab === 'btw' && visible) { btwPanel.show(target); return; }
   btwPanel.dispose();
   if (!project()) { target.innerHTML = '<div class="inspector-empty">Open a project to browse files and review changes.</div>'; return; }
-  const remote = session()?.remoteDevice;
-  if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>Runs on ${escape(remote.name)}</h3><p>Its changes and files are on that computer, so review and commit them there.</p></div>`; return; }
+  // A New task in another computer's project: its checkout is there, and there is no task to ask about yet.
+  // A task running there (a mirror) shows its host's changes and files, read only.
+  const remote = session()?.remoteDevice ? undefined : project()?.remoteDevice;
+  if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>On ${escape(remote.name)}</h3><p>Start the task to review its changes and files here.</p></div>`; return; }
   if (state.inspectorTab === 'search' && !state.selectedKind) { searchPanel.show(target); return; }
   // A refresh keeps the mounted Changes view on screen until the new status arrives.
   if (state.inspectorLoading && changesView) return;
@@ -6620,8 +6638,26 @@ async function openSavedDiff(sessionId: string, changes: TurnChanges, path?: str
   }
 }
 function showOpenProject(forTask = false): void {
-  modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" required><p class="field-help">Enter a full path or choose Browse.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`);
+  const dialog = modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" required><p class="field-help">Enter a full path or choose Browse.</p><div id="open-project-computers"></div><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`);
   if (forTask && newTaskView()) openingProjectForTask = { id: state.sessionId, generation: state.generation };
+  // Your other computers (PandaCode Connect): show their projects here, to start tasks there.
+  if (!remoteTargets.length) return;
+  void call<string[]>('remote_browsed').catch(() => [] as string[]).then(browsed => {
+    const host = dialog.querySelector<HTMLElement>('#open-project-computers'); if (!host?.isConnected) return;
+    host.innerHTML = computersSection(remoteTargets, browsed);
+  });
+}
+/** Shows (or stops showing) another computer's projects and tasks in the sidebar (`remote/browse.rs`). */
+/** `quiet`: a refresh of a computer already shown, with no notice. */
+async function browseComputer(deviceId: string, show: boolean, name = remoteTargets.find(item => item.deviceId === deviceId)?.name ?? 'That computer', quiet = false): Promise<void> {
+  const shown = await call<{ projects: number; tasks: number }>('remote_browse', { deviceId, show });
+  state.projects = await call<Project[]>('list_projects');
+  if (state.projectFilter && !state.projects.some(item => item.id === state.projectFilter)) setProjectFilter('');
+  if (!show && state.computerFilter === deviceId) setComputerFilter('');
+  await reloadSessions();
+  renderNavigation();
+  if (quiet) return;
+  notify(show ? `Showing ${shown.projects} ${shown.projects === 1 ? 'project' : 'projects'} and ${shown.tasks} ${shown.tasks === 1 ? 'task' : 'tasks'} from ${name}` : `No longer showing ${name}`);
 }
 async function changeTaskProject(projectId: string): Promise<void> {
   const selected = session();
@@ -6663,7 +6699,7 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
   const { openProjectPicker } = await import('./project-picker').finally(release);
   if (epoch !== menuEpoch || projectPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
   projectPickerCleanup = openProjectPicker({
-    anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
+    anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects().map(p => ({ ...p, path: projectWhere(p) }))], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
     onClose: () => { projectPickerCleanup = undefined; },
     onSelect: async projectId => {
       if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
@@ -7124,14 +7160,19 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
   const id = heading.dataset.project!, project = state.projects.find(p => p.id === id);
   if (!project) return;
   const anchor = heading.parentElement?.querySelector<HTMLElement>('.folder-actions') ?? heading;
+  // Another computer's project has no folder here: it goes when that computer stops being shown.
+  const remote = project.remoteDevice;
   await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
     { id: 'new', label: 'New task', icon: 'plus' },
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
-    { id: 'reveal', label: REVEAL_LABEL, icon: 'folder', separator: true },
-    { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
+    ...remote ? [{ id: 'unbrowse', label: `Stop showing ${remote.name}`, description: 'Removes its projects and task copies here', icon: 'monitor', separator: true }] : [
+      { id: 'reveal', label: REVEAL_LABEL, icon: 'folder', separator: true },
+      { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
+    ],
   ], onSelect: async choice => {
     closeChoiceMenu();
     if (choice === 'new') { await createTask(id); return; }
+    if (choice === 'unbrowse' && remote) { await browseComputer(remote.id, false, remote.name); return; }
     if (choice === 'reveal') { await call('reveal_path', { path: project.path }); return; }
     if (choice === 'remove') { showRemoveProject(project); return; }
     for (const other of userProjects()) if (other.id !== id) state.collapsedFolders.add(other.id);
@@ -7208,11 +7249,26 @@ function projectAppIcon(projectId: string, name: string): string {
   return projectIconHtml(projectId, name, id => call<string | null>('project_icon', { projectId: id }), () => renderNavigation());
 }
 async function showProjectFilter(anchor: HTMLElement): Promise<void> {
+  // With another computer's projects shown here, the list can be narrowed to one computer too.
+  const computers = shownComputers();
+  const computerItems = computers.length ? [
+    { id: `computer:${LOCAL}`, label: 'This computer', icon: 'monitor', heading: 'Computers', selected: !state.projectFilter && state.computerFilter === LOCAL },
+    ...computers.map(item => ({ id: `computer:${item.id}`, label: item.name, description: computerOffline(item.id) ? 'Offline' : 'Its projects and tasks', leading: toned(icon('monitor'), computerOffline(item.id) ? '' : 'remote'), selected: !state.projectFilter && state.computerFilter === item.id })),
+  ] : [];
+  const scoped = userProjects().filter(p => !state.computerFilter || state.projectFilter || (p.remoteDevice?.id ?? LOCAL) === state.computerFilter);
   await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: [
-    { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
-    ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
+    { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter && !state.computerFilter },
+    ...computerItems,
+    ...scoped.map((p, index) => ({ id: p.id, label: p.name, description: projectWhere(p), leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter, ...(index === 0 && computerItems.length ? { heading: 'Projects' } : {}) })),
   ], onSelect: async id => {
-    setProjectFilter(id);
+    if (id.startsWith('computer:')) {
+      const computer = id.slice('computer:'.length);
+      setProjectFilter(''); setComputerFilter(computer); renderNavigation();
+      // Choosing a computer asks it for its list again (when it can be reached), without waiting for the next round.
+      if (computer !== LOCAL && !computerOffline(computer)) void browseComputer(computer, true, computerName(computer), true).catch(error => notifyError(`Couldn’t refresh ${computerName(computer)}: ${errorText(error)}`));
+      return;
+    }
+    setComputerFilter(''); setProjectFilter(id);
     if (id) await selectProject(id); else renderNavigation();
   } });
 }
@@ -7625,7 +7681,7 @@ const NO_BOT = 'none';
 function botTaskControl(task: Session, fresh: boolean): string {
   const bot = sidebarBots.find(item => item.id === taskBots.get(task.id));
   if (!fresh) return bot ? `<span class="composer-computer composer-computer-fixed" role="img" tabindex="0" aria-label="Bot: ${escape(bot.name)} (fixed for this task)" data-tip="With ${escape(bot.name)}">${icon('bot')}<span class="sr-only">with ${escape(bot.name)}</span></span>` : '';
-  if (!sidebarBots.length || botProjects.has(task.projectId) || chatTask(task) || task.remoteDevice || task.cloud || remoteChoice !== LOCAL) return '';
+  if (!sidebarBots.length || botProjects.has(task.projectId) || chatTask(task) || task.remoteDevice || task.cloud || runChoice(task) !== LOCAL) return '';
   const name = bot?.name ?? 'No bot';
   return `<button type="button" id="composer-bot" class="composer-computer" data-action="bot-task-menu" aria-label="Bot: ${escape(name)}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(name)}: start this task with a bot">${icon('bot')}<span class="sr-only">${escape(name)}</span>${icon('down')}</button>`;
 }
@@ -7667,14 +7723,96 @@ let remoteChoiceName: string | undefined;
 let renderedRemoteKey = '';
 let pairingPrompt: (() => void) | undefined, pairingLoading = false;
 const remoteChecks = new Set<string>(), remoteStartCancels = new Set<string>(), remoteRetries = new Set<string>(), remoteRetryErrors = new Map<string, string>();
+/** New tasks in another computer's project that start in a new worktree there (the Checkout menu). */
+const remoteWorktrees = new Set<string>();
+/** The branch such a worktree starts from, when one was chosen (else the host's default). */
+const remoteBranches = new Map<string, string>();
+/** The Checkout menu of a New task in another computer's project: its folder there, or a new worktree, which opens its branch list at once. */
+async function showRemoteCheckout(anchor: HTMLElement): Promise<void> {
+  const task = session(), remote = task && projectRemote(task.projectId);
+  if (!task || !remote || task.remoteDevice || !newTaskView()) return;
+  const worktree = remoteWorktrees.has(task.id), branch = remoteBranches.get(task.id);
+  await showChoices(anchor, { title: 'Runs in', width: 300, items: [
+    { id: 'local', label: 'Project folder', description: `The project’s own checkout on ${remote.name}, as it is`, icon: 'folder', selected: !worktree },
+    { id: 'worktree', label: 'New worktree', description: worktree ? `From ${branch ?? 'the default branch'} on ${remote.name}; choose another branch` : `An isolated branch on ${remote.name}; choose the branch it starts from`, icon: 'worktree', selected: worktree },
+  ], onSelect: id => {
+    closeChoiceMenu();
+    if (id === 'worktree') remoteWorktrees.add(task.id); else remoteWorktrees.delete(task.id);
+    if (session()?.id === task.id) renderComposer();
+    // New worktree goes straight on to the branch it starts from; dismissing that list keeps the default branch.
+    if (id === 'worktree') run(showRemoteBranches(document.getElementById('remote-checkout') ?? anchor, task, remote));
+  } });
+}
+/** The branches of a remote project's checkout there (`remote_project_branches`), for its New worktree. */
+async function showRemoteBranches(anchor: HTMLElement, task: Session, remote: { id: string; name: string }): Promise<void> {
+  anchor.setAttribute('aria-busy', 'true');
+  let list: { current: string; branches: string[]; defaultBranch: string };
+  try { list = await call<typeof list>('remote_project_branches', { projectId: task.projectId }); }
+  finally { anchor.removeAttribute('aria-busy'); }
+  if (session()?.id !== task.id || !anchor.isConnected) return;
+  const chosen = remoteBranches.get(task.id);
+  const names = [...new Set([list.defaultBranch, list.current, ...list.branches].filter(Boolean))];
+  await showChoices(anchor, { title: `Branches on ${remote.name}`, searchPlaceholder: 'Search branches…', width: 300, items: [
+    { id: '', label: 'Default branch', description: list.defaultBranch ? `${list.defaultBranch}, from origin when it has one` : 'The repository’s main branch', icon: 'branch', selected: !chosen },
+    ...names.map(name => ({ id: `branch:${name}`, label: name, description: name === list.current ? 'Checked out there' : undefined, icon: 'branch', selected: chosen === name })),
+  ], onSelect: id => {
+    closeChoiceMenu();
+    if (id.startsWith('branch:')) remoteBranches.set(task.id, id.slice('branch:'.length)); else remoteBranches.delete(task.id);
+    if (session()?.id === task.id) renderComposer();
+  } });
+}
+/** The computer a file context's files are on when it is not this one: a task running there, or its project's. */
+function contextRemote(context: { projectId: string; sessionId?: string }): string | undefined {
+  const task = context.sessionId ? state.sessions.find(item => item.id === context.sessionId) : undefined;
+  return task?.remoteDevice?.name ?? projectRemote(context.projectId)?.name;
+}
+/** Where a project is, as menus show it: its folder, or the computer it is on (and whether that is reachable). */
+function projectWhere(p: Project): string {
+  return p.remoteDevice ? `On ${p.remoteDevice.name}${computerOffline(p.remoteDevice.id) ? ' · Offline' : ''}` : p.path;
+}
+/** Whether a computer is known to be out of reach: presence lists it offline, or this one lost the relay.
+ * One missing from the list (signed out, revoked) is not marked: what it is now is not known. */
+function computerOffline(deviceId: string): boolean {
+  if (!remotePresenceReady) return false;
+  const target = remoteTargets.find(item => item.deviceId === deviceId);
+  return Boolean(target && !target.online) || Boolean(target && remoteSignedIn && !remoteConnected);
+}
+/** The computer a task runs on: its own (a mirror), its project's, else this one. */
+function taskComputer(s: Session): string {
+  return s.remoteDevice?.id ?? projectRemote(s.projectId)?.id ?? LOCAL;
+}
+/** The computers whose projects are shown here, by name, from the projects themselves. */
+function shownComputers(): { id: string; name: string }[] {
+  const found = new Map<string, string>();
+  for (const p of state.projects) if (p.remoteDevice) found.set(p.remoteDevice.id, p.remoteDevice.name);
+  return [...found].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+}
+function computerName(id: string): string {
+  return id === LOCAL ? 'This computer' : shownComputers().find(item => item.id === id)?.name ?? remoteTargets.find(item => item.deviceId === id)?.name ?? 'Another computer';
+}
+/** A task row's mark for a task that runs on another computer, dimmed while it is out of reach. */
+function remoteMark(device: { id: string; name: string }): string {
+  const offline = computerOffline(device.id), label = `Runs on ${device.name}${offline ? ' · Offline' : ''}`;
+  return `<span class="task-cloud task-remote${offline ? ' is-offline' : ''}" role="img" aria-label="${escape(label)}" title="${escape(label)}">${icon('monitor')}</span>`;
+}
+/** The computer a remote project lives on (`remote/browse.rs`), or undefined for this computer's. */
+function projectRemote(projectId: string | null | undefined): { id: string; name: string } | undefined {
+  return (projectId ? state.projects.find(item => item.id === projectId)?.remoteDevice : undefined) ?? undefined;
+}
+/** Where a New task in `s` goes: its remote project's computer, fixed, else the Run on choice. */
+function runChoice(s: Session): string {
+  return projectRemote(s.projectId)?.id ?? remoteChoice;
+}
 function remoteDeviceId(s: Session): string | undefined {
-  return s.remoteDevice?.id ?? (!s.cloud && newTaskView() && remoteChoice !== LOCAL && !cloudProvider(remoteChoice) ? remoteChoice : undefined);
+  const choice = runChoice(s);
+  return s.remoteDevice?.id ?? (!s.cloud && newTaskView() && choice !== LOCAL && !cloudProvider(choice) ? choice : undefined);
 }
 function remoteTargetFor(s: Session): RemoteTarget | undefined {
   const id = remoteDeviceId(s); if (!id) return undefined;
   const target = remoteTargets.find(item => item.deviceId === id);
   if (target) return target;
-  return s.remoteDevice && remotePresenceReady ? { deviceId: id, name: s.remoteDevice.name, platform: '', online: false, lastSeen: null } : undefined;
+  const known = s.remoteDevice ?? projectRemote(s.projectId);
+  return known && remotePresenceReady ? { deviceId: id, name: known.name, platform: '', online: false, lastSeen: null } : undefined;
 }
 function remoteOffline(s: Session): boolean {
   const id = remoteDeviceId(s); if (!id || !remotePresenceReady) return false;
@@ -7683,7 +7821,8 @@ function remoteOffline(s: Session): boolean {
 }
 /** A New task's chosen computer that is no longer in the account's list, or undefined. */
 function remoteMissing(s: Session): string | undefined {
-  if (s.remoteDevice || s.cloud || !newTaskView() || remoteChoice === LOCAL || cloudProvider(remoteChoice) || !remotePresenceReady) return undefined;
+  // A remote project's computer is fixed: out of reach, it is offline, never "no longer paired".
+  if (s.remoteDevice || s.cloud || !newTaskView() || projectRemote(s.projectId) || remoteChoice === LOCAL || cloudProvider(remoteChoice) || !remotePresenceReady) return undefined;
   return remoteTargets.some(item => item.deviceId === remoteChoice) ? undefined : remoteChoiceName ?? 'That computer';
 }
 function remoteMissingNote(s: Session): string {
@@ -7719,6 +7858,8 @@ async function refreshRemoteTargets(signedIn: boolean): Promise<void> {
   // The chip and status update in place; the prompt is redrawn only when what it offers changes,
   // so presence never closes an open @ menu, a picker or an IME composition.
   renderHeader();
+  // Rows of tasks on another computer show whether it can be reached (morphed, so nothing else moves).
+  if (state.sessions.some(task => task.remoteDevice)) renderNavigation();
   const s = session(); if (!s) return;
   if (remoteComposerKey(s) !== renderedRemoteKey) renderComposer(); else syncRemoteConnection();
 }
@@ -7907,9 +8048,10 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
   let accepted = false;
   configuringSessions.add(s.id); remoteChecks.add(s.id); renderComposer();
   try {
-    const check = await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
-    if (!check.repo) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
-    if (behindText(check) && !await confirmBehind(target.name, check)) return;
+    // A remote project is that computer's own folder: there is no local checkout to compare with GitHub.
+    const check: RemoteRepoCheck = projectRemote(s.projectId) ? { repo: null, branch: '', ahead: 0, dirty: false, pushed: true } : await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
+    if (!check.repo && !projectRemote(s.projectId)) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
+    if (check.repo && behindText(check) && !await confirmBehind(target.name, check)) return;
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
     remoteChecks.delete(s.id);
@@ -7936,7 +8078,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     const started = await trackRemoteStart(s.id, target, startId => call<{ sessionId: string; note?: string }>('remote_start_task', {
       // The empty New task draft becomes the mirror, so no stray draft is left behind.
       sessionId: s.id, deviceId: target.deviceId, projectId: s.projectId, prompt: content, provider: s.provider, model: s.model, mode: s.mode,
-      effort: s.reasoningEffort ?? null, worktree: Boolean(s.worktreePath), branch: s.worktreeBranch || state.git?.branch || check.branch || null, startId, imageIds,
+      effort: s.reasoningEffort ?? null, worktree: Boolean(s.worktreePath) || (Boolean(projectRemote(s.projectId)) && remoteWorktrees.has(s.id)), branch: (projectRemote(s.projectId) && remoteWorktrees.has(s.id) ? remoteBranches.get(s.id) : undefined) || s.worktreeBranch || state.git?.branch || check.branch || null, startId, imageIds,
     }), undefined, onStage).catch((error: unknown) => { if (!remoteStartCancels.has(s.id)) console.error(error); return undefined; });
     accepted = Boolean(started);
     if (!started || started.sessionId !== s.id) {
@@ -8373,6 +8515,20 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'clear-sidebar-filter': state.query = ''; renderNavigation(); $('#sidebar-filter').focus(); break;
     case 'toggle-folder-more': { const id = element.dataset.project!; if (!state.expandedFolders.delete(id)) state.expandedFolders.add(id); renderNavigation(); break; }
     case 'add-project': showOpenProject(); break;
+    case 'browse-computer': {
+      const deviceId = element.dataset.device!, show = element.dataset.show === 'true', refresh = element.dataset.refresh === 'true';
+      // Asking a computer for its list can take a few seconds over the relay: the row says so meanwhile.
+      const row = element.closest<HTMLElement>('.open-project-computer'), detail = row?.querySelector('small'), before = detail?.textContent ?? '';
+      const label = element.textContent;
+      row?.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true; });
+      row?.setAttribute('aria-busy', 'true');
+      if (show) { element.textContent = refresh ? 'Refreshing…' : 'Loading…'; if (detail) detail.textContent = `Asking ${computerName(deviceId)} for its projects…`; }
+      try { await browseComputer(deviceId, show, undefined, false); if (show && !refresh) closeModal(); else showOpenProject(); }
+      finally {
+        if (element.isConnected) { element.textContent = label; if (detail) detail.textContent = before; row?.removeAttribute('aria-busy'); row?.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = false; }); }
+      }
+      break;
+    }
     case 'browse-project': {
       const input = document.querySelector<HTMLInputElement>('#project-folder'); if (!input) break;
       (element as HTMLButtonElement).disabled = true;
@@ -8437,6 +8593,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'mark-bots-read': markAllBotsRead(sidebarBots, bot => state.sessions.filter(task => task.projectId === bot.projectId && task.lastResponseAt).map(task => task.lastResponseAt!)); renderBots(); break;
     case 'open-bot': if (element.dataset.bot) await openBot(element.dataset.bot); break;
     case 'computer-menu': await showComputerMenu(element); break;
+    case 'remote-checkout': await showRemoteCheckout(element); break;
     case 'remote-choose-computer': { const chip = document.querySelector<HTMLElement>('#composer-computer'); if (chip) await showComputerMenu(chip); break; }
     case 'bot-task-menu': await showBotTaskMenu(element); break;
     case 'cloud-menu': await showCloudMenu(element); break;
@@ -8772,6 +8929,8 @@ async function boot(): Promise<void> {
     subscribe('architect-event', onArchitect),
     subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
     subscribe('sessions-changed', () => run(reloadSessions())),
+    // Another computer's projects were listed again (`remote/browse.rs`).
+    subscribe('projects-changed' as 'queue-changed', () => run(call<Project[]>('list_projects').then(projects => { state.projects = projects; renderNavigation(); renderHeader(); }))),
     subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
     // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
     subscribe('queue-changed', payload => run((async () => {
@@ -8812,6 +8971,7 @@ async function boot(): Promise<void> {
   }
   scheduleLimitResumes();
   if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');
+  if (state.computerFilter && state.computerFilter !== LOCAL && !state.projects.some(p => p.remoteDevice?.id === state.computerFilter)) setComputerFilter('');
   const savedProject = localStorage.getItem('pandacode.project');
   // The thread open at the last exit (clean or a crash) comes back; otherwise the newest one.
   const { task: reopened, stuck, stuckNotLast, newTask: lastNewTask, fallback, windowDiedAgain } = threadToReopen(localStorage, state.sessions.filter(s => state.projects.some(p => p.id === s.projectId)), { crashed: Boolean(recovery), paused: recovery?.restartsPaused ?? false, windowDied });
@@ -8851,7 +9011,7 @@ async function boot(): Promise<void> {
     selectionFailed = true;
   }
   // Secondary background listeners and integrations start once the usable screen is up.
-  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
+  run(refreshNamedConnections());
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
   run((subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('tray-open-session', sessionId => run((async () => {

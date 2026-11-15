@@ -71,6 +71,9 @@ pub(crate) struct Settings {
     /// with the key it was linked under.
     #[serde(default)]
     pub links: std::collections::BTreeMap<String, Link>,
+    /// Computers whose projects and tasks this one shows (`remote/browse.rs`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub browsed: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
