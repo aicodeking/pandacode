@@ -1033,7 +1033,7 @@ fn apply_context_effort(store: &storage::Store, task_id: &str, effort: Option<&s
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenTarget {
+pub(crate) struct OpenTarget {
     session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     worker_id: Option<String>,
@@ -1042,7 +1042,7 @@ struct OpenTarget {
     #[serde(skip_serializing_if = "Option::is_none")]
     subagent_id: Option<String>,
 }
-fn open_target(
+pub(crate) fn open_target(
     store: &storage::Store,
     session_id: &str,
     subagent_id: Option<&str>,
