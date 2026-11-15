@@ -553,11 +553,6 @@ impl Library {
         }
         let mut checkouts = Checkouts::default();
         let (surface, written, added) = match adapter::surface(harness, meta.kind, scope, base) {
-=======
-        let moved = previous.as_ref().is_some_and(|a| outside_surface(meta.kind, a));
-        let mut kept = Vec::new();
-        let (surface, written) = match adapter::surface(harness, meta.kind, scope, base) {
->>>>>>> ec924f3 (fix: linked skills wait for a re-import when the source changes)
             Surface::Folder(dir) => {
                 // After a surface move the new folder must be free, as for a first activation;
                 // the old copy goes only once the new one is written, and an edited file stays.

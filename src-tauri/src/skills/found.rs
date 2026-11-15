@@ -30,7 +30,7 @@ pub struct FoundSkill {
     pub library_id: Option<String>,
 }
 
-/// User-scope skill roots of every harness PandaCode knows (`capabilities::skill_roots`,
+/// User-scope skill roots of every harness PandaCode knows (`skill_manager::roots::skill_roots`,
 /// which also feeds the Tools & add-ons inventory), plus the shared `~/.agents/skills`
 /// convention and ZCode's own folder. Duplicated roots (GLM and MiMo read Claude's) collapse.
 pub(crate) fn roots(home: &Path) -> Vec<(PathBuf, String)> {
@@ -42,7 +42,7 @@ pub(crate) fn roots(home: &Path) -> Vec<(PathBuf, String)> {
     };
     let homes = crate::skill_manager::roots::Homes::for_scan();
     for harness in ["claude", "codex", "opencode", "kimi", "pi", "cline"] {
-        for (path, label) in crate::capabilities::skill_roots(harness, home, None, &homes) {
+        for (path, label) in crate::skill_manager::roots::skill_roots(harness, home, None, &homes) {
             push(path, label);
         }
     }
@@ -110,19 +110,22 @@ mod tests {
     fn roots_cover_every_known_harness_once() {
         let base = std::env::temp_dir().join(format!("pandacode-skills-roots-{}", uuid::Uuid::new_v4()));
         let home = &base;
-        let labels: Vec<&str> = roots(home).into_iter().map(|(_, label)| label).collect();
+        let labels: Vec<String> = roots(home).into_iter().map(|(_, label)| label).collect();
         let expect = [
             "~/.claude/skills",
             "~/.codex/skills",
+            "~/.agents/skills",
             "~/.config/opencode/skills",
+            "~/.config/opencode/skill",
+            "~/.agents/skill",
+            "~/.claude/skill",
             "~/.kimi-code/skills",
             "~/.kimi/skills",
             "~/.pi/agent/skills",
             "~/.cline/skills",
-            "~/.agents/skills",
             "~/.zcode/skills",
         ];
-        assert_eq!(labels, expect);
+        assert_eq!(labels, expect.iter().map(|label| label.to_string()).collect::<Vec<_>>());
         let _ = fs::remove_dir_all(&base);
     }
 }
