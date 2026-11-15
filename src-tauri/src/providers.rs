@@ -787,7 +787,7 @@ pub struct ProviderInfo {
     pub models: Vec<ModelInfo>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,
@@ -799,6 +799,15 @@ pub struct ModelInfo {
     /// Faster service tiers beyond the standard speed (Codex `serviceTiers`, Claude fast mode).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub speed_tiers: Vec<ReasoningEffortInfo>,
+    /// Catalog-advertised image input. Omitted when unknown or false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub image_input: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Present when the catalog marks the entry unusable. The picker keeps the
+    /// row, disabled, with this as the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -966,10 +975,7 @@ impl ModelInfo {
             id: "default".into(),
             name: "Default".into(),
             description: "Use the model configured in the CLI".into(),
-            reasoning_efforts: Vec::new(),
-            default_reasoning_effort: None,
-            context_window: None,
-            speed_tiers: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -1254,9 +1260,7 @@ fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec
             id: id.clone(),
             name: id.clone(),
             description: "Saved OpenCode model".into(),
-            reasoning_efforts: Vec::new(),
-            default_reasoning_effort: None,
-            context_window: None,
+            ..ModelInfo::default()
         }));
     }
     models
@@ -1364,6 +1368,7 @@ fn parse_opencode_v2_models(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
                 default_reasoning_effort: None,
                 context_window: entry["limit"]["context"].as_u64().filter(|n| *n > 0 && *n <= 1_000_000_000),
                 id,
+                ..ModelInfo::default()
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1489,6 +1494,7 @@ fn parse_codex_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
                     // model/list does not report the effective window. Live usage does.
                     context_window: None,
                     speed_tiers: codex_speed_tiers(&entry["serviceTiers"]),
+                    ..ModelInfo::default()
                 });
             }
         }
@@ -1611,6 +1617,7 @@ fn parse_claude_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
             context_window: entry["contextWindow"]
                 .as_u64()
                 .filter(|window| *window > 0 && *window <= 1_000_000_000),
+            ..ModelInfo::default()
         };
         if id == "default" {
             models[0] = model;
@@ -4724,6 +4731,7 @@ mod tests {
             reasoning_efforts: vec![super::effort_info("high", None)],
             default_reasoning_effort: None,
             context_window: Some(200_000),
+            ..super::ModelInfo::default()
         };
         let unused = super::ModelInfo {
             speed_tiers: Vec::new(),
