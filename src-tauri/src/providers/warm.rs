@@ -156,6 +156,8 @@ fn key_with_disabled(
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
         // A saved environment variable change starts the next turn cold.
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
+        // So does a GitHub account pin: the token is fixed at spawn.
+        "githubPin": config.github_pin,
         // So do the telemetry opt-outs (`privacy.rs`).
         "telemetryOff": super::privacy::telemetry_off(),
         // So does a saved executable location.
@@ -344,6 +346,14 @@ async fn spawn_spare(
     if let Some(connection) = &connection {
         connection.apply(&mut command);
     }
+    // A pinned project's warm agent runs gh and git as that account; a stale pin keeps
+    // gh's active account instead of failing the preparation.
+    if let Some(pin) = &config.github_pin {
+        if let Ok(Some(token)) = crate::github_accounts::token_for(Some(pin)) {
+            command.env("GH_TOKEN", &token);
+            command.env("GH_ENTERPRISE_TOKEN", &token);
+        }
+    }
     let server = if tools.is_empty() {
         None
     } else {
@@ -516,6 +526,7 @@ mod tests {
             changed(|c| c.codex_settings = Some(json!({"serviceTier": "fast"}))),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
+            changed(|c| c.github_pin = Some("alice@github.com".into())),
             key(&base, &[]),
             key_with(&base, &tools, "work#1"),
         ] {

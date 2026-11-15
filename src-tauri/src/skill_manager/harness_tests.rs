@@ -128,6 +128,7 @@ fn skill_manager_switchable_and_off_explicit_invocation() {
         skill: Some(("off".into(), f.0.join("SKILL.md"))),
         goal: None,
         codex_settings: None,
+        github_pin: None,
         images: vec![],
     };
     apply_instructions(&mut config, &BTreeSet::from(["off".into()]));

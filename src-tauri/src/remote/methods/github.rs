@@ -115,7 +115,7 @@ fn gh_in(root: &Path, args: &[&str], trust: Trust) -> Result<Capture> {
 /// with the caller's trust.
 fn view(root: &Path, kind: &str, number: i64, fields: &str, trust: Trust) -> Result<Value> {
     let repo = base_repo(root)?;
-    crate::github::view_in_as(root, Some(&repo), kind, number, fields, trust)
+    crate::github::view_in_as(root, Some(&repo), None, kind, number, fields, trust)
 }
 
 fn positive(params: &Value, key: &str) -> Result<i64> {
@@ -193,12 +193,15 @@ impl Run for List {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let repo = project_repo(&ctx, &self.project_id).await?;
+            let project = self.project_id.clone();
             let kind = self.kind;
             let items: Vec<Value> = crate::blocking(move || {
+                // The project's pinned GitHub account; a pin that cannot resolve fails the call.
+                let token = crate::github_accounts::token_for(crate::github_accounts::pinned_login(&project).as_deref())?;
                 let values = match kind {
-                    ListKind::Issues => github_hub::issues(&repo)?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
-                    ListKind::Pulls => github_hub::pulls(&repo)?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
-                    ListKind::Runs => github_hub::runs(&repo)?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
+                    ListKind::Issues => github_hub::issues(&repo, token.as_deref())?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
+                    ListKind::Pulls => github_hub::pulls(&repo, token.as_deref())?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
+                    ListKind::Runs => github_hub::runs(&repo, token.as_deref())?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
                 };
                 Ok(values)
             })
@@ -371,7 +374,12 @@ impl Run for ItemCall {
             match self.item {
                 Item::Run(id) => {
                     let repo = project_repo(&ctx, &self.project_id).await?;
-                    let details = crate::blocking(move || github_hub::run_details(&repo, id)).await?;
+                    let project = self.project_id.clone();
+                    let details = crate::blocking(move || {
+                        let token = crate::github_accounts::token_for(crate::github_accounts::pinned_login(&project).as_deref())?;
+                        github_hub::run_details(&repo, id, token.as_deref())
+                    })
+                    .await?;
                     Ok(run_detail(id, details))
                 }
                 Item::Issue(number) => {
@@ -438,7 +446,7 @@ impl Run for Search {
             let items = crate::blocking(move || {
                 // Only the project's own repository's results, whatever the query matched.
                 let repo = github_hub::base_repo(&root).ok_or("This project has no GitHub remote.")?;
-                let items = crate::github::search_as(&root, &query, SEARCH_LIMIT, trust)?;
+                let items = crate::github::search_as(&root, None, &query, SEARCH_LIMIT, trust)?;
                 Ok(items.into_iter().filter(|item| in_repo(&item.url, &repo)).collect::<Vec<_>>())
             })
             .await?;
@@ -527,7 +535,7 @@ impl Run for Review {
             let trust = Trust::phone(ctx.full_access);
             super::once_per_action(ctx.from, "pull.review", &session_id, send_id.as_deref(), async {
                 // The task's linked pull request, in the task's checkout, as `task.pull` reads it.
-                let (root, number) = linked_pull(&ctx.state(), &session_id).await?;
+                let (root, number, _project) = linked_pull(&ctx.state(), &session_id).await?;
                 crate::blocking(move || review_pull_as(&root, &base_repo(&root)?, number, event, &body, trust)).await?;
                 // The 30 s pull cache would otherwise show the timeline from before the review.
                 super::invalidate_pull_cache(&session_id);

@@ -740,6 +740,7 @@ mod behavior_tests {
                 skill: None,
                 goal: None,
                 codex_settings: None,
+                github_pin: None,
                 images: Vec::new(),
             };
             apply_instructions(&mut config, &BTreeSet::from(["review".into()]));
