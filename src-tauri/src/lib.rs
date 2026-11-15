@@ -963,6 +963,8 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),
+        team_environment: Default::default(),
+        team_use_global_environment: true,
     };
     Ok(providers::warms(&config).then_some(config))
 }
