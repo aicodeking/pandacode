@@ -79,7 +79,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     // So does the full-page Settings.
     // So does a closing inspector: the native view leaves at once instead of hanging over the fading panel.
     if (document.querySelector('dialog[open], #settings-page:not([hidden]), #inspector[data-leaving]')) return true;
-    return [...document.querySelectorAll<HTMLElement>('.floating-menu:not([aria-hidden="true"])')].some(menu => {
+    return [...document.querySelectorAll<HTMLElement>('.floating-menu:not([aria-hidden="true"]), .file-window:not([hidden])')].some(menu => {
       const box = menu.getBoundingClientRect();
       return box.width > 0 && box.height > 0 && getComputedStyle(menu).visibility !== 'hidden'
         && box.left < rect.x + rect.width && box.right > rect.x
@@ -198,7 +198,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   const resize = new ResizeObserver(scheduleBounds); resize.observe(viewport);
   const menus = new Set<Element>();
   function observeMenus(): void {
-    const current = new Set(document.querySelectorAll('.floating-menu'));
+    const current = new Set(document.querySelectorAll('.floating-menu,.file-window'));
     for (const menu of menus) if (!current.has(menu)) { resize.unobserve(menu); menus.delete(menu); }
     for (const menu of current) if (!menus.has(menu)) { menus.add(menu); resize.observe(menu); }
   }
@@ -207,7 +207,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   const overlays = new MutationObserver(records => {
     // Dismissal becomes effective before the menu's exit animation finishes.
     // Do not wait for WebKit's animation/timer callbacks to reveal the guest.
-    const selector = '.floating-menu,dialog,#settings-page,#inspector';
+    const selector = '.floating-menu,.file-window,dialog,#settings-page,#inspector';
     if (records.some(record => record.type === 'attributes'
       ? record.target === document.documentElement || record.target instanceof Element && record.target.matches(selector)
       : [...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element && (node.matches(selector) || node.querySelector(selector))))) {

@@ -136,6 +136,41 @@ async function instrumentLauncher(page: Page, intercept = ''): Promise<void> {
   });
 }
 
+test('launcher long tool-group headers ellipsize while tallies and chevrons fit the panel', async ({page}) => {
+  await page.setViewportSize({width:380,height:610});
+  const loaded: string[] = [];
+  page.on('request', request => loaded.push(new URL(request.url()).pathname));
+  await instrumentLauncher(page, `if (command === 'overlay_thread') return {
+    provider:'claude',status:'running',hasOlder:false,messages:[
+      {id:1,sessionId:args.sessionId,role:'user',content:'Review header layout',createdAt:1},
+      ...[
+        {id:'read',name:'Read',status:'completed',input:JSON.stringify({file_path:'src/header-layout-and-regression-coverage.ts'}),output:'Header layout'},
+        {id:'check',name:'Bash',status:'failed',input:JSON.stringify({command:'npx tsc --noEmit'}),output:'error TS2322: Type mismatch\\nExit code: 2'},
+        {id:'edit',name:'Edit',status:'completed',input:JSON.stringify({file_path:'src/overlay-thread.ts',old_string:'wrap',new_string:'nowrap'}),output:'Updated'},
+        {id:'pending',name:'Read',status:'running',input:JSON.stringify({file_path:'src/overlay-thread.ts'}),output:''},
+      ].map((tool,index) => ({id:2+index,sessionId:args.sessionId,role:'tool',content:JSON.stringify({type:'tool_activity',version:1,...tool}),createdAt:2+index})),
+    ]};`);
+  await page.goto('/?view=launcher');
+  await page.locator('.launcher-task[data-task="preview-active"]').click();
+  const summary = page.locator('.launcher-thread-activity .tool-group-summary');
+  await expect(summary).toBeVisible();
+  await expect(summary.locator('.tool-group-status')).toHaveText([' · 1 running',' · 1 failed']);
+  await expect(summary.locator('.tool-trace-stack .icon')).toHaveCount(3);
+  const header = await summary.evaluate(node => {
+    const box = node.getBoundingClientRect(), room = node.closest('.launcher-thread-scroll')!.getBoundingClientRect();
+    const label = node.querySelector<HTMLElement>('.tool-group-label')!;
+    const tallies = [...node.querySelectorAll<HTMLElement>('.tool-group-status')].map(tally => {
+      const rect = tally.getBoundingClientRect();
+      return rect.width > 0 && rect.left >= box.left && rect.right <= box.right + 0.5 && tally.scrollWidth <= tally.clientWidth;
+    });
+    const chevron = node.querySelector(':scope > .icon:last-child')!.getBoundingClientRect();
+    return {cut:label.clientWidth > 0 && label.scrollWidth > label.clientWidth,ellipsis:getComputedStyle(label).textOverflow,tallies,
+      sameLine:box.height < 40,chevron:chevron.width > 0 && chevron.right <= box.right + 0.5,inside:box.right <= room.right + 0.5};
+  });
+  expect(header).toEqual({cut:true,ellipsis:'ellipsis',tallies:[true,true],sameLine:true,chevron:true,inside:true});
+  expect(loaded).not.toContain('/src/styles.css');
+});
+
 test('launcher file mentions insert a quoted reference without sending and keep the launch prompt editable', async ({page}) => {
   await page.setViewportSize({width:490,height:410});
   await instrumentLauncher(page, `if (command === 'search_files') return [{name:'my notes.md',path:'src/my notes.md',isDir:false}];`);

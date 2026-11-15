@@ -253,12 +253,17 @@ pub(super) async fn set_task_preference(
     if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
         // Claude reads fast mode at launch, so the choice applies from the next turn.
         let delta = json!({"serviceTier": claude_tier(request)?});
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        return save_preference(&store, &session_id, &delta);
+        let session = {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            save_preference(&store, &session_id, &delta)?
+        };
+        let running = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id);
+        if !running {
+            crate::providers::discard_warm_agent(&session_id);
+        }
+        return Ok(session);
     }
-    let running = state
-        .agents
-        .lock()
+    let running = crate::run_requests::lock_agents(&state.agents)
         .map_err(|e| e.to_string())?
         .contains_key(&session_id);
     // An idle task is reserved through catalog discovery and persistence. Live
@@ -294,15 +299,21 @@ pub(super) async fn set_task_preference(
     if running {
         live_request(&state, &session_id, "thread/settings/update", delta.clone()).await?;
     }
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    let current = store.session(&session_id)?;
-    if current.provider != task.provider
-        || current.model != task.model
-        || current.reasoning_effort != task.reasoning_effort
-    {
-        return Err("The task's model changed. Open its settings again.".into());
+    let session = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let current = store.session(&session_id)?;
+        if current.provider != task.provider
+            || current.model != task.model
+            || current.reasoning_effort != task.reasoning_effort
+        {
+            return Err("The task's model changed. Open its settings again.".into());
+        }
+        save_preference(&store, &session_id, &delta)?
+    };
+    if !running {
+        crate::providers::discard_warm_agent(&session_id);
     }
-    save_preference(&store, &session_id, &delta)
+    Ok(session)
 }
 
 fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {

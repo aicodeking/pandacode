@@ -66,7 +66,7 @@ test('every harness has environment settings, and all but GLM, MiMo and Alibaba 
     executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable!),
   }));
   // Mirrors providers::PROVIDERS, so a new harness has to show up here too.
-  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
+  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
   expect([...editors.toggles].sort()).toEqual([...roster].sort());
   expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
   expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo' && id !== 'alibaba').sort());
@@ -241,6 +241,7 @@ async function delayedConnections(page: Page): Promise<void> {
 test('provider connections preserve other drafts and edits made during a save', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await delayedConnections(page);
+  await expect(page.locator('#settings-panel-providers')).toContainText('agy acp --process-per-session');
   const opencode = page.getByLabel('OpenCode executable', { exact: true });
   const antigravity = page.getByLabel('Antigravity ACP executable', { exact: true });
   await antigravity.fill('/draft/agy_acp_server.par');
@@ -390,7 +391,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {

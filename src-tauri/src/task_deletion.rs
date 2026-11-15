@@ -87,7 +87,7 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
     delete_owned(&store, sid, &ids)?;
     drop(store);
     for id in &ids {
-        crate::providers::forget_warm_session(id);
+        crate::providers::discard_warm_agent(id);
     }
     Ok(DeletedSessions {
         deleted_session_ids: ids,

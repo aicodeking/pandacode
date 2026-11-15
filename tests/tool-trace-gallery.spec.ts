@@ -54,7 +54,8 @@ for (const width of [380, 420, 1100, 1440]) {
         const rect = tally.getBoundingClientRect();
         return rect.width > 0 && rect.left >= box.left - 0.5 && rect.right <= box.right + 0.5 && tally.scrollWidth <= Math.ceil(rect.width);
       });
-      return { text: node.textContent, inside: box.right <= room.right + 0.5, lines: Math.round(box.height / 30), cut: label.scrollWidth > label.clientWidth, tallies };
+      const chevron = node.querySelector<HTMLElement>(':scope > .icon:last-child')!.getBoundingClientRect();
+      return { text: node.textContent, inside: box.right <= room.right + 0.5, lines: Math.round(box.height / 30), cut: label.scrollWidth > label.clientWidth, tallies, chevron: chevron.width > 0 && chevron.right <= box.right + 0.5 };
     }));
     expect(headers.some(header => header.tallies.length > 1)).toBe(true);
     for (const header of headers) {
@@ -62,11 +63,57 @@ for (const width of [380, 420, 1100, 1440]) {
       expect(header.inside, header.text!).toBe(true);
       // One line at every width: the sentence ellipsizes before a tally wraps to a line that would start with `·`.
       expect(header.lines, header.text!).toBe(1);
+      // nowrap alone keeps one line; the chevron must still fit inside the header, not overflow past it.
+      expect(header.chevron, header.text!).toBe(true);
     }
     // A long sentence is cut by CSS (its tallies above stayed whole).
     expect(headers.some(header => header.cut && header.tallies.length)).toBe(true);
   });
 }
+
+test('a live "Earlier in this turn" fold ellipsizes its sentence on one line and keeps the tally and chevron inside', async ({ page }) => {
+  await page.setViewportSize({ width: 380, height: 600 });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const marker = /switch \(command\) \{/;
+    expect(source).toMatch(marker);
+    await route.fulfill({ response, body: source.replace(marker, `
+      window.__agent = agent;
+      if (command === 'get_messages') return {hasOlder:false,messages:[
+        {id:1001,sessionId:args.sessionId,role:'user',content:'Review header layout',createdAt:1},
+        ...[
+          {id:'earlier-read',name:'Read',status:'completed',input:JSON.stringify({file_path:'src/header-layout-and-regression-coverage.ts'}),output:'Header layout'},
+          {id:'earlier-check',name:'Bash',status:'failed',input:JSON.stringify({command:'npx tsc --noEmit'}),output:'error TS2322: Type mismatch\\nExit code: 2'},
+        ].map((tool,index) => ({id:1002+index,sessionId:args.sessionId,role:'tool',content:JSON.stringify({type:'tool_activity',version:1,...tool}),createdAt:2+index})),
+        {id:1004,sessionId:args.sessionId,role:'assistant',content:'Earlier findings.',createdAt:4},
+        {id:1005,sessionId:args.sessionId,role:'coordination',coordinationKind:'continue',content:'Continue the review',createdAt:5},
+      ]};
+      $&`) });
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => Boolean((window as any).__agent));
+  const sessionId = await page.locator('.task-item[aria-current="page"]').first().getAttribute('data-id');
+  expect(sessionId).toBeTruthy();
+  await page.evaluate(sessionId => {
+    (window as any).__agent({sessionId,kind:'thinking',text:'Checking the earlier findings.'});
+  }, sessionId);
+  // Exercise liveEarlierFold() itself, including the real is-steps ancestry and foldedLabelHtml() icon stack.
+  const summary = page.locator('#stream-region .is-steps .live-earlier > .tool-group-summary');
+  await expect(summary).toBeVisible();
+  await expect(summary.locator(':scope > .tool-trace-stack > .icon')).toHaveCount(2);
+  await expect(summary.locator('.tool-group-status')).toHaveText(' · 1 failed');
+  const header = await summary.evaluate(node => {
+    const box = node.getBoundingClientRect(), room = node.closest('.turn-activity-body')!.getBoundingClientRect();
+    const sentence = node.querySelector<HTMLElement>('.trace-summary-sentence')!, sentenceBox = sentence.getBoundingClientRect();
+    const tallyNode = node.querySelector<HTMLElement>('.tool-group-status')!, tally = tallyNode.getBoundingClientRect();
+    const chevronBox = node.querySelector(':scope > .icon:last-child')!.getBoundingClientRect();
+    return { lines: Math.round(box.height / 30), cut: sentence.clientWidth > 0 && sentence.scrollWidth > sentence.clientWidth, ellipsis: getComputedStyle(sentence).textOverflow,
+      tally: tally.width > 0 && tally.right <= box.right + 0.5 && tallyNode.scrollWidth <= tallyNode.clientWidth,
+      sameLine: Math.abs(tally.top - sentenceBox.top) < 4,
+      chevron: chevronBox.width > 0 && chevronBox.right <= box.right + 0.5, inside: box.right <= room.right + 0.5 };
+  });
+  expect(header).toEqual({ lines: 1, cut: true, ellipsis: 'ellipsis', tally: true, sameLine: true, chevron: true, inside: true });
+});
 
 test('gallery thumbnails load from the preview loader and open the viewer', async ({ page }) => {
   await page.goto('/tool-trace-gallery.html');

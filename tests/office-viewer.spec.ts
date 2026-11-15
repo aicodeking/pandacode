@@ -28,8 +28,6 @@ declare global {
 }
 
 const open = async (page: Page, name: string) => {
-  // A file opens in the inspector's Open files tab, so the Files tree comes back for the next one.
-  if (await page.locator('.file-panel-tab').isVisible()) await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('.file-row').getByRole('button', { name, exact: true }).click();
   await expect(page.locator('#file-tabs').getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true');
 };

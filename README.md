@@ -3,7 +3,7 @@
 A small, native desktop workspace for coding agents. PandaCode runs the coding
 CLIs you already use — **Claude Code, Codex, Kimi Code, OpenCode, GLM Coding
 Plan, Xiaomi MiMo and Alibaba Token Plan** (through Claude Code), **GitHub Copilot CLI, Antigravity,
-xAI's Grok Build, DeepSeek, Command Code, Cline, Kilo Code, Devin CLI and Hermes Agent** (through ACP), **ZCode** (through its app-server protocol), **Pi** and its
+xAI's Grok Build, DeepSeek, Command Code, Cline, Kilo Code, Devin CLI, Hermes Agent and Cursor CLI** (through ACP), **ZCode** (through its app-server protocol), **Pi** and its
 fork **omp** (through Pi's RPC mode), and Meta's **Muse Code** (through its MSP
 protocol) — side by side, with your projects, Git, a
 terminal and a browser in one window.
@@ -317,6 +317,7 @@ information:
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org`, `releases.openai.com`, `storage.googleapis.com`, `pypi.org` | About every 6 hours |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog, and in Settings → Providers when account pools are shown (once, then at most every 5 minutes on window focus, or when you click Refresh) |
 | Asking your Claude Code for usage when PandaCode can't read it (on by default; Settings → Providers → Claude Code → Let PandaCode ask Claude Code for usage when it can’t read it): PandaCode runs your installed Claude Code once, `claude -p /usage` (a local command: no model call, nothing billed), with only its config folder, network and process settings (its telemetry, error reports, nonessential traffic and self-update turned off for this run), which lets Claude Code refresh and save its own login if it needs to, as when you open it (it may answer from its own snapshot instead). PandaCode never writes Claude Code's credentials | Whatever Claude Code itself contacts to refresh its login and read usage (Anthropic) | Only during a Claude usage check that can't read usage (an expired, rejected or missing login, a Keychain or network problem, a rate limit with no saved reading; never for an API-key or other non-subscription setup, a locked Keychain or a Keychain read you denied unless you press Refresh), at most once per Claude setup every 15 minutes (a Refresh you press may run it once more), less often while runs keep failing (up to every 2 hours), never two at once, and never inside a rate limit's server-set wait (after it, a new rate limit with no or an old saved reading may run it); never while the setting is off |
+| Warm start of a coding agent: the CLI of a harness you installed and picked is launched in the background as a normal launch would, including your own startup hooks, plugins and configured MCP servers, which may contact their hosts; no prompt is sent (for Codex, the task's saved conversation may be loaded ahead, but no turn is sent). Turn off with Settings → Agents → **Start agents ahead** | That agent's provider, and whatever your hooks, plugins and MCP servers contact | After a turn ends, when you pick a task's model, effort, permissions or harness in its main thread, and when you start typing in a local task's message box (not a bot's thread); at most 2 idle at a time, each stopped after 10 minutes |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
@@ -391,7 +392,7 @@ PandaCode does not include provider plans or usage.
 
 Muse Code installs with Meta's launcher into `~/.local/bin/muse`; run `muse login` once in a terminal. PandaCode launches `muse serve` and speaks MSP, Muse's JSON-RPC session protocol, with its sandbox and approval modes; see [docs/providers.md](docs/providers.md#muse-code) for what each mode does and what Muse cannot express.
 
-Antigravity runs Google's `agy_acp_server`, or `agy acp` through the `agy` CLI when that server isn't installed. See [provider details](docs/providers.md).
+Antigravity runs Google's `agy_acp_server`, or `agy acp --process-per-session` through the `agy` CLI when that server isn't installed. See [provider details](docs/providers.md).
 
 [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli) installs with `npm install -g @github/copilot`; run `copilot login` in a terminal, then select **GitHub Copilot CLI** in PandaCode. PandaCode launches the local `copilot` executable over ACP. The CLI manages its own sign-in. See [provider details](docs/providers.md#github-copilot-cli).
 
@@ -400,6 +401,8 @@ Antigravity runs Google's `agy_acp_server`, or `agy acp` through the `agy` CLI w
 [ZCode](https://github.com/zai-org/ZCode) installs with its install script (`~/.local/bin/zcode`, Node 24); run `zcode` once in a terminal and sign in, then select **ZCode** in PandaCode. PandaCode talks to `zcode app-server` directly — the CLI's own protocol, since it exposes no ACP mode — listing every model the account can reach with its own reasoning levels. See [provider details](docs/providers.md#zcode).
 
 [Hermes Agent](https://hermes-agent.org) installs with `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash`; run `hermes acp --setup` or configure `~/.hermes/config.yaml`, then select **Hermes Agent** in PandaCode. PandaCode launches `hermes acp` and uses Hermes' configured provider and models. See [provider details](docs/providers.md#hermes-agent).
+
+[Cursor CLI](https://cursor.com/docs/cli/overview) installs with `curl https://cursor.com/install -fsS | bash`; run `agent login` once in a terminal (or set `CURSOR_API_KEY`), then select **Cursor CLI** in PandaCode. PandaCode launches `agent acp` with the CLI's own sign-in and lists the models on your Cursor plan, each with its own thinking levels. See [provider details](docs/providers.md#cursor-cli).
 
 ## Build from source
 

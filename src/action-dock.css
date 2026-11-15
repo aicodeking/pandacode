@@ -127,7 +127,7 @@ html[data-theme] .agents-dock-count{background:var(--ds-primary-bg);color:var(--
 
 /* State: an open panel keeps the neutral fill and its icon takes the panel's tint (the inspector tabs use the same set);
  * Agents is team-toned while anything runs, Run green while its script runs, with a soft pulse while it starts. Deploy has no state of its own. */
-#inspector-toggle{--dock-tint:var(--ds-tone-plan)}
+#inspector-toggle,#files-toggle,#file-editor-toggle{--dock-tint:var(--ds-tone-plan)}
 #terminal-toggle{--dock-tint:var(--ds-tone-saver)}
 #browser-toggle{--dock-tint:var(--ds-tone-remote)}
 .action-dock [data-action="moodboards"]{--dock-tint:var(--ds-tone-worktree)}

@@ -66,6 +66,8 @@ import { LAZY_REPLY_CHARS, drawnFrom, lazyMarkdown, prepareMarkdown, touchedRows
 import { leftRowsCache, leftViews, mountTileWindows, mountTranscriptView } from './transcript-view';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
+import * as modelSwitch from './model-switch';
+import * as modelCatalogs from './model-catalogs';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { mountDesktopBrand } from './brand-mark';
@@ -111,6 +113,7 @@ import { createAgentInput, type AgentInput } from './agent-input';
 import { mountSlashCommands, type SlashCommand } from './slash-commands';
 import { mountFileMentions, type MentionEntry } from './file-mentions';
 import { createFileTabs } from './file-tabs';
+import { createFileExplorer } from './file-explorer';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
@@ -165,8 +168,8 @@ type LiveEarlier = { turn: TranscriptTurn; tools: ToolActivity[] };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
 const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMac);
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
-/** Open files is the inspector's per-task editor view: shown only while the task has file tabs, never saved in the strip's order. */
-type PanelView = InspectorView | 'file';
+/** Inspector tabs only. Open files live in the floating editor, not in this strip. */
+type PanelView = InspectorView;
 const INSPECTOR_TITLES: Record<InspectorView, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design', btw: 'By the way' };
 const INSPECTOR_TIPS: Partial<Record<InspectorView, string>> = { simulator: 'iOS & Android simulators', design: 'Design canvas', btw: 'By the way: a side thread' };
 const INSPECTOR_ICONS: Record<InspectorView, string> = { files: 'file', search: 'search', changes: 'branch', browser: 'globe', pull: 'pull', simulator: 'phone', vm: 'monitor', design: 'sketch', btw: 'chat' };
@@ -253,16 +256,48 @@ const savedMarkdownSources = new WeakMap<HTMLElement, string>();
 let olderMessagesRequest: { sessionId: string; generation: number; beforeId: number } | undefined;
 const pendingApprovals = new Set<string>();
 const configuringSessions = new Set<string>();
-const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let boardMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let modelPickerCleanup: (() => void) | undefined;
+// Only the main composer owns these anchors; side-thread and setup pickers keep their own lifecycle.
+let composerPickerLifecycle: { anchor: HTMLElement; current: () => boolean } | undefined;
+let composerPickerPress: { anchor: HTMLElement; current: () => boolean } | undefined;
+let composerPressRender = false;
+modelSwitch.initModelSwitch({
+  setBusy: (id, busy) => { if (busy) configuringSessions.add(id); else configuringSessions.delete(id); },
+  pickerOpening: () => Boolean(modelPickerCleanup || pendingMenuOpen?.anchor.matches('.model-picker')),
+  notify: text => notify(text),
+  task: id => state.sessions.find(task => task.id === id),
+  put: task => applyHeldPickerChoice(task.id, () => upsertSession(task)),
+  team: id => teams.get(id)?.config,
+  teamChanged: event => applyHeldPickerChoice(event.sessionId, () => onArchitect(event)),
+  autoTeam: async base => {
+    const config = await autoTeamConfig(base, knownModels(base));
+    const choice = pendingMenuOpen?.choice;
+    // Native can publish this exact roster before architect_configure returns; it keeps the current Council.
+    if (choice && teams.get(choice.id)?.config === base) choice.expectTeam(base.council ? { ...config, council: base.council } : config);
+    return config;
+  },
+  releaseAccount: async id => {
+    // Decide on a loaded snapshot: an empty one only means connections_list has not answered yet.
+    if (!namedConnectionsLoaded) await (namedConnectionsLoad ?? refreshNamedConnections()).catch(() => undefined);
+    if (namedConnections.tasks[id]) namedConnections = await call('connection_assign', { sessionId: id, connectionId: null });
+  },
+  label: task => modelLabel(task),
+  effortName: task => effortLabel(task),
+  pickerShown: () => Boolean(modelPickerCleanup),
+  remember: ({ provider, model, local }) => {
+    if (!local) { localChoice = undefined; return; }
+    if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = provider;
+    localStorage.setItem('pandacode.provider', provider); localStorage.setItem('pandacode.model.' + provider, model);
+  },
+});
 let projectPickerCleanup: (() => void) | undefined;
 let choiceMenuCleanup: (() => void) | undefined;
 let choiceMenuAnchor: HTMLElement | undefined;
 let menuEpoch = 0;
-let pendingMenuOpen: { anchor: HTMLElement; release: () => void } | undefined;
+let pendingMenuOpen: { anchor: HTMLElement; release: (cancelled?: boolean) => void; choice?: { id: string; apply: (change: () => void) => void; expectTeam: (config: TeamConfig) => void } } | undefined;
 let openingProjectForTask: { id: string; generation: number } | undefined;
 let creatingTask = false;
 let openingSupport = false;
@@ -519,10 +554,10 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
 }
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
-async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
+async function autoTeamConfig(base?: TeamConfig, models: (id: ProviderId) => Promise<ProviderModel[]> = loadModels): Promise<TeamConfig> {
   // Council can start from the first painted thread while CLI discovery is still running.
   if (providerDiscovery) await providerDiscovery;
-  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, loadModels)]);
+  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, models)]);
   if (!catalog.length) throw new Error('No installed models are available. Open Settings to check your agents.');
   const limits = base ?? library?.lastSetup?.config;
   return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
@@ -585,12 +620,12 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
     <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button>${starPanda()}<button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
-    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', 'Toggle inspector', 'panel', 'active', 'id="inspector-toggle" aria-keyshortcuts="Meta+Shift+B Control+Shift+B"', `Toggle inspector (${shortcut('B', true)})`)}${button('terminal', 'Toggle terminal', 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false" aria-keyshortcuts="Meta+J Control+J"', `Toggle terminal (${shortcut('J')})`)}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('team')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
+    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', 'Toggle inspector', 'panel', 'active', 'id="inspector-toggle" aria-keyshortcuts="Meta+Shift+B Control+Shift+B"', `Toggle inspector (${shortcut('B', true)})`)}${button('terminal', 'Toggle terminal', 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false" aria-keyshortcuts="Meta+J Control+J"', `Toggle terminal (${shortcut('J')})`)}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('toggle-files', 'Toggle file explorer', 'folder', '', 'id="files-toggle" aria-controls="inspector" aria-pressed="false"')}${button('toggle-file-editor', 'Toggle editor', 'edit', '', 'id="file-editor-toggle" aria-controls="file-panel" aria-expanded="false" hidden')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('team')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
     <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
-  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file" tabindex="-1"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
+  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views">${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
 </div><div id="toast" class="toast" hidden><span class="toast-text" role="status" aria-atomic="false"></span></div><dialog id="dialog"></dialog>`;
 mountDesktopBrand($('.brand-name'));
 // Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.
@@ -725,8 +760,68 @@ const fileTabs = createFileTabs({
   preview: (path, context) => previewFile(path, context),
   notify: text => notify(text),
   report: error => report(error),
+  selection: async request => {
+    const task = session();
+    if (!task || task.projectId !== request.context.projectId || request.context.sessionId && request.context.sessionId !== task.id) throw new Error('Open this file in its project task before asking the model.');
+    if (task.archived || taskStage(task) === 'completed') throw new Error('Reopen this task before asking the model.');
+    const fence = '`'.repeat([...request.text.matchAll(/`+/g)].reduce((length, match) => Math.max(length, match[0].length + 1), 3));
+    const instruction = request.action === 'fix' ? 'Fix the selected code in this file. Keep the change focused and verify the fix.' : 'Answer the question about this selected code. Do not change files.';
+    const question = request.question || (request.action === 'fix' ? 'Fix any problems in this selection.' : 'Explain what this code does.');
+    const text = `${question}\n\nFile context: ${request.path}\nSelected lines: ${request.startLine}–${request.endLine}\n${instruction}${request.unsaved ? '\nSource: unsaved editor buffer; use the selected text below.' : ''}\n${fence}\n${request.text}\n${fence}`;
+    const entry = await call<QueuedMessage>('queue_add', { sessionId: task.id, text, attachments: [] });
+    setQueue(task.id, [...queueOf(task.id).filter(item => item.id !== entry.id), entry]);
+    renderComposer(); void run(dispatchQueue(task.id)); notify('Selection request added to this task');
+  },
   focusConversation: () => document.querySelector<HTMLElement>('#prompt')?.focus(),
-  emptied: () => { if (state.inspectorTab === 'file') { state.inspectorTab = threadDefault(inspectorTabs); renderInspector(); } },
+  changed: () => {
+    const toggle = $('#file-editor-toggle'); toggle.hidden = !fileTabs.count;
+    toggle.classList.toggle('active', fileTabs.visible); toggle.setAttribute('aria-expanded', String(fileTabs.visible));
+  },
+});
+const fileExplorer = createFileExplorer({
+  call,
+  menu: ({ anchor, ...options }) => run(showChoices(anchor, options)),
+  modal, closeModal,
+  open: async (path, context) => {
+    if (context.projectId !== state.projectId) await selectProject(context.projectId);
+    await openFile(path, 'file', false, context, /\.(html?|svg)$/i.test(path));
+  },
+  changed: (context, path, next) => {
+    fileTabs.remap(context, path, next);
+    if (context.projectId !== state.projectId || (context.sessionId ?? '') !== state.sessionId) return;
+    for (const folder of [...state.openFolders]) if (folder === path || folder.startsWith(path + '/')) {
+      state.openFolders.delete(folder); if (next) state.openFolders.add(next + folder.slice(path.length));
+    }
+    state.folderFiles.clear();
+  },
+  created: (context, parent) => { if (parent && context.projectId === state.projectId && (context.sessionId ?? '') === state.sessionId) state.openFolders.add(parent); },
+  hasChanges: (context, path) => fileTabs.hasChanges(context, path),
+  refresh: async () => { fileTabs.reload(); await refreshExplorerFiles(); },
+  notify, report,
+});
+document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('contextmenu', event => {
+  const anchor = (event.target as Element).closest('.file-row')?.querySelector<HTMLElement>('button[data-path]');
+  if (!anchor) return;
+  event.preventDefault();
+  fileExplorer.menu(anchor, workspaceContext(), anchor.dataset.path!, anchor.hasAttribute('aria-expanded'), { x: event.clientX, y: event.clientY });
+});
+document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('keydown', event => {
+  const anchor = (event.target as Element).closest<HTMLElement>('.file-row>button:first-child[data-path]');
+  if (!anchor || isImeKey(event)) return;
+  const path = anchor.dataset.path!, directory = anchor.hasAttribute('aria-expanded');
+  if (event.key === 'F10' && event.shiftKey || event.key === 'ContextMenu') {
+    event.preventDefault(); fileExplorer.menu(anchor, workspaceContext(), path, directory); return;
+  }
+  if (event.key === 'F2' || event.key === 'Delete') {
+    event.preventDefault(); fileExplorer.edit(workspaceContext(), event.key === 'F2' ? 'rename' : 'delete', path, directory); return;
+  }
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault(); event.stopPropagation();
+  const rows = [...document.querySelectorAll<HTMLButtonElement>('#inspector-content .file-row>button:first-child')], index = rows.indexOf(anchor as HTMLButtonElement);
+  if (directory && (event.key === 'ArrowRight' && anchor.getAttribute('aria-expanded') === 'false' || event.key === 'ArrowLeft' && anchor.getAttribute('aria-expanded') === 'true')) { anchor.click(); return; }
+  const parent = path.split('/').slice(0, -1).join('/');
+  const next = event.key === 'Home' ? rows[0] : event.key === 'End' ? rows.at(-1) : event.key === 'ArrowLeft' ? rows.find(row => row.dataset.path === parent) : rows[index + (event.key === 'ArrowUp' ? -1 : 1)];
+  next?.focus();
 });
 const pullView = createPullView({
   call,
@@ -1086,8 +1181,21 @@ const toolImageLoader: ToolImageLoader = (sessionId, path, maxEdge) => isNetwork
 attachToolImages(transcriptScroller, () => state.sessionId ?? '', toolImageLoader);
 const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
 // Composer mutations do not imply a resize; the transcript ResizeObserver handles actual size changes before paint.
+// What is skipped is NAMED here rather than inferred: the transcript's own subtree, the composer, and the progress pip with
+// everything inside it. The pip floats over the conversation — #progress-pip is position:absolute in the relatively
+// positioned pane — so no write inside it can move the flow it covers: place() re-sets --pp-top/--pp-bottom/--pp-room from
+// the pane's resize observer, a drag writes translate, and progress-pip.ts writes a frame's width and height and the stage's
+// aspect-ratio while a snapshot animates. A record inside the pip is skipped whatever its type, childList included; a real
+// size change to the transcript is the ResizeObserver's business above.
+// This replaces a getComputedStyle(target).position === 'absolute' | 'fixed' test. That test inferred the skip set from
+// runtime style: every attribute write in the pane paid a style resolution to ask whether its target happened to be out of
+// flow at that moment, so what was skipped could not be read off the source, changed with a class swap on the target, and
+// missed the pip's own descendants because it judged the record's target alone. A named list cannot drift that way.
 const composerArea = $('#composer-area');
-new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target) && !composerArea.contains(record.target))) followTranscript(); })
+const progressPipHost = $('#progress-pip');
+const rePinsTranscript = (target: Node): boolean =>
+  !transcriptScroller.contains(target) && !composerArea.contains(target) && !progressPipHost.contains(target);
+new MutationObserver(records => { if (records.some(record => rePinsTranscript(record.target))) followTranscript(); })
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
@@ -1235,7 +1343,7 @@ function restoreThreadPanel(task?: Session, keepFreshWorkspace = false): void {
   const sameWorkspace = saved?.workspace === workspaceKey();
   // Without saved state the conversation opens the panel on the selected tab, unless the user closed it or it would cover the chat.
   state.inspector = saved?.open ?? (state.view === 'conversation' && inspectorChosen && !matchMedia('(max-width: 920px)').matches);
-  state.inspectorTab = saved?.tab && (saved.tab === 'file' || inspectorTabs.open.includes(saved.tab)) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
+  state.inspectorTab = saved?.tab && inspectorTabs.open.includes(saved.tab) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   if (keepFreshWorkspace) state.selectedContent = '';
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
@@ -1355,7 +1463,7 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', alibaba: 'Alibaba', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
+ function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', alibaba: 'Alibaba', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes', cursor: 'Cursor' })[id]; }
 function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
 function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
@@ -1398,6 +1506,8 @@ function modelTitle(s: Session): string {
   return `${modelLabel(s, false)}${effort ? ` · ${effort}` : ''} — ${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}`;
 }
 function refreshModelLabels(): void {
+  // A catalog can replace the hit-tested text node even when the button itself stays connected.
+  if (composerPickerPress?.current()) { composerPressRender = true; return; }
   const s = session(); if (!s) return;
   const name = modelLabel(s, false), effort = effortLabel(s);
   document.querySelectorAll<HTMLElement>('[data-model-label]').forEach(label => { if (label.textContent !== name) label.textContent = name; });
@@ -1634,22 +1744,58 @@ async function openSupport(): Promise<void> {
     }
   }
 }
-function cancelPendingMenu(): void { menuEpoch++; pendingMenuOpen?.release(); }
+/** A value snapshot: startup refreshes can mutate the Session in place. */
+function composerPickerTargetKey(task = session(), config = teams.get(task?.id ?? '')?.config ?? null): string {
+  return JSON.stringify([task?.id, task?.projectId, task?.provider, task?.model, task?.reasoningEffort ?? null,
+    task?.mode, task?.remoteDevice, task?.cloud, remoteChoice, config]);
+}
+function composerPickerContext(anchor: HTMLElement, botNext: boolean): { anchor: HTMLElement; current: () => boolean } {
+  const epoch = menuEpoch, generation = state.generation, id = state.sessionId, key = composerPickerTargetKey();
+  return { anchor, current: () => epoch === menuEpoch && generation === state.generation &&
+    session()?.id === id && anchor.isConnected && !state.sharedChannelId && !taskCreation &&
+    taskStage(session()!) !== 'completed' && !teamToggles.has(id) && (!isRunning(id) || botNext) && composerPickerTargetKey() === key };
+}
+function finishComposerPickerPress(press = composerPickerPress): void {
+  if (!press || press !== composerPickerPress) return;
+  composerPickerPress = undefined;
+  if (composerPressRender) { composerPressRender = false; renderComposer(); }
+}
+document.addEventListener('pointerdown', event => {
+  finishComposerPickerPress();
+  const anchor = (event.target as Element | null)?.closest<HTMLElement>('#model-picker-trigger, #mode-picker-trigger');
+  if (event.button !== 0 || !anchor || anchor.matches(':disabled')) return;
+  composerPickerPress = composerPickerContext(anchor, Boolean(botForThread()));
+}, true);
+document.addEventListener('pointerup', event => {
+  const press = composerPickerPress;
+  // An outside release has no trigger click to wait for. Keep a valid inside release through native activation,
+  // rather than assuming pointerup ends the interaction.
+  if (press && (!press.current() || !(event.target instanceof Node) || !press.anchor.contains(event.target))) finishComposerPickerPress(press);
+}, true);
+document.addEventListener('click', () => {
+  const press = composerPickerPress;
+  // Let this click reach the action handler and install its pending/open lifecycle before flushing the paint.
+  if (press) window.setTimeout(() => finishComposerPickerPress(press), 0);
+}, true);
+document.addEventListener('pointercancel', () => finishComposerPickerPress(), true);
+window.addEventListener('blur', () => finishComposerPickerPress());
+function cancelPendingMenu(): void { menuEpoch++; composerPickerLifecycle = undefined; pendingMenuOpen?.release(true); }
 function closeModelPicker(): void { cancelPendingMenu(); const close = modelPickerCleanup; modelPickerCleanup = undefined; close?.(); }
 function closeProjectPicker(): void { cancelPendingMenu(); const close = projectPickerCleanup; projectPickerCleanup = undefined; close?.(); }
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
+  if (composerPickerPress?.current() || composerPickerLifecycle?.current()) return;
   // Header/browser controls, the workspace view menu and the GitHub view's row menus survive transcript and composer updates.
   const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && anchor?.id !== 'view-menu' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
 }
-function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => void } {
+function beginMenuOpen(anchor: HTMLElement, onCancel?: () => void): { epoch: number; release: () => void } {
   cancelPendingMenu();
   const epoch = menuEpoch, ownBusy = anchor.getAttribute('aria-busy');
   anchor.setAttribute('aria-busy', 'true');
   let released = false;
-  function release(): void {
+  function release(cancelled = false): void {
     if (released) return;
     released = true;
     if (ownBusy === null) anchor.removeAttribute('aria-busy'); else anchor.setAttribute('aria-busy', ownBusy);
@@ -1658,9 +1804,10 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
     document.removeEventListener('focusin', onOutside, true);
     window.removeEventListener('blur', cancelPendingMenu);
     if (pendingMenuOpen?.release === release) pendingMenuOpen = undefined;
+    if (cancelled) onCancel?.();
   }
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || isImeKey(event)) return;
     event.preventDefault(); event.stopPropagation(); cancelPendingMenu();
   }
   function onOutside(event: Event): void {
@@ -1672,6 +1819,30 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
   document.addEventListener('focusin', onOutside, true);
   window.addEventListener('blur', cancelPendingMenu);
   return { epoch, release };
+}
+/** Only the saving choice may advance a held menu's snapshot (including a refusal's rollback). */
+function applyHeldPickerChoice(id: string, change: () => void): void {
+  const choice = pendingMenuOpen?.choice;
+  if (choice?.id === id) choice.apply(change); else change();
+}
+/** Install dismissal before waiting for a save. A normal release hands off to the actual menu; cancellation aborts it. */
+function beginHeldMenuOpen(anchor: HTMLElement, target: Session) {
+  const controller = new AbortController();
+  const pending = beginMenuOpen(anchor, () => controller.abort());
+  const generation = state.generation, inPanel = Boolean(anchor.closest('.btw-panel'));
+  const task = () => inPanel ? btwSideTask() ?? btwDraftTask() : session();
+  let key = composerPickerTargetKey(target), expectedTeamKey: string | undefined, applying = false;
+  const current = () => pending.epoch === menuEpoch && generation === state.generation &&
+    task()?.id === target.id && !isRunning(target.id) && !taskCreation && !state.sharedChannelId &&
+    taskStage(task()!) !== 'completed' && !teamToggles.has(target.id) &&
+    (inPanel || anchor.isConnected) && (applying || composerPickerTargetKey(task()) === key || composerPickerTargetKey(task()) === expectedTeamKey);
+  pendingMenuOpen!.choice = { id: target.id, apply: change => {
+    if (!current()) { cancelPendingMenu(); change(); return; }
+    applying = true;
+    try { change(); } finally { applying = false; key = composerPickerTargetKey(task()); }
+  }, expectTeam: config => { if (current()) expectedTeamKey = composerPickerTargetKey(task(), config); } };
+  if (!inPanel) composerPickerLifecycle = { anchor, current };
+  return { ...pending, current, signal: controller.signal };
 }
 function rememberedModel(id: ProviderId): string {
   const model = localStorage.getItem('pandacode.defaultModel.' + id) || localStorage.getItem('pandacode.model.' + id) || state.sessions.find(s => s.provider === id && s.model)?.model || 'default';
@@ -1689,24 +1860,16 @@ function usedModels(id: ProviderId): string[] {
 }
 // Teams offer a long catalog's recent models only; OpenCode's saved selection is already short.
 setTeamRecency({ used: usedModels, unlimited: id => id === 'opencode' && openCodeSaved });
-function loadModels(id: ProviderId): Promise<ProviderModel[]> {
-  const cached = modelCatalogs.get(id);
-  if (cached && cached.expires > Date.now()) return cached.pending;
+/** A harness's models, cached and refreshed on demand (model-switch.ts); `onFresh` hears a refresh behind a stale list. */
+function loadModels(id: ProviderId, onFresh?: (update: ProviderModel[] | Error) => void): Promise<ProviderModel[]> {
   // OpenCode's own listing also says whether Settings saved a selection, which keeps the picker's full list.
-  const request = id === 'opencode'
+  const fetch = () => id === 'opencode'
     ? call<OpenCodeModels>('list_opencode_models').then(result => { openCodeSaved = result.selectedModelIds.length > 0; return openCodeChoices(result); })
     : call<ProviderModel[]>('list_provider_models', { provider: id });
-  const pending = request.then(models => {
-    if (modelCatalogs.get(id)?.pending === pending) {
-      const entry = provider(id); if (entry) entry.models = models;
-      if (session()?.provider === id) refreshModelLabels();
-      else refreshTeamProgress();
-    }
-    return models;
-  }).catch(error => { if (modelCatalogs.get(id)?.pending === pending) modelCatalogs.delete(id); throw error; });
-  // Refresh on demand, without polling or retaining an idle provider process.
-  modelCatalogs.set(id, { expires: Date.now() + 5 * 60 * 1000, pending });
-  return pending;
+  return modelCatalogs.loadCatalog(id, fetch, models => {
+    const entry = provider(id); if (entry) entry.models = models;
+    if (session()?.provider === id) refreshModelLabels(); else refreshTeamProgress();
+  }, onFresh);
 }
 
 /* Another computer's catalog (PandaCode Connect): kept per device, never in state.providers. */
@@ -1720,7 +1883,13 @@ function taskConnection(s: Session): import('./connections').Connection | undefi
   const id = namedConnections.tasks[s.id];
   return namedConnections.connections.find(c => c.id === id && c.provider === s.provider);
 }
-function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; refreshModelLabels(); }
+function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; namedConnectionsLoaded = true; refreshModelLabels(); }
+/** Whether a connections snapshot has arrived yet; before it, `namedConnections` is empty, not "no bindings". */
+let namedConnectionsLoaded = false;
+let namedConnectionsLoad: Promise<void> | undefined;
+function refreshNamedConnections(): Promise<void> {
+  return namedConnectionsLoad ??= call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections).finally(() => { namedConnectionsLoad = undefined; });
+}
 /** An account pool moved a running task to another account: show that one, never the old. */
 function onAccountPoolSwitch(event: AgentEvent): void {
   const pool = (event.data as { accountPool?: { connectionId?: string | null } } | null | undefined)?.accountPool; if (!pool) return;
@@ -3561,7 +3730,110 @@ const settleUnfolded = (element: HTMLElement): void => settleIn(element, 4, { re
 /** The reference's steer arrow (↳) and effort gauge; dom.ts has no such glyphs. */
 const STEER_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4v7a3 3 0 0 0 3 3h10m-4-4 4 4-4 4"/></svg>';
 const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 16.5a8.5 8.5 0 1 1 15.6 0"/><path d="m12 13 3.5-4"/></svg>';
+/* The height the text needs is the one thing a keystroke costs a layout read: releasing the box and asking it for its
+ * scrollHeight is the only way to know how many lines the text now wraps to. What the fit memo saves is a second layout,
+ * not that one: the old code wrote the height and then read the box back to decide the overflow switch, so every keystroke
+ * laid the text out twice. It now takes the overflow from the same measurement, and a call whose text is already fitted
+ * (the resizePrompt() that follows a queued message, a redraw between keystrokes) returns without writing and without
+ * laying anything out. A keystroke is not one of those: no focus path calls resizePrompt, and a keystroke's own call always
+ * sees a value the memo has not fitted yet, so typing measures exactly once.
+ * The text is not the fit's only input though: how many lines it wraps to depends on the width it wraps at, and the prompt
+ * is a column of a resizable pane beside a send control that is not one width: 62x36 for Send and Stop
+ * (redesign/conversation.css sizes `.composer-pill>.send-button` 62x36, overriding the 28x28 `--control` square in
+ * styles.css), then content-width for the wider "Checking…" and "Retry connection" secondary buttons, so one draft needs a
+ * taller box in a narrower prompt. The fit is therefore also remembered at a width, and the PROMPT's own ResizeObserver
+ * re-measures it when that width changes — its callbacks run after layout, so the width costs no layout read, and only a
+ * WIDTH counts: the height written below changes the observed box height on every keystroke and must not make the fit stale
+ * (that is the loop guard).
+ * Text and width are not the whole memo key, because a fit can go stale without either changing. `rows` is one input: the
+ * template sets rows="2" and renderComposer() copies the fresh template's rows onto the reused textarea, so a template
+ * that chose a different row count would leave the box at the height fitted for the old one. The box's own height limits
+ * are the other: `min-height` floors a short draft (redesign/conversation.css `.composer-input textarea` sets 60px) and a
+ * `max-height` would cap it, so the limits are keyed too, through a single getComputedStyle(prompt) of just those two
+ * properties. That read sits where the answer can change — in the early-return test, and right after a fit — and costs no
+ * layout: both limits resolve to lengths and keywords the style engine answers from the style it already has, and the
+ * post-fit read runs after scrollHeight forced the layout above it. A font metric is the one input not in the key: the
+ * prompt's font-size is a rem of the root, so the only thing that moves it is the interface scale, whose event re-fits
+ * unconditionally.
+ * The state below sits here rather than beside the listener that also uses it, because renderComposer() — the first caller —
+ * is only a few lines down: a const or let declared below its function's first caller leaves a window where a call (a
+ * redraw, a future top-level one) throws instead of returning. */
+const PROMPT_MAX_HEIGHT = 180;
+/** Everything the fitted height depends on that can change without the text changing: the box's row count and its height
+ *  limits. `rows` is an integer, the limits a serialization of the two computed lengths. */
+type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; limits: string };
+let promptFit: PromptFit | undefined;
+let promptBoxWidth = -1;
+let promptObserved: HTMLTextAreaElement | null = null;
+const promptResize = new ResizeObserver(entries => {
+  const width = entries.at(-1)?.contentRect.width ?? 0;
+  // No box to fit (a view without a composer, the prompt hidden or collapsed): forget the width, so the width it comes back
+  // at re-fits even when that is the width it left at. A sub-pixel change wraps nothing.
+  if (!width) { promptBoxWidth = -1; return; }
+  if (Math.abs(width - promptBoxWidth) < .5) return;
+  promptBoxWidth = width;
+  // An empty prompt is one line at any width, so a width change must not lay it out. The first
+  // character still measures, at the width just recorded.
+  const current = promptObserved;
+  if (current && current.value === '' && promptFit?.prompt === current && promptFit.rows === current.rows && current.style.height) return;
+  resizePrompt(true);
+});
+// Created once, never per render, and watching the prompt itself: its own inline size is exactly the quantity the fit
+// depends on, so the send pill (62 px for Send and Stop) swapping for the wider, content-sized secondary button re-fits the
+// draft even though the composer row's own box never changes. The node survives a redraw of the same thread
+// (renderComposer() puts the old textarea back), so nothing to re-attach there; a thread switch leaves the template's fresh
+// node in place, so resizePrompt() re-attaches below — one identity compare, no layout read.
+function watchPrompt(prompt: HTMLTextAreaElement | null): void {
+  if (prompt === promptObserved) return;
+  if (promptObserved) promptResize.unobserve(promptObserved);
+  promptObserved = prompt;
+  // A different box is measured from scratch, at whatever width it lands at.
+  promptBoxWidth = -1;
+  if (prompt) promptResize.observe(prompt);
+}
+function resizePrompt(remeasure = false): void {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  watchPrompt(prompt);
+  if (!prompt) { promptFit = undefined; return; }
+  const fit = promptFit?.prompt === prompt ? promptFit : undefined;
+  // An empty prompt is one line at any width (docs/agent-reference.md). Every composer render asks, and resolving
+  // min/max height here would restyle the page on each one, so an empty box that is already fitted returns before that
+  // read. `rows` stays in the key: the template copies its row count onto the reused textarea. Interface scale passes
+  // `remeasure` and refits, because the line height changed even though the width did not.
+  if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && prompt.style.height) return;
+  // The same text, the same rows and the same height limits in a box that is already fitted, at a width promptResize has
+  // accounted for, needs the height it has: this call writes nothing and lays nothing out. `value` and `rows` are a string
+  // and an integer, so a keystroke short-circuits on the value before the only read here is reached, and a redraw that
+  // changed the row count or the limits re-fits instead of trusting the last fit.
+  if (!remeasure && fit && fit.value === prompt.value && prompt.style.height && fit.rows === prompt.rows && fit.limits === promptHeightLimits(prompt)) return;
+  prompt.style.height = 'auto';
+  const natural = prompt.scrollHeight;
+  // A pane that is not laid out reports no content height: forget the fit and the width it was taken at, so the next layout
+  // — the pane shown again, or the prompt's observer seeing it at a real width — measures instead of trusting it.
+  if (!natural) { promptFit = undefined; promptBoxWidth = -1; return; }
+  const height = Math.min(natural, PROMPT_MAX_HEIGHT);
+  prompt.style.height = `${height}px`;
+  // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar. At any height the box scrolls
+  // exactly when the text is taller than it, so this is the same test, one measurement cheaper.
+  const overflow = natural > height + 1 ? 'auto' : 'hidden';
+  if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
+  promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: promptHeightLimits(prompt) };
+}
+/** The fitted height also depends on the box's own limits, and they can change without the text or the width changing (a
+ *  rule above it in the cascade, a unit change). Read once where the answer is decided or recorded, never per keystroke. */
+function promptHeightLimits(prompt: HTMLTextAreaElement): string {
+  const style = getComputedStyle(prompt);
+  return `${style.minHeight}|${style.maxHeight}`;
+}
+// An interface-size change can leave the prompt's box the same width and still change how the text wraps (the preview scales
+// the root font while the actions keep their px widths), so the observer above stays silent and the fit has to be re-taken
+// from the event.
+window.addEventListener('pandacode-ui-scale-change', () => resizePrompt(true));
 function renderComposer(): void {
+  // Replacing a pressed button suppresses its native click, even if the same node is put back afterwards.
+  // Delay only the same-target composer paint through this pointer gesture; navigation/target changes still paint.
+  if (composerPickerPress?.current()) { composerPressRender = true; return; }
+  composerPressRender = false;
   refreshTeamProgress();
   syncProgressPip();
   retryRouting(session());
@@ -3570,6 +3842,8 @@ function renderComposer(): void {
   slashPicker?.dispose(); slashPicker = undefined;
   fileMentionPicker?.dispose(); fileMentionPicker = undefined;
   closeContentMenus();
+  const pickerAnchor = composerPickerLifecycle?.current() ? composerPickerLifecycle.anchor : undefined;
+  const pickerFocused = pickerAnchor === document.activeElement;
   const voiceDetails = document.querySelector<HTMLElement>('#composer-area .voice-details');
   const voiceDetailsState = voiceDetails ? { focused: document.activeElement === voiceDetails, top: voiceDetails.scrollTop } : null;
   const voiceFocus = document.activeElement?.closest<HTMLElement>('[data-voice]')?.dataset.voice;
@@ -3609,10 +3883,24 @@ function renderComposer(): void {
     ? `<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="${remoteStartCancels.has(s.id) ? 'Stopping…' : 'Stop task'}" ${remoteStartCancels.has(s.id) ? 'disabled' : ''}>${icon('stop')}</button>`
     : checking ? '<button type="button" class="secondary-button remote-checking" aria-label="Checking…" disabled>Checking…</button>'
     : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
-    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
+    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${modelSwitch.sendHeld(s.id) ? 'aria-busy="true" ' : ''}${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
   $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  // Keep the exact anchor used by the pending-open guards and the popover's positioning/listeners.
+  // A same-task refresh still rebuilds every other control, including the prompt's enabled state.
+  if (pickerAnchor) {
+    const fresh = document.getElementById(pickerAnchor.id) as HTMLButtonElement | null;
+    if (fresh && !fresh.disabled) {
+      pickerAnchor.innerHTML = fresh.innerHTML;
+      for (const name of ['aria-label', 'aria-description', 'data-tip']) {
+        const value = fresh.getAttribute(name);
+        if (value === null) pickerAnchor.removeAttribute(name); else pickerAnchor.setAttribute(name, value);
+      }
+      fresh.replaceWith(pickerAnchor);
+      if (pickerFocused) pickerAnchor.focus({ preventScroll: true });
+    } else closeMenus();
+  }
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -3701,11 +3989,11 @@ document.addEventListener('input', event => { if ((event.target as Element | nul
 /** The composer's harness/model trigger. `main` marks the open thread's (its id and the labels refreshModelLabels updates). */
 function modelTriggerHtml(s: Session, locked: boolean, main = false): string {
   const teamLabel = teamModelLabel(s), effort = effortLabel(s);
-  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model" aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
+  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model"${modelSwitch.triggerBusy(s.id) ? ' aria-busy="true"' : ''} aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
 }
 function modeTriggerHtml(s: Session, disabled: boolean, main = false): string {
   const behavior = approvalMode(s.provider, s.mode);
-  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode" data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
+  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode"${modelSwitch.modeBusy(s.id) ? ' aria-busy="true"' : ''} data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
 }
 function renderBrowserAttachments(): void {
   const target = document.querySelector('.browser-context-attachments'); if (!target) return;
@@ -3959,6 +4247,8 @@ let sessionsReload = 0;
 let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void> | null = null;
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
+  // A model, permission or effort change still saving: start once it lands; a refused one stops the start and says so.
+  if (!await afterChoiceSaved(id, 'Not started')) return;
   const s = state.sessions.find(task => task.id === id);
   if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || configuringSessions.has(id)) return;
   startingBoardTasks.add(id); configuringSessions.add(id);
@@ -4931,8 +5221,17 @@ function scheduleLimitResumes(): void {
   }, Math.min(Math.max(0, next - Date.now()), 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
+/** Waits for the task's model, effort or permission change still saving; false when one was refused (said once, as
+ *  `<held> — <what> wasn't changed.`), so a turn never starts with the old choice. */
+async function afterChoiceSaved(id: string, held: string): Promise<boolean> {
+  if (!modelSwitch.saving(id)) return true;
+  const unchanged = await modelSwitch.settledChange(id);
+  if (unchanged && modelSwitch.announce(unchanged)) notify(`${held} — ${modelSwitch.unchangedText(unchanged)}.`);
+  return !unchanged;
+}
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (teamHeld(task.id)) return clearLimit(task);
+  if (!await afterChoiceSaved(task.id, 'Not continued')) return;
   // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
   const finishing = finishingStreams.get(task.id);
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
@@ -5050,6 +5349,7 @@ async function councilKeepFixing(sessionId: string): Promise<void> {
   const task = state.sessions.find(item => item.id === sessionId);
   if (!task) throw new Error('This task is gone.');
   if (isRunning(task.id)) throw new Error('The team is already working.');
+  if (!await afterChoiceSaved(task.id, 'Not sent')) return;
   // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
   const hold = state.queueHolds.get(task.id), at = Date.now();
   try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
@@ -5064,6 +5364,17 @@ async function send(): Promise<void> {
 async function sendDraft(): Promise<void> {
   state.drafts.flush();
   if (btwFromComposer()) return;
+  const sessionId = state.sessionId;
+  // A model or effort change still saving: the message is held (the send button shows it) until it lands, never sent with
+  // the old choice. A failed model change (already reported) or another task opened meanwhile sends nothing.
+  if (modelSwitch.saving(sessionId)) {
+    // A refused model, permission or effort change (already rolled back) or another task opened meanwhile: nothing goes.
+    const unchanged = await modelSwitch.holdSend(sessionId, () => document.querySelector('#composer .send-button[type="submit"]'));
+    // A refused change is said once, however many presses of Enter it held.
+    if (unchanged) { if (modelSwitch.announce(unchanged)) notify(`Not sent — ${modelSwitch.unchangedText(unchanged)}. Your draft is still there.`); return; }
+    if (state.sessionId !== sessionId) { notify('Not sent — you switched tasks. Your draft is still there.'); return; }
+  }
+  // Read after the wait: text typed while the change saved goes too.
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
@@ -5091,7 +5402,7 @@ async function sendDraft(): Promise<void> {
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
-  noteManualSend(s.id);
+  noteManualSend(s.id); modelSwitch.sent(s.id);
   const filePaths = [...state.attachments], browserItems = state.browserAttachments.get(s.id) ?? [];
   const moodboardItems = (state.moodboardAttachments.get(s.id) ?? []).filter(item => item.projectId === s.projectId);
   const promptItems = attachments.list(s.id);
@@ -5231,11 +5542,13 @@ const btwPanel = new BtwPanel({
     // Before the side thread exists, the choices apply to the one /btw creates (btwDraftTask).
     const side = shown ?? btwDraftTask();
     if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
-    // A pick made while /btw creates the side thread could miss it, so the pickers wait.
-    const running = isRunning(side.id), busy = configuringSessions.has(side.id) || btwSending.has(state.sessionId);
+    // A pick made while /btw creates the side thread could miss it, so the pickers wait. A model, effort or permission
+    // save is not "busy": like the main composer, a press then is held (aria-busy pulse) until the save lands.
+    const saving = modelSwitch.saving(side.id);
+    const running = isRunning(side.id), busy = (configuringSessions.has(side.id) && !saving) || (btwSending.has(state.sessionId) && !modelSwitch.sendHeld(side.id));
     const send = running
       ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
-      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
+      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${modelSwitch.sendHeld(side.id) ? 'aria-busy="true" ' : ''}${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
     return `<div class="composer-tools">${modelTriggerHtml(side, running || busy)}<span class="composer-separator"></span>${modeTriggerHtml(side, running || busy)}</div>${send}`;
   },
   menuBusy: root => Boolean(root.querySelector('[aria-expanded="true"]') || (pendingMenuOpen && root.contains(pendingMenuOpen.anchor))),
@@ -5400,6 +5713,11 @@ function sendBtw(text: string): Promise<void> {
 /** Sends to the side thread with the main thread's news since its last message. */
 async function deliverBtw(main: Session, text: string): Promise<void> {
   const link = btwLink(main.id) ?? await createBtw(main, text);
+  // A model or effort change on the side thread still saving: the message waits for it, and a failed change keeps it.
+  if (modelSwitch.saving(link.sideId)) {
+    const unchanged = await modelSwitch.holdSend(link.sideId, () => document.querySelector('.btw-panel .btw-send'));
+    if (unchanged) throw new Error(`Not sent — ${modelSwitch.unchangedText(unchanged)}. Your message is back in the box.`);
+  }
   const side = state.sessions.find(task => task.id === link.sideId)!;
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
   // Running from here on: no second send can pass the check above, and a failure below tears down only this run.
@@ -5757,6 +6075,24 @@ function onAgent(event: AgentEvent): void {
   if (event.sessionId === state.sessionId) scheduleStreamRender();
 }
 
+async function refreshExplorerFiles(): Promise<void> {
+  if (!project() || session()?.remoteDevice || state.inspectorTab !== 'files' || !state.inspector || state.inspectorLoading) return;
+  const key = workspaceKey(), context = workspaceContext(), folders = ['', ...state.openFolders];
+  const results = await Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', { ...context, path })));
+  if (key !== workspaceKey()) return;
+  const same = (current: FileEntry[] | undefined, next: FileEntry[]) => JSON.stringify(current ?? []) === JSON.stringify(next);
+  let changed = false;
+  results.forEach((result, i) => {
+    if (result.status !== 'fulfilled') return;
+    if (!folders[i]) {
+      if (!same(state.files, result.value) || state.filesError) { state.files = result.value; state.filesError = ''; changed = true; }
+    } else if (state.openFolders.has(folders[i]) && !same(state.folderFiles.get(folders[i]), result.value)) {
+      state.folderFiles.set(folders[i], result.value); changed = true;
+    }
+  });
+  if (changed) renderInspector();
+}
+
 /** A thread switch within the workspace whose status loaded this long ago (ms) reuses it rather than reloading the
  *  status, file list and jj state and redrawing the inspector; anything that changes the files refreshes it itself. */
 const INSPECTOR_FRESH_MS = 5000;
@@ -5793,7 +6129,7 @@ async function refreshInspector(): Promise<void> {
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
   state.filesError = results[1].status === 'rejected' ? errorText(results[1].reason) || 'The folder could not be read.' : '';
-  renderInspector(); renderHeader(); if (state.inspector && state.inspectorTab === 'file') fileTabs.reload();
+  renderInspector(); renderHeader(); fileTabs.reload();
 }
 /** The simulator panel stays mounted once opened; hiding it stops its frames. */
 function syncSimulatorPanel(): void {
@@ -5972,26 +6308,22 @@ $('.inspector-tabs').addEventListener('focusout', event => {
   if (!nav.contains(event.relatedTarget as Node | null)) rovingTabs(nav);
 });
 function renderInspectorTabs(pullLinked: boolean): void {
-  const tabs = state.inspectorTab === 'file' ? inspectorTabs : openTab(inspectorTabs, state.inspectorTab);
+  const tabs = openTab(inspectorTabs, state.inspectorTab);
   if (!sameTabs(tabs, inspectorTabs)) { inspectorTabs = tabs; saveTabs(localStorage, tabs); }
   const nav = $('.inspector-tabs'), add = nav.querySelector<HTMLElement>('.inspector-tab-add')!;
   const shown = tabs.open.filter(view => view !== 'pull' || pullLinked);
-  const files = nav.querySelector<HTMLElement>(':scope>.file-panel-tab')!;
-  files.hidden = !fileTabs.count;
-  const items = [files, ...nav.querySelectorAll<HTMLElement>(':scope>.inspector-tab:not(.file-panel-tab)')];
+  const items = [...nav.querySelectorAll<HTMLElement>(':scope>.inspector-tab')];
   for (const item of items) {
     const view = item.dataset.view as PanelView, selected = view === state.inspectorTab;
-    if (item !== files) {
-      item.hidden = !shown.includes(view as InspectorView);
-      item.querySelector<HTMLElement>('.inspector-tab-close')!.hidden = shown.length < 2;
-    }
+    item.hidden = !shown.includes(view);
+    item.querySelector<HTMLElement>('.inspector-tab-close')!.hidden = shown.length < 2;
     const tab = item.querySelector<HTMLElement>('.inspector-tab-button')!;
     tab.classList.toggle('selected', selected);
     tab.setAttribute('aria-selected', String(selected));
   }
   rovingTabs(nav);
   // Move nodes only when the order changed, so a focused tab keeps focus.
-  if (items.filter(item => !item.hidden && item !== files).map(item => item.dataset.view).join() !== shown.join()) for (const view of shown) nav.insertBefore(items.find(item => item.dataset.view === view)!, add);
+  if (items.filter(item => !item.hidden).map(item => item.dataset.view).join() !== shown.join()) for (const view of shown) nav.insertBefore(items.find(item => item.dataset.view === view)!, add);
   add.hidden = !closedViews(tabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked)).length;
   revealSelectedTab();
 }
@@ -6000,13 +6332,6 @@ function openInspectorView(view: InspectorView): void {
   if (tab) run(action(tab.dataset.action!, tab));
 }
 function closeInspectorTab(view: PanelView): void {
-  if (view === 'file') {
-    fileTabs.forget(state.sessionId);
-    if (state.inspectorTab === 'file') state.inspectorTab = threadDefault(inspectorTabs);
-    renderInspector();
-    document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
-    return;
-  }
   const next = closeTab(inspectorTabs, view);
   if (next === inspectorTabs) return;
   const wasSelected = state.inspectorTab === view;
@@ -6048,7 +6373,7 @@ function showChangesView(target: HTMLElement, key: string, visible: boolean): vo
 function fileTree(files: FileEntry[], depth: number): string {
   return files.map(file => {
     const open = file.isDir && state.openFolders.has(file.path), path = escape(file.path);
-    const row = `<div class="file-row" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : isPreviewableFile(file.path) && !OPENS_IN_TAB.test(file.path) ? 'preview-file' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.(html?|svg)$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}</div>`;
+    const row = `<div class="file-row" data-id="file:${path}" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.svg$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}${button('file-menu', 'Actions for ' + file.name, 'more', 'file-attach', `data-path="${path}" data-directory="${file.isDir}" aria-haspopup="menu"`)}</div>`;
     return row + (open ? fileTree(state.folderFiles.get(file.path) ?? [], depth + 1) : '');
   }).join('');
 }
@@ -6094,15 +6419,18 @@ function renderInspector(): void {
   else hidePanel(inspector, animate, () => { if (inspector.hidden) workspace.classList.add('inspector-closed'); }, $('#inspector-toggle'));
   inspectorDrawn = true; inspectorView = state.view;
   $('#inspector-toggle').classList.toggle('active', visible);
+  const filesOpen = visible && state.inspectorTab === 'files';
+  $('#files-toggle').classList.toggle('active', filesOpen);
+  $('#files-toggle').setAttribute('aria-pressed', String(filesOpen));
+  $('#files-toggle').hidden = !project() || Boolean(state.sharedChannelId);
   const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
   if (state.inspectorTab === 'pull' && !pullTask) { const shown = inspectorTabs.open.filter(view => view !== 'pull'); state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0]; }
-  if (state.inspectorTab === 'file' && !fileTabs.count) state.inspectorTab = threadDefault(inspectorTabs);
   renderInspectorTabs(Boolean(pullTask));
   const pullTab = $('.inspector-tabs').querySelector<HTMLButtonElement>('[data-action="tab-pull"]')!;
   if (pullTask) { pullTab.title = `Pull request #${pullTask.pullRequest!.number}`; pullTab.setAttribute('aria-label', `Pull request #${pullTask.pullRequest!.number}`); }
   const changeCount = state.git?.files.length ?? 0;
   $('.inspector-tabs [data-action="tab-changes"]').setAttribute('aria-label', changeCount ? `Changes, ${changeCount} changed ${changeCount === 1 ? 'file' : 'files'}` : 'Changes');
-  $('#inspector-title').textContent = state.inspectorTab === 'file' ? 'Open files' : INSPECTOR_TITLES[state.inspectorTab];
+  $('#inspector-title').textContent = INSPECTOR_TITLES[state.inspectorTab];
   $('#changes-count').textContent = state.git?.files.length ? String(state.git.files.length) : '';
   const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}`;
   const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !session()?.remoteDevice && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
@@ -6112,10 +6440,7 @@ function renderInspector(): void {
   syncSimulatorPanel();
   syncVmPanel();
   syncDesignPanel();
-  const showFiles = state.inspectorTab === 'file';
-  $('#file-panel').hidden = !showFiles;
-  if (showFiles) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
-  if (showFiles || state.inspectorTab === 'browser' || state.inspectorTab === 'simulator' || state.inspectorTab === 'vm' || state.inspectorTab === 'design') { pullView.dispose(); return; }
+  if (state.inspectorTab === 'browser' || state.inspectorTab === 'simulator' || state.inspectorTab === 'vm' || state.inspectorTab === 'design') { pullView.dispose(); return; }
   const target = $('#inspector-content');
   if (state.inspectorTab === 'pull' && pullTask && visible) { pullView.show(target, pullTask); return; }
   pullView.dispose();
@@ -6154,8 +6479,8 @@ function renderInspector(): void {
   }
   if (state.inspectorTab === 'files') {
     // Morphed once the tree is up, so a folder's chevron survives to turn.
-    const tree = `<div class="file-folder-path"><span>${escape(project()?.name)}</span>${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`;
-    if (target.querySelector(':scope>.file-list')) morph(target, tree); else target.innerHTML = tree;
+    const tree = `<section class="file-explorer" aria-label="File explorer"><div class="file-folder-path"><span title="${escape(workspacePath())}">${escape(project()?.name)}</span><div class="file-explorer-tools">${button('new-workspace-file', 'New file', 'file')}${button('new-workspace-folder', 'New folder', 'folder')}${button('file-menu', 'File actions', 'more', '', 'data-path="" data-directory="true" aria-haspopup="menu"')}${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div></div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div></section>`;
+    if (target.querySelector(':scope>.file-explorer')) morph(target, tree, 6); else target.innerHTML = tree;
     return;
   }
   if (state.jj?.isRepo && !state.jj.colocated) {
@@ -6192,13 +6517,12 @@ async function previewFile(path: string, context = workspaceContext(), active?: 
 }
 async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false): Promise<void> {
   const p = project(); if (!p) return;
-  // Files open as tabs in the inspector's Open files view beside their task's conversation.
   if (kind === 'file') {
     if (context.sessionId && context.sessionId !== state.sessionId) await selectSession(context.sessionId);
     if (context.sessionId && context.sessionId !== state.sessionId) return;
     if (state.view !== 'conversation' && !state.boardPanel) setWorkspaceView('conversation');
     fileTabs.open(path, context, source);
-    ++fileRequest; inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'file'; state.selectedKind = ''; renderInspector(); return;
+    ++fileRequest; state.selectedKind = ''; renderInspector(); return;
   }
   const request = ++fileRequest, generation = state.generation; const content = await call<string>('git_diff', { ...context, path, staged }); if (request !== fileRequest || p.id !== state.projectId || generation !== state.generation) return;
   selectedFileContext = { ...context };
@@ -6356,6 +6680,42 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
   const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
   return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
 }
+/** A catalog as already loaded (possibly stale), never waiting on a request: the switch path must not hold on a provider. */
+// A harness whose list isn't loaded keeps the team's saved entries for it rather than dropping them from the roster.
+const knownModels = (base: TeamConfig) => (id: ProviderId): Promise<ProviderModel[]> => {
+  const listed = provider(id)?.models ?? [];
+  return Promise.resolve(listed.length ? listed : base.workers.filter(worker => worker.provider === id).map(worker => ({ id: worker.model, name: worker.name, description: '' })));
+};
+/** After a saved harness change: reload the transcript (the handoff note), unless a send has begun meanwhile. */
+async function reloadAfterHarnessSwitch(sessionId: string, shown: () => boolean): Promise<void> {
+  // A send replaces state.messages with its optimistic message; a page read before it would wipe that message.
+  const before = state.messages;
+  const sending = () => isRunning(sessionId) || configuringSessions.has(sessionId) || state.messages !== before;
+  if (!shown() || sending()) return;
+  // The harness change is already durable; a transcript refresh error must not report the selection as failed.
+  try {
+    const page = await latestMessagePage(sessionId);
+    if (!shown() || sending()) return;
+    setMessagePage(page);
+    // Painting the transcript closes open menus: with the model picker open or about to open, paint once it closes.
+    modelSwitch.deferTranscript(() => { if (state.sessionId === sessionId) renderTranscript(); });
+  } catch {
+    if (shown() && !sending()) notify('Harness changed. Reopen this task to refresh its conversation.');
+  }
+}
+/** Whether the task's next turn runs on this computer: not a mirror, not a cloud machine, and not a new task aimed at
+ *  another computer or a cloud sandbox (composerDevice() misses cloud targets). Only such a task may warm. */
+function localTarget(task: Session): boolean {
+  return !task.remoteDevice && !task.cloud && !(task.id === state.sessionId && newTaskView() && remoteChoice !== LOCAL);
+}
+/** A task's effort or permissions changed: its labels (side thread: the panel) and the launcher's context. */
+function paintTaskChoice(id: string, inPanel: boolean): void {
+  if (inPanel) { btwPanel.refresh(); return; }
+  const task = state.sessions.find(item => item.id === id);
+  if (id !== state.sessionId || !task) return;
+  refreshModelLabels();
+  syncOverlayContext({ projectId: task.projectId, provider: task.provider, model: task.model || 'default', mode: task.mode, reasoningEffort: task.reasoningEffort ?? null });
+}
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
@@ -6366,6 +6726,22 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   }
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
+  // A model or effort change still saving: open once it lands, on the task as it is then (its trigger was redrawn meanwhile).
+  if (target && modelSwitch.saving(target.id)) {
+    const id = target.id, trigger = () => document.querySelector<HTMLElement>(anchor.closest('.btw-panel') ? '.btw-panel .model-picker' : '#model-picker-trigger');
+    const pending = beginHeldMenuOpen(anchor, target);
+    try {
+      await modelSwitch.holdOpen(id, trigger, async () => {
+        if (!pending.current() || modelPickerCleanup) return;
+        pending.release();
+        await openModel(trigger() ?? anchor, state.sessions.find(s => s.id === id) ?? target);
+      }, pending.signal);
+    } finally { pending.release(); modelSwitch.flushTranscript(); }
+    return;
+  }
+  try { await openModel(anchor, target); } finally { modelSwitch.flushTranscript(); }
+}
+async function openModel(anchor: HTMLElement, target: Session | undefined): Promise<void> {
   const selected = target; if (!selected || configuringSessions.has(selected.id)) return;
   // A side thread's picker acts on the side thread only, and only while the panel still shows it.
   const inPanel = selected.id !== state.sessionId, current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === selected.id : selected.id === state.sessionId;
@@ -6376,7 +6752,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
-  const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
+  // The startup history load can repaint this same task while the module/library is loading or the picker is open.
+  // Preserve that interaction only while its actual target is unchanged; navigation and explicit dismissal still
+  // invalidate the existing menu epoch. Compare snapshots because startup refreshes mutate the Session in place.
+  const targetContext = composerPickerContext(anchor, botNext);
+  const context = !inPanel && anchor.id === 'model-picker-trigger' ? { anchor, current: () =>
+    targetContext.current() && Boolean(modelPickerCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
+  composerPickerLifecycle = context;
+  // Open with the cached team library (team saves update it) and refresh it behind; wait only when none is cached.
+  const library$ = modelCatalogs.pickerTeamLibrary();
+  void refreshNamedConnections().catch(() => undefined);
+  const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), library$]).finally(release);
   if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
@@ -6386,6 +6772,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
+      if (modelSwitch.saving(selected.id)) throw new Error('Wait for the current choice to save before selecting an agent team.');
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
@@ -6398,24 +6785,20 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
-    recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
+    recent: device ? undefined : recentModels, onClose: () => {
+      if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
+      modelPickerCleanup = undefined;
+      modelSwitch.flushTranscript();
+    },
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
-      configuringSessions.add(selected.id);
-      try {
-        const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
-        prewarmedDrafts.delete(selected.id);
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        if (inPanel) btwPanel.refresh();
-        else if (selected.id === state.sessionId) {
-          refreshModelLabels();
-          syncOverlayContext({ projectId: updated.projectId, provider: updated.provider, model: updated.model || 'default', mode: updated.mode, reasoningEffort: updated.reasoningEffort ?? null });
-        }
-      } finally { configuringSessions.delete(selected.id); }
+      // Shows at once and saves behind (model-switch.ts); side threads never warm.
+      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => paintTaskChoice(selected.id, inPanel) });
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
+      if (modelSwitch.saving(selected.id)) throw new Error('Wait for the current choice to save before changing its speed.');
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
       configuringSessions.add(selected.id);
       try {
@@ -6424,7 +6807,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         if (inPanel) btwPanel.refresh();
         else if (selected.id === state.sessionId) refreshModelLabels();
-      } finally { configuringSessions.delete(selected.id); }
+      } finally { if (!modelSwitch.saving(selected.id)) configuringSessions.delete(selected.id); }
     },
     onSelect: async (providerId, model) => {
       if (botNext && isRunning(selected.id) && current()) {
@@ -6434,46 +6817,24 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
-      configuringSessions.add(selected.id);
-      try {
-        // A plain model leaves a named team; ZCode only supports single-agent tasks.
-        if (teams.get(selected.id)?.config.rosterOnly || (providerId === 'zcode' && teams.has(selected.id))) {
-          await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
-          onArchitect({ sessionId: selected.id, removed: true });
-        }
-        // An automatic team keeps its limits but learns about newly installed models.
-        const auto = teams.get(selected.id)?.config;
-        if (auto?.auto && !auto.rosterOnly) {
-          const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
-          onArchitect(saved ?? { sessionId: selected.id, removed: true });
-        }
-        const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
-        prewarmedDrafts.delete(selected.id);
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        // Same-harness model choices keep the account and its resumable conversation.
-        if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
-        if (!device) {
-          if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
-          localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
-        } else localChoice = undefined;
+      // The switch shows at once and saves behind; a failure puts the previous model back and says why (model-switch.ts).
+      // Side threads never warm. A same-harness change touches only the composer and header (the sidebar shows the
+      // harness, not the model), and once saved only the labels and the trigger's busy cue.
+      const shown = () => !inPanel && selected.id === state.sessionId && generation === state.generation;
+      const paint = (harness: boolean) => {
         if (inPanel) { if (current()) btwPanel.harnessChanged(); }
-        else if (selected.id === state.sessionId && generation === state.generation) {
-          if (providerId !== selected.provider) {
-            // The harness change is already durable; a transcript refresh error
-            // must not report the selection itself as failed or restore stale controls.
-            try {
-              const page = await latestMessagePage(selected.id);
-              if (selected.id !== state.sessionId || generation !== state.generation) return;
-              setMessagePage(page);
-            } catch {
-              if (selected.id !== state.sessionId || generation !== state.generation) return;
-              notify('Harness changed. Reopen this task to refresh its conversation.');
-            }
-          }
-          renderComposer(); renderHeader(); renderNavigation(); renderTranscript();
-          document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-        }
-      } finally { configuringSessions.delete(selected.id); }
+        else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
+      };
+      const harness = providerId !== selected.provider;
+      const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
+        show: () => { paint(harness); if (shown()) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
+        repaint: saved => {
+          if (!saved || harness || inPanel) paint(harness);
+          else if (shown()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
+        },
+      });
+      if (harness) void saving.then(saved => saved ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
+      return { saved: saving };
     },
   });
 }
@@ -6593,17 +6954,35 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
+  const targetContext = composerPickerContext(anchor, false);
+  const context = anchor.id === 'mode-picker-trigger' ? { anchor, current: () =>
+    targetContext.current() && Boolean(choiceMenuCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
+  if (context) composerPickerLifecycle = context;
   const { openChoiceMenu } = await import('./choice-menu').finally(release);
   if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
   choiceMenuAnchor = anchor;
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
+    if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
     choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
     if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
     options.afterClose?.();
   } });
 }
 async function showMode(anchor: HTMLElement, target = session()): Promise<void> {
-  const s = target; if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
+  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
+  // A model, effort or permission change still saving: open once it lands (saved or not), on the task and its
+  // redrawn button as they are then.
+  if (target && modelSwitch.saving(target.id)) {
+    const id = target.id, inBtw = Boolean(anchor.closest('.btw-panel'));
+    const trigger = () => document.querySelector<HTMLElement>(inBtw ? '.btw-panel .mode-picker' : '#mode-picker-trigger');
+    const pending = beginHeldMenuOpen(anchor, target);
+    try {
+      await modelSwitch.holdModeOpen(id, trigger, pending.signal);
+      if (pending.signal.aborted || !pending.current()) return;
+      anchor = trigger() ?? anchor;
+    } finally { pending.release(); }
+  }
+  const s = target && (state.sessions.find(task => task.id === target.id) ?? target); if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
@@ -6611,23 +6990,11 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
     if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
-    configuringSessions.add(s.id);
-    try {
-      await call('update_session', { sessionId: s.id, mode: id as Mode });
-      prewarmedDrafts.delete(s.id);
-      const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
-      architectView?.modeChanged();
-      if (inPanel) btwPanel.refresh();
-      else if (s.id === state.sessionId) {
-        if (saved) syncOverlayContext({ projectId: saved.projectId, provider: saved.provider, model: saved.model || 'default', mode: saved.mode, reasoningEffort: saved.reasoningEffort ?? null });
-        const trigger = document.querySelector<HTMLElement>('#mode-picker-trigger');
-        if (trigger) {
-          trigger.innerHTML = modeFaceHtml(chosen);
-          trigger.dataset.mode = chosen.id; trigger.dataset.tip = modeTip(chosen); trigger.setAttribute('aria-label', modeName(chosen)); trigger.setAttribute('aria-description', chosen.description);
-          trayStateChanged();
-        }
-      }
-    } finally { configuringSessions.delete(s.id); }
+    // Shows at once with the button busy (kept by modeTriggerHtml through a repaint) and saves behind (model-switch.ts).
+    void modelSwitch.pickMode(s.id, id as Mode, {
+      warm: !inPanel && localTarget(s), paint: () => paintTaskChoice(s.id, inPanel), name: mode => modeName(approvalMode(s.provider, mode)),
+      trigger: () => document.querySelector<HTMLElement>(inPanel ? '.btw-panel .mode-picker' : '#mode-picker-trigger'),
+    });
   } });
 }
 async function showTaskMenu(anchor: HTMLElement): Promise<void> {
@@ -6914,7 +7281,7 @@ let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
-  modelCatalogs.clear();
+  modelCatalogs.clearCatalogs();
   const providers = await call<Provider[]>('list_providers', { force: true });
   if (generation !== settingsDiscoveryGeneration) return state.providers;
   for (const found of providers) {
@@ -6968,7 +7335,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
           });
           return () => { unsubscribe(); cleanup(); };
         },
-        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
+        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clearCatalogs(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
         harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
       },
@@ -7046,10 +7413,10 @@ async function showProviderConnections(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
   const { mountProviderSettings } = await import('./provider-settings');
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clearCatalogs(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
-  modelCatalogs.delete(id);
+  modelCatalogs.clearCatalogs(id);
   const entry = provider(id); if (entry) entry.models = [];
 }
 async function showOpenCodeModels(): Promise<void> {
@@ -7972,7 +8339,7 @@ async function toggleTerminal(): Promise<void> {
 
 async function action(name: string, element: HTMLElement): Promise<void> {
   if (element.dataset.command) closeModal();
-  if (['tab-files', 'tab-changes', 'browser', 'back-inspector'].includes(name) || name === 'toggle-inspector' && !state.filePreviewLoading) ++fileRequest;
+  if (['tab-files', 'toggle-files', 'tab-changes', 'browser', 'back-inspector'].includes(name) || name === 'toggle-inspector' && !state.filePreviewLoading) ++fileRequest;
   if (name.startsWith('queue-')) { await queueAction(name, element); return; }
   if (name.startsWith('limit-')) { await limitAction(name, element); return; }
   switch (name) {
@@ -8096,11 +8463,12 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'copy-path': await navigator.clipboard.writeText(workspacePath()); notify(session()?.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
     case 'terminal': await toggleTerminal(); break;
     case 'toggle-inspector': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); break;
+    case 'toggle-files': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector || state.inspectorTab !== 'files'; inspectorSuppressed = false; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); break;
     case 'tab-vm': openVm(); break;
     case 'tab-btw': openBtw(); btwPanel.focus(); break;
     case 'inspector-add-tab': await showInspectorViews(element); break;
     case 'close-inspector-tab': closeInspectorTab(element.dataset.view as PanelView); break;
-    case 'tab-open-files': state.inspectorTab = 'file'; state.selectedKind = ''; renderInspector(); break;
+    case 'toggle-file-editor': fileTabs.toggle(); break;
     case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
@@ -8116,6 +8484,8 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
     case 'locate-project-folder': await locateProjectFolder(); break;
+    case 'file-menu': fileExplorer.menu(element, workspaceContext(), element.dataset.path!, element.dataset.directory === 'true'); break;
+    case 'new-workspace-file': case 'new-workspace-folder': fileExplorer.edit(workspaceContext(), name === 'new-workspace-file' ? 'new-file' : 'new-folder', '', true); break;
     case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
     case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;
@@ -8243,59 +8613,6 @@ document.addEventListener('submit', event => {
     } finally { if (submitter?.isConnected) submitter.disabled = false; }
   })());
 });
-/** The prompt last sized while empty or guaranteed single-line: sizing it again while short and single-line
- *  changes nothing and would force a synchronous layout reflow on every keystroke. */
-let emptySized: HTMLTextAreaElement | undefined, emptyWidth = -1;
-let singleLinePrompt: HTMLTextAreaElement | undefined, singleLineWidth = 0, singleLineHeight = '';
-function invalidatePromptSizing(): void {
-  emptySized = undefined; emptyWidth = -1;
-  singleLinePrompt = undefined; singleLineWidth = 0; singleLineHeight = '';
-}
-function resizePrompt(): void {
-  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (!prompt) return;
-  const width = prompt.clientWidth;
-  if (width !== singleLineWidth) {
-    singleLinePrompt = undefined; singleLineWidth = 0; singleLineHeight = '';
-  }
-  if (!prompt.value && emptySized === prompt && width === emptyWidth) return;
-  const scale = Number.parseFloat(document.documentElement.style.getPropertyValue('--ui-scale')) || 1;
-  const guaranteedSingleLine =
-    singleLineHeight !== '' &&
-    width > 160 &&
-    !prompt.value.includes('\n') &&
-    (prompt.value.length === 0 || (/^[\x20-\x7e]*$/.test(prompt.value) && prompt.value.length * Math.ceil(15 * scale) < width - 64));
-  if (
-    guaranteedSingleLine &&
-    prompt === singleLinePrompt &&
-    prompt.style.height === singleLineHeight &&
-    prompt.style.overflowY === 'hidden'
-  ) {
-    emptySized = prompt.value ? undefined : prompt;
-    emptyWidth = prompt.value ? -1 : width;
-    return;
-  }
-  emptySized = prompt.value ? undefined : prompt;
-  emptyWidth = prompt.value ? -1 : width;
-  prompt.style.height = 'auto';
-  const natural = prompt.scrollHeight;
-  const nextHeight = Math.min(natural, 180) + 'px';
-  prompt.style.height = nextHeight;
-  // Use the same measurement; a pixel of rounding at the cap must not show a scroll bar.
-  const overflow = natural > 181 ? 'auto' : 'hidden';
-  if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
-  if (prompt.value.length === 0 && overflow === 'hidden') {
-    singleLinePrompt = prompt;
-    singleLineWidth = width;
-    singleLineHeight = nextHeight;
-  } else if (overflow === 'hidden' && singleLineHeight !== '' && nextHeight === singleLineHeight) {
-    singleLinePrompt = prompt;
-    singleLineWidth = width;
-  } else {
-    singleLinePrompt = undefined;
-  }
-}
-window.addEventListener('pandacode-ui-scale-change', () => { invalidatePromptSizing(); resizePrompt(); });
 document.addEventListener('input', event => {
   const input = event.target as HTMLInputElement;
   if (input.id === 'command-query') renderCommands(input.value);
@@ -8307,15 +8624,7 @@ document.addEventListener('input', event => {
       scheduleStreamRender();
     }
     resizePrompt();
-    if (input.value.length > 0) {
-      const currentSession = state.sessions.find(s => s.id === state.sessionId);
-      const anyRunning = state.streams.size > 0 || state.sessions.some(s => isRunning(s.id) && !teamHeld(s.id));
-      if (currentSession?.draft && !prewarmedDrafts.has(currentSession.id) && !anyRunning && !teams.get(currentSession.id)) {
-        prewarmedDrafts.add(currentSession.id);
-        void call('prewarm_draft_session', { sessionId: currentSession.id }).catch(() => {});
-      }
-    }
-    if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value, false);
+    if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value);
   }
   if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value);
   if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); }
@@ -8608,6 +8917,15 @@ window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true }
 state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
 expireDraftsWhileRunning(state.drafts);
 renderThemeToggle(); render(); renderInspector();
+// The model picker opens without a wait: its module and team library load at idle, or when its trigger is hovered or focused.
+setTimeout(modelCatalogs.warmModelPicker, 1500);
+// Typing a draft in a local task's composer lets native start its next turn ahead (once per draft; model-switch.ts).
+// Bot threads run on the bot's own schedule, so they never warm.
+document.addEventListener('input', event => {
+  const prompt = event.target as HTMLTextAreaElement | null, task = prompt?.id === 'prompt' ? session() : undefined;
+  if (task && localTarget(task) && !botForThread()) modelSwitch.draftChanged(task.id, prompt!.value);
+});
+for (const type of ['pointerover', 'focusin'] as const) document.addEventListener(type, event => { if ((event.target as Element | null)?.closest?.('.model-picker')) modelCatalogs.warmModelPicker(); }, { passive: true });
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; syncStartupActions(); if (!projectsListed) { projectsListed = true; render(); } });
 syncStartupActions();

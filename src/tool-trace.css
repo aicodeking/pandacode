@@ -102,10 +102,7 @@
 .tool-group[data-running] .tool-group-label{color:var(--text)}
 /* A message's hover actions hang below it (smooth.css); short summaries must stay clickable above them. */
 .tool-group-summary{position:relative;z-index:3}
-/* A header with tallies stays one line: the marks give way, then the sentence ellipsizes; tallies (`· 1 failed`) stay whole
- * with their separator, never wrapped to a line that starts with `·`. */
-.tool-group-summary:has(>.tool-group-status){flex-wrap:nowrap}
-.tool-group-summary:has(>.tool-group-status)>.tool-group-label{flex:0 1 auto;min-width:0}
+/* Header layout (one line, label ellipsizes, tallies and chevron stay whole) lives with `.tool-group-label` in styles.css. */
 /* The thin rail the group's rows hang off; plain --border vanishes over dark wallpapers. */
 .tool-group-body{border-left-color:transparent}
 
@@ -195,6 +192,11 @@ html[data-theme="dark"] .tool-activity .tool-trace-card pre,html[data-theme="dar
 .is-steps .trace-summary-text{display:inline-flex;flex-wrap:wrap;align-items:baseline;min-width:0;overflow:hidden;white-space:nowrap}
 .is-steps .trace-summary-sentence{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .is-steps .trace-summary-text>.tool-group-status{flex-shrink:0;white-space:pre}
+/* A folded sentence directly in a one-line group header (the live 'Earlier in this turn' fold) ellipsizes like a label;
+   its tallies stay whole. */
+.tool-group-summary>.trace-summary-text{display:inline-flex;flex-wrap:nowrap;align-items:baseline;flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap}
+.tool-group-summary>.trace-summary-text>.trace-summary-sentence{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.tool-group-summary>.trace-summary-text>.tool-group-status{flex-shrink:0;white-space:pre}
 /* A tally's ` · ` hangs into the room the item before it leaves (margin-right), so a tally that wraps to a new line puts
    its separator left of the clipped edge: no line ever starts with `·`. */
 .trace-summary-text{--tally-sep:1em}

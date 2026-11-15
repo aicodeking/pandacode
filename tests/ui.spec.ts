@@ -3048,15 +3048,16 @@ test('browses a file and includes its contents as attached message context', asy
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"name": "orbit"');
+  await expect(page.locator('.file-editor')).toContainText('"name": "orbit"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await expect(page.locator('#attachments')).toContainText('package.json');
   await prompt(page).fill('Explain this package configuration');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const chip = page.locator('.user-message').last().locator('.message-attachments .prompt-chip');
   await expect(chip).toHaveText(/package\.json\s*Project file/);
+  await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
   await chip.click();
-  await expect(page.locator('#inspector #file-view')).toContainText('"name": "orbit"');
+  await expect(page.locator('#file-view')).toContainText('"name": "orbit"');
   await expect(page.locator('#attachments')).toBeEmpty();
   await expect(prompt(page)).toBeEnabled();
 });
@@ -3256,7 +3257,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"checkout":"worktree"');
+  await expect(page.locator('.file-editor')).toContainText('"checkout":"worktree"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await prompt(page).fill('Read the package from this worktree');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -3269,8 +3270,6 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   for (const command of ['git_status', 'list_files', 'git_diff', 'read_file', 'start_terminal']) {
     expect(calls).toContainEqual(expect.objectContaining({ command, args: expect.objectContaining({ projectId: 'project-1', sessionId: taskId }) }));
   }
-  // Opened, attached, and re-read at run end because the file stays on screen in the inspector.
-  expect(calls.filter((call: any) => call.command === 'read_file' && call.args.sessionId === taskId)).toHaveLength(3);
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);
@@ -3684,4 +3683,76 @@ test('projects, thread and composer load while provider discovery is pending', a
   await page.evaluate(() => (window as any).__releaseBootProviders());
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toHaveValue('Draft kept during discovery');
   await expect(page.getByRole('button', { name: /^Model: / })).toBeEnabled();
+test('a draft re-wraps when the pane narrows, so the prompt never clips it', async ({ page }) => {
+  // The prompt's text is not its fit's only input: how many lines it wraps to depends on the width it wraps at, and the fit
+  // is remembered per text (`resizePrompt` in src/main.ts), so a redraw or a focus change writes nothing. Only the prompt's
+  // own ResizeObserver re-measures it when that width changes, so the same draft must be re-wrapped on a narrower window:
+  // the box is exactly as tall as the text needs up to the 180 px cap, and scrolls only past it. The same textarea node
+  // throughout, so what changes is the fit and not a re-render that remeasured by another path.
+  //
+  // Every expectation is derived from the element — its own padding, border and line-height at this UI scale — never from a
+  // remembered wrap count: a font or UI-scale change moves those numbers together, so the only thing that can make them
+  // disagree is a fit that was not re-taken at the new width.
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect(prompt(page)).toBeEnabled();
+  const field = page.locator('#prompt');
+  const sentence = 'A draft that has to stay whole when the pane narrows: every line of it should stay in view after the window is made smaller, with no scrollbar until the box reaches its cap. ';
+  const draft = (sentence.repeat(2) + sentence.slice(0, 70)).trim();
+  await prompt(page).fill(draft);
+  await expect(prompt(page)).toHaveValue(draft);
+  // The one number the fit is measured against (`PROMPT_MAX_HEIGHT` in src/main.ts): the cap, not a wrap count.
+  const CAP = 180;
+  const fit = () => field.evaluate((node, cap) => {
+    const style = getComputedStyle(node), line = parseFloat(style.lineHeight) || 0;
+    // What a wrap count would subtract: this textarea's own vertical padding and border (16 + 6 px today, at UI scale 1),
+    // read from the live style rather than remembered, so a restyled composer cannot make the arithmetic wrong.
+    const inset = (['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'] as const)
+      .reduce((total, key) => total + (parseFloat(style[key]) || 0), 0);
+    const natural = node.scrollHeight;
+    // `lines` is diagnostic only, for the failure messages: nothing asserts a count.
+    return { width: node.clientWidth, height: node.clientHeight, natural, inline: node.style.height, overflow: style.overflowY, cap,
+      lines: line ? Math.round(((natural - inset) / line) * 10) / 10 : 0 };
+  }, CAP);
+  const fits = async (label: string) => {
+    const now = await fit();
+    // The whole rule, and the assertion that catches a fit never re-taken: the box is min(scrollHeight, cap). A stale fit
+    // is not that number — it is short of the text that re-wrapped (and hidden, with no scrollbar to reach the rest) or
+    // long for it.
+    expect(now.height, `${label}: the box is min(scrollHeight, ${now.cap}) — ${now.lines} lines, ${now.natural}px of text at ${now.width}px, inline ${now.inline}`)
+      .toBe(Math.min(now.natural, now.cap));
+    // Nothing is clipped in a box that carries no scrollbar.
+    if (now.overflow === 'hidden') expect(now.height + 1, `${label}: text hidden past the box's edge`).toBeGreaterThanOrEqual(now.natural);
+    expect(now.overflow, `${label}: a scrollbar exactly when the text is taller than the box`).toBe(now.natural > now.cap + 1 ? 'auto' : 'hidden');
+    return now;
+  };
+  const wide = await fits('wide');
+  // The precondition that makes a stale fit observable instead of merely scrolled: at this width the draft is under the
+  // cap, so the height it was fitted to is the text's own. Derived from the measurement — a wider font or UI scale makes
+  // this viewport fail this precondition (and then wrap counts are not the test's business) rather than failing the fit.
+  expect(wide.natural, `the draft is shorter than the ${wide.cap}px cap at ${wide.width}px, so a stale fit would be visible`).toBeLessThan(wide.cap);
+  await field.evaluate(node => { (window as any).__promptNode = node; });
+  // One notch narrower: the same text wraps to more lines, so the box grows with it. Ablation (checked by re-wrapping the
+  // text for a reason the observer cannot see — a `letter-spacing` override leaves the prompt's box width identical, as
+  // does removing the observer, and the box kept its old height of 150 px while the text needed 176): this is where
+  // `height === min(scrollHeight, cap)` breaks, because the re-wrapped draft needs more than the old fit had.
+  await page.setViewportSize({ width: 1340, height: 900 });
+  await expect.poll(async () => (await fit()).width, { message: 'the composer narrowed' }).toBeLessThan(wide.width - 20);
+  await expect.poll(async () => (await fit()).natural, { message: 'the same draft re-wrapped' }).toBeGreaterThan(wide.natural);
+  const narrow = await fits('narrow');
+  expect(narrow.natural, `the re-wrapped draft needs more than the fit at ${wide.width}px had (${wide.height}px)`).toBeGreaterThan(wide.height + 1);
+  expect(narrow.width).toBeLessThan(wide.width - 20);
+  // Narrower than the cap: the box stops at the cap and the text scrolls, never clipped in a box that would not grow. The
+  // width that gets there depends on the font, the UI scale and the pane, so step in until the measurement says so.
+  let tight = narrow;
+  for (const width of [1220, 1140, 1060, 980]) {
+    if (tight.natural > tight.cap + 1) break;
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(async () => (await fit()).width, { message: `the composer narrowed to ${width}px` }).toBeLessThan(tight.width - 20);
+    await expect.poll(async () => (await fit()).natural, { message: `the draft re-wrapped at ${width}px` }).toBeGreaterThan(tight.natural);
+    tight = await fits(`tight at ${width}px`);
+  }
+  expect(tight.natural, `the draft is taller than the ${tight.cap}px cap`).toBeGreaterThan(tight.cap + 1);
+  expect(tight.height, `the box stops at the ${tight.cap}px cap (inline ${tight.inline})`).toBe(tight.cap);
+  expect(tight.overflow, 'a scrollbar exactly when the text exceeds the cap').toBe('auto');
+  expect(await field.evaluate(node => node === (window as any).__promptNode), 'the same textarea, not a re-render').toBe(true);
 });

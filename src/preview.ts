@@ -2,6 +2,7 @@ import type { VoiceConfiguration, VoiceProfileInput, VoiceEvent, VoiceFailure, V
 import { VOICE_CANCELLED } from './voice-types';
 import realVoiceCatalog from '../src-tauri/src/voice/local/catalog.json';
 import { previewHub, previewRepos } from './preview-github-hub';
+import { createPreviewFileExplorer } from './preview-file-explorer';
 import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessagePage, Project, Provider, ProviderId, ProviderModel, Session, TaskStage, ToolActivity } from './types';
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
@@ -32,6 +33,7 @@ const previewWorkspaceFiles = ['index.html', '.gitignore', 'README.md', 'package
 const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters results as the query changes\n  ✓ preserves keyboard selection\n\nTests: 12 passed, 12 total\nTime: 0.8s\nSample output — no command was executed.';
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pandacode', path: '/Users/you/Projects/pandacode' }];
+const previewExplorer = createPreviewFileExplorer();
 let sessions: Session[] = [
   { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
   { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
@@ -236,6 +238,7 @@ const providers: Provider[] = [
   { id: 'devin', name: 'Devin CLI', installed: true, path: '/sample/bin/devin', version: 'devin 3000.11.216 (sample)', models: [] },
   { id: 'zcode', name: 'ZCode', installed: true, path: '/sample/bin/zcode', version: '3.16.3', models: [] },
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
+  { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -247,6 +250,7 @@ const previewMimoEndpoints = [
 let previewMimoEndpoint: string | null = null;
 const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
 let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
+let previewStartAhead = true;
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 const previewAgentsDockSnapshot = {
   agents: [
@@ -327,6 +331,13 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     // A long catalog (over the team limit of 10) for Settings → Model routing.
     ...Array.from({ length: 12 }, (_, i) => ({ id: `nous/sample-${i + 1}`, name: `Nous Sample ${i + 1}`, description: 'Sample Hermes provider model.' })),
   ],
+  // Shaped like `cursor-agent acp`'s parameterized catalog: each base model lists its own thinking levels.
+  cursor: ([
+    ['default', 'Default', [], '', 0], ['auto-smart', 'Auto', [], '', 0],
+    ['composer-2.5', 'Composer 2.5', [], '', 0],
+    ['claude-opus-5', 'Claude Opus 5', ['low', 'medium', 'high', 'xhigh', 'max'], 'high', 200000],
+    ['gpt-5.5', 'GPT-5.5', ['none', 'low', 'medium', 'high', 'extra-high'], 'medium', 272000],
+  ] as [string, string, string[], string, number][]).map(([id, name, efforts, effort, context]) => ({ id, name, description: id === 'default' ? 'Use the model last chosen in Cursor.' : '', reasoningEfforts: efforts.map(value => ({ id: value, name: value === 'xhigh' || value === 'extra-high' ? 'Extra High' : value[0].toUpperCase() + value.slice(1), description: '' })), ...(effort ? { defaultReasoningEffort: effort } : {}), ...(context ? { contextWindow: context } : {}) })),
   muse: ['muse-wonder-1.0', 'muse-spark-1.3'].map(id => ({ id, name: id, description: '', reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'high', contextWindow: 1007997 })),
   opencode: openCodePreviewModels,
   glm: [
@@ -1500,6 +1511,20 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
+  // Settings → Agents → Start agents ahead; tests read the saves from `__startAheadSaves`, can hold the read
+  // (`__startAheadGetHold`, a promise) and make either call fail (`__startAheadFail = { get?: message, set?: message }`).
+  if (command === 'start_ahead_get') {
+    const w = window as any;
+    if (w.__startAheadGetHold) await w.__startAheadGetHold;
+    if (w.__startAheadFail?.get) throw new Error(w.__startAheadFail.get);
+    return { on: previewStartAhead } as T;
+  }
+  if (command === 'start_ahead_set') {
+    if ((window as any).__startAheadFail?.set) throw new Error((window as any).__startAheadFail.set);
+    previewStartAhead = Boolean(args.on);
+    ((window as any).__startAheadSaves ??= []).push(previewStartAhead);
+    return { on: previewStartAhead } as T;
+  }
   if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
@@ -2126,7 +2151,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'update_session': {
       const s = session(args.sessionId);
       if (args.archived === false && s.archived && s.taskStage === 'completed') s.completedAt = Date.now();
-      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId')), { updatedAt: Date.now() }); break;
+      // `warm` (optional) only asks native to restart the warm process; it is not a task field.
+      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId' && key !== 'warm')), { updatedAt: Date.now() }); break;
     }
     case 'set_reasoning_effort': {
       const s = session(args.sessionId);
@@ -2138,9 +2164,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
     }
+    // Warming a task's next turn ahead (native starts the harness process): nothing to start here.
+    case 'warm_task': session(args.sessionId); result = null; break;
     case 'configure_session': {
       const s = session(args.sessionId);
       if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      // `warm` (optional): only the model picker asks native to start the new model's process ahead.
+      if (args.warm !== undefined && typeof args.warm !== 'boolean') throw new Error('Invalid warm flag.');
       const projectId = args.projectId ?? s.projectId;
       if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
       if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');
@@ -2427,7 +2457,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
-    case 'list_files': result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
+    case 'list_files': result = previewExplorer.list(args); break;
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
       const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
@@ -2528,7 +2558,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
     case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
-      result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
+      result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
+    case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
+    case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;
+    case 'write_workspace_file': {
+      const original = await invoke<string>('read_file', args);
+      previewExplorer.save(args, original); result = null; break;
+    }
+    case 'open_workspace_file': result = null; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;

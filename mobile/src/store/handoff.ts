@@ -7,8 +7,8 @@ export const HANDOFF_ROLE = 'handoff';
 
 /** The harness ids the host can switch between, as the desktop's decoder accepts them. */
 export const HANDOFF_PROVIDERS: ReadonlySet<string> = new Set([
-  'claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode',
-  'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes',
+  'claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode',
+  'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor',
 ]);
 
 /** The longest summary kept, as on the desktop. */
