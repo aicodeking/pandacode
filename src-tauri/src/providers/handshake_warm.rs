@@ -348,20 +348,32 @@ pub(super) fn present(session_id: &str) -> bool {
 
 #[cfg(test)]
 pub(super) fn insert_for_test(session_id: &str, provider: &str) -> u32 {
-    let child = Command::new("sleep").arg("30").stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut c = Command::new("ping");
+        c.args(["-n", "31", "127.0.0.1"]);
+        c
+    };
+    let child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
     let pid = child.id().unwrap();
     let spare = Spare { key: "k".into(), child, group: ProcessGroup::register(None), pending: Vec::new(), born: std::time::Instant::now(), reader: None, early_stderr: Vec::new(), provider: provider.into(), thread: None };
     state().spares.insert(session_id.into(), spare);
     pid
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) async fn start_for_test(command: Command, cwd: &Path) -> Result<(Child, ProcessGroup, Vec<u8>), String> {
     let (child, group, pending, _) = start(command, cwd, &codex_initialize(), || {}).await?;
     Ok((child, group, pending))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn insert_preloaded_for_test(session_id: &str, command: &Command, cwd: &Path, child: Child, group: ProcessGroup, pending: Vec<u8>, thread: Option<super::codex_preload::Preloaded>) {
     let key = key("codex", command, cwd);
     let spare = Spare { key, child, group, pending, born: std::time::Instant::now(), reader: None, early_stderr: Vec::new(), provider: "codex".into(), thread };
@@ -392,11 +404,13 @@ pub fn discard(session_id: &str) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn sleeper() -> (Child, ProcessGroup) {
         let child = Command::new("sleep").arg("30").stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
         (child, ProcessGroup::register(None))
     }
 
+    #[cfg(unix)]
     fn spare(key: &str, (child, group): (Child, ProcessGroup)) -> Spare {
         Spare { key: key.into(), child, group, pending: Vec::new(), born: std::time::Instant::now(), reader: None, early_stderr: Vec::new(), provider: "codex".into(), thread: None }
     }

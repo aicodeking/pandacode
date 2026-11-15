@@ -2388,14 +2388,12 @@ async fn launch_operation_admitted(
     if let Some(title) = &title_run {
         config.prompt.push_str(&title.instruction());
     }
-    if restore_stage.is_none() {
-        if !apply_system_instructions(&mut config, team_worker) {
-            // In the message: on a new conversation, then as a periodic reminder.
-            let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
-            let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
-            if config.resume_id.is_none() || reminder_turn(turns) {
-                config.prompt.push_str(&instructions);
-            }
+    if restore_stage.is_none() && !apply_system_instructions(&mut config, team_worker) {
+        // In the message: on a new conversation, then as a periodic reminder.
+        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
+        let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
+        if config.resume_id.is_none() || reminder_turn(turns) {
+            config.prompt.push_str(&instructions);
         }
     }
     tauri::async_runtime::spawn(async move {

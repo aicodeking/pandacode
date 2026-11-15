@@ -245,6 +245,7 @@ pub(super) async fn switch(mut spare: Spare, requests: &[Value], key: &str, gene
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn spare(key: String, generation: u64, (child, group): (Child, ProcessGroup)) -> Spare {
         Spare { key, child, group, server: None, born: std::time::Instant::now(), generation, pending: Vec::new(), unanswered: HashSet::new() }
     }
@@ -619,6 +620,7 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"cold"}' '{"type":
         assert_eq!(applied["effort"], "low");
     }
 
+    #[cfg(unix)]
     fn sleeper() -> (Child, ProcessGroup) {
         let child = Command::new("sleep").arg("30").kill_on_drop(true).spawn().unwrap();
         (child, ProcessGroup::register(None))

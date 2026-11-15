@@ -441,7 +441,7 @@ pub(super) fn evict(session_id: &str, born: std::time::Instant) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn insert_for_test(session_id: &str, key: &str, child: Child, group: ProcessGroup) {
     let spare = Spare { key: key.into(), child, group, server: None, born: std::time::Instant::now(), generation: 0, pending: Vec::new(), unanswered: HashSet::new() };
     spares().insert(session_id.into(), spare);
@@ -549,11 +549,13 @@ mod tests {
         assert_eq!(miss(true, &original, &next, fresh).as_deref(), Some("changed: model, resume"));
     }
 
+    #[cfg(unix)]
     fn sleeper() -> (Child, ProcessGroup) {
         let child = Command::new("sleep").arg("30").kill_on_drop(true).spawn().unwrap();
         (child, ProcessGroup::register(None))
     }
 
+    #[cfg(unix)]
     fn spare(key: String, generation: u64, (child, group): (Child, ProcessGroup)) -> Spare {
         Spare { key, child, group, server: None, born: std::time::Instant::now(), generation, pending: Vec::new(), unanswered: HashSet::new() }
     }

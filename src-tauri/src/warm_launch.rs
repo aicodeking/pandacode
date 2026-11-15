@@ -205,7 +205,7 @@ pub async fn warm_task(app: tauri::AppHandle, state: State<'_, AppState>, sessio
     // The user is writing here: this task's spare outlives ones only warmed for others.
     providers::touch_warm_agent(&session_id);
     let session = state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?;
-    if providers::has_warm_agent(&session) || state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if providers::has_warm_agent(&session) || run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Ok(());
     }
     rewarm(&app, &session_id, false);

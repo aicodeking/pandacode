@@ -203,7 +203,7 @@ pub(super) fn key_of(thread: Option<&Preloaded>) -> Option<&str> {
     thread.map(|thread| thread.key.as_str())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn preloaded_for_test(key: &str) -> Preloaded {
     Preloaded { key: key.into(), sent: Vec::new(), server: None }
 }
@@ -223,6 +223,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn title_catalog() -> Vec<Value> {
         vec![json!({"type":"function","name":crate::session_titles::TOOL,"description":"Suggest a title.","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}})]
     }
@@ -279,10 +280,12 @@ done"#;
         command
     }
 
+    #[cfg(unix)]
     fn methods(log: &Path) -> Vec<Value> {
         std::fs::read_to_string(log).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
     }
 
+    #[cfg(unix)]
     fn names(sent: &[Value]) -> Vec<&str> {
         sent.iter().map(|request| request["method"].as_str().unwrap_or_default()).collect()
     }
