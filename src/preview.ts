@@ -508,6 +508,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
   }
 }
 // Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+// Explicit tiles and project picker extension fixture only: safe mode while tiles show or the picker holds a draft.
+if (new URLSearchParams(location.search).has('tiles-picker')) {
+  (window as any).__previewTilesPickerSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit transcript extras extension fixture only: safe mode while find is open and a usage limit shows.
 if (new URLSearchParams(location.search).has('thread-extras')) {
   (window as any).__previewThreadExtrasSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();

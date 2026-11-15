@@ -525,7 +525,43 @@ export const THREAD_EXTRAS_PROTECTED = [
   ['limit-state', 'Usage limit, reset time and held work', 'The limit, its reset time, the held queue and the resume ID stay host-owned; continuing, dismissing or resuming at reset needs the user\'s own button or a fresh host choice.'],
   ['connection-assign', 'Moving the task to another connection or provider', 'Only the card\'s own Continue on <connection> buttons move the task, after the user\'s click or a fresh host choice; a package request to assign a connection or provider is refused.'],
 ] as const;
-export type ActionLocation = typeof THREAD_EXTRAS_ACTION_SURFACES[number] | typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Thread tiles and the draft project picker (docs/extensions/tiles-picker.md). Each tile's bar carries an action slot
+ * (a host marker placed by tiles-picker-host.ts, mounted by thread-actions.ts with the tile's own session); the picker's
+ * footer carries one with the captured draft. Tile layout rules, mirrors' read-only rows, drafts and project ownership
+ * stay in thread-tiles.ts, tile-layout.ts, project-picker.ts and main.ts. */
+export const TILES_PICKER_ACTION_SURFACES = ['panda.workspace.tiles.actions', 'panda.workspace.project-picker.actions'] as const;
+export type TilesPickerActionLocation = typeof TILES_PICKER_ACTION_SURFACES[number];
+export const TILES_LOCATION = 'panda.workspace.tiles.controls';
+export const PICKER_LOCATION = 'panda.workspace.project-picker.entries';
+export const TILES_PICKER_PROTECTED_LOCATION = 'panda.workspace.tiles-picker.protected';
+/** A tile bar's controls and a mirror's follow-up button: [id, label]. */
+export const TILES_CONTROLS = [['close', 'Close view'], ['title', 'Tile title (focus)'], ['composer', 'Mirror follow-up button']] as const;
+/** The draft project picker's entries: [id, label]. No project and the other projects order in the list; Open project…
+ * sits in the footer. */
+export const PICKER_ENTRIES = [['current', 'Current project'], ['no-project', 'No project'], ['projects', 'Other projects'], ['open', 'Open project…']] as const;
+/** Entries that never hide, with the reason. They still reorder unless also fixed. */
+export const TILES_PICKER_PINNED: Readonly<Record<string, string | undefined>> = {
+  [`${TILES_LOCATION}/title`]: 'The title names the tile\'s thread and is how a tile is focused; it never hides.',
+  [`${PICKER_LOCATION}/current`]: 'The draft\'s current project always shows with its check, wherever its entry sits; hiding an entry never hides it.',
+  [`${PICKER_LOCATION}/projects`]: 'The other projects are what the picker is for; they never hide.',
+};
+/** Entries that keep their place, with the reason. */
+export const TILES_PICKER_FIXED: Readonly<Record<string, string | undefined>> = {
+  [`${TILES_LOCATION}/composer`]: 'The follow-up button sits under a mirror\'s rows; it hides in place.',
+  [`${PICKER_LOCATION}/current`]: 'The draft\'s current project always shows with its check, wherever its entry sits; hiding an entry never hides it.',
+  [`${PICKER_LOCATION}/open`]: 'Open project… sits alone in the picker\'s footer; it hides in place.',
+};
+/** Protected tile and picker behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const TILES_PICKER_PROTECTED = [
+  ['mirror-input', 'Input to a tile', 'A mirror is a read-only view of another thread: only the focused tile\'s own composer sends, and only the user types there; a package request to send input to any tile is refused.'],
+  ['tile-layout', 'Tile placement, size and count', 'MAX_TILES, the tile rectangles, drag placement and the saved tile list stay host-owned; packages never open, move or resize a tile.'],
+  ['tile-content', 'Tile rows and streaming text', 'A tile\'s transcript rows, its streaming text and its scroll position stay in the host; packages see opaque tile handles only.'],
+  ['draft', 'Draft text and attachments', 'The draft, its undo history and attachments never cross the boundary; packages see only whether a draft exists.'],
+  ['project-move', 'Moving the draft to another project', 'Only the user\'s own choice in the picker, or a fresh host choice for a package request, moves the draft; the host clears its attachments as before.'],
+  ['project-search', 'The picker\'s search text', 'The search field, its text and IME composition stay the user\'s own; packages never set or read it.'],
+  ['project-create', 'Opening a new project folder', 'Open project… shows the host\'s own folder dialog; adding a project is the user\'s own choice there.'],
+] as const;
+export type ActionLocation = typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

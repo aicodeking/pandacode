@@ -2,6 +2,14 @@
 import { escape } from '../dom';
 import type { ThreadActionLocation, ThreadExtrasActionLocation } from './surfaces';
 
+/** A tile bar's marker (tiles-picker-host.ts): the tile's own thread, never the focused one. */
+export function tileSlot(sessionId: string): HTMLElement {
+  const slot = document.createElement('div');
+  slot.className = 'extension-action-slot';
+  Object.assign(slot.dataset, { extensionActionSlot: 'panda.workspace.tiles.actions', extensionSession: sessionId, extensionSelectionKind: 'tile', extensionSelectionIds: JSON.stringify([sessionId]), tilesPicker: '' });
+  return slot;
+}
+
 export function threadActionSlot(location: ThreadActionLocation, sessionId: string, kind: 'task' | 'message' | 'trace' | 'team' = 'task', id = sessionId): string {
   return `<div class="extension-action-slot" data-extension-action-slot="${location}" data-extension-session="${escape(sessionId)}" data-extension-selection-kind="${kind}" data-extension-selection-id="${escape(id)}"></div>`;
 }

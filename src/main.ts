@@ -789,6 +789,18 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     root: $('.workspace'), onContextChanged, find: () => threadFind,
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, provider: s?.provider, limit: s?.limitedAt ? `${s.limitedAt}:${s.limitedUntil ?? ''}:${s.resumeAtReset ? 1 : 0}` : '', busy: Boolean(modelPickerCleanup) }; },
   });
+  // Thread tiles' bar controls and actions, and the draft project picker's entries and actions: presentation only. Tile
+  // layout, mirrors, drafts and moving a draft to another project stay here and in thread-tiles.ts and project-picker.ts.
+  tilesPicker = (await import('./extensions/tiles-picker-host')).mountTilesPickerAdoption({
+    root: $('.workspace'), tiles, onContextChanged, notify,
+    projectOf: task => state.sessions.find(item => item.id === task)?.projectId || undefined,
+    picker: () => {
+      const s = session(), fresh = Boolean(s && !s.worktreePath && newTaskView()), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+      return { task: fresh ? s!.id : undefined, project: s ? chatTask(s) ? NO_PROJECT : s.projectId : undefined, projectId: s?.projectId || undefined, draft: s && prompt?.dataset.sessionId === s.id ? prompt.value : '', pending: Boolean(s && configuringSessions.has(s.id)), busy: Boolean(modelPickerCleanup), generation: state.generation };
+    },
+    projects: () => [NO_PROJECT, ...userProjects().map(project => project.id)],
+    choose: (task, projectId) => { const s = session(); if (s?.id === task && newTaskView()) void chooseTaskProject(s, state.generation, projectId).catch(report); },
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -863,6 +875,8 @@ let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mou
 let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
 /** Queue, token saver and council panels adoption (docs/extensions/composer-panels.md), mounted once extensions load. */
 let composerPanels: ReturnType<typeof import('./extensions/composer-panels-host').mountComposerPanelsAdoption> | undefined;
+/** Thread tiles and draft project picker adoption (docs/extensions/tiles-picker.md), mounted once extensions load. */
+let tilesPicker: ReturnType<typeof import('./extensions/tiles-picker-host').mountTilesPickerAdoption> | undefined;
 /** Transcript extras adoption (docs/extensions/thread-extras.md), mounted once extensions load. */
 let threadExtras: ReturnType<typeof import('./extensions/thread-extras-host').mountThreadExtrasAdoption> | undefined;
 /** Attach menu, Workflow recipes and wake-ups adoption (docs/extensions/composer-attach.md), mounted once extensions load. */
@@ -1043,6 +1057,12 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('tiles-picker')) {
+  (window as any).__previewTiles = () => tilesPicker?.tilesPresentation();
+  (window as any).__previewTilesAction = (input: unknown) => tilesPicker?.dispatchTiles(input) ?? { ok: false, reason: 'Revoked' };
+  (window as any).__previewPicker = () => tilesPicker?.pickerPresentation();
+  (window as any).__previewPickerAction = (input: unknown) => tilesPicker?.dispatchPicker(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('thread-extras')) {
   (window as any).__previewThreadExtras = () => threadExtras?.presentation();
   (window as any).__previewThreadExtrasAction = (input: unknown) => threadExtras?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
@@ -1591,6 +1611,7 @@ const tiles = mountThreadTiles({
   draw: (id, rows, scroller) => drawTile(id, rows, scroller),
   scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: () => !wallpapers.preferences.enabled, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
   notify,
+  extension: () => tilesPicker?.tileLayout(),
 });
 wallpapers.subscribe(() => tiles.refreshScenes());
 showThreadScene = id => { sky.setThread(id); tiles.sync(id); };
@@ -6048,17 +6069,24 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
   const generation = state.generation;
   const { openProjectPicker } = await import('./project-picker').finally(release);
   if (epoch !== menuEpoch || projectPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
+  const currentProjectId = chatTask(selected) ? NO_PROJECT : selected.projectId;
+  // With a package contributing to the picker or the user's arrangement of its entries, the extension surface; without
+  // either (and in safe mode) none, and the picker is the built-in one.
+  const extension = tilesPicker?.pickerExtension(currentProjectId, NO_PROJECT);
   projectPickerCleanup = openProjectPicker({
-    anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
+    anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId,
     onClose: () => { projectPickerCleanup = undefined; },
-    onSelect: async projectId => {
-      if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
-      // createChat closes this picker, which would drop an error thrown back to it.
-      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected).catch(report); return; }
-      await changeTaskProject(projectId);
-    },
+    onSelect: projectId => chooseTaskProject(selected, generation, projectId),
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
+    ...(extension ? { extension } : {}),
   });
+}
+/** The draft project picker's choice, for the picker itself and for an extension's request after a fresh host choice. */
+async function chooseTaskProject(selected: Session, generation: number, projectId: string): Promise<void> {
+  if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
+  // createChat closes this picker, which would drop an error thrown back to it.
+  if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected).catch(report); return; }
+  await changeTaskProject(projectId);
 }
 /** One line for the picker: the lead's model, then the worker count. */
 function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {

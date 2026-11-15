@@ -268,6 +268,11 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.vm.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.vm.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.workspace.header.actions` | action | inspect, contribute | button, menu-trigger | main | — |
+| `panda.workspace.project-picker.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.workspace.project-picker.entries` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.workspace.tiles-picker.protected` | data | inspect | button | main | — |
+| `panda.workspace.tiles.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.workspace.tiles.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.worktree` | data | inspect, replace, move | controls-first | main | — |
 | `panda.worktree.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.worktree.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |

@@ -1,0 +1,157 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.tiles-picker",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.transcript.read",
+    "tasks.tools.read"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.tiles-picker/timeline",
+        "title": "Timeline tiles",
+        "slot": "panda.transcript",
+        "contractVersion": 1,
+        "presentation": "timeline",
+        "capabilities": [
+          "streaming",
+          "tool-output",
+          "questions",
+          "approvals",
+          "team-progress",
+          "usage",
+          "stop-resume",
+          "host-history"
+        ]
+      },
+      {
+        "id": "sample.tiles-picker/toolbar",
+        "title": "Toolbar-first draft picker",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.tiles-picker/tile-notes",
+        "title": "Tile notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Tile notes",
+            "successMessage": "Tile notes kept.",
+            "cancelMessage": "Tile rows stay with PandaCode.",
+            "fields": [
+              {
+                "id": "tags",
+                "kind": "select",
+                "label": "Tile tags",
+                "async": true,
+                "options": [
+                  {
+                    "value": "alpha",
+                    "label": "Alpha"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "sample.tiles-picker/draft-notes",
+        "title": "Draft notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Draft notes",
+            "successMessage": "Draft notes kept.",
+            "cancelMessage": "The draft stays with PandaCode.",
+            "fields": [
+              {
+                "id": "tags",
+                "kind": "select",
+                "label": "Draft tags",
+                "async": true,
+                "options": [
+                  {
+                    "value": "alpha",
+                    "label": "Alpha"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.tiles-picker/tile",
+        "command": "sample.tiles-picker/tile-notes",
+        "location": "panda.workspace.tiles.actions",
+        "presentation": "button",
+        "text": "Tile notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "tile"
+        }
+      },
+      {
+        "id": "sample.tiles-picker/draft",
+        "command": "sample.tiles-picker/draft-notes",
+        "location": "panda.workspace.project-picker.actions",
+        "presentation": "button",
+        "text": "Draft notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "draft-project"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.tiles-picker/title-first",
+        "title": "Tile title before Close view",
+        "location": "panda.workspace.tiles.controls",
+        "rules": [
+          {
+            "id": "panda.workspace.tiles.controls/title",
+            "target": "panda.workspace.tiles.controls/close",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.tiles-picker/projects-first",
+        "title": "Other projects before No project",
+        "location": "panda.workspace.project-picker.entries",
+        "rules": [
+          {
+            "id": "panda.workspace.project-picker.entries/projects",
+            "target": "panda.workspace.project-picker.entries/no-project",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

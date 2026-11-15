@@ -3,8 +3,9 @@ import { THREAD_ACTION_SURFACES, THREAD_EXTRAS_ACTION_SURFACES, type ThreadActio
 import type { Json } from './contracts';
 import { extensionsSnapshot, onExtensionsChanged } from './manager';
 
-type Location = ThreadActionLocation | ThreadExtrasActionLocation;
-const LOCATIONS: readonly string[] = [...THREAD_ACTION_SURFACES, ...THREAD_EXTRAS_ACTION_SURFACES];
+type Location = ThreadActionLocation | ThreadExtrasActionLocation | 'panda.workspace.tiles.actions';
+/** The tile bars' slot shares these markers: each tile's marker names that tile's own thread. */
+const LOCATIONS: readonly string[] = [...THREAD_ACTION_SURFACES, ...THREAD_EXTRAS_ACTION_SURFACES, 'panda.workspace.tiles.actions'];
 /** A marker's captured ids: one id, or the bounded list a transcript-extras marker carries. */
 function selectionIds(host: HTMLElement): string[] {
   if (host.dataset.extensionSelectionIds === undefined) return [host.dataset.extensionSelectionId!];

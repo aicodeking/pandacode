@@ -411,7 +411,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "projectScope" {
@@ -763,6 +763,50 @@ mod tests {
         assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
         let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.context", "revision": 1, "selection": {"kind": "sidebar-section", "ids": ["review"]}});
         assert_eq!(super::validate_contract("context", &context)["ok"], true);
+    }
+    #[test]
+    fn tiles_picker_state_action_layouts_and_selection_kinds_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/tiles-picker/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        for (presentation, action, state_file, action_file) in [
+            ("tilesPresentation", "tilesAction", include_str!("../../../tests/fixtures/extensions/tiles-picker/state.json"), include_str!("../../../tests/fixtures/extensions/tiles-picker/action.json")),
+            ("projectPickerPresentation", "projectPickerAction", include_str!("../../../tests/fixtures/extensions/tiles-picker/picker-state.json"), include_str!("../../../tests/fixtures/extensions/tiles-picker/picker-action.json")),
+        ] {
+            let state: Value = serde_json::from_str(state_file).unwrap();
+            let request: Value = serde_json::from_str(action_file).unwrap();
+            assert_eq!(super::validate_contract(presentation, &state)["ok"], true, "{presentation}");
+            assert_eq!(super::validate_contract(action, &request)["ok"], true, "{action}");
+            for field in ["selector", "ipc", "text", "draft", "search", "path"] {
+                let mut forged = request.clone(); forged[field] = json!("raw");
+                assert_eq!(super::validate_contract(action, &forged)["ok"], false, "{action} {field}");
+                let mut raw = state.clone(); raw[field] = json!("raw");
+                assert_eq!(super::validate_contract(presentation, &raw)["ok"], false, "{presentation} {field}");
+            }
+        }
+        // Input to a tile, its rows, the tile layout and moving or reading the draft have no public control id.
+        let request: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/tiles-picker/action.json")).unwrap();
+        for control in ["tile-send-input", "tile-read-rows", "tile-open", "tile-move", "tile-resize", "picker-select"] {
+            let mut forged = request.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("tilesAction", &forged)["ok"], false, "{control}");
+        }
+        let picker: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/tiles-picker/picker-action.json")).unwrap();
+        for control in ["picker-move", "picker-read-draft", "picker-set-search", "picker-create-project", "picker-clear-attachments", "tile-focus"] {
+            let mut forged = picker.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("projectPickerAction", &forged)["ok"], false, "{control}");
+        }
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/tiles-picker/state.json")).unwrap();
+        let mut tiles = state.clone(); tiles["tiles"] = json!(vec!["tile"; 7]);
+        assert_eq!(super::validate_contract("tilesPresentation", &tiles)["ok"], false);
+        let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 33]);
+        assert_eq!(super::validate_contract("tilesPresentation", &oversized)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.workspace.tiles-picker.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        for (surface, kind) in [("panda.workspace.tiles.actions", "tile"), ("panda.workspace.project-picker.actions", "draft-project")] {
+            let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": surface, "projectId": "project-1", "sessionId": "task-1", "revision": 1, "selection": {"kind": kind, "ids": ["task-1"]}});
+            assert_eq!(super::validate_contract("context", &context)["ok"], true, "{kind}");
+        }
+        let unknown = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.workspace.tiles.actions", "revision": 1, "selection": {"kind": "tile-input", "ids": ["task-1"]}});
+        assert_eq!(super::validate_contract("context", &unknown)["ok"], false);
     }
     #[test]
     fn thread_extras_state_action_layouts_and_selection_kinds_share_native_schema() {

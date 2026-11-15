@@ -9,7 +9,19 @@ type ProjectPickerOptions = {
   onSelect: (projectId: string) => Promise<void>;
   onNewProject: () => void;
   onClose: () => void;
+  /** The picker extension adapter (extensions/tiles-picker-host.ts), once extensions load. Undefined keeps the built-in
+   * list, footer and markup. */
+  extension?: ProjectPickerExtension;
 };
+export interface ProjectPickerExtension {
+  /** The projects in the user's order without the entries they hid (the current project always stays); undefined keeps
+   * the drawn list. */
+  arrange(projects: readonly Project[]): readonly Project[] | undefined;
+  /** Whether Open project… hides in place. */
+  hideOpen(): boolean;
+  /** Mounts the footer's contributed actions; nothing when no enabled package contributes there. */
+  mountActions(host: HTMLElement): (() => void) | undefined;
+}
 
 /** A transient project chooser. It owns no application state or global actions. */
 export function openProjectPicker(options: ProjectPickerOptions): () => void {
@@ -33,10 +45,12 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   let pending = false;
   let closed = false;
   let positionFrame = 0;
+  let disposeActions: (() => void) | undefined;
 
   function close(returnFocus = true): void {
     if (closed) return;
     closed = true;
+    disposeActions?.();
     cancelAnimationFrame(positionFrame);
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onEscape, true);
@@ -93,7 +107,8 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   function renderChoices(): void {
     if (closed) return;
     const query = search.value.trim().toLowerCase();
-    const matches = projects.filter(project => `${project.name}\n${project.path}`.toLowerCase().includes(query));
+    const listed = options.extension?.arrange(projects) ?? projects;
+    const matches = listed.filter(project =>`${project.name}\n${project.path}`.toLowerCase().includes(query));
     const visible = matches.slice(0, 100);
     list.innerHTML = visible.map(project => `<button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span><span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>`).join('');
     empty.hidden = visible.length > 0;
@@ -102,6 +117,8 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     count.textContent = count.hidden ? '' : `Showing ${visible.length} of ${matches.length} projects. Refine your search.`;
     pendingStatus.hidden = !pending;
     openButton.disabled = pending;
+    const hideOpen = Boolean(options.extension?.hideOpen());
+    if (openButton.hasAttribute('data-layout-hidden') !== hideOpen) { openButton.toggleAttribute('data-layout-hidden', hideOpen); openButton.inert = hideOpen; }
     list.setAttribute('aria-busy', String(pending));
     const buttons = choices();
     setActive(buttons.find(button => button.dataset.projectId === activeId) ?? buttons.find(button => button.dataset.projectId === currentProjectId) ?? buttons[0]);
@@ -162,6 +179,12 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
 
   anchor.setAttribute('aria-expanded', 'true');
   document.body.append(panel);
+  if (options.extension) {
+    const slot = document.createElement('div');
+    slot.className = 'project-menu-extensions';
+    disposeActions = options.extension.mountActions(slot);
+    if (disposeActions) openButton.after(slot);
+  }
   renderChoices();
   showPopover(panel, anchor);
   search.focus({ preventScroll: true });

@@ -23,7 +23,13 @@ export interface TileHost {
   /** The thread's scene, in its tile. */
   scene(tile: HTMLElement, id: string): { setThread(id: string | null): void; refresh(): void; dispose(): void };
   notify(text: string): void;
+  /** The tiles extension adapter (extensions/tiles-picker-host.ts), once extensions load: it orders and hides a bar's
+   * controls and places its action slot after every bar update. Undefined, or nothing to arrange, leaves bars as drawn. */
+  extension?(): TileExtension | undefined;
 }
+/** One tile's own nodes, for the extension adapter; never its rows. */
+export interface TileParts { id: string; el: HTMLElement; bar: HTMLElement; close: HTMLElement; title: HTMLElement; composer: HTMLElement; focused: boolean }
+export interface TileExtension { painted(tile: TileParts): void }
 
 /** The bar every tile carries; the pane starts below it. */
 const BAR_HEIGHT = 38;
@@ -85,6 +91,8 @@ export function mountThreadTiles(host: TileHost) {
     scroller.addEventListener('scroll', () => { tile.stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48; }, { passive: true });
     el.addEventListener('click', event => {
       const target = event.target as Element;
+      // A contributed extension action in the bar runs its own command; it neither focuses nor closes the tile.
+      if (target.closest('.extension-action-slot')) return;
       event.stopPropagation();
       if (target.closest('.thread-tile-close')) { close(id); return; }
       const toPrompt = Boolean(target.closest('.thread-mirror-composer'));
@@ -121,6 +129,8 @@ export function mountThreadTiles(host: TileHost) {
       button.setAttribute('aria-current', String(isFocused));
       tile.mirror.hidden = isFocused;
     }
+    const extension = host.extension?.();
+    if (extension) for (const [id, tile] of tiles) extension.painted({ id, el: tile.el, bar: tile.bar, close: tile.el.querySelector<HTMLElement>('.thread-tile-close')!, title: tile.bar.querySelector<HTMLElement>('.thread-tile-title')!, composer: tile.mirror.querySelector<HTMLElement>('.thread-mirror-composer')!, focused: id === focused });
   }
 
   /** Places everything at once; a tile that moved slides from where it was, and its text reflows only the once. */
@@ -338,6 +348,11 @@ export function mountThreadTiles(host: TileHost) {
       if (known.length !== ids.length) { ids = known.length > 1 ? known : []; save(); layout(true); }
       bars();
     },
+    /** For the extension adapter: the tiled threads in their order (empty without tiles), the focused one and whether a
+     * drag is under way. */
+    extensionState: (): { ids: readonly string[]; focused: string; dragging: boolean } => ({ ids: area.dataset.tiles ? [...shown()] : [], focused, dragging: Boolean(dragId) }),
+    /** The extension adapter's arrangement changed: every bar is painted again. */
+    relayout(): void { bars(); },
     /** The Wallpapers switch changed. */
     refreshScenes(): void { for (const tile of tiles.values()) tile.scene.refresh(); },
     /** For specs and the menu. */

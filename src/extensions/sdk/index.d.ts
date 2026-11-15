@@ -249,6 +249,26 @@ export type ThreadExtrasAdmission = { readonly ok: true } | { readonly ok: false
  * message's chips), `find` (ids = [task]; never the query), `turn-changes` (ids = [<turn change set>, …changed paths],
  * at most 99 paths) and `usage-limit` (ids = [<harness>]). */
 export type ThreadExtrasSelectionKind = 'message-attachment' | 'find' | 'turn-changes' | 'usage-limit';
+/** Experimental thread tiles (owner: the selected `panda.transcript` provider) and draft project picker (owner: the
+ * selected `panda.composer` provider). A tile bar's controls and the picker's entries reorder and hide on the original
+ * nodes; actions run the original handlers. Input to a tile, tile layout, the draft and moving it stay host-owned. */
+export type TilesControl = 'tile-focus' | 'tile-close' | 'tile-composer';
+export type ProjectPickerControl = 'picker-toggle' | 'picker-select' | 'picker-open';
+/** Named but never run: refused with `PermissionDenied`. */
+export type TilesProtectedControl = 'tile-send-input' | 'tile-read-rows' | 'tile-open' | 'tile-move' | 'tile-resize';
+export type ProjectPickerProtectedControl = 'picker-move' | 'picker-read-draft' | 'picker-set-search' | 'picker-create-project' | 'picker-clear-attachments';
+/** `task` is the focused thread; `tiles` the tiled threads' opaque handles in order (never titles or rows). Another
+ * focused tile, a closed tile or any redraw changes `revision`. */
+export interface TilesPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly tiles: readonly string[]; readonly controls: readonly { readonly id: string; readonly controlId: TilesControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface TilesAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly control: string; readonly controlId: TilesControl; readonly resource: string; readonly requestId: string }
+/** `task` is the draft; `draft` whether it has text (never the text); `entries` how many projects the open picker
+ * lists. An edited draft, another search or another current project changes `revision`. */
+export interface ProjectPickerPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly open: boolean; readonly draft: boolean; readonly entries: number; readonly controls: readonly { readonly id: string; readonly controlId: ProjectPickerControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface ProjectPickerAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly control: string; readonly controlId: ProjectPickerControl; readonly resource: string; readonly requestId: string }
+export type TilesPickerAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of the tile and picker contexts: `tile` (ids = [the tile's own thread], never the focused one) and
+ * `draft-project` (ids = [draft]; never the draft text). */
+export type TilesPickerSelectionKind = 'tile' | 'draft-project';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';
