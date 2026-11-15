@@ -86,6 +86,13 @@ export function attachmentChips(items: MessageAttachment[], messageId: number, i
       ? `<img data-prompt-image="${escape(item.imageId)}" ${thumbnail ? `src="${escape(thumbnail)}"` : ''} alt="" width="36" height="36"${thumbnail ? '' : ' hidden'}>${thumbnail ? '' : icon('camera')}`
       : icon(item.kind === 'github' && item.detail.startsWith('Pull') ? 'pull' : ICONS[item.kind]);
     const title = 'path' in item ? ` title="${escape(item.path)}"` : item.kind === 'github' ? ` title="${escape(item.url)}"` : '';
-    return `<button type="button" class="prompt-chip prompt-chip-${item.kind === 'image' ? 'image' : item.kind}" data-action="open-message-attachment" data-message-id="${messageId}" data-index="${index}" aria-label="Open ${escape(item.name)}"${title}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(item.detail)}</small></span></button>`;
+    return `<button type="button" class="prompt-chip prompt-chip-${item.kind === 'image' ? 'image' : item.kind}" data-action="open-message-attachment" data-message-id="${messageId}" data-index="${index}" data-attachment-kind="${item.kind}" aria-label="Open ${escape(item.name)}"${title}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(item.detail)}</small></span></button>`;
   }).join('')}</div>`;
+}
+
+/** A sent message's chips with their kind and index, for the transcript extension adapter (thread-extras-host.ts):
+ * it orders and hides chips by kind and adds its action slot after them. The chips' own handler, their index and what
+ * they open are unchanged; no content, name or path leaves the host. */
+export function attachmentChipNodes(row: Element): { kind: MessageAttachment['kind']; index: number; node: HTMLElement }[] {
+  return [...row.querySelectorAll<HTMLElement>(':scope > .prompt-chip[data-attachment-kind]')].map(node => ({ kind: node.dataset.attachmentKind as MessageAttachment['kind'], index: Number(node.dataset.index), node }));
 }

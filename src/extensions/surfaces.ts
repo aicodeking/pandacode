@@ -484,7 +484,48 @@ export const ATTACH_PROTECTED = [
   ['wake-remove', 'Remove a wake-up', 'Removing a wake-up and its confirmation stay the user\'s own buttons; a package request is refused.'],
   ['wake-change', 'Snooze, pause or resume without a choice', 'A schedule changes only through the user\'s own control or a fresh host choice; a package request is refused.'],
 ] as const;
-export type ActionLocation = typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** Transcript extras (docs/extensions/thread-extras.md): a sent message's attachment chips, thread find, a turn's
+ * changes card and footer, and the usage-limit card. Each carries an action slot (mounted by thread-actions.ts from
+ * host markers placed by thread-extras-host.ts) and an order/visibility location for its own controls. Attachment
+ * contents, the find text, diffs and the limit itself stay in main.ts, message-attachments.ts, thread-find.ts,
+ * turn-changes.ts and usage-limit.ts. */
+export const THREAD_EXTRAS_ACTION_SURFACES = ['panda.thread.attachments.actions', 'panda.thread.find.actions', 'panda.thread.changes.actions', 'panda.thread.usage-limit.actions'] as const;
+export type ThreadExtrasActionLocation = typeof THREAD_EXTRAS_ACTION_SURFACES[number];
+export const THREAD_ATTACHMENTS_LOCATION = 'panda.thread.attachments.controls';
+export const THREAD_FIND_LOCATION = 'panda.thread.find.controls';
+export const THREAD_CHANGES_LOCATION = 'panda.thread.changes.controls';
+export const THREAD_LIMIT_LOCATION = 'panda.thread.usage-limit.controls';
+export const THREAD_EXTRAS_PROTECTED_LOCATION = 'panda.thread.extras.protected';
+/** A sent message's attachment chips by kind: [id, label]. Chips of a kind hide and reorder together; each still opens
+ * its own attachment. */
+export const THREAD_ATTACHMENTS_CONTROLS = [['file', 'Project file chips'], ['document', 'Document chips'], ['folder', 'Folder chips'], ['image', 'Image chips'], ['github', 'GitHub item chips'], ['raw', 'Other context chips']] as const;
+/** The find bar's controls: [id, label]. The field itself is protected; Close never hides. */
+export const THREAD_FIND_CONTROLS = [['count', 'Match count'], ['previous', 'Previous match'], ['next', 'Next match'], ['close', 'Close find']] as const;
+/** A turn's changes card and footer controls: [id, label] (the card's order; the footer draws Open diff first). Open diff
+ * never hides. */
+export const THREAD_CHANGES_CONTROLS = [['run', 'Run project'], ['open', 'Open diff']] as const;
+/** The usage-limit card's controls: [id, label]. Continue now never hides; Dismiss never hides and stays last. */
+export const THREAD_LIMIT_CONTROLS = [['resume', 'Resume at reset'], ['continue', 'Continue now'], ['switch', 'Continue on another connection'], ['dismiss', 'Dismiss usage limit']] as const;
+/** Controls that never hide, with the reason. They still reorder unless also fixed. */
+export const THREAD_EXTRAS_PINNED: Readonly<Record<string, string | undefined>> = {
+  [`${THREAD_FIND_LOCATION}/close`]: 'Close is the find bar\'s way out beside Escape; it never hides.',
+  [`${THREAD_CHANGES_LOCATION}/open`]: 'Open diff is what the changes card is for; it never hides.',
+  [`${THREAD_LIMIT_LOCATION}/continue`]: 'Continue now is the card\'s recovery; it never hides.',
+  [`${THREAD_LIMIT_LOCATION}/dismiss`]: 'Dismiss is the user\'s way out of the card; it never hides and stays last.',
+};
+/** Controls that keep their place, with the reason. */
+export const THREAD_EXTRAS_FIXED: Readonly<Record<string, string | undefined>> = {
+  [`${THREAD_LIMIT_LOCATION}/dismiss`]: 'Dismiss is the user\'s way out of the card; it never hides and stays last.',
+};
+/** Protected transcript-extras behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const THREAD_EXTRAS_PROTECTED = [
+  ['attachment-content', 'Attachment contents, image data and paths', 'File and document text, image bytes, folder listings and paths stay in the host; packages see opaque attachment handles and kinds only, and opening one needs a fresh host choice.'],
+  ['find-input', 'Find text, matches and highlights', 'The find field, its text and IME composition, Enter and Escape, the CSS highlights and the reader\'s scroll position stay the user\'s own; packages never set or read the query.'],
+  ['diff-content', 'Patch bodies and file contents', 'A turn\'s diffs load only in the host\'s Changed files viewer; packages see the turn and its changed paths, never patches or file contents.'],
+  ['limit-state', 'Usage limit, reset time and held work', 'The limit, its reset time, the held queue and the resume ID stay host-owned; continuing, dismissing or resuming at reset needs the user\'s own button or a fresh host choice.'],
+  ['connection-assign', 'Moving the task to another connection or provider', 'Only the card\'s own Continue on <connection> buttons move the task, after the user\'s click or a fresh host choice; a package request to assign a connection or provider is refused.'],
+] as const;
+export type ActionLocation = typeof THREAD_EXTRAS_ACTION_SURFACES[number] | typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

@@ -248,9 +248,18 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.terminal.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.terminal.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.terminal.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.thread.attachments.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.thread.attachments.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.thread.changes.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.thread.changes.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.thread.extras.protected` | data | inspect | button | main | — |
+| `panda.thread.find.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.thread.find.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.thread.header` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.thread.message.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.thread.trace.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.thread.usage-limit.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.thread.usage-limit.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.tray.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | tray | select → `host-quick-pick`, form → `main-dialog` |
 | `panda.tray.menu` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | tray | select → `host-quick-pick`, form → `main-dialog`, icons → `panda.tray.actions`, status → `panda.tray.actions`, badge → `panda.tray.actions` |
 | `panda.tray.protected` | data | inspect | button | tray | — |

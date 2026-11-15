@@ -1,0 +1,150 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.thread-extras",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.transcript.read",
+    "tasks.tools.read"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.thread-extras/timeline",
+        "title": "Timeline transcript extras",
+        "slot": "panda.transcript",
+        "contractVersion": 1,
+        "presentation": "timeline",
+        "capabilities": [
+          "streaming",
+          "tool-output",
+          "questions",
+          "approvals",
+          "team-progress",
+          "usage",
+          "stop-resume",
+          "host-history"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.thread-extras/attachment-notes",
+        "title": "Attachment notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Attachment notes",
+            "successMessage": "Attachment notes kept.",
+            "cancelMessage": "Attachment contents stay with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Attachment tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.thread-extras/find-notes",
+        "title": "Find notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Find notes",
+            "successMessage": "Find notes kept.",
+            "cancelMessage": "The find text stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Find tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.thread-extras/changes-notes",
+        "title": "Turn notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Turn notes",
+            "successMessage": "Turn notes kept.",
+            "cancelMessage": "Diffs stay with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Turn tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.thread-extras/limit-notes",
+        "title": "Limit notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Limit notes",
+            "successMessage": "Limit notes kept.",
+            "cancelMessage": "The usage limit stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Limit tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.thread-extras/attachments",
+        "command": "sample.thread-extras/attachment-notes",
+        "location": "panda.thread.attachments.actions",
+        "presentation": "button",
+        "text": "Attachment notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "message-attachment" }
+      },
+      {
+        "id": "sample.thread-extras/find",
+        "command": "sample.thread-extras/find-notes",
+        "location": "panda.thread.find.actions",
+        "presentation": "button",
+        "text": "Find notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "find" }
+      },
+      {
+        "id": "sample.thread-extras/changes",
+        "command": "sample.thread-extras/changes-notes",
+        "location": "panda.thread.changes.actions",
+        "presentation": "button",
+        "text": "Turn notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "turn-changes" }
+      },
+      {
+        "id": "sample.thread-extras/limit",
+        "command": "sample.thread-extras/limit-notes",
+        "location": "panda.thread.usage-limit.actions",
+        "presentation": "button",
+        "text": "Limit notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "usage-limit" }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.thread-extras/folders-first",
+        "title": "Folder chips before Project file chips",
+        "location": "panda.thread.attachments.controls",
+        "rules": [{ "id": "panda.thread.attachments.controls/folder", "target": "panda.thread.attachments.controls/file", "side": "before" }]
+      },
+      {
+        "id": "sample.thread-extras/next-first",
+        "title": "Next match before Previous match",
+        "location": "panda.thread.find.controls",
+        "rules": [{ "id": "panda.thread.find.controls/next", "target": "panda.thread.find.controls/previous", "side": "before" }]
+      },
+      {
+        "id": "sample.thread-extras/open-first",
+        "title": "Open diff before Run",
+        "location": "panda.thread.changes.controls",
+        "rules": [{ "id": "panda.thread.changes.controls/open", "target": "panda.thread.changes.controls/run", "side": "before" }]
+      },
+      {
+        "id": "sample.thread-extras/continue-first",
+        "title": "Continue now before Resume at reset",
+        "location": "panda.thread.usage-limit.controls",
+        "rules": [{ "id": "panda.thread.usage-limit.controls/continue", "target": "panda.thread.usage-limit.controls/resume", "side": "before" }]
+      }
+    ]
+  }
+}

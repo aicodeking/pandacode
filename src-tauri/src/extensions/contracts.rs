@@ -411,7 +411,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "projectScope" {
@@ -763,6 +763,40 @@ mod tests {
         assert_eq!(super::validate_contract("packages", &json!([provider]))["ok"], false);
         let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.context", "revision": 1, "selection": {"kind": "sidebar-section", "ids": ["review"]}});
         assert_eq!(super::validate_contract("context", &context)["ok"], true);
+    }
+    #[test]
+    fn thread_extras_state_action_layouts_and_selection_kinds_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/thread-extras/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/thread-extras/state.json")).unwrap();
+        let action: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/thread-extras/action.json")).unwrap();
+        assert_eq!(super::validate_contract("threadExtrasPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("threadExtrasAction", &action)["ok"], true);
+        for field in ["selector", "ipc", "query", "path", "diff"] {
+            let mut forged = action.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("threadExtrasAction", &forged)["ok"], false);
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("threadExtrasPresentation", &raw)["ok"], false);
+        }
+        // Reading attachment contents, setting the find text, reading diffs and assigning a connection or provider have no public control id.
+        for control in ["attachment-read", "attachment-reveal", "find-set-query", "find-read-matches", "changes-read-diff", "limit-set", "limit-assign-connection", "limit-switch-provider"] {
+            let mut forged = action.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("threadExtrasAction", &forged)["ok"], false);
+        }
+        let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 257]);
+        assert_eq!(super::validate_contract("threadExtrasPresentation", &oversized)["ok"], false);
+        let mut turns = state.clone(); turns["turns"] = json!(vec!["turn"; 65]);
+        assert_eq!(super::validate_contract("threadExtrasPresentation", &turns)["ok"], false);
+        let mut count = state.clone(); count["attachments"] = json!(257);
+        assert_eq!(super::validate_contract("threadExtrasPresentation", &count)["ok"], false);
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.thread.extras.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        for (surface, kind, ids) in [("panda.thread.attachments.actions", "message-attachment", json!(["1:0", "1:1"])), ("panda.thread.find.actions", "find", json!(["task-1"])), ("panda.thread.changes.actions", "turn-changes", json!(["turn-1", "src/a.ts"])), ("panda.thread.usage-limit.actions", "usage-limit", json!(["claude"]))] {
+            let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": surface, "projectId": "project-1", "sessionId": "task-1", "revision": 1, "selection": {"kind": kind, "ids": ids}});
+            assert_eq!(super::validate_contract("context", &context)["ok"], true, "{kind}");
+        }
+        let unknown = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": "panda.thread.find.actions", "revision": 1, "selection": {"kind": "find-query", "ids": ["task-1"]}});
+        assert_eq!(super::validate_contract("context", &unknown)["ok"], false);
     }
     #[test]
     fn composer_attach_state_action_layouts_and_selection_kinds_share_native_schema() {

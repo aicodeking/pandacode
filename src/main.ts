@@ -782,6 +782,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     projectOf: task => state.sessions.find(item => item.id === task)?.projectId || undefined,
     relayout: () => recipesView?.redraw(),
   });
+  // Transcript extras: a sent message's attachment chips, thread find, a turn's changes and the usage-limit card,
+  // presentation only. Attachment contents, the find text, diffs, the limit and connections stay here and in
+  // message-attachments.ts, thread-find.ts, turn-changes.ts and usage-limit.ts.
+  threadExtras = (await import('./extensions/thread-extras-host')).mountThreadExtrasAdoption({
+    root: $('.workspace'), onContextChanged, find: () => threadFind,
+    state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, provider: s?.provider, limit: s?.limitedAt ? `${s.limitedAt}:${s.limitedUntil ?? ''}:${s.resumeAtReset ? 1 : 0}` : '', busy: Boolean(modelPickerCleanup) }; },
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -856,6 +863,8 @@ let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mou
 let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
 /** Queue, token saver and council panels adoption (docs/extensions/composer-panels.md), mounted once extensions load. */
 let composerPanels: ReturnType<typeof import('./extensions/composer-panels-host').mountComposerPanelsAdoption> | undefined;
+/** Transcript extras adoption (docs/extensions/thread-extras.md), mounted once extensions load. */
+let threadExtras: ReturnType<typeof import('./extensions/thread-extras-host').mountThreadExtrasAdoption> | undefined;
 /** Attach menu, Workflow recipes and wake-ups adoption (docs/extensions/composer-attach.md), mounted once extensions load. */
 let composerAttach: ReturnType<typeof import('./extensions/composer-attach-host').mountComposerAttachAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
@@ -1034,6 +1043,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('thread-extras')) {
+  (window as any).__previewThreadExtras = () => threadExtras?.presentation();
+  (window as any).__previewThreadExtrasAction = (input: unknown) => threadExtras?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('composer-attach')) {
   (window as any).__previewAttach = () => composerAttach?.presentation();
   (window as any).__previewAttachAction = (input: unknown) => composerAttach?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
@@ -8067,6 +8080,7 @@ const threadFind = createThreadFind({
   release: () => { stickToBottom = false; },
   openReply: keepReplyOpen,
   restoreFocus: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
+  extension: () => threadExtras?.findLayout(),
 });
 document.addEventListener('keydown', event => {
   // IME conversions own their keys; letter shortcuts otherwise follow the physical layout.

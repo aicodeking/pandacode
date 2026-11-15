@@ -233,6 +233,22 @@ export type ComposerAttachAdmission = { readonly ok: true } | { readonly ok: fal
  * ids = ["<scope>:<name>"]), `task` (Wake this thread later actions, ids = [task]) and `schedule` (a wake-up's ⋯ menu,
  * ids = [schedule]). */
 export type ComposerAttachSelectionKind = 'draft' | 'recipe' | 'task' | 'schedule';
+/** Experimental transcript extras: a sent message's attachment chips, thread find, a turn's changes card and footer,
+ * and the usage-limit card (owner: the selected `panda.transcript` provider). Eligible controls reorder and hide on the
+ * original nodes; actions run the original handlers. Attachment contents, the find text, diffs, the limit and
+ * connection changes stay host-owned. */
+export type ThreadExtrasControl = 'attachment-open' | 'find-previous' | 'find-next' | 'find-close' | 'changes-open' | 'changes-file' | 'changes-run' | 'limit-continue' | 'limit-switch' | 'limit-dismiss' | 'limit-resume';
+/** Named but never run: refused with `PermissionDenied`. */
+export type ThreadExtrasProtectedControl = 'attachment-read' | 'attachment-reveal' | 'find-set-query' | 'find-read-matches' | 'changes-read-diff' | 'limit-set' | 'limit-assign-connection' | 'limit-switch-provider';
+/** `attachments` counts the transcript's chips (never names, paths or contents); `turns` and `provider` are opaque
+ * handles. A new turn, another query, a changed limit or any redraw changes `revision`. */
+export interface ThreadExtrasPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly attachments: number; readonly find: boolean; readonly turns: readonly string[]; readonly limited: boolean; readonly provider: string; readonly controls: readonly { readonly id: string; readonly controlId: ThreadExtrasControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface ThreadExtrasAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly control: string; readonly controlId: ThreadExtrasControl; readonly resource: string; readonly requestId: string }
+export type ThreadExtrasAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of the transcript-extras contexts: `message-attachment` (ids = ["<message>:<index>", …] for the
+ * message's chips), `find` (ids = [task]; never the query), `turn-changes` (ids = [<turn change set>, …changed paths],
+ * at most 99 paths) and `usage-limit` (ids = [<harness>]). */
+export type ThreadExtrasSelectionKind = 'message-attachment' | 'find' | 'turn-changes' | 'usage-limit';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

@@ -508,6 +508,10 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
   }
 }
 // Explicit core Settings extension fixture only: safe mode while a Settings page holds unsaved edits.
+// Explicit transcript extras extension fixture only: safe mode while find is open and a usage limit shows.
+if (new URLSearchParams(location.search).has('thread-extras')) {
+  (window as any).__previewThreadExtrasSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit composer attach extension fixture only: safe mode while a draft, a recipe dialog or a wake-up is open.
 if (new URLSearchParams(location.search).has('composer-attach')) {
   (window as any).__previewAttachSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
@@ -786,6 +790,13 @@ if (new URLSearchParams(location.search).has('extension-performance')) {
 if (new URLSearchParams(location.search).has('replacement')) (window as any).__previewReplacementModules = () => import('./extensions/replacement');
 if (new URLSearchParams(location.search).has('composer-conformance')) (window as any).__previewComposerModules = async () => ({ ...await import('./extensions/component-slot'), ...await import('./extensions/manager') });
 if (new URLSearchParams(location.search).has('transcript-conformance')) (window as any).__previewTranscriptModules = async () => ({ ...await import('./extensions/component-slot'), ...await import('./extensions/manager'), ...await import('./extensions/contracts') });
+// Explicit transcript extras extension fixture only: the first message carries a project file and a folder, the task is
+// held by a usage limit with a second named connection to continue on, and its checkout has a run script.
+if (new URLSearchParams(location.search).has('thread-extras')) {
+  messages['session-1'][0].content += '\n\nFile context: src/components/search.ts\n```\nexport const search = () => [];\n```\n\nFolder context: /Users/you/Projects/orbit-design (12 files, 3 folders)\nsrc/\nREADME.md';
+  Object.assign(session('session-1'), { limitedAt: now - 60000, limitedUntil: now + 3600000 });
+  previewConnections = { ...previewConnections, connections: [{ id: 'conn-work', provider: 'claude', name: 'Work account', args: [], env: {}, secretEnv: [], revision: 1 }] };
+}
 if (new URLSearchParams(location.search).has('transcript-conformance')) {
   for (let turn = 0; turn < 12; turn++) for (const role of ['user', 'assistant'] as const) messages['session-1'].push({ id: ++id, sessionId: 'session-1', role, content: `Recorded history ${turn}: ${role === 'user' ? 'Review this change.' : 'The change preserves the task history and reading position.'}`, createdAt: now - 20000 + turn });
   // Recorded normalized frames, with the same persistence-before-done ordering as

@@ -31,3 +31,16 @@ export function limitBanner(task: Session, now = Date.now(), alternatives: { id:
   return `<section class="limit-banner" aria-label="Usage limit" data-passed="${passed}">${icon('alert')}<span class="limit-status" role="status">${escape(status)}</span>${toggle}
     <button type="button" class="limit-continue" data-action="limit-continue">Continue now</button>${passed ? '' : alternatives.map(c => `<button type="button" class="limit-continue" data-action="limit-switch" data-connection="${escape(c.id)}">Continue on ${escape(c.name)}</button>`).join('')}<button type="button" class="icon-button" data-action="limit-dismiss" aria-label="Dismiss usage limit" title="Dismiss">${icon('close')}</button></section>`;
 }
+
+/** The usage-limit card's own controls, for the transcript extension adapter (thread-extras-host.ts): Resume at reset,
+ * Continue now and Continue on <connection> reorder in place, Dismiss stays last; Continue now and Dismiss never hide.
+ * Each keeps its original handler; the limit, its reset and the task's connection stay host-owned. */
+export function limitBannerControls(section: HTMLElement): { resume: HTMLElement | null; resumeSwitch: HTMLInputElement | null; continue: HTMLElement | null; switches: HTMLElement[]; dismiss: HTMLElement | null } {
+  const buttons = [...section.querySelectorAll<HTMLElement>(':scope > button')];
+  return {
+    resume: section.querySelector<HTMLElement>(':scope > .limit-resume'), resumeSwitch: section.querySelector<HTMLInputElement>(':scope > .limit-resume .limit-resume-switch'),
+    continue: buttons.find(button => button.dataset.action === 'limit-continue') ?? null,
+    switches: buttons.filter(button => button.dataset.action === 'limit-switch'),
+    dismiss: buttons.find(button => button.dataset.action === 'limit-dismiss') ?? null,
+  };
+}

@@ -18,7 +18,13 @@ type Host = {
   openReply(reply: HTMLElement): void;
   /** Where focus returns when the bar closes. */
   restoreFocus(): void;
+  /** The transcript extension adapter (thread-extras-host.ts), when extensions are loaded: it orders and hides the
+   *  bar's own controls in place and adds its action slot after the field, never moving focus or reading the text. */
+  extension?(): ThreadFindExtension | undefined;
 };
+/** Paints the user's order and visibility of the bar's controls (`data-find-control`) and the extension action slot
+ *  onto a drawn bar. The field, its text and composition, Enter and Escape stay the bar's own. */
+export type ThreadFindExtension = Readonly<{ painted(bar: HTMLElement): void }>;
 
 /** Every case-insensitive occurrence of `query` in `root`'s text, as ranges that may span
  *  inline formatting (a match across **bold** text is still one match). */
@@ -31,7 +37,7 @@ export function findRanges(root: ParentNode, query: string): Range[] {
     let text = '';
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-      if (node.parentElement?.closest('.message-actions, .sr-only')) continue;
+      if (node.parentElement?.closest('.message-actions, .sr-only, .extension-action-slot')) continue;
       nodes.push(node); starts.push(text.length); text += node.data;
     }
     const haystack = text.toLocaleLowerCase();
@@ -57,7 +63,7 @@ export function findRanges(root: ParentNode, query: string): Range[] {
 
 export function createThreadFind(host: Host) {
   let bar: HTMLElement | undefined, input: HTMLInputElement | undefined, count: HTMLElement | undefined;
-  let ranges: Range[] = [], current = -1, frame = 0;
+  let ranges: Range[] = [], current = -1, frame = 0, composing = false;
   const highlights = typeof CSS !== 'undefined' && 'highlights' in CSS ? (CSS as unknown as { highlights: Map<string, unknown> }).highlights : undefined;
   const Highlight = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
   const observer = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; search(false); }); });
@@ -161,9 +167,11 @@ export function createThreadFind(host: Host) {
       bar = document.createElement('div');
       bar.className = 'thread-find';
       bar.setAttribute('role', 'search');
-      bar.innerHTML = `${icon('search')}<input type="search" aria-label="Find in thread" placeholder="Find in thread" autocomplete="off" spellcheck="false" maxlength="200"><span class="thread-find-count" aria-live="polite"></span><button type="button" class="icon-button thread-find-previous" data-find-step="-1" aria-label="Previous match" title="Previous match (⇧↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-step="1" aria-label="Next match" title="Next match (↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-close aria-label="Close find" title="Close (Esc)">${icon('close')}</button>`;
+      bar.innerHTML = `${icon('search')}<input type="search" aria-label="Find in thread" placeholder="Find in thread" autocomplete="off" spellcheck="false" maxlength="200"><span class="thread-find-count" data-find-control="count" aria-live="polite"></span><button type="button" class="icon-button thread-find-previous" data-find-step="-1" data-find-control="previous" aria-label="Previous match" title="Previous match (⇧↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-step="1" data-find-control="next" aria-label="Next match" title="Next match (↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-close data-find-control="close" aria-label="Close find" title="Close (Esc)">${icon('close')}</button>`;
       input = bar.querySelector('input')!; count = bar.querySelector<HTMLElement>('.thread-find-count')!;
       input.addEventListener('input', () => search(true));
+      input.addEventListener('compositionstart', () => { composing = true; });
+      input.addEventListener('compositionend', () => { composing = false; });
       input.addEventListener('keydown', event => {
         if (event.key === 'Enter' && !isImeKey(event)) { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
@@ -181,10 +189,15 @@ export function createThreadFind(host: Host) {
     }
     place();
     input!.focus(); input!.select();
+    paintExtension();
     if (input!.value) search(true); else label();
   }
 
+  /** The adapter paints after the field took focus, so its slot never steals it. */
+  function paintExtension(): void { if (bar?.isConnected) host.extension?.()?.painted(bar); }
+
   function close(): void {
+    composing = false;
     observer.disconnect(); resize?.disconnect();
     window.removeEventListener('resize', place);
     cancelAnimationFrame(frame); frame = 0;
@@ -196,6 +209,10 @@ export function createThreadFind(host: Host) {
   return {
     open, close,
     isOpen: () => Boolean(bar?.isConnected),
+    /** Paints the extension adapter's order, visibility and slot again (layout or extension change). */
+    relayout: paintExtension,
+    /** For the adapter's captured actions: whether the field is composing and its text, which never leaves the host. */
+    state: () => ({ open: Boolean(bar?.isConnected), composing, query: input?.value ?? '' }),
     /** ⌘G / ⇧⌘G while the bar is open. */
     step: (by: 1 | -1) => { if (bar?.isConnected) step(by); },
   };

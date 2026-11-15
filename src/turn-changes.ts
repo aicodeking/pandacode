@@ -128,6 +128,17 @@ export function changeRequest(element: HTMLElement): { sessionId: string; change
   return { sessionId: card.dataset.sessionId, changes: JSON.parse(card.dataset.changes) as TurnChanges, path: element.dataset.path };
 }
 
+/** A changes card's or footer's own controls, for the transcript extension adapter (thread-extras-host.ts): Run and
+ * Open diff reorder and hide in place, and the card's file rows open their diff. The captured target is the turn's
+ * change set and its changed paths (`changeRequest`); patch bodies never leave the host. */
+export function turnChangesControls(section: HTMLElement): { open: HTMLElement | null; run: HTMLElement | null; files: HTMLElement[] } {
+  return {
+    open: section.querySelector<HTMLElement>(':scope > .turn-card-foot-open, :scope > .turn-changes-actions > .turn-changes-open'),
+    run: section.querySelector<HTMLElement>(':scope > .turn-changes-run, :scope > .turn-changes-actions > .turn-changes-run'),
+    files: [...section.querySelectorAll<HTMLElement>('.turn-change-tree .turn-change-file')],
+  };
+}
+
 export function captureChangeCards(root: ParentNode): Map<string, boolean> {
   return new Map([...root.querySelectorAll<HTMLDetailsElement>('details[data-change-key]')].map(el => [el.dataset.changeKey!, el.open]));
 }
