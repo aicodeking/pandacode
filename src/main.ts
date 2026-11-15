@@ -4630,6 +4630,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   // A run that started or ended since the details were asked for owns the run's own fields; the rest still apply.
   applyTaskDetails(id, details, asked, steady && state.streams.get(id) === requestedStream && finishingStreams.get(id) === requestedFinishing);
   renderHeader(); renderComposer();
+  // A limit that reset while the thread was closed re-renders its banner and releases its queue hold here.
+  scheduleLimitResumes();
   // What the queue held back while the team was unknown goes now.
   if (queueOf(id).length) run(dispatchQueue(id));
   // A saved team can select a harness whose catalog has not been opened this run.
@@ -5209,16 +5211,28 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
   }
 }
 let limitTimer = 0;
-/** Continues limited tasks set to resume at reset; overdue ones (after a restart) continue at once. */
+/** Resolves a limit whose reset has passed: the opted-in task continues then; the others get the queue's
+ *  Resume back (nothing sends by itself — the banner's Continue now and the queue's Resume stay explicit). */
+function resolvePassedLimit(task: Session): void {
+  if (task.resumeAtReset) return void run(continueAfterLimit(task));
+  if (state.queueHolds.get(task.id) === 'limited') state.queueHolds.set(task.id, 'reset');
+  if (task.id === state.sessionId) renderComposer();
+  renderNavigation();
+}
+/** Re-checks limited tasks when their reset passes; tasks without a reported reset stay until resolved by hand. */
 function scheduleLimitResumes(): void {
   window.clearTimeout(limitTimer);
-  const waiting = state.sessions.filter(task => task.resumeAtReset && task.limitedUntil && !task.archived);
-  if (!waiting.length) return;
-  const next = Math.min(...waiting.map(task => task.limitedUntil!));
+  const waiting = state.sessions.filter(task => task.limitedAt && task.limitedUntil && !task.archived);
+  const now = Date.now();
+  // Resets that already passed resolve right away (after a restart, or when a reload cut the timer short).
+  for (const task of waiting) if (task.limitedUntil! <= now) resolvePassedLimit(task);
+  const future = waiting.filter(task => task.limitedUntil! > now);
+  if (!future.length) return;
+  const next = Math.min(...future.map(task => task.limitedUntil!));
   limitTimer = window.setTimeout(() => {
-    for (const task of state.sessions.filter(item => item.resumeAtReset && item.limitedUntil && item.limitedUntil <= Date.now() + 1000 && !item.archived)) run(continueAfterLimit(task));
+    for (const task of state.sessions.filter(item => item.limitedAt && item.limitedUntil && item.limitedUntil! <= Date.now() + 1000 && !item.archived)) resolvePassedLimit(task);
     scheduleLimitResumes();
-  }, Math.min(Math.max(0, next - Date.now()), 2147483647));
+  }, Math.min(next - now, 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 /** Waits for the task's model, effort or permission change still saving; false when one was refused (said once, as
@@ -5237,7 +5251,7 @@ async function continueAfterLimit(task: Session, text = 'Continue where you left
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
   if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishing) return;
   const hold = state.queueHolds.get(task.id);
-  if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
+  if (hold === 'limited' || hold === 'reset' || hold === 'restart') state.queueHolds.delete(task.id);
   task.resumeAtReset = false;
   state.queueBusy.add(task.id);
   try {
@@ -6003,6 +6017,7 @@ function onAgent(event: AgentEvent): void {
     // A bot's limit already shows as its sidebar chip and above its composer.
     if (!sidebarBots.some(bot => bot.projectId === s.projectId)) notify(`${s.title || 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
+    scheduleLimitResumes();
     return;
   }
   if ((event.kind === 'approval_cancelled' || event.kind === 'input_cancelled') && !state.streams.has(event.sessionId)) return;
