@@ -80,7 +80,7 @@ import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, 
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
-import { languagePref, t } from './i18n.ts';
+import { languagePref, t, tBackend } from './i18n.ts';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';

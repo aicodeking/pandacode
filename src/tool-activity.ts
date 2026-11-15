@@ -1,8 +1,8 @@
 import type { ToolActivity } from './types';
 import { escape, icon } from './dom.ts';
 import { machineResult, pandacodeTool } from './tool-trace-pandacode.ts';
-import {
 import { t } from './i18n.ts';
+import {
   PARTIAL, describeTool, groupTallies, toolBlocked, toolFailed, summarizeGroup, summaryIcons, toolPreview, traceIcon, traceRowHtml,
 } from './tool-trace.ts';
 
