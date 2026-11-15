@@ -630,7 +630,7 @@ async fn solve_issue(app: &tauri::AppHandle, from: &str, full_access: bool, task
         let named = solve_title(number, &title);
         let saved = crate::blocking(move || {
             let store = store.lock().map_err(|e| e.to_string())?;
-            store.set_task_link(&session_id, "issue", Some(&link))?;
+            store.set_task_link(&session_id, "issue", "", Some(&link))?;
             store.update(&session_id, Some(named), None, None, None)
         })
         .await;

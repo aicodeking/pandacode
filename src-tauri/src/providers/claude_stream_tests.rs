@@ -157,6 +157,22 @@ fn app_instructions_ride_the_cached_system_prompt_not_every_message() {
     assert!(!super::takes_system_instructions("codex"));
 }
 
+#[test]
+fn extra_folders_become_add_dir_pairs_in_command_order() {
+    let args_for = |extra: &[&str]| -> Vec<String> {
+        let mut config = config("claude");
+        config.extra_dirs = extra.iter().map(std::path::PathBuf::from).collect();
+        let mut command = tokio::process::Command::new("claude");
+        super::configure_command(&mut command, &config);
+        command.as_std().get_args().map(|arg| arg.to_string_lossy().to_string()).collect()
+    };
+    // A single-folder task keeps today's command line exactly: no --add-dir.
+    assert!(!args_for(&[]).iter().any(|arg| arg == "--add-dir"));
+    let args = args_for(&["/repo/backend", "/repo/web"]);
+    let dirs: Vec<_> = args.windows(2).filter(|pair| pair[0] == "--add-dir").map(|pair| pair[1].clone()).collect();
+    assert_eq!(dirs, ["/repo/backend", "/repo/web"]);
+}
+
 /// Frames recorded from Claude Code 2.1.308 (`-p --input-format stream-json
 /// --replay-user-messages`, haiku) with a steer written to stdin as the first
 /// turn ended: Claude answers it as a second turn of the same process.

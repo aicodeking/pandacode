@@ -203,3 +203,19 @@
    ring, drawn inside the body's clip at its inner radius. */
 .cv-file-body :is(.diff-viewer-content, diffs-container):focus { outline: none; }
 .cv-file-body:has(.diff-viewer-content:focus-visible, diffs-container:focus) { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* One slim heading per repository in a multi-folder task; a single folder draws none. */
+.cv-repo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  margin: 6px 4px 0;
+  padding: 0 2px 0 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cv-repo:first-child { margin-top: 2px; }
+.cv-repo-name { overflow: hidden; text-overflow: ellipsis; font-weight: var(--weight-medium); color: var(--text); }
+.cv-repo-branch, .cv-repo-ahead, .cv-repo-behind { font-family: var(--mono); font-size: var(--text-2xs); flex: 0 0 auto; }
+.cv-repo .cv-icon { width: 22px; height: 22px; }

@@ -5,6 +5,8 @@ import { showPopover, hidePopover } from './popover-motion';
 type ProjectPickerOptions = {
   anchor: HTMLElement;
   projects: Project[];
+  /** Folder counts per project id; projects with more than one show the count. */
+  folderCounts?: Map<string, number>;
   currentProjectId: string;
   onSelect: (projectId: string) => Promise<void>;
   onNewProject: () => void;
@@ -95,7 +97,11 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     const query = search.value.trim().toLowerCase();
     const matches = projects.filter(project => `${project.name}\n${project.path}`.toLowerCase().includes(query));
     const visible = matches.slice(0, 100);
-    list.innerHTML = visible.map(project => `<button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span><span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>`).join('');
+    list.innerHTML = visible.map(project => {
+      const folders = options.folderCounts?.get(project.id) ?? 0;
+      const count = folders > 1 ? `<span class="project-menu-folders">${folders} folders</span>` : '';
+      return `<button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + (count ? ` — ${folders} folders` : '') + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span>${count}<span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>`;
+    }).join('');
     empty.hidden = visible.length > 0;
     empty.textContent = projects.length ? 'No matching projects.' : 'No projects yet.';
     count.hidden = matches.length <= visible.length;

@@ -5,10 +5,11 @@ import './changes-view.css';
 import { errorText } from './error-text';
 
 export interface ChangesViewDeps {
-  loadDiff(path: string, staged: boolean): Promise<string>;
-  stage(paths: string[], staged: boolean): Promise<void>;
-  commit(message: string): Promise<void>;
-  openFile(path: string): void;
+  loadDiff(path: string, staged: boolean, folder?: string): Promise<string>;
+  stage(paths: string[], staged: boolean, folder?: string): Promise<void>;
+  commit(message: string, folder?: string): Promise<void>;
+  /** Opens a changed file; `folder` is the entry's repository qualifier, so the host never re-derives it from the qualified path. */
+  openFile(path: string, folder?: string): void;
   refresh(): void;
   notify(message: string): void;
   notifyError?(message: string): void;
@@ -29,7 +30,7 @@ export interface ChangesView {
 type Scope = 'all' | 'unstaged' | 'staged';
 type Load = 'idle' | 'loading' | 'loaded' | 'evicted' | 'error';
 interface Entry {
-  path: string; staged: boolean; sig: string; code: string;
+  path: string; folder: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
   near: boolean; refresh: boolean; used: number; height?: number; reader?: DiffViewerReaderState;
@@ -37,6 +38,9 @@ interface Entry {
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
 }
+/** One repository's slice of the status; the single-folder task has one unnamed group. The
+ * primary repository keeps bare paths: its `folder` qualifier is empty even when it has a label. */
+interface RepoGroup { label: string; folder: string; branch: string; ahead: number; behind: number; files: GitFile[] }
 
 const REFETCH_GAP = 1_000;
 const PATCH_CACHE_BYTES = 16 * 1024 * 1024;
@@ -87,12 +91,14 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let error: string | undefined;
   let disposed = false, showing = true;
   let committing = false, lastUsed = 0;
+  /** The repository the open commit bar will commit; '' is the primary (or the only) one. */
+  let commitFolder = '';
   const entries = new Map<string, Entry>();
   const collapsed = new Set<string>();
   let order: string[] = [];
   let viewerModule: Promise<typeof import('./diff-viewer')> | undefined;
   let lastRefetch = 0, refetchTimer = 0, fitFrame = 0;
-  let listReader: { path: string; state: DiffViewerReaderState } | undefined;
+  let listReader: { key: string; state: DiffViewerReaderState } | undefined;
   let lastBodyScrollTop = 0;
   let pendingListScrollTop: number | undefined;
   let foldScrollTop: number | undefined;
@@ -117,9 +123,23 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   const addsLabel = q('.cv-adds'), delsLabel = q('.cv-dels'), branchLabel = q('.cv-branch'), foldButton = q<HTMLButtonElement>('[data-cv-action="fold-all"]');
   const commitBar = q<HTMLFormElement>('.cv-commit'), commitInput = q<HTMLInputElement>('.cv-commit-input'), commitSubmit = q<HTMLButtonElement>('.cv-commit-submit');
 
+  /** Entries are keyed by folder label plus path, so paths never collide across repositories. */
+  const entryKey = (path: string, folder: string): string => folder ? `${folder}\0${path}` : path;
+  const keyOf = (entry: Entry): string => entryKey(entry.path, entry.folder);
+  const multi = (): boolean => (status?.repos?.length ?? 0) > 1;
+  const groups = (): RepoGroup[] => {
+    if (!status?.isRepo) return [];
+    if (multi()) return (status.repos ?? []).map((repo, index) => ({ label: repo.label, folder: index === 0 ? '' : repo.label, branch: repo.branch, ahead: repo.ahead, behind: repo.behind, files: repo.files }));
+    return [{ label: '', folder: '', branch: '', ahead: 0, behind: 0, files: status.files }];
+  };
+  const filesOf = (folder: string): GitFile[] => folder ? groups().find(group => group.folder === folder)?.files ?? [] : status?.isRepo ? status.files : [];
+  const stagedFiles = (folder = '') => filesOf(folder).filter(isStaged);
+  const unstagedFiles = (folder = '') => filesOf(folder).filter(isUnstaged);
+
   const observer = new IntersectionObserver(records => {
     for (const record of records) {
-      const entry = entries.get((record.target as HTMLElement).dataset.path ?? '');
+      const el = record.target as HTMLElement;
+      const entry = entries.get(entryKey(el.dataset.path ?? '', el.dataset.repo ?? ''));
       if (!entry) continue;
       entry.near = record.isIntersecting;
       if (entry.near) show(entry);
@@ -137,17 +157,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   });
   resizer.observe(body);
 
-  const files = (): GitFile[] => status?.isRepo ? status.files : [];
-  const stagedFiles = () => files().filter(isStaged);
-  const unstagedFiles = () => files().filter(isUnstaged);
-
-  function visible(): { file: GitFile; staged: boolean }[] {
-    return files().flatMap(file => {
+  function visible(): { file: GitFile; staged: boolean; folder: string }[] {
+    return groups().flatMap(group => group.files.flatMap(file => {
       const s = isStaged(file), u = isUnstaged(file);
-      if (scope === 'staged') return s ? [{ file, staged: true }] : [];
-      if (scope === 'unstaged') return u ? [{ file, staged: false }] : [];
-      return s || u ? [{ file, staged: !u }] : [];
-    }).sort((a, b) => a.file.path.localeCompare(b.file.path));
+      if (scope === 'staged') return s ? [{ file, staged: true, folder: group.folder }] : [];
+      if (scope === 'unstaged') return u ? [{ file, staged: false, folder: group.folder }] : [];
+      return s || u ? [{ file, staged: !u, folder: group.folder }] : [];
+    }).sort((a, b) => a.file.path.localeCompare(b.file.path)));
   }
 
   function setStat(entry: Entry): void {
@@ -210,15 +226,16 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     foldButton.setAttribute('aria-label', foldButton.title);
     foldButton.setAttribute('aria-pressed', String(allFolded));
     foldButton.disabled = !n;
-    commitSubmit.disabled = committing || !stagedFiles().length || !commitInput.value.trim();
+    commitSubmit.disabled = committing || !stagedFiles(commitFolder).length || !commitInput.value.trim();
   }
 
-  function element(path: string): Entry['el'] {
+  function element(path: string, folder: string): Entry['el'] {
     const slash = path.lastIndexOf('/');
     const name = path.slice(slash + 1), dir = slash > 0 ? path.slice(0, slash) : '';
     const el = document.createElement('section');
     el.className = 'cv-file';
     el.dataset.path = path;
+    if (folder) el.dataset.repo = folder;
     el.innerHTML = `
       <div class="cv-file-header">
         <button type="button" class="cv-toggle" data-cv-action="toggle" aria-expanded="true" aria-label="Collapse ${escape(path)}">${icon('chevron', 'cv-chevron')}</button>
@@ -233,6 +250,23 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     return el;
   }
 
+  /** The slim per-repository heading shown only when the task spans several. */
+  function repoHeading(group: RepoGroup): HTMLElement {
+    const el = document.createElement('div');
+    el.className = 'cv-repo';
+    el.dataset.repo = group.label;
+    const counts = [
+      group.ahead ? `<span class="cv-repo-ahead" title="${group.ahead} ahead of the remote">↑${group.ahead}</span>` : '',
+      group.behind ? `<span class="cv-repo-behind" title="${group.behind} behind the remote">↓${group.behind}</span>` : '',
+    ].join('');
+    el.innerHTML = `<span class="cv-repo-name" title="${escape(group.label)}">${escape(group.label)}</span>` +
+      (group.branch ? `<span class="cv-repo-branch" title="Branch ${escape(group.branch)}">${escape(group.branch)}</span>` : '') +
+      counts +
+      `<span class="cv-spacer"></span>` +
+      iconButton('repo-menu', `${group.label} actions`, icon('more'), 'aria-haspopup="menu"').replace('data-cv-action', `data-repo="${escape(group.label)}" data-cv-action`);
+    return el;
+  }
+
   function drop(entry: Entry): void {
     if (entry.viewer) entry.reader = entry.viewer.getReaderState();
     entry.viewer?.dispose();
@@ -241,19 +275,19 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   /** The Changes list owns its one outer scroll position; individual entries never do. */
-  function captureListReader(path?: string): void {
+  function captureListReader(key?: string): void {
     const scrollTop = body.clientHeight > 0 ? body.scrollTop : lastBodyScrollTop;
-    if (!path) pendingListScrollTop = scrollTop;
+    if (!key) pendingListScrollTop = scrollTop;
     listReader = undefined;
     for (const entry of entries.values()) {
-      if (path && entry.path !== path) continue;
+      if (key && keyOf(entry) !== key) continue;
       if (entry.viewer) {
         if (body.clientHeight > 0) entry.height = entry.body.getBoundingClientRect().height || entry.height;
         entry.reader = entry.viewer.getReaderState();
       }
       const state = entry.reader;
       if (state?.anchor && Math.abs(state.top - scrollTop) <= 1 && (!listReader || state.anchor.offset < listReader.state.anchor!.offset)) {
-        listReader = { path: entry.path, state };
+        listReader = { key: keyOf(entry), state };
       }
     }
   }
@@ -273,7 +307,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     let total = 0;
     for (const entry of entries.values()) total += bytes(entry);
     if (total <= PATCH_CACHE_BYTES) return;
-    const candidates = [...entries.values()].filter(entry => entry.load === 'loaded' && (!showing || !entry.near || collapsed.has(entry.path))).sort((a, b) => a.used - b.used);
+    const candidates = [...entries.values()].filter(entry => entry.load === 'loaded' && (!showing || !entry.near || collapsed.has(keyOf(entry)))).sort((a, b) => a.used - b.used);
     for (const entry of candidates) {
       if (total <= PATCH_CACHE_BYTES) break;
       suspend(entry);
@@ -302,7 +336,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const pill = entry.el.querySelector<HTMLElement>('.cv-pill')!;
     pill.textContent = label;
     pill.dataset.status = label.toLowerCase();
-    const folded = collapsed.has(entry.path);
+    const folded = collapsed.has(keyOf(entry));
     entry.el.classList.toggle('collapsed', folded);
     const toggle = entry.el.querySelector<HTMLElement>('.cv-toggle')!;
     toggle.setAttribute('aria-expanded', String(!folded));
@@ -315,8 +349,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const token = ++entry.token;
     if (!quiet) entry.load = 'loading';
     try {
-      const text = await deps.loadDiff(entry.path, entry.staged);
-      if (disposed || entries.get(entry.path) !== entry || token !== entry.token) return;
+      const text = await deps.loadDiff(entry.path, entry.staged, entry.folder || undefined);
+      if (disposed || entries.get(keyOf(entry)) !== entry || token !== entry.token) return;
       if (quiet && entry.load === 'loaded' && text === entry.raw) { mountViewer(entry); return; }
       entry.raw = text;
       const truncated = TRUNCATED.test(text);
@@ -339,11 +373,11 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   /** Mounts the patch, or swaps in a new viewer once it has rendered so the old one never flashes away. */
   function mountViewer(entry: Entry): void {
-    if (!showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
-    const token = entry.token, raw = entry.raw;
+    if (!showing || entries.get(keyOf(entry)) !== entry || collapsed.has(keyOf(entry)) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
+    const token = entry.token, raw = entry.raw, key = keyOf(entry);
     viewerModule ??= import('./diff-viewer');
     viewerModule.then(({ mountDiffViewer }) => {
-      if (disposed || !showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
+      if (disposed || !showing || entries.get(key) !== entry || collapsed.has(key) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
       const slot = document.createElement('div');
       slot.className = 'cv-diff';
       if (entry.viewer && entry.slot) {
@@ -351,7 +385,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         slot.classList.add('cv-diff-next');
         entry.body.append(slot);
       } else entry.body.replaceChildren(slot);
-      const saved = listReader?.path === entry.path ? listReader.state : entry.reader;
+      const saved = listReader?.key === key ? listReader.state : entry.reader;
       const viewer = mountDiffViewer(slot, {
         patch: entry.patch,
         path: entry.path,
@@ -369,7 +403,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
         entry.body.style.minHeight = '';
-        const restore = listReader?.path === entry.path ? listReader : undefined;
+        const restore = listReader?.key === key ? listReader : undefined;
         if (entry.reader || restore) viewer.restoreReaderState(restore?.state ?? entry.reader!, { vertical: Boolean(restore) });
         if (restore) { listReader = undefined; pendingListScrollTop = undefined; }
         entry.height = entry.body.getBoundingClientRect().height || entry.height;
@@ -414,47 +448,58 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     totals();
   }
 
-  function sync(wanted: { file: GitFile; staged: boolean }[]): void {
+  function sync(wanted: { file: GitFile; staged: boolean; folder: string }[]): void {
     list.querySelector('.cv-state')?.remove();
-    const keep = new Set(wanted.map(w => w.file.path));
-    for (const [path, entry] of entries) {
-      if (keep.has(path)) continue;
+    const keep = new Set(wanted.map(w => entryKey(w.file.path, w.folder)));
+    for (const [key, entry] of entries) {
+      if (keep.has(key)) continue;
       drop(entry);
       observer.unobserve(entry.el);
       entry.el.remove();
-      entries.delete(path);
+      entries.delete(key);
     }
     let previous: Element | null = null;
     const fresh: Entry[] = [];
-    wanted.forEach(({ file, staged }) => {
-      const sig = `${file.index}${file.working}:${staged ? 1 : 0}`;
-      let entry = entries.get(file.path);
-      if (!entry) {
-        const el = element(file.path);
-        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, used: 0, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
-        entries.set(file.path, entry);
-        observer.observe(el);
-        fresh.push(entry);
-      } else if (entry.sig !== sig) {
-        entry.sig = sig;
-        entry.staged = staged;
-        const wasLoaded = entry.load !== 'idle';
-        reset(entry);
-        if (wasLoaded) show(entry);
-      }
-      const side = staged ? file.index : (file.index === '?' ? '?' : file.working);
-      paint(entry, side);
+    const place = (el: HTMLElement): void => {
       const next: Element | null = previous ? previous.nextElementSibling : list.firstElementChild;
-      if (next !== entry.el) list.insertBefore(entry.el, next);
-      previous = entry.el;
-    });
-    order = wanted.map(w => w.file.path);
+      if (next !== el) list.insertBefore(el, next);
+      previous = el;
+    };
+    // A multi-folder task interleaves one heading per repository with its own files; a single
+    // folder keeps the flat list. Headings are few and static, so they redraw with the groups.
+    const sections = multi() ? groups().map(group => ({ group, rows: wanted.filter(w => w.folder === group.folder) })).filter(section => section.rows.length)
+      : [{ group: { label: '', folder: '', branch: '', ahead: 0, behind: 0, files: [] }, rows: wanted }];
+    for (const heading of [...list.querySelectorAll('.cv-repo')]) heading.remove();
+    for (const { group, rows } of sections) {
+      if (multi()) place(repoHeading(group));
+      for (const { file, staged, folder } of rows) {
+        const key = entryKey(file.path, folder), sig = `${file.index}${file.working}:${staged ? 1 : 0}`;
+        let entry = entries.get(key);
+        if (!entry) {
+          const el = element(file.path, folder);
+          entry = { path: file.path, folder, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, used: 0, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
+          entries.set(key, entry);
+          observer.observe(el);
+          fresh.push(entry);
+        } else if (entry.sig !== sig) {
+          entry.sig = sig;
+          entry.staged = staged;
+          const wasLoaded = entry.load !== 'idle';
+          reset(entry);
+          if (wasLoaded) show(entry);
+        }
+        const side = staged ? file.index : (file.index === '?' ? '?' : file.working);
+        paint(entry, side);
+        place(entry.el);
+      }
+    }
+    order = wanted.map(w => entryKey(w.file.path, w.folder));
     if (fresh.length) scheduleFit();
   }
 
   /** Hidden panels and folded files keep budgeted patch text, but never start the diff engine. */
   function show(entry: Entry): void {
-    if (!showing || !entry.near || collapsed.has(entry.path)) return;
+    if (!showing || !entry.near || collapsed.has(keyOf(entry))) return;
     entry.used = ++lastUsed;
     if (entry.load === 'idle' || entry.load === 'evicted' || entry.refresh) {
       entry.refresh = false;
@@ -462,10 +507,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     } else mountViewer(entry);
   }
 
-  function toggle(path: string, folded = !collapsed.has(path), captureAnchor = true): void {
-    if (folded && captureAnchor) captureListReader(path);
-    if (folded) collapsed.add(path); else collapsed.delete(path);
-    const entry = entries.get(path);
+  function toggle(key: string, folded = !collapsed.has(key), captureAnchor = true): void {
+    if (folded && captureAnchor) captureListReader(key);
+    if (folded) collapsed.add(key); else collapsed.delete(key);
+    const entry = entries.get(key);
     if (entry) {
       if (folded) suspend(entry);
       paint(entry, entry.code);
@@ -483,7 +528,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     try { await task; } catch (reason) { (deps.notifyError ?? deps.notify)(errorText(reason, failure)); }
   }
 
-  function openCommit(): void {
+  function openCommit(folder = ''): void {
+    commitFolder = folder;
     commitBar.hidden = false;
     totals();
     commitInput.focus();
@@ -491,15 +537,16 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   function closeCommit(): void {
     commitBar.hidden = true;
     commitInput.value = '';
+    commitFolder = '';
     totals();
   }
   async function submitCommit(): Promise<void> {
     const text = commitInput.value.trim();
-    if (!text || committing || !stagedFiles().length) return;
+    if (!text || committing || !stagedFiles(commitFolder).length) return;
     committing = true;
     totals();
     try {
-      await deps.commit(text);
+      await deps.commit(text, commitFolder || undefined);
       if (!disposed) closeCommit();
     } catch (reason) {
       (deps.notifyError ?? deps.notify)(errorText(reason, 'Commit failed'));
@@ -509,12 +556,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     }
   }
 
-  function copy(path: string): void {
-    void navigator.clipboard.writeText(path).then(() => deps.notify('Copied path'), () => (deps.notifyError ?? deps.notify)('Unable to copy path'));
+  function copy(path: string, folder = ''): void {
+    const full = folder ? `${folder}/${path}` : path;
+    void navigator.clipboard.writeText(full).then(() => deps.notify('Copied path'), () => (deps.notifyError ?? deps.notify)('Unable to copy path'));
   }
 
-  function fileMenu(anchor: HTMLElement, path: string): void {
-    const file = files().find(f => f.path === path);
+  function fileMenu(anchor: HTMLElement, path: string, folder: string): void {
+    const file = filesOf(folder).find(f => f.path === path);
     if (!file) return;
     const items = [
       ...(isUnstaged(file) ? [{ id: 'stage', label: 'Stage file', icon: 'plus' }] : []),
@@ -523,9 +571,23 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       { id: 'copy', label: 'Copy path', icon: 'copy' },
     ];
     deps.choose(anchor, path, items, id => {
-      if (id === 'stage' || id === 'unstage') void run(deps.stage([path], id === 'stage'), id === 'stage' ? 'Unable to stage file' : 'Unable to unstage file');
-      else if (id === 'open') deps.openFile(path);
-      else if (id === 'copy') copy(path);
+      if (id === 'stage' || id === 'unstage') void run(deps.stage([path], id === 'stage', folder || undefined), id === 'stage' ? 'Unable to stage file' : 'Unable to unstage file');
+      else if (id === 'open') deps.openFile(folder ? `${folder}/${path}` : path, folder || undefined);
+      else if (id === 'copy') copy(path, folder);
+    });
+  }
+
+  /** One repository's stage/commit actions; each names its repo, the flow stays the single commit bar. */
+  function repoMenu(anchor: HTMLElement, folder: string): void {
+    const staged = stagedFiles(folder).map(f => f.path), unstaged = unstagedFiles(folder).map(f => f.path);
+    deps.choose(anchor, folder, [
+      { id: 'stage-all', label: 'Stage all', icon: 'plus', disabled: !unstaged.length },
+      { id: 'unstage-all', label: 'Unstage all', icon: 'minimize', disabled: !staged.length },
+      { id: 'commit', label: 'Commit…', icon: 'check' },
+    ], id => {
+      if (id === 'stage-all' && unstaged.length) void run(deps.stage(unstaged, true, folder || undefined), 'Unable to stage files');
+      else if (id === 'unstage-all' && staged.length) void run(deps.stage(staged, false, folder || undefined), 'Unable to unstage files');
+      else if (id === 'commit') openCommit(folder);
     });
   }
 
@@ -533,7 +595,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-cv-action]');
     if (!target || !host.contains(target)) return;
     event.stopPropagation();
-    const path = target.closest<HTMLElement>('.cv-file')?.dataset.path ?? '';
+    const row = target.closest<HTMLElement>('.cv-file');
+    const path = row?.dataset.path ?? '';
+    const folder = row?.dataset.repo ?? '';
+    const key = entryKey(path, folder);
     switch (target.dataset.cvAction) {
       case 'scope':
         deps.choose(target, 'Show', (Object.keys(SCOPES) as Scope[]).map(id => ({ id, label: SCOPES[id], selected: id === scope })), id => {
@@ -566,7 +631,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
               pendingListScrollTop = rounded;
             }
           }
-          const target = savedReader ? entries.get(savedReader.path) : undefined;
+          const target = savedReader ? entries.get(savedReader.key) : undefined;
           if (target && savedReader) {
             if (target.viewer) {
               target.viewer.restoreReaderState(savedReader.state, { vertical: true });
@@ -581,11 +646,15 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         break;
       }
       case 'menu': {
+        // Per-repository stage and commit live in each group's own menu; the top menu stays global.
+        const grouped = multi();
         const staged = stagedFiles().map(f => f.path), unstaged = unstagedFiles().map(f => f.path);
         deps.choose(target, 'Changes', [
-          { id: 'stage-all', label: 'Stage all', icon: 'plus', disabled: !unstaged.length },
-          { id: 'unstage-all', label: 'Unstage all', icon: 'minimize', disabled: !staged.length },
-          { id: 'commit', label: 'Commit…', icon: 'check', disabled: !status?.isRepo },
+          ...(!grouped ? [
+            { id: 'stage-all', label: 'Stage all', icon: 'plus', disabled: !unstaged.length },
+            { id: 'unstage-all', label: 'Unstage all', icon: 'minimize', disabled: !staged.length },
+            { id: 'commit', label: 'Commit…', icon: 'check', disabled: !status?.isRepo },
+          ] : []),
           { id: 'refresh', label: 'Refresh', icon: 'refresh' },
           ...(deps.worktree ? [{ id: 'worktree', label: 'Create isolated worktree…', icon: 'branch' }] : []),
         ], id => {
@@ -597,11 +666,12 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         });
         break;
       }
-      case 'toggle': toggle(path); totals(); break;
-      case 'copy': copy(path); break;
-      case 'file-menu': fileMenu(target, path); break;
+      case 'repo-menu': repoMenu(target, target.dataset.repo ?? ''); break;
+      case 'toggle': toggle(key); totals(); break;
+      case 'copy': copy(path, folder); break;
+      case 'file-menu': fileMenu(target, path, folder); break;
       case 'retry': deps.refresh(); break;
-      case 'retry-file': { const entry = entries.get(path); if (entry) { reset(entry); void load(entry); } break; }
+      case 'retry-file': { const entry = entries.get(key); if (entry) { reset(entry); void load(entry); } break; }
     }
   }
 
@@ -623,7 +693,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     if (document.hidden) captureListReader();
     else if (listReader) {
       const restore = listReader;
-      const viewer = entries.get(restore.path)?.viewer;
+      const viewer = entries.get(restore.key)?.viewer;
       if (viewer) {
         viewer.restoreReaderState(restore.state, { vertical: true });
         listReader = undefined;

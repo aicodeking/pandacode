@@ -150,6 +150,8 @@ fn key_with_disabled(
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "fastMode": super::claude_fast_mode(config),
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
+        // A folder added to or removed from the project changes the command line.
+        "extraDirs": config.extra_dirs,
         "instructions": config.instructions, "tools": tools,
         "disabledSkills": disabled,
         // The login a process starts with (API key or subscription) is fixed at spawn.
@@ -174,6 +176,7 @@ fn prepared(mut config: RunConfig, disabled: &std::collections::BTreeSet<String>
 /// The spare's launch as it will run, its key, and the switched-off skills it was keyed with.
 pub(super) fn keyed(mut config: RunConfig, tools: &[Value]) -> (RunConfig, String, std::collections::BTreeSet<String>) {
     config.cwd = external_path(&config.cwd);
+    config.extra_dirs = config.extra_dirs.iter().map(|dir| external_path(dir)).collect();
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
     let config = prepared(config, &disabled);
     let key = key_with_disabled(&config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), &disabled);
@@ -516,6 +519,7 @@ mod tests {
             changed(|c| c.codex_settings = Some(json!({"serviceTier": "fast"}))),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
+            changed(|c| c.extra_dirs = vec![PathBuf::from("/other/repo")]),
             key(&base, &[]),
             key_with(&base, &tools, "work#1"),
         ] {

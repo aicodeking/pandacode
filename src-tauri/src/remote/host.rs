@@ -1762,7 +1762,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             crate::blocking(move || {
                 // `merge_as` refuses a checkout whose config names a program while the switch is off.
                 let link = crate::github_pull::merge_as(&root, Some(&repo), number, &method, trust)?;
-                store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link)).map(|_| ())
+                store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link)).map(|_| ())
             })
             .await?;
             invalidate_pull_cache(&cache_session_id);
@@ -2821,7 +2821,7 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str,
         if store.session(&session_id_owned)?.pull_request.is_some_and(|current| current.number == saved_link.number) {
             return Ok(false);
         }
-        store.set_task_link(&session_id_owned, "pull", Some(&saved_link))?;
+        store.set_task_link(&session_id_owned, "pull", "", Some(&saved_link))?;
         Ok(true)
     })
     .await?;
