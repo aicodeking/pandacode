@@ -588,7 +588,47 @@ export const COMMANDS_PROTECTED = [
   ['panel-actions', 'Command center changes', 'Importing, stopping a job, resuming or forking a conversation, saving preferences and changing a goal need the user\'s own click in the command center.'],
   ['console', 'Harness console', 'An interactive console is a built-in-only capability; packages never open one.'],
 ] as const;
-export type ActionLocation = typeof COMMANDS_ACTION_SURFACES[number] | typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** The Team menu, the Architect & workers setup, the dock's Task actions menu, the Deploy menu and the task Bot
+ * assignment menu (docs/extensions/task-menus.md). Each menu is a host menu that passes an extension surface with its
+ * captured task, team, connections or bot; the menu entries below hide and reorder in place, pinned and protected ones
+ * keep their place and are inspect-only. Starting a team, deleting a task, deploying and assigning a bot keep their
+ * original handlers in main.ts. */
+export const TASK_MENUS_ACTION_SURFACES = ['panda.team.menu', 'panda.team.setup.actions', 'panda.task.menu', 'panda.deploy.menu', 'panda.bot.assignment'] as const;
+export type TaskMenusActionLocation = typeof TASK_MENUS_ACTION_SURFACES[number];
+export const TASK_MENUS_PROTECTED_LOCATION = 'panda.menus.task.protected';
+/** Entries that hide and reorder in each menu, as [id, label]: the id is the menu item's own id in main.ts. */
+export const TASK_MENUS_ENTRIES: Readonly<Record<TaskMenusActionLocation, readonly (readonly [string, string])[]>> = {
+  'panda.team.menu': [['lead', 'Team (the lead picks models)'], ['cheapest', 'Cheap team'], ['balanced', 'Balanced team'], ['quality', 'Best team']],
+  'panda.team.setup.actions': [],
+  'panda.task.menu': [['pin-task', 'Pin or unpin task'], ['rename', 'Rename task'], ['jev-tests', 'Browser tests with Jev'], ['jev-assist', 'Jev assistance'], ['board-complete', 'Settle task'], ['board-reopen', 'Reopen task'], ['goal', 'Manage goal'], ['jobs', 'Background commands'], ['usage', 'Codex usage'], ['copy-path', 'Copy project or worktree path'], ['worktree', 'Work in a new worktree…']],
+  'panda.deploy.menu': [['vercel', 'Deploy to Vercel'], ['cloudflare', 'Deploy to Cloudflare'], ['railway', 'Deploy to Railway'], ['netlify', 'Deploy to Netlify'], ['aws', 'Deploy to AWS'], ['gcloud', 'Deploy to Google Cloud']],
+  'panda.bot.assignment': [],
+};
+/** Menu items that keep their place and never hide, by `<location>/<id>` with the reason. Every other core item of a
+ * menu is in TASK_MENUS_ENTRIES; a bot row is dynamic and always pinned. */
+export const TASK_MENUS_PINNED: Readonly<Record<string, string | undefined>> = {
+  'panda.team.menu/off': 'No team is how a task goes back to a single agent; it never leaves the menu.',
+  'panda.team.menu/named': 'The task\'s named agent team stays listed while it is the task\'s team.',
+  'panda.task.menu/delete-task': 'Deleting a task is destructive and stays in the host\'s own menu, in place.',
+  'panda.task.menu/harness-console': 'An interactive console is a built-in-only capability; its entry stays in place.',
+  'panda.bot.assignment/none': 'No bot is how a task goes back to its own harness and model; it never leaves the menu.',
+};
+/** Protected behavior of these menus: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const TASK_MENUS_PROTECTED = [
+  ['team-off', 'No team', TASK_MENUS_PINNED['panda.team.menu/off']!],
+  ['team-named', 'The task\'s named agent team', TASK_MENUS_PINNED['panda.team.menu/named']!],
+  ['team-save', 'Saving the team setup', 'Architect & workers saves the team, its models and its limits: only the form\'s own Save in the host does; a package request to save or change a team is refused.'],
+  ['team-profile', 'Team profiles', 'Profiles, their rename, update and delete stay in the host\'s profile menu (the panda.roster family).'],
+  ['task-delete', 'Delete task', 'Delete task… is a destructive host action: a package request needs a fresh host choice that runs the original handler once, and the host\'s own confirmation still follows.'],
+  ['task-console', 'Open harness console', TASK_MENUS_PINNED['panda.task.menu/harness-console']!],
+  ['deploy-run', 'Deploy to a platform', 'A deployment starts a new agent task that ships the project: a package request needs a fresh host choice that runs the original handler once.'],
+  ['deploy-credentials', 'Platform connections and credentials', 'Connecting, replacing or disconnecting a platform, its tokens and its project IDs stay in Settings → Agents → Cloud sandboxes; nothing in a Deploy request carries a credential.'],
+  ['bot-assign', 'Assigning a bot', 'Assigning a bot changes the task\'s harness, model and first-message brief: a package request needs a fresh host choice that runs the original handler once.'],
+  ['bot-none', 'No bot', TASK_MENUS_PINNED['panda.bot.assignment/none']!],
+  ['bot-rows', 'The listed bots', 'Bots are the user\'s own: their order is the bots list\'s, and creating, editing or deleting one stays in the Bots panel and settings.'],
+  ['bot-credentials', 'Bot credentials and settings', 'A bot\'s accounts, messaging services and secrets are never visible to a package.'],
+] as const;
+export type ActionLocation = typeof TASK_MENUS_ACTION_SURFACES[number] | typeof COMMANDS_ACTION_SURFACES[number] |typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

@@ -1363,6 +1363,27 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]
+    fn task_menus_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/task-menus/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.task-menus", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        let locations: Vec<&str> = contributes["menus"].as_array().unwrap().iter().map(|menu| menu["location"].as_str().unwrap()).collect();
+        assert_eq!(locations, ["panda.team.menu", "panda.team.setup.actions", "panda.task.menu", "panda.deploy.menu", "panda.bot.assignment"]);
+        assert_eq!(contributes["layouts"][0]["location"], "panda.team.menu");
+        assert_eq!(contributes["layouts"][2]["location"], "panda.deploy.menu");
+        packages.enable("sample.task-menus", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.task-menus", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn tiles_picker_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/tiles-picker/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

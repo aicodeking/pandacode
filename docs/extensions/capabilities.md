@@ -45,6 +45,7 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.board.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.board.detail` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.board.header` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.bot.assignment` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.browser` | data | inspect, replace, move | controls-below | main | — |
 | `panda.browser.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.browser.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
@@ -97,6 +98,7 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.composer.wake.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.wake.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.wake.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.deploy.menu` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.design` | data | inspect, replace, move | comments-first | main | — |
 | `panda.design.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.design.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
@@ -195,6 +197,7 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.machines.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.machines.protected` | data | inspect | button | main | — |
 | `panda.machines.targets` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.menus.task.protected` | data | inspect | button | main | — |
 | `panda.moodboards` | data | inspect, replace, move | viewer-first | main | — |
 | `panda.moodboards.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.moodboards.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
@@ -246,9 +249,12 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.status.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.status.items` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.status.protected` | data | inspect | button | main | — |
+| `panda.task.menu` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.team.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.team.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.team.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.team.menu` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.team.setup.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.terminal` | data | inspect, replace, move, hide, show | tabs-below | main | — |
 | `panda.terminal.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.terminal.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |

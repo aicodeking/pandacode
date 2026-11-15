@@ -1,0 +1,126 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.task-menus",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.task-menus/toolbar",
+        "title": "Toolbar-first task menus",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.task-menus/team-notes",
+        "title": "Team notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Team notes",
+            "successMessage": "Team notes kept.",
+            "cancelMessage": "The team stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Team tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.task-menus/setup-notes",
+        "title": "Setup notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Setup notes",
+            "successMessage": "Setup notes kept.",
+            "cancelMessage": "The setup stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Setup tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.task-menus/task-notes",
+        "title": "Task notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Task notes",
+            "successMessage": "Task notes kept.",
+            "cancelMessage": "The task stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Task tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.task-menus/deploy-notes",
+        "title": "Deploy notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Deploy notes",
+            "successMessage": "Deploy notes kept.",
+            "cancelMessage": "Nothing was deployed.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Deploy tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.task-menus/bot-notes",
+        "title": "Bot notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Bot notes",
+            "successMessage": "Bot notes kept.",
+            "cancelMessage": "The bot stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Bot tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      }
+    ],
+    "menus": [
+      { "id": "sample.task-menus/team", "command": "sample.task-menus/team-notes", "location": "panda.team.menu", "presentation": "button", "text": "Team notes", "visible": { "op": "eq", "key": "selection.kind", "value": "team" } },
+      { "id": "sample.task-menus/setup", "command": "sample.task-menus/setup-notes", "location": "panda.team.setup.actions", "presentation": "button", "text": "Setup notes", "visible": { "op": "eq", "key": "selection.kind", "value": "team" } },
+      { "id": "sample.task-menus/task", "command": "sample.task-menus/task-notes", "location": "panda.task.menu", "presentation": "button", "text": "Task notes", "visible": { "op": "eq", "key": "selection.kind", "value": "task" } },
+      { "id": "sample.task-menus/deploy", "command": "sample.task-menus/deploy-notes", "location": "panda.deploy.menu", "presentation": "button", "text": "Deploy notes" },
+      { "id": "sample.task-menus/bot", "command": "sample.task-menus/bot-notes", "location": "panda.bot.assignment", "presentation": "button", "text": "Bot notes", "visible": { "op": "eq", "key": "selection.kind", "value": "bot" } }
+    ],
+    "layouts": [
+      {
+        "id": "sample.task-menus/best-first",
+        "title": "Best team before Cheap team",
+        "location": "panda.team.menu",
+        "rules": [{ "id": "panda.team.menu/quality", "target": "panda.team.menu/cheapest", "side": "before" }]
+      },
+      {
+        "id": "sample.task-menus/rename-first",
+        "title": "Rename before Pin",
+        "location": "panda.task.menu",
+        "rules": [{ "id": "panda.task.menu/rename", "target": "panda.task.menu/pin-task", "side": "before" }]
+      },
+      {
+        "id": "sample.task-menus/netlify-first",
+        "title": "Netlify before Vercel",
+        "location": "panda.deploy.menu",
+        "rules": [{ "id": "panda.deploy.menu/netlify", "target": "panda.deploy.menu/vercel", "side": "before" }]
+      }
+    ]
+  }
+}

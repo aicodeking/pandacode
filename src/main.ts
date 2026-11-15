@@ -328,6 +328,8 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   const request = ++architectSetupRequest;
   const { openArchitectSetup } = await import('./architect');
   if (request !== architectSetupRequest || !anchor.isConnected || task.id !== state.sessionId) return;
+  // Contributed actions of Architect & workers capture the task and its team (docs/extensions/task-menus.md).
+  let stopSetupActions: (() => void) | undefined;
   architectSetupCleanup = openArchitectSetup(anchor, async () => {
     const [team, library] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles')]);
     return { task, team, library, providers: state.providers, loadModels,
@@ -345,7 +347,9 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
         }
       },
     };
-  }, () => { architectSetupCleanup = undefined; });
+  }, () => { architectSetupCleanup = undefined; stopSetupActions?.(); stopSetupActions = undefined; });
+  const setupPanel = document.querySelector<HTMLElement>('.architect-setup-popover');
+  if (setupPanel) stopSetupActions = taskMenus?.mountSetup(setupPanel, task.id, task.projectId || undefined);
 }
 /** Team mode needs no setup: the task's selected model leads, and the lead (or the user's prompt) picks worker models. */
 const TEAM_TIP = 'Your model leads and starts agents. Name workers in your prompt to pick them.';
@@ -451,33 +455,49 @@ async function configureRouting(mode: RoutingMode): Promise<void> {
     }
   }
 }
-/** No team, a team whose lead picks models, or a team whose workers Panda Router picks by kind (the global mode). */
-async function showTeamMenu(anchor: HTMLElement): Promise<void> {
-  const task = session(); if (!task) return;
-  if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
-  if (!teams.has(task.id)) await loadTeam(task.id);
-  const { id: current, label } = teamState(task), team = teams.get(task.id);
+/** The Team menu's rows for a task: no team, its named team or the lead's team, and the kinds Panda Router picks workers by. */
+function teamMenuItems(task: Session): { id: string; label: string; description: string; leading: string; heading?: string; selected: boolean }[] {
+  const { id: current, label } = teamState(task);
   const routed = routing?.enabled === true;
   // A kind replaces a named agent team, and turns routing on when it is off (or its status is unknown).
   const note = current === 'named' ? `Replaces ${label}` : '';
-  const items = [
+  return [
     { id: 'off', label: 'No team', description: 'A single agent', leading: icon('bot') },
     ...(current === 'named' ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
     ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: toned(icon('team'), 'team') }] : []),
     ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: toned(k.leading, 'team'), heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
   ].map(item => ({ ...item, selected: item.id === current }));
+}
+/** The Team menu's own choice, shared with captured actions; true when it turned the team on. */
+async function chooseTeam(task: Session, id: string): Promise<boolean> {
+  const { id: current } = teamState(task), team = teams.get(task.id), routed = routing?.enabled === true;
+  if (id === current || id === 'named') return false;
+  if (id === 'off') { await setTeam(task, false); return false; }
+  // The team turns on first, so a refusal leaves the global mode alone; an automatic team only changes kind.
+  const keep = team && !team.config.rosterOnly && team.config.auto;
+  let turnedOn = false;
+  if (!keep) { if (!await setTeam(task, true, false)) return false; turnedOn = true; }
+  if (id === 'lead') return turnedOn;
+  await configureRouting(id as RoutingMode);
+  if (!routed) prepareModelRouting();
+  return turnedOn;
+}
+/** No team, a team whose lead picks models, or a team whose workers Panda Router picks by kind (the global mode). */
+async function showTeamMenu(anchor: HTMLElement): Promise<void> {
+  const task = session(); if (!task) return;
+  if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
+  if (!teams.has(task.id)) await loadTeam(task.id);
+  const generation = state.generation;
+  const items = teamMenuItems(task);
   // A team turned on here redraws the composer once the menu closes, so a routing error can still show in it.
   let turnedOn = false;
-  await showChoices(anchor, { title: 'Team', width: 320, items, afterClose: () => { if (turnedOn && task.id === state.sessionId) renderComposer(); }, onSelect: async id => {
-    if (id === current || id === 'named') return;
-    if (id === 'off') { await setTeam(task, false); return; }
-    // The team turns on first, so a refusal leaves the global mode alone; an automatic team only changes kind.
-    const keep = team && !team.config.rosterOnly && team.config.auto;
-    if (!keep) { if (!await setTeam(task, true, false)) return; turnedOn = true; }
-    if (id === 'lead') return;
-    await configureRouting(id as RoutingMode);
-    if (!routed) prepareModelRouting();
+  // Radios keep their role when contributed rows or the user's arrangement bring the extension surface in.
+  const extension = taskMenus?.surface('panda.team.menu', { kind: 'team', ids: [task.id] }, () => task.id === state.sessionId && generation === state.generation, items.map(item => item.id));
+  taskMenuOpen = 'team';
+  await showChoices(anchor, { title: 'Team', width: 320, items: extension ? items.map(item => ({ ...item, kind: 'radio' as const })) : items, ...(extension ? { extensionSurface: { ...extension, width: 320 } } : {}), afterClose: () => { taskMenuOpen = 'none'; if (turnedOn && task.id === state.sessionId) renderComposer(); }, onSelect: async id => {
+    if (await chooseTeam(task, id)) turnedOn = true;
   } });
+  if (!choiceMenuCleanup) taskMenuOpen = 'none';
 }
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
@@ -814,6 +834,39 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     refresh: () => slashPicker?.refresh(true),
   });
   onContextChanged(() => commandsAdoption?.watchProject());
+  // The Team menu and setup, the dock's Task actions menu, the Deploy menu and the Bot assignment menu: contributed
+  // items, order and visibility, and captured actions that run the original handlers. Team configuration, task
+  // deletion, deployments, platform credentials and bot assignment stay here.
+  taskMenus = (await import('./extensions/task-menus-host')).mountTaskMenusAdoption({
+    notify,
+    state: () => {
+      const s = session(), classic = classicTeamSetup();
+      return {
+        task: s?.id || undefined, project: s?.projectId || undefined, team: Boolean(s && teams.get(s.id)), teamCurrent: s ? teamState(s).id : 'off',
+        teamEntries: s && !s.remoteDevice && !classic ? teamMenuItems(s).map(item => item.id) : [], setup: Boolean(s && !s.remoteDevice && classic),
+        taskEntries: s ? taskMenuItems(s).map(item => ({ id: item.id, enabled: !item.disabled })) : [],
+        deploy: Boolean(s && project() && !chatTask(s)), connected: (deployConnections ?? []).filter(item => item.connected).map(item => item.provider).sort(),
+        bot: s ? taskBots.get(s.id) : undefined, bots: s && newTaskView() && botChoiceOffered(s) ? sidebarBots.map(bot => ({ id: bot.id, name: bot.name })) : undefined,
+        menu: architectSetupCleanup ? 'setup' as const : taskMenuOpen, busy: Boolean(modelPickerCleanup) || Boolean(s && configuringSessions.has(s.id)), generation: state.generation,
+      };
+    },
+    anchor: menu => document.querySelector<HTMLElement>({ team: '#team-trigger', setup: '.composer-team-button', task: '#task-menu-trigger', deploy: '#deploy-button', bot: '#composer-bot' }[menu]),
+    loadConnections: () => void loadDeployConnections(),
+    execute: (request, alive) => {
+      const s = state.sessions.find(item => item.id === request.task);
+      if (!s || s.id !== state.sessionId) return;
+      const id = request.key.slice(request.key.indexOf(':') + 1);
+      if (request.controlId === 'team-select') run((async () => {
+        if (!teams.has(s.id)) await loadTeam(s.id);
+        if (!alive()) return;
+        if (await chooseTeam(s, id) && s.id === state.sessionId) renderComposer();
+      })());
+      else if (request.controlId === 'team-setup-open') { const anchor = document.querySelector<HTMLElement>('.composer-team-button'); if (anchor) run(showArchitectSetup(anchor)); }
+      else if (request.controlId === 'task-run' || request.controlId === 'task-delete') { const anchor = document.querySelector<HTMLElement>('#task-menu-trigger'); if (anchor) run(action(id, anchor)); }
+      else if (request.controlId === 'deploy-run') run(startDeploy(id, s.projectId));
+      else if (request.controlId === 'bot-assign') run(assignTaskBot(s, id === NO_BOT ? null : id));
+    },
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -890,6 +943,10 @@ let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mou
 let composerPanels: ReturnType<typeof import('./extensions/composer-panels-host').mountComposerPanelsAdoption> | undefined;
 /** Slash menu and harness command center adoption (docs/extensions/commands-extras.md), mounted once extensions load. */
 let commandsAdoption: ReturnType<typeof import('./extensions/commands-host').mountCommandsAdoption> | undefined;
+/** Team, Task actions, Deploy and Bot assignment menus adoption (docs/extensions/task-menus.md), mounted once extensions load. */
+let taskMenus: ReturnType<typeof import('./extensions/task-menus-host').mountTaskMenusAdoption> | undefined;
+/** The host menu of that adoption that is open; `setup` while Architect & workers is. */
+let taskMenuOpen: import('./extensions/task-menus-core').TaskMenusOpen = 'none';
 /** Thread tiles and draft project picker adoption (docs/extensions/tiles-picker.md), mounted once extensions load. */
 let tilesPicker: ReturnType<typeof import('./extensions/tiles-picker-host').mountTilesPickerAdoption> | undefined;
 /** Transcript extras adoption (docs/extensions/thread-extras.md), mounted once extensions load. */
@@ -1075,6 +1132,10 @@ const worktrees = createWorktrees({
 if (preview && new URLSearchParams(location.search).has('commands-extras')) {
   (window as any).__previewCommands = () => commandsAdoption?.presentation();
   (window as any).__previewCommandsAction = (input: unknown) => commandsAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
+if (preview && new URLSearchParams(location.search).has('task-menus')) {
+  (window as any).__previewTaskMenus = () => taskMenus?.presentation();
+  (window as any).__previewTaskMenusAction = (input: unknown) => taskMenus?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
 if (preview && new URLSearchParams(location.search).has('tiles-picker')) {
   (window as any).__previewTiles = () => tilesPicker?.tilesPresentation();
@@ -6241,25 +6302,41 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
   });
 }
+/** The connected deploy platforms last read; refreshed whenever the Deploy menu opens or a package consumes them. */
+let deployConnections: import('./cloud-settings').CloudConnection[] | undefined;
+async function loadDeployConnections(): Promise<void> {
+  deployConnections = await call<import('./cloud-settings').CloudConnection[]>('cloud_connections').catch(() => []);
+  taskMenus?.presentation();
+}
+/** Deploy's own choice, shared with captured actions: a new task in the project, started with the platform's brief. */
+async function startDeploy(id: string, projectId: string): Promise<void> {
+  const { deployBrief } = await import('./deploy');
+  try {
+    await createTask(projectId);
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (!prompt || state.projectId !== projectId) return;
+    prompt.value = deployBrief(id as import('./deploy').DeployTarget);
+    await send();
+  } catch (cause) {
+    // The menu is already closed, so its disposed error UI cannot report a
+    // failed task start. Keep the original draft and report through the host.
+    report(cause);
+  }
+}
 /** Deploy: pick a connected platform, then a new task in this project ships it end to end. */
 async function showDeploy(anchor: HTMLElement): Promise<void> {
   if (!project() || chatTask(session())) { notify('Open a project to deploy it.'); return; }
-  const [{ deployItems, deployBrief }, connections] = await Promise.all([import('./deploy'), call<import('./cloud-settings').CloudConnection[]>('cloud_connections').catch(() => [])]);
-  await showChoices(anchor, { title: 'Deploy', width: 300, actions: true, items: deployItems(connections), onSelect: async id => {
+  const [{ deployItems }, connections] = await Promise.all([import('./deploy'), call<import('./cloud-settings').CloudConnection[]>('cloud_connections').catch(() => [])]);
+  deployConnections = connections;
+  const items = deployItems(connections), generation = state.generation, shownProject = state.projectId;
+  const connected = connections.filter(item => item.connected).map(item => item.provider);
+  const extension = taskMenus?.surface('panda.deploy.menu', connected.length ? { kind: 'connection', ids: connected } : { kind: 'project', ids: [shownProject] }, () => state.projectId === shownProject && generation === state.generation, items.map(item => item.id));
+  taskMenuOpen = 'deploy';
+  await showChoices(anchor, { title: 'Deploy', width: 300, actions: true, items, ...(extension ? { extensionSurface: { ...extension, width: 300 } } : {}), afterClose: () => { taskMenuOpen = 'none'; }, onSelect: async id => {
     closeChoiceMenu();
-    const projectId = state.projectId;
-    try {
-      await createTask(projectId);
-      const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-      if (!prompt || state.projectId !== projectId) return;
-      prompt.value = deployBrief(id as import('./deploy').DeployTarget);
-      await send();
-    } catch (cause) {
-      // The menu is already closed, so its disposed error UI cannot report a
-      // failed task start. Keep the original draft and report through the host.
-      report(cause);
-    }
+    await startDeploy(id, state.projectId);
   } });
+  if (!choiceMenuCleanup) taskMenuOpen = 'none';
 }
 /** Settles once every New task under way has opened its thread (it waits for boot first, then for the session). */
 let taskCreation: Promise<unknown> | undefined;
@@ -6404,10 +6481,9 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     } finally { configuringSessions.delete(s.id); }
   } });
 }
-async function showTaskMenu(anchor: HTMLElement): Promise<void> {
-  const s = session(); if (!s) { await createTask(); return; }
-  const generation = state.generation;
-  await showChoices(anchor, { title: 'Task actions', actions: true, items: [
+/** The dock Task actions menu's rows for the open task. */
+function taskMenuItems(s: Session): { id: string; label: string; icon: string; danger?: boolean; disabled?: boolean; description?: string }[] {
+  return [
     { id: 'pin-task', label: s.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
     { id: 'rename', label: 'Rename task', icon: 'edit' },
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
@@ -6418,10 +6494,18 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
     { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
-  ], onSelect: id => {
+  ];
+}
+async function showTaskMenu(anchor: HTMLElement): Promise<void> {
+  const s = session(); if (!s) { await createTask(); return; }
+  const generation = state.generation, items = taskMenuItems(s);
+  const extension = taskMenus?.surface('panda.task.menu', { kind: 'task', ids: [s.id] }, () => s.id === state.sessionId && generation === state.generation, items.map(item => item.id));
+  taskMenuOpen = 'task';
+  await showChoices(anchor, { title: 'Task actions', actions: true, items, ...(extension ? { extensionSurface: { ...extension, width: 280 } } : {}), afterClose: () => { taskMenuOpen = 'none'; }, onSelect: id => {
     if (s.id !== state.sessionId || generation !== state.generation) return;
     closeChoiceMenu(); run(action(id, anchor));
   } });
+  if (!choiceMenuCleanup) taskMenuOpen = 'none';
 }
 async function pinTask(id: string): Promise<void> {
   const task = state.sessions.find(item => item.id === id);
@@ -7017,18 +7101,27 @@ async function reloadBotProjects(withProjects = true): Promise<void> {
  * skills, and it uses the bot's harness and model. The task keeps its own project and checkout. */
 let taskBots = new Map<string, string>();
 const NO_BOT = 'none';
+/** Whether a task can choose a bot: the user has bots and the task is a local project task. */
+const botChoiceOffered = (task: Session): boolean => sidebarBots.length > 0 && !botProjects.has(task.projectId) && !chatTask(task) && !task.remoteDevice && !task.cloud && remoteChoice === LOCAL;
 function botTaskControl(task: Session, fresh: boolean): string {
   const bot = sidebarBots.find(item => item.id === taskBots.get(task.id));
   if (!fresh) return bot ? `<span class="composer-computer composer-computer-fixed" role="img" tabindex="0" aria-label="Bot: ${escape(bot.name)} (fixed for this task)" data-tip="With ${escape(bot.name)}">${icon('bot')}<span class="sr-only">with ${escape(bot.name)}</span></span>` : '';
-  if (!sidebarBots.length || botProjects.has(task.projectId) || chatTask(task) || task.remoteDevice || task.cloud || remoteChoice !== LOCAL) return '';
+  if (!botChoiceOffered(task)) return '';
   const name = bot?.name ?? 'No bot';
   return `<button type="button" id="composer-bot" class="composer-computer" data-action="bot-task-menu" aria-label="Bot: ${escape(name)}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(name)}: start this task with a bot">${icon('bot')}<span class="sr-only">${escape(name)}</span>${icon('down')}</button>`;
 }
+/** The Bot menu's rows: no bot first, then the user's bots. */
+function botMenuItems(task: Session): { id: string; label: string; description?: string; icon: string; selected: boolean }[] {
+  const chosen = taskBots.get(task.id) ?? NO_BOT;
+  return [{ id: NO_BOT, label: 'No bot', icon: 'close', selected: chosen === NO_BOT }, ...sidebarBots.map(bot => ({ id: bot.id, label: bot.name, description: bot.role, icon: 'bot', selected: bot.id === chosen }))];
+}
 async function showBotTaskMenu(anchor: HTMLElement): Promise<void> {
   const task = session(); if (!task) return;
-  const chosen = taskBots.get(task.id) ?? NO_BOT;
-  const items = [{ id: NO_BOT, label: 'No bot', icon: 'close', selected: chosen === NO_BOT }, ...sidebarBots.map(bot => ({ id: bot.id, label: bot.name, description: bot.role, icon: 'bot', selected: bot.id === chosen }))];
-  await showChoices(anchor, { title: 'Bot', width: 280, items, onSelect: id => { closeChoiceMenu(); run(assignTaskBot(task, id === NO_BOT ? null : id)); } });
+  const items = botMenuItems(task), generation = state.generation;
+  const extension = taskMenus?.surface('panda.bot.assignment', { kind: 'bot', ids: sidebarBots.length ? sidebarBots.map(bot => bot.id) : [taskBots.get(task.id) ?? NO_BOT] }, () => task.id === state.sessionId && generation === state.generation, items.map(item => item.id));
+  taskMenuOpen = 'bot';
+  await showChoices(anchor, { title: 'Bot', width: 280, items: extension ? items.map(item => ({ ...item, kind: 'radio' as const })) : items, ...(extension ? { extensionSurface: { ...extension, width: 280 } } : {}), afterClose: () => { taskMenuOpen = 'none'; }, onSelect: id => { closeChoiceMenu(); run(assignTaskBot(task, id === NO_BOT ? null : id)); } });
+  if (!choiceMenuCleanup) taskMenuOpen = 'none';
 }
 async function assignTaskBot(task: Session, botId: string | null): Promise<void> {
   if (!newTaskView() || state.sessionId !== task.id) throw new Error('Choose a bot before the task\'s first message.');

@@ -291,6 +291,19 @@ export type CommandsAdmission = { readonly ok: true } | { readonly ok: false; re
 /** `selection.kind` of the slash and command center contexts: `slash-command` (ids = [task]; the `slash` field carries the
  * command, harness and arguments) and `harness-command` (ids = [`<harness>:<panel>`]). */
 export type CommandsSelectionKind = 'slash-command' | 'harness-command';
+/** Experimental Team, dock Task actions, Deploy and Bot assignment menus (owner: the selected `panda.composer` provider; docs/extensions/task-menus.md).
+ * Captured actions run the menus' original handlers: starting or stopping a team, a task action, a deploy and a bot
+ * assignment. Deleting a task, deploying and assigning a bot need a fresh host choice; saving a team, the harness console,
+ * connections and credentials and bot settings are never public. */
+export type TaskMenusControl = 'team-select' | 'team-setup-open' | 'task-run' | 'task-delete' | 'deploy-run' | 'bot-assign';
+/** Named but never run: refused with `PermissionDenied`. */
+export type TaskMenusProtectedControl = 'team-save' | 'team-profile-edit' | 'task-console' | 'task-delete-confirm' | 'deploy-connect' | 'deploy-credentials' | 'bot-credentials' | 'bot-create' | 'bot-delete';
+/** `team`, `connection` and `bot` are opaque handles ('' when the task has none): the task's team, the connected deploy platforms and the task's bot. `menu` is the host menu that is open. Any change of task, team, connections or bot, or a redraw, changes `revision`. */
+export interface TaskMenusPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly team: string; readonly connection: string; readonly bot: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly menu: 'none' | 'team' | 'setup' | 'task' | 'deploy' | 'bot'; readonly controls: readonly { readonly id: string; readonly controlId: TaskMenusControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface TaskMenusAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly team: string; readonly connection: string; readonly bot: string; readonly revision: number; readonly control: string; readonly controlId: TaskMenusControl; readonly resource: string; readonly requestId: string }
+export type TaskMenusAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of these menus' contexts: `team` (ids = [task]), `task` (ids = [task]), `connection` (ids = the connected deploy platforms) and `bot` (ids = [the bots listed, or the task's bot]). */
+export type TaskMenusSelectionKind = 'team' | 'task' | 'connection' | 'bot';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

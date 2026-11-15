@@ -591,6 +591,13 @@ if (new URLSearchParams(location.search).has('vm-coverage') && !new URLSearchPar
   previewCloud.connect('daytona', 'preview-only', {});
   previewCloud.create('daytona', 'preview-cloud');
 }
+// Explicit Team, Task actions, Deploy and Bot assignment menus fixture only: two deploy platforms connected with preview-only keys (no
+// provider call, spend or deployment) and safe mode while a menu is open.
+if (new URLSearchParams(location.search).has('task-menus')) {
+  previewCloud.connect('vercel', 'preview-only', {});
+  previewCloud.connect('netlify', 'preview-only', {});
+  (window as any).__previewTaskMenusSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 // Explicit cloud machine extension fixture only: E2B connected with a preview-only key and the second
 // task already on a ready synthetic machine. No provider call, spend or provisioning; every action is the mock below.
 if (new URLSearchParams(location.search).has('cloud-coverage')) {
