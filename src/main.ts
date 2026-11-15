@@ -43,7 +43,7 @@ import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCom
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
-import { cancelRequest, notifyEvent } from './notifications';
+import { cancelRequest, cancelSession, notifyEvent } from './notifications';
 import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
@@ -342,7 +342,7 @@ async function ensureArchitectView(): Promise<ArchitectView> {
 }
 function onArchitect(team: TeamEvent): void {
   if (deletedSessions.has(team.sessionId)) return;
-  if ('removed' in team) { prewarmedDrafts.delete(team.sessionId); teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
+  if ('removed' in team) { prewarmedDrafts.delete(team.sessionId); teams.set(team.sessionId, null); pendingTeamEnds.delete(team.sessionId); cancelRequest('input', team.sessionId); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
@@ -352,6 +352,16 @@ function onArchitect(team: TeamEvent): void {
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
+  // A lead's held finished or failed notice fires once its team settles (workers done, the team at rest).
+  const heldEnd = pendingTeamEnds.get(team.sessionId);
+  if (heldEnd && !teamActive(team) && !team.workers.some(worker => workerActive(worker))) {
+    pendingTeamEnds.delete(team.sessionId);
+    notifyEvent(heldEnd.kind, team.sessionId, heldEnd.title);
+  }
+  // Council's ask is an architect event, not an agent input: it follows the input preference and
+  // coalescing here, and its end withdraws a still-waiting entry.
+  if (team.councilStatus?.state === 'asking' && current?.councilStatus?.state !== 'asking') notifyEvent('input', team.sessionId, (task?.title ?? 'Task').replace(/ · You$/, ''));
+  if (current?.councilStatus?.state === 'asking' && team.councilStatus?.state !== 'asking') cancelRequest('input', team.sessionId);
   if (task && teamActive(team)) { task.status = 'running'; task.taskStage = 'in_progress'; }
   if (task && !teamActive(team) && !state.streams.has(task.id)) task.status = 'idle';
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
@@ -3723,6 +3733,8 @@ async function respondApproval(sessionId: string, id: string, approved: boolean)
   try {
     await call('respond_approval', { sessionId, requestId: id, approved });
     current.approvals.delete(id); approvalDetails.delete(approvalKey); current.revision++;
+    // Answered here: the native cancellation event may never reach this window.
+    cancelRequest('approval', sessionId, id);
     if (!current.approvals.size && current.status === 'Waiting for approval') current.status = 'Continuing task';
   } finally { pendingApprovals.delete(approvalKey); current.revision++; renderStream(); renderNavigation(); renderApprovalBar(); btwPanel.event(sessionId, 'approval'); }
 }
@@ -4702,6 +4714,7 @@ function removeDeletedSessions(ids: string[]): void {
   const removed = new Set(ids);
   for (const id of removed) {
     deletedSessions.add(id); prewarmedDrafts.delete(id); writeLink(localStorage, id, null);
+    cancelSession(id); pendingTeamEnds.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -4865,6 +4878,8 @@ async function performSlashAction(action: string, argumentsText: string, task: S
 }
 
 const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
+/** A finished or failed notice for a lead whose team still ran: it fires when the team settles. */
+const pendingTeamEnds = new Map<string, { kind: 'done' | 'failed'; title: string }>();
 /** Entries picked with Send now: delivered before the rest, even past a hold. While the run they
  * stopped is ending, `stopping` keeps the hold from before, so the stop does not pause the others. */
 const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
@@ -5976,8 +5991,16 @@ function onAgent(event: AgentEvent): void {
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
-    // A finished or failed run may notify (both off by default); a stopped or rate-limited run does not.
-    if (ending === 'failed' || !ending) notifyEvent(ending ? 'failed' : 'done', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''));
+    // Any request still waiting in a notification is answered or gone once the run ends.
+    cancelSession(event.sessionId);
+    // The run's own outcome is authoritative (a stop from the phone, a mirror that ended while
+    // this window was away); without it, the ending this window recorded decides.
+    const outcome = (event.data as { outcome?: string } | null)?.outcome;
+    const kind: 'done' | 'failed' | null = outcome ? (outcome === 'failed' ? 'failed' : outcome === 'successful' ? 'done' : null)
+      : ending === 'failed' ? 'failed' : !ending ? 'done' : null;
+    // A lead whose workers still run is not done: the notice waits for the team to settle (onArchitect).
+    if (kind && teams.get(event.sessionId)?.workers.some(worker => workerActive(worker))) pendingTeamEnds.set(event.sessionId, { kind, title: (s?.title ?? 'Task').replace(/ · You$/, '') });
+    else if (kind) notifyEvent(kind, event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''));
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
@@ -6057,6 +6080,8 @@ function onAgent(event: AgentEvent): void {
     const requestId = event.requestId;
     current.inputs.set(requestId, createAgentInput(event.sessionId, requestId, event.data, () => {
       current.inputs.get(requestId)?.dispose(); current.inputs.delete(requestId); current.revision++;
+      // Answered here: the native cancellation event may never reach this window.
+      cancelRequest('input', event.sessionId, requestId);
       if (!current.inputs.size && current.status === 'Waiting for your answer') updateStreamStatus(current, 'Continuing task');
       if (event.sessionId === state.sessionId) renderStream();
       btwPanel.event(event.sessionId, 'input');
