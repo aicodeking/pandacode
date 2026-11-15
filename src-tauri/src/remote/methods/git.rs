@@ -1361,8 +1361,8 @@ mod tests {
         root
     }
 
-    #[test]
-    fn worktree_create_moves_an_unstarted_task_and_branches_off_a_started_one() {
+    #[tokio::test]
+    async fn worktree_create_moves_an_unstarted_task_and_branches_off_a_started_one() {
         let root = repo();
         let store = Arc::new(StdMutex::new(crate::storage::Store::open(Path::new(":memory:")).unwrap()));
         let (fresh, started) = {
@@ -1373,12 +1373,13 @@ mod tests {
             store.message(&started.id, "user", "Already talking").unwrap();
             (fresh, started)
         };
+        assert!(crate::providers::handshake_insert_for_test(&fresh.id, "codex") > 0);
         let (moved, same) = create_task_worktree(&store, &fresh.id, "fresh-one", Trust::phone(false)).unwrap();
         assert!(same);
         assert_eq!(moved.id, fresh.id);
         assert_eq!(moved.worktree_branch.as_deref(), Some("pandacode/fresh-one"));
         assert!(Path::new(moved.worktree_path.as_ref().unwrap()).is_dir());
-        assert_eq!(crate::providers::warm_epoch(&fresh.id), 1, "attaching a worktree discards any warm spare");
+        assert!(crate::providers::handshake_spare_pid(&fresh.id).is_none(), "attaching a worktree discards any warm spare");
         let again = create_task_worktree(&store, &fresh.id, "fresh-two", Trust::phone(false)).unwrap_err();
         assert!(again.contains("already has a worktree"), "{again}");
 
