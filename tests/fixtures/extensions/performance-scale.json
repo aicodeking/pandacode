@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "fixture": "extensions-scale-v1",
+  "purpose": "Synthetic declarative packages for the 1,000-contribution/20-extension resolution gate and the 100-cycle lifetime gate. Generated deterministically by tests/extensions-performance.spec.ts and src-tauri/src/extensions/packages.rs; nothing here executes.",
+  "packages": 20,
+  "contributionsPerPackage": 50,
+  "publisher": "perf",
+  "visibleLocations": ["panda.workspace.header.actions", "panda.sidebar.footer"],
+  "contextLocations": [
+    "panda.sidebar.task.context",
+    "panda.sidebar.project.context",
+    "panda.inspector.files.context",
+    "panda.inspector.changes.context",
+    "panda.inspector.search.context",
+    "panda.terminal.context",
+    "panda.browser.context",
+    "panda.documents.context",
+    "panda.board.context",
+    "panda.design.context",
+    "panda.vm.context",
+    "panda.cloud.context"
+  ],
+  "perContextLocation": 4,
+  "samples": 7,
+  "lifetimeCycles": 100,
+  "budgets": {
+    "interactionLongTaskMs": 50,
+    "menuOpenAbsoluteMs": 1000,
+    "resolutionAbsoluteMs": 1000,
+    "heapSettleMiB": 4,
+    "heapPolicy": "Chromium JS heap after forced GC, sampled every 10 cycles: the last sample stays within heapSettleMiB of the warmed cycle-10 sample, and a heap-snapshot census between cycles 20 and 100 finds no JS object/closure/string class or DOM node class retained once per cycle. Engine caches (JIT code, style data, bounded performance-timeline buffers) are reported, not attributed. WebKit exposes no heap metric; its registration counts still gate.",
+    "noise": {
+      "maxDispersion": 0.35,
+      "maxMachineBusyPercent": 30,
+      "definition": "A population is incomparable when (p95 - median) / median exceeds maxDispersion, when the machine was busier than maxMachineBusyPercent in the idle three seconds before sampling, or when the build differs from the frozen vite-production population. Incomparable relative results are reported, never counted as a pass."
+    }
+  }
+}

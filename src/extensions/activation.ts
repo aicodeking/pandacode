@@ -2,9 +2,18 @@
 import { validateContract, evaluateCondition, type Json } from './contracts.ts';
 import type { ExtensionSnapshot, ExtensionMenuItem, ExtensionAction } from './manager';
 import { surfaceWindow } from './window-surfaces.ts';
+// Every mounted surface activates the same enabled batch after each lifecycle change. Validation is
+// pure and its result is only read here, so the last batch's result is shared instead of being
+// recomputed per surface (1,000 contributions × dozens of surfaces otherwise blocks for seconds).
+let lastValidation: { key: string; result: ReturnType<typeof validateContract> } | undefined;
+function validatePackages(manifests: unknown[]): ReturnType<typeof validateContract> {
+  const key = JSON.stringify(manifests);
+  if (lastValidation?.key !== key) lastValidation = { key, result: validateContract('packages', manifests) };
+  return lastValidation.result;
+}
 export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activationId: number, states = new Map<string, boolean>()) {
   let packages = snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled);
-  let checked = validateContract('packages', packages.map(item => item.manifest));
+  let checked = validatePackages(packages.map(item => item.manifest));
   if (!checked.ok && (['DependencyCycle', 'IncompatibleDependency'].includes(checked.error.code) || checked.error.path.includes('/dependencies'))) {
     // A disabled/missing/incompatible/cyclic dependency blocks its dependent closure, not
     // independent UI owners. Other schema/ownership/ordering conflicts still fail atomically.
@@ -17,15 +26,16 @@ export function createDeclarativeActivation(snapshot: ExtensionSnapshot, activat
       }
       return validateContract('packages', closure).ok;
     });
-    checked = validateContract('packages', packages.map(item => item.manifest));
+    checked = validatePackages(packages.map(item => item.manifest));
   }
   if (!checked.ok) throw new Error(`Activation rejected: ${checked.error.code}`);
   const normalized = checked.value as unknown as { packages: typeof packages[number]['manifest'][]; menuOrder: string[] };
+  const position = new Map(normalized.menuOrder.map((id, index) => [id, index]));
   const entries = normalized.packages.flatMap(manifest => (manifest.contributes.menus ?? []).map(menu => {
     const command = manifest.contributes.commands?.find(command => command.id === menu.command)!;
     const icons = packages.find(item => item.manifest.id === manifest.id)?.icons ?? {};
     return { owner: { extensionId: manifest.id, version: manifest.version, activationId }, menu, command, icons, svg: icons[menu.icon ?? ''] };
-  })).sort((a, b) => normalized.menuOrder.indexOf(a.menu.id) - normalized.menuOrder.indexOf(b.menu.id));
+  })).sort((a, b) => position.get(a.menu.id)! - position.get(b.menu.id)!);
   let disposed = false;
   const conditionAllows = (condition: Json | undefined, context: Record<string, Json>) => {
     if (condition === undefined) return true;

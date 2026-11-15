@@ -39,7 +39,11 @@ class ContractFailure {
 }
 function error(code: string, path: string, ids: string[] = []): never { throw new ContractFailure({ schemaVersion: 1, code, path: [...path].slice(0, 512).join(''), ids: ids.slice(0, 64) }); }
 // Match Rust's Unicode scalar/UTF-8 order, not JavaScript's UTF-16 default sort.
+// No `u` flag on purpose: this must match any surrogate code unit, paired or not.
+const surrogate = /[\uD800-\uDFFF]/;
 function compareText(a: string, b: string): number {
+  // Without surrogates, UTF-16 code units are code points, so the native order already matches.
+  if (!surrogate.test(a) && !surrogate.test(b)) return a < b ? -1 : a > b ? 1 : 0;
   const left = [...a], right = [...b];
   for (let i = 0; i < Math.min(left.length, right.length); i++) {
     const difference = left[i].codePointAt(0)! - right[i].codePointAt(0)!;
@@ -47,12 +51,29 @@ function compareText(a: string, b: string): number {
   }
   return left.length - right.length;
 }
+// Schema patterns are a small fixed set; non-global expressions keep no state between exec calls.
+const compiledPatterns = new Map<string, RegExp>();
 function fullMatch(pattern: string, value: string): boolean {
-  const match = new RegExp(pattern).exec(value);
+  let expression = compiledPatterns.get(pattern);
+  if (!expression) { expression = new RegExp(pattern); compiledPatterns.set(pattern, expression); }
+  const match = expression.exec(value);
   return match !== null && match[0] === value;
 }
 
-function quotedBytes(value: string): number { return new TextEncoder().encode(JSON.stringify(value)).length; }
+/** UTF-8 length of a string's JSON form, computed without encoding (validation runs on hot UI paths). */
+function quotedBytes(value: string): number {
+  const text = JSON.stringify(value);
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xD800 && unit <= 0xDBFF && index + 1 < text.length && (text.charCodeAt(index + 1) & 0xFC00) === 0xDC00) { bytes += 4; index++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+function codePoints(value: string): number { return surrogate.test(value) ? [...value].length : value.length; }
 function bounded(value: unknown, path = '$', depth = 0, budget = { nodes: 0, bytes: 0 }): asserts value is Json {
   if (depth > CONTRACT_LIMITS.depth || ++budget.nodes > CONTRACT_LIMITS.nodes) error('LimitExceeded', path);
   if (typeof value === 'string') {
@@ -91,7 +112,7 @@ function shape(value: Json, schema: Schema, path: string, diagnostics: Diagnosti
   switch (schema.type) {
     case 'string':
       if (typeof value !== 'string') error('InvalidShape', path);
-      if ([...value].length < Number(schema.minLength ?? 0) || [...value].length > Number(schema.maxLength ?? Infinity)) error('LimitExceeded', path);
+      { const length = codePoints(value); if (length < Number(schema.minLength ?? 0) || length > Number(schema.maxLength ?? Infinity)) error('LimitExceeded', path); }
       if (schema.pattern && !fullMatch(String(schema.pattern), value)) error('InvalidShape', path);
       break;
     case 'boolean': if (typeof value !== 'boolean') error('InvalidShape', path); break;
@@ -187,14 +208,27 @@ function menuItems(items: ObjectValue[], owner: string, owned: Set<string>, path
   }
 }
 
-/** Returns a deterministic topological order, or the sorted IDs still in a cycle. */
+/** Returns a deterministic topological order, or the sorted IDs still in a cycle. Each step takes the
+ * lowest-ranked node with no remaining predecessor; `rank` is a total order over distinct IDs. Kahn's
+ * algorithm keeps this linear in edges, so 1,000 menus no longer re-sort every step. */
 function orderGraph(nodes: string[], edges: [string, string][], code: string, path: string, rank: (a: string, b: string) => number = (a, b) => a < b ? -1 : a > b ? 1 : 0): string[] {
   const remaining = new Set(nodes), result: string[] = [];
-  while (remaining.size) {
-    const ready = [...remaining].filter(id => !edges.some(([from, to]) => to === id && remaining.has(from))).sort(rank);
-    if (!ready.length) error(code, path, [...remaining].sort());
-    const id = ready[0]; remaining.delete(id); result.push(id);
+  const blockers = new Map<string, number>(), successors = new Map<string, string[]>();
+  for (const [from, to] of edges) if (remaining.has(from) && remaining.has(to)) {
+    blockers.set(to, (blockers.get(to) ?? 0) + 1);
+    if (!successors.has(from)) successors.set(from, []);
+    successors.get(from)!.push(to);
   }
+  // Rank once (n log n comparisons); choosing the next ready node then compares positions only.
+  const position = new Map([...remaining].sort(rank).map((id, index) => [id, index]));
+  const ready = [...remaining].filter(id => !blockers.get(id));
+  while (ready.length) {
+    let best = 0;
+    for (let i = 1; i < ready.length; i++) if (position.get(ready[i])! < position.get(ready[best])!) best = i;
+    const [id] = ready.splice(best, 1); remaining.delete(id); result.push(id);
+    for (const to of successors.get(id) ?? []) { const left = blockers.get(to)! - 1; blockers.set(to, left); if (!left) ready.push(to); }
+  }
+  if (remaining.size) error(code, path, [...remaining].sort());
   return result;
 }
 
@@ -317,12 +351,13 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
   }
   const activationOrder = orderGraph([...ids], dependencies, 'DependencyCycle', '$/dependencies');
   const edges: [string, string][] = [];
+  const menusById = new Map(allMenus.map(item => [item.id as string, item]));
   for (const menu of allMenus) for (const key of ['before', 'after']) for (const target of (menu[key] ?? []) as string[]) {
-    if (!allMenus.some(item => item.id === target && item.location === menu.location)) error('UnknownReference', '$/ordering', [target]);
+    if (menusById.get(target)?.location !== menu.location) error('UnknownReference', '$/ordering', [target]);
     edges.push(key === 'before' ? [menu.id as string, target] : [target, menu.id as string]);
   }
   const menuOrder = orderGraph(allMenus.map(item => item.id as string), edges, 'OrderingCycle', '$/ordering', (a, b) => {
-    const left = allMenus.find(item => item.id === a)!, right = allMenus.find(item => item.id === b)!;
+    const left = menusById.get(a)!, right = menusById.get(b)!;
     for (const key of ['location', 'group']) { const x = String(left[key] ?? ''), y = String(right[key] ?? ''); if (x !== y) return compareText(x, y); }
     return Number(left.order ?? 0) - Number(right.order ?? 0) || (a < b ? -1 : a > b ? 1 : 0);
   });

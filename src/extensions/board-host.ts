@@ -20,7 +20,7 @@ export type BoardHost = {
 export function mountBoardPresentation(root: HTMLElement, details: HTMLElement, host: BoardHost) {
   const context = crypto.randomUUID(), handles = new Map<string, string>(), versions = new Map<string, { signature: string; revision: number }>();
   const applied = new Set<string>(), grants = new Set<string>(), accessories = new Map<HTMLElement, () => void>();
-  const lifetime = new AbortController(); let disposed = false, pending = false, revision = 0, signature = '', activation = 0, activationIdentity = '', closeContext: (() => void) | undefined;
+  const lifetime = new AbortController(); let disposed = false, pending = false, revision = 0, signature = '', activation = 0, activationIdentity = '', closeContext: (() => void) | undefined, snapshot: BoardPresentation | undefined;
   const handle = (id: string) => { if (!id) return ''; if (!handles.has(id)) handles.set(id, crypto.randomUUID()); return handles.get(id)!; };
   function authority() {
     const provider = componentSelection.resolve('panda.board', componentProviders());
@@ -33,15 +33,20 @@ export function mountBoardPresentation(root: HTMLElement, details: HTMLElement, 
   function presentation(): BoardPresentation {
     const state = host.state(), auth = authority();
     const rows = state.tasks.filter(task => !state.filter || task.projectId === state.filter).slice(0, 500).map(task => {
-      const value = JSON.stringify([task.updatedAt, task.title, task.taskDescription, taskStage(task), task.archived, host.running(task.id), host.busy(task.id)]);
+      const running = host.running(task.id), busy = host.busy(task.id), stage = taskStage(task);
+      const value = JSON.stringify([task.updatedAt, task.title, task.taskDescription, stage, task.archived, running, busy]);
       const previous = versions.get(task.id);
       if (previous?.signature !== value) versions.set(task.id, { signature: value, revision: (previous?.revision ?? 0) + 1 });
-      return { id: handle(`task:${task.id}`), project: handle(`project:${task.projectId}`), revision: versions.get(task.id)!.revision, stage: taskStage(task), title: auth.metadata ? task.title.slice(0, 200) : '', running: host.running(task.id), busy: host.busy(task.id), archived: task.archived };
+      return { id: handle(`task:${task.id}`), project: handle(`project:${task.projectId}`), revision: versions.get(task.id)!.revision, stage, title: auth.metadata ? task.title.slice(0, 200) : '', running, busy, archived: task.archived };
     });
     const next = { contractVersion: 1 as const, window: 'main' as const, context, project: handle(`project:${state.project}`), task: state.task ? handle(`task:${state.task}`) : '', filter: state.filter ? handle(`project:${state.filter}`) : '', revision: 0, visible: state.visible && !disposed, loading: state.loading, busy: pending, detail: state.detail, importable: state.importable, truncated: state.tasks.filter(task => !state.filter || task.projectId === state.filter).length > 500, rows };
     const key = JSON.stringify([next, auth.owner, auth.active, auth.granted, auth.taskControl, auth.key]);
+    // Every render refreshes the Board: validating 500 unchanged rows again froze task starts. An
+    // unchanged signature means the same content and revision, so the frozen snapshot is reused.
+    if (key === signature && snapshot) return snapshot;
     if (key !== signature) { signature = key; revision++; }
-    return snapshotBoard({ ...next, revision });
+    snapshot = snapshotBoard({ ...next, revision });
+    return snapshot;
   }
   function dispatch(input: unknown) {
     const auth = authority();

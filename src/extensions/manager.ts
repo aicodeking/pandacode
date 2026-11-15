@@ -21,6 +21,8 @@ let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: 
 const listeners = new Set<() => void>();
 let generation = 0;
 export function extensionsSnapshot(): ExtensionSnapshot { return structuredClone(snapshot); }
+/** Hot paths (control order/visibility on every render) need only this flag, not a deep copy of every package. */
+export function extensionsSafeMode(): boolean { return snapshot.safeMode; }
 export function onExtensionsChanged(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener); }; }
 export function extensionIdentity(owner: string): string { return JSON.stringify({ safe: snapshot.safeMode, package: snapshot.packages.find(item => item.manifest.id === owner), reload: snapshot.development?.find(item => item.id === owner)?.revision }); }
 /** Unrelated package reload/log events must not cancel another owner's in-flight UI. */
@@ -123,3 +125,5 @@ export async function enterExtensionsSafeMode(): Promise<void> {
   accept(await call<ExtensionSnapshot>('extensions_safe_mode'));
 }
 export function extensionGeneration(): number { return generation; }
+/** Lifetime gate: open views/dialogs subscribe per owner and must unsubscribe when they close. */
+export function extensionChangeListenerCount(): number { return listeners.size; }

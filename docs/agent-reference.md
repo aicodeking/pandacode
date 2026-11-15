@@ -199,6 +199,12 @@ Setup: [voice-input.md](voice-input.md); browser/native verification scope: [voi
 - The prompt's opacity fade applies only once a composer has dictated (`data-voice-used`); other users keep the design-system transitions. Leaving cards use `data-voice-leaving`, aria-hidden and disabled controls where inert is unsupported; `:popover-open` is probed once with a `[popover]` fallback.
 - Observed-size writes are deferred to a frame (WebKit ResizeObserver loops). Permission tests wait for `__voiceState().held` before releasing a Start hold.
 
+## Extensions
+
+- Author guide, schemas, capability table and examples: [docs/extensions/README.md](extensions/README.md); compatibility and deprecation policy: [docs/extensions/compatibility.md](extensions/compatibility.md). Source in `src/extensions/` (TypeScript host, validator `contracts.ts`) and `src-tauri/src/extensions/` (native validator `contracts.rs`, packages, supervisor); both validators run the corpus in `tests/fixtures/extensions/contracts-v1.json`.
+- Scale: every mounted surface re-reads the enabled batch on each lifecycle change, so keep per-surface work linear. Read `extensionsSafeMode()` instead of cloning `extensionsSnapshot()` for a flag; validation results are shared per batch (`activation.ts`) and menu order is a linear topological sort in both validators.
+- Gates: `tests/extensions-performance.spec.ts` (zero-extension budgets against `performance-baselines.json`, 1,000 contributions across 20 packages from `performance-scale.json`, 100 lifecycle cycles, crash injection; run with `PW_PROD=1`), `tests/extensions-compatibility.test.mjs` (fixture/example corpus, API range spellings, E01–E31 evidence map in `compatibility-corpus.json`). Native: `contracts.rs`/`packages.rs` scale tests, and the feature-gated supervisor lifetime test (`--features extension-runtime-native-tests`, Windows x64 packaged runtime).
+
 ## Preview mocks
 
 - Voice mocks in `src/preview.ts` implement every `voice_*` command and `voice-event`, entirely synthetic (no microphone, credentials or network). Without `?voice=` there are no profiles and the destination is off. Any other `?voice=` value seeds one `Local speech` custom profile (`voice-preview`, no key); a value that does not start with `local-` also selects it and makes it the destination.

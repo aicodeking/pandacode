@@ -168,6 +168,15 @@ jobs:
         env: { PW_PORT: '1454', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-harness.spec.ts tests/extensions-provider-catalog.spec.ts tests/extensions-provider-teams.spec.ts tests/extensions-provider-cli.spec.ts tests/extensions-provider-skills.spec.ts tests/extensions-remote.spec.ts --workers=1
 
+      # Absolute ceilings and leak/order gates always apply; the relative M0 comparison is reported as
+      # incomparable on a shared runner (different machine from the frozen population), never as a pass.
+      - name: Performance, scale and resource lifetime (Chromium production preview)
+        env: { PW_PORT: '1469', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-performance.spec.ts --workers=1
+      - name: Performance, scale and resource lifetime (WebKit production preview)
+        env: { PW_PORT: '1470', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-performance.spec.ts --workers=1
+
       - name: Multiwindow workspace ownership (Chromium preview)
         env: { PW_PORT: '1467', PW_PROD: '1' }
         run: npx playwright test tests/extensions-multiwindow.spec.ts tests/extensions-updates.spec.ts --workers=1

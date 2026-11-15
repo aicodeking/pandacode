@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { artifactPaths, reportDirectory, acquireBrowserRun, productionFingerprint, ensureProductionBuild } from '../scripts/playwright-artifacts.mjs';
 
@@ -66,6 +66,34 @@ test('a child preview can inherit the owning runner lease, but cannot release it
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(artifactPaths(root).lock), true);
   assert.deepEqual(JSON.parse(readFileSync(artifactPaths(root).lock, 'utf8')).children, []);
+});
+
+test('concurrent workers never expose a torn lease and never lose a joined child', async t => {
+  const root = fixture(t);
+  const release = acquireBrowserRun({ root, installExitHandler: false });
+  t.after(release);
+  const module = new URL('../scripts/playwright-artifacts.mjs', import.meta.url).href;
+  const lock = artifactPaths(root).lock;
+  // A reader that parses the lease as fast as it can while every worker joins and leaves.
+  const reader = spawn(process.execPath, ['-e', `const fs=require('node:fs');let reads=0,torn=0;const end=Date.now()+4000;while(Date.now()<end){try{JSON.parse(fs.readFileSync(${JSON.stringify(lock)},'utf8'));reads++;}catch(e){if(e.code!=='ENOENT'&&e.code!=='EBUSY'&&e.code!=='EPERM')torn++;}}console.log(JSON.stringify({reads,torn}));`], { stdio: ['ignore', 'pipe', 'inherit'] });
+  // Collect from the start: on a slow machine the reader can finish before the workers do.
+  const readerStats = new Promise(resolve => { let text = ''; reader.stdout.on('data', chunk => { text += chunk; }); reader.once('close', () => resolve(text)); });
+  const workers = Array.from({ length: 12 }, () => spawn(process.execPath, ['--input-type=module', '-e',
+    `import { acquireBrowserRun } from ${JSON.stringify(module)}; const leave = acquireBrowserRun({root:${JSON.stringify(root)},allowInherited:true,installExitHandler:false}); console.log('joined'); process.stdin.once('data', () => { leave(); process.exit(0); });`],
+  { stdio: ['pipe', 'pipe', 'inherit'] }));
+  // A failed assertion must not leave workers waiting on stdin and keep the test runner alive.
+  t.after(() => { for (const child of [reader, ...workers]) if (child.exitCode === null) child.kill(); });
+  const output = child => new Promise(resolve => { let text = ''; child.stdout.on('data', chunk => { text += chunk; if (text.includes('joined')) resolve(text); }); child.once('exit', () => resolve(text)); });
+  await Promise.all(workers.map(output));
+  assert.deepEqual([...JSON.parse(readFileSync(lock, 'utf8')).children].sort(), workers.map(worker => worker.pid).sort());
+  const exits = workers.map(worker => new Promise(resolve => worker.once('exit', resolve)));
+  workers.forEach(worker => worker.stdin.write('leave\n'));
+  assert.deepEqual(await Promise.all(exits), workers.map(() => 0));
+  assert.deepEqual(JSON.parse(readFileSync(lock, 'utf8')).children, []);
+  const stats = JSON.parse(await readerStats);
+  assert.ok(stats.reads > 0);
+  assert.equal(stats.torn, 0);
+  assert.deepEqual(readdirSync(dirname(lock)).filter(name => name.endsWith('.tmp') || name.endsWith('.update')), []);
 });
 
 test('the real Playwright runner refuses overlap before it clears existing evidence', t => {

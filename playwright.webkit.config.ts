@@ -116,6 +116,8 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-controls-coverage.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Controls audit:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-window-coverage.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-performance.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions performance`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Window coverage:`);
 export default defineConfig(config, {
   testMatch: [...config.testMatch as string[], '**/extensions-trust.spec.ts', ...(process.platform === 'win32' && process.arch === 'x64' ? ['**/extensions-runtime.spec.ts'] : []), '**/extensions-project-reads.spec.ts', '**/extensions-inventory.spec.ts', '**/extensions-context.spec.ts', '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/extensions-windows.spec.ts', '**/tray-popover.spec.ts', '**/agents-dock.spec.ts', '**/generative-ui.spec.ts'],

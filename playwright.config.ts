@@ -44,6 +44,7 @@ const config = defineConfig({
 });
 
 config.testMatch.push('**/extensions-development.spec.ts');
+config.testMatch.push('**/extensions-performance.spec.ts');
 config.testMatch.push('**/extensions-content-coverage.spec.ts');
 config.testMatch.push('**/extensions-terminal-coverage.spec.ts');
 config.testMatch.push('**/extensions-simulator-coverage.spec.ts');

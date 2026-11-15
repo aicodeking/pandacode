@@ -1450,6 +1450,38 @@ mod tests {
         assert!(storage.packages(true).snapshot().packages.is_empty());
     }
     #[test]
+    fn twenty_scale_packages_and_one_hundred_enable_disable_cycles_leave_no_storage_residue() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        let manifests = crate::extensions::contracts::performance_scale_manifests();
+        let ids: Vec<String> = manifests.iter().map(|m| m["id"].as_str().unwrap().to_owned()).collect();
+        for manifest in &manifests { packages.install(&archive(&[("extension.json", serde_json::to_vec(manifest).unwrap().as_slice())])).unwrap(); }
+        for id in &ids { packages.enable(id, true).unwrap(); }
+        let files = || { let mut names: Vec<String> = std::fs::read_dir(&packages.root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect(); names.sort(); names };
+        let reference = files();
+        let active = |snapshot: &Snapshot| snapshot.packages.iter().filter(|item| item.enabled).map(|item| item.manifest["contributes"]["menus"].as_array().unwrap().len()).sum::<usize>();
+        let started = std::time::Instant::now();
+        let first = storage.packages(false).snapshot();
+        eprintln!("SCALE_SNAPSHOT elapsed_ms={}", started.elapsed().as_millis());
+        // The fixture declares no icons, so every entry reports the safe host-icon fallback, nothing else.
+        let only_icon_fallbacks = |snapshot: &Snapshot| snapshot.diagnostics.iter().all(|line| line.ends_with(": missing icon; using a safe fallback host icon."));
+        assert_eq!(active(&first), 1000); assert_eq!(first.diagnostics.len(), 1000); assert!(only_icon_fallbacks(&first));
+        for cycle in 0..100 {
+            let id = &ids[cycle % ids.len()];
+            packages.enable(id, false).unwrap();
+            let disabled = packages.snapshot();
+            assert_eq!(active(&disabled), 950, "cycle {cycle}: only the disabled owner's contributions leave");
+            assert!(!disabled.packages.iter().find(|item| item.manifest["id"] == id.as_str()).unwrap().enabled);
+            packages.enable(id, true).unwrap();
+        }
+        // Same records, no staged/temporary files left by any of the 200 writes.
+        assert_eq!(files(), reference);
+        let last = storage.packages(false).snapshot();
+        assert_eq!(active(&last), 1000); assert_eq!(last.diagnostics, first.diagnostics); assert!(only_icon_fallbacks(&last));
+        for id in &ids { packages.enable(id, false).unwrap(); }
+        assert_eq!(active(&storage.packages(false).snapshot()), 0);
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+    }
+    #[test]
     fn ordinary_zip_directory_entries_work_without_extraction() {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.add_directory("assets/", zip::write::SimpleFileOptions::default()).unwrap();

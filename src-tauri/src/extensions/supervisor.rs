@@ -180,6 +180,48 @@ mod tests {
             assert_eq!(result.unwrap_err(), expected);
         }
     }
+    /// M10 lifetime gate: 100 supervised activations that complete, throw, crash, are cancelled or
+    /// time out. Each spawns a descendant helper; handles opened before the outcome prove that neither
+    /// the host nor its helper survives any cycle (no taskkill or PID polling of unrelated processes).
+    #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn one_hundred_supervised_cycles_with_crash_injection_leave_no_child_processes() {
+        use windows::Win32::{Foundation::{CloseHandle, HANDLE}, System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION}};
+        let runtime = Runtime::packaged(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).unwrap();
+        let source = "exports.tools={'cycle':async(args,job)=>{const helper=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});await job.progress({host:process.pid,helper:helper.pid});const mode=args[0];if(mode==='throw')throw new Error('injected');if(mode==='crash')process.exit(3);if(mode==='hang')return new Promise(()=>{});return {done:true};}};";
+        let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
+        let started = std::time::Instant::now();
+        for cycle in 0..100 {
+            let mode = ["complete", "throw", "crash", "cancel", "complete", "throw", "crash", "cancel", "complete", "timeout"][cycle % 10];
+            let cancel = Arc::new(AtomicBool::new(false)); let signal = cancel.clone();
+            let mut handles: Vec<HANDLE> = vec![];
+            let argument = if matches!(mode, "cancel" | "timeout") { "hang" } else { mode };
+            let deadline = if mode == "timeout" { Duration::from_millis(1500) } else { DEADLINE };
+            let result = run_owned(&runtime, source, json!({"job":{"tool":"cycle","args":[argument]}}), cancel, &runtime.directory, deadline, |method, value| {
+                if method == "jobProgress" {
+                    for key in ["host", "helper"] { handles.push(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, value[key].as_u64().unwrap() as u32) }.unwrap()); }
+                    if mode == "cancel" { signal.store(true, Ordering::Release); }
+                }
+                json!({"ok":true,"value":null})
+            }).await;
+            let outcome = match (&result, mode) {
+                (Ok(_), "complete") => "completed",
+                (Err("HostUnavailable"), "throw" | "crash") => "failed",
+                (Err("Cancelled"), "cancel") => "cancelled",
+                (Err("Timeout"), "timeout") => "timed out",
+                _ => panic!("cycle {cycle} {mode}: unexpected {result:?}"),
+            };
+            *outcomes.entry(outcome.to_owned()).or_default() += 1;
+            assert_eq!(handles.len(), 2, "cycle {cycle} {mode}: host and helper both started");
+            for handle in handles {
+                let mut exit = 259;
+                unsafe { GetExitCodeProcess(handle, &mut exit).unwrap(); CloseHandle(handle).unwrap(); }
+                assert_ne!(exit, 259, "cycle {cycle} {mode}: an owned process survived");
+            }
+        }
+        eprintln!("SUPERVISOR_LIFETIME cycles=100 outcomes={outcomes:?} elapsed_ms={}", started.elapsed().as_millis());
+        assert_eq!(outcomes.values().sum::<usize>(), 100);
+    }
     #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
     #[tokio::test]
     async fn packaging_resources_use_the_production_loader_without_checkout_fallback() {

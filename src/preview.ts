@@ -763,6 +763,14 @@ if (new URLSearchParams(location.search).has('data-panel') || new URLSearchParam
   (window as any).__previewAppearanceModules = async () => ({ ...(await import('./extensions/rich-views')), ...(await import('./extensions/appearance-state')), ...(await import('./extensions/appearance')), ...(await import('./extensions/contracts')), ...(await import('./palette')), ...(await import('./file-icons')) });
   (window as any).__previewRefreshExtensions = async () => (await import('./extensions/manager')).loadExtensions();
 }
+if (new URLSearchParams(location.search).has('extension-performance')) {
+  // Performance/lifetime gate: the same lifecycle commands the manager uses, plus owned listener counts.
+  (window as any).__extensionPerformance = {
+    enable: async (id: string, enabled: boolean) => (await import('./extensions/manager')).enableExtension(id, enabled),
+    changeListeners: async () => (await import('./extensions/manager')).extensionChangeListenerCount(),
+    nativeListeners: () => Object.fromEntries([...listeners].map(([name, set]) => [name, set.size]).filter(([, size]) => size)),
+  };
+}
 if (new URLSearchParams(location.search).has('replacement')) (window as any).__previewReplacementModules = () => import('./extensions/replacement');
 if (new URLSearchParams(location.search).has('composer-conformance')) (window as any).__previewComposerModules = async () => ({ ...await import('./extensions/component-slot'), ...await import('./extensions/manager') });
 if (new URLSearchParams(location.search).has('transcript-conformance')) (window as any).__previewTranscriptModules = async () => ({ ...await import('./extensions/component-slot'), ...await import('./extensions/manager'), ...await import('./extensions/contracts') });

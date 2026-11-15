@@ -182,16 +182,36 @@ fn package_id(id: &str, path: &str) -> Result<()> {
     if id.starts_with("panda.") { return Err(fail("ReservedId", path, vec![id.to_owned()])); }
     Ok(())
 }
+/// Deterministic topological order: each step takes the lowest-ranked node with no remaining
+/// predecessor (`rank` is total over distinct IDs). Kahn's algorithm over positions ranked once keeps
+/// 1,000 menus from re-sorting every step; a cycle reports the sorted IDs still remaining.
 fn order_graph(nodes: Vec<String>, edges: &[(String, String)], code: &str, path: &str, rank: impl Fn(&String, &String) -> std::cmp::Ordering) -> Result<Vec<String>> {
     let mut remaining: BTreeSet<_> = nodes.into_iter().collect();
-    let mut result = vec![];
-    while !remaining.is_empty() {
-        let mut ready: Vec<_> = remaining.iter().filter(|id| !edges.iter().any(|(from, to)| to == *id && remaining.contains(from))).cloned().collect();
-        ready.sort_by(&rank);
-        let Some(id) = ready.first() else { return Err(fail(code, path, remaining.into_iter().collect())); };
-        remaining.remove(id);
-        result.push(id.clone());
+    let mut blockers: BTreeMap<&String, usize> = BTreeMap::new();
+    let mut successors: BTreeMap<&String, Vec<&String>> = BTreeMap::new();
+    for (from, to) in edges {
+        if remaining.contains(from) && remaining.contains(to) {
+            *blockers.entry(to).or_default() += 1;
+            successors.entry(from).or_default().push(to);
+        }
     }
+    let mut sorted: Vec<String> = remaining.iter().cloned().collect();
+    sorted.sort_by(&rank);
+    let position: BTreeMap<String, usize> = sorted.into_iter().enumerate().map(|(index, id)| (id, index)).collect();
+    let mut ready: Vec<String> = remaining.iter().filter(|id| !blockers.contains_key(id)).cloned().collect();
+    let mut result = vec![];
+    while !ready.is_empty() {
+        let best = (0..ready.len()).min_by_key(|&i| position[&ready[i]]).unwrap();
+        let id = ready.swap_remove(best);
+        remaining.remove(&id);
+        for to in successors.get(&id).cloned().unwrap_or_default() {
+            let left = blockers.get_mut(to).unwrap();
+            *left -= 1;
+            if *left == 0 { ready.push(to.clone()); }
+        }
+        result.push(id);
+    }
+    if !remaining.is_empty() { return Err(fail(code, path, remaining.into_iter().collect())); }
     Ok(result)
 }
 fn reference(contributions: &Value, kind: &str, id: &Value, path: &str) -> Result<()> {
@@ -375,9 +395,9 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             }
         }
     }
+    let by_id: BTreeMap<&str, &Value> = menus.iter().map(|item| (text(item, "id"), item)).collect();
     let menu_order = order_graph(menus.iter().map(|item| text(item, "id").to_owned()).collect(), &edges, "OrderingCycle", "$/ordering", |a, b| {
-        let left = menus.iter().find(|item| item["id"] == *a).unwrap();
-        let right = menus.iter().find(|item| item["id"] == *b).unwrap();
+        let (left, right) = (by_id[a.as_str()], by_id[b.as_str()]);
         text(left, "location").cmp(text(right, "location")).then(text(left, "group").cmp(text(right, "group"))).then(left["order"].as_i64().unwrap_or(0).cmp(&right["order"].as_i64().unwrap_or(0))).then(a.cmp(b))
     })?;
     Ok(json!({"packages": packages, "activationOrder": activation_order, "menuOrder": menu_order}))
@@ -448,6 +468,21 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
     if captured["ok"] != true { return captured; }
     let diagnostics: Vec<_> = items(&parsed, "diagnostics").iter().chain(items(&captured, "diagnostics")).cloned().collect();
     json!({"ok": true, "value": evaluate(&parsed["value"], &captured["value"]), "diagnostics": diagnostics})
+}
+
+/// The 20-package/1,000-contribution scale fixture, generated exactly like
+/// `tests/extensions-performance.spec.ts` does from `performance-scale.json`.
+#[cfg(test)]
+pub(crate) fn performance_scale_manifests() -> Vec<Value> {
+    let scale: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/performance-scale.json")).unwrap();
+    let count = |key: &str| scale[key].as_u64().unwrap() as usize;
+    (1..=count("packages")).map(|p| {
+        let id = format!("{}.ext-{p:02}", scale["publisher"].as_str().unwrap());
+        let commands: Vec<Value> = (1..=count("perContextLocation")).map(|c| json!({"id":format!("{id}/run-{c}"), "title":format!("Perf {p:02} action {c}"), "action":{"kind":"showMessage","message":format!("Perf {p:02} action {c}")}})).collect();
+        let mut menus: Vec<Value> = scale["visibleLocations"].as_array().unwrap().iter().enumerate().map(|(v, location)| json!({"id":format!("{id}/visible-{}", v + 1), "location":location, "command":commands[0]["id"], "presentation":"button", "text":format!("P{p:02}"), "group":"extensions", "order":p - 1})).collect();
+        for location in scale["contextLocations"].as_array().unwrap() { for command in &commands { let n = menus.len() + 1; menus.push(json!({"id":format!("{id}/m-{n:03}"), "location":location, "command":command["id"], "group":"extensions", "order":p - 1})); } }
+        json!({"manifestVersion":1, "id":id, "version":"1.0.0", "engines":{"pandacodeApi":"^1.0.0"}, "extensionKind":"ui", "permissions":["ui.contribute"], "contributes":{"commands":commands, "menus":menus}})
+    }).collect()
 }
 
 #[cfg(test)]
@@ -1187,6 +1222,46 @@ mod tests {
         assert_eq!(validate_contract("packages", &json!([too_deep]))["error"]["code"], "LimitExceeded");
         let mut many = manifest.clone(); many["contributes"]["menus"][0]["items"] = json!((0..128).map(|n| json!({"id":format!("sample.project-helper/item-{n}"), "kind":"submenu", "title":"Nested", "items":[{"id":format!("sample.project-helper/child-{n}"), "kind":"command", "title":"Child", "command":"sample.project-helper/hello"}]})).collect::<Vec<_>>());
         assert_eq!(validate_contract("packages", &json!([many]))["error"]["code"], "LimitExceeded");
+    }
+
+    #[test]
+    fn one_thousand_contributions_across_twenty_packages_validate_in_bounded_time_with_a_stable_order() {
+        let manifests = super::performance_scale_manifests();
+        assert_eq!(manifests.len(), 20);
+        assert_eq!(manifests.iter().map(|m| m["contributes"]["menus"].as_array().unwrap().len()).sum::<usize>(), 1000);
+        let started = std::time::Instant::now();
+        let result = validate_contract("packages", &json!(manifests));
+        let elapsed = started.elapsed();
+        eprintln!("SCALE_VALIDATION elapsed_ms={}", elapsed.as_millis());
+        assert_eq!(result["ok"], true, "{result}");
+        let order = result["value"]["menuOrder"].as_array().unwrap();
+        assert_eq!(order.len(), 1000);
+        // Location, then group, then numeric order, then ID: the first entries are the board context menus of ext-01.
+        assert_eq!(order[0], "perf.ext-01/m-035");
+        let reversed: Vec<Value> = manifests.iter().rev().cloned().collect();
+        assert_eq!(validate_contract("packages", &json!(reversed))["value"]["menuOrder"], result["value"]["menuOrder"], "input order must not change the result");
+        // The former per-step re-sort was cubic (10 s in the TypeScript twin, far longer in a debug
+        // build); ~0.5 s now. A generous bound tolerates parallel test load and still catches that.
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    #[test]
+    fn ordering_cycles_and_constraints_survive_the_linear_topological_order() {
+        let base = || json!({"manifestVersion":1, "id":"sample.order", "version":"1.0.0", "engines":{"pandacodeApi":"^1.0.0"}, "extensionKind":"ui", "permissions":["ui.contribute"], "contributes":{"commands":[{"id":"sample.order/run", "title":"Run", "action":{"kind":"showMessage","message":"Run"}}], "menus":[
+            {"id":"sample.order/a", "location":"panda.workspace.header.actions", "command":"sample.order/run", "order":1},
+            {"id":"sample.order/b", "location":"panda.workspace.header.actions", "command":"sample.order/run", "order":2},
+            {"id":"sample.order/c", "location":"panda.workspace.header.actions", "command":"sample.order/run", "order":3}]}});
+        let order = |value: &Value| validate_contract("packages", &json!([value]))["value"]["menuOrder"].clone();
+        assert_eq!(order(&base()), json!(["sample.order/a", "sample.order/b", "sample.order/c"]));
+        // A constraint only blocks its target: b is ready and ranks before c, then c unblocks a.
+        let mut before = base(); before["contributes"]["menus"][2]["before"] = json!(["sample.order/a"]);
+        assert_eq!(order(&before), json!(["sample.order/b", "sample.order/c", "sample.order/a"]));
+        let mut after = base(); after["contributes"]["menus"][0]["after"] = json!(["sample.order/c", "sample.order/b"]);
+        assert_eq!(order(&after), json!(["sample.order/b", "sample.order/c", "sample.order/a"]));
+        let mut cycle = base(); cycle["contributes"]["menus"][0]["after"] = json!(["sample.order/b"]); cycle["contributes"]["menus"][1]["after"] = json!(["sample.order/a"]);
+        let error = validate_contract("packages", &json!([cycle]));
+        assert_eq!(error["error"]["code"], "OrderingCycle");
+        assert_eq!(error["error"]["ids"], json!(["sample.order/a", "sample.order/b"]));
     }
 
     #[test]

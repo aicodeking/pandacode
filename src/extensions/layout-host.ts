@@ -1,6 +1,7 @@
 import { createLayoutStore, LAYOUT_KEY } from './layout';
-import { extensionsSnapshot } from './manager';
+import { extensionGeneration, extensionsSafeMode, extensionsSnapshot } from './manager';
 import { proposalOrder, type LayoutProposal } from './ordering';
+type OwnedProposal = LayoutProposal & { owner: string; version: string };
 
 // Defer access so unavailable storage still permits built-in startup and reports a failed save.
 export const layout = createLayoutStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) });
@@ -9,12 +10,19 @@ let project: () => string | undefined = () => undefined;
 export const layoutProject = () => project();
 export function registerLayoutContext(context: () => string | undefined) { project = context; }
 
-export function layoutProposals(): (LayoutProposal & { owner: string; version: string })[] {
-  const state = extensionsSnapshot();
-  return state.safeMode ? [] : state.packages.filter(item => item.enabled).flatMap(item => (item.manifest.contributes.layouts ?? []).map(proposal => ({ ...proposal, owner: item.manifest.id, version: item.manifest.version }))).sort((a, b) => a.id.localeCompare(b.id));
+// Proposals change only with the package lifecycle (the activation generation). Every render orders
+// controls, so copying all packages per call made 1,000 contributions cost seconds per lifecycle change.
+let proposals: { generation: number; value: OwnedProposal[] } | undefined;
+export function layoutProposals(): OwnedProposal[] {
+  const generation = extensionGeneration();
+  if (proposals?.generation !== generation) {
+    const state = extensionsSnapshot();
+    proposals = { generation, value: state.safeMode ? [] : state.packages.filter(item => item.enabled).flatMap(item => (item.manifest.contributes.layouts ?? []).map(proposal => ({ ...proposal, owner: item.manifest.id, version: item.manifest.version }))).sort((a, b) => a.id.localeCompare(b.id)) };
+  }
+  return structuredClone(proposals.value);
 }
 export function orderedControls(location: string, ids: readonly string[], projectId = layoutProject()): string[] {
-  if (extensionsSnapshot().safeMode) return [...ids];
+  if (extensionsSafeMode()) return [...ids];
   const selected = layout.extensionLayoutsEnabled() && layoutProposals().find(proposal => proposal.id === layout.selected(location) && proposal.location === location);
   let suggested = [...ids];
   if (selected) { try { suggested = proposalOrder(ids, selected.rules); } catch { /* Invalid proposals never displace the last valid user overlay. */ } }
@@ -43,7 +51,7 @@ export function applyControlVisibility(bindings: ReadonlyArray<readonly [string,
   let moveFocus = false;
   for (const [id, element] of bindings) {
     if (!element) continue;
-    const hidden = !extensionsSnapshot().safeMode && layout.isHidden(id, layoutProject());
+    const hidden = !extensionsSafeMode() && layout.isHidden(id, layoutProject());
     if (hidden && element.contains(document.activeElement)) moveFocus = true;
     element.toggleAttribute('data-layout-hidden', hidden); element.inert = hidden;
   }

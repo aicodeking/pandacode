@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync, closeSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, closeSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -38,9 +38,64 @@ function readLease(path, root) {
   return value;
 }
 
+// Readers never take the update lock, so the lease file must change atomically: a reader sees
+// either the previous or the next complete record, never a truncated one.
+function writeLease(path, lease) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, JSON.stringify(lease));
+  for (let attempt = 0; ; attempt++) {
+    try { renameSync(temporary, path); return; }
+    catch (error) {
+      // Windows refuses to replace a file another process is reading at that instant.
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 400) { rmSync(temporary, { force: true }); throw error; }
+      pause(5 + (attempt % 10));
+    }
+  }
+}
+
+// Exclusive creation with complete contents: link fails with EEXIST if the lease already exists.
+function createLease(path, lease) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, JSON.stringify(lease));
+  try { linkSync(temporary, path); } finally { unlinkSync(temporary); }
+}
+
+function pause(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+// Workers join and leave concurrently; serialize their read-modify-write so no child is lost.
+function updateLease(path, root, change) {
+  const guard = `${path}.update`;
+  let fd;
+  for (let attempt = 0; fd === undefined; attempt++) {
+    try { fd = openSync(guard, 'wx'); }
+    catch (error) {
+      // Windows reports a guard another process just unlinked (delete pending) as EPERM/EACCES.
+      const busy = ['EEXIST', 'EPERM', 'EACCES', 'EBUSY'].includes(error.code);
+      // Wait longer than one holder's whole rename retry window (writeLease).
+      if (!busy || attempt >= 2000) throw busy ? new Error(`Browser-test lease update is stuck; inspect ${guard}.`) : error;
+      pause(10);
+    }
+  }
+  try {
+    if (!existsSync(path)) return;
+    const current = readLease(path, root);
+    const next = change(current);
+    if (next) writeLease(path, next);
+  } finally {
+    closeSync(fd);
+    unlinkSync(guard);
+  }
+}
+
 function alive(pid) {
   try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
+    // Windows answers EPERM for an exited process whose handle is still held (or a reused PID of a
+    // protected process). Lease PIDs are this user's own node processes, which are always signalable.
+    if (error.code === 'EPERM') return process.platform !== 'win32';
+    throw error;
+  }
 }
 
 // Acquire while loading the runner config, BEFORE Playwright clears outputDir.
@@ -55,17 +110,12 @@ export function acquireBrowserRun({ root = process.cwd(), argv = process.argv, a
     const lease = readLease(paths.lock, root);
     if (process.env[leaseEnvironment] === lease.id && alive(lease.pid)) {
       // A surviving preview must protect its build even if the runner itself is interrupted.
-      lease.children = [...new Set([...(lease.children ?? []), process.pid])];
-      writeFileSync(paths.lock, JSON.stringify(lease));
+      updateLease(paths.lock, root, current => current.id === lease.id ? { ...current, children: [...new Set([...(current.children ?? []), process.pid])] } : null);
       let released = false;
       const releaseChild = () => {
         if (released) return;
         released = true;
-        if (!existsSync(paths.lock)) return;
-        const current = readLease(paths.lock, root);
-        if (current.id !== lease.id) return;
-        current.children = (current.children ?? []).filter(pid => pid !== process.pid);
-        writeFileSync(paths.lock, JSON.stringify(current));
+        updateLease(paths.lock, root, current => current.id === lease.id ? { ...current, children: (current.children ?? []).filter(pid => pid !== process.pid) } : null);
       };
       if (installExitHandler) process.once('exit', releaseChild);
       return releaseChild;
@@ -73,9 +123,9 @@ export function acquireBrowserRun({ root = process.cwd(), argv = process.argv, a
   }
   mkdirSync(paths.cache, { recursive: true });
   const lease = { schema: 1, root, pid: process.pid, id: randomUUID() };
-  let fd;
+  let created = false;
   for (let attempt = 0; attempt < 2; attempt++) {
-    try { fd = openSync(paths.lock, 'wx'); break; }
+    try { createLease(paths.lock, lease); created = true; break; }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
       // Serialize stale-owner recovery too: two reclaimers must never unlink a new live lease.
@@ -102,8 +152,7 @@ export function acquireBrowserRun({ root = process.cwd(), argv = process.argv, a
       }
     }
   }
-  if (fd === undefined) throw new Error('Could not acquire the browser-test lease. Try again after the other runner exits.');
-  try { writeFileSync(fd, JSON.stringify(lease)); } finally { closeSync(fd); }
+  if (!created) throw new Error('Could not acquire the browser-test lease. Try again after the other runner exits.');
   const previousEnvironment = process.env[leaseEnvironment];
   process.env[leaseEnvironment] = lease.id;
   let released = false;

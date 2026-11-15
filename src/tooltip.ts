@@ -86,6 +86,13 @@ export function installTooltips(): void {
   // A scroll (often programmatic: a list revealing its row) moves the bubble with its anchor; wheel and
   // keys already hide it, and a pointer left off the anchor hides it through the next pointerover.
   document.addEventListener('scroll', place, true);
-  window.addEventListener('resize', hide);
+  // Layout refreshes dispatch synthetic resizes (terminals and menus refit) without the window changing;
+  // those only re-place the bubble. A real viewport change hides it.
+  let viewport = `${innerWidth}x${innerHeight}`;
+  window.addEventListener('resize', () => {
+    const next = `${innerWidth}x${innerHeight}`;
+    if (next === viewport) { place(); return; }
+    viewport = next; hide();
+  });
   window.addEventListener('blur', hide);
 }
