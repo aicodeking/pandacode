@@ -836,18 +836,12 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     const chunks = splitPatch(input.patch);
     const sections = chunks.filter(chunk => !chunk.continued).length;
     if (sections > MAX_FILES) { showFallback('Large diff — showing a limited plain text preview.'); return; }
-<<<<<<< HEAD
     const fail = () => {
       if (cancelled()) return;
       showFallback(input.truncated
-        ? 'This patch was shortened when recorded. Showing the available plain text patch.'
-        : 'Unable to format this diff. Showing the recorded patch.');
+        ? t('This patch was shortened when recorded. Showing the available plain text patch.')
+        : t('Unable to format this diff. Showing the recorded patch.'));
     };
-=======
-    const fail = () => showFallback(input.truncated
-      ? t('This patch was shortened when recorded. Showing the available plain text patch.')
-      : t('Unable to format this diff. Showing the recorded patch.'));
->>>>>>> 4e17e56e (feat: localize the desktop interface with a language setting)
     try {
       clearTimeout(engineIdleTimer);
       engineIdleTimer = 0;
