@@ -15,6 +15,8 @@ type Deps = {
   refresh(): Promise<void>;
   notify(text: string): void;
   report(error: unknown): void;
+  /** The computer a task's files are on when it is not this one: they are only browsed, by path. */
+  remoteName?(context: Context): string | undefined;
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -26,6 +28,7 @@ export function createFileExplorer(deps: Deps) {
     try { await deps.refresh(); } finally { refreshing = false; }
   }
   function edit(context: Context, action: string, path: string, directory: boolean): void {
+    if (deps.remoteName?.(context)) return;
     const name = path.split('/').pop() ?? '';
     const deleting = action === 'delete', renaming = action === 'rename';
     const title = deleting ? `Delete ${name}?` : renaming ? 'Rename' : action === 'new-folder' ? 'New folder' : 'New file';
@@ -61,6 +64,14 @@ export function createFileExplorer(deps: Deps) {
     });
   }
   function menu(anchor: HTMLElement, context: Context, path: string, directory: boolean, point?: { x: number; y: number }): void {
+    // Another computer's files: nothing to create, rename, reveal or open here; the path is the project's own.
+    const remote = deps.remoteName?.(context);
+    if (remote) {
+      deps.menu({ anchor, point, title: path.split('/').pop() || 'Project files', actions: true, items: [
+        { id: 'copy-path', label: 'Copy Path', description: `Relative to the project on ${remote}`, icon: 'copy' },
+      ], onSelect: async () => { await navigator.clipboard.writeText(path); deps.notify('Path copied'); } });
+      return;
+    }
     deps.menu({ anchor, point, title: path.split('/').pop() || 'Project files', actions: true, items: [
       { id: 'new-file', label: 'New File', icon: 'file' },
       { id: 'new-folder', label: 'New Folder', icon: 'folder' },

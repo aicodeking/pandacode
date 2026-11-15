@@ -104,7 +104,18 @@ test('a new task starts on another computer and is an ordinary task with a locke
   await expect(page.locator('#composer-computer')).toHaveCount(0);
   await expect(page.locator('#composer-area [data-action="branch-menu"]')).toHaveCount(0);
   await expect(page.locator('#composer-area .branch-chip-fixed')).toBeVisible();
-  await expect(page.locator('#inspector-content')).toContainText('Runs on Studio iMac');
+  // Its changes come from its host (remote/inspect.rs), for review only: nothing to stage or commit here.
+  await page.locator('[data-action="tab-changes"]').click();
+  await expect(page.locator('#inspector-content .changes-view')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => ((window as any).__remoteInspects ?? []).some((call: { command: string }) => call.command === 'git_status'))).toBe(true);
+  // The view remounts once the task runs there (read only), so the click is retried until the menu opens.
+  const actions = page.getByRole('dialog', { name: 'Changes' });
+  await expect(async () => {
+    if (!await actions.isVisible()) await page.locator('#inspector-content [data-cv-action="menu"]').click();
+    await expect(actions.getByRole('menuitem', { name: 'Refresh' })).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  await expect(actions.getByRole('menuitem', { name: /Stage all|Commit/ })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await expect(page.locator('#commit-form')).toHaveCount(0);
   // The composer stays the ordinary one.
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeVisible();

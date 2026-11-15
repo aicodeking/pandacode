@@ -84,6 +84,21 @@ pub(crate) async fn route(app: &tauri::AppHandle, state: &AppState, local: &str,
     result.map(Some)
 }
 
+/// A change to a mirror that its host makes too (`method`), so the task is the same everywhere:
+/// the host's refusal stops it, and a host that is offline leaves only this copy changed.
+/// Nothing for a local task.
+pub(crate) async fn change_on_host(app: &tauri::AppHandle, state: &AppState, local: &str, method: &str, params: Value) -> Result<()> {
+    match route(app, state, local, method, params).await {
+        Err(error) if error == super::socket::OFFLINE => Ok(()),
+        result => result.map(drop),
+    }
+}
+
+/// Settling or reopening a mirror does the same on its host (`thread.setStage`).
+pub(crate) async fn set_stage(app: &tauri::AppHandle, state: &AppState, local: &str, stage: &str) -> Result<()> {
+    change_on_host(app, state, local, "thread.setStage", json!({"stage": stage})).await
+}
+
 /// A prompt for a mirror: its images (this computer's captures) go to the host first, then
 /// the message names the ids the host stored them under.
 pub(crate) async fn send(app: &tauri::AppHandle, state: &AppState, local: &str, text: String, image_ids: &[String]) -> Result<()> {
@@ -644,6 +659,12 @@ fn run_ended(app: &tauri::AppHandle, from: &str, data: &Value) {
 /// Copies the run's messages, always (a turn that ended here first, by Stop or an offline
 /// host, still gets them), then ends the turn unless it already ended.
 async fn end_turn(app: &tauri::AppHandle, local: &str, successful: bool, stopped: bool, text: &str) {
+    // A mirror never opened here (`browse.rs`) copies its messages once it is.
+    let deferred = lock(&app.state::<AppState>()).is_ok_and(|store| super::browse::deferred(&store, local));
+    if deferred {
+        finish(app, local, successful, stopped, text);
+        return;
+    }
     if let Err(error) = sync(app, local).await {
         eprintln!("PandaCode Connect: could not copy a remote task's messages: {error}");
     }
@@ -1080,12 +1101,14 @@ pub(crate) fn subscribe_reconnected(app: &tauri::AppHandle) {
     subscribe_soon(app);
 }
 
-/// A followed mirror: host task, local task, last host id copied, running or waiting.
+/// A followed mirror: host task, local task, last host id copied, running or waiting, and
+/// whether its messages wait for it to be opened (`browse.rs`).
 struct Followed {
     session: String,
     local: String,
     synced: i64,
     active: bool,
+    deferred: bool,
 }
 
 /// The mirrors whose first page goes with a reconnect's subscribe, at most [`PIPELINED`]:
@@ -1093,8 +1116,8 @@ struct Followed {
 /// (its tail: running first, else the most recently updated, so a first open waits one round
 /// trip, not two), then the most recently updated copied ones (the order given).
 fn pipelined(mirrors: &[Followed]) -> Vec<&Followed> {
-    let copied = || mirrors.iter().filter(|m| m.synced > 0);
-    let fresh = mirrors.iter().filter(|m| m.synced == 0);
+    let copied = || mirrors.iter().filter(|m| m.synced > 0 && !m.deferred);
+    let fresh = mirrors.iter().filter(|m| m.synced == 0 && !m.deferred);
     let first = fresh.clone().find(|m| m.active).or_else(|| fresh.clone().next());
     copied().filter(|m| m.active).chain(first).chain(copied().filter(|m| !m.active)).take(PIPELINED).collect()
 }
@@ -1106,8 +1129,8 @@ async fn subscribe_all(app: &tauri::AppHandle, reconnected: bool) -> bool {
     let mirrors: Vec<(String, Followed)> = {
         let state = app.state::<AppState>();
         let Ok(store) = state.store.lock() else { return false };
-        let Ok(mut statement) = store.db.prepare("SELECT remote_device,remote_session,id,remote_synced_id,status IN ('running','waiting') FROM sessions WHERE remote_session IS NOT NULL AND archived=0 ORDER BY updated_at DESC") else { return false };
-        statement.query_map([], |r| Ok((r.get(0)?, Followed { session: r.get(1)?, local: r.get(2)?, synced: r.get(3)?, active: r.get(4)? }))).map(|rows| rows.filter_map(std::result::Result::ok).collect()).unwrap_or_default()
+        let Ok(mut statement) = store.db.prepare("SELECT remote_device,remote_session,id,remote_synced_id,status IN ('running','waiting'),remote_deferred FROM sessions WHERE remote_session IS NOT NULL AND archived=0 ORDER BY status IN ('running','waiting') DESC,updated_at DESC") else { return false };
+        statement.query_map([], |r| Ok((r.get(0)?, Followed { session: r.get(1)?, local: r.get(2)?, synced: r.get(3)?, active: r.get(4)?, deferred: r.get(5)? }))).map(|rows| rows.filter_map(std::result::Result::ok).collect()).unwrap_or_default()
     };
     let mut hosts: HashMap<String, Vec<Followed>> = HashMap::new();
     for (device, mirror) in mirrors {
@@ -1141,8 +1164,14 @@ async fn subscribe_all(app: &tauri::AppHandle, reconnected: bool) -> bool {
             }
         }
     });
-    let failed = futures_util::future::join_all(rounds).await.into_iter().any(|failed| failed);
+    // Shown computers (`browse.rs`) list their tasks beside the round; a task new here is
+    // followed by the next one.
+    let (results, adopted) = futures_util::join!(futures_util::future::join_all(rounds), super::browse::refresh(app));
+    let failed = results.into_iter().any(|failed| failed);
     save_cursors(app, true);
+    if adopted {
+        subscribe_soon(app);
+    }
     failed
 }
 
@@ -1299,7 +1328,18 @@ fn catch_up(app: &tauri::AppHandle, device: &str, reply: &Value, requested: &[St
     for session in gone(reply, requested) {
         let state = app.state::<AppState>();
         let local = lock(&state).ok().and_then(|store| local_id(&store, device, &session));
-        if let Some(local) = local.filter(|local| active(&state, local)) {
+        let Some(local) = local else { continue };
+        // A copy shown from a remote project goes with its task.
+        if lock(&state).is_ok_and(|store| super::browse::in_remote_project(&store, &local)) {
+            // The host may have finished and deleted this task while we were disconnected.
+            // End its stale local run first: ordinary deletion refuses running copies.
+            finish(app, &local, false, true, "This task is no longer on the other computer.");
+            if let Err(error) = super::browse::forget(app, &local) {
+                eprintln!("PandaCode Connect: could not remove a missing task's copy: {error}");
+            }
+            continue;
+        }
+        if active(&state, &local) {
             finish(app, &local, false, false, &format!("This task is no longer on {}.", super::device_label(device)));
         }
     }
@@ -1308,9 +1348,9 @@ fn catch_up(app: &tauri::AppHandle, device: &str, reply: &Value, requested: &[St
         let row = app.state::<AppState>().store.lock().ok().and_then(|store| {
             let local = local_id(&store, device, session)?;
             // Unfinished: a backfill or a cut copy left by an earlier run (say, before a quit).
-            store.db.query_row("SELECT status,remote_synced_id,remote_backfill_base IS NOT NULL OR EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id AND remote_cut IS NOT NULL) FROM sessions WHERE id=?1", [&local], |r| Ok((local.clone(), r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?))).ok()
+            store.db.query_row("SELECT status,remote_synced_id,remote_backfill_base IS NOT NULL OR EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id AND remote_cut IS NOT NULL),remote_deferred FROM sessions WHERE id=?1", [&local], |r| Ok((local.clone(), r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?, r.get::<_, bool>(3)?))).ok()
         });
-        let Some((local, current, synced, unfinished)) = row else { continue };
+        let Some((local, current, synced, unfinished, deferred)) = row else { continue };
         match reconcile(&current, status) {
             Reconcile::Ended { successful, stopped } => {
                 pending.push((local, Some((successful, stopped))));
@@ -1346,7 +1386,7 @@ fn catch_up(app: &tauri::AppHandle, device: &str, reply: &Value, requested: &[St
             }
         }
         // A gap means events were lost: the messages copy is the full catch-up.
-        if task["gap"] == true || task["lastId"].as_i64().is_some_and(|last| last > synced) || (unfinished && synced > 0) {
+        if !deferred && (task["gap"] == true || task["lastId"].as_i64().is_some_and(|last| last > synced) || (unfinished && synced > 0)) {
             pending.push((local, None));
         }
     }
@@ -1769,10 +1809,27 @@ pub(crate) async fn commit(app: &tauri::AppHandle, mut request: Launch) -> Resul
     if request.prompt.is_empty() || request.prompt.len() > host::MAX_TEXT {
         return Err("Send between 1 byte and 100 KB of text.".into());
     }
-    let root = lock(&state)?.workspace_root(&request.project_id, None)?;
-    let (repo, current) = tauri::async_runtime::spawn_blocking(move || start_target(&root)).await.map_err(|e| e.to_string())?;
-    let repo = repo.ok_or(NO_REPO)?;
-    let branch = request.branch.clone().filter(|b| !b.trim().is_empty()).or_else(|| Some(current).filter(|b| !b.is_empty()));
+    let project = lock(&state)?.project_entry(&request.project_id)?;
+    let wanted = request.branch.clone().filter(|b| !b.trim().is_empty());
+    let (at, branch) = match (&project.remote_device, &project.remote_project) {
+        // A remote project (`browse.rs`) names its project on that computer; nothing here is read.
+        (Some(device), Some(remote_project)) => {
+            if device.id != device_id {
+                return Err(format!("{} is on {}. Start its tasks there.", project.name, device.name));
+            }
+            (StartAt::Project(remote_project.clone()), wanted)
+        }
+        _ => {
+            let root = lock(&state)?.workspace_root(&request.project_id, None)?;
+            let (repo, current) = tauri::async_runtime::spawn_blocking(move || start_target(&root)).await.map_err(|e| e.to_string())?;
+            (StartAt::Repo(repo.ok_or(NO_REPO)?), wanted.or_else(|| Some(current).filter(|b| !b.is_empty())))
+        }
+    };
+    // A remote project's folder needs a host that keeps the task there; an older one is refused
+    // before anything is made, rather than starting it in a worktree unasked.
+    if matches!(at, StartAt::Project(_)) && !request.worktree {
+        super::browse::require_project_checkout(app, &device_id).await?;
+    }
     // Images go first, before any row exists: a failed upload leaves the New task as it was.
     let image_ids = super::images::send(app, &device_id, &request.image_ids).await?;
     let cancel = Arc::new(Notify::new());
@@ -1787,7 +1844,11 @@ pub(crate) async fn commit(app: &tauri::AppHandle, mut request: Launch) -> Resul
     };
     let _ = app.emit("sessions-changed", ());
     let mode = request.mode.clone();
-    let body = start_body(request, &repo, branch.as_deref(), start_id.as_deref(), &image_ids);
+    let body = start_body(request, &at, branch.as_deref(), start_id.as_deref(), &image_ids);
+    let repo = match at {
+        StartAt::Repo(repo) => Some(repo),
+        StartAt::Project(_) => None,
+    };
     let (start_app, start_local) = (app.clone(), local.clone());
     let start = tauri::async_runtime::spawn(async move { start(start_app, start_local, created, device_id, repo, start_id, cancel, body).await });
     Ok(Committed { local, mode, start })
@@ -1810,9 +1871,28 @@ pub(super) fn commit_row(inner: &mut super::Inner, store: &Store, request: &mut 
 }
 
 /// The `task.start` params of a committed launch.
-pub(super) fn start_body(request: Launch, repo: &str, branch: Option<&str>, start_id: Option<&str>, image_ids: &[String]) -> Value {
+/// Where a start runs on the host: the project whose origin is a GitHub repository (cloned
+/// there when it has none), or one of its projects by id (a remote project, `browse.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum StartAt {
+    Repo(String),
+    Project(String),
+}
+
+pub(super) fn start_body(request: Launch, at: &StartAt, branch: Option<&str>, start_id: Option<&str>, image_ids: &[String]) -> Value {
     let Launch { prompt, provider, model, mode, effort, worktree, .. } = request;
-    json!({"repo": repo, "branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids})
+    let mut body = json!({"branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids});
+    match at {
+        StartAt::Repo(repo) => body["repo"] = json!(repo),
+        StartAt::Project(id) => {
+            body["projectId"] = json!(id);
+            // A remote project's own folder, as it is, like a local task (hosts before it ignore this).
+            if !worktree {
+                body["checkout"] = json!("current");
+            }
+        }
+    }
+    body
 }
 
 /// What a `task.start` reply means for its mirror.
@@ -1845,7 +1925,7 @@ pub(super) fn after_start(viewer: &mut Viewer, local: &str, tracked: bool, start
 
 /// Sends `task.start` for a committed mirror row and links it to the host task.
 #[allow(clippy::too_many_arguments)]
-async fn start(app: tauri::AppHandle, local: String, created: bool, device_id: String, repo: String, start_id: Option<String>, cancel: Arc<Notify>, request: Value) -> Result<(String, Option<String>)> {
+async fn start(app: tauri::AppHandle, local: String, created: bool, device_id: String, repo: Option<String>, start_id: Option<String>, cancel: Arc<Notify>, request: Value) -> Result<(String, Option<String>)> {
     let state = app.state::<AppState>();
     let started = tokio::select! {
         reply = client::call_within(&app, &device_id, "task.start", request, START_TIMEOUT) => reply,
@@ -1861,7 +1941,7 @@ async fn start(app: tauri::AppHandle, local: String, created: bool, device_id: S
         // row says what it waits for. The subscribe round is what gets that going.
         AfterStart::Lost(kept) => {
             if let Some(start_id) = kept {
-                waiting_for(&app, &device_id, &start_id, Some(&repo));
+                waiting_for(&app, &device_id, &start_id, repo.as_deref());
             }
             super::diagnostics::record("rpc.timeout", format!("task.start on {}: {lost}", super::device_label(&device_id)));
             eprintln!("PandaCode Connect: lost the reply to a start ({lost}); asking the host again when it is back.");
@@ -2539,8 +2619,26 @@ mod tests {
     }
 
     #[test]
+    fn a_start_names_the_repository_or_the_hosts_project() {
+        let launch = || Launch { prompt: "Fix it".into(), provider: "github-copilot".into(), model: "default".into(), ..Default::default() };
+        let by_repo = start_body(launch(), &StartAt::Repo("orbit-labs/orbit".into()), Some("main"), Some("s1"), &[]);
+        assert_eq!((by_repo["repo"].as_str(), by_repo.get("projectId")), (Some("orbit-labs/orbit"), None));
+        let by_project = start_body(launch(), &StartAt::Project("p1".into()), None, Some("s1"), &[]);
+        assert_eq!((by_project.get("repo"), by_project["projectId"].as_str()), (None, Some("p1")));
+        // In the project folder, as it is; a worktree start leaves the folder alone.
+        assert_eq!(by_project["checkout"], "current");
+        assert!(super::super::start::parse(&by_project).unwrap().current_checkout);
+        let in_worktree = start_body(Launch { worktree: true, ..launch() }, &StartAt::Project("p1".into()), None, None, &[]);
+        assert!(in_worktree.get("checkout").is_none());
+        assert!(by_repo.get("checkout").is_none(), "a repository start keeps the host's checks");
+        // The host takes exactly one of them.
+        assert!(super::super::start::parse(&by_project).is_ok());
+        assert!(super::super::start::parse(&by_repo).is_ok());
+    }
+
+    #[test]
     fn a_reconnect_pipelines_copied_mirrors_running_first() {
-        let m = |id: &str, synced: i64, active: bool| Followed { session: id.into(), local: format!("l{id}"), synced, active };
+        let m = |id: &str, synced: i64, active: bool| Followed { session: id.into(), local: format!("l{id}"), synced, active, deferred: false };
         let mirrors = [m("a", 5, false), m("b", 0, true), m("c", 9, true), m("d", 3, false), m("e", 1, false), m("f", 2, true)];
         let picked: Vec<&str> = pipelined(&mirrors).iter().map(|m| m.session.as_str()).collect();
         // Running c and f, then b's tail (nothing copied yet), not a fourth.
@@ -2550,6 +2648,10 @@ mod tests {
         let picked: Vec<&str> = pipelined(&fresh).iter().map(|m| m.session.as_str()).collect();
         assert_eq!(picked, ["y", "z"]);
         assert_eq!(pipelined(&[m("x", 0, false)]).len(), 1, "a first-ever open pipelines its tail");
+        // A mirror never opened (`browse.rs`) waits: its messages are copied when it is.
+        let deferred = [Followed { deferred: true, ..m("q", 0, true) }, m("r", 2, false)];
+        let picked: Vec<&str> = pipelined(&deferred).iter().map(|m| m.session.as_str()).collect();
+        assert_eq!(picked, ["r"]);
     }
 
     #[test]

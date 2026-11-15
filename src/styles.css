@@ -550,6 +550,13 @@ dialog::backdrop{background:transparent;backdrop-filter:none;-webkit-backdrop-fi
 dialog input,dialog select{background:var(--bg);color:var(--text);font-size:var(--text-sm)}
 dialog input::placeholder{color:var(--muted)}
 .field-help{font-size:var(--text-xs);color:var(--muted);line-height:1.5;margin:6px 0 12px}
+/* Open project: another computer's projects (remote/browse.rs). */
+.open-project-computers{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:6px}
+.open-project-computer{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card)}
+.open-project-computer-label{display:grid;flex:1;min-width:0}
+.open-project-computer-label strong{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.open-project-computer-label small{color:var(--muted);font-size:var(--text-xs)}
+.open-project-computer .secondary-button{flex:none;min-height:30px;padding:0 12px}
 .field-label-row{display:flex;align-items:center;gap:6px;margin:12px 0 6px}
 .field-label-row>.field-label{margin:0}
 .field-label-row>.info-mark{margin-left:0}

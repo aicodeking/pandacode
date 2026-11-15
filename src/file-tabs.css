@@ -37,3 +37,7 @@
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.file-window{background:var(--panel-surface,var(--bg));backdrop-filter:none;-webkit-backdrop-filter:none}}
 @media(prefers-contrast:more){.file-window{border-color:var(--border);box-shadow:none}}
 @media(forced-colors:active){.file-window{background:Canvas;border-color:CanvasText;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}.file-window-resize::after{background:CanvasText}}
+
+/* A file of a task that runs on another computer: shown, never edited here. */
+.file-view-remote{display:inline-flex;align-items:center;gap:6px;padding:0 8px;color:var(--muted);font-size:var(--text-xs);white-space:nowrap}
+.file-view-remote .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}

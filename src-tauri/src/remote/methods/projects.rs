@@ -479,7 +479,7 @@ mod tests {
         assert!(body.find("crate::send_message(").unwrap() < body.find("made_but_not_sent(&task.id, error)").unwrap());
         let recent = &source[source.find("impl Run for RecentRepos").unwrap()..];
         assert!(recent[..recent.find("\n}\n").unwrap()].contains("repo_projects(projects, &bots)"));
-        let project = |id: &str, path: std::path::PathBuf| crate::storage::Project { id: id.into(), name: id.into(), path: path.to_string_lossy().into_owned(), added_order: 0 };
+        let project = |id: &str, path: std::path::PathBuf| crate::storage::Project { id: id.into(), name: id.into(), path: path.to_string_lossy().into_owned(), added_order: 0, remote_device: None, remote_project: None };
         let chat = crate::chats::root().join("some-chat");
         let kept = repo_projects(
             vec![project("repo", std::env::temp_dir().join("pandacode-repo")), project("bot", std::env::temp_dir().join("pandacode-bot")), project("chat", chat)],

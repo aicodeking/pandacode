@@ -3,7 +3,7 @@
 .composer-context{flex-wrap:nowrap}
 .composer-context>.link-chip{flex-shrink:0}
 .composer-area{container:composer/inline-size}
-@container composer (max-width:560px){.composer-context .composer-local{display:none}.composer-context.composer-context-compact{gap:10px}.composer-context .branch-chip{max-width:none}}
+@container composer (max-width:560px){.composer-context .composer-local:not(#remote-checkout){display:none}.composer-context.composer-context-compact{gap:10px}.composer-context .branch-chip{max-width:none}}
 .composer-context-compact{min-height:36px;padding:4px 12px;gap:14px;font-size:var(--text-xs);background:transparent;border-color:transparent}
 .composer-project-fixed{display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:40%;color:var(--text);font-weight:var(--weight-medium);cursor:default}
 .composer-project-fixed>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -23,6 +23,13 @@
 .composer-computer>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--muted);flex-shrink:0}
 .composer-computer:not(.composer-computer-fixed):hover{background:var(--raised)}
 .composer-computer-fixed{cursor:default}
+/* A New task in another computer's project chooses its checkout there (Project folder / New worktree). */
+/* Class-level weight only (:where), so the composer tray's own sizing (redesign/conversation.css) wins there and its icon matches the other tray items. */
+.composer-local:where(#remote-checkout){padding:5px 6px;border:0;border-radius:var(--radius-sm);background:none;color:var(--text);font:inherit;cursor:pointer;--press:1}
+.composer-local:where(#remote-checkout)>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--muted)}
+.composer-local:where(#remote-checkout[data-checkout="worktree"])>.icon{color:var(--text)}
+.composer-local:where(#remote-checkout:hover,#remote-checkout[aria-expanded="true"]){background:var(--raised)}
+.composer-local:where(#remote-checkout:focus-visible){outline:2px solid var(--focus);outline-offset:1px}
 .branch-chip-missing>.icon:first-child{color:var(--danger)}
 html[data-theme="dark"] .branch-chip[aria-expanded="true"]{background:var(--accent-dim);box-shadow:none}
 html[data-theme="dark"] .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 35%,var(--bg))}
@@ -59,4 +66,4 @@ dialog .worktree-cleanup-option{background:color-mix(in srgb,var(--panel) 72%,tr
 @media(prefers-contrast:more){.link-chip{border:1px solid var(--text)}.branch-chip[aria-expanded="true"]{outline:1px solid var(--focus);outline-offset:-1px}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.branch-chip,.link-chip,.composer-computer{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}}
+@media(prefers-reduced-motion:no-preference){.branch-chip,.link-chip,.composer-computer,#remote-checkout{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}}

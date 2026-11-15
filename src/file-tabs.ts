@@ -44,6 +44,8 @@ type Deps = {
   selection(request: CodeSelection & { context: Context; path: string; unsaved: boolean }): Promise<void>;
   /** Where focus goes when the last file tab closes from the keyboard. */
   focusConversation(): void;
+  /** The computer a file is on when it is not this one (a task running there): it is shown, never edited. */
+  remoteName?(context: Context): string | undefined;
   changed(): void;
 };
 
@@ -112,11 +114,12 @@ export function createFileTabs(deps: Deps) {
     strip.innerHTML = entry.tabs.map(tab => tabButton(tab.path, name(tab.path) + (dirty(tab) ? ' ●' : ''), fileIcon(name(tab.path), false))).join('');
     if (!active || !entry.visible || (!visible && !active.source && Boolean(officeKind(active.path)))) { view.innerHTML = ''; return; }
     const attach = deps.canAttach(active.context) ? `<button data-file-tab="attach">${icon('attach')} Attach</button>` : '';
-    const preview = isPreviewableFile(active.path) ? `<button class="icon-button" data-file-tab="preview" aria-label="Preview in browser" title="Preview in browser">${icon('globe')}</button>` : '';
-    const editor = typeof active.content === 'string' ? `<button data-file-tab="save"${active.saving || !dirty(active) ? ' disabled' : ''}>${active.saving ? 'Saving…' : 'Save'}</button><button data-file-tab="discard"${active.saving || !dirty(active) ? ' disabled' : ''}>Discard</button><button data-file-tab="${active.editing ? 'reader' : 'edit'}">${active.editing ? 'Preview' : 'Edit'}</button>` : '';
+    const remote = deps.remoteName?.(active.context);
+    const preview = !remote && isPreviewableFile(active.path) ? `<button class="icon-button" data-file-tab="preview" aria-label="Preview in browser" title="Preview in browser">${icon('globe')}</button>` : '';
+    const editor = remote ? `<span class="file-view-remote" title="${escape(`This file is on ${remote}: edit it there.`)}">${icon('monitor')}Read only · on ${escape(remote)}</span>` : typeof active.content === 'string' ? `<button data-file-tab="save"${active.saving || !dirty(active) ? ' disabled' : ''}>${active.saving ? 'Saving…' : 'Save'}</button><button data-file-tab="discard"${active.saving || !dirty(active) ? ' disabled' : ''}>Discard</button><button data-file-tab="${active.editing ? 'reader' : 'edit'}">${active.editing ? 'Preview' : 'Edit'}</button>` : '';
     view.innerHTML = `<div class="file-view-header"><span class="file-view-path" title="${escape(active.path)}">${escape(active.path)}</span><div class="file-preview-actions">${editor}${preview}${typeof active.content === 'object' ? '' : `<button class="icon-button" data-file-tab="copy" aria-label="Copy file" title="Copy file">${icon('copy')}</button>`}${attach}</div></div>${active.editing && typeof active.content === 'string' ? '<div class="file-selection-actions"><span data-selection-lines>Select code to ask or fix</span><button data-file-tab="ask" disabled>Ask model</button><button data-file-tab="fix" disabled>Fix selection</button></div><form class="file-selection-form" aria-label="Ask about selected code" hidden><input aria-label="Question about selected code" placeholder="Ask about this code…" maxlength="2000"><button type="submit">Send question</button><button type="button" data-file-tab="cancel-question">Cancel</button><small role="alert" hidden></small></form>' : ''}<div class="file-view-body"></div>`;
     const body = view.querySelector<HTMLElement>('.file-view-body')!;
-    if (active.error) { body.innerHTML = `<div class="inspector-empty" role="alert">${escape(active.error)}<button data-file-tab="external">Open in Default App</button></div>`; return; }
+    if (active.error) { body.innerHTML = `<div class="inspector-empty" role="alert">${escape(active.error)}${remote ? '' : '<button data-file-tab="external">Open in Default App</button>'}</div>`; return; }
     if (active.editing && typeof active.content === 'string') {
       body.classList.add('file-editor');
       body.innerHTML = '<div class="inspector-empty" role="status">Opening editor…</div>';
@@ -176,7 +179,7 @@ export function createFileTabs(deps: Deps) {
       const sameEvicted = tab.content === undefined && tab.evictedBytes !== undefined && (typeof content === 'string' ? content.length * 2 : content.byteLength) === tab.evictedBytes;
       tab.evictedBytes = undefined;
       tab.editorKey = crypto.randomUUID();
-      if (typeof content === 'string') tab.editing ??= true;
+      if (typeof content === 'string') tab.editing ??= !deps.remoteName?.(tab.context);
       tab.content = content;
       if (!sameEvicted) tab.office = undefined;
       if (current() === tab) render(); else trim();
@@ -258,6 +261,8 @@ export function createFileTabs(deps: Deps) {
   });
 
   async function save(tab: Tab): Promise<boolean> {
+    // A file on another computer is never written from here.
+    if (deps.remoteName?.(tab.context)) return false;
     if (tab.saving || typeof tab.content !== 'string') return false;
     if (!dirty(tab)) return true;
     tab.saving = true;
@@ -300,6 +305,7 @@ export function createFileTabs(deps: Deps) {
   view.addEventListener('click', event => {
     const action = (event.target as Element).closest<HTMLElement>('[data-file-tab]')?.dataset.fileTab, tab = current();
     if (!action || !tab) return;
+    if ((action === 'edit' || action === 'save' || action === 'discard' || action === 'external' || action === 'preview') && deps.remoteName?.(tab.context)) return;
     if (action === 'edit' || action === 'reader') { tab.editing = action === 'edit'; tab.reads = (tab.reads ?? 0) + 1; render(); if (tab.editing) pane.focus({ preventScroll: true }); }
     if (action === 'discard' && !tab.saving) { tab.draft = undefined; tab.editorKey = crypto.randomUUID(); render(); void load(tab); }
     if (action === 'save') void save(tab);
@@ -354,8 +360,10 @@ export function createFileTabs(deps: Deps) {
       pane.focus({ preventScroll: true });
     },
     /** Re-reads the file on screen, e.g. after an agent run may have changed it. */
-    reload(): void {
+    reload(force = false): void {
       const entry = thread(), tab = current(); if (!entry || !tab || tab.saving || dirty(tab)) return;
+      // Routine polling uses the cheap fixed stamp. Explicit refresh and run completion read again.
+      if (force && deps.remoteName?.(tab.context)) { void load(tab); return; }
       const path = tab.path;
       void deps.call<string>('workspace_file_stamp', { ...tab.context, path: tab.path }).then(stamp => {
         if (entry.tabs.includes(tab) && tab.path === path && stamp !== tab.stamp) void load(tab);

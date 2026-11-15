@@ -859,7 +859,7 @@ fn task_start_phases() {
         .collect();
     let find: Vec<_> = (0..5).map(|_| time(|| projects.iter().filter_map(|p| crate::github_hub::project_repo(p)).count()).1).collect();
     table.add("finding: project_repo over 10 projects (before)", &find, "one `git config` per project, serial");
-    let listed: Vec<crate::storage::Project> = projects.iter().enumerate().map(|(n, path)| crate::storage::Project { id: n.to_string(), name: n.to_string(), path: path.to_string_lossy().into_owned(), added_order: n as i64 }).collect();
+    let listed: Vec<crate::storage::Project> = projects.iter().enumerate().map(|(n, path)| crate::storage::Project { id: n.to_string(), name: n.to_string(), path: path.to_string_lossy().into_owned(), added_order: n as i64 , remote_device: None, remote_project: None }).collect();
     let found: Vec<_> = (0..5).map(|_| time(|| start::origins(listed.clone()).into_iter().filter(|(_, origin)| origin.is_some()).count()).1).collect();
     table.add("finding: start::origins over 10 projects (now)", &found, "reads .git/config; git only for unusual configs");
     let mut installed = 0;
@@ -1064,7 +1064,7 @@ async fn machine_launch_phases() {
             std::fs::create_dir_all(&dir).unwrap();
             sh(&dir, "git", &["init", "--quiet"]);
             sh(&dir, "git", &["remote", "add", "origin", &format!("https://github.com/bench/p{n}.git")]);
-            crate::storage::Project { id: n.to_string(), name: n.to_string(), path: dir.to_string_lossy().into_owned(), added_order: n }
+            crate::storage::Project { id: n.to_string(), name: n.to_string(), path: dir.to_string_lossy().into_owned(), added_order: n, remote_device: None, remote_project: None }
         })
         .collect();
 

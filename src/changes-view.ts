@@ -15,6 +15,8 @@ export interface ChangesViewDeps {
   choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
   worktree?(): void;
+  /** Review only (a task whose checkout is on another computer): no stage, commit or worktree. */
+  readOnly?: boolean;
 }
 export interface ChangesView {
   /** Re-renders from `status`. Loaded patches are quietly refetched (at most once a second) when
@@ -517,8 +519,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const file = files().find(f => f.path === path);
     if (!file) return;
     const items = [
-      ...(isUnstaged(file) ? [{ id: 'stage', label: 'Stage file', icon: 'plus' }] : []),
-      ...(isStaged(file) ? [{ id: 'unstage', label: 'Unstage file', icon: 'minimize' }] : []),
+      ...(isUnstaged(file) && !deps.readOnly ? [{ id: 'stage', label: 'Stage file', icon: 'plus' }] : []),
+      ...(isStaged(file) && !deps.readOnly ? [{ id: 'unstage', label: 'Unstage file', icon: 'minimize' }] : []),
       { id: 'open', label: 'Open file', icon: 'file', disabled: file.working === 'D' || (file.index === 'D' && file.working === ' ') },
       { id: 'copy', label: 'Copy path', icon: 'copy' },
     ];
@@ -583,12 +585,15 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       case 'menu': {
         const staged = stagedFiles().map(f => f.path), unstaged = unstagedFiles().map(f => f.path);
         deps.choose(target, 'Changes', [
-          { id: 'stage-all', label: 'Stage all', icon: 'plus', disabled: !unstaged.length },
-          { id: 'unstage-all', label: 'Unstage all', icon: 'minimize', disabled: !staged.length },
-          { id: 'commit', label: 'Commit…', icon: 'check', disabled: !status?.isRepo },
+          ...deps.readOnly ? [] : [
+            { id: 'stage-all', label: 'Stage all', icon: 'plus', disabled: !unstaged.length },
+            { id: 'unstage-all', label: 'Unstage all', icon: 'minimize', disabled: !staged.length },
+            { id: 'commit', label: 'Commit…', icon: 'check', disabled: !status?.isRepo },
+          ],
           { id: 'refresh', label: 'Refresh', icon: 'refresh' },
-          ...(deps.worktree ? [{ id: 'worktree', label: 'Create isolated worktree…', icon: 'branch' }] : []),
+          ...(deps.worktree && !deps.readOnly ? [{ id: 'worktree', label: 'Create isolated worktree…', icon: 'branch' }] : []),
         ], id => {
+          if (deps.readOnly && id !== 'refresh') return;
           if (id === 'stage-all' && unstaged.length) void run(deps.stage(unstaged, true), 'Unable to stage files');
           else if (id === 'unstage-all' && staged.length) void run(deps.stage(staged, false), 'Unable to unstage files');
           else if (id === 'commit') openCommit();

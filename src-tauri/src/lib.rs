@@ -795,7 +795,8 @@ async fn delete_session_with_attachment_cleanup(
 
 #[tauri::command]
 async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
-    state.store.lock().map_err(|e| e.to_string())?.projects()
+    // Remote projects too (another computer's, `remote/browse.rs`): the sidebar lists them.
+    state.store.lock().map_err(|e| e.to_string())?.all_projects()
 }
 #[tauri::command]
 async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project> {
@@ -888,6 +889,8 @@ async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String,
 }
 #[tauri::command]
 async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, pinned: bool) -> Result<Session> {
+    // A task on another computer is pinned there too.
+    remote::mirror::change_on_host(&app, &state, &session_id, "thread.pin", serde_json::json!({"pinned": pinned})).await?;
     let task = state.store.lock().map_err(|e| e.to_string())?.pin_session(&session_id, pinned)?;
     let _ = app.emit("sessions-changed", ());
     Ok(task)
@@ -1145,6 +1148,8 @@ async fn set_task_stage(
     session_id: String,
     stage: String,
 ) -> Result<Session> {
+    // A task on another computer is settled (or reopened) there too.
+    remote::mirror::set_stage(&app, &state, &session_id, &stage).await?;
     let task = {
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         if agents.contains_key(&session_id) {
@@ -1304,7 +1309,10 @@ async fn update_session(
             .lock()
             .map_err(|e| e.to_string())?
             .session(&session_id)?;
-        if task.provider == "codex" {
+        // A task on another computer is renamed there too; its harness's own name is the host's.
+        if task.remote_device.is_some() {
+            remote::mirror::change_on_host(&app, &state, &session_id, "thread.rename", serde_json::json!({"title": title})).await?;
+        } else if task.provider == "codex" {
             return task_controls::rename_task(&state, &session_id, title).await;
         }
     }
@@ -1467,15 +1475,21 @@ mod draft_prewarm_tests {
 }
 #[tauri::command]
 async fn get_messages(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     before_id: Option<i64>,
 ) -> Result<MessagePage> {
-    state
+    let page = state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .message_page(&session_id, before_id)
+        .message_page(&session_id, before_id)?;
+    // A remote task shown but never opened copies its messages now (`remote/browse.rs`).
+    if before_id.is_none() {
+        remote::browse::opened(&app, &session_id);
+    }
+    Ok(page)
 }
 
 #[tauri::command]
@@ -3750,21 +3764,30 @@ async fn jj_log(state: State<'_, AppState>, project_id: String, session_id: Opti
 
 #[tauri::command]
 async fn git_status(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
 ) -> Result<workspace::GitStatus> {
+    // A task on another computer: its host's status (remote/inspect.rs).
+    if let Some(status) = remote::inspect::git_status(&app, &state, session_id.as_deref()).await? {
+        return Ok(status);
+    }
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::git_status(&root, workspace::Trust::Desktop)).await
 }
 #[tauri::command]
 async fn git_diff(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     path: Option<String>,
     staged: Option<bool>,
 ) -> Result<String> {
+    if let Some(diff) = remote::inspect::git_diff(&app, &state, session_id.as_deref(), path.as_deref(), staged.unwrap_or(false)).await? {
+        return Ok(diff);
+    }
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::git_diff(&root, path, staged.unwrap_or(false), workspace::Trust::Desktop)).await
 }
@@ -4356,32 +4379,41 @@ async fn write_workspace_file(
 async fn workspace_file_stamp(
     state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: String,
 ) -> Result<String> {
+    // A task on another computer: its files are read from there once (remote/inspect.rs).
+    if let Some(stamp) = remote::inspect::stamp(&state, session_id.as_deref())? {
+        return Ok(stamp);
+    }
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::file_stamp(&root, &path)).await
 }
 #[tauri::command]
 async fn list_files(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     path: Option<String>,
 ) -> Result<Vec<workspace::FileEntry>> {
+    if let Some(entries) = remote::inspect::list_files(&app, &state, session_id.as_deref(), path.as_deref()).await? {
+        return Ok(entries);
+    }
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::list_files(&root, path)).await
 }
 #[tauri::command]
 async fn search_files(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<workspace::FileEntry>> {
-    let mirror = match session_id.as_deref() {
-        Some(id) => state.store.lock().map_err(|e| e.to_string())?.session(id)?.remote_device.is_some(),
-        None => false,
-    };
-    let root = state.root(&project_id, if mirror { None } else { session_id.as_deref() })?;
+    // Another computer's project: its files, from there.
+    if let Some(entries) = remote::inspect::search_files(&app, &state, &project_id, session_id.as_deref(), &query, limit).await? {
+        return Ok(entries);
+    }
+    let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::search_files(&root, query, limit)).await
 }
 #[tauri::command]
@@ -4399,11 +4431,15 @@ async fn search_text(
 }
 #[tauri::command]
 async fn read_file(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     path: String,
 ) -> Result<String> {
+    if let Some(text) = remote::inspect::read_file(&app, &state, session_id.as_deref(), &path).await? {
+        return Ok(text);
+    }
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::read_file(&root, path)).await
 }
@@ -5220,6 +5256,9 @@ pub fn run() {
                 cloud_agents::tasks::cloud_agent_action,
                 cloud_agents::tasks::cloud_agent_set_claude_token,
                 remote::mirror::remote_repo_check,
+                remote::browse::remote_browse,
+                remote::browse::remote_browsed,
+                remote::browse::remote_project_branches,
                 provider_settings::provider_configuration,
                 connections::connections_list,
                 connections::connection_save,

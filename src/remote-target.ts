@@ -26,13 +26,16 @@ export function lastSeenText(target: Pick<RemoteTarget, 'lastSeen'>): string {
 export function offlineText(target: RemoteTarget): string { return `Offline · ${lastSeenText(target)}`; }
 
 /** The control beside Local / Worktree. A New task always offers it, so other computers and cloud providers can be found and set up from here. */
-export function computerControl(session: Session, fresh: boolean, targets: RemoteTarget[], chosen: string, clouds: CloudTarget[] = [], chosenName?: string): string {
+/** `projectDevice`: the computer a remote project lives on (`remote/browse.rs`); its new tasks run there, fixed. */
+export function computerControl(session: Session, fresh: boolean, targets: RemoteTarget[], chosen: string, clouds: CloudTarget[] = [], chosenName?: string, projectDevice?: { id: string; name: string } | null): string {
   if (session.cloud) return cloudChip(session);
-  if (session.remoteDevice) {
-    const name = escape(session.remoteDevice.name), target = targets.find(item => item.deviceId === session.remoteDevice!.id);
-    const offline = target && !target.online;
-    const status = offline ? ` · ${escape(offlineText(target))}` : '';
-    return `<span class="composer-computer composer-computer-fixed" data-remote="${offline ? 'offline' : 'on'}" role="img" tabindex="0" aria-label="Computer: ${name} (fixed for this task)${status}" data-tip="This task runs on ${name}. Start a new task to use another computer.${status}">${icon('monitor')}<span class="sr-only">on ${name}${offline ? ' · Offline' : ''}</span></span>`;
+  const fixed = session.remoteDevice ?? (fresh ? projectDevice : null);
+  if (fixed) {
+    const name = escape(fixed.name), target = targets.find(item => item.deviceId === fixed.id);
+    const offline = target ? !target.online : !session.remoteDevice;
+    const status = offline ? ` · ${escape(target ? offlineText(target) : 'Offline')}` : '';
+    const tip = session.remoteDevice ? `This task runs on ${name}. Start a new task to use another computer.` : `This project is on ${name}, so its tasks run there.`;
+    return `<span class="composer-computer composer-computer-fixed" data-remote="${offline ? 'offline' : 'on'}" role="img" tabindex="0" aria-label="Computer: ${name} (fixed for this ${session.remoteDevice ? 'task' : 'project'})${status}" data-tip="${tip}${status}">${icon('monitor')}<span class="sr-only">on ${name}${offline ? ' · Offline' : ''}</span></span>`;
   }
   if (!fresh) return '';
   const cloud = clouds.find(item => item.provider === cloudProvider(chosen));
@@ -43,6 +46,20 @@ export function computerControl(session: Session, fresh: boolean, targets: Remot
   const status = offline ? ` · ${escape(offlineText(target))}` : missing ? ' · Not paired' : '';
   const remote = chosen === LOCAL ? '' : ` data-remote="${offline || missing ? 'offline' : 'on'}"`;
   return `<button type="button" id="composer-computer" class="composer-computer"${remote} data-action="computer-menu" aria-label="Computer: ${escape(name)}${status}" aria-haspopup="menu" aria-expanded="false" data-tip="Runs on: ${escape(name)}${status}">${icon('monitor')}<span class="sr-only">${escape(name)}${offline ? ' · Offline' : missing ? ' · Not paired' : ''}</span>${icon('down')}</button>`;
+}
+
+/** The Open project dialog's "On another computer" list: show (or stop showing) each computer's projects here. */
+export function computersSection(targets: RemoteTarget[], browsed: string[]): string {
+  if (!targets.length) return '';
+  const rows = [...targets].sort((a, b) => Number(b.online) - Number(a.online)).map(target => {
+    const shown = browsed.includes(target.deviceId), name = escape(target.name);
+    const detail = shown ? (target.online ? 'Its projects are in the sidebar' : `Its projects are in the sidebar · ${offlineText(target)}`) : target.online ? 'Start tasks in its projects from here' : offlineText(target);
+    const action = shown
+      ? `<button type="button" class="secondary-button" data-action="browse-computer" data-device="${escape(target.deviceId)}" data-show="true" data-refresh="true" aria-label="Refresh ${name}" ${target.online ? '' : 'disabled'}>Refresh</button><button type="button" class="secondary-button" data-action="browse-computer" data-device="${escape(target.deviceId)}" data-show="false" aria-label="Stop showing ${name}">Stop showing</button>`
+      : `<button type="button" class="secondary-button" data-action="browse-computer" data-device="${escape(target.deviceId)}" data-show="true" aria-label="Show projects on ${name}" ${target.online ? '' : 'disabled'}>Show projects</button>`;
+    return `<li class="open-project-computer">${toned(icon('monitor'), target.online ? 'remote' : '')}<span class="open-project-computer-label"><strong>${name}</strong><small>${escape(detail)}</small></span>${action}</li>`;
+  }).join('');
+  return `<p class="field-label" id="open-project-computers-label">On another computer</p><ul class="open-project-computers" aria-labelledby="open-project-computers-label">${rows}</ul>`;
 }
 
 export function computerItems(targets: RemoteTarget[], chosen: string, clouds: CloudTarget[] = []) {
