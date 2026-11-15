@@ -17,6 +17,7 @@ mod memory;
 mod app_menu;
 mod app_updates;
 mod appearance;
+mod notifications;
 mod architect;
 mod bots;
 mod chats;
@@ -4937,6 +4938,7 @@ pub(crate) fn install_main_window(app: &tauri::AppHandle, window: &tauri::Webvie
 /// the main webview) and `pandacode serve --port`'s hidden main webview.
 pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        notifications::notifications_show,
         voice::voice_configuration,
         voice::voice_save_profile,
         voice::voice_select_profile,
@@ -5476,6 +5478,7 @@ pub fn run() {
             tray::show(app)
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // Updates come only from GitHub Releases, verified against the public key in tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -5514,6 +5517,9 @@ pub fn run() {
                     }
                 }
             }
+            // Before the first notification shows: the plugin reports clicks only for
+            // notifications shown while its action handler exists.
+            notifications::setup(app.handle());
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("Menu bar item is unavailable: {error}");
             }

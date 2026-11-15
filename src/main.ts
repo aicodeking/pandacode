@@ -44,6 +44,7 @@ import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCom
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
+import { notifyEvent } from './notifications';
 import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
@@ -6645,7 +6646,10 @@ function onAgent(event: AgentEvent): void {
       // panel's own definition (a worker not yet in any team snapshot counts as active).
       if (event.kind === 'approval' || event.kind === 'input_request') {
         const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
-        if (workerActive(owner)) notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
+        if (workerActive(owner)) {
+          notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
+          notifyEvent(event.kind === 'approval' ? 'approval' : 'input', event.sessionId, 'A worker');
+        }
       }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
     }).catch(report);
@@ -6706,6 +6710,8 @@ function onAgent(event: AgentEvent): void {
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
+    // A finished or failed run may notify (both off by default); a stopped or rate-limited run does not.
+    if (ending === 'failed' || !ending) notifyEvent(ending ? 'failed' : 'done', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''));
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
@@ -6788,7 +6794,7 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); notifyEvent('approval', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, '')); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
   }
@@ -6803,6 +6809,7 @@ function onAgent(event: AgentEvent): void {
     }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
     if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
+    notifyEvent('input', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''));
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
@@ -9656,6 +9663,7 @@ async function boot(): Promise<void> {
     subscribe('provider-models-changed', event => invalidateModels(event.provider)),
     subscribe('architect-event', onArchitect),
     subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
+    subscribe('open-task', event => { if (event?.sessionId) run(openThread(event.sessionId, true)); }),
     subscribe('sessions-changed', () => run(reloadSessions())),
     subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
   ];
