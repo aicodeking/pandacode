@@ -63,6 +63,14 @@ export function soundOf(on: Pick<NotificationSettings, 'sound'>): string | undef
   return on.sound && on.sound !== SOUND_NONE ? on.sound : undefined;
 }
 
+/** The batch is re-gated when its window ends: the app may have been focused (or the
+ * notifications turned off) since the requests arrived. A focused flush downgrades to the
+ * chosen sound alone; a batch nothing wants is dropped. */
+export function flushGate(batch: PendingRequest[], on: NotificationSettings, focused: boolean): GateAction | null {
+  if (!batch.some(item => gate(item.kind, on, focused))) return null;
+  return focused ? 'sound' : 'banner';
+}
+
 export interface Notice { title: string; body: string; sessionId?: string }
 
 /** The notice for one event. `hideDetails` keeps the task's name out of both lines. */
@@ -77,7 +85,7 @@ export function notice(kind: NotificationEventKind, title: string, hideDetails: 
 }
 
 /** A request waiting to be batched into the one notice the window sends. */
-export interface PendingRequest { kind: 'approval' | 'input'; sessionId: string; title: string; at: number }
+export interface PendingRequest { kind: 'approval' | 'input'; sessionId: string; title: string; requestId?: string; at: number }
 
 /** Approvals and questions inside this window coalesce into one notification. */
 export const COALESCE_MS = 5000;
@@ -86,13 +94,16 @@ export const COALESCE_MS = 5000;
 export function batchNotice(batch: PendingRequest[], hideDetails: boolean): Notice {
   const first = batch[0];
   if (!first) return { title: '', body: '' };
-  if (batch.length === 1) return { ...notice(first.kind, first.title, hideDetails), sessionId: first.sessionId };
-  if (hideDetails) return { title: 'PandaCode needs you', body: `${batch.length} requests waiting` };
   const same = batch.every(item => item.sessionId === first.sessionId);
+  // The privacy toggle hides the task's name from the shown text, not from the click payload,
+  // so a notice for one task still opens that task; a batch across tasks has none to open.
+  const withTask = (text: { title: string; body: string }): Notice => same ? { ...text, sessionId: first.sessionId } : text;
+  if (batch.length === 1) return withTask(notice(first.kind, first.title, hideDetails));
+  if (hideDetails) return withTask({ title: 'PandaCode needs you', body: `${batch.length} requests waiting` });
   if (!same) return { title: 'Tasks need your attention', body: `${batch.length} requests waiting` };
   const label = batch.every(item => item.kind === 'approval') ? 'approvals'
     : batch.every(item => item.kind === 'input') ? 'answers' : 'requests';
-  return { title: `${first.title} needs you`, body: `${batch.length} ${label} waiting`, sessionId: first.sessionId };
+  return withTask({ title: `${first.title} needs you`, body: `${batch.length} ${label} waiting` });
 }
 
 export interface CoalescerHost {
@@ -103,7 +114,9 @@ export interface CoalescerHost {
 }
 
 export interface Coalescer {
-  add(kind: 'approval' | 'input', sessionId: string, title: string): void;
+  add(kind: 'approval' | 'input', sessionId: string, title: string, requestId?: string): void;
+  /** Takes a cancelled request back out, so the batch never counts what no longer waits. */
+  cancel(kind: 'approval' | 'input', sessionId: string, requestId?: string): void;
   /** Sends what is pending at once (nothing arrives later for a closed task). */
   flushNow(): void;
 }
@@ -119,9 +132,13 @@ export function createCoalescer(host: CoalescerHost, windowMs = COALESCE_MS): Co
     host.flush(due);
   };
   return {
-    add(kind, sessionId, title) {
-      batch.push({ kind, sessionId, title, at: host.now() });
+    add(kind, sessionId, title, requestId) {
+      batch.push({ kind, sessionId, title, requestId, at: host.now() });
       if (handle === undefined) handle = host.schedule(run, windowMs);
+    },
+    cancel(kind, sessionId, requestId) {
+      batch = batch.filter(item => !(item.kind === kind && item.sessionId === sessionId
+        && (item.requestId ?? null) === (requestId ?? null)));
     },
     flushNow() {
       if (handle !== undefined) host.cancel(handle);

@@ -44,7 +44,7 @@ import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCom
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
-import { notifyEvent } from './notifications';
+import { cancelRequest, notifyEvent } from './notifications';
 import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
@@ -6648,7 +6648,7 @@ function onAgent(event: AgentEvent): void {
         const owner = [...teams.values()].flatMap(team => team?.workers ?? []).find(worker => worker.sessionId === event.sessionId);
         if (workerActive(owner)) {
           notify(event.kind === 'approval' ? 'A worker needs your approval. Open Architect & workers.' : 'A worker needs your input. Open Architect & workers.', undefined, { important: true });
-          notifyEvent(event.kind === 'approval' ? 'approval' : 'input', event.sessionId, 'A worker');
+          notifyEvent(event.kind === 'approval' ? 'approval' : 'input', event.sessionId, 'A worker', event.requestId);
         }
       }
       if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) refreshTeamProgress();
@@ -6794,9 +6794,10 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); notifyEvent('approval', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, '')); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); notifyEvent('approval', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''), event.requestId); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
+    cancelRequest('approval', event.sessionId, event.requestId);
   }
   if (event.kind === 'input_request' && event.requestId && current.status !== 'Stopping agent' && !current.inputs.has(event.requestId)) {
     const requestId = event.requestId;
@@ -6809,11 +6810,12 @@ function onAgent(event: AgentEvent): void {
     }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
     if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
-    notifyEvent('input', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''));
+    notifyEvent('input', event.sessionId, (s?.title ?? 'Task').replace(/ · You$/, ''), requestId);
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
     if (!current.inputs.size && current.status === 'Waiting for your answer') updateStreamStatus(current, 'Continuing task');
+    cancelRequest('input', event.sessionId, event.requestId);
   }
   // Tokens and tool snapshots do not change task navigation. Four busy agents
   // share one navigation frame only when a running/recency/approval state changes.
