@@ -20,13 +20,19 @@ export interface RecipesHost {
   enqueue(text: string): Promise<void>;
   /** Called after a run is queued. */
   done?(count: number): void;
+  /** Extension presentation of the dialog (composer-attach-host.ts), when extensions are loaded. */
+  extension?(): RecipesExtension | undefined;
 }
+/** The user's order (`edit`, `run` after Delete) and reversible visibility (`edit`, `new`) of the dialog's eligible
+ * controls, whether the selected recipe carries an extension action slot, and the adapter's paint hook. Delete, Save,
+ * Cancel and the steps are never part of it. */
+export type RecipesExtension = Readonly<{ order: readonly string[]; hidden: ReadonlySet<string>; actions: boolean; painted(root: HTMLElement, selected: Recipe | null): void }>;
 
 const LABEL: Record<StepReport['status'], string> = { supported: 'Supported', fallback: 'Fallback', manual: 'Manual', blocked: 'Blocked' };
 const summary = (step: RecipeStep) => (step.kind === 'slash' ? step.command : step.text) ?? '';
 const NEW_RECIPE: Recipe = { name: 'my-recipe', description: '', steps: [{ kind: 'prompt', text: 'Review the changed files.' }, { kind: 'check', text: 'npm test' }, { kind: 'approval', text: 'Ready to commit?' }] };
 
-export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
+export function mountRecipes(root: HTMLElement, host: RecipesHost): { redraw(): void } {
   let recipes: Recipe[] = [];
   let selected: Recipe | null = null;
   let plan: RecipePlan | null = null;
@@ -47,14 +53,23 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
       return `<tr><td>${i + 1}</td><td>${escape(step.kind)}</td><td class="recipe-text">${escape(summary(step))}</td><td>${report ? `<span class="recipe-status" data-status="${report.status}">${LABEL[report.status]}</span>` : ''}</td><td class="recipe-reason">${escape(report?.reason ?? '')}</td></tr>`;
     }).join('');
     const blocked = !plan || plan.steps.some(s => s.status === 'blocked');
+    const extension = host.extension?.();
+    // Edit and Run in the user's order after Delete, which stays first; an extension slot leads while a package contributes.
+    const controls: Record<string, string> = {
+      edit: `<button type="button" class="secondary-button" data-action="recipe-edit"${hiddenBy(extension, 'edit')}>Edit</button>`,
+      run: `<button type="button" class="primary-button" data-action="recipe-run" ${blocked || busy ? 'disabled' : ''}>Run</button>`,
+    };
+    const slot = extension?.actions ? '<span class="extension-action-slot" data-recipe-extension-actions></span>' : '';
     return `<h3>${escape(selected.name)}</h3><p class="recipe-description">${escape(selected.description)}</p>
       <table class="recipe-steps" aria-label="Dry run for ${escape(selected.name)}"><thead><tr><th>#</th><th>Step</th><th>What</th><th>Status</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-delete">Delete</button><button type="button" class="secondary-button" data-action="recipe-edit">Edit</button><button type="button" class="primary-button" data-action="recipe-run" ${blocked || busy ? 'disabled' : ''}>Run</button></div>`;
+      <div class="recipe-actions">${slot}<button type="button" class="secondary-button" data-action="recipe-delete">Delete</button>${(extension?.order ?? ['edit', 'run']).map(id => controls[id] ?? '').join('')}</div>`;
   }
 
   function draw(): void {
-    root.innerHTML = `<section class="recipes" aria-label="Workflow recipes"><div class="recipe-list"><ul>${recipes.map(rowFor).join('')}</ul><button type="button" class="secondary-button" data-action="recipe-new">New recipe</button></div>
+    const extension = host.extension?.();
+    root.innerHTML = `<section class="recipes" aria-label="Workflow recipes"><div class="recipe-list"><ul>${recipes.map(rowFor).join('')}</ul><button type="button" class="secondary-button" data-action="recipe-new"${hiddenBy(extension, 'new')}>New recipe</button></div>
       <div class="recipe-detail">${detail()}<p class="recipe-message" role="status">${escape(message)}</p></div></section>`;
+    extension?.painted(root, editing === null ? selected : null);
   }
 
   async function dryRun(recipe: Recipe): Promise<void> {
@@ -100,4 +115,7 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
 
   void reload().catch(error => { message = String(error); draw(); });
   draw();
+  return { redraw: () => { if (root.isConnected) draw(); } };
 }
+/** Marks a control hidden by the user's layout: the node stays (with its listener target), out of view and inert. */
+function hiddenBy(extension: RecipesExtension | undefined, id: string): string { return extension?.hidden.has(id) ? ' data-layout-hidden inert' : ''; }

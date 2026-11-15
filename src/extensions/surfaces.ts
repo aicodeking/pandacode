@@ -442,7 +442,49 @@ export const PANEL_PROTECTED = [
   ['council-decisions', 'Keep fixing, Accept and finish, Dismiss', 'The council cycle\'s team decisions stay the user\'s own buttons; a package request is refused.'],
   ['council-settings', 'Council on/off, target and rounds', 'Only the user\'s own choice in the Council panel changes the council; a package request is refused.'],
 ] as const;
-export type ActionLocation = typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** The composer's Attach menu, Workflow recipes and wake-ups (docs/extensions/composer-attach.md). The Attach menu and
+ * a wake-up's ⋯ menu take contributed rows after their own entries; the recipe detail and the "Wake this thread later"
+ * popover carry an action slot mounted by composer-attach-host.ts. Draft attachments, recipe steps and schedules stay
+ * in main.ts, attachments.ts, recipes.ts and schedules-thread.ts. */
+export const ATTACH_ACTION_SURFACES = ['panda.composer.attach.actions', 'panda.composer.recipes.actions', 'panda.composer.wake.actions', 'panda.composer.wake.context'] as const;
+export const ATTACH_MENU_LOCATION = 'panda.composer.attach.actions';
+export const ATTACH_WAKE_MENU_LOCATION = 'panda.composer.wake.context';
+export const ATTACH_RECIPES_LOCATION = 'panda.composer.recipes.controls';
+export const ATTACH_WAKE_LOCATION = 'panda.composer.wake.controls';
+export const ATTACH_PROTECTED_LOCATION = 'panda.composer.attach.protected';
+/** The Attach menu's own entries: [id, label]. They hide and reorder in the menu; Attach files never hides. */
+export const ATTACH_MENU_ENTRIES = [['files', 'Attach files…'], ['folder', 'Attach a folder…'], ['project', 'Project files'], ['sketch', 'Sketch a mockup…'], ['recipes', 'Workflow recipes…'], ['wake', 'Schedule a wake-up…']] as const;
+/** A wake-up's ⋯ menu entries: [id, label]. They hide and reorder in the menu; Remove… never hides. */
+export const ATTACH_WAKE_MENU_ENTRIES = [['snooze-10', 'Snooze 10 min'], ['snooze-60', 'Snooze 1 h'], ['snooze-1440', 'Snooze until tomorrow'], ['enable', 'Pause or resume'], ['edit', 'Edit…'], ['remove', 'Remove…']] as const;
+/** Workflow recipes controls: [id, label]. Edit and Run order in the detail's actions (Delete stays first); New recipe
+ * sits alone under the list. */
+export const ATTACH_RECIPES_CONTROLS = [['edit', 'Edit recipe'], ['run', 'Run recipe'], ['new', 'New recipe']] as const;
+/** "Wake this thread later" choices: [id, label]. The time presets order and hide; More options… hides in place. */
+export const ATTACH_WAKE_CONTROLS = [['in-15', 'In 15 min'], ['in-60', 'In 1 h'], ['tonight', 'Tonight'], ['tomorrow', 'Tomorrow'], ['more', 'More options…']] as const;
+/** Entries that never hide, with the reason. Menu entries also keep their slot; control rows still reorder. */
+export const ATTACH_PINNED: Readonly<Record<string, string | undefined>> = {
+  [`${ATTACH_MENU_LOCATION}/files`]: 'Attach files is what the menu is for; it never hides and keeps its place.',
+  [`${ATTACH_WAKE_MENU_LOCATION}/remove`]: 'Remove opens the strip\'s own confirmation; it never hides and keeps its place.',
+  [`${ATTACH_RECIPES_LOCATION}/run`]: 'Run is the recipe\'s purpose; it never hides.',
+  [`${ATTACH_WAKE_LOCATION}/in-60`]: 'In 1 h is the quick add\'s default choice; it never hides.',
+};
+/** Controls that hide but keep their place, with the reason. */
+export const ATTACH_FIXED: Readonly<Record<string, string | undefined>> = {
+  [`${ATTACH_RECIPES_LOCATION}/new`]: 'New recipe sits alone under the recipe list; it hides in place.',
+  [`${ATTACH_WAKE_LOCATION}/more`]: 'More options sits in the footer beside Cancel and Schedule; it hides in place.',
+};
+/** Protected attach, recipe and wake-up behavior: [id, label, reason]. Inspect-only; never a layout item or a public
+ * action. */
+export const ATTACH_PROTECTED = [
+  ['draft-attachments', 'Draft attachments, file drops and drags', 'Files, folders, images, OS file drops and dragged items join the draft only through the user\'s own picker, drop or drag; packages see a count, never paths or contents.'],
+  ['recipe-delete', 'Delete a recipe', 'Deleting a saved recipe is the user\'s own action; a package request is refused.'],
+  ['recipe-edit-commit', 'Save or cancel a recipe edit', 'Save and Cancel end the user\'s own edit with the user\'s own JSON; a package request is refused.'],
+  ['recipe-steps', 'Recipe steps and dry run', 'Steps, their text and the dry run stay host-drawn; packages see opaque recipe handles only.'],
+  ['wake-create', 'Schedule a wake-up', 'The message, time and repeat of a new wake-up are the user\'s own form; a package request is refused.'],
+  ['wake-remove', 'Remove a wake-up', 'Removing a wake-up and its confirmation stay the user\'s own buttons; a package request is refused.'],
+  ['wake-change', 'Snooze, pause or resume without a choice', 'A schedule changes only through the user\'s own control or a fresh host choice; a package request is refused.'],
+] as const;
+export type ActionLocation = typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

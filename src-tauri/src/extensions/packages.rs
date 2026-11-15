@@ -1314,6 +1314,29 @@ mod tests {
         assert!(storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]
+    fn composer_attach_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/composer-attach/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.composer-attach", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        assert_eq!(contributes["components"][0]["slot"], "panda.composer");
+        assert_eq!(contributes["menus"][0]["location"], "panda.composer.attach.actions");
+        assert_eq!(contributes["menus"][1]["location"], "panda.composer.recipes.actions");
+        assert_eq!(contributes["menus"][2]["location"], "panda.composer.wake.actions");
+        assert_eq!(contributes["menus"][3]["location"], "panda.composer.wake.context");
+        assert_eq!(contributes["layouts"][1]["location"], "panda.composer.recipes.controls");
+        packages.enable("sample.composer-attach", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        packages.enable("sample.composer-attach", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
     fn composer_panels_archive_install_restart_disable_and_safe_mode() {
         let manifest = include_bytes!("../../../tests/fixtures/extensions/composer-panels/extension.json");
         let storage = Storage::new(); let packages = storage.packages(false);

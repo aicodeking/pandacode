@@ -6,13 +6,27 @@ import { cadence, clockAt, schedulesApi, TRACE_HEADER, when, type ScheduleInput,
 
 export interface WakeHost {
   sessionId(): string;
-  showChoices(anchor: HTMLElement, options: { title: string; actions?: boolean; width?: number; items: { id: string; label: string; icon?: string; danger?: boolean }[]; onSelect: (id: string) => void | Promise<void> }): Promise<void>;
+  showChoices(anchor: HTMLElement, options: { title: string; actions?: boolean; width?: number; items: { id: string; label: string; icon?: string; danger?: boolean }[]; onSelect: (id: string) => void | Promise<void>; extensionSurface?: WakeMenuSurface }): Promise<void>;
   /** Settings → Schedules; an empty intent just opens the section. */
   openSettings(intent: { newForSession?: string; editScheduleId?: string }): void;
   notify(text: string): void;
   report(error: unknown): void;
   /** The sidebar glyphs changed. */
   changed(): void;
+  /** Extension presentation of the quick add and the ⋯ menu (composer-attach-host.ts), when extensions are loaded. */
+  extension?(): WakeExtension | undefined;
+}
+/** A wake-up's ⋯ menu as an extension surface: contributed rows after its own entries, with the captured task and
+ *  schedule. */
+export type WakeMenuSurface = { location: 'panda.composer.wake.context'; context: Record<string, string | number | { kind: string; ids: string[] }>; isAlive: () => boolean; pinned: readonly string[]; width: number };
+/** The user's order and reversible visibility of the quick add's time choices (`in-15`, `in-60`, `tonight`, `tomorrow`) and
+ *  More options (`more`), the adapter's hooks for the popover's extension action slot and the ⋯ menu's surface. The
+ *  message, time, repeat, Schedule and the strip's Remove confirmation are never part of it. */
+export type WakeExtension = Readonly<{ order: readonly string[]; hidden: ReadonlySet<string>; actions: boolean; popover(slot: HTMLElement, sessionId: string): () => void; menu(schedule: TaskSchedule, isAlive: () => boolean): WakeMenuSurface | undefined }>;
+/** The wake-ups the strip shows for a thread, whether it is open, and whether schedules are paused (for the extension
+ *  presentation; never the prompts). */
+export function wakeView(sessionId: string): { schedules: readonly Pick<TaskSchedule, 'id' | 'title' | 'enabled' | 'updatedAt' | 'nextRunAt'>[]; expanded: boolean; paused: boolean } {
+  return { schedules: schedules.filter(s => s.sessionId === sessionId).map(({ id, title, enabled, updatedAt, nextRunAt }) => ({ id, title, enabled, updatedAt, nextRunAt })), expanded, paused };
 }
 
 const MINUTE = 60_000, HISTORY = 8, TICK = 30_000;
@@ -176,13 +190,16 @@ function focusRow(id: string, wake: string): void {
 async function showMore(anchor: HTMLElement, schedule: TaskSchedule): Promise<void> {
   const snooze = schedule.kind !== 'after' && schedule.nextRunAt !== null && schedule.enabled;
   const items = [
-    ...snooze ? [{ id: 'snooze:10', label: 'Snooze 10 min', icon: 'moon' }, { id: 'snooze:60', label: 'Snooze 1 h', icon: 'moon' }, { id: 'snooze:1440', label: 'Snooze until tomorrow', icon: 'moon' }] : [],
+    ...snooze ? [{ id: 'snooze-10', label: 'Snooze 10 min', icon: 'moon' }, { id: 'snooze-60', label: 'Snooze 1 h', icon: 'moon' }, { id: 'snooze-1440', label: 'Snooze until tomorrow', icon: 'moon' }] : [],
     ...isFinished(schedule) ? [] : [{ id: 'enable', label: schedule.enabled ? 'Pause' : 'Resume', icon: schedule.enabled ? 'pause' : 'play' }],
     { id: 'edit', label: 'Edit…', icon: 'edit' },
     { id: 'remove', label: 'Remove…', icon: 'trash', danger: true },
   ];
-  await host!.showChoices(anchor, { title: schedule.title, actions: true, width: 240, items, onSelect: async choice => {
-    if (choice.startsWith('snooze:')) await schedulesApi.snooze(schedule.id, Number(choice.slice(7)));
+  // Contributed rows follow the menu's own entries, captured for this thread and wake-up while it is unchanged.
+  const updatedAt = schedule.updatedAt, thread = schedule.sessionId;
+  const extensionSurface = host!.extension?.()?.menu(schedule, () => host?.sessionId() === thread && schedules.find(s => s.id === schedule.id)?.updatedAt === updatedAt);
+  await host!.showChoices(anchor, { title: schedule.title, actions: true, width: 240, items, ...(extensionSurface ? { extensionSurface } : {}), onSelect: async choice => {
+    if (choice.startsWith('snooze-')) await schedulesApi.snooze(schedule.id, Number(choice.slice(7)));
     else if (choice === 'enable') await schedulesApi.setEnabled(schedule.id, !schedule.enabled);
     else if (choice === 'edit') { host!.openSettings({ editScheduleId: schedule.id }); return; }
     else if (choice === 'remove') { confirming = schedule.id; paint(); queueMicrotask(() => focusRow(schedule.id, 'remove-no')); return; }
@@ -275,8 +292,8 @@ function presets(now = Date.now()): { id: string; label: string; at: () => numbe
   const minutes = new Date(now).getHours() * 60 + new Date(now).getMinutes();
   const tonight = minutes < 17 * 60 + 30 ? 18 : minutes < 20 * 60 + 30 ? 21 : 0;
   return [
-    { id: '15', label: 'In 15 min', at: () => Date.now() + 15 * MINUTE },
-    { id: '60', label: 'In 1 h', at: () => Date.now() + 60 * MINUTE },
+    { id: 'in-15', label: 'In 15 min', at: () => Date.now() + 15 * MINUTE },
+    { id: 'in-60', label: 'In 1 h', at: () => Date.now() + 60 * MINUTE },
     ...tonight ? [{ id: 'tonight', label: `Tonight ${clockAt(at(0, tonight)())}`, at: at(0, tonight) }] : [],
     { id: 'tomorrow', label: `Tomorrow ${clockAt(at(1, 9)())}`, at: at(1, 9) },
   ];
@@ -286,18 +303,22 @@ function presets(now = Date.now()): { id: string; label: string; at: () => numbe
 export function openWakeComposer(anchor: HTMLElement, sessionId = host?.sessionId() ?? ''): void {
   if (!host || !sessionId) return;
   closePopover?.();
-  const choices = presets();
-  let preset = '60';
+  const extension = host.extension?.();
+  // The time choices in the user's order (presets the clock leaves out stay out); a hidden one stays, out of view.
+  const offered = presets(), choices = (extension?.order ?? offered.map(c => c.id)).map(id => offered.find(c => c.id === id)).filter((c): c is ReturnType<typeof presets>[number] => Boolean(c));
+  for (const c of offered) if (!choices.includes(c)) choices.push(c);
+  const hiddenBy = (id: string) => extension?.hidden.has(id) ? ' data-layout-hidden inert' : '';
+  let preset = 'in-60';
   const popover = document.createElement('div');
   popover.className = 'floating-menu wake-popover';
   popover.setAttribute('role', 'dialog'); popover.setAttribute('aria-label', 'Wake this thread later');
   popover.innerHTML = `<form class="wake-form"><strong class="wake-form-title">${icon('clock')}Wake this thread later</strong>
     <label class="wake-field"><span>Message</span><textarea name="prompt" rows="2">${escape(DEFAULT_WAKE_PROMPT)}</textarea></label>
-    <div class="wake-presets" role="group" aria-label="When">${choices.map(c => `<button type="button" class="wake-chip" data-preset="${c.id}" aria-pressed="${c.id === preset}">${escape(c.label)}</button>`).join('')}</div>
+    <div class="wake-presets" role="group" aria-label="When">${choices.map(c => `<button type="button" class="wake-chip" data-preset="${c.id}"${hiddenBy(c.id)} aria-pressed="${c.id === preset}">${escape(c.label)}</button>`).join('')}</div>
     <div class="wake-row-fields"><label class="wake-field wake-at"><span>At</span><input type="datetime-local" name="at"></label>
     <label class="wake-field"><span>Repeat</span><select name="repeat">${REPEAT.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label></div>
     <p class="wake-error" role="alert" hidden></p>
-    <div class="wake-form-footer"><button type="button" class="wake-text-button" data-more>More options…</button><span></span><button type="button" class="secondary-button" data-cancel>Cancel</button><button type="submit" class="primary-button">Schedule</button></div></form>`;
+    <div class="wake-form-footer"><button type="button" class="wake-text-button" data-more${hiddenBy('more')}>More options…</button>${extension?.actions ? '<span class="extension-action-slot" data-wake-extension-actions></span>' : ''}<span></span><button type="button" class="secondary-button" data-cancel>Cancel</button><button type="submit" class="primary-button">Schedule</button></div></form>`;
   const form = popover.querySelector('form')!;
   const at = form.querySelector<HTMLInputElement>('[name="at"]')!, error = form.querySelector<HTMLElement>('.wake-error')!;
   const repeatField = form.querySelector<HTMLSelectElement>('[name="repeat"]')!;
@@ -313,7 +334,9 @@ export function openWakeComposer(anchor: HTMLElement, sessionId = host?.sessionI
     form.querySelector<HTMLElement>('.wake-presets')!.hidden = hourly;
     form.querySelector<HTMLElement>('.wake-at')!.hidden = hourly;
   });
+  let unmount: (() => void) | undefined;
   const close = (refocus = true) => {
+    unmount?.(); unmount = undefined;
     popover.remove(); document.removeEventListener('pointerdown', outside, true); closePopover = undefined;
     if (refocus) (anchor.isConnected ? anchor : document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
   };
@@ -323,7 +346,7 @@ export function openWakeComposer(anchor: HTMLElement, sessionId = host?.sessionI
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }
     if (event.key !== 'Tab') return;
     // Focus stays inside the popover until it closes.
-    const stops = [...popover.querySelectorAll<HTMLElement>('textarea, button, input, select')].filter(node => !node.closest('[hidden]') && !(node as HTMLButtonElement).disabled);
+    const stops = [...popover.querySelectorAll<HTMLElement>('textarea, button, input, select')].filter(node => !node.closest('[hidden], [data-layout-hidden]') && !(node as HTMLButtonElement).disabled);
     const first = stops[0], last = stops[stops.length - 1];
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
@@ -352,6 +375,8 @@ export function openWakeComposer(anchor: HTMLElement, sessionId = host?.sessionI
     }, reason => { submit.disabled = false; fail(reason instanceof Error ? reason.message : String(reason)); });
   });
   document.body.append(popover);
+  const slot = popover.querySelector<HTMLElement>('[data-wake-extension-actions]');
+  if (slot && extension) unmount = extension.popover(slot, sessionId);
   const rect = anchor.getBoundingClientRect(), width = popover.offsetWidth, height = popover.offsetHeight;
   // Keep clear of an open inspector; right-align to the trigger when its left edge would run past that.
   const inspector = document.querySelector<HTMLElement>('#inspector');

@@ -218,6 +218,21 @@ export type ComposerPanelsAdmission = { readonly ok: true } | { readonly ok: fal
 /** `selection.kind` of the panel contexts: `queue-entry` (queue row actions, ids = [entry]), `token-saver` (token saver
  * panel actions, ids = [task]) and `council-cycle` (council strip actions, ids = ["<task>:<cycle start>"]). */
 export type ComposerPanelSelectionKind = 'queue-entry' | 'token-saver' | 'council-cycle';
+/** Experimental Attach menu, Workflow recipes and wake-up controls (owner: the selected `panda.composer` provider).
+ * Eligible entries reorder and hide on the original nodes and menus; actions run the original handlers. Draft
+ * attachments, recipe steps, deletes and schedule changes stay host-owned. */
+export type ComposerAttachControl = 'attach-open' | 'attach-file' | 'recipe-pick' | 'recipe-new' | 'recipe-edit' | 'recipe-run' | 'wake-expand' | 'wake-add' | 'wake-run' | 'wake-enable' | 'wake-more';
+/** Named but never run: refused with `PermissionDenied`. */
+export type ComposerAttachProtectedControl = 'attach-paths' | 'attach-remove' | 'recipe-delete' | 'recipe-save' | 'recipe-cancel' | 'wake-create' | 'wake-remove' | 'wake-snooze' | 'wake-set';
+/** `attachments` counts the draft's attachments (never paths); `recipe` and `schedules` are opaque handles. An edited
+ * draft, a changed attachment, recipe or wake-up, or any redraw changes `revision`. */
+export interface ComposerAttachPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly draft: boolean; readonly attachments: number; readonly recipes: boolean; readonly recipe: string; readonly wake: boolean; readonly schedules: readonly string[]; readonly controls: readonly { readonly id: string; readonly controlId: ComposerAttachControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface ComposerAttachAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly task: string; readonly revision: number; readonly control: string; readonly controlId: ComposerAttachControl; readonly resource: string; readonly requestId: string }
+export type ComposerAttachAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** `selection.kind` of the attach contexts: `draft` (Attach menu, ids = [task]), `recipe` (selected recipe actions,
+ * ids = ["<scope>:<name>"]), `task` (Wake this thread later actions, ids = [task]) and `schedule` (a wake-up's ⋯ menu,
+ * ids = [schedule]). */
+export type ComposerAttachSelectionKind = 'draft' | 'recipe' | 'task' | 'schedule';
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

@@ -1,0 +1,166 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.composer-attach",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.composer-attach/toolbar",
+        "title": "Toolbar-first attach",
+        "slot": "panda.composer",
+        "contractVersion": 1,
+        "presentation": "toolbar-first",
+        "capabilities": [
+          "host-input",
+          "attachments",
+          "model-mode",
+          "queue-steer",
+          "send-stop",
+          "approvals"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.composer-attach/attach-notes",
+        "title": "Attach notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Draft attachments stay with PandaCode."
+        }
+      },
+      {
+        "id": "sample.composer-attach/recipe-notes",
+        "title": "Recipe notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Recipe steps stay with PandaCode."
+        }
+      },
+      {
+        "id": "sample.composer-attach/wake-notes",
+        "title": "Wake notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "Wake-ups stay the user's choice."
+        }
+      },
+      {
+        "id": "sample.composer-attach/schedule-notes",
+        "title": "Schedule notes",
+        "action": {
+          "kind": "showMessage",
+          "message": "This wake-up stays as scheduled."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.composer-attach/attach",
+        "command": "sample.composer-attach/attach-notes",
+        "location": "panda.composer.attach.actions",
+        "presentation": "button",
+        "text": "Attach notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "draft"
+        }
+      },
+      {
+        "id": "sample.composer-attach/recipe",
+        "command": "sample.composer-attach/recipe-notes",
+        "location": "panda.composer.recipes.actions",
+        "presentation": "button",
+        "text": "Recipe notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "recipe"
+        }
+      },
+      {
+        "id": "sample.composer-attach/wake",
+        "command": "sample.composer-attach/wake-notes",
+        "location": "panda.composer.wake.actions",
+        "presentation": "button",
+        "text": "Wake notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "task"
+        }
+      },
+      {
+        "id": "sample.composer-attach/schedule",
+        "command": "sample.composer-attach/schedule-notes",
+        "location": "panda.composer.wake.context",
+        "presentation": "button",
+        "text": "Schedule notes",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "schedule"
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.composer-attach/wake-first",
+        "title": "Schedule a wake-up before Attach a folder",
+        "location": "panda.composer.attach.actions",
+        "rules": [
+          {
+            "id": "panda.composer.attach.actions/wake",
+            "target": "panda.composer.attach.actions/folder",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-attach/run-first",
+        "title": "Run before Edit",
+        "location": "panda.composer.recipes.controls",
+        "rules": [
+          {
+            "id": "panda.composer.recipes.controls/run",
+            "target": "panda.composer.recipes.controls/edit",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-attach/tomorrow-first",
+        "title": "Tomorrow before In 15 min",
+        "location": "panda.composer.wake.controls",
+        "rules": [
+          {
+            "id": "panda.composer.wake.controls/tomorrow",
+            "target": "panda.composer.wake.controls/in-15",
+            "side": "before"
+          }
+        ]
+      },
+      {
+        "id": "sample.composer-attach/edit-first",
+        "title": "Edit before the snoozes",
+        "location": "panda.composer.wake.context",
+        "rules": [
+          {
+            "id": "panda.composer.wake.context/edit",
+            "target": "panda.composer.wake.context/snooze-10",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

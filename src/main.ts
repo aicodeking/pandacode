@@ -42,7 +42,7 @@ import './voice-dictation.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
 import { setDocumentView } from './document-viewer';
 import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
-import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
+import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip, wakeView } from './schedules-thread';
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
@@ -774,6 +774,14 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, running: isRunning(), held: Boolean(s && state.queueHolds.get(s.id)), busy: Boolean(modelPickerCleanup) || Boolean(s && state.queueBusy.has(s.id)), generation: state.generation, queue: s ? queueOf(s.id) : [], councilSince: s ? teams.get(s.id)?.councilSince ?? undefined : undefined }; },
     relayout: () => { const s = session(); if (s && queueOf(s.id).length) renderComposer(); else if (s) council.sync(s.id); tokenSaver.relayout(); },
   });
+  // The Attach menu, Workflow recipes and wake-ups: presentation only. Draft attachments, recipe steps, deletes and
+  // schedule changes stay here and in attachments.ts, recipes.ts and schedules-thread.ts.
+  composerAttach = (await import('./extensions/composer-attach-host')).mountComposerAttachAdoption({
+    area: $('#composer-area'), onContextChanged, notify,
+    state: () => { const s = session(), prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); return { project: s?.projectId || undefined, task: s?.id || undefined, busy: Boolean(modelPickerCleanup), generation: state.generation, draft: s && prompt?.dataset.sessionId === s.id ? prompt.value : '', attachments: s ? [...state.attachments.map(path => `file:${path}`), ...attachments.list(s.id).map(item => item.id)] : [], schedules: s ? wakeView(s.id).schedules : [] }; },
+    projectOf: task => state.sessions.find(item => item.id === task)?.projectId || undefined,
+    relayout: () => recipesView?.redraw(),
+  });
   // Subagent rows, team profile controls and the main-window Running agents widget: presentation only. Children, their
   // streams and lineage, profiles, the widget's preference and its pinned window stay in subagents.ts, team-profiles.ts
   // and agents-dock.ts.
@@ -848,6 +856,8 @@ let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mou
 let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
 /** Queue, token saver and council panels adoption (docs/extensions/composer-panels.md), mounted once extensions load. */
 let composerPanels: ReturnType<typeof import('./extensions/composer-panels-host').mountComposerPanelsAdoption> | undefined;
+/** Attach menu, Workflow recipes and wake-ups adoption (docs/extensions/composer-attach.md), mounted once extensions load. */
+let composerAttach: ReturnType<typeof import('./extensions/composer-attach-host').mountComposerAttachAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
 let dockAdoption: ReturnType<typeof import('./extensions/dock-host').mountDockAdoption> | undefined;
 /** Agent roster adoption (docs/extensions/agent-roster.md), mounted once extensions load. */
@@ -1024,6 +1034,10 @@ const worktrees = createWorktrees({
   onExtra: (id, task) => github.onMenu(id, task),
   rerender: () => renderContextBar(),
 });
+if (preview && new URLSearchParams(location.search).has('composer-attach')) {
+  (window as any).__previewAttach = () => composerAttach?.presentation();
+  (window as any).__previewAttachAction = (input: unknown) => composerAttach?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
 if (preview && new URLSearchParams(location.search).has('composer-panels')) {
   (window as any).__previewPanels = () => composerPanels?.presentation();
   (window as any).__previewPanelsAction = (input: unknown) => composerPanels?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
@@ -1227,15 +1241,25 @@ const attachments = mountPromptAttachments({
     return true;
   },
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
-  menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
+  // Contributed rows follow the menu's own entries, captured for the task and its draft; Attach files keeps its place.
+  menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, ...attachMenuSurface(), items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
   projectFiles: () => { state.inspector = true; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
 });
+/** The Attach menu's extension surface for the open task, when packages contribute or the user arranged it. */
+function attachMenuSurface(): { extensionSurface?: NonNullable<ReturnType<NonNullable<typeof composerAttach>['attachSurface']>> } {
+  const s = session(), generation = state.generation;
+  const extensionSurface = s ? composerAttach?.attachSurface({ projectId: s.projectId || undefined, sessionId: s.id }, generation, () => state.sessionId === s.id && generation === state.generation) : undefined;
+  return extensionSurface ? { extensionSurface } : {};
+}
+/** The open Workflow recipes dialog, redrawn when the user's layout or the extensions change. */
+let recipesView: { redraw(): void } | undefined;
 async function openRecipes(): Promise<void> {
   const s = session(); if (!s) return;
   const { mountRecipes } = await import('./recipes');
   modal('Workflow recipes', '<div id="recipes-body"></div>', 'recipes-dialog', { dialog: 'recipes', task: s.id, project: s.projectId });
-  mountRecipes($('#recipes-body'), {
+  recipesView = mountRecipes($('#recipes-body'), {
+    extension: () => composerAttach?.recipesLayout(s.id),
     call, projectId: s.projectId, provider: s.provider,
     slashCommands: async () => (await call<{ commands: { name: string }[] }>('list_slash_commands', { sessionId: s.id })).commands.map(c => c.name),
     enqueue: async text => { const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }); setQueue(s.id, [...queueOf(s.id), entry]); },
@@ -8172,7 +8196,7 @@ async function boot(): Promise<void> {
     if (target.closest('[data-wake="expand"]')) requestAnimationFrame(() => { const body = document.querySelector<HTMLElement>('#wake-body'); if (body) settleUnfolded(body); });
   });
   run(initWakeups({
-    sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
+    sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation, extension: () => composerAttach?.wakeLayout(),
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
   // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.

@@ -123,6 +123,8 @@ config.testMatch = [...config.testMatch as string[], '**/extensions-project-scop
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions project scope`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-composer-controls-coverage.spec.ts'];
 config.testMatch = [...config.testMatch as string[], '**/extensions-composer-panels-coverage.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-attach-wake-coverage.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer attach extension:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer panels extension:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer controls extension:`);
 export default defineConfig(config, {
