@@ -137,6 +137,39 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
   };
 }
 
+/** Settings → Agents → Start agents ahead (`warm_launch.rs`). The switch stays off and disabled, assuming nothing,
+ * until the saved value arrives; if it can't be read the switch is hidden (an unchecked one would read as off) and a
+ * note says why. Each flip saves, and a failed save
+ * puts the switch back and says why. Each saved value is announced (`pandacode:start-ahead`) for warming. */
+function mountStartAhead(input: HTMLInputElement): void {
+  const note = document.createElement('small');
+  note.className = 'settings-embed-error'; note.setAttribute('role', 'alert'); note.hidden = true;
+  input.closest('.setting-row')?.querySelector(':scope > div')?.append(note);
+  const say = (text: string) => { note.textContent = text; note.hidden = !text; };
+  input.checked = false; input.disabled = true; input.setAttribute('aria-busy', 'true');
+  void call<{ on: boolean }>('start_ahead_get')
+    .then(value => { input.checked = value.on; input.disabled = false; })
+    // Inline: the switch's own display rule (settings.css) would override the hidden attribute.
+    .catch(() => { input.style.display = 'none'; say('Couldn’t read this setting. Close Settings and try again.'); })
+    .finally(() => input.removeAttribute('aria-busy'));
+  input.addEventListener('change', async () => {
+    const on = input.checked;
+    say('');
+    input.disabled = true;
+    try {
+      input.checked = (await call<{ on: boolean }>('start_ahead_set', { on })).on;
+      // Warming (model-switch.ts) follows the saved value at once.
+      window.dispatchEvent(new CustomEvent('pandacode:start-ahead', { detail: { on: input.checked } }));
+    } catch (error) {
+      input.checked = !on;
+      say(`Couldn’t save: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    input.disabled = false;
+    // Disabling blurred it; keep keyboard focus on the switch.
+    input.focus({ preventScroll: true });
+  });
+}
+
 function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
@@ -155,6 +188,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        ${switchRow('start-ahead', 'Start agents ahead', 'Starts your agent in the background after a turn, when you pick a model, effort, permissions or harness, or when you start typing, so replies begin sooner. Your agent’s startup hooks and MCP servers run then.', false)}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh" aria-label="Refresh agents" title="Refresh agents">${icon('refresh')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
@@ -330,6 +364,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
+    if (id === 'agents') mountStartAhead(panel.querySelector<HTMLInputElement>('#start-ahead')!);
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const mount = () => {

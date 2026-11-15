@@ -244,6 +244,7 @@ const previewMimoEndpoints = [
 let previewMimoEndpoint: string | null = null;
 const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
 let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
+let previewStartAhead = true;
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 const previewAgentsDockSnapshot = {
   agents: [
@@ -1474,6 +1475,20 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
+  // Settings → Agents → Start agents ahead; tests read the saves from `__startAheadSaves`, can hold the read
+  // (`__startAheadGetHold`, a promise) and make either call fail (`__startAheadFail = { get?: message, set?: message }`).
+  if (command === 'start_ahead_get') {
+    const w = window as any;
+    if (w.__startAheadGetHold) await w.__startAheadGetHold;
+    if (w.__startAheadFail?.get) throw new Error(w.__startAheadFail.get);
+    return { on: previewStartAhead } as T;
+  }
+  if (command === 'start_ahead_set') {
+    if ((window as any).__startAheadFail?.set) throw new Error((window as any).__startAheadFail.set);
+    previewStartAhead = Boolean(args.on);
+    ((window as any).__startAheadSaves ??= []).push(previewStartAhead);
+    return { on: previewStartAhead } as T;
+  }
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
@@ -2088,7 +2103,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'update_session': {
       const s = session(args.sessionId);
       if (args.archived === false && s.archived && s.taskStage === 'completed') s.completedAt = Date.now();
-      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId')), { updatedAt: Date.now() }); break;
+      // `warm` (optional) only asks native to restart the warm process; it is not a task field.
+      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId' && key !== 'warm')), { updatedAt: Date.now() }); break;
     }
     case 'set_reasoning_effort': {
       const s = session(args.sessionId);
@@ -2100,9 +2116,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
     }
+    // Warming a task's next turn ahead (native starts the harness process): nothing to start here.
+    case 'warm_task': session(args.sessionId); result = null; break;
     case 'configure_session': {
       const s = session(args.sessionId);
       if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      // `warm` (optional): only the model picker asks native to start the new model's process ahead.
+      if (args.warm !== undefined && typeof args.warm !== 'boolean') throw new Error('Invalid warm flag.');
       const projectId = args.projectId ?? s.projectId;
       if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
       if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');

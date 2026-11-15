@@ -14,9 +14,11 @@ type ModelPickerOptions = {
   providers: Provider[];
   current: { provider: ProviderId; model: string; reasoningEffort?: string | null; contextUsage?: ContextUsage | null };
   canSwitchProvider: boolean;
-  onSelect: (provider: ProviderId, model: string) => Promise<void>;
+  /** May hand back `saved`, settling once the change is stored: the picker closes at once and remembers the model only if it saved. */
+  onSelect: (provider: ProviderId, model: string) => Promise<void | { saved: Promise<boolean> }>;
   onEffortSelect?: (effort: string | null) => Promise<void>;
-  loadModels?: (provider: ProviderId) => Promise<ProviderModel[]>;
+  /** `onFresh` hears what became of a refresh behind a stale list that was answered first: the newer list, or why it failed. */
+  loadModels?: (provider: ProviderId, onFresh?: (update: ProviderModel[] | Error) => void) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
   loadProviders?: () => Promise<Provider[]>;
   /** Model IDs to list first in a shortened catalog, newest first; null lists every model. Search always covers all. */
@@ -55,6 +57,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const teams = options.teams ?? [];
   const teamSelected = teams.some(team => team.selected);
   const catalogErrors = new Map<ProviderId, string>();
+  /** Harnesses whose list is an older one because its refresh failed (the reason, for the heading's tip). */
+  const catalogStale = new Map<ProviderId, string>();
+  /** Newer lists that landed while the pointer was over the rows: applied when it leaves (or on the next open). */
+  const deferredFresh = new Map<ProviderId, ProviderModel[]>();
   const catalogLoading = new Set<ProviderId>();
   const uid = `model-menu-${++pickerCount}`;
   const panel = document.createElement('section');
@@ -80,6 +86,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   let railMarkup = '';
   let settingsKey = '';
   let pendingEffort: string | null | undefined;
+  /** Effort saves in flight and the latest one's number: choices never wait on each other, only the latest one's outcome shows. */
+  let effortSaves = 0, effortSeq = 0;
   let hoveredEffort: string | null | undefined;
   let view = teamSelected ? 'teams' : `h:${current.provider}`;
 
@@ -280,7 +288,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       if (group) {
         const visible = shortList(group.provider.id, models(group));
         total = visible.length;
-        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
+        const stale = catalogStale.get(group.provider.id);
+        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>'
+          // A failed refresh behind an older list: say so quietly, keep the list.
+          : stale !== undefined ? `<span class="model-menu-stale" data-tip="${escape(`${stale ? `${stale} ` : ''}Showing the saved list.`)}">Couldn't refresh</span>`
+          : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
@@ -295,6 +307,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const next = buttons.find(button => optionKey(button) === activeKey) ?? (query ? buttons[0] : buttons.find(button => button.getAttribute('aria-current') === 'true') ?? buttons[0]);
       setActive(next);
     }
+    // A first fetch shows a quiet "Loading…" even over the bundled list, so rows don't change unannounced. A stale list
+    // answers at once (its refresh lands silently through onFresh), so it clears before anything paints.
     list.querySelectorAll<HTMLElement>('[data-catalog-loading]').forEach(status => { status.hidden = !catalogLoading.has(status.dataset.catalogLoading as ProviderId); });
     updateControls();
     position();
@@ -393,9 +407,12 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   }
 
   function updateControls(): void {
-    panel.setAttribute('aria-busy', String(pending));
-    pendingStatus.hidden = !pending;
-    list.querySelectorAll<HTMLButtonElement>('.model-menu-option[data-available="true"]').forEach(button => { button.disabled = pending; });
+    // Rows and effort choices stay live during an effort save (a model picked then saves after it, model-switch.ts);
+    // named teams cannot join that queue, so they wait until every effort save settles.
+    const busy = pending || effortSaves > 0;
+    panel.setAttribute('aria-busy', String(busy));
+    pendingStatus.hidden = !busy;
+    list.querySelectorAll<HTMLButtonElement>('.model-menu-option[data-available="true"]').forEach(button => { button.disabled = pending || (effortSaves > 0 && Boolean(button.dataset.team)); });
     renderSettings();
   }
 
@@ -410,26 +427,26 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       renderSettings();
       return;
     }
-    if (effort === (current.reasoningEffort ?? null)) { renderSettings(); return; }
-    const focused = settings.contains(document.activeElement);
-    pending = true;
+    if (effort === (pendingEffort !== undefined ? pendingEffort : current.reasoningEffort ?? null)) { renderSettings(); return; }
+    const seq = ++effortSeq;
+    effortSaves += 1;
     pendingEffort = effort;
     error.hidden = true;
     updateControls();
     try {
       await onEffortSelect(effort);
+      // Saves land in order, so each success is the last confirmed effort.
       current.reasoningEffort = effort;
     } catch (reason) {
-      if (closed) return;
+      // A newer choice decides; an older one's refusal says nothing.
+      if (closed || seq !== effortSeq) return;
       error.textContent = reason instanceof Error ? reason.message : String(reason);
       error.hidden = false;
     } finally {
+      effortSaves -= 1;
       if (!closed) {
-        pending = false;
-        pendingEffort = undefined;
+        if (seq === effortSeq) pendingEffort = undefined;
         updateControls();
-        // A disabled control loses focus during the save; leave deliberate navigation alone.
-        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
       }
     }
   }
@@ -437,15 +454,16 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   // ----- Selection and events -----
 
   async function select(button: HTMLButtonElement): Promise<void> {
-    if (pending || closed || button.disabled) return;
+    if (pending || closed || button.disabled || (button.dataset.team && effortSaves > 0)) return;
     pending = true;
     error.hidden = true;
     updateControls();
     try {
       if (button.dataset.team) await options.onTeamSelect?.(button.dataset.team);
       else {
-        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!);
-        rememberRecent(button.dataset.provider as ProviderId, button.dataset.model!);
+        const providerId = button.dataset.provider as ProviderId, model = button.dataset.model!;
+        const result = await onSelect(providerId, model);
+        void (result?.saved ?? Promise.resolve(true)).then(saved => { if (saved) rememberRecent(providerId, model); }).catch(() => undefined);
       }
       close();
     } catch (reason) {
@@ -465,7 +483,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   }
 
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || isImeKey(event)) return;
     event.preventDefault();
     event.stopPropagation();
     // The first Esc clears the query; the next closes.
@@ -504,6 +522,16 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const button = (event.target as Element).closest<HTMLButtonElement>('.model-menu-option');
     if (button && !pending && !button.disabled && !button.classList.contains('model-menu-active')) setActive(button);
   });
+  // The pointer left the rows: apply the lists that landed meanwhile (renderChoices keeps the active row).
+  list.addEventListener('pointerleave', () => {
+    if (closed || !deferredFresh.size) return;
+    for (const [id, models] of deferredFresh) {
+      const entry = providers.find(provider => provider.id === id);
+      if (entry) { entry.models = models; catalogStale.delete(id); }
+    }
+    deferredFresh.clear();
+    renderChoices();
+  });
   panel.addEventListener('click', event => event.stopPropagation());
   panel.addEventListener('keydown', event => {
     const target = event.target as HTMLElement;
@@ -518,7 +546,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const next = key === 'ArrowRight' || key === 'ArrowDown' ? Math.min(radios.length - 1, index + 1) : key === 'ArrowLeft' || key === 'ArrowUp' ? Math.max(0, index - 1) : key === 'Home' ? 0 : key === 'End' ? radios.length - 1 : -1;
       if (next < 0) return;
       event.preventDefault();
-      if (pending || radio.disabled) return;
+      if (radio.disabled) return;
       radios[next].focus({ preventScroll: true });
       void saveEffort(radios[next].dataset.effort || null);
       return;
@@ -558,7 +586,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     for (const provider of providers) {
       if (!provider.installed || !canSwitchProvider && provider.id !== current.provider) continue;
       catalogLoading.add(provider.id);
-      void Promise.resolve().then(() => loadModels(provider.id)).then(models => {
+      const fresh = (update: ProviderModel[] | Error) => {
+        if (closed) return;
+        if (update instanceof Error) catalogStale.set(provider.id, update.message);
+        // Rows never move under the pointer: a refresh that lands meanwhile waits for it to leave.
+        else if (list.matches(':hover')) { deferredFresh.set(provider.id, update); return; }
+        else { catalogStale.delete(provider.id); provider.models = update; }
+        renderChoices();
+      };
+      void Promise.resolve().then(() => loadModels(provider.id, fresh)).then(models => {
         if (closed) return;
         provider.models = models;
       }).catch(reason => { if (!closed) catalogErrors.set(provider.id, reason instanceof Error ? reason.message : String(reason ?? '')); }).finally(() => {

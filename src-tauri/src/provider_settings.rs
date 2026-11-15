@@ -36,6 +36,9 @@ struct Settings {
     /// Settings → Agents → Turn off agent telemetry (`providers/privacy.rs`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     telemetry_off: bool,
+    /// Settings → Agents → "Start agents ahead" turned off (`warm_launch.rs`). Absent means on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    start_ahead_off: bool,
 }
 struct Runtime {
     path: PathBuf,
@@ -1019,6 +1022,28 @@ pub(crate) fn telemetry_off() -> bool {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.telemetry_off)).unwrap_or(false)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Overrides the saved "Start agents ahead" switch for this test thread.
+    pub(crate) static START_AHEAD_FORCE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether agents may be started ahead of a send (default on).
+pub(crate) fn start_ahead() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = START_AHEAD_FORCE.with(std::cell::Cell::get) {
+        return forced;
+    }
+    CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| !runtime.settings.start_ahead_off)).unwrap_or(true)
+}
+
+pub(crate) fn set_start_ahead(on: bool) -> Result<()> {
+    let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
+        .lock().map_err(|e| e.to_string())?;
+    let next = Settings { start_ahead_off: !on, ..runtime.settings.clone() };
+    persist(&mut runtime, next)
+}
+
 pub(crate) fn set_telemetry_off(off: bool) -> Result<()> {
     let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
         .lock().map_err(|e| e.to_string())?;
@@ -1221,6 +1246,24 @@ mod tests {
             serde_json::json!({"executablePaths":{},"apiKey":"secret"})
         )
         .is_err());
+    }
+    #[test]
+    fn start_ahead_switch_survives_reload_and_defaults_on() {
+        let directory = std::env::temp_dir().join(format!("pandacode-start-ahead-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime { path: directory.join("provider-settings.json"), settings: Settings::default() };
+        assert!(!runtime.settings.start_ahead_off, "on by default");
+        let next = Settings { start_ahead_off: true, ..runtime.settings.clone() };
+        persist(&mut runtime, next).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert_eq!(saved["startAheadOff"], true);
+        let reloaded: Settings = serde_json::from_value(saved).unwrap();
+        assert!(reloaded.start_ahead_off);
+        // On is not written, so files from earlier versions load unchanged.
+        persist(&mut runtime, Settings { start_ahead_off: false, ..reloaded }).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(saved.get("startAheadOff").is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn telemetry_switch_survives_reload_and_keeps_other_settings() {

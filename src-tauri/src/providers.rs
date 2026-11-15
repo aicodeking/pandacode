@@ -23,7 +23,135 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms};
+mod handshake_warm;
+mod codex_preload;
+pub use warm::{debounce as warm_debounce, touch as touch_warm_agent, epoch as warm_epoch, release as release_warm_ticket, reserve as reserve_warm_agent, reserved as warm_reserved, supported as warms};
+/// A send's launch, as `run_process_with_tools` counts and settles it.
+#[cfg(test)]
+pub(crate) fn warm_launched(session_id: &str) {
+    warm::launched(session_id);
+    warm::launch_settled(session_id);
+}
+pub use handshake_warm::{kept_across_switch as handshake_spare_kept, provider as handshake_warm_provider, supported as handshake_warms};
+
+/// Start the next turn's warm agent: Claude's (`warm.rs`), or Codex's app-server or an ACP
+/// agent (`handshake_warm.rs`).
+pub async fn prewarm_agent(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
+    if !start_ahead() {
+        return Ok(());
+    }
+    // A turn just ended: a follow-up is likely.
+    warm::touch(&config.session_id);
+    if handshake_warm::supported(&config) {
+        return handshake_warm::prewarm(config, None, launch, tools, approval_tools).await;
+    }
+    warm::prewarm(config, tools, approval_tools, launch).await
+}
+
+/// A debounced first start (`reserve_warm_agent`): starts only if `ticket` is still the
+/// task's newest and no send came in meanwhile.
+pub async fn prewarm_reserved(ticket: u64, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
+    if !start_ahead() {
+        warm::release(&config.session_id, ticket);
+        return Ok(());
+    }
+    if handshake_warm::supported(&config) {
+        return handshake_warm::prewarm(config, Some(ticket), launch, tools, approval_tools).await;
+    }
+    warm::prewarm_reserved(ticket, config, tools, approval_tools, launch).await
+}
+
+/// A harness's idle spares: when each started, and how to drop one.
+type IdleSpares = (fn() -> Vec<(std::time::Instant, String)>, fn(&str, std::time::Instant));
+
+/// Idle spares of every harness share one budget (`warm::LIMIT`): the most recently wanted
+/// stay (`warm::touch`, else birth). Another
+/// harness adds its `births` and `evict` here.
+pub(super) fn limit_spares() {
+    let harnesses: [IdleSpares; 2] = [(warm::births, warm::evict), (handshake_warm::births, handshake_warm::evict)];
+    let mut idle: Vec<_> = harnesses
+        .iter()
+        .flat_map(|(births, evict)| births().into_iter().map(move |(born, id)| (born, id, *evict)))
+        .filter(|(_, id, _)| counts_toward_limit(id))
+        .collect();
+    // The most recently wanted stay: a task just used outlives two that were only warmed.
+    idle.sort_by_key(|(born, id, _)| std::cmp::Reverse(warm::recency(id, *born)));
+    for (born, id, evict) in idle.into_iter().skip(warm::LIMIT) {
+        evict(&id, born);
+    }
+}
+
+/// Every task's idle spare counts toward the shared limit.
+#[cfg(not(test))]
+fn counts_toward_limit(_: &str) -> bool {
+    true
+}
+
+/// Unit tests share the spare maps and run in parallel: only the limit test's tasks count, so
+/// one test's spares never evict another's.
+#[cfg(test)]
+fn counts_toward_limit(session_id: &str) -> bool {
+    session_id.starts_with("warm-limit-")
+}
+
+/// Settings → Agents → "Start agents ahead" (default on).
+pub fn start_ahead() -> bool {
+    crate::provider_settings::start_ahead()
+}
+
+/// The task has a warm agent for its current harness, or one starting or debouncing. A Claude
+/// agent kept while the task looks at another harness does not count.
+pub fn has_warm_agent(session: &crate::storage::Session) -> bool {
+    warm::pending_ticket(&session.id)
+        || match session.provider.as_str() {
+            "claude" => warm::present(&session.id),
+            provider => handshake_warm::provider(provider) && handshake_warm::present(&session.id),
+        }
+}
+
+/// Drop the task's pending first start, whatever its ticket: a later pick superseded it.
+pub fn cancel_warm_ticket(session_id: &str) {
+    warm::cancel_ticket(session_id);
+}
+
+/// Give the task a waiting Codex or ACP spare (a stand-in process); returns its pid.
+#[cfg(test)]
+pub(crate) fn handshake_insert_for_test(session_id: &str, provider: &str) -> u32 {
+    handshake_warm::insert_for_test(session_id, provider)
+}
+
+/// The pid of the task's waiting Codex or ACP spare.
+#[cfg(test)]
+pub(crate) fn handshake_spare_pid(session_id: &str) -> Option<u32> {
+    handshake_warm::spare_pid(session_id)
+}
+
+/// Record a Claude prewarm's inputs, as a turn end does, without starting anything.
+#[cfg(test)]
+pub(crate) fn warm_record_for_test(config: &RunConfig) {
+    warm::record_for_test(config);
+}
+
+/// Stop every agent started ahead ("Start agents ahead" was turned off).
+pub fn discard_all_warm_agents() {
+    warm::discard_all();
+    handshake_warm::discard_all();
+}
+
+/// Drop every warm agent a task has (its folder changed, or it was deleted).
+pub fn discard_warm_agent(session_id: &str) {
+    warm::discard(session_id);
+    handshake_warm::discard(session_id);
+}
+
+/// After a settings switch: Claude's agent follows it (`warm::retarget`). A Codex or ACP spare
+/// is kept across a quick harness flip, as Claude's is: it goes when another harness's start
+/// begins (`handshake_warm::other_start`) or a launch happens.
+pub fn retarget_warm_agent(session: &crate::storage::Session) -> bool {
+    // The user just picked a setting for this task.
+    warm::touch(&session.id);
+    warm::retarget(session)
+}
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
@@ -1352,6 +1480,14 @@ struct Step {
 
 struct Protocol {
     config: RunConfig,
+    /// A warm Claude agent's switch requests still unanswered (`warm_switch.rs`): the first
+    /// message waits for their replies, which are not this turn's.
+    warm_switch: HashSet<String>,
+    /// The `initialize` reply held back until then.
+    held_start: Option<Value>,
+    /// The adopted agent refused its switch before the prompt was written: the run replaces
+    /// it with a cold launch.
+    warm_refused: bool,
     remote_id: String,
     turn_id: String,
     phase: u8,
@@ -1386,6 +1522,9 @@ struct Protocol {
     partial_tools: HashMap<(String, u64), PartialTool>,
     image_blocks: Vec<Value>,
     active_model: String,
+    /// A warm spare already loaded this Codex thread: `turn/start` carries the chosen model,
+    /// which the load may not have (`codex_preload.rs`).
+    codex_preloaded: bool,
     kimi_thinking_values: Vec<String>,
     acp_config: Value,
     // Grok Build authenticates before session calls; the session request waits here.
@@ -1490,7 +1629,11 @@ impl Protocol {
         Self {
             remote_id: config.resume_id.clone().unwrap_or_default(),
             active_model: config.model.clone(),
+            codex_preloaded: false,
             config,
+            warm_switch: HashSet::new(),
+            held_start: None,
+            warm_refused: false,
             turn_id: String::new(),
             phase: 0,
             steers: Default::default(),
@@ -1972,15 +2115,8 @@ impl Protocol {
             "pi" | "omp" => json!({"type":"get_state","id":"pandacode-init"}),
             "zcode" => self.zcode_initial(),
             "muse" => self.muse_initial(),
-            "codex" => {
-                let mut request = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"}}});
-                request["params"]["capabilities"] =
-                    json!({"experimentalApi":true,"requestAttestation":false});
-                request
-            }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
-                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
-            }
+            "codex" => codex_initialize(),
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => acp_initialize(),
             _ => {
                 json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
             }
@@ -2169,6 +2305,10 @@ impl Protocol {
                     if let Some(model) = value["result"]["model"].as_str() {
                         self.active_model = model.into();
                     }
+                    if self.codex_preloaded && self.config.model != "default" && !self.config.model.is_empty() {
+                        // Loaded with the model chosen then; this turn switches to today's.
+                        self.active_model = self.config.model.clone();
+                    }
                     self.goals.resolved_effort = value["result"]["reasoningEffort"]
                         .as_str()
                         .map(str::to_owned);
@@ -2320,6 +2460,9 @@ impl Protocol {
         }
         if let Some(effort) = &self.config.reasoning_effort {
             request["params"]["effort"] = json!(effort);
+        }
+        if self.codex_preloaded && self.config.model != "default" && !self.config.model.is_empty() {
+            request["params"]["model"] = json!(self.config.model);
         }
         step.write.push(request);
         self.phase = 1;
@@ -2549,6 +2692,30 @@ impl Protocol {
         match string(&value, "type").as_str() {
             "control_response" => {
                 let response = &value["response"];
+                // A reply to the adopted warm agent's switch: it applies the task's settings.
+                if let Some(id) = response["request_id"].as_str().filter(|id| self.warm_switch.contains(*id)).map(str::to_owned) {
+                    if response["subtype"] != "success" {
+                        // Nothing of the turn was written yet: start it cold instead (logged only).
+                        eprintln!("Warm Claude agent refused its switch ({}); starting cold.", string(response, "error"));
+                        self.warm_switch.clear();
+                        self.held_start = None;
+                        self.warm_refused = true;
+                        return Ok(step);
+                    }
+                    self.warm_switch.remove(&id);
+                    if !self.warm_switch.is_empty() {
+                        return Ok(step);
+                    }
+                    return match self.held_start.take() {
+                        Some(start) => self.claude(start),
+                        None => Ok(step),
+                    };
+                }
+                // Its first message waits until the switch is applied (`set_model` replies late).
+                if response["request_id"] == "pandacode-init" && !self.warm_switch.is_empty() {
+                    self.held_start = Some(value);
+                    return Ok(step);
+                }
                 if response["request_id"] == "pandacode-init" {
                     if response["subtype"] == "error" {
                         return Err(string(response, "error"));
@@ -3243,6 +3410,18 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
     configure_command_with_skills(command, config, &Default::default());
 }
 
+/// Claude Code's `--permission-mode` for a PandaCode mode (also sent to a warm agent).
+pub(super) fn claude_permission_mode(mode: &str) -> &'static str {
+    match mode {
+        "auto" => "acceptEdits",
+        // Claude Code's auto mode: its safety reviewer approves routine actions.
+        "review" => "auto",
+        "plan" => "plan",
+        "full" => "bypassPermissions",
+        _ => "default",
+    }
+}
+
 /// Lists OpenCode's agents for this launch itself; `run_inner` passes its one scan instead.
 fn configure_command_with_skills(
     command: &mut Command,
@@ -3300,14 +3479,7 @@ fn configure_command_with_agents(
             if claude_lists_hook_events(command) {
                 command.arg("--include-hook-events");
             }
-            let permission_mode = match config.mode.as_str() {
-                "auto" => "acceptEdits",
-                // Claude Code's auto mode: its safety reviewer approves routine actions.
-                "review" => "auto",
-                "plan" => "plan",
-                "full" => "bypassPermissions",
-                _ => "default",
-            };
+            let permission_mode = claude_permission_mode(&config.mode);
             // Always override the resumed session's mode, including when the
             // user has moved from full access back to standard approvals.
             command.args(["--permission-mode", permission_mode]);
@@ -3347,6 +3519,36 @@ fn configure_command_with_agents(
                 opencode_agents,
             ),
         );
+    }
+}
+
+/// The ACP `initialize` request every ACP harness is sent first; a warm spare sends exactly
+/// this and nothing more.
+fn acp_initialize() -> Value {
+    json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
+}
+
+/// Codex's `initialize` request, shared by cold launches and warm spares.
+/// A spare may then preload a saved thread (`codex_preload.rs`).
+fn codex_initialize() -> Value {
+    json!({"id":1,"method":"initialize","params":{
+        "clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"},
+        "capabilities":{"experimentalApi":true,"requestAttestation":false},
+    }})
+}
+
+/// A named connection's arguments and environment win over the global setup.
+fn connect_command(
+    command: &mut Command,
+    provider: &str,
+    disabled: &std::collections::BTreeSet<String>,
+    connection: Option<&crate::connections::Launch>,
+) {
+    let Some(connection) = connection else { return };
+    connection.apply(command);
+    // A connection's own `-c skills.config=…` can't override the switches: merged, manager last.
+    if provider == "codex" {
+        command.args(crate::skill_manager::codex_connection_arguments(&connection.args, disabled));
     }
 }
 
@@ -3455,7 +3657,7 @@ async fn run_inner(
     {
         return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
     }
-    let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
+    let connection = crate::connections::for_task(&config.session_id, &config.provider)
         .map(|connection| crate::connections::launch(&connection))
         .transpose()?;
     let path = connection
@@ -3468,47 +3670,13 @@ async fn run_inner(
         })?;
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
-    let mut command = provider_command(&config.provider, &path)?;
-    let mut command = {
-        let (config, disabled, agents) =
-            (config.clone(), disabled.clone(), opencode_agents.clone());
-        crate::blocking(move || {
-            configure_command_with_agents(&mut command, &config, &disabled, &agents);
-            Ok(command)
-        })
-        .await?
-    };
-    // A named connection's arguments and environment win over the global setup.
-    if let Some(connection) = &connection {
-        connection.apply(&mut command);
-        // A connection's own `-c skills.config=…` can't override the switches: merged, manager last.
-        if config.provider == "codex" {
-            command.args(crate::skill_manager::codex_connection_arguments(
-                &connection.args,
-                &disabled,
-            ));
-        }
-    }
-    if config.provider == "opencode" && !disabled.is_empty() {
-        enforce_opencode_after_connection(&mut command, &mut config, &disabled, &opencode_agents);
-    }
-    if config.provider == "kilo" {
-        let inline = kilo::configure_environment(&mut command, &config);
-        if let Some(connection) = &mut connection {
-            connection.secrets.push(inline);
-        }
-    }
-    let key = if config.provider == "glm" {
-        Some(glm::configure(&mut command)?)
-    } else if config.provider == "mimo" {
-        Some(mimo::configure(&mut command)?)
-    } else if config.provider == "deepseek" {
-        deepseek::configure(&mut command)?
-    } else if config.provider == "commandcode" {
-        commandcode::key_environment(&mut command)
-    } else {
-        None
-    };
+    // Reads saved keys and settings: off the runtime.
+    let (command, key, config, connection) = crate::blocking(move || {
+        let (mut config, mut connection) = (config, connection);
+        let (command, key) = local_command(&mut config, &path, &disabled, &opencode_agents, connection.as_mut())?;
+        Ok((command, key, config, connection))
+    })
+    .await?;
     run_process_with_tools(
         config,
         sink,
@@ -3524,6 +3692,37 @@ async fn run_inner(
             .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
         connection.as_ref().map_or(error.clone(), |connection| connection.redact(&error))
     })
+}
+
+/// The local command a run launches (`config.cwd` already external), and the saved key it
+/// carries, for redaction. Shared with the warm spares, so a spare is keyed by exactly this.
+fn local_command(
+    config: &mut RunConfig,
+    path: &Path,
+    disabled: &std::collections::BTreeSet<String>,
+    opencode_agents: &crate::skill_manager::OpenCodeAgents,
+    mut connection: Option<&mut crate::connections::Launch>,
+) -> Result<(Command, Option<String>), String> {
+    let mut command = provider_command(&config.provider, path)?;
+    configure_command_with_agents(&mut command, config, disabled, opencode_agents);
+    connect_command(&mut command, &config.provider, disabled, connection.as_deref());
+    if config.provider == "opencode" && !disabled.is_empty() {
+        enforce_opencode_after_connection(&mut command, config, disabled, opencode_agents);
+    }
+    if config.provider == "kilo" {
+        let inline = kilo::configure_environment(&mut command, config);
+        if let Some(connection) = &mut connection {
+            connection.secrets.push(inline);
+        }
+    }
+    let key = match config.provider.as_str() {
+        "glm" => Some(glm::configure(&mut command)?),
+        "mimo" => Some(mimo::configure(&mut command)?),
+        "deepseek" => deepseek::configure(&mut command)?,
+        "commandcode" => commandcode::key_environment(&mut command),
+        _ => None,
+    };
+    Ok((command, key))
 }
 
 #[cfg(all(test, unix))]
@@ -3594,6 +3793,26 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
     ((!host.tools.is_empty()).then_some(host), Some(jev))
 }
 
+/// Start the harness process itself for this launch (no warm agent).
+fn spawn_harness(command: &mut Command, config: &RunConfig, mcp: Option<&mcp_host::Server>) -> Result<(Child, ProcessGroup), String> {
+    if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
+        if let Some(server) = mcp {
+            command.args(["--mcp-config", &server.claude_config().to_string()]);
+        }
+    }
+    command
+        .current_dir(&config.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.spawn().map_err(|e| format!("Could not start {}: {e}", config.provider))?;
+    let group = ProcessGroup::register(child.id());
+    Ok((child, group))
+}
+
 async fn run_process_with_tools(
     config: RunConfig,
     sink: Sink,
@@ -3612,64 +3831,129 @@ async fn run_process_with_tools(
             .collect()
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
+    // The run's own tool server starts meanwhile, in case the send goes cold: stopped (dropped)
+    // if the agent is adopted, which keeps its own server.
+    let mut speculative = None;
     let mut spare = match &host {
         Some(tools) if warm::supported(&config) => {
             // The key reads the task's switches and saved settings: off the runtime.
             let (keyed, catalog) = (config.clone(), tools.tools.clone());
-            let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;
-            warm::take(&config.session_id, &key)
-        }
-        _ => {
-            warm::launched(&config.session_id);
-            None
-        }
-    };
-    let (host, mcp) = match (config.provider.as_str(), host) {
-        ("claude", Some(host)) if spare.is_some() => {
-            let server = spare.as_mut().and_then(|spare| spare.server.take());
-            if let Some(server) = &server {
-                server.rebind(host, config.session_id.clone(), sink.clone(), &config.mode)?;
+            match crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await {
+                Ok(key) => {
+                    let server = mcp_host::Server::start_for_run(tools.clone(), config.session_id.clone(), sink.clone(), &config.mode);
+                    let (taken, server) = tokio::join!(warm::take(&config.session_id, &key), server);
+                    if taken.is_none() {
+                        speculative = Some(server);
+                    }
+                    taken
+                }
+                Err(error) => {
+                    // Still a launch: nothing waits for a spare it will never take.
+                    warm::launched(&config.session_id);
+                    warm::launch_settled(&config.session_id);
+                    return Err(error);
+                }
             }
-            (None, server)
         }
-        ("codex", host) => {
-            // Dynamic tools are fixed at thread creation. A per-run MCP override
-            // adds optional tools and title metadata to resumed conversations
-            // without discarding their history.
-            let (host, jev) = split_jev_host(host);
-            let server = if let Some(jev) = jev {
+        _ => None,
+    };
+    // A Codex or ACP spare already answered `initialize`; it is keyed by this exact command and
+    // the harness's config files (read off the runtime). The run's MCP host server starts
+    // meanwhile: for these harnesses it goes in `thread/start` or `session/new`, never on the
+    // command line, so it cannot change the key.
+    let claude_adopted = spare.is_some();
+    let had_host = host.is_some();
+    // The catalog a Codex spare's loaded thread must have been loaded with (`codex_preload`).
+    let codex_host = if config.provider == "codex" { host.clone() } else { None };
+    // The thread this send would load: a spare that loaded another is not waited for.
+    let codex_thread = codex_host.as_ref().map_or_else(
+        || codex_preload::expected(&config, &[], &HashSet::new()),
+        |host| codex_preload::expected(&config, &host.tools, &host.approval_tools),
+    );
+    let mut claude_server = spare.as_mut().and_then(|spare| spare.server.take());
+    let handshake_take = async {
+        if claude_adopted || !handshake_warm::supported(&config) {
+            return Ok(None);
+        }
+        let (launch, provider, cwd) = (handshake_warm::shape(&command), config.provider.clone(), config.cwd.clone());
+        let key = crate::blocking(move || Ok(launch.key(&provider, &cwd))).await?;
+        // A spare slow to answer `initialize` is raced by this run's own launch.
+        let cold = handshake_warm::Cold { command: &mut command, cwd: &config.cwd, provider: &config.provider };
+        Ok::<_, String>(handshake_warm::take(&config.session_id, &key, codex_thread.as_deref(), Some(cold)).await)
+    };
+    let host_start = async {
+        Ok::<_, String>(match (config.provider.as_str(), host) {
+            ("claude", Some(host)) if claude_adopted => {
+                if let Some(server) = &claude_server {
+                    server.rebind(host, config.session_id.clone(), sink.clone(), &config.mode)?;
+                }
+                (None, claude_server.take())
+            }
+            // Cold after all: the server started while the agent was looked for.
+            ("claude", Some(_)) if speculative.is_some() => (None, speculative.take().unwrap_or(Ok(None))?),
+            ("codex", host) => {
+                // Dynamic tools are fixed at thread creation. A per-run MCP override
+                // adds optional tools and title metadata to resumed conversations
+                // without discarding their history.
+                let (host, jev) = split_jev_host(host);
+                let server = if let Some(jev) = jev {
+                    mcp_host::Server::start_for_run(
+                        jev,
+                        config.session_id.clone(),
+                        sink.clone(),
+                        &config.mode,
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                (host.map(host_tools::HostTools::new).transpose()?, server)
+            }
+            (
+                "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
+                | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
+                Some(host),
+            ) => (
+                None,
                 mcp_host::Server::start_for_run(
-                    jev,
+                    host,
                     config.session_id.clone(),
                     sink.clone(),
                     &config.mode,
                 )
-                .await?
-            } else {
-                None
-            };
-            (host.map(host_tools::HostTools::new).transpose()?, server)
-        }
-        (
-            "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
-            Some(host),
-        ) => (
-            None,
-            mcp_host::Server::start_for_run(
-                host,
-                config.session_id.clone(),
-                sink.clone(),
-                &config.mode,
-            )
-            .await?,
-        ),
-        // ZCode bridging does not pass `mcpServers` in session/create yet, so a
-        // started server would sit unconsumed; drop host tools until it does.
-        ("zcode", Some(_)) => (None, None),
-        (_, None) => (None, None),
-        _ => return Err("Host tools are unavailable for this provider".into()),
+                .await?,
+            ),
+            // ZCode bridging does not pass `mcpServers` in session/create yet, so a
+            // started server would sit unconsumed; drop host tools until it does.
+            ("zcode", Some(_)) => (None, None),
+            (_, None) => (None, None),
+            _ => return Err("Host tools are unavailable for this provider".into()),
+        })
     };
+    let (codex_spare, started) = tokio::join!(handshake_take, host_start);
+    // Every launch counts (`warm::take` counted a Claude one), and ends any pending first start,
+    // whether or not keying or the host succeeded: nothing waits for a spare never taken.
+    if !warm::supported(&config) || !had_host {
+        warm::launched(&config.session_id);
+    }
+    warm::launch_settled(&config.session_id);
+    // A Codex or ACP spare this launch did not take is for another harness: one launch, no spare.
+    handshake_warm::discard(&config.session_id);
+    let mut codex_spare = codex_spare?;
+    let (host, mut mcp) = started?;
+    // A spare that loaded this exact thread: its MCP server (rebound to this run) replaces the
+    // one just started, and the requests it sent are not sent again.
+    let mut preloaded = Vec::new();
+    if let Some(thread) = codex_spare.as_mut().and_then(|spare| spare.thread.take()) {
+        match codex_preload::adopt(thread, &config, codex_host, mcp.is_some(), &sink) {
+            Some((server, sent)) => (mcp, preloaded) = (server, sent),
+            None => {
+                eprintln!("Warm Codex thread not used (this send loads it differently); starting cold.");
+                codex_spare = None;
+            }
+        }
+    }
+    let codex_ready = codex_spare.is_some();
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
@@ -3686,37 +3970,32 @@ async fn run_process_with_tools(
     reached_harness();
     let lingers = config.provider == "antigravity" && !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let mut agent_temp = None;
+    // What a warm agent printed while its settings were switched, for the parser below.
+    let mut bytes = Vec::new();
+    let mut warm_switch = HashSet::new();
+    // And what a handshake spare wrote to stderr while it waited, for this run's error reports.
+    let mut early_stderr = Vec::new();
     let (mut child, mut group) = if let Some(spare) = spare {
+        bytes = spare.pending;
+        warm_switch = spare.unanswered;
+        (spare.child, spare.group)
+    } else if let Some(spare) = codex_spare {
+        bytes = spare.pending;
+        early_stderr = spare.early_stderr;
         (spare.child, spare.group)
     } else {
         if lingers {
             end_lingering(&config.session_id).await;
             agent_temp = AgentTemp::redirect(&mut command);
         }
-        if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
-            if let Some(server) = &mcp {
-                command.args(["--mcp-config", &server.claude_config().to_string()]);
-            }
-        }
-        command
-            .current_dir(&config.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        command.process_group(0);
-        let child = command
-            .spawn()
-            .map_err(|e| format!("Could not start {}: {e}", config.provider))?;
-        let group = ProcessGroup::register(child.id());
-        (child, group)
+        spawn_harness(&mut command, &config, mcp.as_ref())?
     };
     let mut stdin = child.stdin.take().ok_or("Provider stdin unavailable")?;
     let mut stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
-    let mut stderr_task = StderrReader(tokio::spawn(read_stderr(stderr)));
+    let mut stderr_task = StderrReader(tokio::spawn(read_stderr(std::io::Cursor::new(early_stderr).chain(stderr))));
     let mut protocol = Protocol::new(config);
+    protocol.warm_switch = warm_switch;
     if crate::cloud_agents::transport::is_cloud(&protocol.config.session_id) {
         protocol.claude_over_cloud();
     }
@@ -3729,12 +4008,13 @@ async fn run_process_with_tools(
         .as_ref()
         .filter(|_| protocol.config.provider == "codex")
         .map(mcp_host::Server::codex_config);
+    protocol.codex_preloaded = !preloaded.is_empty();
     // An optional bridge can fail to bind. In that case no local MCP tool is
     // registered, so a same-named user server must retain normal approvals.
     protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
     let mut jobs = tokio::task::JoinSet::new();
     let mut queued = VecDeque::new();
-    let mut bytes = Vec::new();
+    let mut rescan = !bytes.is_empty();
     let mut buf = [0u8; 8192];
     let mut stopped = false;
     let mut input_open = true;
@@ -3743,7 +4023,26 @@ async fn run_process_with_tools(
     let mut deadline = startup_deadline(started, started, step_limit);
     let mut answered = false;
     let result=async {
-        write_json(&mut stdin,&protocol.initial()).await?;
+        if codex_ready {
+            // The warm spare already sent `initialize`: replay its complete lines (the reply
+            // among them), as if they had just been read.
+            let end=bytes.iter().rposition(|b|*b==b'\n').map_or(0,|i|i+1);
+            let lines:Vec<u8>=bytes.drain(..end).collect();
+            for line in lines.split(|b|*b==b'\n').filter(|line|!line.iter().all(u8::is_ascii_whitespace)) {
+                let value:Value=serde_json::from_slice(line).map_err(|e|format!("Invalid provider JSON: {e}"))?;
+                answered=true;
+                let mut step=protocol.receive(value)?;
+                // A loaded thread: the spare already sent these, the same as built here.
+                let sent=step.write.len().min(preloaded.len());
+                for (request,method) in step.write.drain(..sent).zip(preloaded.drain(..sent)) {
+                    if request["method"]!=method.as_str() {return Err("The warm Codex agent loaded its thread differently. Send again.".into());}
+                }
+                if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
+            }
+            if !preloaded.is_empty() {return Err("The warm Codex agent did not finish loading its thread. Send again.".into());}
+        } else {
+            write_json(&mut stdin,&protocol.initial()).await?;
+        }
         if protocol.config.provider == "antigravity" {
             sink(protocol.event("status", "Waiting for Antigravity startup", None));
         }
@@ -3824,7 +4123,8 @@ async fn run_process_with_tools(
                     let previous_len=bytes.len();
                     bytes.extend_from_slice(&buf[..count]);
                     let mut consumed=0;
-                    let mut scan=previous_len;
+                    // A warm agent's held-back lines are scanned once, with the first read.
+                    let mut scan=if std::mem::take(&mut rescan) {0} else {previous_len};
                     while let Some(offset)=bytes[scan..].iter().position(|b|*b==b'\n') {
                         let end=scan+offset;scan=end+1;
                         let line=&bytes[consumed..end];consumed=end+1;
@@ -3839,6 +4139,20 @@ async fn run_process_with_tools(
                         if protocol.phase==0 {deadline=startup_deadline(started,tokio::time::Instant::now(),step_limit);}
                         let step=protocol.receive(value)?;
                         if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
+                        if protocol.warm_refused {break;}
+                    }
+                    if std::mem::take(&mut protocol.warm_refused) {
+                        // The adopted warm agent refused its switch: replace it with the cold
+                        // launch this run would have made (the old process group is killed).
+                        (child, group) = spawn_harness(&mut command, &protocol.config, mcp.as_ref())?;
+                        stdin = child.stdin.take().ok_or("Provider stdin unavailable")?;
+                        stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
+                        let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
+                        stderr_task = StderrReader(tokio::spawn(read_stderr(std::io::Cursor::new(Vec::new()).chain(stderr))));
+                        bytes.clear();
+                        write_json(&mut stdin,&protocol.initial()).await?;
+                        deadline=startup_deadline(started,tokio::time::Instant::now(),step_limit);
+                        continue;
                     }
                     bytes.drain(..consumed);
                     if should_shrink(bytes.len(),bytes.capacity()){bytes.shrink_to(FRAME_KEEP);}

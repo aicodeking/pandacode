@@ -59,6 +59,8 @@ import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
+import * as modelSwitch from './model-switch';
+import * as modelCatalogs from './model-catalogs';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { mountDesktopBrand } from './brand-mark';
@@ -192,16 +194,48 @@ const savedMarkdownSources = new WeakMap<HTMLElement, string>();
 let olderMessagesRequest: { sessionId: string; generation: number; beforeId: number } | undefined;
 const pendingApprovals = new Set<string>();
 const configuringSessions = new Set<string>();
-const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let boardMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let modelPickerCleanup: (() => void) | undefined;
+// Only the main composer owns these anchors; side-thread and setup pickers keep their own lifecycle.
+let composerPickerLifecycle: { anchor: HTMLElement; current: () => boolean } | undefined;
+let composerPickerPress: { anchor: HTMLElement; current: () => boolean } | undefined;
+let composerPressRender = false;
+modelSwitch.initModelSwitch({
+  setBusy: (id, busy) => { if (busy) configuringSessions.add(id); else configuringSessions.delete(id); },
+  pickerOpening: () => Boolean(modelPickerCleanup || pendingMenuOpen?.anchor.matches('.model-picker')),
+  notify: text => notify(text),
+  task: id => state.sessions.find(task => task.id === id),
+  put: task => applyHeldPickerChoice(task.id, () => upsertSession(task)),
+  team: id => teams.get(id)?.config,
+  teamChanged: event => applyHeldPickerChoice(event.sessionId, () => onArchitect(event)),
+  autoTeam: async base => {
+    const config = await autoTeamConfig(base, knownModels(base));
+    const choice = pendingMenuOpen?.choice;
+    // Native can publish this exact roster before architect_configure returns; it keeps the current Council.
+    if (choice && teams.get(choice.id)?.config === base) choice.expectTeam(base.council ? { ...config, council: base.council } : config);
+    return config;
+  },
+  releaseAccount: async id => {
+    // Decide on a loaded snapshot: an empty one only means connections_list has not answered yet.
+    if (!namedConnectionsLoaded) await (namedConnectionsLoad ?? refreshNamedConnections()).catch(() => undefined);
+    if (namedConnections.tasks[id]) namedConnections = await call('connection_assign', { sessionId: id, connectionId: null });
+  },
+  label: task => modelLabel(task),
+  effortName: task => effortLabel(task),
+  pickerShown: () => Boolean(modelPickerCleanup),
+  remember: ({ provider, model, local }) => {
+    if (!local) { localChoice = undefined; return; }
+    if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = provider;
+    localStorage.setItem('pandacode.provider', provider); localStorage.setItem('pandacode.model.' + provider, model);
+  },
+});
 let projectPickerCleanup: (() => void) | undefined;
 let choiceMenuCleanup: (() => void) | undefined;
 let choiceMenuAnchor: HTMLElement | undefined;
 let menuEpoch = 0;
-let pendingMenuOpen: { anchor: HTMLElement; release: () => void } | undefined;
+let pendingMenuOpen: { anchor: HTMLElement; release: (cancelled?: boolean) => void; choice?: { id: string; apply: (change: () => void) => void; expectTeam: (config: TeamConfig) => void } } | undefined;
 let openingProjectForTask: { id: string; generation: number } | undefined;
 let creatingTask = false;
 let openingSupport = false;
@@ -457,8 +491,8 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
 }
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
-async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
-  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, loadModels)]);
+async function autoTeamConfig(base?: TeamConfig, models: (id: ProviderId) => Promise<ProviderModel[]> = loadModels): Promise<TeamConfig> {
+  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, models)]);
   const limits = base ?? library?.lastSetup?.config;
   return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
 }
@@ -1273,6 +1307,8 @@ function modelTitle(s: Session): string {
   return `${modelLabel(s, false)}${effort ? ` · ${effort}` : ''} — ${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}`;
 }
 function refreshModelLabels(): void {
+  // A catalog can replace the hit-tested text node even when the button itself stays connected.
+  if (composerPickerPress?.current()) { composerPressRender = true; return; }
   const s = session(); if (!s) return;
   const name = modelLabel(s, false), effort = effortLabel(s);
   document.querySelectorAll<HTMLElement>('[data-model-label]').forEach(label => { if (label.textContent !== name) label.textContent = name; });
@@ -1358,22 +1394,58 @@ async function openSupport(): Promise<void> {
     }
   }
 }
-function cancelPendingMenu(): void { menuEpoch++; pendingMenuOpen?.release(); }
+/** A value snapshot: startup refreshes can mutate the Session in place. */
+function composerPickerTargetKey(task = session(), config = teams.get(task?.id ?? '')?.config ?? null): string {
+  return JSON.stringify([task?.id, task?.projectId, task?.provider, task?.model, task?.reasoningEffort ?? null,
+    task?.mode, task?.remoteDevice, task?.cloud, remoteChoice, config]);
+}
+function composerPickerContext(anchor: HTMLElement, botNext: boolean): { anchor: HTMLElement; current: () => boolean } {
+  const epoch = menuEpoch, generation = state.generation, id = state.sessionId, key = composerPickerTargetKey();
+  return { anchor, current: () => epoch === menuEpoch && generation === state.generation &&
+    session()?.id === id && anchor.isConnected && !state.sharedChannelId && !taskCreation &&
+    taskStage(session()!) !== 'completed' && !teamToggles.has(id) && (!isRunning(id) || botNext) && composerPickerTargetKey() === key };
+}
+function finishComposerPickerPress(press = composerPickerPress): void {
+  if (!press || press !== composerPickerPress) return;
+  composerPickerPress = undefined;
+  if (composerPressRender) { composerPressRender = false; renderComposer(); }
+}
+document.addEventListener('pointerdown', event => {
+  finishComposerPickerPress();
+  const anchor = (event.target as Element | null)?.closest<HTMLElement>('#model-picker-trigger, #mode-picker-trigger');
+  if (event.button !== 0 || !anchor || anchor.matches(':disabled')) return;
+  composerPickerPress = composerPickerContext(anchor, Boolean(botForThread()));
+}, true);
+document.addEventListener('pointerup', event => {
+  const press = composerPickerPress;
+  // An outside release has no trigger click to wait for. Keep a valid inside release through native activation,
+  // rather than assuming pointerup ends the interaction.
+  if (press && (!press.current() || !(event.target instanceof Node) || !press.anchor.contains(event.target))) finishComposerPickerPress(press);
+}, true);
+document.addEventListener('click', () => {
+  const press = composerPickerPress;
+  // Let this click reach the action handler and install its pending/open lifecycle before flushing the paint.
+  if (press) window.setTimeout(() => finishComposerPickerPress(press), 0);
+}, true);
+document.addEventListener('pointercancel', () => finishComposerPickerPress(), true);
+window.addEventListener('blur', () => finishComposerPickerPress());
+function cancelPendingMenu(): void { menuEpoch++; composerPickerLifecycle = undefined; pendingMenuOpen?.release(true); }
 function closeModelPicker(): void { cancelPendingMenu(); const close = modelPickerCleanup; modelPickerCleanup = undefined; close?.(); }
 function closeProjectPicker(): void { cancelPendingMenu(); const close = projectPickerCleanup; projectPickerCleanup = undefined; close?.(); }
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
+  if (composerPickerPress?.current() || composerPickerLifecycle?.current()) return;
   // Header/browser controls, the workspace view menu and the GitHub view's row menus survive transcript and composer updates.
   const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && anchor?.id !== 'view-menu' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
 }
-function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => void } {
+function beginMenuOpen(anchor: HTMLElement, onCancel?: () => void): { epoch: number; release: () => void } {
   cancelPendingMenu();
   const epoch = menuEpoch, ownBusy = anchor.getAttribute('aria-busy');
   anchor.setAttribute('aria-busy', 'true');
   let released = false;
-  function release(): void {
+  function release(cancelled = false): void {
     if (released) return;
     released = true;
     if (ownBusy === null) anchor.removeAttribute('aria-busy'); else anchor.setAttribute('aria-busy', ownBusy);
@@ -1382,9 +1454,10 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
     document.removeEventListener('focusin', onOutside, true);
     window.removeEventListener('blur', cancelPendingMenu);
     if (pendingMenuOpen?.release === release) pendingMenuOpen = undefined;
+    if (cancelled) onCancel?.();
   }
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || isImeKey(event)) return;
     event.preventDefault(); event.stopPropagation(); cancelPendingMenu();
   }
   function onOutside(event: Event): void {
@@ -1396,6 +1469,30 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
   document.addEventListener('focusin', onOutside, true);
   window.addEventListener('blur', cancelPendingMenu);
   return { epoch, release };
+}
+/** Only the saving choice may advance a held menu's snapshot (including a refusal's rollback). */
+function applyHeldPickerChoice(id: string, change: () => void): void {
+  const choice = pendingMenuOpen?.choice;
+  if (choice?.id === id) choice.apply(change); else change();
+}
+/** Install dismissal before waiting for a save. A normal release hands off to the actual menu; cancellation aborts it. */
+function beginHeldMenuOpen(anchor: HTMLElement, target: Session) {
+  const controller = new AbortController();
+  const pending = beginMenuOpen(anchor, () => controller.abort());
+  const generation = state.generation, inPanel = Boolean(anchor.closest('.btw-panel'));
+  const task = () => inPanel ? btwSideTask() ?? btwDraftTask() : session();
+  let key = composerPickerTargetKey(target), expectedTeamKey: string | undefined, applying = false;
+  const current = () => pending.epoch === menuEpoch && generation === state.generation &&
+    task()?.id === target.id && !isRunning(target.id) && !taskCreation && !state.sharedChannelId &&
+    taskStage(task()!) !== 'completed' && !teamToggles.has(target.id) &&
+    (inPanel || anchor.isConnected) && (applying || composerPickerTargetKey(task()) === key || composerPickerTargetKey(task()) === expectedTeamKey);
+  pendingMenuOpen!.choice = { id: target.id, apply: change => {
+    if (!current()) { cancelPendingMenu(); change(); return; }
+    applying = true;
+    try { change(); } finally { applying = false; key = composerPickerTargetKey(task()); }
+  }, expectTeam: config => { if (current()) expectedTeamKey = composerPickerTargetKey(task(), config); } };
+  if (!inPanel) composerPickerLifecycle = { anchor, current };
+  return { ...pending, current, signal: controller.signal };
 }
 function rememberedModel(id: ProviderId): string {
   const model = localStorage.getItem('pandacode.defaultModel.' + id) || localStorage.getItem('pandacode.model.' + id) || state.sessions.find(s => s.provider === id && s.model)?.model || 'default';
@@ -1413,24 +1510,16 @@ function usedModels(id: ProviderId): string[] {
 }
 // Teams offer a long catalog's recent models only; OpenCode's saved selection is already short.
 setTeamRecency({ used: usedModels, unlimited: id => id === 'opencode' && openCodeSaved });
-function loadModels(id: ProviderId): Promise<ProviderModel[]> {
-  const cached = modelCatalogs.get(id);
-  if (cached && cached.expires > Date.now()) return cached.pending;
+/** A harness's models, cached and refreshed on demand (model-switch.ts); `onFresh` hears a refresh behind a stale list. */
+function loadModels(id: ProviderId, onFresh?: (update: ProviderModel[] | Error) => void): Promise<ProviderModel[]> {
   // OpenCode's own listing also says whether Settings saved a selection, which keeps the picker's full list.
-  const request = id === 'opencode'
+  const fetch = () => id === 'opencode'
     ? call<OpenCodeModels>('list_opencode_models').then(result => { openCodeSaved = result.selectedModelIds.length > 0; return openCodeChoices(result); })
     : call<ProviderModel[]>('list_provider_models', { provider: id });
-  const pending = request.then(models => {
-    if (modelCatalogs.get(id)?.pending === pending) {
-      const entry = provider(id); if (entry) entry.models = models;
-      if (session()?.provider === id) refreshModelLabels();
-      else refreshTeamProgress();
-    }
-    return models;
-  }).catch(error => { if (modelCatalogs.get(id)?.pending === pending) modelCatalogs.delete(id); throw error; });
-  // Refresh on demand, without polling or retaining an idle provider process.
-  modelCatalogs.set(id, { expires: Date.now() + 5 * 60 * 1000, pending });
-  return pending;
+  return modelCatalogs.loadCatalog(id, fetch, models => {
+    const entry = provider(id); if (entry) entry.models = models;
+    if (session()?.provider === id) refreshModelLabels(); else refreshTeamProgress();
+  }, onFresh);
 }
 
 /* Another computer's catalog (PandaCode Connect): kept per device, never in state.providers. */
@@ -1444,7 +1533,13 @@ function taskConnection(s: Session): import('./connections').Connection | undefi
   const id = namedConnections.tasks[s.id];
   return namedConnections.connections.find(c => c.id === id && c.provider === s.provider);
 }
-function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; refreshModelLabels(); }
+function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; namedConnectionsLoaded = true; refreshModelLabels(); }
+/** Whether a connections snapshot has arrived yet; before it, `namedConnections` is empty, not "no bindings". */
+let namedConnectionsLoaded = false;
+let namedConnectionsLoad: Promise<void> | undefined;
+function refreshNamedConnections(): Promise<void> {
+  return namedConnectionsLoad ??= call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections).finally(() => { namedConnectionsLoad = undefined; });
+}
 /** An account pool moved a running task to another account: show that one, never the old. */
 function onAccountPoolSwitch(event: AgentEvent): void {
   const pool = (event.data as { accountPool?: { connectionId?: string | null } } | null | undefined)?.accountPool; if (!pool) return;
@@ -2784,6 +2879,10 @@ const settleUnfolded = (element: HTMLElement): void => settleIn(element, 4, { re
 const STEER_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4v7a3 3 0 0 0 3 3h10m-4-4 4 4-4 4"/></svg>';
 const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 16.5a8.5 8.5 0 1 1 15.6 0"/><path d="m12 13 3.5-4"/></svg>';
 function renderComposer(): void {
+  // Replacing a pressed button suppresses its native click, even if the same node is put back afterwards.
+  // Delay only the same-target composer paint through this pointer gesture; navigation/target changes still paint.
+  if (composerPickerPress?.current()) { composerPressRender = true; return; }
+  composerPressRender = false;
   refreshTeamProgress();
   syncProgressPip();
   retryRouting(session());
@@ -2792,6 +2891,8 @@ function renderComposer(): void {
   slashPicker?.dispose(); slashPicker = undefined;
   fileMentionPicker?.dispose(); fileMentionPicker = undefined;
   closeContentMenus();
+  const pickerAnchor = composerPickerLifecycle?.current() ? composerPickerLifecycle.anchor : undefined;
+  const pickerFocused = pickerAnchor === document.activeElement;
   const voiceDetails = document.querySelector<HTMLElement>('#composer-area .voice-details');
   const voiceDetailsState = voiceDetails ? { focused: document.activeElement === voiceDetails, top: voiceDetails.scrollTop } : null;
   const voiceFocus = document.activeElement?.closest<HTMLElement>('[data-voice]')?.dataset.voice;
@@ -2831,10 +2932,24 @@ function renderComposer(): void {
     ? `<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="${remoteStartCancels.has(s.id) ? 'Stopping…' : 'Stop task'}" ${remoteStartCancels.has(s.id) ? 'disabled' : ''}>${icon('stop')}</button>`
     : checking ? '<button type="button" class="secondary-button remote-checking" aria-label="Checking…" disabled>Checking…</button>'
     : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
-    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
+    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${modelSwitch.sendHeld(s.id) ? 'aria-busy="true" ' : ''}${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
   $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  // Keep the exact anchor used by the pending-open guards and the popover's positioning/listeners.
+  // A same-task refresh still rebuilds every other control, including the prompt's enabled state.
+  if (pickerAnchor) {
+    const fresh = document.getElementById(pickerAnchor.id) as HTMLButtonElement | null;
+    if (fresh && !fresh.disabled) {
+      pickerAnchor.innerHTML = fresh.innerHTML;
+      for (const name of ['aria-label', 'aria-description', 'data-tip']) {
+        const value = fresh.getAttribute(name);
+        if (value === null) pickerAnchor.removeAttribute(name); else pickerAnchor.setAttribute(name, value);
+      }
+      fresh.replaceWith(pickerAnchor);
+      if (pickerFocused) pickerAnchor.focus({ preventScroll: true });
+    } else closeMenus();
+  }
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -2923,11 +3038,11 @@ document.addEventListener('input', event => { if ((event.target as Element | nul
 /** The composer's harness/model trigger. `main` marks the open thread's (its id and the labels refreshModelLabels updates). */
 function modelTriggerHtml(s: Session, locked: boolean, main = false): string {
   const teamLabel = teamModelLabel(s), effort = effortLabel(s);
-  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model" aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
+  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model"${modelSwitch.triggerBusy(s.id) ? ' aria-busy="true"' : ''} aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
 }
 function modeTriggerHtml(s: Session, disabled: boolean, main = false): string {
   const behavior = approvalMode(s.provider, s.mode);
-  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode" data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
+  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode"${modelSwitch.modeBusy(s.id) ? ' aria-busy="true"' : ''} data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
 }
 function renderBrowserAttachments(): void {
   const target = document.querySelector('.browser-context-attachments'); if (!target) return;
@@ -3181,6 +3296,8 @@ let sessionsReload = 0;
 let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void> | null = null;
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
+  // A model, permission or effort change still saving: start once it lands; a refused one stops the start and says so.
+  if (!await afterChoiceSaved(id, 'Not started')) return;
   const s = state.sessions.find(task => task.id === id);
   if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || configuringSessions.has(id)) return;
   startingBoardTasks.add(id); configuringSessions.add(id);
@@ -3991,8 +4108,17 @@ function scheduleLimitResumes(): void {
   }, Math.min(Math.max(0, next - Date.now()), 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
+/** Waits for the task's model, effort or permission change still saving; false when one was refused (said once, as
+ *  `<held> — <what> wasn't changed.`), so a turn never starts with the old choice. */
+async function afterChoiceSaved(id: string, held: string): Promise<boolean> {
+  if (!modelSwitch.saving(id)) return true;
+  const unchanged = await modelSwitch.settledChange(id);
+  if (unchanged && modelSwitch.announce(unchanged)) notify(`${held} — ${modelSwitch.unchangedText(unchanged)}.`);
+  return !unchanged;
+}
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (teamHeld(task.id)) return clearLimit(task);
+  if (!await afterChoiceSaved(task.id, 'Not continued')) return;
   // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
   const finishing = finishingStreams.get(task.id);
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
@@ -4110,6 +4236,7 @@ async function councilKeepFixing(sessionId: string): Promise<void> {
   const task = state.sessions.find(item => item.id === sessionId);
   if (!task) throw new Error('This task is gone.');
   if (isRunning(task.id)) throw new Error('The team is already working.');
+  if (!await afterChoiceSaved(task.id, 'Not sent')) return;
   // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
   const hold = state.queueHolds.get(task.id), at = Date.now();
   try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
@@ -4123,6 +4250,17 @@ async function send(): Promise<void> {
 }
 async function sendDraft(): Promise<void> {
   if (btwFromComposer()) return;
+  const sessionId = state.sessionId;
+  // A model or effort change still saving: the message is held (the send button shows it) until it lands, never sent with
+  // the old choice. A failed model change (already reported) or another task opened meanwhile sends nothing.
+  if (modelSwitch.saving(sessionId)) {
+    // A refused model, permission or effort change (already rolled back) or another task opened meanwhile: nothing goes.
+    const unchanged = await modelSwitch.holdSend(sessionId, () => document.querySelector('#composer .send-button[type="submit"]'));
+    // A refused change is said once, however many presses of Enter it held.
+    if (unchanged) { if (modelSwitch.announce(unchanged)) notify(`Not sent — ${modelSwitch.unchangedText(unchanged)}. Your draft is still there.`); return; }
+    if (state.sessionId !== sessionId) { notify('Not sent — you switched tasks. Your draft is still there.'); return; }
+  }
+  // Read after the wait: text typed while the change saved goes too.
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
@@ -4150,7 +4288,7 @@ async function sendDraft(): Promise<void> {
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
-  noteManualSend(s.id);
+  noteManualSend(s.id); modelSwitch.sent(s.id);
   const filePaths = [...state.attachments], browserItems = state.browserAttachments.get(s.id) ?? [];
   const moodboardItems = (state.moodboardAttachments.get(s.id) ?? []).filter(item => item.projectId === s.projectId);
   const promptItems = attachments.list(s.id);
@@ -4282,11 +4420,13 @@ const btwPanel = new BtwPanel({
     // Before the side thread exists, the choices apply to the one /btw creates (btwDraftTask).
     const side = shown ?? btwDraftTask();
     if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
-    // A pick made while /btw creates the side thread could miss it, so the pickers wait.
-    const running = isRunning(side.id), busy = configuringSessions.has(side.id) || btwSending.has(state.sessionId);
+    // A pick made while /btw creates the side thread could miss it, so the pickers wait. A model, effort or permission
+    // save is not "busy": like the main composer, a press then is held (aria-busy pulse) until the save lands.
+    const saving = modelSwitch.saving(side.id);
+    const running = isRunning(side.id), busy = (configuringSessions.has(side.id) && !saving) || (btwSending.has(state.sessionId) && !modelSwitch.sendHeld(side.id));
     const send = running
       ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
-      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
+      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${modelSwitch.sendHeld(side.id) ? 'aria-busy="true" ' : ''}${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
     return `<div class="composer-tools">${modelTriggerHtml(side, running || busy)}<span class="composer-separator"></span>${modeTriggerHtml(side, running || busy)}</div>${send}`;
   },
   menuBusy: root => Boolean(root.querySelector('[aria-expanded="true"]') || (pendingMenuOpen && root.contains(pendingMenuOpen.anchor))),
@@ -4450,6 +4590,11 @@ function sendBtw(text: string): Promise<void> {
 /** Sends to the side thread with the main thread's news since its last message. */
 async function deliverBtw(main: Session, text: string): Promise<void> {
   const link = btwLink(main.id) ?? await createBtw(main, text);
+  // A model or effort change on the side thread still saving: the message waits for it, and a failed change keeps it.
+  if (modelSwitch.saving(link.sideId)) {
+    const unchanged = await modelSwitch.holdSend(link.sideId, () => document.querySelector('.btw-panel .btw-send'));
+    if (unchanged) throw new Error(`Not sent — ${modelSwitch.unchangedText(unchanged)}. Your message is back in the box.`);
+  }
   const side = state.sessions.find(task => task.id === link.sideId)!;
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
   // Running from here on: no second send can pass the check above, and a failure below tears down only this run.
@@ -5344,6 +5489,42 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
   const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
   return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
 }
+/** A catalog as already loaded (possibly stale), never waiting on a request: the switch path must not hold on a provider. */
+// A harness whose list isn't loaded keeps the team's saved entries for it rather than dropping them from the roster.
+const knownModels = (base: TeamConfig) => (id: ProviderId): Promise<ProviderModel[]> => {
+  const listed = provider(id)?.models ?? [];
+  return Promise.resolve(listed.length ? listed : base.workers.filter(worker => worker.provider === id).map(worker => ({ id: worker.model, name: worker.name, description: '' })));
+};
+/** After a saved harness change: reload the transcript (the handoff note), unless a send has begun meanwhile. */
+async function reloadAfterHarnessSwitch(sessionId: string, shown: () => boolean): Promise<void> {
+  // A send replaces state.messages with its optimistic message; a page read before it would wipe that message.
+  const before = state.messages;
+  const sending = () => isRunning(sessionId) || configuringSessions.has(sessionId) || state.messages !== before;
+  if (!shown() || sending()) return;
+  // The harness change is already durable; a transcript refresh error must not report the selection as failed.
+  try {
+    const page = await latestMessagePage(sessionId);
+    if (!shown() || sending()) return;
+    setMessagePage(page);
+    // Painting the transcript closes open menus: with the model picker open or about to open, paint once it closes.
+    modelSwitch.deferTranscript(() => { if (state.sessionId === sessionId) renderTranscript(); });
+  } catch {
+    if (shown() && !sending()) notify('Harness changed. Reopen this task to refresh its conversation.');
+  }
+}
+/** Whether the task's next turn runs on this computer: not a mirror, not a cloud machine, and not a new task aimed at
+ *  another computer or a cloud sandbox (composerDevice() misses cloud targets). Only such a task may warm. */
+function localTarget(task: Session): boolean {
+  return !task.remoteDevice && !task.cloud && !(task.id === state.sessionId && newTaskView() && remoteChoice !== LOCAL);
+}
+/** A task's effort or permissions changed: its labels (side thread: the panel) and the launcher's context. */
+function paintTaskChoice(id: string, inPanel: boolean): void {
+  if (inPanel) { btwPanel.refresh(); return; }
+  const task = state.sessions.find(item => item.id === id);
+  if (id !== state.sessionId || !task) return;
+  refreshModelLabels();
+  syncOverlayContext({ projectId: task.projectId, provider: task.provider, model: task.model || 'default', mode: task.mode, reasoningEffort: task.reasoningEffort ?? null });
+}
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
@@ -5354,6 +5535,22 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   }
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
+  // A model or effort change still saving: open once it lands, on the task as it is then (its trigger was redrawn meanwhile).
+  if (target && modelSwitch.saving(target.id)) {
+    const id = target.id, trigger = () => document.querySelector<HTMLElement>(anchor.closest('.btw-panel') ? '.btw-panel .model-picker' : '#model-picker-trigger');
+    const pending = beginHeldMenuOpen(anchor, target);
+    try {
+      await modelSwitch.holdOpen(id, trigger, async () => {
+        if (!pending.current() || modelPickerCleanup) return;
+        pending.release();
+        await openModel(trigger() ?? anchor, state.sessions.find(s => s.id === id) ?? target);
+      }, pending.signal);
+    } finally { pending.release(); modelSwitch.flushTranscript(); }
+    return;
+  }
+  try { await openModel(anchor, target); } finally { modelSwitch.flushTranscript(); }
+}
+async function openModel(anchor: HTMLElement, target: Session | undefined): Promise<void> {
   const selected = target; if (!selected || configuringSessions.has(selected.id)) return;
   // A side thread's picker acts on the side thread only, and only while the panel still shows it.
   const inPanel = selected.id !== state.sessionId, current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === selected.id : selected.id === state.sessionId;
@@ -5364,7 +5561,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
-  const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
+  // The startup history load can repaint this same task while the module/library is loading or the picker is open.
+  // Preserve that interaction only while its actual target is unchanged; navigation and explicit dismissal still
+  // invalidate the existing menu epoch. Compare snapshots because startup refreshes mutate the Session in place.
+  const targetContext = composerPickerContext(anchor, botNext);
+  const context = !inPanel && anchor.id === 'model-picker-trigger' ? { anchor, current: () =>
+    targetContext.current() && Boolean(modelPickerCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
+  composerPickerLifecycle = context;
+  // Open with the cached team library (team saves update it) and refresh it behind; wait only when none is cached.
+  const library$ = modelCatalogs.pickerTeamLibrary();
+  void refreshNamedConnections().catch(() => undefined);
+  const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), library$]).finally(release);
   if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
@@ -5374,6 +5581,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
+      if (modelSwitch.saving(selected.id)) throw new Error('Wait for the current choice to save before selecting an agent team.');
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
@@ -5386,20 +5594,16 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
-    recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
+    recent: device ? undefined : recentModels, onClose: () => {
+      if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
+      modelPickerCleanup = undefined;
+      modelSwitch.flushTranscript();
+    },
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
-      configuringSessions.add(selected.id);
-      try {
-        const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        if (inPanel) btwPanel.refresh();
-        else if (selected.id === state.sessionId) {
-          refreshModelLabels();
-          syncOverlayContext({ projectId: updated.projectId, provider: updated.provider, model: updated.model || 'default', mode: updated.mode, reasoningEffort: updated.reasoningEffort ?? null });
-        }
-      } finally { configuringSessions.delete(selected.id); }
+      // Shows at once and saves behind (model-switch.ts); side threads never warm.
+      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => paintTaskChoice(selected.id, inPanel) });
     },
     onSelect: async (providerId, model) => {
       if (botNext && isRunning(selected.id) && current()) {
@@ -5409,45 +5613,24 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
-      configuringSessions.add(selected.id);
-      try {
-        // A plain model leaves a named team; ZCode only supports single-agent tasks.
-        if (teams.get(selected.id)?.config.rosterOnly || (providerId === 'zcode' && teams.has(selected.id))) {
-          await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
-          onArchitect({ sessionId: selected.id, removed: true });
-        }
-        // An automatic team keeps its limits but learns about newly installed models.
-        const auto = teams.get(selected.id)?.config;
-        if (auto?.auto && !auto.rosterOnly) {
-          const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
-          onArchitect(saved ?? { sessionId: selected.id, removed: true });
-        }
-        const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        // Same-harness model choices keep the account and its resumable conversation.
-        if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
-        if (!device) {
-          if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
-          localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
-        } else localChoice = undefined;
+      // The switch shows at once and saves behind; a failure puts the previous model back and says why (model-switch.ts).
+      // Side threads never warm. A same-harness change touches only the composer and header (the sidebar shows the
+      // harness, not the model), and once saved only the labels and the trigger's busy cue.
+      const shown = () => !inPanel && selected.id === state.sessionId && generation === state.generation;
+      const paint = (harness: boolean) => {
         if (inPanel) { if (current()) btwPanel.harnessChanged(); }
-        else if (selected.id === state.sessionId && generation === state.generation) {
-          if (providerId !== selected.provider) {
-            // The harness change is already durable; a transcript refresh error
-            // must not report the selection itself as failed or restore stale controls.
-            try {
-              const page = await latestMessagePage(selected.id);
-              if (selected.id !== state.sessionId || generation !== state.generation) return;
-              setMessagePage(page);
-            } catch {
-              if (selected.id !== state.sessionId || generation !== state.generation) return;
-              notify('Harness changed. Reopen this task to refresh its conversation.');
-            }
-          }
-          renderComposer(); renderHeader(); renderNavigation(); renderTranscript();
-          document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-        }
-      } finally { configuringSessions.delete(selected.id); }
+        else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
+      };
+      const harness = providerId !== selected.provider;
+      const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
+        show: () => { paint(harness); if (shown()) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
+        repaint: saved => {
+          if (!saved || harness || inPanel) paint(harness);
+          else if (shown()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
+        },
+      });
+      if (harness) void saving.then(saved => saved ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
+      return { saved: saving };
     },
   });
 }
@@ -5561,17 +5744,35 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
+  const targetContext = composerPickerContext(anchor, false);
+  const context = anchor.id === 'mode-picker-trigger' ? { anchor, current: () =>
+    targetContext.current() && Boolean(choiceMenuCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
+  if (context) composerPickerLifecycle = context;
   const { openChoiceMenu } = await import('./choice-menu').finally(release);
   if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
   choiceMenuAnchor = anchor;
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
+    if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
     choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
     if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
     options.afterClose?.();
   } });
 }
 async function showMode(anchor: HTMLElement, target = session()): Promise<void> {
-  const s = target; if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
+  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
+  // A model, effort or permission change still saving: open once it lands (saved or not), on the task and its
+  // redrawn button as they are then.
+  if (target && modelSwitch.saving(target.id)) {
+    const id = target.id, inBtw = Boolean(anchor.closest('.btw-panel'));
+    const trigger = () => document.querySelector<HTMLElement>(inBtw ? '.btw-panel .mode-picker' : '#mode-picker-trigger');
+    const pending = beginHeldMenuOpen(anchor, target);
+    try {
+      await modelSwitch.holdModeOpen(id, trigger, pending.signal);
+      if (pending.signal.aborted || !pending.current()) return;
+      anchor = trigger() ?? anchor;
+    } finally { pending.release(); }
+  }
+  const s = target && (state.sessions.find(task => task.id === target.id) ?? target); if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
@@ -5579,21 +5780,11 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
     if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
-    configuringSessions.add(s.id);
-    try {
-      await call('update_session', { sessionId: s.id, mode: id as Mode });
-      const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
-      if (inPanel) btwPanel.refresh();
-      else if (s.id === state.sessionId) {
-        if (saved) syncOverlayContext({ projectId: saved.projectId, provider: saved.provider, model: saved.model || 'default', mode: saved.mode, reasoningEffort: saved.reasoningEffort ?? null });
-        const trigger = document.querySelector<HTMLElement>('#mode-picker-trigger');
-        if (trigger) {
-          trigger.innerHTML = modeFaceHtml(chosen);
-          trigger.dataset.mode = chosen.id; trigger.dataset.tip = modeTip(chosen); trigger.setAttribute('aria-label', modeName(chosen)); trigger.setAttribute('aria-description', chosen.description);
-          trayStateChanged();
-        }
-      }
-    } finally { configuringSessions.delete(s.id); }
+    // Shows at once with the button busy (kept by modeTriggerHtml through a repaint) and saves behind (model-switch.ts).
+    void modelSwitch.pickMode(s.id, id as Mode, {
+      warm: !inPanel && localTarget(s), paint: () => paintTaskChoice(s.id, inPanel), name: mode => modeName(approvalMode(s.provider, mode)),
+      trigger: () => document.querySelector<HTMLElement>(inPanel ? '.btw-panel .mode-picker' : '#mode-picker-trigger'),
+    });
   } });
 }
 async function showTaskMenu(anchor: HTMLElement): Promise<void> {
@@ -5880,7 +6071,7 @@ let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
-  modelCatalogs.clear();
+  modelCatalogs.clearCatalogs();
   const providers = await call<Provider[]>('list_providers', { force: true });
   if (generation !== settingsDiscoveryGeneration) return state.providers;
   for (const found of providers) {
@@ -5932,7 +6123,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
           });
           return () => { unsubscribe(); cleanup(); };
         },
-        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
+        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clearCatalogs(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
         harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
       },
@@ -6003,10 +6194,10 @@ async function showProviderConnections(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
   const { mountProviderSettings } = await import('./provider-settings');
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clearCatalogs(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
-  modelCatalogs.delete(id);
+  modelCatalogs.clearCatalogs(id);
   const entry = provider(id); if (entry) entry.models = [];
 }
 async function showOpenCodeModels(): Promise<void> {
@@ -7374,7 +7565,7 @@ async function boot(): Promise<void> {
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
   [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
   projectsListed = true;
-  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
+  run(refreshNamedConnections());
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
     state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
@@ -7402,6 +7593,15 @@ const agentUpdates = initializeAgentUpdates({
 });
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 renderThemeToggle(); render(); renderInspector();
+// The model picker opens without a wait: its module and team library load at idle, or when its trigger is hovered or focused.
+setTimeout(modelCatalogs.warmModelPicker, 1500);
+// Typing a draft in a local task's composer lets native start its next turn ahead (once per draft; model-switch.ts).
+// Bot threads run on the bot's own schedule, so they never warm.
+document.addEventListener('input', event => {
+  const prompt = event.target as HTMLTextAreaElement | null, task = prompt?.id === 'prompt' ? session() : undefined;
+  if (task && localTarget(task) && !botForThread()) modelSwitch.draftChanged(task.id, prompt!.value);
+});
+for (const type of ['pointerover', 'focusin'] as const) document.addEventListener(type, event => { if ((event.target as Element | null)?.closest?.('.model-picker')) modelCatalogs.warmModelPicker(); }, { passive: true });
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
 run(bootPending);

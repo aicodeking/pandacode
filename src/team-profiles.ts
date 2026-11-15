@@ -4,6 +4,12 @@ import { openChoiceMenu } from './choice-menu';
 import type { TeamLibrary, TeamProfile, TeamSetup } from './architect-types';
 import { sameTeamSetup } from './team-mode';
 
+/** A team profile was saved or deleted; `detail` is the new library. main.ts listens (by name, to keep this module lazy). */
+export const TEAMS_CHANGED_EVENT = 'pandacode:teams-changed';
+export function teamsChanged(library: TeamLibrary): void {
+  window.dispatchEvent(new CustomEvent(TEAMS_CHANGED_EVENT, { detail: library }));
+}
+
 /** Reusable templates stay local until the setup form applies the draft. */
 export function mountTeamProfiles(host: HTMLElement, options: {
   library: TeamLibrary;
@@ -54,6 +60,7 @@ export function mountTeamProfiles(host: HTMLElement, options: {
     pending = true; error.hidden = true; menu?.(); options.busy(true);
     try {
       library = await action();
+      teamsChanged(library);
       if (!disposed) { after?.(); closeEditor(); }
     } catch (cause) { if (!disposed) showError(cause); }
     finally { pending = false; if (!disposed) { options.busy(false); refresh(); } }

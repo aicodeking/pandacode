@@ -39,6 +39,7 @@ mod cloud_agents;
 mod capabilities;
 mod vsix_themes;
 mod token_saver;
+mod warm_launch;
 mod task_usage;
 mod skill_manager;
 mod skills;
@@ -327,6 +328,27 @@ fn reconcile_inactive_task(
 #[cfg(test)]
 mod task_agent_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_discarded_draft_stops_what_was_started_ahead_for_it() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        let session = store.mark_draft(&task.id).unwrap();
+        // Typing in the New task started a spare and left a start pending.
+        providers::handshake_insert_for_test(&task.id, "codex");
+        providers::reserve_warm_agent(&task.id);
+        assert!(providers::has_warm_agent(&session));
+        assert!(release_draft(&store, &task.id).unwrap(), "still an empty draft");
+        assert_eq!(providers::handshake_spare_pid(&task.id), None, "its process is stopped");
+        assert!(!providers::has_warm_agent(&session), "and its pending start is gone");
+        // A task that is not an empty draft is left alone.
+        let kept = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        providers::handshake_insert_for_test(&kept.id, "codex");
+        assert!(!release_draft(&store, &kept.id).unwrap());
+        assert!(providers::handshake_spare_pid(&kept.id).is_some());
+        providers::discard_warm_agent(&kept.id);
+    }
 
     #[test]
     fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
@@ -842,13 +864,24 @@ async fn discard_draft(app: tauri::AppHandle, window: tauri::WebviewWindow, sess
     }
     blocking(move || {
         let state = app.state::<AppState>();
-        if !state.store.lock().map_err(|e| e.to_string())?.is_empty_draft(&session_id)? {
+        if !release_draft(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)? {
             return Ok(false);
         }
         task_deletion::delete_state(&state, &session_id)?;
         Ok(true)
     })
     .await
+}
+
+/// Whether the task is still an empty draft; if so, whatever was started ahead for it (a warm
+/// agent with its tool servers, a pending start) is stopped first, so a New task left before
+/// its first prompt keeps nothing running and frees its spare slot.
+fn release_draft(store: &Store, session_id: &str) -> Result<bool> {
+    if !store.is_empty_draft(session_id)? {
+        return Ok(false);
+    }
+    providers::discard_warm_agent(session_id);
+    Ok(true)
 }
 #[tauri::command]
 async fn create_board_task(
@@ -909,7 +942,78 @@ async fn set_task_stage(
     remote::orchestrate::retry(&app, &session_id);
     Ok(task)
 }
-#[tauri::command]
+/// A task's launch settings from its row, before the turn's prompt, images and skill.
+fn launch_config(session: &Session, cwd: std::path::PathBuf) -> RunConfig {
+    RunConfig {
+        session_id: session.id.clone(),
+        provider: session.provider.clone(),
+        model: session.model.clone(),
+        reasoning_effort: session.reasoning_effort.clone(),
+        mode: session.mode.clone(),
+        cwd,
+        resume_id: session.resume_id.clone(),
+        prompt: String::new(),
+        instructions: String::new(),
+        images: Vec::new(),
+        skill: None,
+        goal: None,
+        codex_settings: session.codex_settings.clone(),
+    }
+}
+
+/// App instructions for a harness that takes them with its system prompt (cached, paid once).
+/// `false` when the harness reads them in the message instead.
+fn apply_system_instructions(config: &mut RunConfig, worker: bool) -> bool {
+    if !providers::takes_system_instructions(&config.provider) {
+        return false;
+    }
+    config.instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
+    true
+}
+
+/// The tools a task's launch offers, and whether a team's tools failed to build. Building the
+/// catalog only reads settings, secrets and the store; handlers run when a tool is called.
+fn task_tool_host(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    stopped: &Arc<AtomicBool>,
+    team: Option<&architect::Admission>,
+    cloud: bool,
+    tracker: Option<Arc<Mutex<turn_changes::Tracker>>>,
+    title_run: Option<&session_titles::TitleRun>,
+) -> (Option<providers::ToolHost>, bool) {
+    let (app, session_id, stopped) = (app.clone(), session_id.to_owned(), stopped.clone());
+    let host = if let Some(admission) = team {
+        architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
+            .map(|host| {
+                // Workers keep their scoped team tools; only the lead may manage other tasks.
+                if admission.parent == session_id {
+                    agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+                } else {
+                    host
+                }
+            })
+    } else {
+        Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+    };
+    let team_tools_missing = team.is_some() && host.is_none();
+    let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
+    let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
+    let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
+    let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
+    let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
+    let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
+    let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
+    // A cloud agent's checkout is on its machine, where screenshots cannot be read.
+    let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
+    let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
+    let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
+    let host = Some(turn_changes::with_host(host, tracker, stopped.clone()));
+    (Some(session_titles::with_host(title_run, host, stopped)), team_tools_missing)
+}
+
+/// Changes a task's harness, model or folder. Leaves warm agents alone apart from dropping one
+/// for an old folder: the app's command (`warm_launch::configure_session`) warms on a user pick.
 async fn configure_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -926,14 +1030,19 @@ async fn configure_session(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
-    state.store.lock().map_err(|e| e.to_string())?.configure(
+    let session = state.store.lock().map_err(|e| e.to_string())?.configure(
         &session_id,
         &provider,
         &model,
         project_id.as_deref(),
-    )
+    )?;
+    drop(agents);
+    // A new folder changes everything about the launch.
+    if project_id.is_some() {
+        providers::discard_warm_agent(&session_id);
+    }
+    Ok(session)
 }
-#[tauri::command]
 async fn set_reasoning_effort(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -947,13 +1056,14 @@ async fn set_reasoning_effort(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    state
+    let session = state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
+        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())?;
+    drop(agents);
+    Ok(session)
 }
-#[tauri::command]
 async fn update_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1772,21 +1882,7 @@ fn prepare_task_run_in_project(
         error
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
-    let config = RunConfig {
-        session_id: session_id.clone(),
-        provider: session.provider,
-        model: session.model,
-        reasoning_effort: session.reasoning_effort,
-        mode: session.mode,
-        cwd,
-        resume_id: session.resume_id,
-        prompt,
-        instructions: String::new(),
-        images,
-        skill,
-        goal: admission.goal,
-        codex_settings: session.codex_settings,
-    };
+    let config = RunConfig { prompt, images, skill, goal: admission.goal, ..launch_config(&session, cwd) };
     architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
     let mut agent = RunningAgent::new(tx, stopped.clone());
     agent.team_maintenance = team_maintenance;
@@ -2159,12 +2255,9 @@ async fn launch_operation_admitted(
     }
     if restore_stage.is_none() {
         let worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
-        if providers::takes_system_instructions(&config.provider) {
-            // Cached with the system prompt: paid once, then read at a tenth of the price.
-            config.instructions = instructions;
-        } else {
+        if !apply_system_instructions(&mut config, worker) {
             // In the message: on a new conversation, then as a periodic reminder.
+            let instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
             let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
             if config.resume_id.is_none() || reminder_turn(turns) {
                 config.prompt.push_str(&instructions);
@@ -2348,38 +2441,12 @@ async fn launch_operation_admitted(
                 }
             }
         });
-        let host = if let Some(admission) = team.as_ref() {
-            architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
-                .map(|host| {
-                    // Workers keep their scoped team tools; only the lead may manage other tasks.
-                    if admission.parent == session_id {
-                        agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
-                    } else {
-                        host
-                    }
-                })
-        } else {
-            Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
-        };
-        let team_tools_missing = team.is_some() && host.is_none();
-        let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
-        let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
-        // A cloud agent's checkout is on its machine, where screenshots cannot be read.
-        let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
-        let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
-        let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
-        let host = Some(session_titles::with_host(title_run.as_ref(), host, stopped.clone()));
+        let (host, team_tools_missing) = task_tool_host(&app, &session_id, &stopped, team.as_ref(), cloud, tracker.clone(), title_run.as_ref());
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
         let managed_worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
+        let warm_next = ((providers::warms(&config) || providers::handshake_warms(&config)) && !managed_worker && !cloud).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
@@ -4424,9 +4491,12 @@ pub fn run() {
                 update_task_details,
                 set_task_stage,
                 start_task,
-                configure_session,
-                set_reasoning_effort,
-                update_session,
+                warm_launch::configure_session,
+                warm_launch::set_reasoning_effort,
+                warm_launch::update_session,
+                warm_launch::warm_task,
+                warm_launch::start_ahead_get,
+                warm_launch::start_ahead_set,
                 delete_session_with_attachment_cleanup,
                 chats::chat_create,
                 chats::chat_cleanup,
