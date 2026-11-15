@@ -309,6 +309,7 @@ fn sleep_and_agent_items_keep_named_fields() {
     assert_eq!(agent.output, "child: completed — Looks good");
     let unknown = tool_item(&mut p, "item/completed", json!({"type":"futureThing","id":"u1","payload":{"secret":"HIDDEN"}}));
     assert_eq!((unknown.name.as_str(), unknown.input.as_str(), unknown.output.as_str()), ("futureThing", "", ""));
+}
 /// The per-task "Auto-approve writes" toggle answers command and file-change
 /// approvals itself in Standard mode: the accept response goes straight back
 /// and no approval event reaches the user.

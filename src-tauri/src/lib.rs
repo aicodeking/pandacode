@@ -1176,6 +1176,7 @@ fn launch_config(session: &Session, cwd: std::path::PathBuf) -> RunConfig {
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),
+        auto_writes: session.auto_writes,
     }
 }
 
@@ -1282,7 +1283,6 @@ async fn set_reasoning_effort(
     drop(agents);
     Ok(session)
 }
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn update_session(
     app: tauri::AppHandle,

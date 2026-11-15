@@ -187,10 +187,11 @@ pub async fn update_session(
     archived: Option<bool>,
     model: Option<String>,
     mode: Option<String>,
+    auto_writes: Option<bool>,
     warm: Option<bool>,
 ) -> Result<()> {
-    let switched = model.is_some() || mode.is_some();
-    crate::update_session(app.clone(), state.clone(), session_id.clone(), title, archived, model, mode).await?;
+    let switched = model.is_some() || mode.is_some() || auto_writes.is_some();
+    crate::update_session(app.clone(), state.clone(), session_id.clone(), title, archived, model, mode, auto_writes).await?;
     if warm == Some(true) && switched {
         rewarm(&app, &session_id, true);
     }
