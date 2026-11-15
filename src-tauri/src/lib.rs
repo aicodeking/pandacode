@@ -963,6 +963,7 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),
+        auto_writes: session.auto_writes,
     };
     Ok(providers::warms(&config).then_some(config))
 }
