@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveSystemLocale } from '../src/i18n.ts';
+import ts from 'typescript';
 
 const srcDir = fileURLToPath(new URL('../src', import.meta.url));
 const localesDir = `${srcDir}/locales`;
@@ -45,6 +46,44 @@ function rustFiles(dir) {
   return out;
 }
 
+/** Masks test-only items, not the rest of a file that also contains production code. */
+function productionRust(text) {
+  const tokens = [...text.matchAll(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?:br|r)(#*)"[\s\S]*?"\1|b?"(?:[^"\\]|\\[\s\S])*"|b?'(?:[^'\\\n]|\\(?:u\{[\da-fA-F]+\}|x[\da-fA-F]{2}|[\s\S]))'|\w+|[^\s]/g)];
+  const ranges = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i][0].startsWith('//') || tokens[i][0].startsWith('/*')) continue;
+    if (tokens.slice(i, i + 7).map(token => token[0]).join('') !== '#[cfg(test)]') continue;
+    const start = tokens[i].index;
+    let braces = 0, brackets = 0, parens = 0;
+    for (i += 7; i < tokens.length; i++) {
+      const token = tokens[i][0];
+      if (token === '[') brackets++;
+      else if (token === ']') brackets--;
+      else if (token === '(') parens++;
+      else if (token === ')') parens--;
+      else if (token === '{') braces++;
+      else if (token === '}') {
+        if (--braces === 0 && brackets === 0 && parens === 0) break;
+      } else if (token === ';' && braces === 0 && brackets === 0 && parens === 0) break;
+    }
+    assert.ok(i < tokens.length, 'unterminated cfg(test) item');
+    ranges.push([start, tokens[i].index + tokens[i][0].length]);
+  }
+  for (const [start, end] of ranges.reverse()) text = text.slice(0, start) + ' '.repeat(end - start) + text.slice(end);
+  return text;
+}
+
+test('Rust extraction excludes cfg(test) blocks and items without dropping later production errors', () => {
+  const source = `#[cfg(test)] mod tests { fn fixture() { Err("Fixture only"); let s = r#"}"#; } }
+    fn before() { Err("Production before"); }
+    #[cfg(test)] if fail_save() { return Err("Injected failure"); }
+    #[cfg(test)] mod external_tests;
+    fn after() { Err("Production after"); }`;
+  const production = productionRust(source);
+  for (const key of ['Fixture only', 'Injected failure']) assert.ok(!production.includes(key));
+  for (const key of ['Production before', 'Production after']) assert.ok(production.includes(key));
+});
+
 const tauriSrc = fileURLToPath(new URL('../src-tauri/src', import.meta.url));
 const zhHansBackend = (await import('../src/locales/zh-Hans.ts')).backend;
 const zhHantTwBackend = (await import('../src/locales/zh-Hant-TW.ts')).backend;
@@ -68,40 +107,49 @@ const FULL_BACKENDS = [
 ];
 
 
-/** Extracts keys from t('…') literals and tagged t`…${…}…` templates, like the runtime does. */
+/** Uses cooked literal text, just like t() at runtime, without matching prose or comments. */
 function extractKeys(text) {
   const keys = new Set();
-  const staticRe = /\bt\(\s*'((?:[^'\\]|\\.)*)'\s*\)|\bt\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
-  for (const match of text.matchAll(staticRe)) {
-    keys.add((match[1] ?? match[2]).replace(/\\(['"\\])/g, '$1'));
-  }
-  let index = -1;
-  while ((index = text.indexOf('t`', index + 1)) !== -1) {
-    if (index > 0 && /[\w$]/.test(text[index - 1])) continue;
-    let cursor = index + 2, key = '', n = 0, closed = false;
-    while (cursor < text.length) {
-      const ch = text[cursor];
-      if (ch === '`') { closed = true; break; }
-      if (ch === '$' && text[cursor + 1] === '{') {
-        key += `{${n++}}`;
-        cursor += 2;
-        let depth = 1;
-        while (cursor < text.length && depth > 0) {
-          const inner = text[cursor];
-          if (inner === '{') depth++;
-          else if (inner === '}') depth--;
-          else if (inner === '`') { while (cursor < text.length && text[cursor] !== '`') { if (text[cursor] === '\\') cursor++; cursor++; } }
-          cursor++;
-        }
-        continue;
-      }
-      if (ch === '\\') { key += text.slice(cursor, cursor + 2); cursor += 2; continue; }
-      key += ch; cursor++;
+  const source = ts.createSourceFile('catalog.ts', text, ts.ScriptTarget.Latest, true);
+  const isT = node => ts.isIdentifier(node) && node.text === 't';
+  function visit(node) {
+    if (ts.isCallExpression(node) && isT(node.expression) && node.arguments.length === 1) {
+      const value = node.arguments[0];
+      if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) keys.add(value.text);
+    } else if (ts.isTaggedTemplateExpression(node) && isT(node.tag)) {
+      const value = node.template;
+      keys.add(ts.isNoSubstitutionTemplateLiteral(value) ? value.text
+        : value.head.text + value.templateSpans.map((span, index) => `{${index}}${span.literal.text}`).join(''));
     }
-    if (closed) keys.add(key);
+    ts.forEachChild(node, visit);
   }
+  visit(source);
   return keys;
 }
+
+test('key extraction ignores template suffixes, examples, comments and other tags', () => {
+  const source = [
+    'const label = `Switch to ${next}`;',
+    'const example = "t(\'Not a key\')";',
+    '// t`Not a tagged key`',
+    '/* t("Not a call") */',
+    'const html = htmlTag`text`;',
+    'object.t("Not the translator");',
+    'const hint = `A plain object`;',
+  ].join('\n');
+  assert.deepEqual([...extractKeys(source)], []);
+});
+
+test('key extraction preserves escaped text and traverses nested template expressions', () => {
+  const source = String.raw`const a = t('\n[Display truncated]');
+    const b = t("Say \"hello\"");
+    const c = t\`Outer \${({ nested: \`value \${t('Inner')}\` }).nested} end\`;
+    const d = t\`Line\n\${value} and \${other}\`;
+    const e = t(\`Static template\`);`.replace(/\\`/g, '`').replace(/\\\$/g, '$');
+  assert.deepEqual([...extractKeys(source)].sort(), [
+    '\n[Display truncated]', 'Say "hello"', 'Outer {0} end', 'Inner', 'Line\n{0} and {1}', 'Static template',
+  ].sort());
+});
 
 test('zh-Hans and zh-Hant-TW cover the same keys, every value translated', () => {
   assert.deepEqual(Object.keys(zhHantTw).sort(), Object.keys(zhHans).sort());
@@ -223,7 +271,7 @@ test('dynamically translated key sets (stored stream statuses) are covered too',
 test('stable Rust error strings are covered by the backend catalogs', () => {
   const literals = new Set();
   for (const file of rustFiles(tauriSrc)) {
-    const text = readFileSync(file, 'utf8');
+    const text = productionRust(readFileSync(file, 'utf8'));
     for (const match of text.matchAll(/Err\(\s*"((?:[^"\\]|\\.)*)"/g)) literals.add(match[1]);
   }
   const sentenceLike = [...literals].filter(s => s.length >= 14 && s[0].isupper === undefined && s[0] === s[0].toUpperCase() && /\p{Lu}/u.test(s[0]) && s.includes(' ') && !/[{}<>/*]/.test(s));
