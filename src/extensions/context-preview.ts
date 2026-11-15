@@ -22,6 +22,9 @@ export function createPreviewContextBroker() {
       return entry && ['showProjectContext', 'runCommand'].includes(activation.actionFor(id, context)?.kind ?? '') ? entry.owner.extensionId : undefined;
     } finally { activation.dispose(); }
   }
+  // Mirrors native owner admission: a package scoped to selected projects answers only its captured projects.
+  const inScope = (snapshot: ExtensionSnapshot, owner: string, context: Record<string, Json>) => { const projects = snapshot.packages.find(item => item.manifest.id === owner)?.projects; return !projects || typeof context.projectId === 'string' && projects.includes(context.projectId); };
+  const scopeFailure = (): ContextReply => ({ ok: false, error: { schemaVersion: 1, code: 'PermissionDenied', path: '$.projectScope', ids: [] } });
   const dispatch = (raw: Record<string, unknown>, snapshot: ExtensionSnapshot, data: Data): ContextReply => {
     const fail = contextFailure;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('InvalidShape');
@@ -37,6 +40,7 @@ export function createPreviewContextBroker() {
         if (context.windowId !== 'main') return fail('PermissionDenied');
         const owner = resolve(snapshot, raw.id, raw.version, context);
         if (!owner) return fail('PermissionDenied');
+        if (!inScope(snapshot, owner, context)) return scopeFailure();
         if (context.sessionId) {
           const task = data.tasks.find(task => task.id === context.sessionId);
           if (!task) return fail('NotFound');
@@ -51,6 +55,7 @@ export function createPreviewContextBroker() {
       const invocation = handles.get(raw.handle);
       if (!invocation) return fail('StaleContext');
       if (resolve(snapshot, invocation.id, invocation.version, invocation.context) !== invocation.owner) return fail('PermissionDenied');
+      if (!inScope(snapshot, invocation.owner, invocation.context)) return scopeFailure();
       const manifest = snapshot.packages.find(item => item.manifest.id === invocation.owner)!.manifest as typeof snapshot.packages[number]['manifest'] & { permissions: string[] };
       if (raw.op === 'cancelRead') return { ok: true, value: null };
       if (raw.op === 'readConsent' || raw.op === 'read') {

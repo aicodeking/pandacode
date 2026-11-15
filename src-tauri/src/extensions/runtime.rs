@@ -25,7 +25,8 @@ impl ExtensionRuntime {
     }
     fn finish<T>(&self, request_id: &str, owner: String, digest: String, result: &Result<T, &'static str>) {
         if let Ok(mut active) = self.active.lock() { active.remove(request_id); }
-        if result.as_ref().is_err_and(|code| !["Cancelled", "UnsupportedRuntime"].contains(code)) {
+        // A project-scope change is a user preference, not a package fault.
+        if result.as_ref().is_err_and(|code| !["Cancelled", "UnsupportedRuntime", context::PROJECT_SCOPE].contains(code)) {
             if let Ok(mut quarantine) = self.quarantine.lock() { quarantine.insert((owner, digest)); }
         }
     }
@@ -42,6 +43,7 @@ enum Request {
     DevelopmentSelect { path: String },
     DevelopmentReload { id: String },
     StorageGrant { id: String, allow: bool },
+    ProjectScope { id: String, scope: Value },
     Storage { handle: String, request: Value },
     Jobs { handle: String, request: Value },
     Connections { handle: String, request: Value },
@@ -52,6 +54,12 @@ enum Request {
     RollbackUpdate { id: String },
 }
 fn ok(value: Value) -> Value { json!({"ok":true,"value":value}) }
+/// The shared `projectScope` contract: `{mode:"all"}` clears the scope, `{mode:"selected"}` lists projects.
+fn project_scope(scope: &Value) -> Result<Option<Vec<String>>, String> {
+    let checked = super::contracts::validate_contract("projectScope", scope);
+    if checked["ok"] != true { return Err(checked["error"]["code"].as_str().unwrap_or("InvalidShape").to_owned()); }
+    Ok(match checked["value"]["mode"].as_str() { Some("selected") => Some(checked["value"]["projects"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_owned)).collect()), _ => None })
+}
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
     crate::providers::dynamic_adapter::stop(owner);
     stop_presentation_work(app, owner);
@@ -112,6 +120,17 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
                 packages.storage_grant(&id, allow)?;
                 serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".to_owned())
             })();
+            super::windows::changed(&app);
+            match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
+        }
+        Request::ProjectScope { id, scope } => {
+            let result = (|| {
+                let projects = project_scope(&scope)?;
+                let packages = app.state::<ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
+                packages.set_scope(&id, projects)?;
+                serde_json::to_value(packages.snapshot()).map_err(|_| "HostUnavailable".to_owned())
+            })();
+            // Existing captured handles keep their project; admission re-checks the scope on every call.
             super::windows::changed(&app);
             match result { Ok(value) => ok(value), Err(code) => context::failure(&code) }
         }

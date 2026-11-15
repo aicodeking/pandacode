@@ -52,6 +52,11 @@ fn export<'a>(consumer: &Value, provider: &'a Value, service: &str, version: &st
     payload(&method["inputSchema"], input)?;
     Ok(method)
 }
+/// The consumer's own scope is checked by the captured binding; a provider scoped to other projects
+/// never answers a call captured in this one.
+fn provider_scope(provider: &super::packages::Package, captured: &Value) -> Result<()> {
+    if provider.in_scope(captured["projectId"].as_str()) { Ok(()) } else { Err(context::PROJECT_SCOPE) }
+}
 fn dependencies(available: &[Value], owner: &str) -> Result<()> {
     let mut pending = vec![owner.to_owned()]; let mut seen = BTreeSet::new(); let mut selected = vec![];
     while let Some(id) = pending.pop() {
@@ -95,6 +100,7 @@ pub(super) fn call(app: &tauri::AppHandle, handle: &str, raw: Value, host_ui: bo
                 if !state.grants.contains(&(owner.clone(), handle.into(), service.clone())) { return Err("PermissionDenied"); }
                 let provider_id = service.split('/').next().ok_or("InvalidShape")?;
                 let provider = snapshot.packages.iter().find(|p| p.manifest["id"] == provider_id && p.enabled).ok_or("NotFound")?;
+                provider_scope(provider, &captured)?;
                 dependencies(&snapshot.packages.iter().filter(|p| p.enabled).map(|p| p.manifest.clone()).collect::<Vec<_>>(), &owner)?;
                 let schema = export(consumer, &provider.manifest, &service, &version, &method, &input)?.clone();
                 let (_, source) = packages.executable_source(provider_id).map_err(|_| "PermissionDenied")?;
@@ -161,6 +167,23 @@ mod tests {
         assert_eq!(dependencies(std::slice::from_ref(&consumer), "sample.service-consumer"), Err("NotFound"));
         let mut unrelated = provider.clone(); unrelated["id"] = json!("other.unrelated"); unrelated["dependencies"] = json!({"other.missing":"^1.0.0"});
         assert!(dependencies(&[provider, consumer, unrelated], "sample.service-consumer").is_ok());
+    }
+    #[test]
+    fn service_calls_are_refused_when_the_consumer_or_provider_scope_excludes_the_captured_project() {
+        let provider_manifest: Value = serde_json::from_str(PROVIDER).unwrap();
+        let mut provider = super::super::packages::context_test_snapshot(provider_manifest).packages.remove(0);
+        let (a, b, none) = (json!({"projectId":"A"}), json!({"projectId":"B"}), json!({}));
+        for captured in [&a, &b, &none] { assert!(provider_scope(&provider, captured).is_ok(), "all projects unchanged"); }
+        provider.projects = Some(vec!["A".into()]);
+        assert!(provider_scope(&provider, &a).is_ok());
+        assert_eq!(provider_scope(&provider, &b), Err(context::PROJECT_SCOPE));
+        assert_eq!(provider_scope(&provider, &none), Err(context::PROJECT_SCOPE));
+        assert_eq!(context::failure(provider_scope(&provider, &b).unwrap_err())["error"]["path"], "$.projectScope");
+        // The consumer's binding goes through the context broker's owner admission (context.rs tests).
+        let consumer_manifest: Value = serde_json::from_str(CONSUMER).unwrap();
+        let mut consumer = super::super::packages::context_test_snapshot(consumer_manifest).packages.remove(0);
+        consumer.projects = Some(vec!["A".into()]);
+        assert!(consumer.in_scope(Some("A")) && !consumer.in_scope(Some("B")) && !consumer.in_scope(None) && !consumer.in_scope(Some("")));
     }
     #[test]
     fn provider_reload_disposes_subscriptions_grants_and_old_activation_without_touching_unrelated() {

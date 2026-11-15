@@ -23,12 +23,23 @@ pub(crate) use updates::{configure_notifications, updates_changed};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[serde(default)] executable_trust: Option<String>, #[serde(default)] lifecycle: updates::Lifecycle }
+struct Record { schema: u8, archive: String, checksum: String, enabled: bool, #[serde(default)] executable_trust: Option<String>, #[serde(default)] lifecycle: updates::Lifecycle, #[serde(default, skip_serializing_if = "Option::is_none")] projects: Option<Vec<String>> }
 #[derive(Clone, Serialize)]
 pub struct Executable { digest: String, trusted: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool, #[serde(skip_serializing_if = "Option::is_none")] update: Option<updates::Status>, #[serde(skip)] pub(super) rich_assets: BTreeMap<String, super::rich_views::RichAssets> }
+pub struct Package { pub(super) manifest: Value, icons: BTreeMap<String, String>, pub(super) enabled: bool, reason: Option<String>, executable: Option<Executable>, #[serde(rename = "storageGranted")] storage_granted: bool, #[serde(skip_serializing_if = "Option::is_none")] update: Option<updates::Status>, #[serde(skip_serializing_if = "Option::is_none")] pub(super) projects: Option<Vec<String>>, #[serde(skip)] pub(super) rich_assets: BTreeMap<String, super::rich_views::RichAssets> }
+impl Package {
+    /// Project scope of enablement. `None` (every record written before scopes existed) means all
+    /// projects; a selected scope admits only a captured project it lists, never a project-less one.
+    pub(super) fn in_scope(&self, project: Option<&str>) -> bool {
+        self.projects.as_ref().is_none_or(|projects| project.is_some_and(|project| !project.is_empty() && projects.iter().any(|id| id == project)))
+    }
+}
+/// Validates the persisted selected-project list: 1..=64 distinct, bounded, printable project IDs.
+fn valid_scope(projects: &[String]) -> bool {
+    !projects.is_empty() && projects.len() <= 64 && projects.iter().collect::<BTreeSet<_>>().len() == projects.len() && projects.iter().all(|id| !id.is_empty() && id.chars().count() <= 256 && !id.chars().any(char::is_control))
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot { pub(super) safe_mode: bool, pub(super) packages: Vec<Package>, diagnostics: Vec<String>, development: Vec<DevelopmentStatus> }
@@ -39,7 +50,7 @@ pub struct Packages { root: PathBuf, pub(super) safe: bool, development: Mutex<B
 pub struct ExtensionPackages(pub std::sync::Arc<Mutex<Packages>>);
 #[cfg(test)]
 pub(super) fn context_test_snapshot(manifest: Value) -> Snapshot {
-    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false, update: None, rich_assets: BTreeMap::new() }], diagnostics: vec![], development: vec![] }
+    Snapshot { safe_mode: false, packages: vec![Package { manifest, icons: BTreeMap::new(), enabled: true, reason: None, executable: None, storage_granted: false, update: None, projects: None, rich_assets: BTreeMap::new() }], diagnostics: vec![], development: vec![] }
 }
 impl ExtensionPackages {
     pub fn new(dir: &Path, safe: bool) -> Self { let mut packages = Packages { root: dir.join("extensions-v1"), safe, development: Mutex::default(), streams: Mutex::default(), pins: Mutex::default() }; if !packages.recover_updates() { packages.safe = true; } Self(std::sync::Arc::new(Mutex::new(packages))) }
@@ -166,7 +177,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         rich_assets.insert(view["id"].as_str().unwrap().to_owned(), assets);
     }
     if files.values().any(|(name, _)| !allowed.contains(name)) { return Err("Undeclared package file; executable files and install hooks are unsupported.".into()); }
-    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false, update: None, rich_assets })
+    Ok(Package { manifest, icons, enabled: false, reason: None, executable, storage_granted: false, update: None, projects: None, rich_assets })
 }
 
 impl Packages {
@@ -253,6 +264,7 @@ impl Packages {
         if path.file_stem().and_then(|p| p.to_str()) != package.manifest["id"].as_str() { return Err("Extension record ownership mismatch.".into()); }
         package.enabled = record.enabled && !record.lifecycle.failed;
         package.reason = record.lifecycle.reason.clone();
+        package.projects = record.projects.clone();
         package.update = self.update_status(&record, &package.manifest)?;
         package.storage_granted = self.storage_is_granted(&package.manifest);
         if let Some(executable) = &mut package.executable {
@@ -290,7 +302,7 @@ impl Packages {
                         // A failed record remains manageable without trusting its contents.
                         if path.extension().and_then(|s| s.to_str()) == Some("json") {
                             if let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|id| safe_name(id)) {
-                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false, update: None, rich_assets: BTreeMap::new() });
+                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error), executable: None, storage_granted: false, update: None, projects: None, rich_assets: BTreeMap::new() });
                             }
                         }
                     }
@@ -325,7 +337,19 @@ impl Packages {
         if self.development.lock().map_err(|_| "HostUnavailable")?.contains_key(package.manifest["id"].as_str().unwrap()) { return Err("Duplicate package ownership; selected for development.".into()); }
         if path.symlink_metadata().is_ok() { return Err("Duplicate package ownership; already installed.".into()); }
         if std::fs::read_dir(&self.root).map_err(|_| "Cannot inspect extension storage.")?.filter_map(|entry| entry.ok()).filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json")).count() >= MAX_PACKAGES { return Err("Installed package limit exceeded.".into()); }
-        self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false, executable_trust: None, lifecycle: Default::default() })
+        self.write(&path, &Record { schema: 1, archive: STANDARD.encode(bytes), checksum: format!("{:x}", Sha256::digest(bytes)), enabled: false, executable_trust: None, lifecycle: Default::default(), projects: None })
+    }
+    /// Project scope of enablement: `None` = all projects. A preference like `enabled`: it survives
+    /// disable/enable, restart, safe mode (which never reads records) and update/rollback.
+    pub(super) fn set_scope(&self, id: &str, projects: Option<Vec<String>>) -> Result<()> {
+        if self.safe { return Err("Safe mode: package changes are bypassed.".into()); }
+        if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
+        if projects.as_deref().is_some_and(|projects| !valid_scope(projects)) { return Err("InvalidShape".into()); }
+        self.directory()?;
+        let path = self.root.join(format!("{id}.json"));
+        let (mut record, _) = self.record(&path)?;
+        record.projects = projects;
+        self.write(&path, &record)
     }
     fn enable(&self, id: &str, enabled: bool) -> Result<()> {
         if self.safe { return Err("Safe mode: activation is bypassed.".into()); }

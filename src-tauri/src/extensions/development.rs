@@ -65,7 +65,7 @@ impl Packages {
         if self.root.join(format!("{id}.json")).symlink_metadata().is_ok() { return Err("Duplicate package ownership; already installed.".into()); }
         let mut selected = self.development.lock().map_err(|_| "HostUnavailable")?;
         if selected.contains_key(&id) || selected.len() >= 8 { return Err("Conflict".into()); }
-        selected.insert(id.clone(), Development { path: path.to_path_buf(), revision: 0, record: Record { schema: 1, archive: STANDARD.encode(&bytes), checksum: format!("{:x}", Sha256::digest(&bytes)), enabled: false, executable_trust: None, lifecycle: Default::default() }, logs: vec!["Validation passed; immutable folder snapshot selected. No code executed.".into(), "Executable trust and explicit enable required. Package output redacted.".into()] });
+        selected.insert(id.clone(), Development { path: path.to_path_buf(), revision: 0, record: Record { schema: 1, archive: STANDARD.encode(&bytes), checksum: format!("{:x}", Sha256::digest(&bytes)), enabled: false, executable_trust: None, lifecycle: Default::default(), projects: None }, logs: vec!["Validation passed; immutable folder snapshot selected. No code executed.".into(), "Executable trust and explicit enable required. Package output redacted.".into()] });
         Ok(id)
     }
     pub(in crate::extensions) fn development_reload(&self, id: &str) -> Result<()> {
@@ -83,7 +83,7 @@ impl Packages {
                 let unchanged = digest == old.1.checksum;
                 let mut selected = self.development.lock().map_err(|_| "HostUnavailable")?;
                 let dev = selected.get_mut(id).ok_or("StaleContext")?;
-                dev.record = Record { schema: 1, archive: STANDARD.encode(bytes), checksum: digest, enabled: unchanged && old.1.enabled, executable_trust: if unchanged { old.1.executable_trust } else { None }, lifecycle: Default::default() };
+                dev.record = Record { schema: 1, archive: STANDARD.encode(bytes), checksum: digest, enabled: unchanged && old.1.enabled, executable_trust: if unchanged { old.1.executable_trust } else { None }, lifecycle: Default::default(), projects: old.1.projects };
                 drop(selected);
                 self.development_log(id, if unchanged { "Reload validated; unchanged content retains trust. Activation remains lazy." } else { "Reload validated; changed content disabled. Review executable trust again." });
                 Ok(())

@@ -671,7 +671,11 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     'panda.ui/open-settings': () => showSettings(),
     'panda.ui/toggle-theme': () => toggleTheme(),
   });
-  const { loadExtensions, extensionsSnapshot, onExtensionsChanged, extensionIdentity } = await import('./extensions/manager');
+  const { loadExtensions, extensionsSnapshot, onExtensionsChanged, extensionIdentity, setExtensionsProject, registerExtensionProjects } = await import('./extensions/manager');
+  // Project scope of enablement: packages scoped to selected projects contribute only while one of them is active.
+  registerExtensionProjects(() => state.projects.map(item => ({ id: item.id, name: item.name })));
+  setExtensionsProject(state.projectId || undefined);
+  extensionContextListeners.add(() => setExtensionsProject(state.projectId || undefined));
   const { mountBoardPresentation } = await import('./extensions/board-host');
   boardPresentation = mountBoardPresentation($('#project-board'), $('#task-details-heading'), {
     state: () => { const boardProject = state.projectFilter || project()?.id || state.projects[0]?.id || ''; return { project: boardProject, task: state.sessionId, filter: state.projectFilter, visible: state.view === 'board', detail: state.boardPanel, loading: state.messagesLoading || Boolean(state.messagesError), importable: github.connected(boardProject), tasks: listedSessions() }; },

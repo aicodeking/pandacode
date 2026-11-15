@@ -116,7 +116,13 @@ pub fn invalidate(app: &tauri::AppHandle, owner: Option<&str>) {
     }
 }
 type Reply = Result<Value, &'static str>;
-pub fn failure(code: &str) -> Value { json!({"ok":false,"error":{"schemaVersion":1,"code":code,"path":"$","ids":[]}}) }
+/// Internal refusal for a package whose project scope excludes the captured project. It crosses IPC
+/// as the public `PermissionDenied` code with the stable path `$.projectScope`.
+pub const PROJECT_SCOPE: &str = "ProjectScope";
+pub fn failure(code: &str) -> Value {
+    if code == PROJECT_SCOPE { return json!({"ok":false,"error":{"schemaVersion":1,"code":"PermissionDenied","path":"$.projectScope","ids":[]}}); }
+    json!({"ok":false,"error":{"schemaVersion":1,"code":code,"path":"$","ids":[]}})
+}
 fn envelope(value: Reply) -> Value {
     match value {
         Ok(value) => { let reply = json!({"ok":true,"value":value}); if reply.to_string().len() <= MAX_RESULT { reply } else { failure("LimitExceeded") } }
@@ -140,9 +146,14 @@ fn view_command(contributes: &Value, id: &str, context: &Value) -> bool {
 fn owner(snapshot: &Snapshot, id: &str, version: &str, context: &Value) -> Reply {
     if snapshot.safe_mode || context["windowId"] != "main" || id.len() > 160 || version.len() > 32 { return Err("PermissionDenied"); }
     if contracts::validate_contract("context", context)["ok"] != true { return Err("InvalidShape"); }
-    let enabled: Vec<_> = snapshot.packages.iter().filter(|package| package.enabled).map(|package| package.manifest.clone()).collect();
+    let packages: Vec<_> = snapshot.packages.iter().filter(|package| package.enabled).collect();
+    let enabled: Vec<_> = packages.iter().map(|package| package.manifest.clone()).collect();
     if contracts::validate_contract("packages", &json!(enabled))["ok"] != true { return Err("PermissionDenied"); }
-    for manifest in &enabled {
+    // The dependency graph above is the enabled set; the project scope only gates admission.
+    let project = context["projectId"].as_str();
+    let mut out_of_scope = false;
+    for package in &packages {
+        let manifest = &package.manifest;
         if manifest["version"] != version { continue; }
         let contributes = &manifest["contributes"];
         let command_id = if matches!(context["surfaceId"].as_str(), Some("panda.commands" | "panda.shortcuts")) || view_command(contributes, id, context) { Some(json!(id)) } else {
@@ -152,10 +163,11 @@ fn owner(snapshot: &Snapshot, id: &str, version: &str, context: &Value) -> Reply
             })
         };
         if contributes["commands"].as_array().into_iter().flatten().any(|command| Some(&command["id"]) == command_id.as_ref() && matches!(command["action"]["kind"].as_str(), Some("showProjectContext" | "runCommand")) && allowed(command, context)) {
+            if !package.in_scope(project) { out_of_scope = true; continue; }
             return Ok(manifest.clone());
         }
     }
-    Err("PermissionDenied")
+    Err(if out_of_scope { PROJECT_SCOPE } else { "PermissionDenied" })
 }
 fn project_id(context: &Value) -> &str { context["projectId"].as_str().unwrap_or("") }
 fn read_root(store: &Store, invocation: &Invocation) -> Result<String, &'static str> {
@@ -441,6 +453,54 @@ mod tests {
         assert_eq!(call(broker, snapshot, store, json!({"op":"consent","handle":handle,"capability":capability,"allow":allow}))["ok"], true);
     }
     fn query(handle: &str, resource: &str) -> Value { json!({"op":"query","handle":handle,"resource":resource,"limit":1}) }
+    #[test]
+    fn project_scope_refuses_captures_and_context_reads_outside_scope_and_keeps_the_captured_project() {
+        let (mut broker, mut snapshot, store) = fixture();
+        let scope_refusal = json!({"ok":false,"error":{"schemaVersion":1,"code":"PermissionDenied","path":"$.projectScope","ids":[]}});
+        let header = |project: Option<&str>| { let mut context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","revision":1}); if let Some(project) = project { context["projectId"] = json!(project); } json!({"op":"capture","id":"sample.project-context/header","version":"1.0.0","context":context}) };
+        // All projects (no scope, every pre-scope record): A, B and project-less captures are admitted as before.
+        for project in [Some("A"), Some("B"), None] { assert_eq!(call(&mut broker, &snapshot, &store, header(project))["ok"], true); }
+        broker.handles.clear();
+        let a = capture(&mut broker, &snapshot, &store, Some("A"));
+        consent(&mut broker, &snapshot, &store, &a, "projects.summary", true);
+        snapshot.packages[0].projects = Some(vec!["A".into()]);
+        // Project B became active: a capture carrying B, or no project, is refused with the stable reason.
+        assert_eq!(call(&mut broker, &snapshot, &store, header(Some("B"))), scope_refusal);
+        assert_eq!(call(&mut broker, &snapshot, &store, header(None)), scope_refusal);
+        assert_eq!(broker.handles.len(), 1, "a refused capture creates no handle");
+        // The action captured in A and finished after the switch still reads A, never B.
+        let page = call(&mut broker, &snapshot, &store, query(&a, "projects"));
+        assert_eq!(page["value"]["items"], json!([{"id":"A","name":"Alpha"}]));
+        // A context read whose captured project is outside the scope is refused (forged or out-of-scope handle).
+        let mut forged = broker.handles[&a].clone(); forged.context["projectId"] = json!("B");
+        broker.handles.insert("forged-b".into(), forged);
+        broker.grants.insert(("sample.project-context".into(), "1.0.0".into(), "B".into(), "projects.summary".into()));
+        assert_eq!(call(&mut broker, &snapshot, &store, query("forged-b", "projects")), scope_refusal);
+        // Narrowing the scope away from A refuses A's pending handle too; widening back to all restores it.
+        snapshot.packages[0].projects = Some(vec!["B".into()]);
+        assert_eq!(call(&mut broker, &snapshot, &store, query(&a, "projects")), scope_refusal);
+        snapshot.packages[0].projects = None;
+        assert_eq!(call(&mut broker, &snapshot, &store, query(&a, "projects"))["value"]["items"][0]["id"], "A");
+    }
+    #[test]
+    fn project_scope_gates_runtime_activation_and_storage_bindings_by_captured_project() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/project-summary/extension.json")).unwrap();
+        let command = manifest["contributes"]["commands"][0]["id"].as_str().unwrap().to_owned();
+        let mut snapshot = super::super::packages::context_test_snapshot(manifest);
+        let broker = ContextBroker::default();
+        for project in ["A", "B"] {
+            let context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.commands","revision":1,"projectId":project});
+            broker.broker.lock().unwrap().handles.insert(format!("handle-{project}"), Invocation { id: command.clone(), version: "1.0.0".into(), owner: "sample.project-summary".into(), context, expires: Instant::now() + LIFETIME });
+        }
+        for handle in ["handle-A", "handle-B"] { assert!(broker.runtime_binding(&snapshot, handle).is_ok() && broker.storage_binding(&snapshot, handle).is_ok(), "all projects unchanged"); }
+        snapshot.packages[0].projects = Some(vec!["A".into()]);
+        assert_eq!(broker.runtime_binding(&snapshot, "handle-A").unwrap().2["projectId"], "A");
+        assert_eq!(broker.storage_binding(&snapshot, "handle-A").unwrap().2["projectId"], "A");
+        assert_eq!(broker.runtime_binding(&snapshot, "handle-B").unwrap_err(), PROJECT_SCOPE);
+        assert_eq!(broker.storage_binding(&snapshot, "handle-B").unwrap_err(), PROJECT_SCOPE);
+        assert_eq!(failure(PROJECT_SCOPE)["error"], json!({"schemaVersion":1,"code":"PermissionDenied","path":"$.projectScope","ids":[]}));
+        assert_eq!(contracts::validate_contract("error", &failure(PROJECT_SCOPE)["error"])["ok"], true, "the refusal stays a public error envelope");
+    }
     #[test]
     fn remote_mirror_context_never_reads_or_runs_against_viewer_project() {
         let (mut broker, snapshot, store) = fixture();

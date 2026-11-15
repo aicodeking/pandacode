@@ -66,6 +66,51 @@ mod tests {
         assert_eq!(packages.lock().unwrap().snapshot().packages[0].manifest["version"], "1.1.0");
     }
     #[test]
+    fn project_scope_survives_restart_disable_safe_mode_update_and_rollback_and_legacy_records_mean_all() {
+        let disk = Storage::new(); let packages = disk.packages(false); install(&packages, false);
+        let scope = |packages: &Packages| packages.snapshot().packages.iter().find(|p| p.manifest["id"] == ID).and_then(|p| p.projects.clone());
+        // A record written before scopes existed: no `projects` key on disk, loads as all projects.
+        let path = packages.root.join(format!("{ID}.json"));
+        let mut legacy: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(legacy.get("projects").is_none(), "an all-projects record keeps the pre-scope on-disk shape");
+        legacy.as_object_mut().unwrap().remove("projects");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let restarted = disk.packages(false); let package = &restarted.snapshot().packages[0];
+        assert!(package.enabled && package.projects.is_none() && package.in_scope(Some("B")) && package.in_scope(None));
+        // Choose only project A.
+        for invalid in [vec![], vec!["A".to_owned(), "A".to_owned()], vec!["x".repeat(257)], vec!["bad\nid".to_owned()], (0..65).map(|i| format!("p{i}")).collect()] { assert!(packages.set_scope(ID, Some(invalid)).is_err()); }
+        assert!(packages.set_scope("../outside", Some(vec!["A".into()])).is_err());
+        packages.set_scope(ID, Some(vec!["A".into()])).unwrap();
+        let only_a = Some(vec!["A".to_owned()]);
+        assert_eq!(scope(&packages), only_a);
+        let selected = packages.snapshot().packages.remove(0);
+        assert!(selected.in_scope(Some("A")) && !selected.in_scope(Some("B")) && !selected.in_scope(None));
+        assert_eq!(serde_json::to_value(&selected).unwrap()["projects"], json!(["A"]), "the snapshot DTO exposes the scope");
+        // Restart, disable/enable.
+        assert_eq!(scope(&disk.packages(false)), only_a);
+        packages.enable(ID, false).unwrap(); assert_eq!(scope(&packages), only_a);
+        packages.enable(ID, true).unwrap(); assert_eq!(scope(&packages), only_a);
+        // Safe mode reads no record and cannot change the scope; the next normal launch keeps it.
+        let safe = disk.packages(true);
+        assert!(safe.snapshot().packages.is_empty() && safe.set_scope(ID, None).is_err());
+        assert_eq!(scope(&disk.packages(false)), only_a);
+        // An update (stage, review, drain) keeps the current scope, even one changed after staging.
+        packages.stage_update_bytes(ID, &bytes("1.1.0", false)).unwrap();
+        packages.set_scope(ID, Some(vec!["A".into(), "C".into()])).unwrap();
+        review(&packages);
+        let updated = packages.snapshot().packages.remove(0);
+        assert_eq!(updated.manifest["version"], "1.1.0"); assert!(updated.enabled);
+        assert_eq!(updated.projects, Some(vec!["A".to_owned(), "C".to_owned()]));
+        // Rollback restores content and state, never the older scope.
+        packages.set_scope(ID, Some(vec!["B".into()])).unwrap();
+        packages.rollback_update(ID, "Manual rollback").unwrap();
+        let rolled = packages.snapshot().packages.remove(0);
+        assert_eq!(rolled.manifest["version"], "1.0.0"); assert_eq!(rolled.projects, Some(vec!["B".to_owned()]));
+        // Back to all projects: the record returns to the pre-scope shape.
+        packages.set_scope(ID, None).unwrap(); assert_eq!(scope(&packages), None);
+        let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(); assert!(raw.get("projects").is_none());
+    }
+    #[test]
     fn update_dependency_activation_failure_and_disable_during_drain_preserve_user_choice() {
         let disk = Storage::new(); let packages = std::sync::Arc::new(Mutex::new(disk.packages(false)));
         let digest = { let packages = packages.lock().unwrap(); install(&packages, true); packages.executable_source(ID).unwrap().0 };
@@ -247,7 +292,7 @@ impl Packages {
         let checksum = format!("{:x}", Sha256::digest(bytes));
         if record.checksum == checksum { return Err("Identical package content".into()); }
         record.lifecycle.reason = None;
-        record.lifecycle.staged = Some(Box::new(Record { schema: 1, archive: STANDARD.encode(bytes), checksum, enabled: record.enabled, executable_trust: None, lifecycle: Lifecycle::default() }));
+        record.lifecycle.staged = Some(Box::new(Record { schema: 1, archive: STANDARD.encode(bytes), checksum, enabled: record.enabled, executable_trust: None, lifecycle: Lifecycle::default(), projects: record.projects.clone() }));
         self.write(&path, &record)
     }
     pub(in crate::extensions) fn review_update(&self, id: &str, digest: &str) -> Result<()> {
@@ -275,6 +320,8 @@ impl Packages {
         let mut candidate = *record.lifecycle.staged.take().ok_or("StaleContext")?;
         // Disable/revocation during drain must not be undone by the earlier staged preference.
         candidate.enabled = record.enabled;
+        // The project scope is the user's current preference, not the one captured at staging.
+        candidate.projects = record.projects.clone();
         // Revalidate graph before committing. Failed activation validation leaves old bytes selected.
         let package = validate(&STANDARD.decode(&candidate.archive).map_err(|_| "InvalidPackage")?)?;
         let executable = package.executable.is_some();
@@ -293,6 +340,8 @@ impl Packages {
         let path = self.root.join(format!("{id}.json")); let (mut record, _) = self.record(&path)?;
         if record.lifecycle.staged.take().is_some() { record.lifecycle.approved = false; return self.write(&path, &record); }
         if let Some(mut previous) = record.lifecycle.previous.take() {
+            // Rollback restores content and state, never an older project scope.
+            previous.projects = record.projects.clone();
             let package = validate(&STANDARD.decode(&previous.archive).map_err(|_| "InvalidPackage")?)?;
             let mut manifests: Vec<_> = self.snapshot().packages.into_iter().filter(|p| p.enabled && p.manifest["id"] != id).map(|p| p.manifest).collect();
             if previous.enabled { manifests.push(package.manifest); }

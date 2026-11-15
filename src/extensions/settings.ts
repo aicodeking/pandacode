@@ -1,11 +1,25 @@
 import { escape } from '../dom';
 import { stageExtensionUpdate, reviewExtensionUpdate, rollbackExtensionUpdate, loadExtensions } from './manager';
-import { extensionsSnapshot, onExtensionsChanged, installExtension, enableExtension, uninstallExtension, enterExtensionsSafeMode, trustExecutable, selectDevelopmentExtension, reloadDevelopmentExtension, grantExtensionStorage, removeExtensionOwnData } from './manager';
+import { extensionsManagementSnapshot as extensionsSnapshot, onExtensionsChanged, installExtension, setExtensionProjectScope, extensionProjects, extensionsActiveProject, enableExtension, uninstallExtension, enterExtensionsSafeMode, trustExecutable, selectDevelopmentExtension, reloadDevelopmentExtension, grantExtensionStorage, removeExtensionOwnData } from './manager';
 import { EXECUTABLE_WARNING } from './executable';
 import { openExtensionDialog } from './dialogs';
 import { mountSurfaceExplorer } from './explorer';
 import { mountShortcutSettings } from './shortcut-settings';
 
+const projectName = (id: string) => extensionProjects().find(project => project.id === id)?.name;
+function scopeSummary(projects: string[] | undefined): string {
+  return projects ? `Projects: ${projects.map(id => projectName(id) ?? `unavailable project ${id}`).join(', ')}` : 'Projects: all projects';
+}
+/** Project scope of enablement: native radios and checkboxes, so keyboard and screen readers work unchanged. */
+function scopeControl(id: string, projects: string[] | undefined, disabled: boolean): string {
+  const known = extensionProjects(), listed = [...known.map(project => project.id), ...(projects ?? []).filter(project => !known.some(item => item.id === project))];
+  const owner = escape(id), off = disabled ? 'disabled' : '';
+  const choices = listed.map(project => `<label><input type="checkbox" data-scope-owner="${owner}" data-scope-project="${escape(project)}" ${projects?.includes(project) ? 'checked' : ''} ${off}> ${escape(projectName(project) ?? `Unavailable project ${project}`)}</label>`).join('');
+  return `<fieldset class="setting-row" data-extension-scope="${owner}"><legend>Projects for ${owner}</legend>
+    <label><input type="radio" name="extension-scope-${owner}" data-scope-owner="${owner}" data-scope-mode="all" ${projects ? '' : 'checked'} ${off}> All projects</label>
+    <label><input type="radio" name="extension-scope-${owner}" data-scope-owner="${owner}" data-scope-mode="selected" ${projects ? 'checked' : ''} ${off}> Only selected projects</label>
+    ${projects ? `<div role="group" aria-label="Selected projects for ${owner}">${choices}</div>` : ''}</fieldset>`;
+}
 export function mountExtensionSettings(host: HTMLElement): () => void {
   let disposed = false, pending = false, error = '';
   let cleanupExplorer: (() => void) | undefined;
@@ -23,7 +37,7 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       ${(snapshot.development ?? []).map(dev => `<div class="setting-row"><strong>${escape(dev.id)}</strong><button type="button" class="secondary-button" data-extension-id="${escape(dev.id)}" data-extension-reload ${pending ? 'disabled' : ''}>Reload ${escape(dev.id)}</button></div><pre role="log" aria-label="Development logs ${escape(dev.id)}">${escape(dev.logs.join('\n'))}</pre>`).join('')}</section>
       ${snapshot.safeMode ? '<p role="status" tabindex="-1">Safe mode: packages are not loaded. Restart without --safe-mode to restore explicit enable preferences.</p>' : ''}
       <p>Uninstall retains private data by default. The separate “Uninstall and remove private data” action requires confirmation for only that extension’s private settings and storage. Projects, drafts and history are never removed. Storage grants constrain the public API, not independent file access by trusted native code.</p>
-      ${snapshot.packages.map(item => `<div class="setting-row"><div><strong>${escape(item.manifest.id)}</strong><small>${escape(item.manifest.version)} · Local unsigned · ${item.reason ? 'Failed' : item.enabled ? 'Enabled' : 'Installed — disabled'}</small><small>Owner: ${escape(item.manifest.id)} · ${escape(item.reason ?? (item.enabled ? 'Explicitly enabled' : 'Not enabled by the user'))}</small></div><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-enabled="${!item.enabled}" ${pending ? 'disabled' : ''}>${item.reason ? 'Retry' : item.enabled ? 'Disable' : 'Enable'} ${escape(item.manifest.id)}</button><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-uninstall ${pending ? 'disabled' : ''}>Uninstall ${escape(item.manifest.id)}</button></div>`).join('')}
+      ${snapshot.packages.map(item => `<div class="setting-row"><div><strong>${escape(item.manifest.id)}</strong><small>${escape(item.manifest.version)} · Local unsigned · ${item.reason ? 'Failed' : item.enabled ? 'Enabled' : 'Installed — disabled'}</small><small>Owner: ${escape(item.manifest.id)} · ${escape(item.reason ?? (item.enabled ? 'Explicitly enabled' : 'Not enabled by the user'))} · ${escape(scopeSummary(item.projects))}</small></div><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-enabled="${!item.enabled}" ${pending ? 'disabled' : ''}>${item.reason ? 'Retry' : item.enabled ? 'Disable' : 'Enable'} ${escape(item.manifest.id)}</button><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-uninstall ${pending ? 'disabled' : ''}>Uninstall ${escape(item.manifest.id)}</button></div>${scopeControl(item.manifest.id, item.projects, pending || snapshot.safeMode)}`).join('')}
       ${error ? `<p role="alert">${escape(error)}</p>` : ''}${snapshot.diagnostics.map(message => `<p role="status">${escape(message)}</p>`).join('')}<section data-extension-shortcuts aria-label="Extension shortcuts"></section><section data-extension-catalog aria-label="Surface explorer"></section>`;
     for (const item of snapshot.packages.filter(item => item.executable)) {
       const node = document.createElement('button'); node.type = 'button'; node.className = 'secondary-button'; node.dataset.extensionId = item.manifest.id; node.dataset.extensionTrust = '';
@@ -119,6 +133,34 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       }
     }
   };
-  const cleanup = onExtensionsChanged(draw); host.addEventListener('click', click); draw(); void loadExtensions();
-  return () => { disposed = true; closeTrust?.(); cleanup(); cleanupExplorer?.(); cleanupShortcuts?.(); host.removeEventListener('click', click); host.replaceChildren(); };
+  const change = async (event: Event) => {
+    const input = event.target instanceof HTMLInputElement && host.contains(event.target) ? event.target : null;
+    const owner = input?.dataset.scopeOwner;
+    if (!input || !owner || pending) return;
+    const current = extensionsSnapshot().packages.find(item => item.manifest.id === owner)?.projects;
+    let next: string[] | null | undefined;
+    if (input.dataset.scopeMode === 'all') next = null;
+    else if (input.dataset.scopeMode === 'selected') {
+      const active = extensionsActiveProject(), first = active && extensionProjects().some(project => project.id === active) ? active : extensionProjects()[0]?.id;
+      if (current) return;
+      if (!first) { error = 'Open a project first, then choose it for this extension.'; draw(); return; }
+      next = [first];
+    } else if (input.dataset.scopeProject) {
+      const project = input.dataset.scopeProject, selected = current ?? [];
+      next = input.checked ? [...selected.filter(id => id !== project), project] : selected.filter(id => id !== project);
+      if (!next.length) { error = 'Keep at least one project, or choose All projects.'; draw(); refocus(input); return; }
+    }
+    if (next === undefined) return;
+    pending = true; error = ''; draw();
+    try { await setExtensionProjectScope(owner, next); }
+    catch (failure) { error = failure instanceof Error ? failure.message : String(failure); }
+    finally { pending = false; draw(); refocus(input); }
+  };
+  const refocus = (input: HTMLInputElement) => {
+    if (disposed) return;
+    const match = [...host.querySelectorAll<HTMLInputElement>('input[data-scope-owner]')].find(candidate => candidate.dataset.scopeOwner === input.dataset.scopeOwner && candidate.dataset.scopeMode === input.dataset.scopeMode && candidate.dataset.scopeProject === input.dataset.scopeProject);
+    (match && !match.disabled ? match : host.querySelector<HTMLElement>('[role="alert"]') ?? host.querySelector<HTMLElement>('[data-extension-install]'))?.focus({ preventScroll: true });
+  };
+  const cleanup = onExtensionsChanged(draw); host.addEventListener('click', click); host.addEventListener('change', change); draw(); void loadExtensions();
+  return () => { disposed = true; closeTrust?.(); cleanup(); cleanupExplorer?.(); cleanupShortcuts?.(); host.removeEventListener('click', click); host.removeEventListener('change', change); host.replaceChildren(); };
 }

@@ -57,7 +57,8 @@ fn resolve_checked(snapshot: &Snapshot, actual_label: &str, request: &ActionRequ
     let window = surface_window(&request.surface_id).ok_or("PermissionDenied")?;
     if actual_label != window || snapshot.safe_mode || request.id.len() > 160 || request.version.len() > 32 { return Err("PermissionDenied".into()); }
     let context = json!({"schemaVersion":1, "windowId":window, "surfaceId":request.surface_id, "revision":1});
-    for package in snapshot.packages.iter().filter(|package| package.enabled && package.manifest["version"] == request.version) {
+    // Auxiliary windows capture no project: a package scoped to selected projects contributes nothing here.
+    for package in snapshot.packages.iter().filter(|package| package.enabled && package.in_scope(None) && package.manifest["version"] == request.version) {
         let contributes = &package.manifest["contributes"];
         for menu in contributes["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == request.surface_id && allows(menu, &context)) {
             if matches!(menu["presentation"].as_str(), Some("status" | "badge")) { continue; }
@@ -177,7 +178,7 @@ pub fn native_items(snapshot: &Snapshot, presentation: &NativePresentation) -> V
         if output.last().is_some_and(|item| item.separator) { output.pop(); }
         output
     }
-    for package in snapshot.packages.iter().filter(|package| package.enabled) {
+    for package in snapshot.packages.iter().filter(|package| package.enabled && package.in_scope(None)) {
         let version = package.manifest["version"].as_str().unwrap_or_default();
         // Passive status/badge presentations have no native menu form (`x-primitives` hosts.nativeMenu.omits).
         // Hidden by the user's main-window layout: presentation only, the action stays registered.
@@ -212,7 +213,7 @@ pub fn select_checked(snapshot: &Snapshot, request: &ActionRequest, checked: &mu
         }
         None
     }
-    for package in snapshot.packages.iter().filter(|package| package.enabled && package.manifest["version"] == request.version) {
+    for package in snapshot.packages.iter().filter(|package| package.enabled && package.in_scope(None) && package.manifest["version"] == request.version) {
         for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten().filter(|menu| menu["location"] == request.surface_id) {
             let Some((leaf, siblings)) = menu["items"].as_array().and_then(|items| find(items, &request.id)) else { continue };
             match leaf["kind"].as_str() {
@@ -277,6 +278,20 @@ mod tests {
             let mut value = json!({"hidden": [], "order": []}); value[key] = json!("main");
             assert!(serde_json::from_value::<NativeLayout>(value).is_err(), "{key}");
         }
+    }
+    #[test]
+    fn project_scoped_packages_contribute_nothing_to_project_less_auxiliary_windows() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/window-coverage/extension.json")).unwrap();
+        let mut snapshot = super::super::packages::context_test_snapshot(manifest);
+        let presentation = NativePresentation::default();
+        let request = ActionRequest { surface_id: "panda.tray.menu".into(), id: "sample.window-coverage/native-extra".into(), version: "1.0.0".into() };
+        let all = native_items(&snapshot, &presentation);
+        assert!(!all.is_empty() && resolve(&snapshot, "tray", &request).is_ok(), "all projects: the tray lists and resolves the package");
+        snapshot.packages[0].projects = Some(vec!["A".into()]);
+        assert!(native_items(&snapshot, &presentation).is_empty(), "a scoped package has no native tray menu entries");
+        assert_eq!(resolve(&snapshot, "tray", &request).err().as_deref(), Some("PermissionDenied"));
+        snapshot.packages[0].projects = None;
+        assert_eq!(native_items(&snapshot, &presentation).len(), all.len());
     }
     #[test]
     fn action_request_rejects_forged_identity_context_and_raw_commands() {

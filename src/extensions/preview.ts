@@ -141,6 +141,16 @@ export function previewExtensions(command: string, args: Record<string, unknown>
       else previewUpdates.rollback(snapshot.packages, request.id);
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return { ok: true, value: read() };
     }
+    if (request.op === 'projectScope') {
+      // Synthetic stand-in for the native record write; native tests own persistence and admission.
+      const checked = validateContract('projectScope', (args.request as { scope?: unknown }).scope);
+      if (!checked.ok) return { ok: false, error: checked.error };
+      const item = snapshot.packages.find(item => item.manifest.id === request.id);
+      if (!item) return { ok: false, error: { schemaVersion: 1, code: 'NotFound', path: '$', ids: [] } };
+      const scope = checked.value as { mode: 'all' | 'selected'; projects?: string[] };
+      if (scope.mode === 'selected') item.projects = [...scope.projects!]; else delete item.projects;
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return { ok: true, value: read() };
+    }
     if (request.op === 'storageGrant') {
       previewPrivateStorage.grant(snapshot, request.id, request.allow);
       notify('extensions-changed', null); return { ok: true, value: read() };

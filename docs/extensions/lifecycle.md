@@ -58,6 +58,16 @@ browser previews are synthetic, not installed WebView evidence.
 5. Uninstall retains private data, including state imported into the installation
    record, in the existing owner-private store. Private-data deletion is separate
    and refused while a pinned installation still exists. No core history is removed.
+6. **Project scope** (Settings → Extensions → Projects for &lt;id&gt;): All projects or
+   only selected projects, stored as the optional `projects` list of the installation
+   record (absent = All projects, so older records keep their meaning and an All
+   projects record keeps the older on-disk shape). Staging copies it, promotion keeps
+   the current preference even if it changed after staging, and rollback restores
+   content and state but never an older scope. Safe mode reads no record and cannot
+   change it. The webview withholds a scoped package's contributions while another
+   project is active; native admission refuses captured work outside the scope with
+   `PermissionDenied` at path `$.projectScope`, and a scope change is never treated
+   as a package fault (no quarantine). See [install](install.md#project-scope).
 
 The existing archive limits remain 2 MiB compressed, 1 MiB expanded, 64 files and
 256 KiB per file. One record is bounded to 9 MiB for selected/candidate/prior

@@ -1,15 +1,16 @@
 import { call } from '../bridge';
 import { escape, isImeKey } from '../dom';
 import { SECTIONS, type ExtensionSettingsPage } from '../settings-sections';
-import { extensionsSnapshot } from './manager';
+import { extensionsManagementSnapshot } from './manager';
 import { SETTINGS_FIELD_PAGES } from './surfaces';
 import { settingsDefaults, validSettingsValues, type SettingsPageDefinition } from './settings-state';
 import { TEXT_LIMIT, type DialogValues } from './dialog-state';
 import { primitiveLimit } from './contracts';
 type SettingsControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
+/** A package's settings pages are a management surface: available while it is enabled, whatever the active project. */
 function enabledSettingsPages() {
-  const snapshot = extensionsSnapshot();
+  const snapshot = extensionsManagementSnapshot();
   return snapshot.safeMode ? [] : snapshot.packages.filter(item => item.enabled).flatMap(item => (item.manifest.contributes.settings ?? []).map(page => ({ owner: item.manifest.id, page })));
 }
 /** Extension-owned pages with their own section. */

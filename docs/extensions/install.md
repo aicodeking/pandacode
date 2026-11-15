@@ -46,6 +46,23 @@ are retained. Failed records show a reason and **Retry**, which revalidates the 
 Duplicate installation is rejected; replacing/updating packages is not implemented yet. A failed validation
 does not create an active or partial package. No core database migration occurs.
 
+### Project scope
+
+Each installed package has a **Projects for &lt;id&gt;** choice next to Enable/Disable: **All projects** (the
+default, and the meaning of every package record written before this choice existed) or **Only selected
+projects**, which starts with the active project and offers a checkbox per project; at least one stays
+selected. The project scope is a preference like Enable: it is stored in the package record and survives
+restart, disable/enable, safe mode and updates or rollbacks. While a project outside the scope is active, the
+package contributes nothing to the main window (header, sidebar, status, dock, views, commands, themes) and
+reappears when an in-scope project is active, without a reload. Auxiliary windows (menu bar popover, native
+tray menu, launcher, Running agents) capture no project, so only All projects packages appear there. The
+package's own settings pages and this Extensions page stay available so it can be managed from any project.
+Native admission refuses a captured action, service call, storage call or context read whose captured project
+is outside the scope with `PermissionDenied` at path `$.projectScope`; work captured in an in-scope project
+keeps its project after another project becomes active. Executable trust stays bound to content and version
+(not per project), API grant consent is unchanged, and executable harness providers stay registered for every
+project.
+
 ## Recovery
 
 For a complete data-panel example, ZIP only `extension.json` from
