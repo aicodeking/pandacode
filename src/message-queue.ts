@@ -13,12 +13,13 @@ export interface QueuedMessage {
 }
 export type QueuedAttachment = { kind: 'path'; path: string } | ({ kind: 'image' | 'document' | 'folder' | 'sketch' } & Record<string, unknown>);
 
-export type HoldReason = 'restart' | 'failed' | 'stopped' | 'limited';
+export type HoldReason = 'restart' | 'failed' | 'stopped' | 'limited' | 'reset';
 export const HOLD_LABEL: Record<HoldReason, string> = {
   restart: 'Paused after restart',
   failed: 'Paused after the run failed',
   stopped: 'Paused after you stopped the run',
   limited: 'Paused until the usage limit resets',
+  reset: 'The usage limit has reset',
 };
 
 export interface QueueView {
