@@ -480,7 +480,18 @@ impl Library {
             .files
             .iter()
             .cloned()
-            .partition(|w| plain && adapter::recorded_in_surface(&activation.harness, kind, activation.scope, base, id, Path::new(&w.path)));
+            .partition(|w| {
+                if !plain {
+                    return false;
+                }
+                let path = Path::new(&w.path);
+                if activation.surface == "link" {
+                    kind == Kind::Skill && adapter::targets(&activation.harness, kind, activation.scope, base, id)
+                        .iter().any(|(target, folder)| *folder && path == target)
+                } else {
+                    adapter::recorded_in_surface(&activation.harness, kind, activation.scope, base, id, path)
+                }
+            });
         for w in &refused {
             eprintln!("[skills] {} is not where {id} is written for {} in {}; PandaCode left it alone", w.path, activation.harness, base.display());
         }
@@ -606,7 +617,7 @@ impl Library {
                     }
                 } else {
                     if switching && previous_surface == Some("link") {
-                        kept.extend(adapter::remove_link(&old_files));
+                        kept.extend(adapter::remove_link(&old_files, checkout));
                     }
                     match adapter::write_folder(&dir, id, &files, previous_files, checkout) {
                         Ok(written) => written,
@@ -1201,7 +1212,7 @@ fn on_disk(target: &Path, snapshot: &Files, new: &Files, failed: Option<&Path>) 
 fn remove_written(id: &str, surface: &str, files: &[Written], checkout: Option<&Path>, folders: &[PathBuf]) -> Vec<String> {
     match surface {
         "folder" => adapter::remove_folder(files, folders, checkout),
-        "link" => adapter::remove_link(files),
+        "link" => adapter::remove_link(files, checkout),
         "block" => files.iter().filter(|w| !matches!(adapter::remove_block(w, id, checkout), Ok(true))).map(|w| w.path.clone()).collect(),
         _ => Vec::new(),
     }
