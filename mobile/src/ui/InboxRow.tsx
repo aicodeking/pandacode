@@ -32,6 +32,7 @@ import { ago } from './status.tsx';
 import { rootStack, TASK_ROUTE, type SidebarOpen, type StackState } from './sidebar-nav.ts';
 import { openFromSidebar } from './sidebar-open.ts';
 import type { Colors } from './theme.ts';
+import { tNow } from './language.ts';
 
 const HOUR = 3600_000;
 
@@ -69,6 +70,7 @@ function leaveOpen(state: StackState | undefined, deviceId: string, sessionId: s
  * `leave`: the row is the task open beside the sidebar, so archiving it closes that pane (an archived
  * task stays listed); a deleted one leaves the list and its screen closes itself. */
 function manage(row: Row, caps: Caps, leave?: () => void): Item[] {
+  const t = tNow();
   const { deviceId, task } = row;
   if (task.botId) return [];
   const settle = offersSettle({ badge: row.badge });
@@ -88,6 +90,7 @@ const tap = (run: () => void) => () => {
 };
 
 function actions(row: Row, snoozed: boolean, caps: Caps, leave?: () => void): Item[] {
+  const t = tNow();
   if (row.outboxId) {
     const id = row.outboxId;
     return [
