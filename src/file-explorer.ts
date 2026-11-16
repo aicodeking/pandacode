@@ -17,6 +17,38 @@ type Deps = {
   report(error: unknown): void;
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** How often the open tree and the file on screen are re-read while someone can see them. */
+const POLL_MS = 2000;
+/** What the poll keeps fresh: the Files tree in the inspector, and the open-file panel (tabs or a floating window). */
+const WATCHED = '#inspector-content .file-explorer, #file-panel';
+
+/** Whether a watched surface is on screen. One query and a visibility check per tick, every 2 s at most. */
+function watchedVisible(): boolean {
+  for (const element of document.querySelectorAll<HTMLElement>(WATCHED)) {
+    const shown = typeof element.checkVisibility === 'function' ? element.checkVisibility() : element.getClientRects().length > 0;
+    if (shown) return true;
+  }
+  return false;
+}
+
+/** The 2 s poll (`list_files` for the tree, `workspace_file_stamp` for the file on screen). It runs only while the window
+ * is focused and shown, so a background or hidden window costs no timer and no IPC at all, and each tick skips the
+ * refresh unless the Files tree or an open file is visible. Coming back (focus, or the document shown again) refreshes
+ * at once and restarts the poll. */
+function startPolling(refresh: () => void): void {
+  let timer = 0, focused = true;
+  const sync = (): void => {
+    const live = focused && !document.hidden;
+    if (live && !timer) timer = window.setInterval(() => { if (watchedVisible()) refresh(); }, POLL_MS);
+    else if (!live && timer) { window.clearInterval(timer); timer = 0; }
+  };
+  window.addEventListener('focus', () => { focused = true; sync(); refresh(); });
+  // A blur also fires when focus moves into one of the app's own frames (the browser panel, a preview); the document
+  // still has focus then, so read it once the move has landed rather than trusting the event.
+  window.addEventListener('blur', () => { window.setTimeout(() => { focused = document.hasFocus(); sync(); }, 0); });
+  document.addEventListener('visibilitychange', () => { sync(); if (!document.hidden && focused) refresh(); });
+  sync();
+}
 
 export function createFileExplorer(deps: Deps) {
   let refreshing = false;
@@ -77,7 +109,6 @@ export function createFileExplorer(deps: Deps) {
       } else edit(context, action, path, directory);
     } });
   }
-  window.setInterval(() => { if (!document.hidden) void refresh().catch(deps.report); }, 2000);
-  window.addEventListener('focus', () => { void refresh().catch(deps.report); });
+  startPolling(() => { void refresh().catch(deps.report); });
   return { menu, edit };
 }

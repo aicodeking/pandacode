@@ -119,7 +119,7 @@ import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { heldBackOpened, showCrashRecovery, takeCrashRecovery, tasksChanged } from './crash-recovery';
 import { addToastClose, labelToastShortcut, wireToastKeys } from './toast-keys';
 import { keepToastClear } from './toast-clearance';
-import { NEW_TASK_DRAFT, PersistedDrafts, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
+import { NEW_TASK_DRAFT, PersistedDrafts, browserDraftTimer, flushDraftsOnLeave, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
 import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
@@ -146,7 +146,7 @@ import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
 import { TailText } from './tail-text';
-import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
+import { noteChangedPaths, preloadDiffsAfterPaint, preloadDiffsWhenWanted } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
 import { errorText } from './error-text';
 import { escapeClosesToast, globalErrorText, isBenignGlobalError, nextToastCount, queueToast, shouldShowGlobalError, shouldToastLiveError, toastTitle, type ToastTone } from './toast-model';
@@ -185,7 +185,7 @@ const state = {
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
   selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
-  attachments: [] as string[], drafts: new PersistedDrafts(localStorage), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
+  attachments: [] as string[], drafts: new PersistedDrafts(localStorage, Date.now, browserDraftTimer), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
   browserAttachments: new Map<string, BrowserAttachment[]>(),
   moodboardAttachments: new Map<string, { id: string; projectId: string; name: string }[]>(),
   generation: 0, hasOlder: false,
@@ -626,7 +626,7 @@ const github = createGithub({
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
-    const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
+    const harness = pickHarness(state.providers);
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     return { provider: harness.id, model: rememberedModel(harness.id) };
   },
@@ -1318,6 +1318,10 @@ function lastActivity(s: Session): number | null { return s.lastPromptAt == null
 function activeTask(s: Session, now = Date.now()): boolean { const time = lastActivity(s); return time != null && time > now - ACTIVITY_WINDOW; }
 const pendingPromptActivity = new Map<string, number>();
 function session(): Session | undefined { return state.sessions.find(s => s.id === state.sessionId); }
+/** The harness a new task starts with: the default one if installed, else the first installed, else the first listed. */
+function pickHarness(providers: Provider[]): Provider | undefined {
+  return providers.find(p => p.id === state.defaultProvider && p.installed) ?? providers.find(p => p.installed) ?? providers[0];
+}
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
 /** A team waiting out its lead's usage limit with nothing at work. It stays active (Stop works, prompts
@@ -3516,8 +3520,10 @@ const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="cu
  * not that one: the old code wrote the height and then read the box back to decide the overflow switch, so every keystroke
  * laid the text out twice. It now takes the overflow from the same measurement, and a call whose text is already fitted
  * (the resizePrompt() that follows a queued message, a redraw between keystrokes) returns without writing and without
- * laying anything out. A keystroke is not one of those: no focus path calls resizePrompt, and a keystroke's own call always
- * sees a value the memo has not fitted yet, so typing measures exactly once.
+ * laying anything out. A keystroke is not one of those, but it rarely needs the box released (fitTyped): one line of plain
+ * text at a known width has the one-line fit's height (measured on a canvas, no layout), and text added at the end can only
+ * grow the box, which its scrollHeight at the current height shows without a write. Only a deletion or an edit inside
+ * multi-line text releases the box and measures, and every path writes the height only when it changes.
  * The text is not the fit's only input though: how many lines it wraps to depends on the width it wraps at, and the prompt
  * is a column of a resizable pane beside a send control that is not one width: 62x36 for Send and Stop
  * (redesign/conversation.css sizes `.composer-pill>.send-button` 62x36, overriding the 28x28 `--control` square in
@@ -3540,10 +3546,14 @@ const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="cu
  * is only a few lines down: a const or let declared below its function's first caller leaves a window where a call (a
  * redraw, a future top-level one) throws instead of returning. */
 const PROMPT_MAX_HEIGHT = 180;
-/** Everything the fitted height depends on that can change without the text changing: the box's row count and its height
- *  limits. `rows` is an integer, the limits a serialization of the two computed lengths. */
-type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; limits: string };
+/** Everything the fitted height depends on that can change without the text changing: the box's row count and its
+ *  computed metrics (height limits and font, `promptMetrics`), the width it was fitted at (-1 when unknown) and the
+ *  text's natural height (scrollHeight with the box released). */
+type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; limits: string; width: number; natural: number };
 let promptFit: PromptFit | undefined;
+/** The fit of any one-line text in this box at this width, rows and metrics: every one-line text needs the same height. */
+type PromptOneLine = { prompt: HTMLTextAreaElement; rows: number; limits: string; width: number; natural: number };
+let promptOneLine: PromptOneLine | undefined;
 let promptBoxWidth = -1;
 let promptObserved: HTMLTextAreaElement | null = null;
 const promptResize = new ResizeObserver(entries => {
@@ -3575,36 +3585,84 @@ function watchPrompt(prompt: HTMLTextAreaElement | null): void {
 function resizePrompt(remeasure = false): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   watchPrompt(prompt);
-  if (!prompt) { promptFit = undefined; return; }
+  if (!prompt) { promptFit = undefined; promptOneLine = undefined; return; }
   const fit = promptFit?.prompt === prompt ? promptFit : undefined;
   // An empty prompt is one line at any width (docs/agent-reference.md). Every composer render asks, and resolving
   // min/max height here would restyle the page on each one, so an empty box that is already fitted returns before that
   // read. `rows` stays in the key: the template copies its row count onto the reused textarea. Interface scale passes
   // `remeasure` and refits, because the line height changed even though the width did not.
   if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && prompt.style.height) return;
-  // The same text, the same rows and the same height limits in a box that is already fitted, at a width promptResize has
-  // accounted for, needs the height it has: this call writes nothing and lays nothing out. `value` and `rows` are a string
-  // and an integer, so a keystroke short-circuits on the value before the only read here is reached, and a redraw that
-  // changed the row count or the limits re-fits instead of trusting the last fit.
-  if (!remeasure && fit && fit.value === prompt.value && prompt.style.height && fit.rows === prompt.rows && fit.limits === promptHeightLimits(prompt)) return;
+  // The same text, the same rows and the same metrics in a box that is already fitted, at a width promptResize has
+  // accounted for, needs the height it has: this call writes nothing and lays nothing out. A keystroke changed the value,
+  // so it goes to fitTyped(), which writes the height only when it changes and, for one line of plain text at a known
+  // width, reads no layout at all.
+  if (!remeasure && fit && prompt.style.height && fit.rows === prompt.rows) {
+    const metrics = promptMetrics(prompt);
+    if (fit.limits === metrics.key && (fit.value === prompt.value || fitTyped(prompt, fit, metrics))) return;
+  }
   prompt.style.height = 'auto';
   const natural = prompt.scrollHeight;
   // A pane that is not laid out reports no content height: forget the fit and the width it was taken at, so the next layout
   // — the pane shown again, or the prompt's observer seeing it at a real width — measures instead of trusting it.
-  if (!natural) { promptFit = undefined; promptBoxWidth = -1; return; }
-  const height = Math.min(natural, PROMPT_MAX_HEIGHT);
-  prompt.style.height = `${height}px`;
+  if (!natural) { promptFit = undefined; promptOneLine = undefined; promptBoxWidth = -1; return; }
+  applyPromptHeight(prompt, natural);
+  const metrics = promptMetrics(prompt);
+  promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
+  if (promptBoxWidth > 0 && oneLineText(prompt.value, metrics.font, promptBoxWidth)) promptOneLine = { prompt, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
+}
+/** Writes the height (and the overflow switch) for a natural height, each only when it changes. */
+function applyPromptHeight(prompt: HTMLTextAreaElement, natural: number): void {
+  const height = `${Math.min(natural, PROMPT_MAX_HEIGHT)}px`;
+  if (prompt.style.height !== height) prompt.style.height = height;
   // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar. At any height the box scrolls
   // exactly when the text is taller than it, so this is the same test, one measurement cheaper.
-  const overflow = natural > height + 1 ? 'auto' : 'hidden';
+  const overflow = natural > Math.min(natural, PROMPT_MAX_HEIGHT) + 1 ? 'auto' : 'hidden';
   if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
-  promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: promptHeightLimits(prompt) };
 }
-/** The fitted height also depends on the box's own limits, and they can change without the text or the width changing (a
- *  rule above it in the cascade, a unit change). Read once where the answer is decided or recorded, never per keystroke. */
-function promptHeightLimits(prompt: HTMLTextAreaElement): string {
+/** A changed value in a box fitted at the same rows and metrics, without releasing its height. One line of plain text at
+ *  the width the one-line fit was taken at needs that fit's height (canvas-measured, no layout). Text added at the end
+ *  only adds lines: past the cap nothing changes, otherwise the box's scrollHeight read at its current height — the layout
+ *  the keystroke needs anyway, with nothing written before it — says whether it grew. Anything else (a deletion, an edit
+ *  inside multi-line text, an unknown width) returns false for the full measurement. */
+function fitTyped(prompt: HTMLTextAreaElement, fit: PromptFit, metrics: PromptMetrics): boolean {
+  const value = prompt.value, width = promptBoxWidth, one = promptOneLine;
+  if (width <= 0) return false;
+  if (one && one.prompt === prompt && one.rows === prompt.rows && one.limits === metrics.key && Math.abs(one.width - width) < .5 && oneLineText(value, metrics.font, width)) {
+    applyPromptHeight(prompt, one.natural);
+    promptFit = { ...fit, value, width, natural: one.natural };
+    return true;
+  }
+  if (Math.abs(fit.width - width) >= .5 || value.length <= fit.value.length || !value.startsWith(fit.value)) return false;
+  if (fit.natural > PROMPT_MAX_HEIGHT + 1) { promptFit = { ...fit, value }; return true; }
+  const scrolled = prompt.scrollHeight;
+  if (!scrolled) return false;
+  // Laid out already by the read above: the box's own height costs nothing more.
+  const natural = scrolled > prompt.clientHeight ? scrolled : fit.natural;
+  if (natural !== fit.natural) applyPromptHeight(prompt, natural);
+  promptFit = { ...fit, value, natural };
+  return true;
+}
+/** The computed styles the fit depends on besides text and width: the height limits and, when the canvas can measure
+ *  the text the way the box lays it out, the font (empty otherwise). One getComputedStyle, no layout. */
+type PromptMetrics = { key: string; font: string };
+function promptMetrics(prompt: HTMLTextAreaElement): PromptMetrics {
   const style = getComputedStyle(prompt);
-  return `${style.minHeight}|${style.maxHeight}`;
+  const plain = style.letterSpacing === 'normal' && style.wordSpacing === '0px' && style.textTransform === 'none' && style.textIndent === '0px' && (style.fontStretch === '100%' || style.fontStretch === 'normal');
+  const font = plain ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '';
+  return { key: `${style.minHeight}|${style.maxHeight}|${style.lineHeight}|${font}`, font };
+}
+/** Latin text with no line breaks or tabs, whose glyphs come from the box's own font (no emoji or fallback fonts that
+ *  could change a line's height). Longer text always takes the measured path. */
+const ONE_LINE_PLAIN = /^[\x20-\x7e\u00a0-\u024f]{0,400}$/;
+let promptCanvas: { context: CanvasRenderingContext2D; font: string } | null | undefined;
+/** Whether `text` stays on one line in a box `width` wide, with a margin for the canvas and the layout rounding apart. */
+function oneLineText(text: string, font: string, width: number): boolean {
+  if (!text) return true;
+  if (!font || !ONE_LINE_PLAIN.test(text)) return false;
+  if (promptCanvas === undefined) { const context = document.createElement('canvas').getContext('2d'); promptCanvas = context ? { context, font: '' } : null; }
+  if (!promptCanvas) return false;
+  if (promptCanvas.font !== font) { promptCanvas.context.font = font; promptCanvas.font = font; }
+  return promptCanvas.context.measureText(text).width + Math.max(8, width * .02) < width;
 }
 // An interface-size change can leave the prompt's box the same width and still change how the text wraps (the preview scales
 // the root font while the actions keep their px widths), so the observer above stays silent and the fit has to be re-taken
@@ -3744,7 +3802,9 @@ function renderComposer(): void {
 /** Steer with nothing typed stays pressable (it focuses the prompt) but says it has nothing to send. */
 function syncSteerAvailability(): void {
   const steer = document.querySelector<HTMLElement>('#composer-area .steer-button'), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (steer && prompt) steer.setAttribute('aria-disabled', String(!prompt.value.trim()));
+  if (!steer || !prompt) return;
+  const disabled = String(!prompt.value.trim());
+  if (steer.getAttribute('aria-disabled') !== disabled) steer.setAttribute('aria-disabled', disabled);
 }
 document.addEventListener('input', event => { if ((event.target as Element | null)?.id === 'prompt') syncSteerAvailability(); });
 /** The composer's harness/model trigger. `main` marks the open thread's (its id and the labels refreshModelLabels updates). */
@@ -3967,7 +4027,7 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   let saved: Session;
   if (id) saved = await call<Session>('update_task_details', { sessionId: id, title, description });
   else {
-    const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
+    const harness = pickHarness(await providersForChoice());
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
   }
@@ -4242,6 +4302,7 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
 function selectSession(id: string, focusComposer = false): Promise<void> {
+  state.drafts.flush();
   if (id !== state.sessionId) voiceDictation.detach();
   return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
 }
@@ -4354,7 +4415,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (queueOf(id).length) run(dispatchQueue(id));
   // A saved team can select a harness whose catalog has not been opened this run.
   // Resolve its display name in place, without delaying the task or replacing input.
-  if (provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  if (providersKnown && provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   if (generation !== state.generation) return;
   await refreshInspectorIfStale(); renderHeader();
@@ -6063,6 +6124,7 @@ function renderInspector(): void {
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
   const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
+  if (visible && (state.inspectorTab === 'changes' || state.selectedKind)) preloadDiffsAfterPaint();
   const inspector = $('#inspector');
   // Opening: the column appears at once and the panel slides in. Closing: the panel fades in its
   // column and the column snaps shut after (`inspector-closed`), so the thread never rewraps under a
@@ -6483,8 +6545,8 @@ async function startTask(projectId: string): Promise<void> {
   closeModelPicker();
   closeProjectPicker();
   const generation = state.generation;
-  const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
-    ?? state.providers.find(p => p.installed) ?? state.providers[0];
+  const harness = pickHarness(await providersForChoice());
+  if (generation !== state.generation) return;
   if (!harness) { notify('Open Settings to check your installed agents.'); return; }
   // An untouched draft is replaced so current defaults apply. Coming from elsewhere, a kept draft
   // (typed text or a worktree) is reopened; from inside one, New task starts another.
@@ -6514,8 +6576,8 @@ async function createChat(from?: Session): Promise<void> {
     if (state.projectFilter) setProjectFilter('');
     state.query = ''; closeModal(); await selectSession(unused.id, true); return;
   }
-  const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
-    ?? state.providers.find(p => p.installed) ?? state.providers[0];
+  const harness = pickHarness(await providersForChoice());
+  if (generation !== state.generation) return;
   if (!harness) { notify('Open Settings to check your installed agents.'); return; }
   if (!from) leaveDraft('');
   creatingTask = true;
@@ -6889,6 +6951,8 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
     if (previous?.path === found.path && previous?.version === found.version) found.models = previous.models;
   }
   state.providers = providers;
+  // A Settings refresh answers the boot question too (the boot list may have failed or still be out).
+  if (!providersKnown) { providersKnown = true; settleProviders(providers); }
   return providers;
 }
 /** Settings is a full page over the workspace; Back or Escape returns to where you were. */
@@ -7160,7 +7224,7 @@ async function showBots(open: { botId?: string; startNew?: boolean } = {}): Prom
   try {
     const [{ mountBots }, providers] = await Promise.all([
       import('./bots'),
-      state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers'),
+      (providersKnown ? Promise.resolve(state.providers) : providersReady),
     ]);
     if (!dialog.open || !host.isConnected) return;
     botsView = mountBots(host, { ...botsOptions(providers), initialBot: open.botId, startNew: open.startNew });
@@ -7174,7 +7238,7 @@ async function showBotSettings(botId: string, tab?: import('./bots').Section): P
   const dialog = modal(name ? `${name} settings` : 'Bot settings', '<div id="bots-host"><p role="status">Loading…</p></div>', 'bot-settings-dialog');
   const host = dialog.querySelector<HTMLElement>('#bots-host')!;
   try {
-    const [{ mountBots }, providers] = await Promise.all([import('./bots'), state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers')]);
+    const [{ mountBots }, providers] = await Promise.all([import('./bots'), (providersKnown ? Promise.resolve(state.providers) : providersReady)]);
     if (!dialog.open || !host.isConnected) return;
     botsView = mountBots(host, { ...botsOptions(providers), layout: 'settings', initialBot: botId, initialTab: tab, onDeleted: () => run((async () => { closeModal(); await reloadBotProjects(); await reloadSessions(); if (!session()) clearOpenSession(); render(); })()) });
   } catch {
@@ -7910,7 +7974,7 @@ async function showAgentUsage(): Promise<void> {
   try {
     const [{ mountAgentUsage }, providers] = await Promise.all([
       import('./agent-usage'),
-      state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers'),
+      (providersKnown ? Promise.resolve(state.providers) : providersReady),
     ]);
     if (!dialog.open || !host.isConnected) return;
     agentUsageCleanup = mountAgentUsage(host, providers);
@@ -8342,13 +8406,18 @@ const windowDied = windowContentDied(localStorage);
 async function boot(): Promise<void> {
   // Asked first: paused crash restarts skip reopening the last thread.
   const crashRecovery = takeCrashRecovery();
-  await subscribe('agent-event', onAgent);
-  await subscribe('provider-models-changed', event => invalidateModels(event.provider));
-  await subscribe('architect-event', onArchitect);
+  // Probing every CLI takes seconds; the first thread needs none of it (loadBootProviders).
+  loadBootProviders();
+  // The listeners the task list depends on are registered together, all before the list is read.
+  const listening: Promise<unknown>[] = [
+    subscribe('agent-event', onAgent),
+    subscribe('provider-models-changed', event => invalidateModels(event.provider)),
+    subscribe('architect-event', onArchitect),
+    subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
+    subscribe('sessions-changed', () => run(reloadSessions())),
+    subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
+  ];
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
-  await subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds));
-  await subscribe('sessions-changed', () => run(reloadSessions()));
-  await subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event)));
   // An agent booted or asked to show a simulator: bring the panel forward.
   // An agent started or asked to show a VM: bring the panel forward.
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
@@ -8409,13 +8478,13 @@ async function boot(): Promise<void> {
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
   // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
-  await subscribe('queue-changed', payload => run((async () => {
+  listening.push(subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
     setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
     if (id === state.sessionId) renderComposer();
     await dispatchQueue(id);
-  })()));
-  await subscribe('overlay-open-task', event => run((async () => {
+  })())));
+  listening.push(subscribe('overlay-open-task', event => run((async () => {
     const request = ++overlayOpenRequest, initialGeneration = state.generation;
     await reloadSessions();
     if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
@@ -8431,9 +8500,10 @@ async function boot(): Promise<void> {
     } else if (event.subagentId) {
       await subagents.showAgent(event.subagentId);
     }
-  })()));
-  await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
-  [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
+  })())));
+  listening.push(connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction));
+  await Promise.all(listening);
+  [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
   projectsListed = true;
   // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
   void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
@@ -8474,7 +8544,61 @@ async function boot(): Promise<void> {
   run(fileIconsReady.then(refreshFileIcons));
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
   if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
-  if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+}
+/* Harnesses: `list_providers` probes every CLI (seconds), so boot opens the first thread without it. Until it answers,
+ * state.providers is the last launch's list (names, models and install state, PROVIDER_CATALOG_KEY), so names and labels
+ * paint as before, and nothing judges what is installed: no "check your agent CLIs" note, no model discovery on a stale
+ * answer. When it lands, labels refresh and the open thread's models load. */
+const PROVIDER_CATALOG_KEY = 'pandacode.providerCatalog';
+let providersKnown = false;
+let settleProviders: (providers: Provider[]) => void = () => {};
+/** The real harness list, once `list_providers` has answered (the last known list if it failed). */
+const providersReady = new Promise<Provider[]>(resolve => { settleProviders = resolve; });
+/** The harness list a choice can rely on: the current one once known, or the last launch's while it names an
+ *  installed harness; otherwise the real list, waited for. */
+function providersForChoice(): Promise<Provider[]> | Provider[] {
+  return providersKnown || state.providers.some(p => p.installed) ? state.providers : providersReady;
+}
+function lastProviderCatalog(): Provider[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(PROVIDER_CATALOG_KEY) ?? '[]');
+    if (!Array.isArray(saved)) return [];
+    return saved.filter((p): p is Pick<Provider, 'id' | 'name' | 'installed' | 'models'> => Boolean(p) && typeof p.id === 'string' && typeof p.name === 'string' && typeof p.installed === 'boolean' && Array.isArray(p.models))
+      .map(({ id, name, installed, models }) => ({ id, name, installed, models, path: null, version: '' }));
+  } catch { return []; }
+}
+function keepProviderCatalog(providers: Provider[]): void {
+  try { localStorage.setItem(PROVIDER_CATALOG_KEY, JSON.stringify(providers.map(({ id, name, installed, models }) => ({ id, name, installed, models })))); }
+  catch { /* the next launch waits for the list, as the first one does */ }
+}
+function loadBootProviders(): void {
+  if (!state.providers.length) state.providers = lastProviderCatalog();
+  const discovery = settingsDiscoveryGeneration;
+  run(call<Provider[]>('list_providers').then(found => providersLanded(found, discovery), error => { settleProviders(state.providers); throw error; }));
+}
+function providersLanded(found: Provider[], discovery: number): void {
+  if (!Array.isArray(found)) { settleProviders(state.providers); return; }
+  keepProviderCatalog(found);
+  // Names the transcript painted from the last launch's list (or 'Agent' with none) are redrawn only when they differ.
+  const renamed = found.length !== state.providers.length || found.some(entry => provider(entry.id)?.name !== entry.name);
+  // A Settings refresh meanwhile has the newer list; otherwise models already discovered this launch stay.
+  if (discovery === settingsDiscoveryGeneration) {
+    for (const entry of found) { const previous = provider(entry.id); if (previous && modelCatalogs.has(entry.id)) entry.models = previous.models; }
+    state.providers = found;
+  }
+  providersKnown = true;
+  settleProviders(state.providers);
+  const s = session();
+  if (s && !s.remoteDevice && provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  refreshModelLabels(); renderHeader(); refreshTeamProgress();
+  if (renamed && s && !state.messagesLoading && transcriptVisible()) renderTranscript(true);
+  if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
+  // Restored queues name the agent they wait for.
+  if (s && state.queues.get(s.id)?.length) renderComposer();
+  if (!preview && !state.providers.some(p => p.installed)) {
+    const pending = bootPending;
+    void (pending ?? Promise.resolve()).catch(() => undefined).then(() => notify('Open Settings to check your installed agent CLIs.'));
+  }
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify, notifyError }));
@@ -8486,6 +8610,7 @@ window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true }
 // A New task's text is kept per project, since its draft session does not outlive the launch.
 state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
 expireDraftsWhileRunning(state.drafts);
+flushDraftsOnLeave(state.drafts);
 renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
@@ -8503,7 +8628,7 @@ function showCrashNotice(): void {
 }
 // An orderly unload (reload, quit that reaches the page) is never a thread that took the app down.
 // WKWebView may not fire pagehide on Cmd+Q, so a committed quit's native `app-quitting` event does the same.
-const leave = () => leavePage(localStorage);
+const leave = () => { state.drafts.flush(); leavePage(localStorage); };
 window.addEventListener('pagehide', leave);
 void subscribe('app-quitting', leave).catch(error => console.warn('Could not listen for quitting:', error));
 // A page that outlives the native reload budget is stable: an earlier window death is forgotten.
@@ -8511,6 +8636,7 @@ window.setTimeout(() => windowStable(localStorage), WINDOW_STABLE_AFTER);
 wireToastKeys($('#toast'));
 keepToastClear($('#toast'), $('#composer-area'));
 void bootPending.catch(() => undefined).then(showCrashNotice);
-// The diff engine (module, highlighter workers, themes) starts right after the first paint.
-preloadDiffsAfterPaint();
+// The diff engine (module, highlighter workers, themes) starts once a diff is likely: the Changes tab or a diff
+// view open (renderInspector), a change row hovered or focused, or after boot has gone idle for a while.
+preloadDiffsWhenWanted();
 if (!preview) initializeNativeAppearance();

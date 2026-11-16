@@ -157,3 +157,67 @@ test('file explorer: switching projects shows only the active checkout', async (
   await expect(explorer(page).locator('.file-folder-path>span')).toHaveText('orbit');
   await expect(item(page, 'only-in-orbit.txt')).toBeVisible();
 });
+
+/** Counts the poll's IPC (`list_files` for the tree, `workspace_file_stamp` for the file on screen) by patching the preview's
+ * command switch, as `observeWorktreeCommands` in ui.spec.ts does. */
+async function countPolls(page: Page): Promise<() => Promise<number>> {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const marker = /switch\s*\(command\)\s*\{/, source = await response.text();
+    expect(source).toMatch(marker);
+    const body = source.replace(marker, `if (command === 'list_files' || command === 'workspace_file_stamp') window.__filePolls = (window.__filePolls ?? 0) + 1;
+      switch (command) {`) + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
+    await route.fulfill({ response, body });
+  });
+  await page.reload();
+  // The reload restores the open Files panel; let it draw (or settle closed) before toggling it.
+  await expect(item(page, 'README.md').or(page.locator('#files-toggle[aria-pressed="false"]'))).toBeVisible();
+  await showExplorer(page);
+  await expect(item(page, 'README.md')).toBeVisible();
+  return () => page.evaluate(() => (window as any).__filePolls as number ?? 0);
+}
+/** No poll IPC across two and a bit poll intervals. */
+async function expectQuiet(page: Page, polls: () => Promise<number>, why: string): Promise<void> {
+  await page.waitForTimeout(150);
+  const from = await polls();
+  await page.waitForTimeout(4500);
+  expect(await polls(), why).toBe(from);
+}
+
+test('file explorer: the poll pauses while the window is unfocused or hidden and refreshes at once on return', async ({ page }) => {
+  test.setTimeout(45_000);
+  const polls = await countPolls(page);
+  let from = await polls();
+  await expect.poll(polls, { timeout: 5000, message: 'focused with the tree on screen, it polls' }).toBeGreaterThan(from);
+  await page.evaluate(() => { document.hasFocus = () => false; dispatchEvent(new Event('blur')); });
+  await expectQuiet(page, polls, 'no poll while the window is unfocused');
+  from = await polls();
+  await page.evaluate(() => { document.hasFocus = () => true; dispatchEvent(new Event('focus')); });
+  await expect.poll(polls, { timeout: 500, message: 'focus refreshes at once' }).toBeGreaterThan(from);
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await expectQuiet(page, polls, 'no poll while the window is hidden');
+  from = await polls();
+  await page.evaluate(() => { delete (document as any).hidden; document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(polls, { timeout: 500, message: 'showing the window refreshes at once' }).toBeGreaterThan(from);
+  // Focus moving into one of the app's own frames blurs the window, but the document keeps focus: the poll goes on.
+  from = await polls();
+  await page.evaluate(() => dispatchEvent(new Event('blur')));
+  await expect.poll(polls, { timeout: 5000, message: 'a blur that leaves the document focused keeps polling' }).toBeGreaterThan(from);
+});
+
+test('file explorer: the poll runs only while the Files tree or an open file is on screen', async ({ page }) => {
+  test.setTimeout(45_000);
+  const polls = await countPolls(page);
+  await item(page, 'README.md').click();
+  await expect(page.locator('#file-tabs .file-tab')).toHaveCount(1);
+  // The open file alone (tree closed) keeps its stamp fresh.
+  await page.getByRole('button', { name: 'Toggle file explorer', exact: true }).click();
+  await expect(explorer(page)).toBeHidden();
+  await expect(page.locator('#file-panel')).toBeVisible();
+  const from = await polls();
+  await expect.poll(polls, { timeout: 5000, message: 'an open file on screen is polled' }).toBeGreaterThan(from);
+  // The file hidden too: the tab still exists, but nothing on screen shows the files.
+  await page.locator('#file-editor-toggle').click();
+  await expect(page.locator('#file-panel')).toBeHidden();
+  await expectQuiet(page, polls, 'no poll while neither the tree nor a file is on screen');
+});

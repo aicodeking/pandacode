@@ -165,6 +165,18 @@ type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
 pub const SCHEMA_VERSION: i64 = 37;
+/// A team snapshot's `status`, NULL for a corrupt snapshot. The index and both reads below
+/// must spell it identically, or SQLite stops reading it from the index.
+macro_rules! team_status_sql {
+    () => { "CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END" };
+}
+/// Created at every open, never by a migration: older builds keep the database at the same
+/// `user_version` and SQLite maintains the index for them.
+const TEAM_STATUS_INDEX: &str = concat!("CREATE INDEX IF NOT EXISTS architect_teams_status ON architect_teams(session_id,(", team_status_sql!(), "))");
+/// Reads the status stored in the index instead of parsing the snapshot (megabytes for a large
+/// team). `INDEXED BY` is needed: the planner otherwise prefers the unique primary-key index.
+const TEAM_STATUS_BY_INDEX: &str = concat!("SELECT ", team_status_sql!(), " FROM architect_teams INDEXED BY architect_teams_status WHERE session_id=?1");
+const TEAM_STATUS_BY_ROW: &str = concat!("SELECT ", team_status_sql!(), " FROM architect_teams WHERE session_id=?1");
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 
@@ -248,6 +260,14 @@ impl Store {
             path: path.into(),
             restart_interrupted: 0,
         })
+    }
+
+    /// A team's stored `status`; None without a team row, for a corrupt snapshot, or for a
+    /// status that is not a string. A database only ever opened read-only by this build may lack
+    /// the index, so that read parses the row as before.
+    pub(crate) fn team_status(&self, sid: &str) -> Option<String> {
+        let query = self.db.prepare_cached(TEAM_STATUS_BY_INDEX).or_else(|_| self.db.prepare_cached(TEAM_STATUS_BY_ROW));
+        query.and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0))).ok().flatten()
     }
 
     pub(crate) fn launch_session_project(&self, sid: &str) -> Result<Option<(String, String)>> {
@@ -646,6 +666,7 @@ impl Store {
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
+        db.execute_batch(TEAM_STATUS_INDEX).map_err(|e| e.to_string())?;
         let recovery = db.transaction().map_err(|e| e.to_string())?;
         // Only rows from before typed coordination existed are eligible for the
         // narrowly scoped legacy display projection. New user copies stay user text.
@@ -2820,6 +2841,47 @@ mod tests {
         assert_eq!(review.updated_at, 9);
         assert!(!store.session(&live.id).unwrap().archived);
         assert_eq!(store.settle_archived().unwrap(), 0);
+    }
+
+    #[test]
+    fn team_status_reads_the_status_index_without_parsing_the_snapshot() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = store.db.prepare(&format!("EXPLAIN QUERY PLAN {TEAM_STATUS_BY_INDEX}")).unwrap()
+            .query_map(["t"], |row| row.get::<_, String>(3)).unwrap().map(|row| row.unwrap()).collect();
+        assert_eq!(plan, ["SEARCH architect_teams USING COVERING INDEX architect_teams_status (session_id=?)"]);
+        store.db.execute_batch("PRAGMA foreign_keys=OFF; INSERT INTO architect_teams(session_id,content) VALUES('t','{\"status\":\"running\"}'),('bad','{broken');").unwrap();
+        assert_eq!(store.team_status("t").as_deref(), Some("running"));
+        assert_eq!(store.team_status("bad"), None);
+        assert_eq!(store.team_status("none"), None);
+        // A save updates the indexed status.
+        store.db.execute("UPDATE architect_teams SET content='{\"status\":\"completed\"}' WHERE session_id='t'", []).unwrap();
+        assert_eq!(store.team_status("t").as_deref(), Some("completed"));
+        assert!(store.db.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)).unwrap() == "ok");
+    }
+
+    #[test]
+    fn team_status_index_is_recreated_at_open_and_never_bumps_the_schema() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-status-{}", id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        drop(Store::open(&path).unwrap());
+        {
+            // An older build's database: same version, no index, a waiting team.
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("PRAGMA foreign_keys=OFF; DROP INDEX architect_teams_status;
+                INSERT INTO architect_teams(session_id,content) VALUES('t','{\"status\":\"paused\"}');").unwrap();
+        }
+        let read_only = Store::open_read_only(&path).unwrap();
+        assert_eq!(read_only.team_status("t").as_deref(), Some("paused"), "falls back to the row without the index");
+        drop(read_only);
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let indexed: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='architect_teams_status')", [], |row| row.get(0)).unwrap();
+        assert!(indexed);
+        assert_eq!(store.team_status("t").as_deref(), Some("paused"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 // Warm paths for the inspector's Changes view: the viewer module, its worker pool and
-// themes start after the app's first paint, and the pool warms the grammars of the
+// themes start once a diff is likely (preloadDiffsWhenWanted), and the pool warms the grammars of the
 // files in the current git status first. The patch splitting here is shared with
 // mounting, so every viewer derives the same pool cache keys.
 
@@ -10,10 +10,41 @@ export function preloadDiffs(): Promise<unknown> {
   return preloaded;
 }
 
+let afterPaint = false;
 /** preloadDiffs() right after the next paint, so it never delays the list it belongs to. */
 export function preloadDiffsAfterPaint(): void {
-  if (preloaded) return;
-  requestAnimationFrame(() => setTimeout(() => void preloadDiffs(), 0));
+  disarm();
+  if (preloaded || afterPaint) return;
+  afterPaint = true;
+  requestAnimationFrame(() => setTimeout(() => { afterPaint = false; void preloadDiffs(); }, 0));
+}
+
+/** With no diff asked for, the engine starts this long after boot, at the next idle moment. */
+export const DIFF_IDLE_AFTER = 15_000;
+/** Pointing at or focusing one of these is a diff about to be opened: change rows, Open diff, the Changes tab. */
+export const DIFF_INTENT = '.turn-changes, [data-action="open-turn-diff"], [data-action="tab-changes"], .cv-file, .change-review-files';
+let disarm: () => void = () => {};
+
+/**
+ * Starts the engine only when a diff is likely: something matching DIFF_INTENT is hovered or
+ * focused, `preloadDiffsAfterPaint()` is called (the Changes tab or a file or diff view opened),
+ * or DIFF_IDLE_AFTER has passed and the page is idle. A diff opened before any of these still
+ * renders: mounting starts the engine itself.
+ */
+export function preloadDiffsWhenWanted(doc: Pick<Document, 'addEventListener' | 'removeEventListener'> = document, win: Pick<Window, 'setTimeout' | 'clearTimeout'> & { requestIdleCallback?: (run: () => void, options?: { timeout: number }) => number } = window): void {
+  if (preloaded || afterPaint) return;
+  disarm();
+  const near = (event: Event) => { if ((event.target as Element | null)?.closest?.(DIFF_INTENT)) preloadDiffsAfterPaint(); };
+  const idle = () => { if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(preloadDiffsAfterPaint, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
+  const timer = win.setTimeout(idle, DIFF_IDLE_AFTER);
+  doc.addEventListener('pointerover', near, { passive: true });
+  doc.addEventListener('focusin', near);
+  disarm = () => {
+    disarm = () => {};
+    win.clearTimeout(timer);
+    doc.removeEventListener('pointerover', near);
+    doc.removeEventListener('focusin', near);
+  };
 }
 
 let changedNames: string[] = [];

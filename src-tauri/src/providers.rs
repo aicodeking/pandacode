@@ -925,6 +925,32 @@ pub(crate) fn mimo_endpoints() -> &'static [(&'static str, &'static str, &'stati
     &mimo::ENDPOINTS
 }
 
+/// `--version` for each path, in order ("" when absent or failing). Every distinct binary is
+/// probed once, all at the same time, so discovery waits for the slowest CLI rather than the
+/// sum of them (GLM, MiMo and Alibaba share Claude's binary). Plain scoped threads: no locks
+/// are held and nothing is shared between probes.
+fn versions(paths: &[Option<&Path>]) -> Vec<String> {
+    let mut distinct: Vec<&Path> = Vec::new();
+    for path in paths.iter().flatten() {
+        if !distinct.contains(path) {
+            distinct.push(path);
+        }
+    }
+    let found: Vec<Option<String>> = std::thread::scope(|scope| {
+        let probes: Vec<_> = distinct.iter().map(|path| scope.spawn(move || version(path))).collect();
+        // A probe that panicked reports no version, like one that failed.
+        probes.into_iter().map(|probe| probe.join().ok().flatten()).collect()
+    });
+    paths
+        .iter()
+        .map(|path| {
+            path.and_then(|path| distinct.iter().position(|known| *known == path))
+                .and_then(|index| found[index].clone())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 fn version(path: &Path) -> Option<String> {
     capture(launch::std_command(path).ok()?, &["--version"], Duration::from_secs(2))
         .map(|text| text.chars().take(150).collect())
@@ -1034,18 +1060,23 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
+    let paths: Vec<_> = PROVIDERS.iter().map(|(id, _)| executable(id)).collect();
+    // Antigravity's ACP server is not asked for a version; it reports "ACP".
+    let probes: Vec<_> = PROVIDERS
+        .iter()
+        .zip(&paths)
+        .map(|((id, _), path)| if *id == "antigravity" { None } else { path.as_deref() })
+        .collect();
+    let versions = versions(&probes);
     PROVIDERS.into_iter()
-    .map(|(id, name)| {
-        let path = executable(id);
+    .zip(paths)
+    .zip(versions)
+    .map(|(((id, name), path), version)| {
         ProviderInfo {
             id: id.into(),
             name: name.into(),
             installed: path.is_some(),
-            version: if id == "antigravity" {
-                "ACP".into()
-            } else {
-                path.as_deref().and_then(version).unwrap_or_default()
-            },
+            version: if id == "antigravity" { "ACP".into() } else { version },
             path: path.map(|p| p.to_string_lossy().into_owned()),
             models: if id == "glm" {
                 glm::models()
@@ -4284,6 +4315,57 @@ mod tests {
         assert!(super::should_shrink(10, 2 * 1024 * 1024));
         assert!(!super::should_shrink(10, 1024 * 1024));
         assert!(!super::should_shrink(super::FRAME_KEEP, 2 * 1024 * 1024));
+    }
+
+    /// Four slow stand-in CLIs (one listed three times) probe at once: each binary runs
+    /// once, results keep their order, and the wall time is one probe, not four.
+    #[cfg(unix)]
+    #[test]
+    fn version_probes_run_in_parallel_once_per_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-versions-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let scripts: Vec<_> = (0..4).map(|index| {
+            let script = root.join(format!("cli{index}"));
+            std::fs::write(&script, format!(
+                "#!/bin/sh\necho cli{index} >> '{log}'\nsleep 0.6\necho 'cli{index} 1.{index}.0'\n",
+                log = log.display(),
+            )).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            script
+        }).collect();
+        let missing = root.join("missing");
+        let paths = [
+            Some(scripts[0].as_path()), None, Some(scripts[1].as_path()), Some(scripts[0].as_path()),
+            Some(scripts[2].as_path()), Some(missing.as_path()), Some(scripts[0].as_path()), Some(scripts[3].as_path()),
+        ];
+        let started = std::time::Instant::now();
+        let versions = super::versions(&paths);
+        let elapsed = started.elapsed();
+        let runs = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(versions, [
+            "cli0 1.0.0", "", "cli1 1.1.0", "cli0 1.0.0", "cli2 1.2.0", "", "cli0 1.0.0", "cli3 1.3.0",
+        ]);
+        let mut runs: Vec<_> = runs.lines().collect();
+        runs.sort_unstable();
+        assert_eq!(runs, ["cli0", "cli1", "cli2", "cli3"], "each distinct binary runs once");
+        // Serially this is 4 × 0.6 s = 2.4 s; in parallel about one 0.6 s probe.
+        assert!(elapsed < std::time::Duration::from_millis(1600), "probes ran serially: {elapsed:?}");
+    }
+
+    /// Times `discover()` against the CLIs installed on this machine.
+    #[test]
+    #[ignore = "Runs --version on every installed agent CLI"]
+    fn installed_discover_timing() {
+        let started = std::time::Instant::now();
+        let providers = super::discover();
+        let elapsed = started.elapsed();
+        for provider in &providers {
+            println!("{:>16} {:<5} {}", provider.id, provider.installed, provider.version.lines().next().unwrap_or(""));
+        }
+        println!("discover() took {elapsed:?}");
     }
     /// Recorded from `opencode --standalone api model.list` 2.2.5 (trimmed to two models).
     const OPENCODE_V2_MODELS: &str = r#"{"location":{"directory":"/tmp"},"data":[{"id":"flint-40b-free","modelID":"flint-40b-free","providerID":"opencode","type":"chat","family":"flint","name":"Flint 40B Free","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[{"id":"low","settings":{"reasoningEffort":"low"}},{"id":"medium","settings":{"reasoningEffort":"medium"}},{"id":"high","settings":{"reasoningEffort":"high"}},{"id":"xhigh","settings":{"reasoningEffort":"xhigh"}},{"id":"max","settings":{"reasoningEffort":"max"}}],"time":{"released":1792540800000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":262144,"output":65536}},{"id":"big-pickle","modelID":"big-pickle","providerID":"opencode","type":"chat","family":"big-pickle","name":"Big Pickle","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[],"time":{"released":1760659200000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":200000,"input":160000,"output":32000}}]}"#;

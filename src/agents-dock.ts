@@ -74,13 +74,24 @@ export function renderAgentRows(list: HTMLElement, agents: AgentsDockAgent[], re
   rows.forEach(row => row.remove());
 }
 
-/** The one clock per window: rewrites only the elapsed labels under `root`, once a second. */
+/** The one clock per window: rewrites only the elapsed labels under `root`, once a second, and only while `root` holds
+ * rows. An empty list (no agents running, the usual state) runs no timer at all: a childList observer on `root` (rows are
+ * its direct children, `renderAgentRows`) starts the clock when the first row arrives and stops it when the last goes. */
 export function startElapsedTick(root: HTMLElement): () => void {
-  const timer = window.setInterval(() => {
+  let timer = 0;
+  const tick = (): void => {
     const now = Date.now();
     root.querySelectorAll<HTMLTimeElement>('.agents-dock-elapsed[data-started]').forEach(age => paintElapsed(age, now));
-  }, 1_000);
-  return () => window.clearInterval(timer);
+  };
+  const sync = (): void => {
+    const rows = root.querySelector(':scope>[data-agent-id]') !== null;
+    if (rows && !timer) timer = window.setInterval(tick, 1_000);
+    else if (!rows && timer) { window.clearInterval(timer); timer = 0; }
+  };
+  const observer = new MutationObserver(sync);
+  observer.observe(root, { childList: true });
+  sync();
+  return () => { observer.disconnect(); window.clearInterval(timer); timer = 0; };
 }
 
 /** Eagerly mount the live running-agents button in the workspace header. */

@@ -1669,15 +1669,18 @@ pub fn summary(store: &Store, sid: &str, id: &str) -> Result<TurnChanges> {
         .ok_or("This change summary does not belong to this task.")?;
     serde_json::from_str(&summary).map_err(|e| e.to_string())
 }
+/// Async with the store work on the blocking pool: a sync command would lock the store on the
+/// main thread. Takes only the store lock.
 #[tauri::command]
-pub fn turn_change_summary(
+pub async fn turn_change_summary(
     state: tauri::State<'_, crate::AppState>,
     session_id: String,
     change_id: String,
 ) -> Result<TurnChanges> {
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    summary(&store, &session_id, &change_id)
+    let store = state.store.clone();
+    crate::blocking(move || summary(&*store.lock().map_err(|e| e.to_string())?, &session_id, &change_id)).await
 }
+/// Takes only the store lock, on the blocking pool rather than an async worker.
 #[tauri::command]
 pub async fn turn_change_diff(
     state: tauri::State<'_, crate::AppState>,
@@ -1685,8 +1688,8 @@ pub async fn turn_change_diff(
     change_id: String,
     path: String,
 ) -> Result<TurnChangeDiff> {
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    detail(&store, &session_id, &change_id, &path)
+    let store = state.store.clone();
+    crate::blocking(move || detail(&*store.lock().map_err(|e| e.to_string())?, &session_id, &change_id, &path)).await
 }
 #[cfg(test)]
 mod tests;

@@ -141,18 +141,34 @@ pub struct CrashRecovery {
 /// plugin, so a duplicate launch never takes it): the same notice on every call until
 /// `crash_recovery_shown`, so a reload after the page died before showing it still gets it.
 /// Nothing when this run has no guard.
+///
+/// Async with the work on the blocking pool, so the store is never locked on the main thread.
+/// Takes the notice locks (`peek`, released on return), then the store lock alone.
 #[tauri::command]
-pub fn crash_recovery_take(state: tauri::State<'_, crate::AppState>) -> Option<CrashRecovery> {
-    let interrupted = || state.store.lock().map(|store| store.restart_interrupted).unwrap_or_else(|p| p.into_inner().restart_interrupted);
-    let pending = HOLDER.peek()?;
-    Some(recovery(pending, interrupted()))
+pub async fn crash_recovery_take(state: tauri::State<'_, crate::AppState>) -> crate::Result<Option<CrashRecovery>> {
+    let store = state.store.clone();
+    crate::blocking(move || {
+        let Some(pending) = HOLDER.peek() else { return Ok(None) };
+        let interrupted = store.lock().map(|store| store.restart_interrupted).unwrap_or_else(|p| p.into_inner().restart_interrupted);
+        Ok(Some(recovery(pending, interrupted)))
+    })
+    .await
 }
 
 /// The main webview showed the notice: `crash_recovery_take` returns nothing for the rest of
 /// the run (`crash_report_reveal` still knows its report), and a copy a quit already put back
-/// for the next launch is removed again.
+/// for the next launch is removed again. On the blocking pool: it writes the state file and
+/// talks to the guard.
 #[tauri::command]
-pub fn crash_recovery_shown() {
+pub async fn crash_recovery_shown() -> crate::Result<()> {
+    crate::blocking(|| {
+        mark_shown();
+        Ok(())
+    })
+    .await
+}
+
+fn mark_shown() {
     HOLDER.shown(link::data_dir());
     // The stopped agents belonged to that notice: a later crash must not repeat them.
     link::clear_interrupted();
@@ -177,9 +193,10 @@ fn recovery(pending: Pending, restart_interrupted: usize) -> CrashRecovery {
     }
 }
 
+/// Reads the settings file on the blocking pool, not the main thread.
 #[tauri::command]
-pub fn crash_restart_enabled(app: tauri::AppHandle) -> crate::Result<bool> {
-    Ok(shown_setting(&data_dir(&app)?, super::ENABLED.load(Ordering::SeqCst)))
+pub async fn crash_restart_enabled(app: tauri::AppHandle) -> crate::Result<bool> {
+    crate::blocking(move || Ok(shown_setting(&data_dir(&app)?, super::ENABLED.load(Ordering::SeqCst)))).await
 }
 
 /// The switch shows what the guard will decide from when the app dies: `crash-restart.json`
@@ -190,17 +207,38 @@ fn shown_setting(dir: &std::path::Path, in_memory: bool) -> bool {
     state::saved_setting(dir).unwrap_or(in_memory)
 }
 
-/// Saves the setting and arms or disarms the running guard at once.
+/// Saves the setting and arms or disarms the running guard at once, on the blocking pool (a
+/// file write and a message to the guard).
 #[tauri::command]
-pub fn set_crash_restart_enabled(app: tauri::AppHandle, enabled: bool) -> crate::Result<()> {
-    let path = data_dir(&app)?.join(state::SETTINGS_FILE);
-    state::save(&path, &Settings { enabled }).map_err(|e| format!("Could not save the setting: {e}"))?;
-    super::ENABLED.store(enabled, Ordering::SeqCst);
+pub async fn set_crash_restart_enabled(app: tauri::AppHandle, enabled: bool) -> crate::Result<()> {
+    crate::blocking(move || save_restart_setting(&app, enabled)).await
+}
+
+/// Held while the setting file and `ENABLED` change together, so two fast toggles never leave
+/// them disagreeing. A leaf lock: nothing else is locked or called under it.
+static SAVING: Mutex<()> = Mutex::new(());
+
+fn save_restart_setting(app: &tauri::AppHandle, enabled: bool) -> crate::Result<()> {
+    let path = data_dir(app)?.join(state::SETTINGS_FILE);
+    let armed = save_in_order(&SAVING, &path, enabled, &super::ENABLED)?;
     // Saved either way: with no guard (off by env, failed to start, gone) it applies next launch.
-    if link::connected() && link::send(if enabled { &Message::Arm } else { &Message::Disarm }) != link::Sent::Delivered {
+    // After `SAVING` is released (the link has its own lock). Sends the flag as it is now, as
+    // the link's resync does, so a slower overlapping call never sends a stale value last.
+    if link::connected() && link::send(if armed { &Message::Arm } else { &Message::Disarm }) != link::Sent::Delivered {
         eprintln!("Crash guard did not get the new setting; it applies from the next launch.");
     }
     Ok(())
+}
+
+/// Writes `path` and then `flag` under `saving` alone; the flag only moves when the file was
+/// saved. Returns the flag as it stands once the lock is released.
+fn save_in_order(saving: &Mutex<()>, path: &std::path::Path, enabled: bool, flag: &AtomicBool) -> crate::Result<bool> {
+    {
+        let _saving = saving.lock().unwrap_or_else(|p| p.into_inner());
+        state::save(path, &Settings { enabled }).map_err(|e| format!("Could not save the setting: {e}"))?;
+        flag.store(enabled, Ordering::SeqCst);
+    }
+    Ok(flag.load(Ordering::SeqCst))
 }
 
 /// The frontend matches `/no crash report/i` on this text.
@@ -211,7 +249,9 @@ const NO_REPORT: &str = "There is no crash report on this computer.";
 #[tauri::command]
 pub async fn crash_report_reveal(app: tauri::AppHandle) -> crate::Result<()> {
     let remembered = HOLDER.report();
-    let shown_report = report_to_reveal(&data_dir(&app)?, remembered.as_deref()).ok_or(NO_REPORT)?;
+    let dir = data_dir(&app)?;
+    // Lists the reports folder: on the blocking pool, not an async worker.
+    let shown_report = crate::blocking(move || report_to_reveal(&dir, remembered.as_deref()).ok_or_else(|| NO_REPORT.to_string())).await?;
     let shown = crate::reveal_path(shown_report.to_string_lossy().into_owned()).await;
     shown.map_err(|error| reveal_error(&shown_report, error))
 }
@@ -233,6 +273,24 @@ fn reveal_error(report: &std::path::Path, error: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_toggles_leave_the_saved_setting_and_the_flag_agreeing() {
+        let dir = std::env::temp_dir().join(format!("pandacode-restart-toggle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(state::SETTINGS_FILE);
+        let (saving, flag) = (Mutex::new(()), AtomicBool::new(true));
+        for round in 0..20 {
+            std::thread::scope(|scope| {
+                for enabled in [true, false, true, false] {
+                    let (saving, flag, path) = (&saving, &flag, &path);
+                    scope.spawn(move || save_in_order(saving, path, enabled, flag).unwrap());
+                }
+            });
+            assert_eq!(state::saved_setting(&dir), Some(flag.load(Ordering::SeqCst)), "round {round}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_notice_is_held_until_shown_and_its_report_kept_after() {

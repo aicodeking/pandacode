@@ -383,6 +383,58 @@ fn reconcile_inactive_task(
 }
 
 #[cfg(test)]
+mod read_scan_tests {
+    use super::*;
+
+    /// `prompt_activity` and the task search read on their own read-only connection: the shared
+    /// store lock is free while the query runs, and the answers match the store's own.
+    #[test]
+    fn long_scans_run_on_a_read_only_connection_with_the_store_lock_free() {
+        let dir = std::env::temp_dir().join(format!("pandacode-read-scan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        store.db.execute("UPDATE sessions SET draft=0 WHERE id=?1", [&task.id]).unwrap();
+        store.message(&task.id, "user", "Find the needle in the haystack.").unwrap();
+        let since = storage::now() - 86_400_000;
+        let expected_activity = store.prompt_activity(since).unwrap();
+        let expected_search = store.search_tasks(&project.id, "needle", 20).unwrap();
+        assert_eq!(expected_activity.len(), 1);
+        assert_eq!(expected_search.len(), 1);
+        let shared = Arc::new(Mutex::new(store));
+
+        let probe = shared.clone();
+        let activity = tauri::async_runtime::block_on(read_scan(shared.clone(), move |reader| {
+            assert!(probe.try_lock().is_ok(), "the store lock is free while the scan runs");
+            assert!(reader.db.is_readonly(rusqlite::MAIN_DB).unwrap(), "a read-only connection");
+            reader.prompt_activity(since)
+        }))
+        .unwrap();
+        assert_eq!(activity, expected_activity);
+
+        let probe = shared.clone();
+        let project_id = project.id.clone();
+        let found = tauri::async_runtime::block_on(read_scan(shared.clone(), move |reader| {
+            assert!(probe.try_lock().is_ok(), "the store lock is free while the search runs");
+            reader.search_tasks(&project_id, "needle", 20)
+        }))
+        .unwrap();
+        assert_eq!(found, expected_search);
+
+        // A writer holding the store lock does not stop a scan that already has its path.
+        let held = shared.lock().unwrap();
+        let path = held.path.clone();
+        let reader = Store::open_read_only(&path).unwrap();
+        assert_eq!(reader.prompt_activity(since).unwrap(), expected_activity);
+        drop(held);
+        drop(reader);
+        drop(shared);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod task_agent_tests {
     use super::*;
 
@@ -742,6 +794,22 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
         .map_err(|e| e.to_string())?
 }
 
+/// Runs a long read (a scan of the messages table) on its own read-only connection to the task
+/// database, never under the shared store lock: that lock is held only to copy the database
+/// path, and released before the connection opens. Call it on the blocking pool (`read_scan`).
+fn scan_read_only<T>(store: &Mutex<Store>, scan: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
+    let path = store.lock().map_err(|e| e.to_string())?.path.clone();
+    scan(&Store::open_read_only(&path)?)
+}
+
+/// `scan_read_only` on the blocking pool.
+async fn read_scan<T: Send + 'static>(
+    store: Arc<Mutex<Store>>,
+    scan: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    blocking(move || scan_read_only(&store, scan)).await
+}
+
 #[tauri::command(rename = "delete_session")]
 async fn delete_session_with_attachment_cleanup(
     app: tauri::AppHandle,
@@ -771,9 +839,11 @@ async fn delete_session_with_attachment_cleanup(
     Ok(deleted)
 }
 
+/// Store lock alone, on the blocking pool.
 #[tauri::command]
 async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
-    state.store.lock().map_err(|e| e.to_string())?.projects()
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.projects()).await
 }
 #[tauri::command]
 async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project> {
@@ -829,14 +899,17 @@ async fn relink_project(state: State<'_, AppState>, project_id: String, path: St
     }
     Ok(project)
 }
+/// Agents then store (`listed_sessions`), on the blocking pool.
 #[tauri::command]
-async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
-    listed_sessions(&state)
+async fn list_sessions(app: tauri::AppHandle) -> Result<Vec<Session>> {
+    blocking(move || listed_sessions(&app.state::<AppState>())).await
 }
 /// The ids among `ids` with no task row at all (launch restore drops their saved drafts).
+/// Store lock alone, on the blocking pool.
 #[tauri::command]
 async fn sessions_missing(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<String>> {
-    state.store.lock().map_err(|e| e.to_string())?.missing_sessions(&ids)
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.missing_sessions(&ids)).await
 }
 /// Tasks as the sidebar shows them, with stale running states settled.
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
@@ -859,10 +932,12 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     architect::wake(app);
     Ok(())
 }
+/// Scans a year of messages: on its own read-only connection (`read_scan`), so the store lock
+/// is held only to read the database path.
 #[tauri::command]
 async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String, u64)>> {
     let since = storage::now() - 366 * 86_400_000;
-    state.store.lock().map_err(|e| e.to_string())?.prompt_activity(since)
+    read_scan(state.store.clone(), move |store| store.prompt_activity(since)).await
 }
 #[tauri::command]
 async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, pinned: bool) -> Result<Session> {
@@ -882,15 +957,16 @@ async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, ses
     let _ = app.emit("sessions-changed", ());
     Ok(tasks)
 }
+/// Agents then store (the existing order), on the blocking pool.
 #[tauri::command]
-async fn get_task(state: State<'_, AppState>, session_id: String) -> Result<Session> {
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    Ok(reconcile_inactive_task(
-        &store,
-        &agents,
-        store.session(&session_id)?,
-    ))
+async fn get_task(app: tauri::AppHandle, session_id: String) -> Result<Session> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        Ok(reconcile_inactive_task(&store, &agents, store.session(&session_id)?))
+    })
+    .await
 }
 #[tauri::command]
 async fn configure_window_appearance(
@@ -1105,11 +1181,9 @@ async fn get_messages(
     session_id: String,
     before_id: Option<i64>,
 ) -> Result<MessagePage> {
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .message_page(&session_id, before_id)
+    // Store lock alone, on the blocking pool.
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.message_page(&session_id, before_id)).await
 }
 
 #[tauri::command]
@@ -4596,10 +4670,10 @@ pub fn run() {
                 agents_dock::agents_dock_pin,
                 support::open_support,
                 support::support_details,
-                model_routing::model_routing_status,
+                model_routing::model_routing_status_command,
                 model_routing::model_routing_exclusions,
                 model_routing::model_routing_set_exclusions,
-                model_routing::model_routing_configure,
+                model_routing::model_routing_configure_command,
                 model_routing::model_routing_prepare,
                 model_routing::model_routing_route,
                 model_routing::model_routing_tiers,

@@ -777,7 +777,8 @@ test.describe('streaming scroll regressions', () => {
     await prompt(page).pressSequentially(draft, { delay: 5 });
     await page.evaluate(() => clearInterval((window as any).__typingStream));
     expect(await page.evaluate(() => (window as any).__mentionReads)).toBe(0);
-    expect(await page.evaluate(() => (window as any).__promptReads)).toBe(draft.length);
+    // One line of plain text is measured off-layout (main.ts fitTyped): typing it reads no prompt layout at all.
+    expect(await page.evaluate(() => (window as any).__promptReads)).toBe(0);
     await page.waitForTimeout(200);
     const calls = await page.evaluate(async () => {
       const input = document.querySelector('#prompt')!;

@@ -418,3 +418,35 @@ test.describe('slash commands app integration', () => {
     expect(await appCalls(page, 'read_file')).toHaveLength(0);
   });
 });
+
+test('slash commands render once per keystroke, and not again while the query and caret token stay the same', async ({ page }) => {
+  await setup(page);
+  await draft(page).fill('/');
+  await expect(menu(page).getByRole('option')).toHaveCount(3);
+  // Every render rewrites the status line; its childList records count renders.
+  await page.evaluate(() => {
+    const fixture = (window as any).__slash;
+    fixture.renders = 0;
+    new MutationObserver(records => { fixture.renders += records.filter(record => record.type === 'childList').length; })
+      .observe(document.querySelector('.slash-menu .slash-menu-status')!, { childList: true });
+  });
+  const renders = () => page.evaluate(() => (window as any).__slash.renders as number);
+  // Each keystroke fires input, keyup and selectionchange: one render each, not three.
+  await draft(page).press('r');
+  await draft(page).press('e');
+  await draft(page).press('v');
+  await expect(menu(page).getByRole('option')).toHaveCount(1);
+  await expect.poll(renders).toBe(3);
+  // A caret move inside the same token, a click and a refocus change nothing on screen: no render.
+  await draft(page).press('ArrowLeft');
+  await draft(page).click();
+  await page.evaluate(() => document.dispatchEvent(new Event('selectionchange')));
+  await page.waitForTimeout(100);
+  expect(await renders()).toBe(3);
+  // A changed query renders again, once.
+  await draft(page).press('End');
+  await draft(page).press('Backspace');
+  await expect.poll(renders).toBe(4);
+  await expect(menu(page).getByRole('option')).toHaveCount(1);
+  await expect(menu(page)).toContainText('1 command');
+});

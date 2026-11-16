@@ -553,11 +553,7 @@ pub(crate) fn leads_team(store: &Store, sid: &str) -> Result<bool> {
 /// Whether a task's saved team is working. Every listing asks this for every task while holding
 /// both global locks, so it reads the status alone: a team's snapshot can be megabytes.
 pub(crate) fn is_active(store: &Store, sid: &str) -> bool {
-    store.db.prepare_cached("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1")
-        .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
-        .ok()
-        .flatten()
-        .is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
+    store.team_status(sid).is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
 }
 /// The reset of the lead's usage limit, while it is still ahead.
 fn limit_reset(store: &Store, sid: &str) -> Result<Option<i64>> {
@@ -3567,3 +3563,57 @@ pub(crate) fn stopped_by_team(store: &Store, admission: Option<&Admission>, sid:
 }
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod is_active_tests {
+    use super::*;
+    /// `is_active` as it read before the status index: parse the snapshot row itself.
+    fn parsed(store: &Store, sid: &str) -> bool {
+        store.db.prepare("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams NOT INDEXED WHERE session_id=?1")
+            .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
+            .ok()
+            .flatten()
+            .is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
+    }
+
+    #[test]
+    fn is_active_matches_parsing_the_snapshot_for_every_shape() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let snapshots = [
+            ("running", r#"{"status":"running","workers":[{"status":"completed"}]}"#, true),
+            ("waiting", r#"{"status":"waiting"}"#, true),
+            ("escaped", r#"{"status":"running"}"#, true),
+            ("completed", r#"{"status":"completed","workers":[{"status":"running"}]}"#, false),
+            ("interrupted", r#"{"status":"interrupted"}"#, false),
+            ("ready", r#"{"status":"ready"}"#, false),
+            ("upper", r#"{"status":"Running"}"#, false),
+            ("padded", r#"{"status":" running"}"#, false),
+            ("missing", r#"{"workers":[]}"#, false),
+            ("null", r#"{"status":null}"#, false),
+            ("number", r#"{"status":1}"#, false),
+            ("bool", r#"{"status":true}"#, false),
+            ("object", r#"{"status":{"status":"running"}}"#, false),
+            ("array", r#"["running"]"#, false),
+            ("scalar", r#""running""#, false),
+            ("corrupt", r#"{"status":"running""#, false),
+            ("empty", "", false),
+            ("not-json", "running", false),
+        ];
+        for (sid, content, _) in snapshots {
+            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", [sid, content]).unwrap();
+        }
+        for (sid, _, active) in snapshots.iter().copied().chain([("absent", "", false)]) {
+            assert_eq!(parsed(&store, sid), active, "{sid}: parsed");
+            assert_eq!(is_active(&store, sid), active, "{sid}: indexed");
+        }
+        // A real save keeps the indexed status current.
+        let config: TeamConfig = serde_json::from_value(serde_json::json!({"workers": [], "maxParallel": 1, "maxRounds": 1, "maxAssignments": 1, "workspace": "shared", "summaryLimit": 100})).unwrap();
+        let mut team = new_team("running".into(), config);
+        team.status = "completed".into();
+        save(&store, &mut team).unwrap();
+        assert!(!is_active(&store, "running") && !parsed(&store, "running"));
+        team.status = "waiting".into();
+        save(&store, &mut team).unwrap();
+        assert!(is_active(&store, "running") && parsed(&store, "running"));
+    }
+}
