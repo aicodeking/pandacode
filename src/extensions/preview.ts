@@ -16,6 +16,7 @@ import { createConnectionsPreview } from './connections-preview';
 import { createServicesPreview } from './services-preview';
 import * as runtimeGrants from './runtime-grants';
 import { createServiceLifetimePreview } from './runtime-service-lifetime';
+import { createPrivateSecretsPreview } from './runtime-private-secrets';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
@@ -113,12 +114,24 @@ export function previewProviderFinished(id: string, notify: (name: string, value
 const previewServiceLifetime = createServiceLifetimePreview();
 if (windowLabel === 'main') previewServiceLifetime.launch();
 if (new URLSearchParams(location.search).has('service-lifetime')) (window as unknown as { __extensionServiceLifetime?: unknown }).__extensionServiceLifetime = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+// Private package secrets (R0802): labelled stand-in of the native owner; service calls come from a test hook only.
+const previewPrivateSecrets = createPrivateSecretsPreview();
+if (new URLSearchParams(location.search).has('private-secrets')) (window as unknown as { __extensionPrivateSecrets?: unknown }).__extensionPrivateSecrets = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function privateSecretsCall(args: Record<string, unknown>): unknown {
+  const snapshot = read(), id = String(args.id), grants = runtimeGrants.createRuntimeGrantsPreview();
+  if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+  const version = snapshot.packages.find(item => item.manifest.id === id)?.manifest.version ?? '';
+  return previewPrivateSecrets.handle(snapshot.safeMode ? 'PermissionDenied' : grants.check(id, version, 'secrets.private'), id, args.caller === 'panel' ? 'panel' : 'service', String(args.method), args.params);
+}
 function reconcileServices(): void {
   const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
   if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
   previewServiceLifetime.reconcile(snapshot, (id, version) => grants.check(id, version, 'runtime.service') === 'ok');
 }
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
+  if (command === 'extensions_private_secrets') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewPrivateSecrets.projection(); }
+  if (command === 'extensions_private_secrets_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return privateSecretsCall(args); }
+  if (command === 'extensions_uninstall') previewPrivateSecrets.removePackage(String(args.id));
   if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceLifetime.projection(); }
   try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') reconcileServices(); }
 }

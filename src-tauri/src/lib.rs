@@ -4842,6 +4842,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     providers::dynamic_adapter::configure(&app.state::<extensions::packages::ExtensionPackages>().0, app.path().resource_dir().ok().map(|path| path.join("extension-runtime")));
     app.manage(extensions::runtime_grants::RuntimeGrants::open(&dir));
     app.manage(extensions::runtime_family_consents::FamilyConsents::open(&dir));
+    app.manage(extensions::runtime_private_secrets::PrivateSecrets::open(&dir));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
@@ -5166,6 +5167,7 @@ pub fn run() {
                 extensions::runtime_service_lifetime::extensions_service_lifetime,
                 extensions::runtime_native_consents::extensions_runtime_native_consents,
                 extensions::runtime_family_consents::extensions_family_consents,
+                extensions::runtime_private_secrets::extensions_private_secrets,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,
                 extensions::packages::extensions_install,

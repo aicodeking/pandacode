@@ -450,5 +450,12 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable } }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets }
+/** The package's own secrets (`secrets.private`, service only): scoped to this package by the host, at most 64 keys (`^[a-z][a-z0-9-]{0,63}$`) of 16 KiB each, kept across disable and update, removed on uninstall. Not a host credential; see docs/extensions/runtime-private-secrets.md. */
+export interface PrivateSecrets {
+  get(options: { key: string }): Promise<{ readonly value: string | null }>;
+  set(options: { key: string; value: string }): Promise<null>;
+  delete(options: { key: string }): Promise<null>;
+  list(): Promise<{ readonly keys: readonly string[] }>;
+}
 export type Service = (panda: ServicePandaCode, lifetime: ServiceLifetime) => void | Promise<void>;

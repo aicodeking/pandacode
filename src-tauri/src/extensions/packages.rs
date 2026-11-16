@@ -455,7 +455,7 @@ pub fn extensions_enable(app: tauri::AppHandle, state: tauri::State<'_, Extensio
 }
 #[tauri::command]
 pub fn extensions_uninstall(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
-    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let pinned = state.pin_count(&id) > 0; let snapshot = state.snapshot(); drop(state); if !pinned { super::runtime::stop(&app, Some(&id)); super::context::invalidate(&app, Some(&id)); } super::windows::changed(&app); Ok(snapshot)
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; let pinned = state.pin_count(&id) > 0; let snapshot = state.snapshot(); drop(state); if !pinned { super::runtime::stop(&app, Some(&id)); super::context::invalidate(&app, Some(&id)); if let Some(secrets) = tauri::Manager::try_state::<super::runtime_private_secrets::PrivateSecrets>(&app) { let _ = secrets.remove_package(&id); } } super::windows::changed(&app); Ok(snapshot)
 }
 #[tauri::command]
 pub fn extensions_safe_mode(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {

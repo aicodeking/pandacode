@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.private-secrets",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "secrets.private"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.private-secrets/store"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.private-secrets/store", "title": "Store a private secret", "action": { "kind": "runCommand" } }]
+  }
+}
