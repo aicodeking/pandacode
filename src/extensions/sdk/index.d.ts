@@ -437,3 +437,18 @@ export interface SearchAction { readonly contractVersion: 1; readonly context: s
 export type SearchAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' };
 /** Project scope of a package's enablement, chosen by the user in Settings → Extensions (never by a package). A refusal for a project outside it is `PermissionDenied` at path `$.projectScope`. */
 export type ProjectScope = { readonly schemaVersion: 1; readonly mode: 'all' } | { readonly schemaVersion: 1; readonly mode: 'selected'; readonly projects: readonly string[] };
+/** Background service (`runtime.service` with `"service": { "start": "onEnable" }`): one per package, started at app start and on enable for an enabled, trusted package holding the `runtime.service` grant; see docs/extensions/runtime-service-lifetime.md. */
+export type ServiceStartReason = 'appStart' | 'enable' | 'restart' | 'update';
+/** A revoked `runtime.service` grant stops the service with `trust`. */
+export type ServiceStopReason = 'disable' | 'uninstall' | 'update' | 'trust' | 'safeMode' | 'quit' | 'stop' | 'park';
+export interface ServiceLifetime {
+  readonly reason: ServiceStartReason;
+  readonly restarts: number;
+  /** Runs before the process is ended; the host waits at most 2 s. */
+  onStop(handler: (reason: ServiceStopReason) => void | Promise<void>): Disposable;
+  /** One line for the Running list. `working: true` makes the quit confirmation name the service. */
+  setStatus(status: { text: string; working?: boolean }): Promise<null>;
+}
+/** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable } }
+export type Service = (panda: ServicePandaCode, lifetime: ServiceLifetime) => void | Promise<void>;

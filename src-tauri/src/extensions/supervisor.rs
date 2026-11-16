@@ -48,7 +48,7 @@ pub async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Value> 
     let mut bytes = vec![0; length]; reader.read_exact(&mut bytes).await.map_err(|_| "HostUnavailable")?;
     serde_json::from_slice(&bytes).map_err(|_| "InvalidShape")
 }
-async fn write_frame(writer: &mut (impl AsyncWrite + Unpin), value: &Value, max: usize) -> Result<()> {
+pub(crate) async fn write_frame(writer: &mut (impl AsyncWrite + Unpin), value: &Value, max: usize) -> Result<()> {
     let bytes = serde_json::to_vec(value).map_err(|_| "InvalidShape")?;
     if bytes.len() > max { return Err("LimitExceeded"); }
     writer.write_u32_le(bytes.len() as u32).await.map_err(|_| "HostUnavailable")?;
@@ -134,18 +134,20 @@ where F: FnMut(String, Value) -> Fut, Fut: std::future::Future<Output = Value> {
 }
 
 #[cfg(windows)]
-mod job {
+pub(crate) mod job {
     use super::*;
     use windows::Win32::{Foundation::HANDLE, System::JobObjects::*};
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     pub struct Job(OwnedHandle);
     impl Job {
-        pub fn attach(child: &tokio::process::Child) -> Result<Self> {
+        pub fn attach(child: &tokio::process::Child) -> Result<Self> { Self::attach_with(child, Some(384 * 1024 * 1024)) }
+        /// `None` keeps kill-on-close ownership without a memory cap (a background service is measured, not capped).
+        pub fn attach_with(child: &tokio::process::Child, memory: Option<usize>) -> Result<Self> {
             unsafe {
                 let job = Self(OwnedHandle::from_raw_handle(CreateJobObjectW(None, None).map_err(|_| "HostUnavailable")?.0));
                 let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_JOB_MEMORY;
-                limits.JobMemoryLimit = 384 * 1024 * 1024;
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | if memory.is_some() { JOB_OBJECT_LIMIT_JOB_MEMORY } else { JOB_OBJECT_LIMIT(0) };
+                limits.JobMemoryLimit = memory.unwrap_or(0);
                 SetInformationJobObject(HANDLE(job.0.as_raw_handle()), JobObjectExtendedLimitInformation, std::ptr::from_ref(&limits).cast(), std::mem::size_of_val(&limits) as u32).map_err(|_| "HostUnavailable")?;
                 let handle = HANDLE(child.raw_handle().ok_or("HostUnavailable")?);
                 AssignProcessToJobObject(HANDLE(job.0.as_raw_handle()), handle).map_err(|_| "HostUnavailable")?;

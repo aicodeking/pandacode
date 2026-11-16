@@ -15,6 +15,8 @@ import harnessSvg from '../../tests/fixtures/extensions/fake-harness/assets/mark
 import { createConnectionsPreview } from './connections-preview';
 import { createServicesPreview } from './services-preview';
 import * as runtimeGrants from './runtime-grants';
+import { createServiceLifetimePreview } from './runtime-service-lifetime';
+import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
 // One store per page, so a ticket minted by a gate is the one the choice presents; a reload is the preview's restart.
@@ -107,7 +109,20 @@ function read(): ExtensionSnapshot {
 export const previewExtensionSnapshot = read;
 export function previewProviderStarted(id: string): void { const snapshot = read(); previewUpdates.pin(snapshot.packages, id); localStorage.setItem(key, JSON.stringify(snapshot.packages)); }
 export function previewProviderFinished(id: string, notify: (name: string, value: unknown) => void): void { const snapshot = read(); if (snapshot.safeMode) return; previewUpdates.release(snapshot.packages, id); localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); }
+// Background services (R0104): synthetic stand-in of the native owner; every extensions command reconciles it.
+const previewServiceLifetime = createServiceLifetimePreview();
+if (windowLabel === 'main') previewServiceLifetime.launch();
+if (new URLSearchParams(location.search).has('service-lifetime')) (window as unknown as { __extensionServiceLifetime?: unknown }).__extensionServiceLifetime = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function reconcileServices(): void {
+  const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
+  if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+  previewServiceLifetime.reconcile(snapshot, (id, version) => grants.check(id, version, 'runtime.service') === 'ok');
+}
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
+  if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceLifetime.projection(); }
+  try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') reconcileServices(); }
+}
+function previewExtensionCommand(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void): unknown {
   if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewServices.stop(String(args.id));
   if (command === 'extensions_safe_mode' || command === 'extensions_window_recover') previewServices.stop();
   if (command === 'extensions_runtime' && ['developmentReload', 'trust'].includes((args.request as { op: string })?.op)) previewServices.stop((args.request as { id: string }).id);

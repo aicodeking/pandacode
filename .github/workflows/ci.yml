@@ -81,6 +81,12 @@ jobs:
       - name: Family consents (WebKit)
         env: { PW_PORT: '15462', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-family-consents.spec.ts --workers=1
+      - name: Background service lifetime (Chromium)
+        env: { PW_PORT: '15441', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-service-lifetime.spec.ts --workers=1
+      - name: Background service lifetime (WebKit)
+        env: { PW_PORT: '15442', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-service-lifetime.spec.ts --workers=1
       - name: Trusted development preview (Chromium)
         env:
           PW_PORT: '1435'

@@ -2,7 +2,7 @@
 const { Module } = require('node:module');
 const { join } = require('node:path');
 const MAX_FRAME = 65536;
-let buffer = Buffer.alloc(0), init, sequence = 0;
+let buffer = Buffer.alloc(0), init, sequence = 0, stopService, stopping = false;
 const pending = new Map();
 const write = process.stdout.write.bind(process.stdout);
 function send(value) {
@@ -58,6 +58,41 @@ process.stdin.on('data', chunk => {
         const module = new Module(join(process.cwd(), 'extension.cjs'));
         module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
         module._compile(init.source, module.filename);
+        if (invocation?.lifetime) {
+          // Background service (runtime.service): no deadline, no message budget, alive until the host stops it.
+          const service = module.exports.service;
+          if (typeof service !== 'function') throw new Error('Missing service');
+          const stops = new Set();
+          const lifetime = Object.freeze({
+            reason: invocation.lifetime.reason,
+            restarts: invocation.lifetime.restarts,
+            onStop(handler) {
+              if (typeof handler !== 'function') throw new TypeError('onStop needs a function');
+              stops.add(handler);
+              return Object.freeze({ dispose: () => { stops.delete(handler); } });
+            },
+            setStatus: status => rpc('serviceStatus', { text: String(status?.text ?? '').slice(0, 200), working: status?.working === true }),
+          });
+          // Handlers registered here live in the service's shared state; owned commands only.
+          const servicePanda = Object.freeze({
+            apiVersion: '1.0.0',
+            commands: Object.freeze({ register(id, handler) {
+              if (!invocation.lifetime.commands.includes(id) || typeof handler !== 'function' || commands.has(id)) throw new Error('PermissionDenied');
+              commands.set(id, handler);
+              return Object.freeze({ dispose: () => commands.delete(id) });
+            } }),
+          });
+          stopService = async reason => {
+            if (stopping) return;
+            stopping = true;
+            await Promise.allSettled([...stops].map(handler => Promise.resolve().then(() => handler(reason))));
+            try { await rpc('serviceStopped', { reason }); } catch { /* the host ends the process anyway */ }
+            process.exit(0);
+          };
+          await service(servicePanda, lifetime);
+          await rpc('serviceReady', null);
+          return;
+        }
         if (invocation?.provider) {
           const handler = module.exports.providers?.[invocation.provider.id];
           if (typeof handler !== 'function') throw new Error('Missing provider');
@@ -93,6 +128,9 @@ process.stdin.on('data', chunk => {
         commands.clear();
         await rpc('complete', null);
       }).catch(() => { void rpc('failed', null).catch(() => process.exit(2)); });
+    } else if (value && typeof value.stop === 'string' && init.context?.lifetime) {
+      // The host's stop request: run onStop handlers, acknowledge, exit. The host waits at most 2 s.
+      if (stopService) void stopService(value.stop); else process.exit(0);
     } else {
       const waiter = pending.get(value.id); if (!waiter) return process.exit(2);
       pending.delete(value.id);

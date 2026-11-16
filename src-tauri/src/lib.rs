@@ -4844,6 +4844,9 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_family_consents::FamilyConsents::open(&dir));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
+    // Background services of trusted packages start at app start, on a blocking task that never delays launch.
+    app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
+    extensions::runtime_service_lifetime::reconcile_app(app.handle());
     app.manage(extensions::jobs::ExtensionJobs::default());
     app.manage(extensions::connections::ExtensionConnections::default());
     app.manage(extensions::rich_views::RichViews::default());
@@ -4946,6 +4949,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         }
         if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         jev::shutdown();
+        extensions::runtime_service_lifetime::quit(app);
         app.state::<file_preview::FilePreviews>().shutdown();
         if let Ok(agents) = lock_agents(&state.agents) {
             for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
@@ -4965,6 +4969,8 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
+            // Background services were asked to stop above; give their onStop handlers their bounded time.
+            extensions::runtime_service_lifetime::quit_wait(&handle).await;
             providers::shutdown_all();
             // Let pending pipe EOFs finish persistence after a forced cleanup.
             for _ in 0..20 {
@@ -4992,6 +4998,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         // VMs PandaCode started release their memory when it quits.
         app.state::<vm::Vms>().shutdown();
         cloud::aws_screen::close(None);
+        extensions::runtime_service_lifetime::quit(app);
         providers::shutdown_all();
     }
 }
@@ -5156,6 +5163,7 @@ pub fn run() {
                 extensions::packages::extensions_snapshot,
                 extensions::runtime_grants::extensions_runtime_grants,
                 extensions::runtime_grants::extensions_runtime_grant,
+                extensions::runtime_service_lifetime::extensions_service_lifetime,
                 extensions::runtime_native_consents::extensions_runtime_native_consents,
                 extensions::runtime_family_consents::extensions_family_consents,
                 extensions::packages::extensions_settings_get,

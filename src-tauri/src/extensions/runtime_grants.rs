@@ -315,7 +315,7 @@ pub fn extensions_runtime_grants(packages: tauri::State<'_, super::packages::Ext
 }
 /// `{ op: 'grant' | 'narrow' | 'revoke' | 'revokeAll', id, permission?, scope? }`; answers the new projection.
 #[tauri::command]
-pub fn extensions_runtime_grant(packages: tauri::State<'_, super::packages::ExtensionPackages>, grants: tauri::State<'_, RuntimeGrants>, request: Value) -> Result<Value> {
+pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_, super::packages::ExtensionPackages>, grants: tauri::State<'_, RuntimeGrants>, request: Value) -> Result<Value> {
     let snapshot = serde_json::to_value(packages.0.lock().map_err(|_| "Extension manager unavailable.")?.snapshot()).map_err(|_| "MalformedData")?;
     grants.sync(&snapshot)?;
     let id = request["id"].as_str().ok_or("InvalidArguments")?;
@@ -328,6 +328,8 @@ pub fn extensions_runtime_grant(packages: tauri::State<'_, super::packages::Exte
         (Some("revokeAll"), _) => grants.revoke_all(id)?,
         _ => return Err("InvalidArguments".into()),
     }
+    // A new `runtime.service` grant starts the service; a revoked one already cancelled its grant work.
+    super::runtime_service_lifetime::reconcile_app(&app);
     Ok(grants.projection())
 }
 

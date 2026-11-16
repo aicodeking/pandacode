@@ -63,6 +63,8 @@ fn project_scope(scope: &Value) -> Result<Option<Vec<String>>, String> {
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
     crate::providers::dynamic_adapter::stop(owner);
     stop_presentation_work(app, owner);
+    // Disable, uninstall, untrust, rollback and safe mode: the background service follows the package state.
+    super::runtime_service_lifetime::reconcile_app(app);
 }
 /// Window-bound resources are presentation-owned; workspace provider tasks are not.
 pub fn presentation_closed(app: &tauri::AppHandle) {
@@ -80,9 +82,11 @@ fn stop_presentation_work(app: &tauri::AppHandle, owner: Option<&str>) {
 /// core provider runs: their leases own the version barrier.
 pub(in crate::extensions) fn package_changed(app: &tauri::AppHandle, owner: &str) {
     stop_presentation_work(app, Some(owner)); context::invalidate(app, Some(owner));
+    super::runtime_service_lifetime::reconcile_app(app);
 }
 pub fn retry(app: &tauri::AppHandle, owner: &str) {
     if let Ok(mut quarantine) = app.state::<ExtensionRuntime>().quarantine.lock() { quarantine.retain(|(id, _)| id != owner); }
+    super::runtime_service_lifetime::retry_app(app, owner);
 }
 
 #[tauri::command]

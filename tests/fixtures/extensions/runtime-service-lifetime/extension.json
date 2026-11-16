@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.service-lifetime",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.service-lifetime/long"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.service-lifetime/long", "title": "Service lifetime long command", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.service-lifetime/header", "location": "panda.workspace.header.actions", "command": "sample.service-lifetime/long", "presentation": "button", "text": "Long command" }]
+  }
+}

@@ -340,7 +340,7 @@ impl Packages {
         if result.is_err() { let _ = std::fs::remove_file(stage); }
         Ok(result?)
     }
-    fn install(&self, bytes: &[u8]) -> Result<()> {
+    pub(in crate::extensions) fn install(&self, bytes: &[u8]) -> Result<()> {
         if self.safe { return Err("Safe mode: package loading is bypassed.".into()); }
         let package = validate(bytes)?;
         self.directory()?;
@@ -362,7 +362,7 @@ impl Packages {
         record.projects = projects;
         self.write(&path, &record)
     }
-    fn enable(&self, id: &str, enabled: bool) -> Result<()> {
+    pub(in crate::extensions) fn enable(&self, id: &str, enabled: bool) -> Result<()> {
         if self.safe { return Err("Safe mode: activation is bypassed.".into()); }
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
         self.directory()?;
@@ -399,7 +399,7 @@ impl Packages {
         let mut source = String::new(); zip.by_name("main.cjs").map_err(|_| "HostUnavailable")?.take(MAX_FILE + 1).read_to_string(&mut source).map_err(|_| "HostUnavailable")?;
         Ok((record.checksum, source))
     }
-    fn uninstall(&self, id: &str) -> Result<()> {
+    pub(in crate::extensions) fn uninstall(&self, id: &str) -> Result<()> {
         if self.safe { return Err("Safe mode: package changes are bypassed.".into()); }
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
         self.directory()?;

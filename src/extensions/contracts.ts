@@ -274,6 +274,8 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length)) error('DuplicateId', path, [id]);
     }
     if (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id))) error('UnsupportedRuntime', path, [id]);
+    // A background service is a named permission: it must be declared to be granted (runtime-service-lifetime.md).
+    if ((manifest.runtime as ObjectValue | undefined)?.service && !((manifest.permissions ?? []) as Json[]).includes('runtime.service')) error('PermissionDenied', `${path}/permissions`, [id]);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;
