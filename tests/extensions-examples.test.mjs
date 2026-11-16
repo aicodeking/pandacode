@@ -34,6 +34,11 @@ function declaredFiles(manifest) {
   for (const view of manifest.contributes?.views ?? []) if (view.rich) for (const key of ['html', 'css', 'script']) declared.add(view.rich[key]);
   return [...declared].sort();
 }
+/** `true` when `file` lies inside a declared code folder (`runtime.files`, R0105): any file type is package code there. */
+const inCodeFolder = (manifest, file) => (manifest.runtime?.files ?? []).some(folder => file.startsWith(`${folder}/`) && file.length > folder.length + 1);
+/** A relative specifier into a declared code folder (`./lib/x.cjs`), resolved from the code directory. */
+const relativeCode = (manifest, specifier) => specifier.startsWith('./') && inCodeFolder(manifest, specifier.slice(2));
+const CODE_FOLDERS = 'tests/fixtures/extensions/runtime-code-folders';
 /** Validation set for one manifest: itself first, then the examples it depends on. */
 function packageSet(manifest) {
   return [manifest, ...Object.keys(manifest.dependencies ?? {}).map(id => manifestOf(byId.get(id).dir))];
@@ -75,7 +80,7 @@ test('extension examples: each package validates and carries only declared files
     assert.equal(result.ok, true, `${example.dir}: ${JSON.stringify(result.error)}`);
     assert.deepEqual(result.diagnostics, [], example.dir);
     const root = `${EXAMPLES}/${example.dir}/package`;
-    assert.deepEqual(files(root), declaredFiles(manifest), example.dir);
+    assert.deepEqual(files(root).filter(file => !inCodeFolder(manifest, file)), declaredFiles(manifest), example.dir);
     for (const file of files(root).filter(file => file.endsWith('.svg'))) {
       const svg = read(join(root, file)).trim();
       assert.match(svg, /^<svg[\s>]/); assert.doesNotMatch(svg, /<script|\son\w+=|href=|<foreignObject/i);
@@ -84,11 +89,22 @@ test('extension examples: each package validates and carries only declared files
 });
 
 test('extension examples: executable code needs no private source, install hook or runtime download', () => {
-  for (const example of corpus.examples.filter(example => example.executable)) {
-    const source = read(`${EXAMPLES}/${example.dir}/package/main.cjs`);
-    for (const [, specifier] of source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)) assert.match(specifier, /^node:/, `${example.dir} requires ${specifier}`);
-    assert.doesNotMatch(source, /\bimport\s*\(|from\s+['"]|child_process|https?:\/\//, example.dir);
+  // Q044 (R0105): code folders make relative `require` and `import()` into a declared folder package code, and a
+  // service (`runtime.service`) has the user's authority, child processes included (ADR-0005). Retained: no other
+  // specifier (the package ships its code; nothing is resolved from outside the archive) and no `https://` (no runtime
+  // download: the platform makes no automatic request; a service downloads into its own data directory if it must).
+  const sources = [
+    ...corpus.examples.filter(example => example.executable).map(example => [example.dir, manifestOf(example.dir), read(`${EXAMPLES}/${example.dir}/package/main.cjs`)]),
+    [CODE_FOLDERS, JSON.parse(read(`${CODE_FOLDERS}/extension.json`)), read(`${CODE_FOLDERS}/main.cjs`)],
+  ];
+  for (const [dir, manifest, source] of sources) {
+    for (const [, specifier] of source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)) assert.ok(/^node:/.test(specifier) || relativeCode(manifest, specifier), `${dir} requires ${specifier}`);
+    for (const [, specifier] of source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) assert.ok(relativeCode(manifest, specifier), `${dir} imports ${specifier}`);
+    assert.doesNotMatch(source, /\bimport\s*\((?!\s*['"])|from\s+['"]|https?:\/\//, dir);
+    if (!manifest.runtime?.service) assert.doesNotMatch(source, /child_process/, dir);
   }
+  assert.equal(relativeCode({ runtime: { files: ['lib'] } }, './other/x.cjs'), false);
+  assert.equal(relativeCode({ runtime: {} }, './lib/x.cjs'), false);
   for (const dir of corpus.examples.map(example => example.dir).filter(dir => existsSync(`${EXAMPLES}/${dir}/package.json`))) {
     const pkg = JSON.parse(read(`${EXAMPLES}/${dir}/package.json`));
     assert.equal(pkg.private, true); assert.deepEqual(Object.keys(pkg.scripts), ['build']);
@@ -175,13 +191,22 @@ test('extension examples: archive corpus matches the author pre-check of declare
     if (change.omit === 'extension.json') { assert.equal(change.error, 'Missing extension.json.'); continue; }
     const declared = declaredFiles(manifest);
     const unsafe = present.some(file => file.split('/').some(part => part === '..' || part === ''));
-    const undeclared = present.filter(file => !declared.includes(file));
+    const undeclared = present.filter(file => !declared.includes(file) && !inCodeFolder(manifest, file));
     const missing = declared.filter(file => !present.includes(file));
     assert.ok(unsafe || undeclared.length || missing.length, change.name);
     if (unsafe) assert.equal(change.error, 'Unsafe archive entry.');
     else if (missing.length) assert.match(change.error, /^Missing /, change.name);
     else assert.match(change.error, /^Undeclared package file/, change.name);
   }
+  // Q045 (R0105): the pre-check learns the code folders. Every file of the code-folder fixture is declared through
+  // `runtime.files`; without it the folder files are undeclared, and so is a file outside every declared folder
+  // (retained, predictability: the archive is exactly what the manifest declares, so the reviewed content is what runs).
+  const manifest = JSON.parse(read(`${CODE_FOLDERS}/extension.json`));
+  const present = files(CODE_FOLDERS);
+  assert.deepEqual(present.filter(file => !declaredFiles(manifest).includes(file) && !inCodeFolder(manifest, file)), []);
+  const bare = structuredClone(manifest); delete bare.runtime.files;
+  assert.deepEqual(present.filter(file => !declaredFiles(bare).includes(file) && !inCodeFolder(bare, file)), ['lib/esm.mjs', 'lib/helper.cjs', 'lib/shared.mjs', 'lib/worker.cjs', 'wasm/add.wasm']);
+  assert.equal(inCodeFolder(manifest, 'other/x.cjs') || inCodeFolder(manifest, 'lib/') || inCodeFolder(manifest, 'LIB/helper.cjs'), false);
 });
 
 function sdkUnion(name, member) {

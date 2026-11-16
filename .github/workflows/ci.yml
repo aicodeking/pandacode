@@ -105,6 +105,12 @@ jobs:
       - name: Workspace events (WebKit)
         env: { PW_PORT: '15902', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-events.spec.ts --workers=1
+      - name: Code folders and package data (Chromium)
+        env: { PW_PORT: '15861', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-code-folders.spec.ts --workers=1
+      - name: Code folders and package data (WebKit)
+        env: { PW_PORT: '15862', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-code-folders.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1

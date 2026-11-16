@@ -20,12 +20,15 @@ import { createPrivateSecretsPreview } from './runtime-private-secrets';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
+import * as codeFolders from './runtime-code-folders';
 // One store per page, so a ticket minted by a gate is the one the choice presents; a reload is the preview's restart.
 const previewFamilyConsents = familyConsents.createFamilyConsentsPreview(runtimeGrants.createRuntimeGrantsPreview());
 (window as unknown as { __extensionFamilyConsents?: unknown }).__extensionFamilyConsents = { ...familyConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
 // Test hook of the preview only (the production build has no module paths): the grants module and the validator.
 (window as unknown as { __extensionRuntimeGrants?: unknown }).__extensionRuntimeGrants = { ...runtimeGrants, validateContract };
 (window as unknown as { __extensionNativeConsents?: unknown }).__extensionNativeConsents = { ...nativeConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
+// Code folders, the service environment and the data directory (R0105): the webview mirror of the native rules.
+(window as unknown as { __extensionCodeFolders?: unknown }).__extensionCodeFolders = codeFolders;
 export const previewServices = createServicesPreview();
 export const previewConnections = createConnectionsPreview();
 import { createJobsPreview } from './jobs-preview';

@@ -250,6 +250,8 @@ impl Packages {
         // Inspect the complete pair before removing either; never follow a substituted link.
         for candidate in [&path, &stage] { if candidate.symlink_metadata().is_ok() { regular(candidate)?; } }
         for candidate in [&path, &stage] { if candidate.symlink_metadata().is_ok() { std::fs::remove_file(candidate).map_err(|_| "StorageUnavailable")?; } }
+        // The package's data directory (`panda.storage.directory`, every scope) goes with its own data.
+        super::runtime_code_folders::remove_data(&self.app_data(), id)?;
         self.storage_dispose(Some(id), None); Ok(())
     }
     /// Identity, version, project and activation binding come ONLY from the captured host handle.

@@ -57,12 +57,23 @@ process.stdin.on('data', chunk => {
         connections: Object.freeze(Object.fromEntries(['status', 'start', 'poll', 'cancel'].map(op => [op, options => rpc('connections', { ...options, op })]))),
         services: Object.freeze(Object.fromEntries(['start', 'poll', 'dispose'].map(op => [op, options => rpc('services', { ...options, op })]))),
         // Scope can only be global or this invocation's captured project. No owner/path input.
-        storage: Object.freeze(Object.fromEntries(['get', 'set', 'remove', 'snapshot', 'subscribe', 'events', 'unsubscribe', 'migrate'].map(op => [op, options => rpc('storage', { ...options, op })]))),
+        // The data directory (`storage.directory`) is service only: a short activation has none.
+        storage: Object.freeze({
+          ...Object.fromEntries(['get', 'set', 'remove', 'snapshot', 'subscribe', 'events', 'unsubscribe', 'migrate'].map(op => [op, options => rpc('storage', { ...options, op })])),
+          directory: () => Promise.reject(new Error('UnsupportedCapability')),
+        }),
       });
       void Promise.resolve().then(async () => {
-        const module = new Module(join(process.cwd(), 'extension.cjs'));
-        module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
-        module._compile(init.source, module.filename);
+        let module;
+        if (invocation?.lifetime && typeof init.entry === 'string') {
+          // A service runs from its code directory (runtime.files): Node's own loader, so relative require, import(),
+          // workers and Wasm resolve beside main.cjs.
+          module = { exports: require(init.entry) };
+        } else {
+          module = new Module(join(process.cwd(), 'extension.cjs'));
+          module.filename = join(process.cwd(), 'extension.cjs'); module.paths = [];
+          module._compile(init.source, module.filename);
+        }
         if (invocation?.lifetime) {
           // Background service (runtime.service): no deadline, no message budget, alive until the host stops it.
           const service = module.exports.service;
@@ -150,6 +161,8 @@ process.stdin.on('data', chunk => {
               events: params => rpc('context', { ...params, op: 'events', invocation: invocations.getStore() }),
               unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe', invocation: invocations.getStore() }),
             }),
+            // The package's data directory (storage.private). `project` needs the context of an owned command.
+            storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
           });
           // Host to service calls interleave freely with the service's own requests: each runs on its own.
           serveCall = async call => {

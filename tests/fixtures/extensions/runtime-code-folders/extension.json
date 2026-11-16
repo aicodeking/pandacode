@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.code-folders",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "storage.private"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.code-folders/probe"], "files": ["lib", "wasm"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.code-folders/probe", "title": "Code folders probe", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.code-folders/header", "location": "panda.workspace.header.actions", "command": "sample.code-folders/probe", "presentation": "button", "text": "Probe" }]
+  }
+}

@@ -5,15 +5,21 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::{BTreeMap, BTreeSet}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, sync::Mutex};
 
-const MAX_ARCHIVE: u64 = 2 * 1024 * 1024;
-const MAX_FILE: u64 = 256 * 1024;
-const MAX_EXPANDED: u64 = 1024 * 1024;
-const MAX_FILES: usize = 64;
+// Package limits (runtime slice R0105, measured in docs/extensions/runtime-code-folders.md). Reliability numbers:
+// install validates the whole archive in memory and the record carries it in base64.
+pub(crate) const MAX_ARCHIVE: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_FILE: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_EXPANDED: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_FILES: usize = 1024;
 const MAX_PACKAGES: usize = 64;
-const MAX_RECORD: u64 = 9 * 1024 * 1024;
+/// The record carries the current archive and one more generation (the staged update or the rollback), each in
+/// base64, plus 1 MiB for the lifecycle and settings state of both generations.
+pub(crate) const MAX_RECORD: u64 = 2 * MAX_ARCHIVE.div_ceil(3) * 4 + 1024 * 1024;
 type Result<T> = std::result::Result<T, String>;
 #[path = "development.rs"]
 mod development;
+#[path = "runtime_code_folders.rs"]
+pub(crate) mod runtime_code_folders;
 #[path = "storage.rs"]
 mod storage;
 #[path = "updates.rs"]
@@ -155,6 +161,8 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         let (name, source) = files.get("main.cjs").ok_or("Missing executable entrypoint.")?;
         if name != "main.cjs" || std::str::from_utf8(source).is_err() { return Err("Invalid executable entrypoint.".into()); }
         allowed.insert(name.clone());
+        // Code folders (`runtime.files`): every file inside a declared folder is package code, of any type.
+        for (name, _) in files.values() { if runtime_code_folders::in_code_folder(&manifest, name) { allowed.insert(name.clone()); } }
         Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
     } else { None };
     for icon in contributions["icons"].as_array().into_iter().flatten() {
@@ -399,6 +407,26 @@ impl Packages {
         let mut source = String::new(); zip.by_name("main.cjs").map_err(|_| "HostUnavailable")?.take(MAX_FILE + 1).read_to_string(&mut source).map_err(|_| "HostUnavailable")?;
         Ok((record.checksum, source))
     }
+    /// The code of an enabled, trusted package for its code directory: the entry point and every file of its
+    /// declared code folders (`runtime.files`), read from the revalidated stored archive.
+    pub(crate) fn code_files(&self, id: &str) -> Result<(String, runtime_code_folders::CodeFiles)> {
+        if self.safe || !safe_name(id) || id.contains('/') { return Err("PermissionDenied".into()); }
+        let (record, package) = self.record(&self.root.join(format!("{id}.json")))?;
+        if !package.enabled || !package.executable.is_some_and(|executable| executable.trusted) { return Err("PermissionDenied".into()); }
+        let bytes = STANDARD.decode(record.archive).map_err(|_| "HostUnavailable")?;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "HostUnavailable")?;
+        let mut files = Vec::new();
+        for index in 0..zip.len() {
+            let mut file = zip.by_index(index).map_err(|_| "HostUnavailable")?;
+            let name = file.name().to_owned();
+            if file.is_dir() || !(name == "main.cjs" || runtime_code_folders::in_code_folder(&package.manifest, &name)) { continue; }
+            let mut content = Vec::new(); file.by_ref().take(MAX_FILE + 1).read_to_end(&mut content).map_err(|_| "HostUnavailable")?;
+            files.push((name, content));
+        }
+        Ok((record.checksum, files))
+    }
+    /// The app data directory that holds `extensions-v1` and the per-package code and data directories.
+    pub(crate) fn app_data(&self) -> PathBuf { self.root.parent().map(Path::to_path_buf).unwrap_or_default() }
     pub(in crate::extensions) fn uninstall(&self, id: &str) -> Result<()> {
         if self.safe { return Err("Safe mode: package changes are bypassed.".into()); }
         if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
@@ -408,8 +436,11 @@ impl Packages {
         if self.development.lock().map_err(|_| "HostUnavailable")?.remove(id).is_some() { return Ok(()); }
         regular(&path)?;
         if let Ok(Some(record)) = self.raw_record(id) { if let Some(state) = record.lifecycle.state { self.settings_write_legacy(id, &state)?; } }
-        // Only this installation record. Core storage and extension data are separate.
-        std::fs::remove_file(path).map_err(|_| "Cannot uninstall extension.".into())
+        // Only this installation record and its extracted code. Core storage and extension data are separate.
+        std::fs::remove_file(path).map_err(|_| "Cannot uninstall extension.")?;
+        // A service still running from the code directory removes it when it has stopped (`uninstall`).
+        runtime_code_folders::remove_code(&self.app_data(), id);
+        Ok(())
     }
 }
 
@@ -1854,7 +1885,10 @@ mod tests {
         assert!(rejected(&archive(&entries)).contains("file-count"));
         assert!(rejected(&archive(&[("large", &vec![0; MAX_FILE as usize + 1])])).contains("file limit"));
         let data = vec![0; MAX_FILE as usize];
-        assert!(rejected(&archive(&[("a", &data), ("b", &data), ("c", &data), ("d", &data), ("e", &data)])).contains("expansion"));
+        // Nine files at the single-file limit pass 64 MiB expanded (R0105 limits).
+        let names: Vec<String> = (0..=(MAX_EXPANDED / MAX_FILE)).map(|i| format!("file{i}")).collect();
+        let entries: Vec<_> = names.iter().map(|name| (name.as_str(), data.as_slice())).collect();
+        assert!(rejected(&archive(&entries)).contains("expansion"));
     }
     #[test]
     fn rejects_malformed_or_active_svg_and_undeclared_executables() {

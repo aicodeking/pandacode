@@ -7,8 +7,12 @@
 //! `onStop` handlers at most two seconds, then ends the whole process tree (the job object).
 //!
 //! What this slice does NOT do (named owners): crash restart with backoff and parking (R0106), the Running list
-//! and the quit confirmation (R0107), the user's environment, code folders and the data directory (R0105), the
-//! duplex channel that dispatches owned commands, context queries and host events into the service (R0201).
+//! and the quit confirmation (R0107), the duplex channel that dispatches owned commands, context queries and host
+//! events into the service (R0201).
+//!
+//! R0105 runs the service from its checksum-qualified code directory (`runtime.files`), with the user's environment
+//! minus `NODE_OPTIONS` and the host's `PANDACODE_*` variables, and serves `storage.directory`
+//! (`packages/runtime_code_folders.rs`).
 //!
 //! Services live here, not in `ExtensionRuntime::active`: they never take one of the eight short-activation slots
 //! and a short activation of the same package is never refused because its service runs. They are not owned by a
@@ -29,7 +33,8 @@ pub mod runtime_workspace_events;
 use self::runtime_workspace_events::WorkspaceEvents;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
+use super::packages::runtime_code_folders;
+use std::{collections::BTreeMap, ffi::OsString, future::Future, path::PathBuf, pin::Pin, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
 use tokio::{io::AsyncReadExt, sync::{mpsc, oneshot, watch, Notify}, task::JoinSet};
 
 /// A request the service made to the host, after the channel admitted it.
@@ -121,7 +126,11 @@ struct Entry {
 #[derive(Default)]
 struct Counters { starts: BTreeMap<&'static str, u64>, stops: BTreeMap<&'static str, u64>, last_stop: Option<(&'static str, bool)> }
 /// A start that waits for the previous process of the same package to end (one service per package).
-struct Queued { want: Want, source: String, reason: StartReason, work: Work }
+struct Queued { want: Want, source: String, reason: StartReason, work: Work, code: Code }
+/// What the service's code directory and data directory need (R0105): the app data directory, the archive checksum,
+/// the entry point and code folders read from the stored archive, and the `storage.private` grant work (absent when
+/// the grant is not held; cancelled when it is revoked).
+struct Code { app_data: PathBuf, checksum: String, files: Vec<(String, Vec<u8>)>, storage: Option<Work> }
 #[derive(Default)]
 struct Inner { launched: bool, quitting: bool, next: u64, entries: BTreeMap<String, Entry>, counters: BTreeMap<String, Counters>, queued: BTreeMap<String, Queued> }
 
@@ -133,6 +142,9 @@ pub struct ServiceLifetime {
     runtimes: Arc<Vec<PathBuf>>,
     /// Extra variables for the service process. Only tests set them (to hand a fixture its fake back end).
     env: Arc<Vec<(String, String)>>,
+    /// The user environment the service inherits (R0105); `None` is the app's own environment at spawn time. Only
+    /// tests replace it.
+    parent: Arc<Option<Vec<(OsString, OsString)>>>,
     /// Serves the service's requests (context queries and subscriptions); installed by the app, a fake in tests.
     dispatch: Arc<Mutex<Option<Dispatch>>>,
     /// Subscriptions and queues of the workspace events of every running service.
@@ -141,7 +153,13 @@ pub struct ServiceLifetime {
 
 impl ServiceLifetime {
     pub fn new(runtimes: Vec<PathBuf>) -> Self {
-        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), dispatch: Arc::default(), events: Arc::default() }
+        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), parent: Arc::default(), dispatch: Arc::default(), events: Arc::default() }
+    }
+    /// Replaces the user environment the service inherits (tests: canary variables without touching the process).
+    #[cfg(test)]
+    pub fn with_parent_env(mut self, parent: Vec<(OsString, OsString)>) -> Self {
+        self.parent = Arc::new(Some(parent));
+        self
     }
     /// Where the app reports workspace events (`publish`) and where the grant gate is installed.
     pub fn events(&self) -> Arc<WorkspaceEvents> { self.events.clone() }
@@ -167,13 +185,6 @@ impl ServiceLifetime {
         let (reply, answer) = oneshot::channel();
         calls.try_send(HostCall { method: "command", params: json!({"commandId": command_id, "args": args}), handle, reply }).map_err(|error| match error { mpsc::error::TrySendError::Full(_) => "LimitExceeded", mpsc::error::TrySendError::Closed(_) => "HostUnavailable" })?;
         answer.await.unwrap_or_else(|_| Err("HostUnavailable".into()))
-    }
-    /// Tests only: the parent environment a service process is started from, as the app's own environment would be.
-    /// Added by R0202 to unblock R0105's installed test; R0105 owns what the service does with it.
-    #[cfg(test)]
-    pub fn with_parent_env(mut self, parent: Vec<(std::ffi::OsString, std::ffi::OsString)>) -> Self {
-        self.env = Arc::new(parent.into_iter().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())).collect());
-        self
     }
     #[cfg(test)]
     pub fn with_env(mut self, env: &[(&str, &str)]) -> Self {
@@ -209,9 +220,14 @@ impl ServiceLifetime {
             };
             let Ok((digest, source)) = packages.executable_source(&id) else { continue };
             if digest != want.digest { continue; }
+            // The code the service runs from: the entry point and its declared code folders, of the same archive.
+            let Ok((checksum, files)) = packages.code_files(&id) else { continue };
+            if checksum != want.digest { continue; }
             let Ok(work) = grants.begin(&id, &want.version, PERMISSION, &Target::default()) else { continue };
-            if inner.entries.contains_key(&id) { inner.queued.insert(id, Queued { want, source, reason, work }); }
-            else { self.start(&mut inner, id, Queued { want, source, reason, work }); }
+            let storage = grants.begin(&id, &want.version, runtime_code_folders::STORAGE_PERMISSION, &Target::default()).ok();
+            let code = Code { app_data: packages.app_data(), checksum, files, storage };
+            if inner.entries.contains_key(&id) { inner.queued.insert(id, Queued { want, source, reason, work, code }); }
+            else { self.start(&mut inner, id, Queued { want, source, reason, work, code }); }
         }
         drop(inner);
         self.changed.notify_waiters();
@@ -289,24 +305,41 @@ impl ServiceLifetime {
         let (calls, incoming_calls) = mpsc::channel(CALL_QUEUE);
         *inner.counters.entry(id.clone()).or_default().starts.entry(queued.reason.as_str()).or_default() += 1;
         inner.entries.insert(id.clone(), Entry { generation, version: queued.want.version.clone(), digest: queued.want.digest.clone(), reason: queued.reason, restarts: 0, state: State::Starting, status: None, error: None, stop, commands: queued.want.commands.clone(), calls });
-        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), dispatch: self.dispatch.clone(), events: self.events.clone() };
+        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), parent: self.parent.clone(), dispatch: self.dispatch.clone(), events: self.events.clone() };
         tauri::async_runtime::spawn(async move { manager.supervise(id, generation, queued, stopped, incoming_calls).await });
     }
 
     async fn supervise(self, id: String, generation: u64, queued: Queued, stopped: watch::Receiver<Option<StopReason>>, mut calls: mpsc::Receiver<HostCall>) {
-        let Queued { want, source, reason, work } = queued;
+        let Queued { want, source, reason, work, code } = queued;
+        let Code { app_data, checksum, files, storage } = code;
         let directories = self.runtimes.clone();
         let runtime = tauri::async_runtime::spawn_blocking(move || directories.iter().find_map(|directory| supervisor::Runtime::packaged(directory).ok())).await.ok().flatten();
-        let init = json!({"lifetime": {"reason": reason.as_str(), "restarts": 0, "commands": want.commands}});
+        // The checksum-qualified code directory, verified against the stored archive (rebuilt when anything differs).
+        let materialized = { let (app_data, id) = (app_data.clone(), id.clone()); tauri::async_runtime::spawn_blocking(move || runtime_code_folders::materialize(&app_data, &id, &checksum, &files)).await.unwrap_or(Err("StorageUnavailable")) };
         let events = |event: Event| self.event(&id, generation, event);
         let dispatch = self.dispatch.lock().ok().and_then(|slot| slot.clone());
-        // The subscription lives exactly as long as the process: a stop, crash, disable or safe mode leaves no listener.
-        let wake = self.events.attach(&id, &want.version, generation);
-        let outcome = match runtime {
-            Some(runtime) => run(&runtime, &source, init, stopped, &work, Wiring { owner: id.clone(), dispatch, calls: &mut calls, env: &self.env, subscriptions: self.events.clone(), wake }, events).await,
-            None => Outcome::Failed("UnsupportedRuntime"),
+        let outcome = match (runtime, materialized) {
+            (Some(runtime), Ok(directory)) => {
+                let entry = directory.join("main.cjs");
+                let init = json!({"lifetime": {"reason": reason.as_str(), "restarts": 0, "commands": want.commands}});
+                let parent: Vec<(OsString, OsString)> = match self.parent.as_ref() { Some(parent) => parent.clone(), None => std::env::vars_os().collect() };
+                let code = ServiceCode { directory, entry, parent, app_data: app_data.clone(), storage: storage.as_ref() };
+                // The subscription lives exactly as long as the process: a stop, crash, disable or safe mode leaves no listener.
+                let wake = self.events.attach(&id, &want.version, generation);
+                let outcome = run(&runtime, &source, init, stopped, &work, Wiring { owner: id.clone(), dispatch, calls: &mut calls, env: &self.env, subscriptions: self.events.clone(), wake, code }, events).await;
+                self.events.detach(&id, generation);
+                outcome
+            }
+            (None, _) => Outcome::Failed("UnsupportedRuntime"),
+            (Some(_), Err(code)) => Outcome::Failed(code),
         };
-        self.events.detach(&id, generation);
+        drop(storage);
+        // Uninstall removed the record while this process ran from its code directory: remove the code now.
+        // A reinstall queued behind this stop starts afterwards and writes its directory again.
+        if matches!(outcome, Outcome::Stopped(StopReason::Uninstall, _)) {
+            let (app_data, id) = (app_data, id.clone());
+            let _ = tauri::async_runtime::spawn_blocking(move || runtime_code_folders::remove_code(&app_data, &id)).await;
+        }
         // Whatever the outcome, no caller of this process is left waiting.
         calls.close();
         while let Ok(call) = calls.try_recv() { let _ = call.reply.send(Err("HostUnavailable".into())); }
@@ -353,19 +386,23 @@ enum Outcome { Stopped(StopReason, bool), Failed(&'static str) }
 
 /// What the process loop needs besides the process: who the service is, who serves its requests and the queue of
 /// host to service calls.
-struct Wiring<'a> { owner: String, dispatch: Option<Dispatch>, calls: &'a mut mpsc::Receiver<HostCall>, env: &'a [(String, String)], subscriptions: Arc<WorkspaceEvents>, wake: Arc<Notify> }
+struct Wiring<'a> { owner: String, dispatch: Option<Dispatch>, calls: &'a mut mpsc::Receiver<HostCall>, env: &'a [(String, String)], subscriptions: Arc<WorkspaceEvents>, wake: Arc<Notify>, code: ServiceCode<'a> }
+/// Where the service runs and what it may keep (R0105): its code directory and entry point, the user environment it
+/// inherits, and the app data directory with the `storage.private` grant work for `storage.directory`.
+struct ServiceCode<'a> { directory: PathBuf, entry: PathBuf, parent: Vec<(OsString, OsString)>, app_data: PathBuf, storage: Option<&'a Work> }
 
 /// One service process: no deadline, no heap flag, no message budget (the 2 MiB frame bound and the 64-pending
 /// and rate bounds of the duplex channel stay). Ends when the host asks it to stop (after at most `STOP_GRACE`),
 /// when its grant work is cancelled, or when it exits or breaks the protocol. The whole job is always terminated
 /// and the child reaped before this returns, and every call still outstanding is settled first.
 async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop: watch::Receiver<Option<StopReason>>, work: &Work, wiring: Wiring<'_>, mut events: impl FnMut(Event)) -> Outcome {
-    let Wiring { owner, dispatch, calls, env, subscriptions, wake } = wiring;
+    let Wiring { owner, dispatch, calls, env, subscriptions, wake, code } = wiring;
+    let ServiceCode { directory, entry, parent, app_data, storage } = code;
     let mut command = tokio::process::Command::new(&runtime.binary);
-    command.args(["--input-type=commonjs", "--eval", supervisor::BOOTSTRAP]).current_dir(&runtime.directory)
-        .env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    // The service's environment is still the short activation's cleared one; R0105 gives it the user's environment.
-    for name in ["SystemRoot", "WINDIR", "TEMP", "TMP"] { if let Some(value) = std::env::var_os(name) { command.env(name, value); } }
+    command.args(["--input-type=commonjs", "--eval", supervisor::BOOTSTRAP]).current_dir(&directory)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    // The user's environment without NODE_OPTIONS and the host's PANDACODE_* variables (R0105, ADR-0006).
+    runtime_code_folders::apply_service_environment(&mut command, parent);
     for (name, value) in env { command.env(name, value); }
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
@@ -384,7 +421,7 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     let mut grace = Box::pin(tokio::time::sleep(Duration::from_secs(365 * 24 * 3600)));
     let mut poll = tokio::time::interval(GRANT_POLL);
     let mut failure: Option<&'static str> = None;
-    if supervisor::write_frame(&mut stdin, &json!({"token": token, "source": source, "context": init}), 300_000).await.is_err() { failure = Some("HostUnavailable"); }
+    if supervisor::write_frame(&mut stdin, &json!({"token": token, "source": source, "entry": entry.to_string_lossy(), "context": init}), 300_000).await.is_err() { failure = Some("HostUnavailable"); }
     // Every later frame goes through one writer task, so a service that stops reading never blocks this loop.
     let (out, mut outgoing) = mpsc::channel::<Vec<u8>>(512);
     let writer = tauri::async_runtime::spawn(async move {
@@ -447,11 +484,19 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
                                 Err(code) => { if !answer(id, &super::context::failure(code)) && requested.is_none() { failure = Some("HostUnavailable"); } }
                                 Ok(()) => {
                                     // Context requests run for the command they were made from, never for a handle the package names.
-                                    let handle = if method == "context" { params.get("invocation").and_then(Value::as_u64).and_then(|call| handles.get(&call).cloned()) } else { None };
+                                    let handle = if method == "context" || method == "storageDirectory" { params.get("invocation").and_then(Value::as_u64).and_then(|call| handles.get(&call).cloned()) } else { None };
                                     let mut params = params;
                                     if let Some(object) = params.as_object_mut() { object.remove("invocation"); }
-                                    let served = dispatch.as_ref().map(|dispatch| dispatch(DispatchRequest { owner: owner.clone(), method, params, handle }));
-                                    serving.spawn(async move { (id, match served { Some(served) => served.await, None => super::context::failure("UnsupportedCapability") }) });
+                                    // `storage.directory` (R0105): the live `storage.private` grant of this service. With
+                                    // the captured context of an owned command the app resolves its project (and checks
+                                    // the grant again); without one it is answered here, and `project` is `StaleContext`.
+                                    if method == "storageDirectory" && (handle.is_none() || dispatch.is_none() || !storage.is_some_and(|work| !work.is_cancelled())) {
+                                        let (granted, app_data, owner, params) = (storage.is_some_and(|work| !work.is_cancelled()), app_data.clone(), owner.clone(), params);
+                                        serving.spawn(async move { (id, tauri::async_runtime::spawn_blocking(move || runtime_code_folders::storage_directory_reply(&app_data, &owner, &params, granted, None)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"))) });
+                                    } else {
+                                        let served = dispatch.as_ref().map(|dispatch| dispatch(DispatchRequest { owner: owner.clone(), method, params, handle }));
+                                        serving.spawn(async move { (id, match served { Some(served) => served.await, None => super::context::failure("UnsupportedCapability") }) });
+                                    }
                                 }
                             },
                         }
@@ -555,6 +600,7 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
         let app = app.clone();
         Box::pin(async move {
             use tauri::Manager;
+            if request.method == "storageDirectory" { return storage_directory(&app, request); }
             if request.method != "context" { return super::context::failure("UnsupportedCapability"); }
             let Some(handle) = request.handle else { return super::context::failure("StaleContext") };
             let result = (|| {
@@ -569,6 +615,21 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             result.unwrap_or_else(super::context::failure)
         }) as Pin<Box<dyn Future<Output = Value> + Send>>
     })
+}
+/// `storage.directory` made while an owned command runs (R0105): the project is the one of the captured context the
+/// command was invoked from, and the `storage.private` grant is checked again for the owner's installed version.
+fn storage_directory(app: &tauri::AppHandle, request: DispatchRequest) -> Value {
+    use tauri::Manager;
+    let Some(handle) = request.handle else { return super::context::failure("StaleContext") };
+    let result = (|| {
+        let packages = app.state::<super::packages::ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
+        let snapshot = packages.snapshot();
+        let (owner, version, context) = app.state::<super::context::ContextBroker>().local_binding(app, &snapshot, &handle)?;
+        if owner != request.owner { return Err("PermissionDenied"); }
+        let granted = app.state::<RuntimeGrants>().check(&owner, &version, runtime_code_folders::STORAGE_PERMISSION, &Target::default()).is_ok();
+        Ok(runtime_code_folders::storage_directory_reply(&packages.app_data(), &owner, &request.params, granted, context["projectId"].as_str()))
+    })();
+    result.unwrap_or_else(super::context::failure)
 }
 /// Enable and development reload: clear a failed service, then reconcile.
 pub fn retry_app(app: &tauri::AppHandle, owner: &str) {

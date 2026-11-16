@@ -450,7 +450,7 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage }
 /** Workspace events (`events.workspace`, service only; narrowable per project): ids only, in order, at most 256 waiting, then one `gap`. See docs/extensions/runtime-workspace-events.md. */
 export type WorkspaceEventKind = 'task.created' | 'task.removed' | 'task.shown' | 'task.stopped' | 'task.idle' | 'task.compacted' | 'turn.started' | 'turn.finished' | 'turn.failed' | 'project.opened' | 'project.closed' | 'settings.changed' | 'app.focus';
 export type WorkspaceEventStarter = 'user' | 'bot' | 'schedule' | 'team' | { readonly package: string };
@@ -468,6 +468,8 @@ export interface WorkspaceEvents {
   /** The handler of one event finishes before the next event reaches any handler. A refused subscription (no grant) leaves the kind without listeners. */
   on<K extends WorkspaceEventKind | 'gap'>(kind: K, handler: (event: Extract<WorkspaceEvent, { kind: K }>) => void | Promise<void>): Disposable;
 }
+/** The package's data directory (`storage.private`, service only; a short activation answers `UnsupportedCapability`): `global`, or `project` for the call's project (`StaleContext` without one). Kept across disable, update and uninstall; removed by "remove own data". Code runs from the declared `runtime.files` folders; see docs/extensions/runtime-code-folders.md. */
+export interface ServiceStorage { directory(options: { scope: 'global' | 'project' }): Promise<{ readonly schemaVersion: 1; readonly path: string }> }
 /** The package's own secrets (`secrets.private`, service only): scoped to this package by the host, at most 64 keys (`^[a-z][a-z0-9-]{0,63}$`) of 16 KiB each, kept across disable and update, removed on uninstall. Not a host credential; see docs/extensions/runtime-private-secrets.md. */
 export interface PrivateSecrets {
   get(options: { key: string }): Promise<{ readonly value: string | null }>;
