@@ -187,4 +187,3 @@ test('Core dialogs: conflict is bounded and owner-labelled; disable, fault and s
   await expect(title).toHaveValue('Unsaved host title'); await expect(title).toBeFocused(); await expect(dialog(page)).toHaveJSProperty('open', true);
   await close(page); await eligible(page, 'rename-task'); await expect(band(page)).toBeHidden();
 });
-

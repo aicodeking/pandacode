@@ -362,4 +362,3 @@ test('Status extension: cached usage, period, tab, progress, notices and focus s
   expect((await props(page)).safeMode).toBe(true);
   await noAuthority(page);
 });
-

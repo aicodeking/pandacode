@@ -129,6 +129,11 @@ test('Bots panel extension: captured actions run original handlers after a fresh
   expect(await act(page, 'search', {}, { controlId: 'rename-bot' })).toEqual({ ok: false, reason: 'InvalidArguments' });
   expect(await act(page, 'search', {}, { selector: '.bot-row' })).toEqual({ ok: false, reason: 'InvalidArguments' });
   expect(await act(page, 'search', {}, { contractVersion: 2 })).toEqual({ ok: false, reason: 'UnsupportedCapability' });
+  // The sample may open any bot first; start from Ledger so that opening Writer below is a real change.
+  if (await selectedBot(page) === 'Writer') {
+    expect(await act(page, 'open-bot', { bot: 'Ledger' })).toEqual({ ok: true });
+    await expect(bot(page, 'Ledger').locator('.bot-row-open')).toHaveAttribute('aria-current', 'page');
+  }
   const stale = await action(page, 'open-bot', { bot: 'Ledger' });
   const request = await action(page, 'open-bot', { bot: 'Writer' });
   expect(await send(page, request)).toEqual({ ok: true });

@@ -3,8 +3,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 // Integrated gap closure (T60K): the machine-checked map from each of T60's 49 gap keys to the coverage block, adapter,
-// catalog locations and passing evidence of T60A-T60J. T60's own retry flips its completionAudit dispositions; this file
-// only proves that every key has a real delivery that the ledger, the source and the specs agree on.
+// catalog locations and passing evidence of T60A-T60J. T60's completionAudit names each key as the `closure` of the row it
+// closes (checked in extensions-surface-ledger.test.mjs); this file proves that every key has a real delivery that the
+// ledger, the source and the specs agree on.
 const read = path => readFileSync(path, 'utf8');
 const ledger = JSON.parse(read('tests/fixtures/extensions/surfaces.json'));
 
@@ -71,13 +72,16 @@ function checkClosure(value, exists = existsSync) {
   }
   assert.equal(blocks, 10, 'T60A-T60J each own one coverage block');
   assert.equal(closure.status, 'closed');
-  assert.ok(!('completionAudit' in value), 'T60 owns completionAudit and adds it when it is retried');
+  // T60's completion audit references each key from the row it closes instead of copying the delivery.
+  const audit = value.completionAudit, rows = [...Object.values(audit?.members ?? {}), ...Object.values(audit?.useCases ?? {})];
+  for (const entry of Object.values(audit?.inventory ?? {})) rows.push(entry, ...Object.values(entry.actions ?? {}));
+  assert.deepEqual(rows.filter(row => 'closure' in row).map(row => row.closure).sort(), [...GAPS].sort(), 'completionAudit references every key once as a closure');
 }
 
 test('gapClosure lists exactly the 49 T60 gap keys and every reference, catalog surface and evidence path resolves', () => {
   checkClosure(ledger);
   assert.equal(Object.keys(ledger.gapClosure.keys).length, 49);
-  assert.deepEqual(Object.keys(ledger).slice(0, 3), ['schemaVersion', 'controlsAudit', 'primitivesCoverage'], 'the first lines stay as the held T60 patch expects');
+  assert.deepEqual(Object.keys(ledger).slice(0, 3), ['schemaVersion', 'completionAudit', 'controlsAudit'], 'the T60 completion audit leads the ledger');
 });
 
 test('the checker fails on a missing or extra key, an unknown reference, a missing evidence path and a protected-only closure', () => {
@@ -92,7 +96,8 @@ test('the checker fails on a missing or extra key, an unknown reference, a missi
   assert.throws(() => checkClosure(mutate(copy => { const entry = copy.gapClosure.keys['panda.thread.find']; entry.catalog = ['panda.thread.extras.protected']; entry.by = [entry.block, entry.adapter, ...entry.catalog]; })), /only at protected/);
   assert.throws(() => checkClosure(mutate(copy => { copy.threadCoverage['panda.thread.extras'].closes = copy.threadCoverage['panda.thread.extras'].closes.filter(key => key !== 'panda.thread.find'); })), /not listed in closes/);
   assert.throws(() => checkClosure(mutate(copy => { copy.threadCoverage['panda.thread.extras'].closes.push('panda.thread.invented'); })), /closes and gapClosure disagree/);
-  assert.throws(() => checkClosure(mutate(copy => { copy.completionAudit = {}; })), /owns completionAudit/);
+  assert.throws(() => checkClosure(mutate(copy => { copy.completionAudit = {}; })), /references every key once/);
+  assert.throws(() => checkClosure(mutate(copy => { delete copy.completionAudit.members['panda.thread.find'].closure; })), /references every key once/);
 });
 
 /** One row per family: where the audit confirms clicked actions, refusals and the protected list. */
@@ -177,9 +182,11 @@ test('the gap-closure spec is registered in both Playwright configs and in CI, b
   assert.ok(webkit.includes('Gap closure extension:'), 'the WebKit grep selects the spec titles');
 });
 
-test('the held T60 patch hunk context stays: the first five ledger lines are unchanged', () => {
-  const head = read('tests/fixtures/extensions/surfaces.json').split(/\r?\n/).slice(0, 5);
-  assert.deepEqual(head.slice(0, 3), ['{', '  "schemaVersion": 1,', '  "controlsAudit": {']);
-  assert.match(head[3], /^ {4}"task": "extensibility-final-261113-v3yy\/T56I",$/);
+test('the ledger keeps its CRLF line endings and opens with the T60 completion audit', () => {
+  const text = read('tests/fixtures/extensions/surfaces.json');
+  assert.ok(!/[^\r]\n/.test(text), 'every line ends with CRLF');
+  const head = text.split('\r\n').slice(0, 5);
+  assert.deepEqual(head.slice(0, 3), ['{', '  "schemaVersion": 1,', '  "completionAudit": {']);
+  assert.match(head[3], /^ {4}"task": "extensibility-final-261113-v3yy\/T60",$/);
   assert.match(head[4], /^ {4}"status": "accepted",$/);
 });

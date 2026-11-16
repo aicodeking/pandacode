@@ -222,6 +222,86 @@ test('native secondary window creation is inventoried separately from preview re
   }
 });
 
+// Final completion audit (T60): every member, source owner/action and use case has one disposition. An open row is
+// missing implementation: it must be listed in gaps and keeps the audit blocked; it is never a protected exception.
+// A row closed by the gaps run names its gapClosure key instead of copying it: the key's adapter, references and evidence
+// (checked in extensions-gap-closure.test.mjs) are its evidence, and each of the 49 keys closes exactly its own row.
+function checkCompletionAudit(value) {
+  const audit = value.completionAudit, gaps = new Set(Object.keys(audit.gaps));
+  const known = new Set([...Object.keys(value), ...value.implementedAdapters.map(row => row.id), ...value.catalog.surfaces]);
+  const closures = value.gapClosure.keys, closed = [];
+  const open = new Set();
+  const closure = (id, entry) => {
+    if (!('closure' in entry)) return undefined;
+    assert.equal(entry.closure, id, `${id}: names another row's closure ${entry.closure}`);
+    const delivery = closures[entry.closure];
+    assert.ok(delivery, `${id}: unknown gapClosure key`);
+    closed.push(id);
+    return delivery;
+  };
+  const check = (id, entry) => {
+    assert.ok(['adapter', 'protected', 'platform', 'not-production', 'open'].includes(entry.disposition), `${id}: unknown disposition`);
+    const delivery = closure(id, entry);
+    if (closures[id]) assert.ok(entry.disposition === 'adapter' && delivery, `${id}: a closed gap maps to its gapClosure delivery, never to an exception`);
+    for (const ref of [...entry.by ?? [], ...delivery?.by ?? []]) assert.ok(known.has(ref), `${id}: unknown reference ${ref}`);
+    for (const path of [...entry.evidence ?? [], ...delivery?.evidence ?? []]) assert.ok(existsSync(path), `${id}: missing evidence ${path}`);
+    if (entry.disposition === 'adapter') assert.ok(entry.by?.length || entry.evidence?.length || delivery, `${id}: adapter without evidence`);
+    else if (entry.disposition === 'open') { assert.ok(entry.missing?.length > 20, `${id}: open row must say what is missing`); open.add(id); }
+    else assert.ok(entry.reason?.length > 20, `${id}: exception without its reason`);
+  };
+  const ids = members(value).map(row => row.id);
+  assert.deepEqual(Object.keys(audit.members).sort(), ids.sort(), 'Every ledger member needs exactly one completion disposition');
+  for (const id of ids) check(id, audit.members[id]);
+  assert.deepEqual(Object.keys(audit.inventory).sort(), value.sourceInventory.map(([owner]) => owner).sort(), 'Every source owner needs a disposition');
+  for (const [owner, actions] of value.sourceInventory) {
+    const entry = audit.inventory[owner];
+    check(owner, entry);
+    for (const [action, override] of Object.entries(entry.actions ?? {})) {
+      assert.ok(actions.includes(action), `${owner}: unknown action ${action}`);
+      check(`${owner}#${action}`, override);
+    }
+  }
+  assert.deepEqual(Object.keys(audit.useCases), Array.from({ length: 34 }, (_, index) => String(index + 1)), 'All 34 use cases');
+  const corpus = JSON.parse(read(audit.cases.map)).requirements;
+  assert.deepEqual(Object.keys(corpus), Array.from({ length: 31 }, (_, index) => `E${String(index + 1).padStart(2, '0')}`));
+  for (const [id, entry] of Object.entries(audit.useCases)) {
+    assert.ok(['implemented', 'partial', 'preview-only', 'open'].includes(entry.status), `use case ${id}: unknown status`);
+    for (const ref of entry.cases ?? []) assert.ok(corpus[ref], `use case ${id}: unknown case ${ref}`);
+    const key = `useCase:${id}`, delivery = closure(key, entry);
+    if (closures[key]) assert.ok(entry.status === 'implemented' && delivery, `${key}: a closed gap maps to its gapClosure delivery`);
+    const evidence = [...entry.evidence ?? [], ...delivery?.evidence ?? []];
+    assert.ok(evidence.length, `use case ${id}: no evidence`);
+    for (const path of evidence) assert.ok(existsSync(path), `use case ${id}: missing evidence ${path}`);
+    if (entry.status !== 'implemented') assert.ok(entry.note?.length > 20, `use case ${id}: say what is incomplete`);
+    if (entry.status === 'open') open.add(key);
+  }
+  assert.deepEqual(closed.sort(), Object.keys(closures).sort(), 'Every gapClosure key closes exactly one completion row');
+  assert.deepEqual([...gaps].sort(), [...open].sort(), 'gaps lists exactly the open rows');
+  assert.equal(audit.status, gaps.size ? 'blocked' : 'accepted', 'An open gap keeps the completion audit blocked');
+  assert.equal(audit.verdict.implementation, gaps.size ? 'incomplete' : 'complete');
+}
+
+test('completion audit maps every ledger member, source action, use case and E case', () => {
+  checkCompletionAudit(ledger);
+  const mutate = change => { const copy = structuredClone(ledger); change(copy.completionAudit, copy); return copy; };
+  // A former gap cannot be relabelled as an exception, reopened silently, or closed by another row's delivery.
+  assert.throws(() => checkCompletionAudit(mutate(audit => { audit.members['panda.thread.find'] = { disposition: 'protected', reason: 'Relabelled to look complete.' }; })), /never to an exception/);
+  assert.throws(() => checkCompletionAudit(mutate(audit => { audit.inventory['src/main.ts'].actions.steer = { disposition: 'open', missing: 'Steer bar reopened without a gaps entry.' }; })), /never to an exception/);
+  assert.throws(() => checkCompletionAudit(mutate(audit => { audit.members['panda.composer.queue'].closure = 'panda.composer.model'; })), /names another row's closure/);
+  assert.throws(() => checkCompletionAudit(mutate(audit => { audit.useCases['2'] = { status: 'open', evidence: ['docs/extensions/contracts.md'], note: 'Per-project enablement is missing again.' }; })), /closed gap maps to its gapClosure delivery/);
+  assert.throws(() => checkCompletionAudit(mutate((audit, copy) => { delete copy.gapClosure.keys['panda.thread.find']; delete audit.members['panda.thread.find'].closure; })), /exactly one completion row|adapter without evidence/);
+  // An open row not caused by the gaps run still has to be listed in gaps and block the audit.
+  const reopened = mutate(audit => { audit.members['panda.workspace.header.actions.leading'] = { disposition: 'open', missing: 'Leading header actions have no adapter in this mutation.' }; });
+  assert.throws(() => checkCompletionAudit(reopened), /gaps lists exactly the open rows/);
+  reopened.completionAudit.gaps['panda.workspace.header.actions.leading'] = 'Leading header actions have no adapter in this mutation.';
+  assert.throws(() => checkCompletionAudit(reopened), /keeps the completion audit blocked/);
+  reopened.completionAudit.status = 'blocked';
+  assert.throws(() => checkCompletionAudit(reopened), /incomplete/);
+  const omitted = structuredClone(ledger);
+  delete omitted.completionAudit.members['panda.composer.council'];
+  assert.throws(() => checkCompletionAudit(omitted), /exactly one completion disposition/);
+});
+
 test('validator rejects omitted closed inspector/settings surfaces', () => {
   for (const family of ['panda.inspector', 'panda.settings.pages']) {
     const omitted = structuredClone(ledger);

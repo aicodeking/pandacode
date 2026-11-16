@@ -89,4 +89,3 @@ test('Machines metadata never grants a target, start, link answer or stop; only 
     assert.deepEqual(during, [cancel]);
   }
 });
-

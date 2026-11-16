@@ -55,7 +55,7 @@ test('extensions project scope: ledger closes useCase:2 with evidence, docs desc
   const adapter = ledger.implementedAdapters.filter(row => row.id === 'panda.extensions.enablement');
   assert.equal(adapter.length, 1);
   assert.ok(adapter[0].tests.includes('tests/extensions-project-scope.spec.ts'));
-  assert.equal(ledger.completionAudit, undefined, 'the held T60 completion audit is not pre-empted');
+  assert.deepEqual(ledger.completionAudit.useCases['2'], { ...ledger.completionAudit.useCases['2'], status: 'implemented', closure: 'useCase:2' }, 'the T60 completion audit closes use case 2 through this scope');
   for (const doc of ['../docs/extensions/lifecycle.md', '../docs/extensions/install.md']) {
     const text = read(doc);
     assert.match(text, /project scope/i, doc); assert.match(text, /All projects/, doc); assert.match(text, /\$\.projectScope/, doc);

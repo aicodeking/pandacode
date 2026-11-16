@@ -29,7 +29,7 @@ Keyboard tab navigation and close-dialog Escape/focus remain original handlers.
 Fallback restores those same nodes, not a remounted terminal. Browser preview
 continuity is synthetic; native library tests are separate evidence, not installed
 WebView2/WKWebView/Linux drag/window qualification (deferred outside this run).
- 
+
 Limits: 1,000 tabs per eligible current group, 128-character request IDs, and
 4,096 admitted request IDs per panel lifetime (exhaustion revokes further public
 dispatch, never core controls). No original unbounded output is serialized.

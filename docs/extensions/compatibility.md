@@ -49,6 +49,31 @@ content endpoint is implied. Original document control availability and native
 process/approval policy still apply. The original read-only diff has no hunk-stage
 handler; unsupported hunk mutations never become whole-file staging.
 
+## Platform completion and API stability
+
+API 1 remains **experimental**. The final completion audit maps every surface in
+the ledger (`tests/fixtures/extensions/surfaces.json`, `completionAudit`) to a
+supported contract or a protected or platform exception with its reason; no open
+gap remains. The composer controls and panels ([composer](composer.md),
+[panels](composer-panels.md), [attach and wake-ups](composer-attach.md)), thread
+find, turn changes, attachment chips and the usage-limit card
+([thread extras](thread-extras.md)), thread tiles and the draft project picker
+([tiles and picker](tiles-picker.md)), the command center and slash commands
+([commands](commands-extras.md)), the task and window menus
+([task menus](task-menus.md), [window menus](window-menus.md)), the shared bot
+chat controls and web projection ([bot conversation](bot-conversation.md)) and
+per-project enablement ([lifecycle](lifecycle.md)) are delivered; each row names
+its delivery in the ledger's `gapClosure`, which also records their limits. A
+package limited to some projects is refused natively for executable work, services,
+storage and auxiliary windows; its declarative contributions run nothing natively
+and are withheld by the webview for other projects.
+
+API 1 is still not declared stable: installed Windows, Linux and macOS
+qualification is deferred, and the no-extension performance gates have only
+browser-preview evidence. Only API 1.0.0 exists, so the deprecation and migration
+policy in the [author guide](README.md#compatibility-deprecation-and-migration)
+has not yet been exercised by a second API version.
+
 ## Recovery and qualification
 
 Choose Built-in, disable the package, or disable extensions for the launch. Safe

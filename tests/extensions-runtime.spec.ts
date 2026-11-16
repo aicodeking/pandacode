@@ -11,7 +11,7 @@ function native(caseName: string) {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Trusted native runtime fixture requires the explicitly qualified Windows x64 target');
   const directory = resolve('src-tauri/target/debug/deps');
   const binary = process.env.PANDACODE_EXTENSION_TEST_BINARY ?? readdirSync(directory).filter(name => /^pandacode_lib-[a-z0-9]+\.exe$/.test(name)).map(name => resolve(directory, name)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
-  if (!binary) throw new Error('Build the actual application native tests first; no fallback');
+  if (!binary) throw new Error('Build the native tests with --features extension-runtime-native-tests and set PANDACODE_EXTENSION_TEST_BINARY; no fallback');
   const child = spawn(binary, ['--exact', 'extensions::packages::tests::trusted_native_driver', '--nocapture'], { env: { ...process.env, PANDACODE_EXTENSION_CASE: caseName, PANDACODE_EXTENSION_CANCEL_FROM_STDIN: caseName === 'cancel' ? '1' : '0' }, stdio: ['pipe', 'pipe', 'pipe'] });
   owned.add(child); child.once('close', () => { owned.delete(child); });
   let output = '', errors = '', ready!: () => void;
@@ -23,7 +23,13 @@ function native(caseName: string) {
     child.once('close', code => {
       if (code !== 0) { reject(new Error(`Native application fixture failed (${code}) ${output}\n${errors}`)); return; }
       const line = output.split(/\r?\n/).find(line => line.startsWith('TRUSTED_RESULT '));
-      if (!line) { reject(new Error(`No native evidence: ${output}`)); return; }
+      if (!line) {
+        // A default build filters `trusted_native_driver` out and reports "running 0 tests" with exit code 0.
+        reject(new Error(/running 0 tests/.test(output)
+          ? `${binary} was built without the trusted native driver. Build it with \`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --features extension-runtime-native-tests --no-run\` and set PANDACODE_EXTENSION_TEST_BINARY to the printed test binary.`
+          : `No native evidence: ${output}`));
+        return;
+      }
       resolve(JSON.parse(line.slice('TRUSTED_RESULT '.length)));
     });
   });
