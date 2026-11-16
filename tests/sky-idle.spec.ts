@@ -160,3 +160,78 @@ test('reduced motion keeps its one still frame, idle rate or not', async ({ page
   await page.waitForTimeout(800);
   expect(await frames(page)).toBe(still);
 });
+
+/** The rate governor (src/sky-window.ts `rateSample`): where a painted frame costs tens of milliseconds of main-thread work
+ * (a CPU-composited WebKit, #348/#351), the rest and idle rates halve at the same pace. `__sky.forceFrameMs` (preview
+ * only) stands in for the measured cost. */
+const forceFrameMs = (page: Page, ms: number | null) => page.evaluate(value => { (window as any).__sky.forceFrameMs = value; }, ms);
+const halved = (page: Page) => page.evaluate(() => (window as any).__sky.rateHalved as boolean);
+
+test('costly frames halve the rest and idle rates at the shipped pace, and cheap ones bring them back', async ({ page }) => {
+  test.setTimeout(60_000);
+  await open(page);
+  await setIdleAfter(page, 1e9);
+  await forceFrameMs(page, 40);
+  await expect.poll(() => halved(page), { timeout: 5000 }).toBe(true);
+  await nextPaint(page);
+  const rest = await measure(page, 2500);
+  console.log(`costly rest: ${rest.fps.toFixed(2)} fps, ${rest.ratio.toFixed(3)} scene s per wall s`);
+  expect(rest.fps, `${rest.fps.toFixed(1)} fps at a costly rest`).toBeGreaterThan(3);
+  expect(rest.fps, `${rest.fps.toFixed(1)} fps at a costly rest`).toBeLessThan(5);
+  expect(withinTenPercent(rest.ratio, SHIPPED_REST_PACE), `costly rest pace (${rest.ratio.toFixed(3)})`).toBe(true);
+  // The idle rate halves too, to the 2 fps floor for the daytime sky's 3.
+  await setIdleAfter(page, 0);
+  await nextPaint(page);
+  const idle = await measure(page, 3500);
+  console.log(`costly idle: ${idle.fps.toFixed(2)} fps, ${idle.ratio.toFixed(3)} scene s per wall s`);
+  expect(idle.fps, `${idle.fps.toFixed(1)} fps at a costly idle`).toBeGreaterThan(1.5);
+  expect(idle.fps, `${idle.fps.toFixed(1)} fps at a costly idle`).toBeLessThan(2.6);
+  expect(withinTenPercent(idle.ratio, SHIPPED_REST_PACE), `costly idle pace (${idle.ratio.toFixed(3)})`).toBe(true);
+  // Cheap frames again: the rates come back, at the same pace.
+  await forceFrameMs(page, 1);
+  await expect.poll(() => halved(page), { timeout: 10_000 }).toBe(false);
+  await setIdleAfter(page, 1e9);
+  await nextPaint(page);
+  const back = await measure(page, 2000);
+  console.log(`restored rest: ${back.fps.toFixed(2)} fps, ${back.ratio.toFixed(3)} scene s per wall s`);
+  expect(back.fps, `${back.fps.toFixed(1)} fps once frames are cheap`).toBeGreaterThan(5);
+  expect(withinTenPercent(back.ratio, SHIPPED_REST_PACE), `restored pace (${back.ratio.toFixed(3)})`).toBe(true);
+});
+
+test('costly frames keep rain at its 4 fps floor, and a run keeps its rate', async ({ page }) => {
+  await open(page, 'rain');
+  await forceFrameMs(page, 40);
+  await setIdleAfter(page, 0);
+  await expect.poll(() => halved(page), { timeout: 5000 }).toBe(true);
+  await nextPaint(page);
+  const rain = await measure(page, 2500);
+  expect(rain.fps, `${rain.fps.toFixed(1)} fps for costly idle rain`).toBeGreaterThan(3);
+  expect(rain.fps, `${rain.fps.toFixed(1)} fps for costly idle rain`).toBeLessThan(5);
+  expect(withinTenPercent(rain.ratio, SHIPPED_REST_PACE), `costly rain pace ${rain.ratio.toFixed(3)}`).toBe(true);
+  // A run churning the transcript keeps its 8 fps cap however costly the frames: streaming rates are untouched.
+  await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  const busy = await measure(page, 1500);
+  expect(busy.fps, `${busy.fps.toFixed(1)} fps during a costly run`).toBeGreaterThan(5);
+  expect(await slow(page)).toBe(false);
+});
+
+test('cheap frames keep the shipped rest and idle rates', async ({ page }) => {
+  await open(page);
+  // What this renderer measures on its own (logged only: a loaded box can make a real frame look costly).
+  await page.waitForTimeout(1500);
+  console.log(`measured frame costs: ${(await page.evaluate(() => (window as any).__sky.frameCosts as number[])).map(ms => ms.toFixed(1)).join(', ')}`);
+  await forceFrameMs(page, 2);
+  await setIdleAfter(page, 1e9);
+  await page.waitForTimeout(1200);
+  expect(await halved(page)).toBe(false);
+  const rest = await measure(page, 2000);
+  expect(rest.fps, `${rest.fps.toFixed(1)} fps at a cheap rest`).toBeGreaterThan(5);
+  expect(withinTenPercent(rest.ratio, SHIPPED_REST_PACE), `cheap rest pace (${rest.ratio.toFixed(3)})`).toBe(true);
+  await setIdleAfter(page, 0);
+  await expect.poll(() => slow(page)).toBe(true);
+  const idle = await measure(page, 3000);
+  expect(idle.fps, `${idle.fps.toFixed(1)} fps at a cheap idle`).toBeGreaterThanOrEqual(2);
+  expect(idle.fps, `${idle.fps.toFixed(1)} fps at a cheap idle`).toBeLessThanOrEqual(4);
+  expect(await halved(page)).toBe(false);
+});

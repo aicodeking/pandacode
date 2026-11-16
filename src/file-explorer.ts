@@ -37,19 +37,26 @@ function watchedVisible(): boolean {
  * no timer and no IPC at all. Each tick skips the refresh unless the Files tree or an open file is visible. Coming back
  * (focus, or the document shown again) refreshes at once and restarts the poll at the matching rate. */
 function startPolling(refresh: () => void): void {
-  let timer = 0, period = 0, focused = true;
+  // Read, never assumed: a window launched in the background starts unfocused, and focus that leaves the app from inside
+  // one of its frames fires no blur here (the window blurred when the frame took focus), so each tick reads it again too.
+  let timer = 0, period = 0, focused = document.hasFocus();
   const sync = (): void => {
     const next = document.hidden ? 0 : focused ? POLL_MS : UNFOCUSED_POLL_MS;
     if (next === period) return;
     if (timer) { window.clearInterval(timer); timer = 0; }
     period = next;
-    if (period) timer = window.setInterval(() => { if (watchedVisible()) refresh(); }, period);
+    if (period) timer = window.setInterval(tick, period);
+  };
+  const tick = (): void => {
+    const now = document.hasFocus();
+    if (now !== focused) { focused = now; sync(); if (!now) return; }
+    if (watchedVisible()) refresh();
   };
   window.addEventListener('focus', () => { focused = true; sync(); refresh(); });
   // A blur also fires when focus moves into one of the app's own frames (the browser panel, a preview); the document
   // still has focus then, so read it once the move has landed rather than trusting the event.
   window.addEventListener('blur', () => { window.setTimeout(() => { focused = document.hasFocus(); sync(); }, 0); });
-  document.addEventListener('visibilitychange', () => { sync(); if (!document.hidden) refresh(); });
+  document.addEventListener('visibilitychange', () => { focused = document.hasFocus(); sync(); if (!document.hidden) refresh(); });
   sync();
 }
 

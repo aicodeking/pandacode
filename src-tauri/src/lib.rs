@@ -3050,10 +3050,34 @@ async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: O
     if let Some(remote) = remote::catalog::providers(&app, device_id, force).await? {
         return Ok(remote);
     }
-    serde_json::to_value(local_providers(force).await).map_err(|e| e.to_string())
+    serde_json::to_value(listed_providers(app, force).await).map_err(|e| e.to_string())
 }
-/// This computer's harnesses; `force` drops the cached ACP catalogs first.
+/// This computer's harnesses for the app, from path lookups only: each version is the
+/// remembered one, else "". Unknown versions are probed in the background and arrive as the
+/// `provider-versions` event, `{ versions: { [providerId]: string } }`.
+async fn listed_providers(app: tauri::AppHandle, force: bool) -> Vec<providers::ProviderInfo> {
+    forget_provider_details(force);
+    tauri::async_runtime::spawn_blocking(move || {
+        providers::discover_now(move |versions| {
+            // Called by the probe thread with no lock held.
+            if let Err(error) = app.emit("provider-versions", serde_json::json!({ "versions": versions })) {
+                eprintln!("PandaCode: could not announce CLI versions: {error}");
+            }
+        })
+    })
+    .await
+    .unwrap_or_default()
+}
+/// This computer's harnesses with every version answered (waits for `--version` probes; the
+/// saved cache usually answers). For callers that cannot hear `provider-versions`.
 pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo> {
+    forget_provider_details(force);
+    tauri::async_runtime::spawn_blocking(providers::discover)
+        .await
+        .unwrap_or_default()
+}
+/// `force` drops the cached ACP catalogs and CLI versions (failures included).
+fn forget_provider_details(force: bool) {
     if force {
         providers::acp_catalog::invalidate("antigravity");
         providers::acp_catalog::invalidate("grok");
@@ -3061,10 +3085,8 @@ pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo>
         providers::acp_catalog::invalidate("zcode");
         providers::acp_catalog::invalidate("hermes");
         providers::acp_catalog::invalidate("cursor");
+        providers::forget_versions();
     }
-    tauri::async_runtime::spawn_blocking(providers::discover)
-        .await
-        .unwrap_or_default()
 }
 #[tauri::command]
 async fn list_provider_models(app: tauri::AppHandle, provider: String, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
@@ -4418,6 +4440,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
         crash_guard::narrow_webview_data(&webview_data);
     }
     secret_store::setup(&dir);
+    providers::load_version_cache(&dir);
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
     connections::setup(&dir)?;

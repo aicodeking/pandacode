@@ -39,13 +39,16 @@ export function preloadDiffsWhenWanted(doc: Pick<Document, 'addEventListener' | 
   if (preloaded || afterPaint) return;
   disarm();
   const near = (event: Event) => { if ((event.target as Element | null)?.closest?.(DIFF_INTENT)) preloadDiffsAfterPaint(); };
-  const whenIdle = () => { if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(() => { if (changedNames.length) preloadDiffsAfterPaint(); }, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
-  const idle = () => { if (changedNames.length) whenIdle(); else idleWithoutChanges = whenIdle; };
+  let armed = true;
+  // The changes may be gone by the idle moment (committed, reverted): then it waits for the next ones again.
+  const idle = () => { if (!armed) return; if (changedNames.length) whenIdle(); else idleWithoutChanges = whenIdle; };
+  const whenIdle = () => { if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(() => { if (armed && changedNames.length) preloadDiffsAfterPaint(); else idle(); }, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
   const timer = win.setTimeout(idle, DIFF_IDLE_AFTER);
   doc.addEventListener('pointerover', near, { passive: true });
   doc.addEventListener('focusin', near);
   disarm = () => {
     disarm = () => {};
+    armed = false;
     idleWithoutChanges = undefined;
     win.clearTimeout(timer);
     doc.removeEventListener('pointerover', near);

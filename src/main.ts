@@ -346,8 +346,9 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   closeMenus();
   const request = ++architectSetupRequest;
   const { openArchitectSetup } = await import('./architect');
-  if (request !== architectSetupRequest || !anchor.isConnected || task.id !== state.sessionId) return;
-  architectSetupCleanup = openArchitectSetup(anchor, async () => {
+  const live = liveAnchor(anchor);
+  if (request !== architectSetupRequest || !live || task.id !== state.sessionId) return;
+  architectSetupCleanup = openArchitectSetup(live, async () => {
     const [team, library] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles')]);
     return { task, team, library, providers: state.providers, loadModels,
       save: async (config, architect, profileId) => {
@@ -626,10 +627,10 @@ const github = createGithub({
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
-    // Synchronous for github.ts: before the harness list is known (and with no last-launch list to rely on) say so
-    // instead of choosing from an empty list or calling the agents missing.
-    const choice = providersForChoice();
-    if (!Array.isArray(choice)) throw new Error('Agent harnesses are still loading. Try again in a moment.');
+    // Synchronous for github.ts: before the harness list is known (and while the last launch's may not be used yet) say
+    // so instead of choosing from an empty or stale list or calling the agents missing.
+    const choice = providersForChoiceNow();
+    if (!choice) throw new Error('Agent harnesses are still loading. Try again in a moment.');
     const harness = pickHarness(choice);
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     return { provider: harness.id, model: rememberedModel(harness.id) };
@@ -1667,6 +1668,14 @@ async function openSupport(): Promise<void> {
   }
 }
 function cancelPendingMenu(): void { menuEpoch++; pendingMenuOpen?.release(); }
+/** The trigger a menu opens from, once its module has loaded: a composer re-render meanwhile (boot repaints it when the
+ *  harness list lands) replaces the button, so the one now carrying its id (#model-picker-trigger, #mode-picker-trigger)
+ *  stands in rather than the click being dropped. Undefined when there is none, or it is disabled now. */
+function liveAnchor(anchor: HTMLElement): HTMLElement | undefined {
+  if (anchor.isConnected) return anchor;
+  const again = anchor.id ? document.getElementById(anchor.id) : null;
+  return again instanceof HTMLElement && !(again instanceof HTMLButtonElement && again.disabled) ? again : undefined;
+}
 function closeModelPicker(): void { cancelPendingMenu(); const close = modelPickerCleanup; modelPickerCleanup = undefined; close?.(); }
 function closeProjectPicker(): void { cancelPendingMenu(); const close = projectPickerCleanup; projectPickerCleanup = undefined; close?.(); }
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
@@ -4055,6 +4064,7 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
     const harness = pickHarness(await providersForChoice());
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
+    noteProvisional(saved);
   }
   const index = state.sessions.findIndex(s => s.id === saved.id);
   if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved;
@@ -6402,7 +6412,9 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const { openProjectPicker } = await import('./project-picker').finally(release);
-  if (epoch !== menuEpoch || projectPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || projectPickerCleanup || !live || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
+  anchor = live;
   projectPickerCleanup = openProjectPicker({
     anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
     onClose: () => { projectPickerCleanup = undefined; },
@@ -6442,7 +6454,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
-  if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || modelPickerCleanup || !live || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
+  anchor = live;
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
@@ -6557,8 +6571,38 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
 }
 /** Settles once every New task under way has opened its thread (it waits for boot first, then for the session). */
 let taskCreation: Promise<unknown> | undefined;
+/* New task and New chat presses. One under way marks its buttons busy (aria-busy, progress cursor) until its draft is
+ * open, so a press made while the harness list or boot is awaited visibly registered. The same press again is the one
+ * under way (no second draft); a different one made meanwhile (New chat while a draft opens, another project's New
+ * task) is kept, only the latest, and runs once the first ends. */
+type CreationPress = { key: string; action: 'new-task' | 'new-chat'; work: () => Promise<void> };
+let pressInFlight: CreationPress | undefined;
+let pressQueued: { press: CreationPress; done: () => void; failed: (error: unknown) => void } | undefined;
+function pressCreation(press: CreationPress): Promise<void> {
+  if (pressInFlight) {
+    if (press.key === pressInFlight.key) return Promise.resolve();
+    pressQueued?.done();
+    return new Promise<void>((done, failed) => { pressQueued = { press, done, failed }; showCreationBusy(); });
+  }
+  pressInFlight = press; showCreationBusy();
+  return press.work().finally(() => {
+    pressInFlight = undefined;
+    const queued = pressQueued; pressQueued = undefined;
+    if (queued) pressCreation(queued.press).then(queued.done, queued.failed); else showCreationBusy();
+  });
+}
+function showCreationBusy(): void {
+  for (const action of ['new-task', 'new-chat'] as const) {
+    const busy = pressInFlight?.action === action || pressQueued?.press.action === action;
+    document.querySelectorAll<HTMLElement>(`button[data-action="${action}"]`).forEach(button => {
+      if (busy) { button.setAttribute('aria-busy', 'true'); button.style.cursor = 'progress'; }
+      else if (button.hasAttribute('aria-busy')) { button.removeAttribute('aria-busy'); button.style.removeProperty('cursor'); }
+    });
+  }
+}
+function newChat(): Promise<void> { return pressCreation({ key: 'chat', action: 'new-chat', work: () => createChat() }); }
 function createTask(projectId = state.projectId): Promise<void> {
-  const run = startTask(projectId);
+  const run = pressCreation({ key: `task:${projectId}`, action: 'new-task', work: () => startTask(projectId) });
   const tracked: Promise<unknown> = Promise.allSettled([taskCreation, run]).finally(() => { if (taskCreation === tracked) taskCreation = undefined; });
   taskCreation = tracked;
   return run;
@@ -6588,6 +6632,7 @@ async function startTask(projectId: string): Promise<void> {
     const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
     if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
     created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
+    noteProvisional(created);
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
   if (generation !== state.generation) { renderNavigation(); return; }
@@ -6614,6 +6659,7 @@ async function createChat(from?: Session): Promise<void> {
     if (!harness) { notify('Open Settings to check your installed agents.'); return; }
     if (!from) leaveDraft('');
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    if (!from) noteProvisional(created);
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
@@ -6654,7 +6700,9 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const { openChoiceMenu } = await import('./choice-menu').finally(release);
-  if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || generation !== state.generation || !live) return;
+  anchor = live;
   choiceMenuAnchor = anchor;
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
     choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
@@ -6930,7 +6978,9 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const { openModelPicker } = await import('./model-picker').finally(release);
-  if (epoch !== menuEpoch || !anchor.isConnected) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || !live) return;
+  anchor = live;
   modelPickerCleanup = openModelPicker({
     anchor, providers: state.providers, current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
     canSwitchProvider: true, loadModels, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
@@ -6974,15 +7024,15 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
   modelCatalogs.clear();
-  const providers = await call<Provider[]>('list_providers', { force: true });
+  askingProviderList();
+  const found = await call<Provider[]>('list_providers', { force: true });
   if (generation !== settingsDiscoveryGeneration) return state.providers;
-  for (const found of providers) {
-    const previous = provider(found.id);
-    if (previous?.path === found.path && previous?.version === found.version) found.models = previous.models;
-  }
+  // Versions arrive blank (the cache was cleared) and fill in by `provider-versions`; the same CLI keeps its shown
+  // models, and a real version change reported later drops them.
+  const providers = mergeProviderList(found, (entry, previous) => previous.path === entry.path);
   state.providers = providers;
   // A Settings refresh answers the boot question too (the boot list may have failed or still be out).
-  if (!providersKnown) { providersKnown = true; settleProviders(providers); }
+  if (!providersKnown) { providersKnown = true; settleProviders(providers); run(correctProvisionalTasks()); }
   refreshAuthorNames();
   return providers;
 }
@@ -7007,7 +7057,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
     settingsView = mountSettings(host, {
       providers: state.providers, defaultProvider: state.defaultProvider, defaultModel: defaultModelLabel(), activityExpanded: activityExpanded(),
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
-      theme: currentTheme(), preview, section, discover: discoverSettingsProviders,
+      theme: currentTheme(), preview, section, discover: discoverSettingsProviders, versionsPending: providerVersionsPending,
       projects: { list: userProjects, remove: removeProject },
       turnChecks: turnChecksEnabled(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
@@ -8041,7 +8091,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
   switch (name) {
     case 'support': await openSupport(); break;
     case 'new-task': if (state.view === 'board') showBoardTaskForm(); else await createTask(); break;
-    case 'new-chat': if (state.view !== 'conversation') setWorkspaceView('conversation'); await createChat(); break;
+    case 'new-chat': if (state.view !== 'conversation') setWorkspaceView('conversation'); await newChat(); break;
     case 'board-view': setWorkspaceView('board'); break;
     case 'conversation-view': setWorkspaceView('conversation'); break;
     case 'github-view': setWorkspaceView('github'); break;
@@ -8439,10 +8489,14 @@ const windowDied = windowContentDied(localStorage);
 async function boot(): Promise<void> {
   // Asked first: paused crash restarts skip reopening the last thread.
   const crashRecovery = takeCrashRecovery();
-  // Probing every CLI takes seconds; the first thread needs none of it (loadBootProviders).
-  loadBootProviders();
+  // The harness list answers at once and its versions follow by event; the first thread needs neither (loadBootProviders),
+  // and the list is asked once the versions listener is in place.
+  const versionsListening = (subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('provider-versions', providerVersionsReported);
+  loadBootProviders(versionsListening);
   // The listeners the task list depends on are registered together, all before the list is read.
   const listening: Promise<unknown>[] = [
+    // Without the versions event the list still works; Settings then says "Not reported".
+    versionsListening.catch(error => console.warn('Could not listen for agent versions:', error)),
     subscribe('agent-event', onAgent),
     subscribe('provider-models-changed', event => invalidateModels(event.provider)),
     subscribe('architect-event', onArchitect),
@@ -8578,22 +8632,49 @@ async function boot(): Promise<void> {
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
   if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
 }
-/* Harnesses: `list_providers` probes every CLI (seconds), so boot opens the first thread without it. Until it answers,
- * state.providers is the last launch's list (names, models and install state, PROVIDER_CATALOG_KEY), so names and labels
- * paint as before, and nothing judges what is installed: no "check your agent CLIs" note, no model discovery on a stale
- * answer. When it lands, labels refresh and the open thread's models load. */
+/* Harnesses: `list_providers` answers at once (install state from path lookups, each version the cached one or ''), then
+ * probes versions in the background and reports them with the `provider-versions` event. Until the list answers,
+ * state.providers is the last launch's list (names, models and install state, PROVIDER_CATALOG_KEY), so names and
+ * labels paint as before, and nothing judges what is installed: no "check your agent CLIs" note, no model discovery on a
+ * stale answer. When it lands, labels refresh and the open thread's models load. */
 const PROVIDER_CATALOG_KEY = 'pandacode.providerCatalog';
+/** A choice (New task, New chat, a board task) waits this long for the real list before using the last launch's. */
+const PROVIDER_CHOICE_WAIT_MS = 3_000;
+/** Settings says "Checking…" for an installed harness with no version until `provider-versions` arrives, at most this long. */
+const PROVIDER_VERSIONS_PATIENCE_MS = 60_000;
 let providersKnown = false;
+/** Set once the boot list is late (PROVIDER_CHOICE_WAIT_MS without an answer) or has failed: choices may then use the
+ *  last launch's list, and drafts made from it are checked again when the real list lands (provisionalTasks). */
+let providersOverdue = false;
 let settleProviders: (providers: Provider[]) => void = () => {};
-/** The real harness list, once `list_providers` has answered (the last known list if it failed). */
-const providersReady = new Promise<Provider[]>(resolve => { settleProviders = resolve; });
-/** The harness list a choice can rely on: the current one once known, or the last launch's while it names an
- *  installed harness; otherwise the real list, waited for. */
-function providersForChoice(): Promise<Provider[]> | Provider[] {
-  return providersKnown || state.providers.some(p => p.installed) ? state.providers : providersReady;
+let failProviders: (error: Error) => void = () => {};
+/** The real harness list, once `list_providers` or a Settings refresh has answered. Never the last launch's list:
+ *  rejected only when every boot attempt failed before a Settings refresh answered. */
+const providersReady = new Promise<Provider[]>((resolve, reject) => { settleProviders = resolve; failProviders = reject; });
+providersReady.catch(() => undefined);
+let markProvidersOverdue: () => void = () => {};
+const providersOverdueNow = new Promise<void>(resolve => { markProvidersOverdue = () => { providersOverdue = true; resolve(); }; });
+/** Tasks created from the last launch's list (the real one was late), checked again when the real list lands. */
+const provisionalTasks = new Set<string>();
+/** The list a choice can use right now: the real one, or the last launch's once the real one is overdue and the last
+ *  launch's names an installed harness. */
+function providersForChoiceNow(): Provider[] | undefined {
+  if (providersKnown) return state.providers;
+  return providersOverdue && state.providers.some(p => p.installed) ? state.providers : undefined;
 }
-/** The real harness list, for anything that enumerates what is installed (team rosters, import sources): never the last
- *  launch's list, which may name CLIs removed since. */
+/** The harness list a choice relies on: the real one, waited for; the last launch's only when the real one has not
+ *  answered within PROVIDER_CHOICE_WAIT_MS (or failed). Callers note `!providersKnown` afterwards to mark what they
+ *  create as provisional. */
+function providersForChoice(): Promise<Provider[]> | Provider[] {
+  const now = providersForChoiceNow();
+  if (now) return now;
+  return Promise.race([providersReady, providersOverdueNow.then(() => providersForChoiceNow() ?? providersReady)]);
+}
+/** Marks a task made from the last launch's list, so the real list can correct its harness before its first Send. */
+function noteProvisional(task: Session): void { if (!providersKnown) provisionalTasks.add(task.id); }
+/** The real harness list, for anything that enumerates what is installed (team rosters, import sources). It waits for
+ *  `list_providers` through boot's retries and never answers with the last launch's list, which may name CLIs removed
+ *  since; it rejects when every boot attempt failed and no Settings refresh has answered. */
 function knownProviders(): Promise<Provider[]> | Provider[] {
   return providersKnown ? state.providers : providersReady;
 }
@@ -8609,33 +8690,89 @@ function keepProviderCatalog(providers: Provider[]): void {
   try { localStorage.setItem(PROVIDER_CATALOG_KEY, JSON.stringify(providers.map(({ id, name, installed, models }) => ({ id, name, installed, models })))); }
   catch { /* the next launch waits for the list, as the first one does */ }
 }
-/** After a failed `list_providers`, boot asks again this long after each failure; the last failure is reported. Waiting
- *  choices are answered with the last known list at the first failure, so nothing hangs on the retries. A Settings
- *  refresh (discoverSettingsProviders) answers it too and ends the retries. */
+/* Versions. '' means not known yet (or not reported); only a real version replaced by a different real one is a new
+ * CLI, whose cached models are dropped. */
+/** The last real version seen per harness this launch. */
+const realVersions = new Map<ProviderId, string>();
+/** Versions `provider-versions` reported since the last list request, for a list answer that arrives after them. */
+let reportedVersions = new Map<ProviderId, string>();
+let versionsPendingUntil = 0;
+/** Whether Settings should say "Checking…" for an installed harness with no version yet. */
+function providerVersionsPending(): boolean { return Date.now() < versionsPendingUntil; }
+/** Records a version; true when it replaces a different real one (a '' on either side never counts). */
+function versionReplaced(id: ProviderId, version: string): boolean {
+  if (!version) return false;
+  const before = realVersions.get(id);
+  realVersions.set(id, version);
+  return Boolean(before && before !== version);
+}
+/** A list request is going out: its probe reports again, so earlier reports no longer apply. */
+function askingProviderList(): void {
+  reportedVersions = new Map();
+  versionsPendingUntil = Date.now() + PROVIDER_VERSIONS_PATIENCE_MS;
+  window.setTimeout(() => settingsView?.providersChanged(state.providers), PROVIDER_VERSIONS_PATIENCE_MS + 50);
+}
+/** A landed list, merged: versions reported meanwhile fill its blanks; models found this launch stay unless `keep` says
+ *  otherwise or the harness's version really changed. New objects throughout. */
+function mergeProviderList(found: Provider[], keep: (entry: Provider, previous: Provider) => boolean): Provider[] {
+  return found.map(entry => {
+    const version = entry.version || reportedVersions.get(entry.id) || '';
+    const previous = provider(entry.id);
+    if (versionReplaced(entry.id, version)) { modelCatalogs.delete(entry.id); return { ...entry, version, models: [] }; }
+    return { ...entry, version, models: previous && keep(entry, previous) ? previous.models : entry.models };
+  });
+}
+/** `provider-versions`: fills versions in place (Settings rows, no redraw, so open menus stay open) and drops the cached
+ *  models of a harness whose real version changed. */
+function providerVersionsReported(event: unknown): void {
+  const versions = event && typeof event === 'object' ? (event as { versions?: unknown }).versions : undefined;
+  if (!versions || typeof versions !== 'object' || Array.isArray(versions)) return;
+  const reported = Object.entries(versions as Record<string, unknown>).filter((pair): pair is [ProviderId, string] => typeof pair[1] === 'string');
+  reportedVersions = new Map([...reportedVersions, ...reported]);
+  versionsPendingUntil = 0;
+  const byId = new Map(reported), dropped: ProviderId[] = [];
+  state.providers = state.providers.map(entry => {
+    // A probe that found nothing keeps the version already shown.
+    const version = byId.get(entry.id) || entry.version;
+    const replaced = versionReplaced(entry.id, version);
+    if (replaced) { modelCatalogs.delete(entry.id); dropped.push(entry.id); return { ...entry, version, models: [] }; }
+    return version === entry.version ? entry : { ...entry, version };
+  });
+  settingsView?.providersChanged(state.providers);
+  if (!dropped.length) return;
+  const s = session();
+  if (s && !s.remoteDevice && dropped.includes(s.provider)) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  refreshModelLabels(); refreshTeamProgress();
+}
+/** After a failed `list_providers`, boot asks again this long after each failure; the last failure is reported and
+ *  rejects providersReady. The first failure lets waiting choices use the last launch's list, so nothing hangs on the
+ *  retries. A Settings refresh (discoverSettingsProviders) answers it too and ends the retries. */
 const PROVIDER_RETRY_MS = [2_000, 5_000, 15_000];
-function loadBootProviders(): void {
+/** `listening`: the `provider-versions` subscription, registered before the first request so no report is missed. */
+function loadBootProviders(listening: Promise<unknown>): void {
   if (!state.providers.length) state.providers = lastProviderCatalog();
-  askBootProviders(0);
+  window.setTimeout(() => { if (!providersKnown) markProvidersOverdue(); }, PROVIDER_CHOICE_WAIT_MS);
+  void listening.catch(() => undefined).then(() => askBootProviders(0));
 }
 function askBootProviders(attempt: number): void {
   const discovery = settingsDiscoveryGeneration;
-  run(call<Provider[]>('list_providers').then(found => providersLanded(found, discovery), error => {
-    settleProviders(state.providers);
+  askingProviderList();
+  run(call<Provider[]>('list_providers').then(found => {
+    if (!Array.isArray(found)) throw new Error('The agent harness list was not readable.');
+    providersLanded(found, discovery);
+  }).catch(error => {
     if (providersKnown) return;
+    markProvidersOverdue();
     const wait = PROVIDER_RETRY_MS[attempt];
-    if (wait === undefined) throw error;
+    if (wait === undefined) { failProviders(new Error('Could not list agent harnesses. Refresh them in Settings → Agents.')); throw error; }
     console.warn(`Could not list agent harnesses; trying again in ${wait / 1000} s:`, error);
     window.setTimeout(() => { if (!providersKnown) askBootProviders(attempt + 1); }, wait);
   }));
 }
 function providersLanded(found: Provider[], discovery: number): void {
-  if (!Array.isArray(found)) { settleProviders(state.providers); return; }
   keepProviderCatalog(found);
   // A Settings refresh meanwhile has the newer list; otherwise models already discovered this launch stay.
-  if (discovery === settingsDiscoveryGeneration) {
-    for (const entry of found) { const previous = provider(entry.id); if (previous && modelCatalogs.has(entry.id)) entry.models = previous.models; }
-    state.providers = found;
-  }
+  if (discovery === settingsDiscoveryGeneration) state.providers = mergeProviderList(found, entry => modelCatalogs.has(entry.id));
   providersKnown = true;
   settleProviders(state.providers);
   const s = session();
@@ -8643,12 +8780,28 @@ function providersLanded(found: Provider[], discovery: number): void {
   // Names painted from the last launch's list (or the built-in short names) change in place: no transcript redraw, so a
   // menu open over it stays open.
   refreshModelLabels(); refreshAuthorNames(); renderHeader(); refreshTeamProgress();
+  settingsView?.providersChanged(state.providers);
   if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
   // Restored queues name the agent they wait for.
   if (s && state.queues.get(s.id)?.length) renderComposer();
+  run(correctProvisionalTasks());
   if (!preview && !state.providers.some(p => p.installed)) {
     const pending = bootPending;
     void (pending ?? Promise.resolve()).catch(() => undefined).then(() => notify('Open Settings to check your installed agent CLIs.'));
+  }
+}
+/** Tasks created from the last launch's list while the real one was late: one whose harness turns out to be missing,
+ *  and that has not been sent yet, moves to the harness a New task would pick now (or says to check Settings). */
+async function correctProvisionalTasks(): Promise<void> {
+  const ids = [...provisionalTasks]; provisionalTasks.clear();
+  for (const id of ids) {
+    const task = state.sessions.find(s => s.id === id);
+    if (!task || task.lastPromptAt != null || isRunning(id) || provider(task.provider)?.installed) continue;
+    const harness = pickHarness(state.providers);
+    if (!harness?.installed) { notify('Open Settings to check your installed agents.'); continue; }
+    const updated = await call<Session>('configure_session', { sessionId: id, provider: harness.id, model: rememberedModel(harness.id) });
+    state.sessions = state.sessions.map(s => s.id === id ? updated : s);
+    if (id === state.sessionId) { renderComposer(); renderHeader(); }
   }
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.

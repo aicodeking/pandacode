@@ -929,40 +929,350 @@ pub(crate) fn mimo_endpoints() -> &'static [(&'static str, &'static str, &'stati
 /// more of them past `VERSION_TIMEOUT`.
 const VERSION_PROBES_AT_ONCE: usize = 4;
 /// Slow CLIs take several seconds to print a version (cline and commandcode about 9 s when cold).
-/// Boot does not wait on discovery, and an answer is remembered afterwards.
+/// Nothing waits on a probe but the blocking `discover()`, and an answer is remembered afterwards.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(8);
+/// The version cache's file in the app data folder.
+const VERSION_CACHE_FILE: &str = "cli-versions.json";
+const VERSION_CACHE_FORMAT: u32 = 1;
+/// A saved file never grows past this many binaries.
+const VERSION_CACHE_LIMIT: usize = 256;
+/// A version answer keeps this many characters.
+const VERSION_CHARS: usize = 150;
 
-/// `--version` for each path, in order ("" when absent or failing). Every distinct binary is
-/// probed once (GLM, MiMo and Alibaba share Claude's binary), at most `VERSION_PROBES_AT_ONCE`
-/// at a time, and a binary already answered this process (same file, size and mtime) is not
-/// run again. Plain scoped threads; the version cache is a leaf lock taken only for a lookup
-/// or an insert, never across a probe.
-fn versions(paths: &[Option<&Path>]) -> Vec<String> {
-    let mut distinct: Vec<&Path> = Vec::new();
-    for path in paths.iter().flatten() {
-        if !distinct.contains(path) {
-            distinct.push(path);
+/// A provider id and the binary it would run (None when not installed or not probed).
+type VersionTarget = (String, Option<PathBuf>);
+/// Finds the targets again, for a probe round asked for while one was running.
+type VersionTargets = Arc<dyn Fn() -> Vec<VersionTarget> + Send + Sync>;
+/// Hears each background round's answers, per provider id; called with no lock held.
+type VersionAnnounce = Box<dyn Fn(std::collections::BTreeMap<String, String>) + Send>;
+
+/// One build of a binary as it was found. `path` is the path as found, not resolved: Volta and
+/// mise shims are symlinks to one shared binary that answers by its own name, so a key on the
+/// resolved file alone gave every shimmed CLI the same version. `target`, `size` and `modified`
+/// describe the resolved file, so an update changes the stamp.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct BinaryStamp {
+    path: PathBuf,
+    target: PathBuf,
+    size: u64,
+    /// Nanoseconds since the Unix epoch.
+    modified: Option<u64>,
+}
+
+impl BinaryStamp {
+    fn of(path: &Path) -> Option<Self> {
+        let target = std::fs::canonicalize(path).ok()?;
+        let metadata = std::fs::metadata(&target).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| u64::try_from(since.as_nanos()).ok());
+        Some(Self { path: path.to_owned(), target, size: metadata.len(), modified })
+    }
+
+    fn of_targets(targets: &[VersionTarget]) -> Vec<Option<Self>> {
+        targets.iter().map(|(_, path)| path.as_deref().and_then(Self::of)).collect()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedVersion {
+    #[serde(flatten)]
+    stamp: BinaryStamp,
+    version: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedVersions {
+    format: u32,
+    versions: Vec<SavedVersion>,
+}
+
+/// The cache as it should be on disk; `sequence` orders snapshots so an older one never
+/// replaces a newer file.
+struct VersionSnapshot {
+    sequence: u64,
+    file: PathBuf,
+    versions: Vec<SavedVersion>,
+}
+
+#[derive(Default)]
+struct VersionState {
+    /// `None` is a timeout or failure: unknown for the rest of this process, so it is not asked
+    /// again on every list, and never saved, so the next launch asks again.
+    answers: HashMap<BinaryStamp, Option<String>>,
+    /// Where answers are saved; unset until `load` (tests, headless helpers without a data dir).
+    file: Option<PathBuf>,
+    /// A background probe is running (single flight).
+    probing: bool,
+    /// A list found an unknown version while the probe ran: run another round after it.
+    again: bool,
+    /// Bumped by `forget`; a round started before it drops its answers.
+    generation: u64,
+    saves: u64,
+}
+
+impl VersionState {
+    /// The remembered answer ("" for a failure this process); None when never asked.
+    fn answer(&self, stamp: &BinaryStamp) -> Option<String> {
+        self.answers.get(stamp).map(|answer| answer.clone().unwrap_or_default())
+    }
+
+    fn snapshot(&mut self) -> Option<VersionSnapshot> {
+        let file = self.file.clone()?;
+        self.saves += 1;
+        let versions = self
+            .answers
+            .iter()
+            .filter_map(|(stamp, answer)| Some(SavedVersion { stamp: stamp.clone(), version: answer.clone()? }))
+            .take(VERSION_CACHE_LIMIT)
+            .collect();
+        Some(VersionSnapshot { sequence: self.saves, file, versions })
+    }
+}
+
+/// What `--version` answered for each binary, shared by every discovery and saved across
+/// launches.
+struct VersionCache {
+    /// Leaf lock: held only to read or change the state, never across a probe, a file
+    /// operation, an emit or a call into another module.
+    state: Mutex<VersionState>,
+    /// The sequence of the last snapshot written. Leaf lock held across that one file write,
+    /// taken with no other lock held.
+    written: Mutex<u64>,
+}
+
+/// Clears `probing` if a probe round panics, so later lists can probe again.
+struct ProbingReset(&'static VersionCache);
+
+impl Drop for ProbingReset {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut state = self.0.lock();
+            state.probing = false;
+            state.again = false;
         }
     }
-    let stamps: Vec<Option<BinaryStamp>> = distinct.iter().map(|path| BinaryStamp::of(path)).collect();
-    let mut found: Vec<Option<String>> = stamps.iter().map(|stamp| stamp.as_ref().and_then(cached_version)).collect();
-    let pending: Vec<usize> = (0..distinct.len()).filter(|index| found[*index].is_none()).collect();
-    let probed = probe_limited(&pending, VERSION_PROBES_AT_ONCE, |index| version(distinct[*index]));
-    for (index, answer) in pending.into_iter().zip(probed) {
-        // Only an answer is remembered: a timeout or failure says nothing lasting about the CLI.
-        if let (Some(stamp), Some(answer)) = (&stamps[index], &answer) {
-            remember_version(stamp, answer);
-        }
-        found[index] = answer;
+}
+
+impl VersionCache {
+    fn new() -> Self {
+        Self { state: Mutex::new(VersionState::default()), written: Mutex::new(0) }
     }
-    paths
-        .iter()
-        .map(|path| {
-            path.and_then(|path| distinct.iter().position(|known| *known == path))
-                .and_then(|index| found[index].clone())
-                .unwrap_or_default()
-        })
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VersionState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Reads the saved answers (once, at startup) and saves new ones to `file` from now on.
+    fn load(&self, file: PathBuf) {
+        let saved = read_saved_versions(&file);
+        let mut state = self.lock();
+        state.file = Some(file);
+        for entry in saved {
+            state.answers.entry(entry.stamp).or_insert(Some(entry.version));
+        }
+    }
+
+    /// Forgets every answer (Settings refresh); a round already running drops its answers.
+    fn forget(&self) {
+        let mut state = self.lock();
+        state.answers.clear();
+        state.generation += 1;
+    }
+
+    /// The known version for each target, in order ("" when unknown), without waiting on a
+    /// probe. When one is unknown, one background probe asks and `announce` hears the answers;
+    /// a list during that probe shares it and only asks for one more round after it.
+    fn versions_now(&'static self, current: Vec<VersionTarget>, targets: VersionTargets, announce: VersionAnnounce) -> Vec<String> {
+        let stamps = BinaryStamp::of_targets(&current);
+        let (versions, start) = {
+            let mut state = self.lock();
+            let versions = stamps
+                .iter()
+                .map(|stamp| stamp.as_ref().and_then(|stamp| state.answer(stamp)).unwrap_or_default())
+                .collect();
+            let unknown = stamps.iter().flatten().any(|stamp| !state.answers.contains_key(stamp));
+            let start = unknown && !state.probing;
+            if start {
+                state.probing = true;
+            } else if unknown {
+                state.again = true;
+            }
+            (versions, start)
+        };
+        if start {
+            let spawned = std::thread::Builder::new()
+                .name("cli-versions".into())
+                .spawn(move || self.probe_rounds(current, stamps, &*targets, &*announce));
+            if let Err(error) = spawned {
+                eprintln!("PandaCode: could not start the CLI version probe: {error}");
+                self.lock().probing = false;
+            }
+        }
+        versions
+    }
+
+    fn probe_rounds(
+        &'static self,
+        mut current: Vec<VersionTarget>,
+        mut stamps: Vec<Option<BinaryStamp>>,
+        targets: &(dyn Fn() -> Vec<VersionTarget> + Send + Sync),
+        announce: &(dyn Fn(std::collections::BTreeMap<String, String>) + Send),
+    ) {
+        let _reset = ProbingReset(self);
+        loop {
+            if let Some(found) = self.probe_round(&current, &stamps) {
+                if !found.is_empty() {
+                    announce(found);
+                }
+            }
+            {
+                let mut state = self.lock();
+                if !std::mem::take(&mut state.again) {
+                    state.probing = false;
+                    return;
+                }
+            }
+            current = targets();
+            stamps = BinaryStamp::of_targets(&current);
+        }
+    }
+
+    /// Probes every target whose version is unknown, at most `VERSION_PROBES_AT_ONCE` at a
+    /// time and each distinct build once, remembers and saves the answers, and returns them
+    /// per provider id. None when `forget` ran meanwhile (the answers are dropped).
+    fn probe_round(&self, current: &[VersionTarget], stamps: &[Option<BinaryStamp>]) -> Option<std::collections::BTreeMap<String, String>> {
+        let (generation, pending) = {
+            let state = self.lock();
+            let mut pending: Vec<BinaryStamp> = Vec::new();
+            for stamp in stamps.iter().flatten() {
+                if !state.answers.contains_key(stamp) && !pending.contains(stamp) {
+                    pending.push(stamp.clone());
+                }
+            }
+            (state.generation, pending)
+        };
+        if pending.is_empty() {
+            return Some(Default::default());
+        }
+        let answers = probe_limited(&pending, VERSION_PROBES_AT_ONCE, |stamp| version(&stamp.path));
+        let snapshot = {
+            let mut state = self.lock();
+            if state.generation != generation {
+                return None;
+            }
+            for (stamp, answer) in pending.iter().zip(&answers) {
+                // An older build of the same file is never asked for again.
+                state.answers.retain(|known, _| known.path != stamp.path);
+                state.answers.insert(stamp.clone(), answer.clone());
+            }
+            if answers.iter().any(Option::is_some) { state.snapshot() } else { None }
+        };
+        if let Some(snapshot) = snapshot {
+            self.save(snapshot);
+        }
+        Some(
+            current
+                .iter()
+                .zip(stamps)
+                .filter_map(|((id, _), stamp)| {
+                    let index = pending.iter().position(|probed| Some(probed) == stamp.as_ref())?;
+                    Some((id.clone(), answers[index].clone().unwrap_or_default()))
+                })
+                .collect(),
+        )
+    }
+
+    /// Probes what is unknown on this thread, then answers every target ("" when unknown).
+    fn versions_blocking(&self, current: &[VersionTarget]) -> Vec<String> {
+        let stamps = BinaryStamp::of_targets(current);
+        self.probe_round(current, &stamps);
+        let state = self.lock();
+        stamps
+            .iter()
+            .map(|stamp| stamp.as_ref().and_then(|stamp| state.answer(stamp)).unwrap_or_default())
+            .collect()
+    }
+
+    fn save(&self, snapshot: VersionSnapshot) {
+        let mut written = self.written.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *written >= snapshot.sequence {
+            return;
+        }
+        let saved = SavedVersions { format: VERSION_CACHE_FORMAT, versions: snapshot.versions };
+        match serde_json::to_vec(&saved).map_err(|error| error.to_string()).and_then(|bytes| write_atomically(&snapshot.file, &bytes)) {
+            Ok(()) => *written = snapshot.sequence,
+            Err(error) => eprintln!("PandaCode: could not save CLI versions to {}: {error}", snapshot.file.display()),
+        }
+    }
+}
+
+/// Saved answers that still make sense; a missing, unreadable or foreign file is empty.
+fn read_saved_versions(file: &Path) -> Vec<SavedVersion> {
+    let bytes = match std::fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            eprintln!("PandaCode: could not read saved CLI versions: {error}");
+            return Vec::new();
+        }
+    };
+    let saved: SavedVersions = match serde_json::from_slice(&bytes) {
+        Ok(saved) => saved,
+        Err(error) => {
+            eprintln!("PandaCode: ignoring unreadable saved CLI versions: {error}");
+            return Vec::new();
+        }
+    };
+    if saved.format != VERSION_CACHE_FORMAT {
+        return Vec::new();
+    }
+    saved
+        .versions
+        .into_iter()
+        .filter(|entry| entry.stamp.path.is_absolute() && entry.stamp.target.is_absolute() && !entry.version.is_empty())
+        .map(|entry| SavedVersion { version: entry.version.chars().take(VERSION_CHARS).collect(), ..entry })
+        .take(VERSION_CACHE_LIMIT)
         .collect()
+}
+
+/// Writes `bytes` to a temporary file beside `file` and renames it over `file`, so a reader
+/// never sees half a file.
+fn write_atomically(file: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = file.file_name().ok_or("The version cache has no file name.")?.to_string_lossy();
+    let temporary = file.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let written = std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written.map_err(|error| error.to_string())
+}
+
+static VERSIONS: std::sync::LazyLock<VersionCache> = std::sync::LazyLock::new(VersionCache::new);
+
+/// Loads the saved CLI versions from the app data folder; call once at startup.
+pub(crate) fn load_version_cache(data_dir: &Path) {
+    VERSIONS.load(data_dir.join(VERSION_CACHE_FILE));
+}
+
+/// Forgets every CLI version (Settings refresh), failures included, so the next list asks again.
+pub(crate) fn forget_versions() {
+    VERSIONS.forget();
+}
+
+/// `--version` for each path, in order ("" when absent, failing or timed out), probing what is
+/// unknown on this thread. Every distinct build is probed once, at most
+/// `VERSION_PROBES_AT_ONCE` at a time. Tests drive the shared cache through it.
+#[cfg(test)]
+fn versions(paths: &[Option<&Path>]) -> Vec<String> {
+    let targets: Vec<VersionTarget> = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (index.to_string(), path.map(Path::to_path_buf)))
+        .collect();
+    VERSIONS.versions_blocking(&targets)
 }
 
 /// Runs `probe` on every item, at most `limit` at a time, and returns the answers in item order.
@@ -995,41 +1305,9 @@ fn probe_limited<T: Sync>(items: &[T], limit: usize, probe: impl Fn(&T) -> Optio
     found
 }
 
-/// One build of a binary: its resolved path, size and modification time. An update changes it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct BinaryStamp {
-    path: PathBuf,
-    size: u64,
-    modified: Option<std::time::SystemTime>,
-}
-
-impl BinaryStamp {
-    fn of(path: &Path) -> Option<Self> {
-        let path = std::fs::canonicalize(path).ok()?;
-        let metadata = std::fs::metadata(&path).ok()?;
-        Some(Self { size: metadata.len(), modified: metadata.modified().ok(), path })
-    }
-}
-
-/// Versions answered this process. Leaf lock: held only to read or write the map.
-static VERSION_CACHE: std::sync::LazyLock<Mutex<HashMap<BinaryStamp, String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn cached_version(stamp: &BinaryStamp) -> Option<String> {
-    VERSION_CACHE.lock().ok()?.get(stamp).cloned()
-}
-
-fn remember_version(stamp: &BinaryStamp, version: &str) {
-    if let Ok(mut cache) = VERSION_CACHE.lock() {
-        // An older build of the same file is never asked for again.
-        cache.retain(|known, _| known.path != stamp.path);
-        cache.insert(stamp.clone(), version.to_owned());
-    }
-}
-
 fn version(path: &Path) -> Option<String> {
     capture(launch::std_command(path).ok()?, &["--version"], VERSION_TIMEOUT)
-        .map(|text| text.chars().take(150).collect())
+        .map(|text| text.chars().take(VERSION_CHARS).collect())
 }
 
 /// Whether this Claude CLI takes `--include-hook-events` (absent in 2.1.0, present by 2.1.100):
@@ -1134,16 +1412,39 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
-/// Blocking discovery; invoke on a worker thread, not the UI event loop.
-pub fn discover() -> Vec<ProviderInfo> {
-    let paths: Vec<_> = PROVIDERS.iter().map(|(id, _)| executable(id)).collect();
-    // Antigravity's ACP server is not asked for a version; it reports "ACP".
-    let probes: Vec<_> = PROVIDERS
+/// Where each provider's CLI is, in `PROVIDERS` order: path lookups only.
+fn installed_paths() -> Vec<Option<PathBuf>> {
+    PROVIDERS.iter().map(|(id, _)| executable(id)).collect()
+}
+
+/// The binaries asked for a version. Antigravity's ACP server is not asked; it reports "ACP".
+fn version_targets(paths: &[Option<PathBuf>]) -> Vec<VersionTarget> {
+    PROVIDERS
         .iter()
-        .zip(&paths)
-        .map(|((id, _), path)| if *id == "antigravity" { None } else { path.as_deref() })
-        .collect();
-    let versions = versions(&probes);
+        .zip(paths)
+        .map(|((id, _), path)| ((*id).to_owned(), if *id == "antigravity" { None } else { path.clone() }))
+        .collect()
+}
+
+/// Blocking discovery: waits for every unknown `--version`. Invoke on a worker thread, not the
+/// UI event loop.
+pub fn discover() -> Vec<ProviderInfo> {
+    let paths = installed_paths();
+    let versions = VERSIONS.versions_blocking(&version_targets(&paths));
+    provider_infos(paths, versions)
+}
+
+/// Discovery that never waits on a probe: each version is the remembered one, else "". When one
+/// is unknown, a single background probe asks and `announce` hears its answers per provider id.
+/// Path lookups only; still call it off the UI event loop.
+pub fn discover_now(announce: impl Fn(std::collections::BTreeMap<String, String>) + Send + 'static) -> Vec<ProviderInfo> {
+    let paths = installed_paths();
+    let refind: VersionTargets = Arc::new(|| version_targets(&installed_paths()));
+    let versions = VERSIONS.versions_now(version_targets(&paths), refind, Box::new(announce));
+    provider_infos(paths, versions)
+}
+
+fn provider_infos(paths: Vec<Option<PathBuf>>, versions: Vec<String>) -> Vec<ProviderInfo> {
     PROVIDERS.into_iter()
     .zip(paths)
     .zip(versions)
@@ -4487,7 +4788,7 @@ mod tests {
         assert_eq!(super::versions(&paths), ["good 3.0.0", ""]);
         assert_eq!((starts("good"), starts("bad")), (1, 1));
         assert_eq!(super::versions(&paths), ["good 3.0.0", ""]);
-        assert_eq!((starts("good"), starts("bad")), (1, 2), "the answer is reused; the failure is asked again");
+        assert_eq!((starts("good"), starts("bad")), (1, 1), "the answer and the failure are both reused");
 
         let file = std::fs::File::options().write(true).open(&good).unwrap();
         file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000)).unwrap();
@@ -4498,20 +4799,242 @@ mod tests {
         assert_eq!(good_runs, 2, "a new mtime is a new build");
     }
 
-    /// Times `discover()` twice against the CLIs installed on this machine: the second call
-    /// answers from the version cache.
+    /// A cache of its own (the global one is shared by parallel tests).
+    fn fresh_version_cache() -> &'static super::VersionCache {
+        Box::leak(Box::new(super::VersionCache::new()))
+    }
+
+    type Heard = std::sync::mpsc::Receiver<std::collections::BTreeMap<String, String>>;
+
+    /// An announce that forwards each round's answers to the returned receiver.
+    fn heard() -> (super::VersionAnnounce, Heard) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        (Box::new(move |versions| { let _ = sender.send(versions); }), receiver)
+    }
+
+    fn fixed_targets(targets: &[super::VersionTarget]) -> super::VersionTargets {
+        let targets = targets.to_vec();
+        std::sync::Arc::new(move || targets.clone())
+    }
+
+    fn target(id: &str, path: &std::path::Path) -> super::VersionTarget {
+        (id.to_owned(), Some(path.to_owned()))
+    }
+
+    fn count_starts(log: &std::path::Path, name: &str) -> usize {
+        std::fs::read_to_string(log).unwrap_or_default().lines().filter(|line| *line == format!("start {name}")).count()
+    }
+
+    /// A list never waits on a probe: with an 8 s CLI it answers at once with "", the
+    /// background probe times out and announces "", and that failure is not asked again this
+    /// process.
+    #[cfg(unix)]
+    #[test]
+    fn versions_now_answers_at_once_while_a_slow_cli_is_probed() {
+        let root = std::env::temp_dir().join(format!("pandacode-version-now-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let slow = fake_cli(&root, "slow", &log, "sleep 8\necho 'slow 1.0.0'");
+        let quick = fake_cli(&root, "quick", &log, "echo 'quick 2.0.0'");
+        let targets = vec![target("slow", &slow), target("quick", &quick), ("absent".to_owned(), None)];
+        let cache = fresh_version_cache();
+        let (announce, receiver) = heard();
+
+        let started = std::time::Instant::now();
+        let versions = cache.versions_now(targets.clone(), fixed_targets(&targets), announce);
+        let elapsed = started.elapsed();
+        assert_eq!(versions, ["", "", ""]);
+        assert!(elapsed < std::time::Duration::from_millis(200), "the list waited on a probe: {elapsed:?}");
+
+        let answers = receiver.recv_timeout(std::time::Duration::from_secs(20)).expect("the probe announced");
+        let expected: std::collections::BTreeMap<_, _> = [("quick".to_owned(), "quick 2.0.0".to_owned()), ("slow".to_owned(), String::new())].into();
+        assert_eq!(answers, expected);
+
+        let (announce, receiver) = heard();
+        let started = std::time::Instant::now();
+        assert_eq!(cache.versions_now(targets.clone(), fixed_targets(&targets), announce), ["", "quick 2.0.0", ""]);
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        assert!(receiver.recv_timeout(std::time::Duration::from_millis(500)).is_err(), "nothing was unknown, so nothing was probed");
+        let starts = (count_starts(&log, "slow"), count_starts(&log, "quick"));
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(starts, (1, 1), "the timeout is remembered for the process");
+    }
+
+    /// Lists that arrive while a probe runs share it: one process per binary, one announcement.
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_lists_share_one_probe() {
+        let root = std::env::temp_dir().join(format!("pandacode-version-flight-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let cli = fake_cli(&root, "cli", &log, "sleep 0.5\necho 'cli 4.0.0'");
+        let targets = vec![target("cli", &cli)];
+        let cache = fresh_version_cache();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let lists: Vec<_> = (0..2)
+            .map(|_| {
+                let (targets, sender, gate) = (targets.clone(), sender.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    let announce: super::VersionAnnounce = Box::new(move |versions| { let _ = sender.send(versions); });
+                    cache.versions_now(targets.clone(), fixed_targets(&targets), announce)
+                })
+            })
+            .collect();
+        for list in lists {
+            assert_eq!(list.join().unwrap(), [""]);
+        }
+        let answers = receiver.recv_timeout(std::time::Duration::from_secs(10)).expect("the probe announced");
+        assert_eq!(answers.get("cli").map(String::as_str), Some("cli 4.0.0"));
+        assert!(receiver.recv_timeout(std::time::Duration::from_secs(1)).is_err(), "a second probe announced");
+        let starts = count_starts(&log, "cli");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(starts, 1, "two lists started {starts} probes");
+        assert!(!cache.lock().probing);
+    }
+
+    /// Volta and mise shims are symlinks to one binary that answers by its own name: each
+    /// keeps its own version.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_shims_keep_their_own_versions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-version-shims-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let shim = root.join("shim");
+        std::fs::write(&shim, "#!/bin/sh\necho \"$(basename \"$0\") 5.0.0\"\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (alpha, beta) = (root.join("alpha"), root.join("beta"));
+        std::os::unix::fs::symlink(&shim, &alpha).unwrap();
+        std::os::unix::fs::symlink(&shim, &beta).unwrap();
+        let (alpha_stamp, beta_stamp) = (super::BinaryStamp::of(&alpha).unwrap(), super::BinaryStamp::of(&beta).unwrap());
+        let cache = fresh_version_cache();
+        let versions = cache.versions_blocking(&[target("alpha", &alpha), target("beta", &beta)]);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_ne!(alpha_stamp, beta_stamp);
+        assert_eq!(alpha_stamp.target, beta_stamp.target);
+        assert_eq!(versions, ["alpha 5.0.0", "beta 5.0.0"]);
+    }
+
+    /// Answers are saved; the next launch loads them and starts no probe for unchanged
+    /// binaries. A failure is not saved, so that launch asks it again.
+    #[cfg(unix)]
+    #[test]
+    fn saved_versions_load_and_skip_probes() {
+        let root = std::env::temp_dir().join(format!("pandacode-version-saved-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let good = fake_cli(&root, "good", &log, "echo 'good 6.0.0'");
+        let bad = fake_cli(&root, "bad", &log, "exit 1");
+        let file = root.join(super::VERSION_CACHE_FILE);
+        let targets = vec![target("good", &good), target("bad", &bad)];
+
+        let first = fresh_version_cache();
+        first.load(file.clone());
+        assert_eq!(first.versions_blocking(&targets), ["good 6.0.0", ""]);
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved["format"], super::VERSION_CACHE_FORMAT);
+        assert_eq!(saved["versions"].as_array().map(Vec::len), Some(1), "only the answer is saved: {saved}");
+        let leftovers: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")).collect();
+        assert!(leftovers.is_empty(), "the temporary file was renamed away");
+
+        let second = fresh_version_cache();
+        second.load(file.clone());
+        let (announce, receiver) = heard();
+        let started = std::time::Instant::now();
+        assert_eq!(second.versions_now(targets.clone(), fixed_targets(&targets), announce), ["good 6.0.0", ""]);
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        let answers = receiver.recv_timeout(std::time::Duration::from_secs(10)).expect("the failure is asked again");
+        assert_eq!(answers.keys().collect::<Vec<_>>(), ["bad"]);
+        let starts = (count_starts(&log, "good"), count_starts(&log, "bad"));
+
+        let third = fresh_version_cache();
+        std::fs::write(&file, "not json").unwrap();
+        third.load(file.clone());
+        assert_eq!(third.versions_blocking(&targets[..1]), ["good 6.0.0"]);
+        let good_after_garbage = count_starts(&log, "good");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(starts, (1, 2), "the saved answer skipped its probe");
+        assert_eq!(good_after_garbage, 2, "an unreadable file is ignored");
+    }
+
+    /// `force` forgets answers and failures, so the next list probes again; a round already
+    /// running when it forgets drops its answers and asks again.
+    #[cfg(unix)]
+    #[test]
+    fn forgetting_versions_probes_again() {
+        let root = std::env::temp_dir().join(format!("pandacode-version-forget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let cli = fake_cli(&root, "cli", &log, "sleep 0.4\necho 'cli 7.0.0'");
+        let targets = vec![target("cli", &cli)];
+        let cache = fresh_version_cache();
+        assert_eq!(cache.versions_blocking(&targets), ["cli 7.0.0"]);
+
+        cache.forget();
+        let (announce, receiver) = heard();
+        assert_eq!(cache.versions_now(targets.clone(), fixed_targets(&targets), announce), [""]);
+        let answers = receiver.recv_timeout(std::time::Duration::from_secs(10)).expect("forgotten versions are probed");
+        assert_eq!(answers.get("cli").map(String::as_str), Some("cli 7.0.0"));
+        assert_eq!(count_starts(&log, "cli"), 2);
+
+        // Forget while a round runs: that round's answer is dropped and one more round asks.
+        cache.forget();
+        let (announce, receiver) = heard();
+        assert_eq!(cache.versions_now(targets.clone(), fixed_targets(&targets), announce), [""]);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cache.forget();
+        let (unused, _ignored) = heard();
+        assert_eq!(cache.versions_now(targets.clone(), fixed_targets(&targets), unused), [""]);
+        let answers = receiver.recv_timeout(std::time::Duration::from_secs(10)).expect("the rerun announced");
+        assert_eq!(answers.get("cli").map(String::as_str), Some("cli 7.0.0"));
+        assert!(receiver.recv_timeout(std::time::Duration::from_millis(800)).is_err(), "the dropped round announced");
+        let starts = count_starts(&log, "cli");
+        let remembered = cache.versions_blocking(&targets);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(starts, 4);
+        assert_eq!(remembered, ["cli 7.0.0"]);
+    }
+
+    /// Times the list on a first launch (no saved versions) and a second launch (a new cache
+    /// loading the first one's file) against the CLIs installed on this machine, and prints
+    /// what the background probe announced.
     #[test]
     #[ignore = "Runs --version on every installed agent CLI"]
     fn installed_discover_timing() {
-        for call in ["first", "second"] {
+        let root = std::env::temp_dir().join(format!("pandacode-version-launch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join(super::VERSION_CACHE_FILE);
+        for launch in ["first", "second"] {
+            let cache = fresh_version_cache();
+            cache.load(file.clone());
+            let (announce, receiver) = heard();
             let started = std::time::Instant::now();
-            let providers = super::discover();
+            let paths = super::installed_paths();
+            let refind: super::VersionTargets = std::sync::Arc::new(|| super::version_targets(&super::installed_paths()));
+            let versions = cache.versions_now(super::version_targets(&paths), refind, announce);
+            let providers = super::provider_infos(paths, versions);
             let elapsed = started.elapsed();
             for provider in &providers {
                 println!("{:>16} {:<5} {}", provider.id, provider.installed, provider.version.lines().next().unwrap_or(""));
             }
-            println!("{call} discover() took {elapsed:?}");
+            println!("{launch} launch: list_providers took {elapsed:?}");
+            if !cache.lock().probing {
+                println!("{launch} launch: every version was known; no probe started, no provider-versions event");
+                continue;
+            }
+            let started = std::time::Instant::now();
+            match receiver.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(versions) => println!(
+                    "{launch} launch: provider-versions after {:?}: {}",
+                    started.elapsed(),
+                    serde_json::json!({ "versions": versions })
+                ),
+                Err(_) => println!("{launch} launch: no provider-versions event (no probe started)"),
+            }
         }
+        std::fs::remove_dir_all(&root).unwrap();
     }
     /// Recorded from `opencode --standalone api model.list` 2.2.5 (trimmed to two models).
     const OPENCODE_V2_MODELS: &str = r#"{"location":{"directory":"/tmp"},"data":[{"id":"flint-40b-free","modelID":"flint-40b-free","providerID":"opencode","type":"chat","family":"flint","name":"Flint 40B Free","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[{"id":"low","settings":{"reasoningEffort":"low"}},{"id":"medium","settings":{"reasoningEffort":"medium"}},{"id":"high","settings":{"reasoningEffort":"high"}},{"id":"xhigh","settings":{"reasoningEffort":"xhigh"}},{"id":"max","settings":{"reasoningEffort":"max"}}],"time":{"released":1792540800000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":262144,"output":65536}},{"id":"big-pickle","modelID":"big-pickle","providerID":"opencode","type":"chat","family":"big-pickle","name":"Big Pickle","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[],"time":{"released":1760659200000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":200000,"input":160000,"output":32000}}]}"#;

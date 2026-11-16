@@ -47,6 +47,8 @@ interface SettingsOptions {
   turnChecks: boolean;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
+  /** True while the harnesses' versions are still being probed: an installed one with no version says "Checking…". */
+  versionsPending?(): boolean;
   /** Mounts the optional GitHub row; returns its cleanup. */
   github?(host: HTMLElement): () => void;
   /** Projects listed under General; remove() rejects with the native refusal text. */
@@ -69,7 +71,12 @@ interface SettingsOptions {
   /** Leaves Settings for the workspace. */
   close(): void;
 }
-export interface SettingsView { show(section: SettingsSection): void; dispose(): void }
+export interface SettingsView {
+  show(section: SettingsSection): void;
+  /** Agents rows follow a changed harness list (versions reported later) in place: open rows stay open. */
+  providersChanged(providers: Provider[]): void;
+  dispose(): void;
+}
 
 const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page))!;
 
@@ -232,7 +239,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       row.querySelector('summary')!.setAttribute('aria-label', `${provider.name} details, ${provider.installed ? 'Installed' : 'Not installed'}`);
       row.querySelector('.provider-availability')!.classList.toggle('available', provider.installed);
       row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
-      row.querySelector('.settings-provider-version')!.textContent = provider.version || 'Not reported';
+      const version = row.querySelector('.settings-provider-version')!, versionText = provider.version || (provider.installed && options.versionsPending?.() ? 'Checking…' : 'Not reported');
+      if (version.textContent !== versionText) version.textContent = versionText;
       row.querySelector('code')!.textContent = provider.path || 'Install the agent, then refresh.';
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       rows.delete(provider.id);
@@ -415,6 +423,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   show(options.section ?? 'recommended', true);
   return {
     show: id => show(id, true),
+    providersChanged: providers => { if (!disposed) updateProviders(providers); },
     dispose: () => {
       if (disposed) return;
       disposed = true; readinessCleanup.forEach(cleanup => cleanup());

@@ -228,3 +228,21 @@ test('file explorer: the poll runs only while the Files tree or an open file is 
   await expect(page.locator('#file-panel')).toBeHidden();
   await expectQuiet(page, polls, 'no poll while neither the tree nor a file is on screen');
 });
+
+test('file explorer: a window that starts unfocused polls at the 8 s rate', async ({ page }) => {
+  test.setTimeout(60_000);
+  // Launched in the background: the document never had focus, and no blur ever fires to say so.
+  await page.addInitScript(() => { document.hasFocus = () => false; });
+  const polls = await countPolls(page);
+  const shownAt = Date.now();
+  await expectQuiet(page, polls, 'no 2 s poll in a window that started unfocused');
+  const from = await polls();
+  await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'an unfocused, visible window still polls' }).toBeGreaterThan(from);
+  expect(Date.now() - shownAt, 'the first poll of a window that started unfocused').toBeGreaterThan(5000);
+  // Focus arriving brings the 2 s poll back, refreshing at once.
+  const focusedFrom = await polls();
+  await page.evaluate(() => { document.hasFocus = () => true; dispatchEvent(new Event('focus')); });
+  await expect.poll(polls, { timeout: 500, message: 'focus refreshes at once' }).toBeGreaterThan(focusedFrom);
+  const after = await polls();
+  await expect.poll(polls, { timeout: 3500, intervals: [100], message: 'focused again, it polls every 2 s' }).toBeGreaterThan(after);
+});

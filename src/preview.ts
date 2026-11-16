@@ -240,6 +240,26 @@ const providers: Provider[] = [
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
   { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
+/* Mirrors the native list_providers contract: install state at once, each version the cached one or '' until probed;
+ * the probe reports by `provider-versions` shortly after (force clears the cache). Tests: `window.__previewHoldVersions
+ * = true` (before load) keeps each report until `window.__previewReleaseVersions()`. */
+const PREVIEW_VERSION_PROBE_MS = 400;
+let previewVersionsProbed = false;
+let previewVersionProbe: number | undefined;
+function listPreviewProviders(force: boolean): Provider[] {
+  if (force) previewVersionsProbed = false;
+  const listed = providers.map(p => ({ ...p, version: previewVersionsProbed ? p.version : '' }));
+  if (!previewVersionsProbed && previewVersionProbe === undefined) {
+    const report = () => {
+      previewVersionProbe = undefined; previewVersionsProbed = true;
+      emit('provider-versions', { versions: Object.fromEntries(providers.filter(p => p.installed).map(p => [p.id, p.version])) });
+    };
+    const w = window as typeof window & { __previewHoldVersions?: boolean; __previewReleaseVersions?: () => void };
+    if (w.__previewHoldVersions) { previewVersionProbe = -1; w.__previewReleaseVersions = report; }
+    else previewVersionProbe = window.setTimeout(report, PREVIEW_VERSION_PROBE_MS);
+  }
+  return listed;
+}
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
   { id: 'token-plan-cn', url: 'https://token-plan-cn.xiaomimimo.com/anthropic', label: 'Token Plan · China cluster' },
@@ -2044,7 +2064,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = reordered.map(taskSummary); break;
     }
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
-    case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
+    case 'list_providers': result = args.deviceId ? remoteProviders() : listPreviewProviders(Boolean(args.force)); break;
     case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;

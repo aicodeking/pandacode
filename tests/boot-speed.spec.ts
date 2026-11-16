@@ -104,7 +104,7 @@ test('the model picker opened before list_providers answers shows Loading, then 
   await expect(page.locator('#transcript .agent-message .message-meta strong').first()).toHaveText('Claude');
   await page.locator('#model-picker-trigger').click();
   const menu = page.locator('.model-menu');
-  await expect(menu).toBeVisible();
+  await expect(menu).toBeVisible({ timeout: 10_000 });
   await expect(menu.locator('.model-menu-list')).toHaveText(/Loading…/);
   await expect(menu.locator('.model-menu-rail [role="tab"][data-view^="h:"]')).toHaveCount(0);
   expect(await answered(page), 'still waiting for list_providers').toBeNull();
@@ -147,11 +147,125 @@ test('a menu open when list_providers answers stays open while the names update 
   await message.evaluate(el => { (el as HTMLElement & { __kept?: boolean }).__kept = true; });
   await page.locator('#mode-picker-trigger').click();
   const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
-  await expect(menu.getByRole('menuitemradio')).toHaveCount(5);
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(5, { timeout: 10_000 });
   await release(page);
   await expect.poll(() => answered(page), { timeout: PROVIDERS_DELAY + 5_000 }).not.toBeNull();
   await expect(author).toHaveText('Claude Code');
   await expect(menu).toBeVisible();
   // The row was renamed, not redrawn.
   expect(await message.evaluate(el => Boolean((el as HTMLElement & { __kept?: boolean }).__kept))).toBe(true);
+});
+
+/* Versions: list_providers answers with '' for any version not cached and `provider-versions` fills them in. The preview
+ * mock follows that contract; `__previewHoldVersions` keeps each report until the test releases it. */
+type VersionsWindow = Window & { __previewHoldVersions?: boolean; __previewReleaseVersions?: () => void; __previewEmit?: (name: string, event: unknown) => void; __modelCalls?: Record<string, number> };
+
+async function heldVersions(page: Page): Promise<void> {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = /case ["']list_provider_models["']\s*:/;
+    expect(source).toMatch(marker);
+    const body = source.replace(marker, `$& { const counts = (window.__modelCalls ??= {}); counts[args.provider] = (counts[args.provider] ?? 0) + 1; }`);
+    await route.fulfill({ response, body: previewBody(body) });
+  });
+  await page.addInitScript(() => { (window as VersionsWindow).__previewHoldVersions = true; });
+}
+/** Delivers the held `provider-versions` report (the mock's probe finishing). */
+async function releaseVersions(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => typeof (window as VersionsWindow).__previewReleaseVersions), { timeout: 10_000 }).toBe('function');
+  await page.evaluate(() => { const w = window as VersionsWindow; const report = w.__previewReleaseVersions!; w.__previewReleaseVersions = undefined; report(); });
+}
+const modelCalls = (page: Page, id: string) => page.evaluate(name => (window as VersionsWindow).__modelCalls?.[name] ?? 0, id);
+async function threadPainted(page: Page): Promise<void> {
+  await expect(page.locator('#transcript .agent-message .message-meta strong').first()).toHaveText('Claude Code', { timeout: 10_000 });
+}
+
+test('versions fill in after provider-versions without closing an open menu or redrawing', async ({ page }) => {
+  test.setTimeout(45_000);
+  await heldVersions(page);
+  await page.goto('/');
+  await threadPainted(page);
+  const message = page.locator('#transcript .agent-message').first();
+  await message.evaluate(el => { (el as HTMLElement & { __kept?: boolean }).__kept = true; });
+  await page.locator('#mode-picker-trigger').click();
+  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(5, { timeout: 10_000 });
+  await releaseVersions(page);
+  await page.waitForTimeout(300);
+  await expect(menu).toBeVisible();
+  expect(await message.evaluate(el => Boolean((el as HTMLElement & { __kept?: boolean }).__kept))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+
+  // Settings → Agents refreshes (versions cleared), says Checking… and fills in the open row in place.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  const row = settings.locator('.provider-diagnostic[data-provider="claude"]');
+  const version = row.locator('.settings-provider-version');
+  await expect(version).toHaveText('Checking…', { timeout: 10_000 });
+  await row.locator('summary').click();
+  await expect(version).toBeVisible();
+  await row.evaluate(el => { (el as HTMLElement & { __kept?: boolean }).__kept = true; });
+  await releaseVersions(page);
+  await expect(version).toHaveText('Sample provider');
+  await expect(row).toHaveAttribute('open', '');
+  expect(await row.evaluate(el => Boolean((el as HTMLElement & { __kept?: boolean }).__kept))).toBe(true);
+  // A harness that is not installed reports no version, not Checking….
+  await expect(settings.locator('.provider-diagnostic[data-provider="antigravity"] .settings-provider-version')).toHaveText('Not reported');
+});
+
+test('a version filling in keeps cached models; a real version change drops them', async ({ page }) => {
+  test.setTimeout(45_000);
+  await heldVersions(page);
+  await page.goto('/');
+  await threadPainted(page);
+  // The open thread's harness loads its models once the list lands.
+  await expect.poll(() => modelCalls(page, 'claude'), { timeout: 10_000 }).toBe(1);
+  await releaseVersions(page);
+  await page.locator('#model-picker-trigger').click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible({ timeout: 10_000 });
+  await expect(menu.locator('.model-menu-list [role="option"]:not([disabled])').first()).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await modelCalls(page, 'claude'), "'' to a real version is not a new CLI").toBe(1);
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await page.evaluate(() => (window as VersionsWindow).__previewEmit!('provider-versions', { versions: { claude: 'Claude Code 99.0.0 (sample)' } }));
+  await expect.poll(() => modelCalls(page, 'claude'), { timeout: 10_000 }).toBe(2);
+});
+
+test('a click on the model trigger survives a composer re-render while the picker loads', async ({ page }) => {
+  test.setTimeout(45_000);
+  let releasePicker: () => void = () => {};
+  const pickerHeld = new Promise<void>(resolve => { releasePicker = resolve; });
+  let pickerAsked = false;
+  await page.route(/\/src\/model-picker\.ts(\?|$)/, async route => { pickerAsked = true; await pickerHeld; await route.continue(); });
+  await page.goto('/');
+  await threadPainted(page);
+  await page.locator('#model-picker-trigger').click();
+  await expect.poll(() => pickerAsked, { timeout: 10_000 }).toBe(true);
+  // A boot re-render replaces the trigger while the module is still loading.
+  await page.evaluate(() => { const old = document.querySelector('#model-picker-trigger')!; old.replaceWith(old.cloneNode(true)); });
+  releasePicker();
+  await expect(page.locator('.model-menu')).toBeVisible({ timeout: 10_000 });
+});
+
+test('a New task press while the list is out shows busy and makes exactly one draft', async ({ page }) => {
+  test.setTimeout(30_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  const button = page.locator('.sidebar-actions .new-task-button');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await button.click();
+  expect(await page.evaluate(() => (window as BootWindow).__drafts ?? 0), 'nothing is created before the list answers').toBe(0);
+  await release(page);
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__drafts ?? 0), { timeout: 10_000 }).toBe(1);
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  await expect(button).not.toHaveAttribute('aria-busy', 'true');
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as BootWindow).__drafts ?? 0)).toBe(1);
 });
