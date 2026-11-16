@@ -20,6 +20,20 @@ test('storage.private is a shared native/frontend capability and fixture is vali
   const native = readFileSync('src-tauri/src/extensions/contracts.rs', 'utf8');
   assert.equal((native.match(/"storage.private"/g) ?? []).length, 3);
 });
+test('SQLite schema keeps the original\'s schedule step at 37, the provider identity step at 38, and the constant at the newest step', () => {
+  const source = readFileSync('src-tauri/src/storage.rs', 'utf8');
+  const open = source.slice(source.indexOf('pub fn open('), source.indexOf('mod tests {'));
+  const constant = Number(source.match(/pub const SCHEMA_VERSION: i64 = (\d+);/)[1]);
+  const steps = [...open.matchAll(/PRAGMA user_version=(\d+)/g)].map(match => Number(match[1]));
+  assert.equal(constant, 38);
+  assert.equal(Math.max(...steps), constant);
+  const step = version => open.slice(open.indexOf(`if version < ${version}`), open.indexOf(`PRAGMA user_version=${version};`));
+  assert.match(step(37), /saved_remotely/);
+  assert.doesNotMatch(step(37), /extension_provider_identities/);
+  assert.match(step(38), /CREATE TABLE IF NOT EXISTS extension_provider_identities/);
+  assert.doesNotMatch(step(38), /task_schedules/);
+  assert.match(readFileSync('AGENTS.md', 'utf8'), new RegExp(`schema is at \`user_version\` ${constant}\\b`));
+});
 test('private storage public requests isolate identical keys by authenticated owner and captured project after reload', () => {
   const f = fixture();
   for (const [owner, project, scope, value] of [[manifest.id, 'A', 'global', 1], [manifest.id, 'A', 'project', 2], [manifest.id, 'B', 'project', 3], ['other.storage-laboratory', 'A', 'global', 4]]) {

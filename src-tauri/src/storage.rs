@@ -627,8 +627,14 @@ impl Store {
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
                   PRAGMA user_version=36;").map_err(|e| e.to_string())?;
             }
-            let extension_37 = version == 37 && migration.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='extension_provider_identities')", [], |row| row.get::<_, bool>(0)).map_err(|e| e.to_string())?;
-            if version < 37 || extension_37 {
+            // Two builds wrote a version 37: the original's is the schedule step below, the
+            // extension build's created the provider identity table (step 38 here) instead. The
+            // schedule step marks every user-made schedule, so it must run exactly once: a 37
+            // without `task_schedules.saved_remotely` never ran it (the step always leaves that
+            // column), whatever else the file holds. A 37 with the column is the original's and
+            // is never marked again; the identity half is step 38's, which tolerates either.
+            let schedule_step_missing = version == 37 && !migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name='saved_remotely')", [], |r| r.get::<_, bool>(0)).map_err(|e| e.to_string())?;
+            if version < 37 || schedule_step_missing {
                 // Whether a remote device last saved each schedule, so the team gate is checked
                 // again when it fires (`schedules::remote_team_gate`). Version 35's schema already
                 // carries the column on databases created since; ids an unreleased build kept in
@@ -648,6 +654,8 @@ impl Store {
             if version < 38 {
                 // Identity metadata is separate from executable packages. No history, resume,
                 // connection or model value is rewritten; an old binary is not a downgrade path.
+                // An extension-build 37 already has the table and some rows: both are kept and
+                // only missing identities are added, in the same transaction as any step above.
                 migration.execute_batch("CREATE TABLE IF NOT EXISTS extension_provider_identities(id TEXT PRIMARY KEY, extension_id TEXT NOT NULL); PRAGMA user_version=38;").map_err(|e| e.to_string())?;
                 let mut stmt = migration.prepare("SELECT DISTINCT provider FROM sessions").map_err(|e| e.to_string())?;
                 let ids = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
@@ -3759,7 +3767,7 @@ mod tests {
         let store = Store::open(&path).unwrap();
         assert_eq!(rows(&store.db), before, "all pre-existing tables and history are byte-for-byte unchanged");
         assert_eq!(std::fs::read(dir.join("connections.json")).unwrap(), connections);
-        assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+        assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
         assert_eq!(store.db.query_row("SELECT extension_id FROM extension_provider_identities WHERE id='sample.harness/agent'", [], |r| r.get::<_, String>(0)).unwrap(), "sample.harness");
         let saved = store.session("extension-task").unwrap();
         assert_eq!(saved.resume_id.as_deref(), Some("native-resume-extension"));
@@ -3795,6 +3803,226 @@ mod tests {
         assert_eq!(store.session("extension-task").unwrap().resume_id.as_deref(), Some("native-resume-extension"));
         assert_eq!(store.messages("extension-task", None).unwrap().len(), 3);
         assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// Every table's rows as text, for the tables `keep` accepts.
+    fn table_rows(db: &Connection, keep: impl Fn(&str) -> bool) -> Vec<(String, Vec<String>)> {
+        let tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").unwrap()
+            .query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+        tables.into_iter().filter(|table| keep(table)).map(|table| {
+            let mut stmt = db.prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid")).unwrap();
+            let count = stmt.column_count();
+            let values = stmt.query_map([], |row| Ok((0..count).map(|i| format!("{:?}", row.get_ref(i).unwrap())).collect::<Vec<_>>().join("|")))
+                .unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+            (table, values)
+        }).collect()
+    }
+
+    /// History the schema steps never rewrite: everything but the schedule and identity tables.
+    fn history_rows(db: &Connection) -> Vec<(String, Vec<String>)> {
+        table_rows(db, |table| !matches!(table, "task_schedules" | "scheduler_settings" | "extension_provider_identities"))
+    }
+
+    fn user_version(db: &Connection) -> i64 {
+        db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap()
+    }
+
+    fn has_saved_remotely(db: &Connection) -> bool {
+        db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name='saved_remotely')", [], |r| r.get(0)).unwrap()
+    }
+
+    fn identities(db: &Connection) -> Vec<(String, String)> {
+        db.prepare("SELECT id,extension_id FROM extension_provider_identities ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap()
+    }
+
+    fn settings_content(db: &Connection) -> String {
+        db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).unwrap()
+    }
+
+    /// The databases schema 38 must converge from. Both builds wrote a 37: the original's is the
+    /// schedule step (a `saved_remotely` column filled from the settings row's `remoteSaved`
+    /// list), the extension build's created the provider identity table instead.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Origin { Pre37, Original37, Extension37 }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Settings { Listed, Malformed }
+
+    struct SchemaFixture {
+        path: PathBuf,
+        /// User-made schedules, marked by upstream's 37 (the original's `resaved` was saved on the
+        /// desktop since, which cleared its mark).
+        user: String,
+        resaved: String,
+        /// Agent wakeups; `listed` is in the settings row's `remoteSaved` list before step 37.
+        listed: String,
+        agent: String,
+    }
+
+    const SCHEMA_NOW: i64 = 1_767_225_600_000;
+
+    /// A file written by `origin`: the recorded provider history, two user schedules, two agent
+    /// wakeups and the scheduler settings row each build would leave.
+    fn schema_fixture(origin: Origin, settings: Settings) -> SchemaFixture {
+        let dir = std::env::temp_dir().join(format!("pandacode-schema-{origin:?}-{}", id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        let store = Store::open(&path).unwrap();
+        store.db.execute_batch(include_str!("../../tests/fixtures/extensions/provider-history-v36.sql")).unwrap();
+        let schedule = |by: &str| {
+            let input = crate::schedules::ScheduleInput { session_id: "legacy-task".into(), prompt: "Check the deploy".into(), kind: "once".into(), run_at: Some(SCHEMA_NOW + 60_000), ..Default::default() };
+            crate::schedules::create(&store, &input, by, None, SCHEMA_NOW).unwrap().id
+        };
+        let (user, resaved, listed, agent) = (schedule("user"), schedule("user"), schedule("agent"), schedule("agent"));
+        match origin {
+            Origin::Pre37 => store.db.execute_batch("DROP TABLE extension_provider_identities; ALTER TABLE task_schedules DROP COLUMN saved_remotely; PRAGMA user_version=36;").unwrap(),
+            // The original ran its schedule step and never had the identity table.
+            Origin::Original37 => {
+                store.db.execute_batch("DROP TABLE extension_provider_identities; PRAGMA user_version=37;").unwrap();
+                for id in [&user, &listed] {
+                    store.db.execute("UPDATE task_schedules SET saved_remotely=1 WHERE id=?1", [id]).unwrap();
+                }
+            }
+            // The extension build has the table (here holding an uninstalled package's identity,
+            // and not yet the imported history's) and the schedule table of version 35.
+            Origin::Extension37 => store.db.execute_batch("INSERT INTO extension_provider_identities(id,extension_id) VALUES('retired.package/agent','retired.package');
+                ALTER TABLE task_schedules DROP COLUMN saved_remotely; PRAGMA user_version=37;").unwrap(),
+        }
+        match (origin, settings) {
+            (Origin::Original37, Settings::Listed) => { store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1)", [r#"{"paused":true}"#]).unwrap(); }
+            (_, Settings::Listed) => { store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1)", [serde_json::json!({"paused": true, "remoteSaved": [listed]}).to_string()]).unwrap(); }
+            // The CHECK keeps this out today; a damaged or hand-edited file can still carry it.
+            (_, Settings::Malformed) => store.db.execute_batch("PRAGMA ignore_check_constraints=1; INSERT INTO scheduler_settings(id,content) VALUES(1,'{not json'); PRAGMA ignore_check_constraints=0;").unwrap(),
+        }
+        SchemaFixture { path, user, resaved, listed, agent }
+    }
+
+    fn marks(store: &Store, f: &SchemaFixture) -> [bool; 4] {
+        [&f.user, &f.resaved, &f.listed, &f.agent].map(|id| crate::schedules::saved_remotely(store, id).unwrap())
+    }
+
+    fn assert_history_intact(store: &Store) {
+        let legacy = store.session("legacy-task").unwrap();
+        assert_eq!((legacy.provider.as_str(), legacy.model.as_str(), legacy.resume_id.as_deref()), ("codex", "gpt-recorded", Some("native-resume-legacy")));
+        let extension = store.session("extension-task").unwrap();
+        assert_eq!((extension.provider.as_str(), extension.model.as_str(), extension.resume_id.as_deref()), ("sample.harness/agent", "model/recorded", Some("native-resume-extension")));
+        assert_eq!(store.messages("legacy-task", None).unwrap().len(), 2);
+        assert_eq!(store.messages("extension-task", None).unwrap().len(), 3);
+    }
+
+    /// Reopening at 38 runs no step again: a schedule saved on the desktop since keeps its
+    /// cleared mark and every row stays as it was.
+    fn assert_reopen_changes_nothing(store: Store, f: &SchemaFixture) {
+        crate::schedules::mark_saved_remotely(&store, &f.resaved, false).unwrap();
+        let before = table_rows(&store.db, |_| true);
+        drop(store);
+        let store = Store::open(&f.path).unwrap();
+        assert_eq!(user_version(&store.db), SCHEMA_VERSION);
+        assert_eq!(table_rows(&store.db, |_| true), before);
+        assert!(!crate::schedules::saved_remotely(&store, &f.resaved).unwrap());
+    }
+
+    #[test]
+    fn schema_38_converges_from_both_versions_37_and_older_with_upstream_schedule_semantics() {
+        for origin in [Origin::Pre37, Origin::Original37, Origin::Extension37] {
+            let f = schema_fixture(origin, Settings::Listed);
+            let (history, schedules) = {
+                let raw = Connection::open(&f.path).unwrap();
+                assert_eq!(user_version(&raw), if origin == Origin::Pre37 { 36 } else { 37 });
+                assert_eq!(has_saved_remotely(&raw), origin == Origin::Original37, "{origin:?}");
+                (history_rows(&raw), table_rows(&raw, |t| matches!(t, "task_schedules" | "scheduler_settings")))
+            };
+            let store = Store::open(&f.path).unwrap();
+            assert_eq!(user_version(&store.db), SCHEMA_VERSION, "{origin:?}");
+            assert_eq!(history_rows(&store.db), history, "{origin:?}: history is byte-for-byte unchanged");
+            assert_history_intact(&store);
+            let mut expected = vec![("sample.harness/agent".to_string(), "sample.harness".to_string())];
+            if origin == Origin::Extension37 {
+                expected.push(("retired.package/agent".into(), "retired.package".into()));
+                expected.sort();
+            }
+            assert_eq!(identities(&store.db), expected, "{origin:?}: identities are backfilled and kept");
+            if origin == Origin::Original37 {
+                // Upstream's step already ran: nothing is marked again and the settings row stays.
+                assert_eq!(table_rows(&store.db, |t| matches!(t, "task_schedules" | "scheduler_settings")), schedules);
+                assert_eq!(marks(&store, &f), [true, false, true, false]);
+            } else {
+                // Upstream's step runs once: every user-made schedule fails closed, a listed agent
+                // wakeup moves into the column, and the list leaves the settings row.
+                assert_eq!(marks(&store, &f), [true, true, true, false], "{origin:?}");
+                let content = settings_content(&store.db);
+                assert!(!content.contains("remoteSaved"), "{origin:?}: {content}");
+                assert!(crate::schedules::settings(&store).unwrap().paused, "{origin:?}");
+            }
+            assert_reopen_changes_nothing(store, &f);
+        }
+    }
+
+    #[test]
+    fn schema_38_fresh_database_has_both_steps_and_reopens_unchanged() {
+        let dir = std::env::temp_dir().join(format!("pandacode-schema-fresh-{}", id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fresh.db");
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store.db), SCHEMA_VERSION);
+        assert!(has_saved_remotely(&store.db));
+        assert!(identities(&store.db).is_empty());
+        assert_eq!(crate::schedules::settings(&store).unwrap(), crate::schedules::SchedulerSettings::default());
+        store.db.execute_batch(include_str!("../../tests/fixtures/extensions/provider-history-v36.sql")).unwrap();
+        store.create_session("history-project", "sample.harness/agent", "model/exact", "full").unwrap();
+        assert_eq!(identities(&store.db), vec![("sample.harness/agent".to_string(), "sample.harness".to_string())]);
+        let schedule = |by: &str| {
+            let input = crate::schedules::ScheduleInput { session_id: "legacy-task".into(), prompt: "Check".into(), kind: "once".into(), run_at: Some(SCHEMA_NOW + 60_000), ..Default::default() };
+            crate::schedules::create(&store, &input, by, None, SCHEMA_NOW).unwrap().id
+        };
+        let f = SchemaFixture { path: path.clone(), user: schedule("user"), resaved: schedule("user"), listed: schedule("agent"), agent: schedule("agent") };
+        // A new schedule starts unmarked; only a remote save marks it.
+        assert_eq!(marks(&store, &f), [false; 4]);
+        assert_reopen_changes_nothing(store, &f);
+    }
+
+    #[test]
+    fn schema_38_survives_malformed_scheduler_settings_from_every_unmigrated_origin() {
+        for origin in [Origin::Pre37, Origin::Extension37] {
+            let f = schema_fixture(origin, Settings::Malformed);
+            let store = Store::open(&f.path).unwrap();
+            assert_eq!(user_version(&store.db), SCHEMA_VERSION, "{origin:?}");
+            // As upstream: the unreadable list is skipped, user-made schedules still fail closed,
+            // and the damaged row is left as it was rather than failing startup.
+            assert_eq!(marks(&store, &f), [true, true, false, false], "{origin:?}");
+            assert_eq!(settings_content(&store.db), "{not json");
+            assert_eq!(crate::schedules::settings(&store).unwrap(), crate::schedules::SchedulerSettings::default());
+            assert_history_intact(&store);
+            assert_reopen_changes_nothing(store, &f);
+        }
+    }
+
+    #[test]
+    fn schema_38_failure_after_the_schedule_step_rolls_back_both_halves_of_an_extension_37() {
+        let f = schema_fixture(Origin::Extension37, Settings::Listed);
+        let history = {
+            let raw = Connection::open(&f.path).unwrap();
+            raw.execute_batch("CREATE TRIGGER fail_identity_backfill BEFORE INSERT ON extension_provider_identities BEGIN SELECT RAISE(ABORT,'recorded interruption'); END;").unwrap();
+            history_rows(&raw)
+        };
+        assert!(Store::open(&f.path).err().unwrap().contains("recorded interruption"));
+        {
+            // The identity step failed after the schedule step: neither is kept.
+            let raw = Connection::open(&f.path).unwrap();
+            assert_eq!(user_version(&raw), 37);
+            assert!(!has_saved_remotely(&raw));
+            assert!(settings_content(&raw).contains("remoteSaved"));
+            assert_eq!(identities(&raw), vec![("retired.package/agent".to_string(), "retired.package".to_string())]);
+            assert_eq!(history_rows(&raw), history);
+            raw.execute_batch("DROP TRIGGER fail_identity_backfill;").unwrap();
+        }
+        let store = Store::open(&f.path).unwrap();
+        assert_eq!(user_version(&store.db), SCHEMA_VERSION);
+        assert_eq!(marks(&store, &f), [true, true, true, false]);
+        assert_eq!(history_rows(&store.db), history);
+        assert_history_intact(&store);
+        assert_reopen_changes_nothing(store, &f);
     }
 
     #[test]
