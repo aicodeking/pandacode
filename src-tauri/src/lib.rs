@@ -4840,6 +4840,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::packages::ExtensionPackages::new(&dir, std::env::args().any(|arg| arg == "--safe-mode")));
     extensions::packages::configure_notifications(app.handle().clone());
     providers::dynamic_adapter::configure(&app.state::<extensions::packages::ExtensionPackages>().0, app.path().resource_dir().ok().map(|path| path.join("extension-runtime")));
+    app.manage(extensions::runtime_grants::RuntimeGrants::open(&dir));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
     app.manage(extensions::jobs::ExtensionJobs::default());
@@ -5152,6 +5153,8 @@ pub fn run() {
                 extensions::context::extensions_context,
                 extensions::runtime::extensions_runtime,
                 extensions::packages::extensions_snapshot,
+                extensions::runtime_grants::extensions_runtime_grants,
+                extensions::runtime_grants::extensions_runtime_grant,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,
                 extensions::packages::extensions_install,

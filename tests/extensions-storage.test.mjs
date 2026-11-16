@@ -18,7 +18,9 @@ function fixture() {
 test('storage.private is a shared native/frontend capability and fixture is valid', () => {
   assert.equal(validateContract('packages', [manifest]).ok, true);
   const native = readFileSync('src-tauri/src/extensions/contracts.rs', 'utf8');
-  assert.equal((native.match(/"storage.private"/g) ?? []).length, 3);
+  // The vocabulary lives once, in runtime_grants.rs; the validator consults it at all three of its checks.
+  assert.equal((native.match(/runtime_grants::PERMISSIONS\.contains/g) ?? []).length, 3);
+  assert.equal((readFileSync('src-tauri/src/extensions/runtime_grants.rs', 'utf8').match(/"storage\.private"/g) ?? []).length, 1);
 });
 test('SQLite schema keeps the original\'s schedule step at 37, the provider identity step at 38, and the constant at the newest step', () => {
   const source = readFileSync('src-tauri/src/storage.rs', 'utf8');

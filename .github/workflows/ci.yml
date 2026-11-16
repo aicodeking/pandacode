@@ -57,6 +57,12 @@ jobs:
       - name: WebKit extension conformance
         env: { PW_PORT: '15436', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-baseline.spec.ts tests/extensions-install.spec.ts tests/extensions-catalog.spec.ts tests/extensions-layout.spec.ts tests/extensions-menus.spec.ts tests/extensions-dialogs.spec.ts tests/extensions-view-actions.spec.ts tests/extensions-thread-actions.spec.ts tests/extensions-settings-actions.spec.ts tests/extensions-windows.spec.ts tests/extensions-context.spec.ts tests/extensions-inventory.spec.ts tests/extensions-project-reads.spec.ts --workers=1
+      - name: Runtime grants (Chromium)
+        env: { PW_PORT: '15437', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-grants.spec.ts --workers=1
+      - name: Runtime grants (WebKit)
+        env: { PW_PORT: '15438', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-grants.spec.ts --workers=1
       - name: Trusted development preview (Chromium)
         env:
           PW_PORT: '1435'

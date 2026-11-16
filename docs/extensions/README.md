@@ -143,6 +143,37 @@ needs an undeclared permission fails with `PermissionDenied`.
 | `services.call` | Call another package's exported service through the broker |
 | `btw.taskControl` | BTW side-task mutations after host-user consent ([BTW](btw.md)) |
 | `btw.content` | Insert a visible BTW answer into the draft after host-user consent (never sends) |
+| `runtime.service` | One long-lived background service; its command, hook, tool and provider handlers run inside it |
+| `events.workspace` | Workspace events with ids, no content (per project) |
+| `ui.dynamic` | Contributions that a running service registers, updates and reveals, and the dialog answer |
+| `ui.notify` | Replaceable, attributed in-app and operating-system notifications |
+| `ui.presentation` | Composer band, transcript and working presentations, notes on tool rows and approval prompts, extras in protected dialogs |
+| `tasks.start` | Start a task (per project) |
+| `tasks.message` | Send messages and notes, and change the message queue (per project) |
+| `tasks.draft` | Read and edit the draft and its attachments without sending (per project) |
+| `tasks.control` | Stop, set mode, configure, council, workers, limit pauses and compaction of a task (per project) |
+| `tasks.usage.read` | Task usage reports (per project) |
+| `harnesses.limits.read` | Harness usage windows and credits; refreshing them |
+| `harnesses.accounts.read` | The accounts a harness can run with; never a credential value |
+| `harness.hooks.observe` | Every harness hook event with its content (per project) |
+| `harness.hooks.decide` | Decide tool calls, rewrite prompts and results, answer approvals and questions (per project and tool kind) |
+| `harness.hooks.context` | Add context to a prompt and notes for the model (per project) |
+| `harness.companions` | Host companions for harnesses |
+| `harness.console` | Open harness consoles and run command-center actions (per project) |
+| `tools.model` | Tools offered to the model: declared service tools and tool servers (per project) |
+| `models.call` | A bounded one-shot model answer |
+| `secrets.private` | The package's own private secrets |
+| `credentials.use` | Have the host attach a named held credential to the package's declared requests; the value is never returned (per credential item) |
+| `auth.signIn` | Host-run browser sign-in for the package |
+| `documents.editors` | Custom editors, new-file templates and save hooks over host buffers (per project) |
+| `workspace.manage` | Projects, worktrees, branches, tasks, bots, channels, recipes, wake-ups, moodboards, cloud and pulls (per project) |
+| `workspace.settings` | Read and change the settled workspace settings |
+| `terminals.read` | List terminals and read their output (per project) |
+| `terminals.write` | Open, write to and close terminals (per project) |
+| `guests.control` | Virtual machine, simulator and browser guests |
+| `projects.checks.run` | Run a project's check scripts, with no per-run prompt (per project) |
+| `metrics.read` | Application and service resource metrics |
+| `internal.unstable` | The unstable internal interface, which may change without notice |
 <!-- permissions:end -->
 
 **Context.** Every action captures its invocation once: `windowId`, `surfaceId`, optional

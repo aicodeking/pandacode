@@ -260,16 +260,16 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         if !matches(text(&manifest["engines"], "pandacodeApi"), "1.0.0", &format!("{path}/engines/pandacodeApi"))? { return Err(fail("IncompatibleApi", &format!("{path}/engines/pandacodeApi"), vec![id])); }
         for key in ["permissions", "requiredCapabilities"] {
             for capability in strings(&manifest[key]) {
-                if !["btw.content", "btw.taskControl", "services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
+                if !super::runtime_grants::PERMISSIONS.contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
             }
         }
         let optional = strings(&manifest["optionalCapabilities"]);
         for (i, capability) in optional.iter().enumerate() {
-            if !["btw.content", "btw.taskControl", "services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&capability.as_str()) {
+            if !super::runtime_grants::PERMISSIONS.contains(&capability.as_str()) {
                 diagnostics.push(json!({"code":"UnknownOptionalCapability", "path":format!("{path}/optionalCapabilities/{i}")}));
             }
         }
-        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| ["btw.content", "btw.taskControl", "services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read"].contains(&v.as_str())).collect::<Vec<_>>()); }
+        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| super::runtime_grants::PERMISSIONS.contains(&v.as_str())).collect::<Vec<_>>()); }
         for kind in strings(&manifest["requiredContributions"]) {
             if !CONTRIBUTIONS.contains(&kind.as_str()) { return Err(fail("UnsupportedContribution", &format!("{path}/requiredContributions"), vec![kind])); }
         }

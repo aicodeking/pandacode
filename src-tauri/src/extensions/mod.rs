@@ -10,6 +10,7 @@ pub mod runtime;
 pub mod jobs;
 pub mod connections;
 pub mod services;
+pub mod runtime_grants;
 pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;
