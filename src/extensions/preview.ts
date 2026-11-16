@@ -17,6 +17,7 @@ import { createServicesPreview } from './services-preview';
 import * as runtimeGrants from './runtime-grants';
 import { createServiceLifetimePreview } from './runtime-service-lifetime';
 import { createPrivateSecretsPreview } from './runtime-private-secrets';
+import { createSignInPreview } from './runtime-sign-in';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
@@ -126,6 +127,31 @@ function privateSecretsCall(args: Record<string, unknown>): unknown {
   const version = snapshot.packages.find(item => item.manifest.id === id)?.manifest.version ?? '';
   return previewPrivateSecrets.handle(snapshot.safeMode ? 'PermissionDenied' : grants.check(id, version, 'secrets.private'), id, args.caller === 'panel' ? 'panel' : 'service', String(args.method), args.params);
 }
+// Browser sign-in (R0803): labelled stand-in of the native owner on a simulated clock and simulated ports; service calls come from a test hook only.
+const previewSignIn = createSignInPreview();
+if (new URLSearchParams(location.search).has('sign-in')) (window as unknown as { __extensionSignIn?: unknown }).__extensionSignIn = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function signInGrant(id: string): string {
+  const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
+  if (snapshot.safeMode) return 'PermissionDenied';
+  grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+  return grants.check(id, snapshot.packages.find(item => item.manifest.id === id)?.manifest.version ?? '', 'auth.signIn');
+}
+function signInService(args: Record<string, unknown>): unknown {
+  const id = String(args.id), port = Number(args.port);
+  switch (args.op) {
+    case 'start': return previewSignIn.start(signInGrant(id), id, args.caller === 'panel' ? 'panel' : 'service', args.params, args.browser === 'missing' ? 'missing' : 'works');
+    case 'browser': return previewSignIn.browser(id, args as { method?: string; target: string });
+    case 'advance': previewSignIn.advance(Number(args.ms)); return null;
+    case 'occupy': previewSignIn.occupy(port); return null;
+    case 'free': previewSignIn.free(port); return null;
+    case 'listening': return previewSignIn.listening(port);
+    case 'outcome': return previewSignIn.outcome(id);
+    default: throw new Error('InvalidArguments');
+  }
+}
+function reconcileSignIns(): void {
+  for (const flow of previewSignIn.projection().flows) if (signInGrant(flow.id) !== 'ok') previewSignIn.revoke(flow.id);
+}
 function reconcileServices(): void {
   const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
   if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
@@ -134,9 +160,13 @@ function reconcileServices(): void {
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
   if (command === 'extensions_private_secrets') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewPrivateSecrets.projection(); }
   if (command === 'extensions_private_secrets_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return privateSecretsCall(args); }
+  if (command === 'extensions_sign_in') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewSignIn.projection(); }
+  if (command === 'extensions_sign_in_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return signInService(args); }
+  if (command === 'extensions_sign_in_cancel') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return { cancelled: previewSignIn.cancel(String(args.id)) }; }
+  if (command === 'extensions_sign_in_paste') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); previewSignIn.paste(String(args.id), String(args.url)); return null; }
   if (command === 'extensions_uninstall') previewPrivateSecrets.removePackage(String(args.id));
   if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceLifetime.projection(); }
-  try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') reconcileServices(); }
+  try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') { reconcileServices(); reconcileSignIns(); } }
 }
 function previewExtensionCommand(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void): unknown {
   if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewServices.stop(String(args.id));

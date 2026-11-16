@@ -450,7 +450,22 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth }
+/** Browser sign-in (`auth.signIn`, service only; see docs/extensions/runtime-sign-in.md): the host opens the system browser, listens on a loopback address for the redirect and returns the whole redirected address (it carries the authorization code, so keep it in the service). `{redirect_uri}` in `authorizeUrl` is replaced by the encoded listening address. At most one flow per package; a taken port or a second flow answers `Conflict`, a missing browser `HostUnavailable` unless `manual` is true. */
+export interface SignInOptions {
+  readonly authorizeUrl: string;
+  readonly callback: { readonly path: string; readonly port?: number; readonly host?: '127.0.0.1' | 'localhost' };
+  /** 1 to 900000 ms; default 120000. */
+  readonly timeoutMs?: number;
+  /** Offer "Paste the redirect address" when the wait ends or no browser opens; the dialog stays open for 2 minutes. */
+  readonly manual?: boolean;
+  readonly title?: string;
+}
+export type SignInResult =
+  | { readonly status: 'completed'; readonly url: string; readonly redirectUri: string; readonly via: 'callback' | 'manual' }
+  | { readonly status: 'cancelled' }
+  | { readonly status: 'timeout' };
+export interface ServiceAuth { signIn(options: SignInOptions): Promise<SignInResult> }
 /** Workspace events (`events.workspace`, service only; narrowable per project): ids only, in order, at most 256 waiting, then one `gap`. See docs/extensions/runtime-workspace-events.md. */
 export type WorkspaceEventKind = 'task.created' | 'task.removed' | 'task.shown' | 'task.stopped' | 'task.idle' | 'task.compacted' | 'turn.started' | 'turn.finished' | 'turn.failed' | 'project.opened' | 'project.closed' | 'settings.changed' | 'app.focus';
 export type WorkspaceEventStarter = 'user' | 'bot' | 'schedule' | 'team' | { readonly package: string };

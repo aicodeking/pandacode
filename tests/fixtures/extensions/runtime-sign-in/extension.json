@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.sign-in",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "auth.signIn", "secrets.private"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.sign-in/connect"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.sign-in/connect", "title": "Connect the sample cloud", "action": { "kind": "runCommand" } }]
+  }
+}

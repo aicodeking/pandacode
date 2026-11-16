@@ -15,6 +15,7 @@ pub mod runtime_grants;
 mod runtime_grants_manager;
 pub mod runtime_service_lifetime;
 pub mod runtime_private_secrets;
+pub mod runtime_sign_in;
 pub mod runtime_native_consents;
 pub mod runtime_family_consents;
 pub mod runtime_platform_qualification;
