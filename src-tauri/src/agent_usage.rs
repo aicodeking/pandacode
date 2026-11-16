@@ -646,8 +646,8 @@ const WAITING_LIMIT: usize = 64;
 /// setup's last check noted: no login files, Keychain, connection secrets or
 /// network per poll, only PandaCode's small saved-reading file.
 #[tauri::command]
-pub(crate) async fn agent_usage_asking_claude(window: tauri::WebviewWindow, connections: Vec<String>) -> crate::Result<HashMap<String, ClaudeWaiting>> {
-    if window.label() != "main" {
+pub(crate) async fn agent_usage_asking_claude(webview: tauri::Webview, connections: Vec<String>) -> crate::Result<HashMap<String, ClaudeWaiting>> {
+    if !crate::is_main_webview(webview.label()) {
         return Err("Usage limits are available only in the main application window.".into());
     }
     if connections.len() > WAITING_LIMIT || connections.iter().any(|id| id.len() > 200) {
@@ -676,12 +676,12 @@ pub(crate) fn asking_claude(connection: Option<&str>) -> bool {
 /// environment; without it the global setup is read, as before.
 #[tauri::command]
 pub(crate) async fn agent_usage(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     provider: String,
     refresh: bool,
     connection: Option<String>,
 ) -> crate::Result<Usage> {
-    if window.label() != "main" {
+    if !crate::is_main_webview(webview.label()) {
         return Err("Usage limits are available only in the main application window.".into());
     }
     match connection {

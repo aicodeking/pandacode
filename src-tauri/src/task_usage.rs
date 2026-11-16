@@ -7,11 +7,11 @@ use tauri::Manager;
 pub(crate) async fn task_token_usage(
     state: tauri::State<'_, crate::AppState>,
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     session_id: String,
     since: Option<i64>,
 ) -> crate::Result<Option<crate::usage_ledger::TaskUsage>> {
-    if window.label() != "main" {
+    if !crate::is_main_webview(webview.label()) {
         return Err("Task usage is available only in the main application window.".into());
     }
     let links = state

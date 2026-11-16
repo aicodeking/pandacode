@@ -116,6 +116,32 @@ use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 type Result<T> = std::result::Result<T, String>;
+
+/// Whether a command's caller is the workspace webview.
+///
+/// Commands that act on the workspace take the calling `tauri::Webview`, not a
+/// `WebviewWindow`: the in-app browser is a child webview of the main window, and
+/// Tauri refuses to resolve a `WebviewWindow` for a window that holds one (its
+/// `is_webview_window` wants every webview in the window to share its label). A
+/// command that asked for the window would fail with "current webview is not a
+/// WebviewWindow" for as long as the browser panel stays open.
+pub(crate) fn is_main_webview(label: &str) -> bool {
+    label == "main"
+}
+
+#[cfg(test)]
+mod main_webview_tests {
+    use super::*;
+
+    #[test]
+    fn the_in_app_browser_is_not_the_workspace_webview() {
+        assert!(is_main_webview("main"));
+        assert!(!is_main_webview("browser-guest"));
+        assert!(!is_main_webview("tray"));
+        assert!(!is_main_webview("launcher"));
+    }
+}
+
 struct RunningAgent {
     input: UnboundedSender<RunInput>,
     stopped: Arc<AtomicBool>,

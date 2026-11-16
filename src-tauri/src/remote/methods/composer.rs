@@ -817,7 +817,7 @@ fn ledger_totals(ledger: &Value, now_hour: i64, hours: i64) -> Value {
 /// (no main window, as on a headless host).
 async fn ledger_summary(app: &tauri::AppHandle, refresh: bool) -> Value {
     let Some(window) = app.get_webview_window("main") else { return Value::Null };
-    let Ok(ledger) = crate::usage_ledger::usage_ledger(app.clone(), window, Some(refresh)).await else { return Value::Null };
+    let Ok(ledger) = crate::usage_ledger::usage_ledger(app.clone(), window.as_ref().clone(), Some(refresh)).await else { return Value::Null };
     let Ok(ledger) = serde_json::to_value(ledger) else { return Value::Null };
     let now_hour = crate::storage::now().div_euclid(3_600_000);
     json!({ "scannedAt": ledger["scannedAt"], "day": ledger_totals(&ledger, now_hour, DAY_HOURS), "week": ledger_totals(&ledger, now_hour, WEEK_HOURS) })
