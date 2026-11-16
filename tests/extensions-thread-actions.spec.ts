@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { scrollTopUntil } from './transcript-fixtures';
 const manifest = JSON.parse(readFileSync(new URL('./fixtures/extensions/thread-laboratory/extension.json', import.meta.url), 'utf8'));
 const prompt = (page: Page) => page.locator('#prompt');
 const contributed = (page: Page, id: string) => page.locator(`[data-extension-contribution="sample.thread-laboratory/${id}"]`).first();
@@ -196,4 +197,89 @@ test('extensions thread actions: a live BTW message action uses the side task, n
   expect(await page.evaluate(() => (window as any).__extensionDialogTransport.calls[0].context.sessionId)).toBe(sideId);
   await page.keyboard.press('Escape'); await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+});
+
+/* A long thread draws only a window of its turns (src/transcript-rows.ts): rows enter it as the reader scrolls up, leave
+ * it on a return to the bottom (a trim) and on a thread switch, and come back. Every row slot is mounted once while its
+ * row is in the document, for that row's own task and message, and disposed as soon as the row leaves. */
+test('extensions thread actions: windowed transcript rows mount slots as they enter and dispose them as they leave', async ({ page }) => {
+  // Two scrolls through a hundred turns, a trim, three thread switches and four action menus: longer than one ordinary
+  // flow, so the whole test gets more time (WebKit), while every step keeps its default expectation deadline.
+  test.setTimeout(60_000);
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(manifest => {
+    localStorage.setItem('pandacode.wallpapers', 'false');
+    localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: {} }]));
+  }, manifest);
+  await page.goto('/');
+  await page.locator('#navigation .task-item').first().waitFor();
+  await page.evaluate(async () => { await (window as any).__previewExtensionDialogTransport(); (window as any).__previewMirrorThread(400, 400); });
+  const transcript = page.locator('#transcript');
+  const label = (n: number) => `Message ${String(n).padStart(3, '0')}`;
+  const drawn = (n: number) => transcript.getByText(label(n), { exact: true });
+  const long = page.locator('#navigation .task-item').filter({ hasText: 'Long remote thread' });
+  await long.click();
+  await expect(drawn(399)).toBeVisible();
+  await expect(drawn(359)).toHaveCount(0);
+  /** Every row slot drawn now, and how many contributions each holds: exactly one (this package's) when mounted. */
+  const slots = () => transcript.evaluate(node => [...node.querySelectorAll<HTMLElement>('[data-extension-action-slot^="panda.thread."]')]
+    .map(slot => ({ session: slot.dataset.extensionSession, mounted: slot.querySelectorAll('[data-extension-contribution]').length })));
+  const allMounted = async () => {
+    const list = await slots();
+    expect(list.length).toBeGreaterThan(0);
+    expect(list.filter(slot => slot.session !== 'mirror-long' || slot.mounted !== 1)).toEqual([]);
+  };
+  await expect.poll(async () => (await slots()).every(slot => slot.mounted === 1)).toBe(true);
+  await allMounted();
+  // Rows entering the window above it mount their slots.
+  await scrollTopUntil(page, '#transcript', label(300));
+  await expect.poll(async () => (await slots()).every(slot => slot.mounted === 1)).toBe(true);
+  await allMounted();
+  // Rows leaving it (the trim on a return to the bottom) dispose theirs: a slot out of the document holds nothing.
+  await transcript.evaluate(node => { (window as any).__enteredSlots = [...node.querySelectorAll('[data-extension-action-slot^="panda.thread."]')]; node.scrollTop = node.scrollHeight; });
+  await expect(drawn(300)).toHaveCount(0, { timeout: 10_000 });
+  const left = () => page.evaluate(() => (window as any).__enteredSlots.filter((slot: Element) => !slot.isConnected).map((slot: Element) => slot.childElementCount));
+  await expect.poll(async () => (await left()).length).toBeGreaterThan(0);
+  await expect.poll(async () => (await left()).filter((count: number) => count > 0)).toEqual([]);
+  await allMounted();
+  // The same turns entering again mount fresh slots, once each, which act for their own row.
+  await scrollTopUntil(page, '#transcript', label(301));
+  await expect.poll(async () => (await slots()).every(slot => slot.mounted === 1)).toBe(true);
+  await allMounted();
+  const act = async (message: number) => {
+    const trigger = transcript.locator(`[data-extension-action-slot="panda.thread.message.actions"][data-extension-selection-id="${100000 + message}"] [data-extension-contribution="sample.thread-laboratory/message"]`);
+    await trigger.scrollIntoViewIfNeeded(); await trigger.locator('..').hover(); await trigger.click();
+    await page.getByRole('menuitem', { name: 'Choose action tags', exact: true }).press('Enter');
+    await page.getByRole('button', { name: 'Action tags', exact: true }).click();
+    await expect(page.getByRole('menuitemradio', { name: 'Alpha', exact: true })).toBeVisible();
+    const context = await page.evaluate(() => (window as any).__extensionDialogTransport.calls.at(-1).context);
+    await page.keyboard.press('Escape'); await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    return context;
+  };
+  const entered = await act(301);
+  expect(entered).toMatchObject({ surfaceId: 'panda.thread.message.actions', sessionId: 'mirror-long', selection: { kind: 'message', ids: ['100301'] } });
+  const before = await act(399);
+  expect(before).toMatchObject({ sessionId: 'mirror-long', projectId: entered.projectId, selection: { kind: 'message', ids: ['100399'] } });
+  // The thread opened again keeps the rows that did not change: their slots act with this opening's context, never the
+  // one captured when the row was drawn.
+  await long.click();
+  await expect(drawn(399)).toBeVisible();
+  const reopened = await act(399);
+  expect(reopened).toMatchObject({ sessionId: 'mirror-long', projectId: entered.projectId, selection: { kind: 'message', ids: ['100399'] } });
+  expect(reopened.revision).toBeGreaterThan(before.revision);
+  // A thread switch takes the rows out (their slots dispose), and switching straight back puts them back: mounted again,
+  // with the context of this visit.
+  await transcript.evaluate(node => { (window as any).__enteredSlots = [...node.querySelectorAll('[data-extension-action-slot^="panda.thread."]')]; });
+  await page.locator('#navigation .task-item[data-id="session-1"]').click();
+  await expect(drawn(399)).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() => (window as any).__enteredSlots.filter((slot: Element) => !slot.isConnected && slot.childElementCount > 0).length)).toBe(0);
+  await long.click();
+  await expect(drawn(399)).toBeVisible();
+  await expect.poll(async () => (await slots()).every(slot => slot.mounted === 1)).toBe(true);
+  await allMounted();
+  const back = await act(399);
+  expect(back).toMatchObject({ sessionId: 'mirror-long', projectId: entered.projectId, selection: { kind: 'message', ids: ['100399'] } });
+  expect(back.revision).toBeGreaterThan(reopened.revision);
+  expect(errors).toEqual([]);
 });

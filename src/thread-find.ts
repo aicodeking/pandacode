@@ -72,7 +72,7 @@ function blockText(block: HTMLElement): { nodes: Text[]; starts: number[]; text:
   let text = '';
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-    if (node.parentElement?.closest('.message-actions, .extension-action-slot, .sr-only')) continue;
+    if (node.parentElement?.closest('.message-actions, .sr-only, .extension-action-slot')) continue;
     nodes.push(node); starts.push(text.length); text += node.data;
   }
   return { nodes, starts, text };

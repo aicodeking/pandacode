@@ -26,7 +26,10 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * without ever overshooting. The wind is caught up over the whole span — that is what makes it look continuous — while the
  * pointer is seeded from the resumed instant and steps at most one frame's worth, so a freeze resumes the parting where it
  * stopped instead of handing it the whole wait in one 16 ms frame.
- * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
+ * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. Under severe
+ * pressure (a software renderer, as WebKit on Windows: three paints in a row over 100 ms, timed by the GPU query or by a
+ * bounded pair of rAF callbacks after each paint) the sky keeps its last frame still (`data-sky-pressure`) rather than
+ * delay core input. Only paints are timed: the gap between idle ticks and a reader hold never count as pressure. */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
   wanted(): boolean;
@@ -205,7 +208,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     }
     setData('night', String(colors.night > .5));
     setData('threadScene', scene.id);
-    if (shown && ctx === undefined) ctx = context(canvas);
+    // A parked sky takes its context back here; a deferred one (`deferWebGL`) not before `startRendering` opens the gate.
+    if (shown && renderingReady && ctx === undefined) ctx = context(canvas);
     const program = ctx ? programFor(ctx, scene) ?? null : null;
     if (!ctx || !program) { clearStill(); layer.removeAttribute('data-gl'); return; }
     const { gl } = ctx, u = program.locations;
@@ -262,6 +266,9 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     const now = performance.now();
     inputAt = now;
     holdUntil = Math.max(holdUntil, now + HOLD_MS);
+    // A hold is intentional, never paint pressure: the pressure probe of the last paint would time the frames the reader's
+    // own scroll or typing spends, so it is dropped (neither counted nor clearing the count); the next paint probes again.
+    if (probeFrame) { cancelAnimationFrame(probeFrame); probeFrame = 0; }
     // Reduced motion paints one still frame off its own interval, and nothing is queued here to defer.
     if (disposed || reducedMotion.matches) return;
     // Nothing is scheduled at all (the last frame was the idle one): arm the wake that ends the hold.
@@ -592,7 +599,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   }
   /** The run flipped: the wind starts moving on this frame (a small push, still eased by its spring), not a beat later. */
   function windChanged(): void {
-    if (reducedMotion.matches || constrained || !ctx) return;
+    if (reducedMotion.matches || constrained) return;
     windVelocity += ((running() ? 1 : 0) - wind) * 1.2;
     wake(true);
   }
@@ -660,7 +667,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     } else clearStill();
   }
   function move(event: PointerEvent): void {
-    if (!shown || reducedMotion.matches || constrained || !ctx || event.pointerType === 'touch') return;
+    if (!shown || reducedMotion.matches || constrained || event.pointerType === 'touch') return;
     if ((event.target as Element | null)?.closest?.(READABLE)) { leave(); return; }
     const rect = layer.getBoundingClientRect();
     if (!rect.width || !rect.height) return;

@@ -197,6 +197,47 @@ test('the sky settles sustained severe paint pressure without stopping the core 
   await expect(page.locator('#prompt')).toHaveValue('Core input under renderer pressure');
 });
 
+test('the sky settles sustained paint pressure from its own frames, never from a reader hold', async ({ page }) => {
+  // Without a GPU timer query, the bounded rAF pair after each paint is what times it (the original WebKit regression).
+  // This is the severe-pressure probe, not the render-scale governor the note below this test is about.
+  await page.addInitScript(() => {
+    const get = WebGLRenderingContext.prototype.getExtension;
+    WebGLRenderingContext.prototype.getExtension = function (this: WebGLRenderingContext, name: string) {
+      return name === 'EXT_disjoint_timer_query' ? null : get.call(this, name);
+    } as typeof get;
+  });
+  await open(page);
+  await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
+  /** `times` paints, each followed by 150 ms of a blocked main thread before the next frame: a software renderer's paint
+   * cost. With `hold`, the reader's wheel on the transcript comes first, so that time is the reader's own scroll. */
+  const stall = (hold: boolean, times: number) => page.evaluate(async ({ hold, times }) => {
+    const sky = (window as any).__sky, transcript = document.querySelector('#transcript')!, layer = document.querySelector<HTMLElement>('.thread-sky')!;
+    for (let round = 0; round < times; round++) {
+      const seen = sky.frames, deadline = performance.now() + 5000;
+      while (sky.frames === seen) {
+        // Settled still: no further paint comes.
+        if (layer.dataset.skyPressure) return true;
+        if (performance.now() > deadline) return false;
+        await new Promise(resolve => setTimeout(resolve));
+      }
+      if (hold) transcript.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 40 }));
+      const until = performance.now() + 150;
+      while (performance.now() < until) { /* the frame's cost */ }
+    }
+    return true;
+  }, { hold, times });
+  expect(await stall(true, 10)).toBe(true);
+  // A check that something does not happen: the probes the holds dropped would have landed well within this.
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => (window as any).__sky.timing)).toBe('frame');
+  await expect(sky(page)).not.toHaveAttribute('data-sky-pressure');
+  await expect(sky(page)).not.toHaveAttribute('data-sky-state', 'static');
+  // The same cost with no reader input is the sky's own: three such paints settle it still.
+  expect(await stall(false, 12)).toBe(true);
+  await expect(sky(page)).toHaveAttribute('data-sky-pressure', 'true');
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+});
+
 /* There is deliberately no "a reader hold never feeds the paint cost" test here. The governor samples one path only: with
  * `timing` 'frame' it reads the rAF interval of a frame (`onFrame`, src/sky-window.ts), so a hold is invisible to it by
  * construction — the timer that ends a hold is not a frame, and the loop only runs on rAF while the pointer stirs the
