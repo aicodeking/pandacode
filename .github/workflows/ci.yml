@@ -63,6 +63,12 @@ jobs:
       - name: Runtime grants (WebKit)
         env: { PW_PORT: '15438', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-grants.spec.ts --workers=1
+      - name: Native consents migration (Chromium)
+        env: { PW_PORT: '15439', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-native-consents.spec.ts --workers=1
+      - name: Native consents migration (WebKit)
+        env: { PW_PORT: '15440', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-native-consents.spec.ts --workers=1
       - name: Trusted development preview (Chromium)
         env:
           PW_PORT: '1435'

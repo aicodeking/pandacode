@@ -1,0 +1,53 @@
+{
+  "description": "Legacy API-1 consents and their native grants. Read by src-tauri/src/extensions/runtime_native_consents.rs and tests/extensions-runtime-native-consents.spec.ts. `packages` has the shape of `extensions_snapshot` (`storageGranted` is the persisted private-storage consent, which the broker already keeps across restarts); `legacy` lists transient per-handle consents (`allow: false` is a denial); `kinds` maps each legacy consent family to the native permission that replaces it.",
+  "kinds": [
+    { "family": "context", "permission": "projects.summary" },
+    { "family": "context", "permission": "tasks.summary" },
+    { "family": "context", "permission": "harnesses.inventory" },
+    { "family": "context", "permission": "connections.summary" },
+    { "family": "context", "permission": "jobs.summary" },
+    { "family": "files", "permission": "projects.files.metadata" },
+    { "family": "files", "permission": "projects.files.read" },
+    { "family": "git", "permission": "projects.git.read" },
+    { "family": "jobs", "permission": "tools.execute" },
+    { "family": "connections", "permission": "connections.request" },
+    { "family": "services", "permission": "services.call" },
+    { "family": "storage", "permission": "storage.private" }
+  ],
+  "packages": [
+    {
+      "manifest": { "id": "sample.consent-granted", "version": "1.0.0", "permissions": ["storage.private", "projects.summary", "projects.files.read", "projects.git.read", "tools.execute", "connections.request", "services.call", "jobs.summary"] },
+      "enabled": true, "storageGranted": true, "executable": null
+    },
+    {
+      "manifest": { "id": "sample.consent-denied", "version": "2.0.0", "permissions": ["storage.private", "projects.summary", "tasks.summary"] },
+      "enabled": true, "storageGranted": false, "executable": null
+    },
+    {
+      "manifest": { "id": "sample.consent-missing", "version": "1.0.0", "permissions": ["projects.files.metadata"] },
+      "enabled": true, "storageGranted": false, "executable": null
+    },
+    {
+      "manifest": { "id": "sample.consent-undeclared", "version": "1.0.0", "permissions": ["projects.summary"] },
+      "enabled": true, "storageGranted": true, "executable": null
+    }
+  ],
+  "legacy": [
+    { "id": "sample.consent-granted", "permission": "projects.summary", "project": "project-a", "allow": true },
+    { "id": "sample.consent-granted", "permission": "projects.summary", "project": "project-b", "allow": true },
+    { "id": "sample.consent-granted", "permission": "projects.files.read", "project": "project-a", "allow": true },
+    { "id": "sample.consent-granted", "permission": "projects.git.read", "project": "project-a", "allow": true },
+    { "id": "sample.consent-granted", "permission": "tools.execute", "project": "project-a", "allow": true },
+    { "id": "sample.consent-granted", "permission": "connections.request", "project": "project-a", "allow": true },
+    { "id": "sample.consent-granted", "permission": "services.call", "allow": true },
+    { "id": "sample.consent-granted", "permission": "jobs.summary", "project": "project-a", "allow": false },
+    { "id": "sample.consent-denied", "permission": "projects.summary", "project": "project-a", "allow": false },
+    { "id": "sample.consent-undeclared", "permission": "projects.files.read", "project": "project-a", "allow": true },
+    { "id": "sample.not-installed", "permission": "projects.summary", "project": "project-a", "allow": true }
+  ],
+  "expect": {
+    "granted": ["sample.consent-granted/projects.files.read", "sample.consent-granted/projects.git.read", "sample.consent-granted/projects.summary", "sample.consent-granted/services.call", "sample.consent-granted/storage.private", "sample.consent-granted/tools.execute", "sample.consent-granted/connections.request"],
+    "neverGranted": ["sample.consent-undeclared/storage.private","sample.consent-granted/jobs.summary", "sample.consent-denied/storage.private", "sample.consent-denied/projects.summary", "sample.consent-missing/projects.files.metadata", "sample.consent-undeclared/projects.files.read"],
+    "projectsSummaryProjects": ["project-a", "project-b"]
+  }
+}

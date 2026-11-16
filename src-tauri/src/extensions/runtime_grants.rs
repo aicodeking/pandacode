@@ -29,7 +29,7 @@ pub const PERMISSIONS: [&str; 50] = [
     "terminals.write", "guests.control", "projects.checks.run", "metrics.read", "internal.unstable",
 ];
 /// Permissions the user can narrow to chosen projects.
-const PROJECT_SCOPED: [&str; 26] = [
+pub(super) const PROJECT_SCOPED: [&str; 26] = [
     "btw.content", "btw.taskControl", "connections.request", "projects.summary", "tasks.summary", "projects.files.metadata", "projects.files.read", "projects.git.read",
     "tasks.transcript.read", "tasks.tools.read", "events.workspace", "tasks.start", "tasks.message", "tasks.draft", "tasks.control", "tasks.usage.read", "harness.hooks.observe",
     "harness.hooks.decide", "harness.hooks.context", "harness.console", "tools.model", "documents.editors", "workspace.manage", "terminals.read", "terminals.write",
@@ -62,7 +62,12 @@ impl Target {
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct File { schema_version: u8, revision: u64, packages: BTreeMap<String, Record> }
+struct File {
+    schema_version: u8, revision: u64, packages: BTreeMap<String, Record>,
+    /// Legacy consents already adopted, per package: permission names. A name here is never adopted again, so a
+    /// later revoke or narrowing by the user is not undone by repeating the migration (`runtime_native_consents`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")] migrations: BTreeMap<String, BTreeSet<String>>,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Record {
@@ -118,7 +123,7 @@ fn allowed(file: &File, id: &str, version: &str, permission: &str, target: &Targ
     if within(&scope.projects, &target.project) && within(&scope.tool_kinds, &target.tool_kind) && within(&scope.items, &target.item) { Ok(()) } else { Err(DENIED.into()) }
 }
 fn valid(file: &File) -> bool {
-    file.schema_version == 1 && file.packages.iter().all(|(id, record)| {
+    file.schema_version == 1 && file.migrations.iter().all(|(id, done)| id.len() <= 128 && done.iter().all(|name| known(name))) && file.packages.iter().all(|(id, record)| {
         !id.is_empty() && id.len() <= 128 && record.declared.iter().all(|name| known(name))
             && record.grants.iter().all(|(name, scope)| record.declared.contains(name) && scope_valid(name, scope).is_ok())
     })
@@ -151,10 +156,10 @@ impl RuntimeGrants {
     fn mutate<T>(&self, change: impl FnOnce(&mut File) -> Result<T>) -> Result<T> {
         let mut state = self.state.lock().map_err(|_| "StorageUnavailable")?;
         if state.corrupt { return Err("MalformedData".into()); }
-        let mut next = File { schema_version: 1, revision: state.file.revision, packages: state.file.packages.clone() };
+        let mut next = File { schema_version: 1, revision: state.file.revision, packages: state.file.packages.clone(), migrations: state.file.migrations.clone() };
         let value = change(&mut next)?;
-        let before = serde_json::to_vec(&state.file.packages).map_err(|_| "MalformedData")?;
-        if serde_json::to_vec(&next.packages).map_err(|_| "MalformedData")? == before { return Ok(value); }
+        let before = serde_json::to_vec(&(&state.file.packages, &state.file.migrations)).map_err(|_| "MalformedData")?;
+        if serde_json::to_vec(&(&next.packages, &next.migrations)).map_err(|_| "MalformedData")? == before { return Ok(value); }
         next.revision += 1;
         self.write(&next)?;
         state.file = next;
@@ -177,6 +182,7 @@ impl RuntimeGrants {
         let record = file.packages.entry(id.to_owned()).or_insert_with(|| Record { version: version.into(), declared: BTreeSet::new(), digest: digest.clone(), trusted_digest: None, archived: false, grants: BTreeMap::new() });
         record.version = version.into();
         record.grants.retain(|name, _| declared.contains(name));
+        if let Some(done) = file.migrations.get_mut(id) { done.retain(|name| declared.contains(name)); }
         record.declared = declared.clone();
         if record.digest != digest { record.digest = digest; }
         if record.trusted_digest.is_some() && record.trusted_digest != record.digest { record.trusted_digest = None; }
@@ -202,7 +208,27 @@ impl RuntimeGrants {
                 record.archived = safe || package["enabled"] != true;
             }
             file.packages.retain(|id, _| present.contains(id));
+            file.migrations.retain(|id, done| present.contains(id) && !done.is_empty());
             Ok(())
+        })
+    }
+    /// Adopts legacy consents as grants in ONE write: every entry is validated first and nothing changes if any fails
+    /// or the write fails. An entry whose package or permission is not declared is skipped, as is one already adopted
+    /// (`migrations`) or already granted; the user's later revoke is therefore never undone. Answers the adopted entries.
+    pub(super) fn adopt(&self, entries: &[(String, String, Scope)]) -> Result<Vec<(String, String)>> {
+        for (_, permission, scope) in entries { scope_valid(permission, scope)?; }
+        self.mutate(|file| {
+            let mut adopted = vec![];
+            for (id, permission, scope) in entries {
+                let Some(record) = file.packages.get_mut(id) else { continue };
+                if !record.declared.contains(permission) { continue; }
+                if !file.migrations.entry(id.clone()).or_default().insert(permission.clone()) { continue; }
+                if record.grants.contains_key(permission) { continue; }
+                record.grants.insert(permission.clone(), scope.clone());
+                adopted.push((id.clone(), permission.clone()));
+            }
+            file.migrations.retain(|_, done| !done.is_empty());
+            Ok(adopted)
         })
     }
     /// Registers or updates a package directly (install and update review use this with the user's decision).

@@ -5155,6 +5155,7 @@ pub fn run() {
                 extensions::packages::extensions_snapshot,
                 extensions::runtime_grants::extensions_runtime_grants,
                 extensions::runtime_grants::extensions_runtime_grant,
+                extensions::runtime_native_consents::extensions_runtime_native_consents,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,
                 extensions::packages::extensions_install,
