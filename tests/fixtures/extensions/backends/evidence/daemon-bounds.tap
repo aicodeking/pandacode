@@ -1,0 +1,40 @@
+TAP version 13
+# Subtest: B1 pure core computes ready/blocked, revisions, signal acknowledgements and reset
+ok 1 - B1 pure core computes ready/blocked, revisions, signal acknowledgements and reset
+  ---
+  duration_ms: 14.2345
+  type: 'test'
+  ...
+# Subtest: B1 TCP/HTTP protocols, events, UTF-8 chunks and request log
+ok 2 - B1 TCP/HTTP protocols, events, UTF-8 chunks and request log
+  ---
+  duration_ms: 1196.8255
+  type: 'test'
+  ...
+# Subtest: B1 metric interval changes, scripts, history and offline events
+ok 3 - B1 metric interval changes, scripts, history and offline events
+  ---
+  duration_ms: 767.1071
+  type: 'test'
+  ...
+# Subtest: B1 faults, bounded frame rejection, EOF and termination leave no listener
+ok 4 - B1 faults, bounded frame rejection, EOF and termination leave no listener
+  ---
+  duration_ms: 1474.5209
+  type: 'test'
+  ...
+# Subtest: B1 seed/reset and ephemeral-only port arguments
+ok 5 - B1 seed/reset and ephemeral-only port arguments
+  ---
+  duration_ms: 719.5346
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4797.5744

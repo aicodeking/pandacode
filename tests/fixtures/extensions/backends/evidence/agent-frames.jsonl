@@ -1,0 +1,106 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"say\":\"hello\"},{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"never execute\"}},\"ask\":true},{\"usage\":{\"usedTokens\":64,\"contextWindow\":128}}]"}]}}
+{"jsonrpc":"2.0","id":1001,"result":{"outcome":{"outcome":"selected","optionId":"allow"},"_meta":{"fixture":{"input":{"command":"rewritten"}}}}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","id":1002,"result":{"outcome":{"outcome":"selected","optionId":"deny"},"_meta":{"fixture":{"reason":"git.reset-hard"}}}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Read\",\"kind\":\"read\",\"input\":{\"path\":\"fixture\"}},\"ask\":false}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[{"name":"fixture","type":"http","url":"http://127.0.0.1:54334/mcp","headers":[{"name":"Authorization","value":"Bearer tok-tools-fixture"}]}]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"listTools\":true},{\"callTool\":{\"name\":\"memory\",\"arguments\":{\"mode\":\"add\"}}},{\"callTool\":{\"name\":\"absent\"}},{\"callTool\":{\"name\":\"broken\"}}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"sleep\":60000}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"question\":{\"id\":\"q\"}}]"}]}}
+{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"compact\":true}]"}]}}
+{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"fail\":\"failed turn\"}]"}]}}
+{"jsonrpc":"2.0","id":8,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#reply model summary"}]}}
+{"jsonrpc":"2.0","id":9,"method":"session/new","params":{"mcpServers":[{"type":"http","url":"https://example.test/mcp"}]}}
+{"jsonrpc":"2.0","id":10,"method":"initialize"}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"say\":\"hello\"},{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"never execute\"}},\"ask\":true},{\"usage\":{\"usedTokens\":64,\"contextWindow\":128}}]"}]}}
+{"jsonrpc":"2.0","id":1001,"result":{"outcome":{"outcome":"selected","optionId":"allow"},"_meta":{"fixture":{"input":{"command":"rewritten"}}}}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","id":1002,"result":{"outcome":{"outcome":"selected","optionId":"deny"},"_meta":{"fixture":{"reason":"git.reset-hard"}}}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Read\",\"kind\":\"read\",\"input\":{\"path\":\"fixture\"}},\"ask\":false}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[{"name":"fixture","type":"http","url":"http://127.0.0.1:54921/mcp","headers":[{"name":"Authorization","value":"Bearer tok-tools-fixture"}]}]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"listTools\":true},{\"callTool\":{\"name\":\"memory\",\"arguments\":{\"mode\":\"add\"}}},{\"callTool\":{\"name\":\"absent\"}},{\"callTool\":{\"name\":\"broken\"}}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"sleep\":60000}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"question\":{\"id\":\"q\"}}]"}]}}
+{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"compact\":true}]"}]}}
+{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"fail\":\"failed turn\"}]"}]}}
+{"jsonrpc":"2.0","id":8,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#reply model summary"}]}}
+{"jsonrpc":"2.0","id":9,"method":"session/new","params":{"mcpServers":[{"type":"http","url":"https://example.test/mcp"}]}}
+{"jsonrpc":"2.0","id":10,"method":"initialize"}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"say\":\"hello\"},{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"never execute\"}},\"ask\":true},{\"usage\":{\"usedTokens\":64,\"contextWindow\":128}}]"}]}}
+{"jsonrpc":"2.0","id":1001,"result":{"outcome":{"outcome":"selected","optionId":"allow"},"_meta":{"fixture":{"input":{"command":"rewritten"}}}}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","id":1002,"result":{"outcome":{"outcome":"selected","optionId":"deny"},"_meta":{"fixture":{"reason":"git.reset-hard"}}}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Read\",\"kind\":\"read\",\"input\":{\"path\":\"fixture\"}},\"ask\":false}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[{"name":"fixture","type":"http","url":"http://127.0.0.1:57088/mcp","headers":[{"name":"Authorization","value":"Bearer tok-tools-fixture"}]}]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"listTools\":true},{\"callTool\":{\"name\":\"memory\",\"arguments\":{\"mode\":\"add\"}}},{\"callTool\":{\"name\":\"absent\"}},{\"callTool\":{\"name\":\"broken\"}}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"sleep\":60000}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"question\":{\"id\":\"q\"}}]"}]}}
+{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"compact\":true}]"}]}}
+{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"fail\":\"failed turn\"}]"}]}}
+{"jsonrpc":"2.0","id":8,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#reply model summary"}]}}
+{"jsonrpc":"2.0","id":9,"method":"session/new","params":{"mcpServers":[{"type":"http","url":"https://example.test/mcp"}]}}
+{"jsonrpc":"2.0","id":10,"method":"initialize"}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":11,"method":"initialize"}
+{"jsonrpc":"2.0","id":12,"method":"initialize"}
+{"jsonrpc":"2.0","id":13,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"sleep\":60000}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"say\":\"hello\"},{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"never execute\"}},\"ask\":true},{\"usage\":{\"usedTokens\":64,\"contextWindow\":128}}]"}]}}
+{"jsonrpc":"2.0","id":1001,"result":{"outcome":{"outcome":"selected","optionId":"allow"},"_meta":{"fixture":{"input":{"command":"rewritten"}}}}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","id":1002,"result":{"outcome":{"outcome":"selected","optionId":"deny"},"_meta":{"fixture":{"reason":"git.reset-hard"}}}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Read\",\"kind\":\"read\",\"input\":{\"path\":\"fixture\"}},\"ask\":false}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[{"name":"fixture","type":"http","url":"http://127.0.0.1:49887/mcp","headers":[{"name":"Authorization","value":"Bearer tok-tools-fixture"}]}]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"listTools\":true},{\"callTool\":{\"name\":\"memory\",\"arguments\":{\"mode\":\"add\"}}},{\"callTool\":{\"name\":\"absent\"}},{\"callTool\":{\"name\":\"broken\"}}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"sleep\":60000}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"tool\":{\"name\":\"Bash\",\"input\":{}},\"ask\":true}]"}]}}
+{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"fixture-1"}}
+{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"question\":{\"id\":\"q\"}}]"}]}}
+{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"compact\":true}]"}]}}
+{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"fail\":\"failed turn\"}]"}]}}
+{"jsonrpc":"2.0","id":8,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#reply model summary"}]}}
+{"jsonrpc":"2.0","id":9,"method":"session/new","params":{"mcpServers":[{"type":"http","url":"https://example.test/mcp"}]}}
+{"jsonrpc":"2.0","id":10,"method":"initialize"}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":11,"method":"initialize"}
+{"jsonrpc":"2.0","id":12,"method":"initialize"}
+{"jsonrpc":"2.0","id":13,"method":"session/prompt","params":{"sessionId":"fixture-1","prompt":[{"type":"text","text":"#script [{\"sleep\":60000}]"}]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}

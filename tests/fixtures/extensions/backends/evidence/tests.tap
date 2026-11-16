@@ -1,0 +1,130 @@
+TAP version 13
+# Subtest: B5 shared core covers every step, reason/rewrite, questions, compaction and fixed reply
+ok 1 - B5 shared core covers every step, reason/rewrite, questions, compaction and fixed reply
+  ---
+  duration_ms: 5.0824
+  type: 'test'
+  ...
+# Subtest: B5 Windows stdio ACP text, permission allow/rewrite/deny and usage
+ok 2 - B5 Windows stdio ACP text, permission allow/rewrite/deny and usage
+  ---
+  duration_ms: 386.0507
+  type: 'test'
+  ...
+# Subtest: B5 is a real loopback tool client with bearer, list/call/missing/error
+ok 3 - B5 is a real loopback tool client with bearer, list/call/missing/error
+  ---
+  duration_ms: 488.001
+  type: 'test'
+  ...
+# Subtest: B5 cancel pending permission/sleep, unsupported steps, malformed frames, faults and EOF
+ok 4 - B5 cancel pending permission/sleep, unsupported steps, malformed frames, faults and EOF
+  ---
+  duration_ms: 489.4798
+  type: 'test'
+  ...
+# Subtest: B5 bounded fault modes and pending-turn EOF terminate without a child executor
+ok 5 - B5 bounded fault modes and pending-turn EOF terminate without a child executor
+  ---
+  duration_ms: 1137.1486
+  type: 'test'
+  ...
+# Subtest: B4 follows cloud authorize to a real loopback callback without opening a browser
+ok 6 - B4 follows cloud authorize to a real loopback callback without opening a browser
+  ---
+  duration_ms: 1234.1873
+  type: 'test'
+  ...
+# Subtest: B4 ignore, record, five redirects, outside redirect rejection and EOF cancel
+ok 7 - B4 ignore, record, five redirects, outside redirect rejection and EOF cancel
+  ---
+  duration_ms: 2175.6673
+  type: 'test'
+  ...
+# Subtest: B2 every CLI command shares B1 state, including conflicts and chunked reads
+ok 8 - B2 every CLI command shares B1 state, including conflicts and chunked reads
+  ---
+  duration_ms: 6973.339
+  type: 'test'
+  ...
+# Subtest: B2 usage, unreachable, injected failure, delay cancellation and valid padded JSON
+ok 9 - B2 usage, unreachable, injected failure, delay cancellation and valid padded JSON
+  ---
+  duration_ms: 2380.5382
+  type: 'test'
+  ...
+# Subtest: B3 pure core clock, token expiry and concurrent authorization-code reuse
+ok 10 - B3 pure core clock, token expiry and concurrent authorization-code reuse
+  ---
+  duration_ms: 8.9523
+  type: 'test'
+  ...
+# Subtest: B3 PKCE exchange, reuse, mismatch, expiry, refresh rotation, revoke and listener isolation
+ok 11 - B3 PKCE exchange, reuse, mismatch, expiry, refresh rotation, revoke and listener isolation
+  ---
+  duration_ms: 1105.0077
+  type: 'test'
+  ...
+# Subtest: B3 authorize deny/bad-state/page/hang and no outside callback
+ok 12 - B3 authorize deny/bad-state/page/hang and no outside callback
+  ---
+  duration_ms: 466.3792
+  type: 'test'
+  ...
+# Subtest: B3 SSE echo/reply/usage, rate limits, header auth, faults, shutdown and EOF
+ok 13 - B3 SSE echo/reply/usage, rate limits, header auth, faults, shutdown and EOF
+  ---
+  duration_ms: 650.7464
+  type: 'test'
+  ...
+# Subtest: B1 pure core computes ready/blocked, revisions, signal acknowledgements and reset
+ok 14 - B1 pure core computes ready/blocked, revisions, signal acknowledgements and reset
+  ---
+  duration_ms: 14.7795
+  type: 'test'
+  ...
+# Subtest: B1 TCP/HTTP protocols, events, UTF-8 chunks and request log
+ok 15 - B1 TCP/HTTP protocols, events, UTF-8 chunks and request log
+  ---
+  duration_ms: 637.0601
+  type: 'test'
+  ...
+# Subtest: B1 metric interval changes, scripts, history and offline events
+ok 16 - B1 metric interval changes, scripts, history and offline events
+  ---
+  duration_ms: 643.4344
+  type: 'test'
+  ...
+# Subtest: B1 faults, bounded frame rejection, EOF and termination leave no listener
+ok 17 - B1 faults, bounded frame rejection, EOF and termination leave no listener
+  ---
+  duration_ms: 896.9251
+  type: 'test'
+  ...
+# Subtest: B1 seed/reset and ephemeral-only port arguments
+ok 18 - B1 seed/reset and ephemeral-only port arguments
+  ---
+  duration_ms: 582.1848
+  type: 'test'
+  ...
+# Subtest: B6 writes a real SQLite fixture with exact bigint/BLOB and closes the file
+ok 19 - B6 writes a real SQLite fixture with exact bigint/BLOB and closes the file
+  ---
+  duration_ms: 538.9456
+  type: 'test'
+  ...
+# Subtest: B6 configurable count and invalid input
+ok 20 - B6 configurable count and invalid input
+  ---
+  duration_ms: 631.3203
+  type: 'test'
+  ...
+1..20
+# tests 20
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 23113.1736
