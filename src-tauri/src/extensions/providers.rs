@@ -110,3 +110,64 @@ impl BuiltinProvider {
 pub fn all() -> impl Iterator<Item = BuiltinProvider> {
     crate::providers::PROVIDERS.into_iter().map(|(id, name)| BuiltinProvider { id, name })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Store;
+
+    fn identities(store: &Store) -> Vec<(String, String)> {
+        store.db.prepare("SELECT id,extension_id FROM extension_provider_identities ORDER BY id").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// Every built-in, upstream's Alibaba and Cursor included, is saved, reopened and
+    /// switched to as a built-in: no package identity row, built-in execution, the
+    /// contract descriptor and team admission. A package identity survives uninstall
+    /// and never falls back to a built-in CLI.
+    #[test]
+    fn every_builtin_creates_and_reopens_as_builtin_while_package_identities_need_their_adapter() {
+        let dir = std::env::temp_dir().join(format!("pandacode-builtin-sessions-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pandacode.db");
+        let mut saved = Vec::new();
+        let package = "retired.package/agent";
+        {
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&dir).unwrap();
+            for provider in all() {
+                let session = store.create_session(&project.id, provider.id, "default", "full").unwrap();
+                assert_eq!(session.provider, provider.id);
+                saved.push((session.id, provider.id));
+            }
+            // Reconfigure an existing task onto each upstream built-in.
+            let switched = store.create_session(&project.id, "claude", "default", "full").unwrap();
+            for id in ["alibaba", "cursor", "zcode"] {
+                assert_eq!(store.configure(&switched.id, id, "default", None).unwrap().provider, id);
+            }
+            let retired = store.create_session(&project.id, package, "model/exact", "full").unwrap();
+            saved.push((retired.id, package));
+            assert_eq!(identities(&store), [(package.to_owned(), "retired.package".to_owned())]);
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(identities(&store), [(package.to_owned(), "retired.package".to_owned())], "only the package identity is recorded, and it survives reopening");
+        for (sid, id) in &saved {
+            assert_eq!(store.session(sid).unwrap().provider, *id, "reopened {id}");
+            if *id == package { continue; }
+            let provider = BuiltinProvider::get(id).unwrap();
+            assert!(validate_identity(id).is_ok() && extension_owner(id).is_none());
+            assert!(require_builtin_execution(id).is_ok(), "{id} runs through its built-in adapter");
+            assert_eq!(serde_json::to_value(provider.descriptor()).unwrap()["name"], provider.name);
+            assert!(crate::architect::require_team_provider(id).is_ok(), "{id} is a team harness");
+        }
+        // Uninstalled (no registration): history stays readable, execution needs the package's own adapter.
+        assert!(validate_identity(package).is_ok());
+        assert_eq!(require_builtin_execution(package).unwrap_err(), PROVIDER_RECOVERY);
+        assert_eq!(crate::providers::dynamic_adapter::require_available(package).unwrap_err(), PROVIDER_RECOVERY);
+        assert!(BuiltinProvider::get(package).is_err(), "no built-in CLI fallback for a package identity");
+        assert_eq!(require_console(package).unwrap_err(), CONSOLE_UNSUPPORTED);
+        assert!(crate::architect::require_team_provider(package).unwrap_err().contains("History is preserved"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

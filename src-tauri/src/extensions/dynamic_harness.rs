@@ -319,7 +319,10 @@ mod tests {
         assert!(team_call(None, json!({"name":"pandacode_list_workers","arguments":{}})).await.is_err());
         assert_eq!(*calls.lock().unwrap(), vec!["pandacode_list_workers"]);
         assert!(crate::architect::require_team_provider("sample.missing/recorded").unwrap_err().contains("History is preserved"));
-        assert!(crate::architect::require_team_provider("zcode").is_err());
+        // Upstream 0.3.128 bridges team tools into ZCode through `session/create`, so every
+        // built-in is a core team harness; anything outside the roster and not a package stays refused.
+        for builtin in crate::providers::PROVIDERS.map(|(id, _)| id) { assert!(crate::architect::require_team_provider(builtin).is_ok(), "{builtin}"); }
+        for unknown in ["not-a-provider", "panda.core/zcode", "sample.harness"] { assert!(crate::architect::require_team_provider(unknown).unwrap_err().contains("unsupported team tools"), "{unknown}"); }
     }
     #[test]
     fn dynamic_harness_core_owns_pending_completion_identity_and_cancellation() {

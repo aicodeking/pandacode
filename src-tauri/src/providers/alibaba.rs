@@ -167,4 +167,40 @@ mod tests {
         assert_eq!(settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], FAST_MODEL);
         assert_eq!(models()[0].id, DEFAULT_MODEL);
     }
+
+    /// Opt in explicitly: two short billable Token Plan prompts through the installed Claude Code.
+    /// ALIBABA_TOKEN_PLAN_API_KEY=sk-sp-… cargo test installed_alibaba_runs_and_resumes_a_task -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "needs Claude Code and an Alibaba Token Plan key; sends two short prompts"]
+    async fn installed_alibaba_runs_and_resumes_a_task() {
+        super::super::widen_process_path();
+        super::super::executable("alibaba").expect("Install Claude Code first");
+        let cwd = std::env::temp_dir().join(format!("pandacode-alibaba-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        let turn = |prompt: &str, resume: Option<String>| {
+            let mut config = super::super::tests::config("alibaba");
+            config.cwd = cwd.clone();
+            config.prompt = prompt.into();
+            config.model = FAST_MODEL.into();
+            config.resume_id = resume;
+            let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<super::super::AgentEvent>::new()));
+            let seen = events.clone();
+            let sink: super::super::Sink = std::sync::Arc::new(move |event| seen.lock().unwrap().push(event));
+            let (input, receiver) = tokio::sync::mpsc::unbounded_channel::<super::super::RunInput>();
+            async move {
+                let _input = input;
+                super::super::run(config, sink, receiver).await.expect("the turn should finish");
+                let events = events.lock().unwrap().clone();
+                events
+            }
+        };
+        let text = |events: &[super::super::AgentEvent]| events.iter().filter(|e| e.kind == "text").map(|e| e.text.as_str()).collect::<String>();
+        let first = turn("Reply with exactly the word PANDACODE_OK and nothing else. Do not use tools.", None).await;
+        let session = first.iter().find(|event| event.kind == "session").expect("a session id").text.clone();
+        assert!(text(&first).contains("PANDACODE_OK"));
+        let second = turn("What exact word did you reply before? Reply only with that word. Do not use tools.", Some(session.clone())).await;
+        assert!(text(&second).contains("PANDACODE_OK"));
+        assert_eq!(second.iter().find(|event| event.kind == "session").map(|event| event.text.as_str()), Some(session.as_str()), "resume keeps the session");
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
 }

@@ -502,7 +502,7 @@ fn configuration() -> Result<Configuration> {
         global_environment,
         environment,
         use_global_environment,
-        providers: crate::providers::PROVIDERS.iter().map(|(id, name)| (id.to_string(), name.to_string())).chain(crate::providers::dynamic_adapter::discover().into_iter().map(|provider| (provider.id, provider.name))).collect(),
+        providers: roster(crate::providers::dynamic_adapter::discover()),
         provider_adapters: crate::extensions::providers::all().map(|provider| provider.descriptor()).collect(),
         extension_providers: crate::providers::dynamic_adapter::discover(),
         glm_key_saved,
@@ -526,6 +526,15 @@ fn configuration() -> Result<Configuration> {
         )),
         credential_storage_error,
     })
+}
+
+/// The settings page's harness list: every built-in, then the active package providers.
+fn roster(packages: Vec<crate::providers::ProviderInfo>) -> Vec<(String, String)> {
+    crate::providers::PROVIDERS
+        .iter()
+        .map(|(id, name)| (id.to_string(), name.to_string()))
+        .chain(packages.into_iter().map(|provider| (provider.id, provider.name)))
+        .collect()
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -1704,6 +1713,30 @@ mod tests {
             assert_eq!(validated_executable("claude", path).unwrap(), Some(canonical));
             std::fs::remove_file(file).unwrap();
         }
+    }
+    #[test]
+    fn upstream_built_ins_are_listed_configurable_and_keep_their_names_beside_package_providers() {
+        let package = crate::providers::ProviderInfo {
+            id: "sample.harness/agent".into(), name: "Sample agent".into(), installed: true, path: None,
+            version: "1.0.0".into(), models: Vec::new(), metadata: None,
+        };
+        let listed = roster(vec![package]);
+        assert_eq!(listed.len(), crate::providers::PROVIDERS.len() + 1);
+        assert_eq!(listed.last().unwrap(), &("sample.harness/agent".to_owned(), "Sample agent".to_owned()));
+        for (id, name) in [("alibaba", "Alibaba Token Plan"), ("cursor", "Cursor CLI"), ("zcode", "ZCode")] {
+            assert!(listed.contains(&(id.to_owned(), name.to_owned())), "{id} is listed as a built-in");
+            assert!(known_provider(id), "{id} accepts an executable override");
+            assert_eq!(validated_executable(id, "").unwrap(), None);
+            let descriptor = crate::extensions::providers::all().find(|provider| provider.id == id).unwrap().descriptor();
+            assert_eq!(serde_json::to_value(descriptor).unwrap()["id"], id);
+        }
+        assert!(!known_provider("sample.harness/agent"), "a package provider never gets a built-in executable override");
+        assert!(validated_executable("sample.harness/agent", "/bin/sh").is_err());
+        // Alibaba runs Claude Code, so it follows Claude's executable; Cursor has its own.
+        let mut settings = Settings::default();
+        settings.executable_paths.insert("claude".into(), "/opt/claude".into());
+        assert_eq!(saved_executable(&settings, "alibaba").unwrap(), "/opt/claude");
+        assert_eq!(saved_executable(&settings, "cursor"), None);
     }
     #[test]
     fn glm_and_mimo_follow_the_claude_location_and_nothing_else_does() {

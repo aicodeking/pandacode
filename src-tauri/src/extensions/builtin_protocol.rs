@@ -89,6 +89,55 @@ mod tests {
         assert!(BuiltinProvider::get("not-a-provider").is_err());
     }
 
+    /// One roster by name: native table, contract, team harnesses, web identity/types/Skills
+    /// names, preview mocks, console policy and both fixtures. A built-in added upstream
+    /// that misses any of them fails here instead of becoming an unknown identity.
+    #[test]
+    fn builtin_roster_agrees_by_name_across_native_web_preview_and_fixtures() {
+        fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            let from = source.find(start).unwrap_or_else(|| panic!("{start:?} not found")) + start.len();
+            &source[from..from + source[from..].find(end).unwrap_or_else(|| panic!("{end:?} not found after {start:?}"))]
+        }
+        fn quoted(text: &str) -> Vec<String> {
+            regex::Regex::new(r"'([a-z][a-z-]*)'").unwrap().captures_iter(text).map(|c| c[1].to_owned()).collect()
+        }
+        fn sorted(mut ids: Vec<String>) -> Vec<String> { ids.sort(); ids }
+        fn keys(value: &Value) -> Vec<String> { sorted(value.as_object().unwrap().keys().cloned().collect()) }
+        let native: Vec<(String, String)> = PROVIDERS.iter().map(|(id, name)| ((*id).into(), (*name).into())).collect();
+        let ids: Vec<String> = native.iter().map(|(id, _)| id.clone()).collect();
+        assert!(ids.iter().any(|id| id == "alibaba") && ids.iter().any(|id| id == "cursor"));
+        assert_eq!(all().map(|p| (p.id.to_owned(), p.name.to_owned())).collect::<Vec<_>>(), native, "contract roster");
+        assert_eq!(sorted(crate::architect::HARNESSES.iter().map(|id| (*id).to_owned()).collect()), sorted(ids.clone()),
+            "every built-in, ZCode included, is a team harness");
+
+        let identity = include_str!("../../../src/extensions/provider-identity.ts");
+        assert_eq!(quoted(between(identity, "BUILTIN_PROVIDER_IDS = [", "]")), ids, "web identity roster, in native order");
+        let types = include_str!("../../../src/types.ts");
+        assert_eq!(sorted(quoted(between(types, "export type BuiltinProviderId =", ";"))), sorted(ids.clone()), "BuiltinProviderId");
+        let skills = include_str!("../../../src/skill-manager-model.ts");
+        let names = between(skills, "const HARNESS_NAMES", "};");
+        let skill_ids = regex::Regex::new(r"'?([a-z][a-z-]*)'?: '").unwrap().captures_iter(names).map(|c| c[1].to_owned()).collect();
+        assert_eq!(sorted(skill_ids), sorted(ids.clone()), "Skills manager HARNESS_NAMES");
+        let preview = include_str!("../../../src/preview.ts");
+        let mocks: Vec<(String, String)> = regex::Regex::new(r"\{ id: '([^']+)', name: '([^']+)'").unwrap()
+            .captures_iter(between(preview, "const providers: Provider[] = [", "];"))
+            .map(|c| (c[1].to_owned(), c[2].to_owned())).collect();
+        assert_eq!(mocks, native, "preview provider mocks by id and name");
+
+        // The web console hint and native terminal admission name the same built-ins.
+        let cli = include_str!("../../../src/extensions/provider-cli.ts");
+        let refused = quoted(between(cli, "providerOwner(id) || [", "]"));
+        let natively_refused: Vec<String> = ids.iter().filter(|id| crate::extensions::providers::require_console(id).is_err()).cloned().collect();
+        assert_eq!(sorted(refused), sorted(natively_refused), "console policy");
+
+        let parity: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/builtin-provider-parity.json")).unwrap();
+        assert_eq!(keys(&parity["providers"]), sorted(ids.clone()), "parity fixture");
+        let matrix: Value = serde_json::from_str(include_str!("../../../tests/fixtures/skill-matrix.json")).unwrap();
+        // Entry contents (enforcement, installAs) are compared with the native table by
+        // skill_manager::matrix_tests::skill_manager_matrix_fixture_matches_the_native_table.
+        assert_eq!(keys(&matrix), sorted(ids), "Skills matrix fixture");
+    }
+
     #[test]
     fn builtin_adapter_recorded_frames_preserve_start_resume_events_responses_steer_and_stop() {
         let fixture: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/builtin-provider-parity.json")).unwrap();
@@ -220,6 +269,8 @@ mod tests {
                 "pi" | "omp" => pi::parse_models(&catalogs["pi"]),
                 "muse" => muse::parse_models(&catalogs["muse"]),
                 "zcode" => zcode::parse_models(&catalogs["zcode"]),
+                "alibaba" => Ok(alibaba::models()),
+                "cursor" => Ok(cursor::catalog(&catalogs["cursor"])),
                 _ => Ok(acp::parse_models_for(id, &catalogs["acp"])),
             }
         };
