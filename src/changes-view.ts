@@ -1,5 +1,5 @@
 import type { GitFile, GitStatus } from './types';
-import type { DiffViewerController } from './diff-viewer';
+import type { DiffViewerController, DiffViewerReaderState } from './diff-viewer';
 import { escape, fileIcon, icon, isImeKey } from './dom';
 import { createChangesPresentation, snapshotChangesPresentation, type ChangesPresentation, type ChangesAction, type ChangesResult, type ChangesControl } from './extensions/diff';
 import { applyChangesPresentation, componentProviders, componentSelection } from './extensions/replacement';
@@ -7,6 +7,7 @@ import { extensionsSnapshot, onExtensionsChanged, extensionIdentity } from './ex
 import { layout, applyControlOrder, applyControlVisibility } from './extensions/layout-host';
 import { mountExtensionActions } from './extensions/header';
 import './changes-view.css';
+import { errorText } from './error-text';
 
 export interface ChangesViewDeps {
   /** Opaque captured host context; not supplied by an extension. */
@@ -18,6 +19,7 @@ export interface ChangesViewDeps {
   openFile(path: string): void;
   refresh(): void;
   notify(message: string): void;
+  notifyError?(text: string): void;
   choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void, filePath?: string): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
   worktree?(): void;
@@ -29,23 +31,27 @@ export interface ChangesView {
   update(status: GitStatus | null, error?: string, options?: { refetch?: boolean }): void;
   presentation(): ChangesPresentation;
   dispatch(action: ChangesAction): ChangesResult;
+  /** Hidden inspectors retain patches, folds and scroll, while releasing their renderers. */
+  setVisible(visible: boolean): void;
   dispose(): void;
 }
 
 type Scope = 'all' | 'unstaged' | 'staged';
-type Load = 'idle' | 'loading' | 'loaded' | 'error';
+type Load = 'idle' | 'loading' | 'loaded' | 'evicted' | 'error';
 interface Entry {
   id: string; diffId: string; revision: number; hunks: { id: string; revision: number }[];
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
+  near: boolean; refresh: boolean; used: number; height?: number; reader?: DiffViewerReaderState;
   viewer?: DiffViewerController; slot?: HTMLElement; shown?: string;
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
 }
 
-const EAGER = 8;
 const REFETCH_GAP = 1_000;
+const PATCH_CACHE_BYTES = 16 * 1024 * 1024;
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 // Added to each diff's shadow root (by the viewer, also for hunk groups that mount later): long lines scroll with a visible bar; wrapped code may break anywhere (so indentation never
 // sits alone on a row), and hunk headers are one slim muted line.
 const SHADOW_CSS = `
@@ -90,8 +96,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let scope: Scope = 'all';
   let status: GitStatus | null = null;
   let error: string | undefined;
-  let disposed = false;
-  let committing = false;
+  let disposed = false, showing = true;
+  let committing = false, lastUsed = 0;
   let mutating = false, revision = 0;
   let presentationSignature = '';
   const repository = crypto.randomUUID(), context = deps.context ?? crypto.randomUUID();
@@ -101,6 +107,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let order: string[] = [];
   let viewerModule: Promise<typeof import('./diff-viewer')> | undefined;
   let lastRefetch = 0, refetchTimer = 0, fitFrame = 0;
+  let listReader: { path: string; state: DiffViewerReaderState } | undefined;
+  let lastBodyScrollTop = 0;
+  let pendingListScrollTop: number | undefined;
+  let foldScrollTop: number | undefined;
 
   host.classList.add('changes-view');
   host.innerHTML = `
@@ -128,7 +138,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const items = [...entries.values()].slice(0, 64); let hunkBudget = 256, omitted = entries.size > items.length;
     const mapped = items.map(entry => {
       const hunks = entry.hunks.slice(0, Math.min(32, hunkBudget)); hunkBudget -= hunks.length; omitted ||= hunks.length < entry.hunks.length;
-      return { id: entry.id, diffId: entry.diffId, revision: entry.revision, staged: entry.staged, load: entry.load, hunks, controls: [control('toggle', 'Collapse file', true, !collapsed.has(entry.path)), control('copy', 'Copy path'), control('open', 'Open file', entry.code !== 'D'), control('stage', 'Stage file', unstagedFiles().some(file => file.path === entry.path)), control('unstage', 'Unstage file', stagedFiles().some(file => file.path === entry.path)), control('retry-file', 'Retry diff', entry.load === 'error'), ...(entry.viewer?.controls().map(({ id, node }) => control(id, node.getAttribute('aria-label')!, !node.disabled && !node.closest('[hidden]'), node.getAttribute('aria-pressed') === 'true')) ?? [])] };
+      return { id: entry.id, diffId: entry.diffId, revision: entry.revision, staged: entry.staged, load: entry.load === 'evicted' ? 'idle' as const : entry.load, hunks, controls: [control('toggle', 'Collapse file', true, !collapsed.has(entry.path)), control('copy', 'Copy path'), control('open', 'Open file', entry.code !== 'D'), control('stage', 'Stage file', unstagedFiles().some(file => file.path === entry.path)), control('unstage', 'Unstage file', stagedFiles().some(file => file.path === entry.path)), control('retry-file', 'Retry diff', entry.load === 'error'), ...(entry.viewer?.controls().map(({ id, node }) => control(id, node.getAttribute('aria-label')!, !node.disabled && !node.closest('[hidden]'), node.getAttribute('aria-pressed') === 'true')) ?? [])] };
     });
     const state: ChangesPresentation = { contractVersion: 1, context, repository, revision, scope, selected: selected && items.includes(selected) ? selected.id : '', focused: selected?.id ?? '', loading: !status, error: Boolean(error), offline: !navigator.onLine, visible: !disposed && host.checkVisibility() && !host.closest('[inert]'), pending: committing || mutating, truncated: omitted, files: mapped,
       controls: [control('scope-all', 'All changes', true, scope === 'all'), control('scope-staged', 'Staged', true, scope === 'staged'), control('scope-unstaged', 'Unstaged', true, scope === 'unstaged'), control('fold-all', 'Collapse all', entries.size > 0), control('stage-all', 'Stage all', unstagedFiles().length > 0), control('unstage-all', 'Unstage all', stagedFiles().length > 0), control('open-commit', 'Commit…', Boolean(status?.isRepo), !commitBar.hidden), control('commit', 'Commit', !committing && stagedFiles().length > 0 && Boolean(commitInput.value.trim())), control('refresh', 'Refresh')],
@@ -186,12 +196,22 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   const observer = new IntersectionObserver(records => {
     for (const record of records) {
-      if (!record.isIntersecting) continue;
       const entry = entries.get((record.target as HTMLElement).dataset.path ?? '');
-      if (entry && entry.load === 'idle') void load(entry);
+      if (!entry) continue;
+      entry.near = record.isIntersecting;
+      if (entry.near) show(entry);
+      else suspend(entry);
     }
+    trimPatches();
   }, { root: body, rootMargin: '800px 0px' });
-  const resizer = new ResizeObserver(() => scheduleFit());
+  const resizer = new ResizeObserver(() => {
+    if (pendingListScrollTop !== undefined && body.clientHeight > 0) {
+      body.scrollTop = pendingListScrollTop;
+      lastBodyScrollTop = body.scrollTop;
+      pendingListScrollTop = undefined;
+    }
+    scheduleFit();
+  });
   resizer.observe(body);
 
   const files = (): GitFile[] => status?.isRepo ? status.files : [];
@@ -209,7 +229,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function setStat(entry: Entry): void {
     const parts: string[] = [];
-    if (entry.load === 'loaded') {
+    if (entry.load === 'loaded' || entry.load === 'evicted') {
       if (entry.adds) parts.push(`<span class="cv-add">+${entry.adds}</span>`);
       if (entry.dels) parts.push(`<span class="cv-del">-${entry.dels}</span>`);
     }
@@ -217,29 +237,46 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     scheduleFit();
   }
 
-  /** Directories lose leading segments (`…/components`), never a mid-word fragment. */
-  function fitDir(el: HTMLElement): void {
-    const dir = el.dataset.dir ?? '';
-    el.textContent = dir;
-    if (!el.clientWidth || el.scrollWidth <= el.clientWidth) return;
-    const parts = dir.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      el.textContent = `…/${parts.slice(i).join('/')}`;
-      if (el.scrollWidth <= el.clientWidth) return;
+  /** Directories lose leading segments (`…/components`), never a mid-word fragment. Every path is written, then every
+   *  width read in one layout; the shortened candidates are measured off-layout on a canvas in the paths' font. */
+  function fitDirs(els: readonly HTMLElement[]): void {
+    for (const el of els) el.textContent = el.dataset.dir ?? '';
+    // While a path overflows, flex shrinks its box to the room there is: its width is that room.
+    const over = els.flatMap(el => el.clientWidth && el.scrollWidth > el.clientWidth ? [{ el, room: el.clientWidth }] : []);
+    if (!over.length) return;
+    // The canvas measures only what its font shorthand says: spacing or font features it cannot see, or a shorthand the
+    // engine leaves empty, fall back to measuring each candidate in place.
+    const style = getComputedStyle(over[0].el);
+    const plain = Boolean(style.font) && (style.letterSpacing === 'normal' || parseFloat(style.letterSpacing) === 0) && (style.wordSpacing === 'normal' || parseFloat(style.wordSpacing) === 0) && style.fontFeatureSettings === 'normal' && (style.fontKerning === 'auto' || style.fontKerning === 'normal' || !style.fontKerning);
+    const context = plain ? document.createElement('canvas').getContext('2d') : null;
+    if (context) context.font = style.font;
+    for (const { el, room } of over) {
+      const parts = (el.dataset.dir ?? '').split('/');
+      const fits = (text: string): boolean => context ? Math.ceil(context.measureText(text).width) <= room : (el.textContent = text, el.scrollWidth <= el.clientWidth);
+      let shown = '';
+      for (let i = 1; i < parts.length && !shown; i++) if (fits(`…/${parts.slice(i).join('/')}`)) shown = `…/${parts.slice(i).join('/')}`;
+      // No room for even the last folder: the full path stays in the title.
+      el.textContent = shown;
     }
-    // No room for even the last folder: the full path stays in the title.
-    el.textContent = '';
   }
+  /** The paths last fitted, with their rows' text (a row's counts take room from its path) and the list's width: the
+   *  same nodes with the same text in the same width fit the same, so they are not measured again. */
+  let fitted: { els: HTMLElement[]; texts: string[]; width: number } | undefined;
+  const rowText = (el: HTMLElement): string => `${el.dataset.dir ?? ''}\n${el.closest('.cv-file-header')?.textContent ?? el.textContent}`;
   function scheduleFit(): void {
     fitFrame ||= requestAnimationFrame(() => {
       fitFrame = 0;
-      if (!disposed) for (const el of body.querySelectorAll<HTMLElement>('.cv-dir')) fitDir(el);
+      if (disposed) return;
+      const els = [...body.querySelectorAll<HTMLElement>('.cv-dir')], width = body.clientWidth, texts = els.map(rowText);
+      if (fitted && fitted.width === width && fitted.els.length === els.length && els.every((el, i) => el === fitted!.els[i] && texts[i] === fitted!.texts[i])) return;
+      fitDirs(els);
+      fitted = { els, texts: els.map(rowText), width };
     });
   }
 
   function totals(): void {
     let adds = 0, dels = 0;
-    for (const entry of entries.values()) if (entry.load === 'loaded') { adds += entry.adds; dels += entry.dels; }
+    for (const entry of entries.values()) { adds += entry.adds; dels += entry.dels; }
     const n = entries.size;
     filesLabel.textContent = n ? `${n} file${n === 1 ? '' : 's'}` : '';
     addsLabel.textContent = n ? `+${adds}` : '';
@@ -274,13 +311,60 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function drop(entry: Entry): void {
+    if (entry.viewer) entry.reader = entry.viewer.getReaderState();
     entry.viewer?.dispose();
     for (const old of entry.stale.splice(0)) old.viewer.dispose();
     entry.viewer = entry.slot = entry.shown = undefined;
   }
 
+  /** The Changes list owns its one outer scroll position; individual entries never do. */
+  function captureListReader(path?: string): void {
+    const scrollTop = body.clientHeight > 0 ? body.scrollTop : lastBodyScrollTop;
+    if (!path) pendingListScrollTop = scrollTop;
+    listReader = undefined;
+    for (const entry of entries.values()) {
+      if (path && entry.path !== path) continue;
+      if (entry.viewer) {
+        if (body.clientHeight > 0) entry.height = entry.body.getBoundingClientRect().height || entry.height;
+        entry.reader = entry.viewer.getReaderState();
+      }
+      const state = entry.reader;
+      if (state?.anchor && Math.abs(state.top - scrollTop) <= 1 && (!listReader || state.anchor.offset < listReader.state.anchor!.offset)) {
+        listReader = { path: entry.path, state };
+      }
+    }
+  }
+
+  /** Keep an offscreen diff's extent, so releasing its renderer does not move the list's scroll. */
+  function suspend(entry: Entry): void {
+    if (!entry.viewer) return;
+    entry.height = entry.body.getBoundingClientRect().height || entry.height;
+    if (entry.height) entry.body.style.minHeight = `${entry.height}px`;
+    drop(entry);
+    entry.body.replaceChildren();
+  }
+
+  function trimPatches(): void {
+    // Count UTF-16 storage conservatively, including a separate stripped patch when present.
+    const bytes = (entry: Entry) => 2 * (entry.raw.length + (entry.patch === entry.raw ? 0 : entry.patch.length));
+    let total = 0;
+    for (const entry of entries.values()) total += bytes(entry);
+    if (total <= PATCH_CACHE_BYTES) return;
+    const candidates = [...entries.values()].filter(entry => entry.load === 'loaded' && (!showing || !entry.near || collapsed.has(entry.path))).sort((a, b) => a.used - b.used);
+    for (const entry of candidates) {
+      if (total <= PATCH_CACHE_BYTES) break;
+      suspend(entry);
+      total -= bytes(entry);
+      entry.raw = entry.patch = '';
+      entry.load = 'evicted';
+      entry.token++;
+    }
+  }
+
   function reset(entry: Entry): void {
     drop(entry);
+    entry.body.style.minHeight = '';
+    entry.height = undefined;
     entry.token++;
     entry.revision++; revision++;
     entry.diffId = crypto.randomUUID(); entry.hunks = [];
@@ -311,7 +395,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     if (!quiet) entry.load = 'loading';
     try {
       const text = await deps.loadDiff(entry.path, entry.staged);
-      if (disposed || token !== entry.token) return;
+      if (disposed || entries.get(entry.path) !== entry || token !== entry.token) return;
       if (quiet && entry.load === 'loaded' && text === entry.raw) { mountViewer(entry); return; }
       entry.raw = text;
       entry.revision++; revision++;
@@ -324,9 +408,12 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       setStat(entry);
       totals();
       mountViewer(entry);
+      trimPatches();
     } catch (reason) {
       if (disposed || token !== entry.token || (quiet && entry.load === 'loaded')) return;
       drop(entry);
+      entry.body.style.minHeight = '';
+      entry.height = undefined;
       entry.load = 'error';
       entry.revision++; revision++;
       entry.body.innerHTML = `<div class="cv-placeholder cv-error">${icon('alert')}<span>${escape(reason instanceof Error ? reason.message : String(reason || 'Unable to load diff'))}</span><button type="button" class="cv-link" data-cv-action="retry-file">Retry</button></div>`;
@@ -336,11 +423,11 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   /** Mounts the patch, or swaps in a new viewer once it has rendered so the old one never flashes away. */
   function mountViewer(entry: Entry): void {
-    if (entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
+    if (!showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
     const token = entry.token, raw = entry.raw;
     viewerModule ??= import('./diff-viewer');
     viewerModule.then(({ mountDiffViewer }) => {
-      if (disposed || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
+      if (disposed || !showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
       const slot = document.createElement('div');
       slot.className = 'cv-diff';
       if (entry.viewer && entry.slot) {
@@ -348,12 +435,28 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         slot.classList.add('cv-diff-next');
         entry.body.append(slot);
       } else entry.body.replaceChildren(slot);
-      const viewer = mountDiffViewer(slot, { patch: entry.patch, path: entry.path, layout: 'unified', truncated: entry.el.dataset.truncated === 'true', scrollRoot: body, shadowCSS: SHADOW_CSS });
+      const saved = listReader?.path === entry.path ? listReader.state : entry.reader;
+      const viewer = mountDiffViewer(slot, {
+        patch: entry.patch,
+        path: entry.path,
+        layout: saved?.layout ?? 'unified',
+        wrap: saved?.wrap,
+        truncated: entry.el.dataset.truncated === 'true',
+        scrollRoot: body,
+        shadowCSS: SHADOW_CSS,
+        hunkSeparatorHeight: 20,
+        blockGap: 0,
+      });
       Object.assign(entry, { viewer, slot, shown: raw });
       void viewer.ready.then(() => {
         if (disposed || entry.viewer !== viewer) return;
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
+        entry.body.style.minHeight = '';
+        const restore = listReader?.path === entry.path ? listReader : undefined;
+        if (entry.reader || restore) viewer.restoreReaderState(restore?.state ?? entry.reader!, { vertical: Boolean(restore) });
+        if (restore) { listReader = undefined; pendingListScrollTop = undefined; }
+        entry.height = entry.body.getBoundingClientRect().height || entry.height;
         refreshPresentation();
       });
     }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
@@ -361,7 +464,10 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function refetch(): void {
     lastRefetch = Date.now();
-    for (const entry of entries.values()) if (entry.load === 'loaded' || entry.load === 'error') void load(entry, true);
+    for (const entry of entries.values()) if (entry.load === 'loaded' || entry.load === 'error') {
+      entry.refresh = true;
+      show(entry);
+    }
   }
   function scheduleRefetch(): void {
     const wait = lastRefetch + REFETCH_GAP - Date.now();
@@ -411,7 +517,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       let entry = entries.get(file.path);
       if (!entry) {
         const el = element(file.path);
-        entry = { id: crypto.randomUUID(), diffId: crypto.randomUUID(), revision: 0, hunks: [], path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
+        entry = { id: crypto.randomUUID(), diffId: crypto.randomUUID(), revision: 0, hunks: [], path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, used: 0, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
         entries.set(file.path, entry);
         observer.observe(el);
         fresh.push(entry);
@@ -420,7 +526,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         entry.staged = staged;
         const wasLoaded = entry.load !== 'idle';
         reset(entry);
-        if (wasLoaded) void load(entry);
+        if (wasLoaded) show(entry);
       }
       const side = staged ? file.index : (file.index === '?' ? '?' : file.working);
       paint(entry, side);
@@ -429,20 +535,39 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       previous = entry.el;
     });
     order = wanted.map(w => w.file.path);
-    // The first few patches load right away; the rest load as they near the viewport.
-    for (const entry of fresh) if (order.indexOf(entry.path) < EAGER && entry.load === 'idle') void load(entry);
     if (fresh.length) scheduleFit();
   }
 
-  function toggle(path: string, folded = !collapsed.has(path)): void {
+  /** Hidden panels and folded files keep budgeted patch text, but never start the diff engine. */
+  function show(entry: Entry): void {
+    if (!showing || !entry.near || collapsed.has(entry.path)) return;
+    entry.used = ++lastUsed;
+    if (entry.load === 'idle' || entry.load === 'evicted' || entry.refresh) {
+      entry.refresh = false;
+      void load(entry, entry.load === 'loaded');
+    } else mountViewer(entry);
+  }
+
+  function toggle(path: string, folded = !collapsed.has(path), captureAnchor = true): void {
     revision++;
+    if (folded && captureAnchor) captureListReader(path);
     if (folded) collapsed.add(path); else collapsed.delete(path);
     const entry = entries.get(path);
-    if (entry) paint(entry, entry.code);
+    if (entry) {
+      if (folded) suspend(entry);
+      paint(entry, entry.code);
+      if (folded) {
+        drop(entry);
+        // Error and Retry are lightweight state: folding must not erase them.
+        if (entry.load !== 'error') entry.body.replaceChildren();
+      }
+      else show(entry);
+      trimPatches();
+    }
   }
 
   async function run(task: Promise<void>, failure: string): Promise<void> {
-    try { await task; } catch (reason) { deps.notify(reason instanceof Error && reason.message ? reason.message : failure); }
+    try { await task; } catch (reason) { (deps.notifyError ?? deps.notify)(errorText(reason, failure)); }
   }
   async function mutate(paths: string[], staged: boolean): Promise<void> {
     if (disposed || committing || mutating || !navigator.onLine || !paths.length) return;
@@ -471,7 +596,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       await deps.commit(text);
       if (!disposed) closeCommit();
     } catch (reason) {
-      deps.notify(reason instanceof Error && reason.message ? reason.message : 'Commit failed');
+      (deps.notifyError ?? deps.notify)(errorText(reason, 'Commit failed'));
     } finally {
       committing = false;
       revision++;
@@ -480,7 +605,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function copy(path: string): void {
-    void navigator.clipboard.writeText(path).then(() => deps.notify('Copied path'), () => deps.notify('Unable to copy path'));
+    void navigator.clipboard.writeText(path).then(() => deps.notify('Copied path'), () => (deps.notifyError ?? deps.notify)('Unable to copy path'));
   }
 
   function fileMenu(anchor: HTMLElement, path: string): void {
@@ -517,8 +642,40 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         break;
       case 'fold-all': {
         const fold = ![...entries.keys()].every(p => collapsed.has(p));
-        for (const p of entries.keys()) toggle(p, fold);
-        totals();
+        if (fold) {
+          captureListReader();
+          foldScrollTop = pendingListScrollTop;
+          pendingListScrollTop = undefined;
+          for (const p of entries.keys()) toggle(p, true, false);
+          totals();
+        } else {
+          const savedReader = listReader;
+          const savedTop = savedReader?.state.top ?? foldScrollTop;
+          foldScrollTop = undefined;
+          for (const p of entries.keys()) toggle(p, false, false);
+          totals();
+          listReader = savedReader;
+          if (savedTop !== undefined) {
+            const rounded = Math.round(savedTop);
+            if (body.clientHeight > 0) {
+              body.scrollTop = rounded;
+              lastBodyScrollTop = body.scrollTop;
+            } else {
+              pendingListScrollTop = rounded;
+            }
+          }
+          const target = savedReader ? entries.get(savedReader.path) : undefined;
+          if (target && savedReader) {
+            if (target.viewer) {
+              target.viewer.restoreReaderState(savedReader.state, { vertical: true });
+              listReader = undefined;
+              pendingListScrollTop = undefined;
+            } else {
+              target.near = true;
+              show(target);
+            }
+          }
+        }
         break;
       }
       case 'menu': {
@@ -552,6 +709,30 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   window.addEventListener('online', totals, { signal: listeners.signal });
   window.addEventListener('offline', totals, { signal: listeners.signal });
   host.addEventListener('click', onClick, { signal: listeners.signal });
+  const cancelListReader = () => { listReader = undefined; pendingListScrollTop = undefined; foldScrollTop = undefined; };
+  body.addEventListener('scroll', () => {
+    if (body.clientHeight > 0) lastBodyScrollTop = body.scrollTop;
+  }, { passive: true, signal: listeners.signal });
+  body.addEventListener('wheel', cancelListReader, { passive: true, signal: listeners.signal });
+  body.addEventListener('touchstart', cancelListReader, { passive: true, signal: listeners.signal });
+  body.addEventListener('pointerdown', event => {
+    if (!(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) cancelListReader();
+  }, { passive: true, signal: listeners.signal });
+  body.addEventListener('keydown', event => {
+    if (SCROLL_KEYS.has(event.key) && !(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) cancelListReader();
+  }, { signal: listeners.signal });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) captureListReader();
+    else if (listReader) {
+      const restore = listReader;
+      const viewer = entries.get(restore.path)?.viewer;
+      if (viewer) {
+        viewer.restoreReaderState(restore.state, { vertical: true });
+        listReader = undefined;
+        pendingListScrollTop = undefined;
+      }
+    }
+  }, { signal: listeners.signal });
   commitBar.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void submitCommit(); }, { signal: listeners.signal });
   commitInput.addEventListener('input', () => { revision++; totals(); }, { signal: listeners.signal });
   commitInput.addEventListener('keydown', event => {
@@ -572,6 +753,20 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       render();
       if (options?.refetch === true) { clearTimeout(refetchTimer); refetchTimer = 0; refetch(); }
       else if (options?.refetch ?? changed) scheduleRefetch();
+    },
+    setVisible(visible) {
+      if (disposed || showing === visible) return;
+      if (!visible) captureListReader();
+      showing = visible;
+      if (showing && pendingListScrollTop !== undefined && body.clientHeight > 0) {
+        body.scrollTop = pendingListScrollTop;
+        lastBodyScrollTop = body.scrollTop;
+        pendingListScrollTop = undefined;
+      }
+      for (const entry of entries.values()) {
+        if (showing) show(entry); else suspend(entry);
+      }
+      trimPatches();
     },
     dispose() {
       if (disposed) return;

@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.108"
+version = "0.3.128"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -21,6 +21,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
+# The blocking error dialog when the desktop app cannot start (crash_guard/startup.rs); the
+# version tauri-plugin-dialog already brings in, which also picks its platform features.
+rfd = { version = "0.16", default-features = false }
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
@@ -42,6 +45,9 @@ hkdf = "0.12"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 chacha20poly1305 = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls-no-provider"] }
+# The app data dir before Tauri starts (crash guard): the same crate and major version Tauri
+# resolves `app_data_dir` with (its PathResolver needs an app, which the guard never has).
+dirs = "7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -50,12 +56,15 @@ webpki-roots = "0.26"
 des = "0.8"
 shell-words = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-tauri-plugin-updater = ">=2, <2.10"
+# 2.14 checks and downloads updates with reqwest 0.13, which verifies TLS against
+# the OS certificate store. It needs Tauri 2.12 (the Windows bindings below) and
+# rustc 1.90. Keep the cap on 2.14 so a later minor cannot change that stack.
+tauri-plugin-updater = ">=2.14.1, <2.15"
 tauri-plugin-process = ">=2, <2.4"
 if-addrs = "=0.15.0"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
 libm = "0.2"
-cpal = "0.16"
+cpal = "0.17"
 # On-device dictation (src/voice/local): 16 kHz resampling and the free-space check before downloads.
 rubato = "5"
 fs4 = "1.1"
@@ -102,6 +111,10 @@ keyring = { version = "3", default-features = false, features = ["sync-secret-se
 # feature is not a default; it reaches Niri, Hyprland, KDE and GNOME's data-control.
 # WKWebView and WebView2 hand pasted images over as files, so other targets skip it.
 arboard = { version = "3", features = ["wayland-data-control"] }
+
+[dev-dependencies]
+# Paused tokio clock for deterministic usage-check timing tests (test builds only).
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"

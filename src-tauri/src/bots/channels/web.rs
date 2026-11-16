@@ -102,7 +102,7 @@ fn history(app: &tauri::AppHandle, channel: &Channel) -> Value {
     let Ok(store) = state.store.lock() else { return json!({"messages": [], "busy": false, "extensions": extensions}) };
     let (session, mut payload) = crate::bots::web_projection(&store, &channel.bot_id, &channel.id, THREAD, extensions);
     drop(store);
-    let busy = session.as_deref().is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(session)).unwrap_or(false));
+    let busy = session.as_deref().is_some_and(|session| crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(session)).unwrap_or(false));
     payload["busy"] = json!(busy);
     payload["cursor"] = json!(cursor());
     payload
@@ -116,7 +116,7 @@ fn busy(app: &tauri::AppHandle, channel: &Channel) -> bool {
             .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
             .ok()
     });
-    session.is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false))
+    session.is_some_and(|session| crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session)).unwrap_or(false))
 }
 
 async fn events(app: &tauri::AppHandle, channel: &Channel, after: u64) -> Value {

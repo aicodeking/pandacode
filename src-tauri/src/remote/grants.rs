@@ -7,6 +7,7 @@
 //! requests). `blocked` is refused outright and stays blocked when its key changes.
 //! A grant belongs to a device id and the fingerprint of its public key. Grants live in a
 //! 0600 JSON file in the app data dir (`connect-grants.json`, via `secret_store`).
+use super::methods::Access;
 use super::{config, crypto, remote};
 use crate::Result;
 use chacha20poly1305::aead::{rand_core::RngCore, OsRng};
@@ -34,6 +35,11 @@ const CONTROL: [&str; 10] = ["task.send", "task.steer", "task.stop", "task.teamR
 /// is `full`-only too.
 #[cfg(test)]
 const FULL_ONLY: [&str; 4] = ["task.start", "task.pullMerge", "bot.message", "bot.pause"];
+
+/// A `methods/` registry method's declared grant; built-in methods are listed above.
+fn registry_access(method: &str) -> Option<Access> {
+    super::methods::find(method).map(|method| method.access)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -83,8 +89,8 @@ impl Scope {
         match self {
             Scope::Pending | Scope::Blocked => false,
             Scope::Full => true,
-            Scope::View => VIEW.contains(&method),
-            Scope::Control => VIEW.contains(&method) || CONTROL.contains(&method),
+            Scope::View => VIEW.contains(&method) || registry_access(method) == Some(Access::View),
+            Scope::Control => VIEW.contains(&method) || CONTROL.contains(&method) || matches!(registry_access(method), Some(Access::View | Access::Control)),
         }
     }
 }
@@ -341,6 +347,30 @@ pub(crate) fn check(app: &tauri::AppHandle, device: &str, method: &str) -> Resul
     }
 }
 
+/// The approved scope `device` holds here as `host.hello` reports it (`view`, `control` or
+/// `full`); `None` for a pending, blocked or unknown device. Never announces a pending one.
+pub(crate) fn scope_name(app: &tauri::AppHandle, device: &str) -> Option<&'static str> {
+    let snap = snapshot(app);
+    let peer = snap.peers.iter().find(|peer| peer.id == device)?;
+    approved_name(with(&snap.dir, |grants| grants.scope_of(peer)))
+}
+
+fn approved_name(scope: Scope) -> Option<&'static str> {
+    matches!(scope, Scope::View | Scope::Control | Scope::Full).then(|| scope.name())
+}
+
+/// The narrowest scope that may call `method` (`view`, `control` or `full`), as `host.hello`
+/// lists it: anything unlisted is `full`-only, as in [`Scope::allows`].
+pub(crate) fn method_access(method: &str) -> &'static str {
+    if Scope::View.allows(method) {
+        "view"
+    } else if Scope::Control.allows(method) {
+        "control"
+    } else {
+        "full"
+    }
+}
+
 /// Host side of `pair.redeem`: the device sent the code shown here. Returns `{scope}`.
 pub(crate) fn redeem(app: &tauri::AppHandle, device: &str, params: &Value) -> Result<Value> {
     let snap = snapshot(app);
@@ -439,6 +469,48 @@ mod tests {
         for method in VIEW.iter().chain(&CONTROL) {
             assert!(super::super::host::METHODS.contains(method), "{method} is not a host method");
         }
+        // Registry methods classify themselves and are never also listed here.
+        for method in super::super::methods::all() {
+            assert!(!seen.contains(method.name) && method.name != REDEEM, "{} is both a registry and a grants.rs method", method.name);
+        }
+        for method in super::super::host::all_methods() {
+            let classified = VIEW.contains(&method) || CONTROL.contains(&method) || FULL_ONLY.contains(&method) || method == REDEEM || registry_access(method).is_some();
+            assert!(classified, "{method} has no grant");
+        }
+    }
+
+    #[test]
+    fn method_access_names_the_narrowest_scope() {
+        assert_eq!(method_access("tasks.list"), "view");
+        assert_eq!(method_access("host.hello"), "view");
+        assert_eq!(method_access("task.send"), "control");
+        assert_eq!(method_access("task.start"), "full");
+        assert_eq!(method_access("nope.nothing"), "full");
+        for method in super::super::host::all_methods() {
+            let access = method_access(method);
+            let scope = Scope::parse(access).unwrap();
+            assert!(scope.allows(method), "{method}");
+            assert_eq!(access == "view", Scope::View.allows(method), "{method}");
+        }
+        assert_eq!(approved_name(Scope::Control), Some("control"));
+        assert_eq!(approved_name(Scope::Pending), None);
+        assert_eq!(approved_name(Scope::Blocked), None);
+    }
+
+    #[test]
+    fn registry_methods_are_allowed_by_their_declared_access() {
+        for method in super::super::methods::all() {
+            let (view, control) = match method.access {
+                Access::View => (true, true),
+                Access::Control => (false, true),
+                Access::Full => (false, false),
+            };
+            assert_eq!(Scope::View.allows(method.name), view, "{}", method.name);
+            assert_eq!(Scope::Control.allows(method.name), control, "{}", method.name);
+            assert!(Scope::Full.allows(method.name), "{}", method.name);
+            assert!(!Scope::Pending.allows(method.name) && !Scope::Blocked.allows(method.name), "{}", method.name);
+        }
+        assert!(Scope::View.allows("host.hello"));
     }
 
     #[test]

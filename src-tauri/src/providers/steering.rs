@@ -143,11 +143,11 @@ fn lost_report_note(lost: &[String]) -> String {
 
 impl Protocol {
     fn claude_family(&self) -> bool {
-        matches!(self.config.provider.as_str(), "claude" | "glm" | "mimo")
+        matches!(self.config.provider.as_str(), "claude" | "glm" | "mimo" | "alibaba")
     }
 
     pub(super) fn steer(&mut self, id: String, text: String, reply: RpcReply) -> Step {
-        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes") {
+        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor") {
             return self.acp_steer(id, text, reply);
         }
         let mut step = Step::default();
@@ -536,7 +536,7 @@ impl Protocol {
     /// Claude Code's run stays open for them, and `claude_end_idle` says this itself.
     pub(super) fn lost_reports_note(&mut self) -> Vec<AgentEvent> {
         let lost = self.subagents.as_ref().map(subagents::Subagents::active_names).unwrap_or_default();
-        if lost.is_empty() || matches!(self.config.provider.as_str(), "claude" | "glm" | "mimo") {
+        if lost.is_empty() || matches!(self.config.provider.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
             return Vec::new();
         }
         vec![self.event("note", lost_report_note(&lost), None)]
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn acp_harnesses_steer_and_empty_messages_are_refused() {
-        for provider in ["kimi", "opencode", "kilo", "grok", "antigravity", "deepseek", "commandcode", "hermes"] {
+        for provider in ["kimi", "opencode", "kilo", "grok", "antigravity", "deepseek", "commandcode", "hermes", "cursor"] {
             let mut p = Protocol::new(config(provider));
             let (_, mut reply) = steer(&mut p, "hello");
             assert!(reply.try_recv().unwrap().is_ok(), "{provider} holds the steer");

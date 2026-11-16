@@ -211,6 +211,18 @@ pub(crate) fn advance_heartbeat(store: &Store, bot: &Bot, now: i64) -> Result<()
     Ok(())
 }
 
+/// Persist the scheduler's state transitions and report whether observers need a refresh.
+pub(crate) fn advance_due(store: &Store, schedules: &[Schedule], bots: &[Bot], now: i64) -> bool {
+    let mut changed = false;
+    for schedule in schedules {
+        changed |= advance(store, schedule, now).is_ok();
+    }
+    for bot in bots {
+        changed |= advance_heartbeat(store, bot, now).is_ok();
+    }
+    changed
+}
+
 pub(crate) const HEARTBEAT_PROMPT: &str = "Check-in: review your standing goals and what you remember. Use read-only steps only (reading files, pages or connected data); do not send messages, change data or spend money without asking. If something needs the user's attention or a decision, say so briefly and propose the next step.";
 
 /// Scheduler loop: every 30 seconds, start due schedules and check-ins as bot turns.
@@ -220,17 +232,12 @@ pub(crate) fn start(app: tauri::AppHandle) {
         loop {
             tick.tick().await;
             let now = crate::storage::now();
-            let due = {
+            let (due, changed) = {
                 let state = app.state::<AppState>();
                 let Ok(store) = state.store.lock() else { continue };
                 let Ok(due) = due(&store, now) else { continue };
-                for schedule in &due.0 {
-                    let _ = advance(&store, schedule, now);
-                }
-                for bot in &due.1 {
-                    let _ = advance_heartbeat(&store, bot, now);
-                }
-                due
+                let changed = advance_due(&store, &due.0, &due.1, now);
+                (due, changed)
             };
             for schedule in due.0 {
                 let label = format!("Scheduled: {}", schedule.title);
@@ -241,7 +248,9 @@ pub(crate) fn start(app: tauri::AppHandle) {
             for bot in due.1 {
                 let _ = gateway::run_scheduled(&app, &bot.id, "Check-in", HEARTBEAT_PROMPT).await;
             }
-            let _ = app.emit("bots-changed", ());
+            if changed {
+                let _ = app.emit("bots-changed", ());
+            }
         }
     });
 }

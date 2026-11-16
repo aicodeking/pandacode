@@ -235,6 +235,45 @@ fn symlink_targets_are_compared_without_reading_external_contents() {
     assert!(!got.details[0].patch.contains("secret never read"));
     assert!(got.details[0].patch.contains("different-target"));
 }
+#[cfg(unix)]
+#[test]
+fn hard_linked_files_are_listed_but_their_content_is_never_stored() {
+    let f = Fixture::new(false);
+    let outside = f.base.join("id_rsa");
+    fs::write(&outside, "PRIVATE KEY one\n").unwrap();
+    f.write("plain.txt", "one\n");
+    let got = capture(&f, || {
+        // An agent links a secret in under an ordinary name, then it changes.
+        fs::hard_link(&outside, f.root.join("notes.txt")).unwrap();
+        fs::write(&outside, "PRIVATE KEY two\n").unwrap();
+        f.write("plain.txt", "two\n");
+    });
+    let find = |name: &str| got.details.iter().find(|x| x.path == name).unwrap();
+    let linked = find("notes.txt");
+    assert!(linked.hard_linked() && linked.patch.is_empty() && linked.truncated, "{:?}", linked.error);
+    assert!(!find("plain.txt").hard_linked() && find("plain.txt").patch.contains("+two"));
+    let file = got.summary.files.iter().find(|x| x.path == "notes.txt").unwrap();
+    assert_eq!((file.status.as_str(), file.additions, file.binary), ("added", None, false));
+    // A file that was linked at the start and is modified in place keeps no "before" either.
+    let modified = capture(&f, || fs::write(&outside, "PRIVATE KEY three\n").unwrap());
+    assert_eq!(modified.details.len(), 1);
+    assert!(modified.details[0].hard_linked() && modified.details[0].patch.is_empty());
+    // Stored as JSON and read back, the marker survives (turn.diff refuses it).
+    let blob = serde_json::to_string(&modified.details[0]).unwrap();
+    assert!(!blob.contains("PRIVATE KEY"));
+    assert!(serde_json::from_str::<TurnChangeDiff>(&blob).unwrap().hard_linked());
+    // No snapshot copy of the linked content was written to the cache either.
+    let mut pending = vec![f.cache.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if entry.path().is_dir() {
+                pending.push(entry.path());
+            } else {
+                assert!(!fs::read(entry.path()).unwrap().starts_with(b"PRIVATE KEY"), "{:?}", entry.path());
+            }
+        }
+    }
+}
 
 #[test]
 fn bounded_myers_reconstructs_original_inputs_and_matches_minimum_edit_counts() {
@@ -849,4 +888,68 @@ fn only_a_real_write_dates_a_turn() {
     assert_eq!(tracker.last_write(), 0);
     write_tool(&mut tracker, "reported:capture", "running", &[]);
     assert!(tracker.last_write() > 0, "a track_files capture is a real write");
+}
+
+#[tokio::test]
+async fn shared_tracker_overlaps_startup_and_joins_before_started_begin_and_finish() {
+    let f = Fixture::new(false);
+    f.write("ours.txt", "baseline\n");
+
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (root, cache) = (f.root.clone(), f.cache.clone());
+    let shared = SharedTracker::spawn(move || {
+        let _ = entered_tx.send(());
+        let _ = release_rx.recv();
+        Tracker::start(root, cache)
+    });
+    // `spawn` returns immediately without waiting for `Tracker::start` to complete.
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    // Start an early `started()` + `pandacode_track_files` begin while startup is still held.
+    let shared_turn_start = shared.clone();
+    let started_done = Arc::new(AtomicBool::new(false));
+    let started_flag = started_done.clone();
+    let join_started = tokio::task::spawn_blocking(move || {
+        shared_turn_start.with(|t| t.started()).unwrap();
+        started_flag.store(true, Ordering::SeqCst);
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !started_done.load(Ordering::SeqCst),
+        "started() must wait for background startup"
+    );
+
+    let stopped = Arc::new(AtomicBool::new(false));
+    let host = with_host(None, Some(shared.clone()), stopped);
+    let begin_fut = tokio::spawn({
+        let handler = host.handler.clone();
+        async move {
+            (handler)(
+                TRACK_TOOL.into(),
+                serde_json::json!({"action":"begin","paths":["ours.txt"]}),
+            )
+            .await
+        }
+    });
+
+    // Release startup: both `started()` and `begin` now join the ready tracker cleanly.
+    release_tx.send(()).unwrap();
+    join_started.await.unwrap();
+    assert!(started_done.load(Ordering::SeqCst));
+    let begun = begin_fut.await.unwrap().unwrap();
+
+    f.write("ours.txt", "baseline\npost-begin edit\n");
+    (host.handler)(
+        TRACK_TOOL.into(),
+        serde_json::json!({"action":"complete","captureId":begun["captureId"],"paths":["ours.txt"]}),
+    )
+    .await
+    .unwrap();
+
+    let captured = shared.with(|t| t.finish()).unwrap().unwrap();
+    assert_eq!(captured.summary.files.len(), 1);
+    assert_eq!(captured.summary.files[0].path, "ours.txt");
+    assert_eq!((captured.summary.additions, captured.summary.deletions), (1, 0));
+    assert!(captured.details[0].patch.contains("+post-begin edit"));
 }

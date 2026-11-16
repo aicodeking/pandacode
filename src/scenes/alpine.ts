@@ -6,6 +6,7 @@ import type { Scene } from './types';
  * stars). The wind drives the fog faster (via `drift`); the pointer parts the fog where the scene shows. */
 export const scene: Scene = {
   id: 'alpine',
+  motion: 'ambient',
   label: 'Alpine',
   fallback: colors => [colors.top, colors.horizon, [.36, .5, .48]],
   fragment: `

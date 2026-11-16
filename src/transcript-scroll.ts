@@ -1,3 +1,6 @@
+/** Whether the engine keeps the reader's content in place itself when content above it changes size (not WebKit). */
+export const scrollAnchors = typeof CSS !== 'undefined' && Boolean(CSS.supports?.('overflow-anchor', 'auto'));
+
 const scrollRounding = new WeakMap<HTMLElement, { top: number; remainder: number }>();
 
 function restoreScrollTop(transcript: HTMLElement, top: number): void {
@@ -20,8 +23,33 @@ function viewport(transcript: HTMLElement): { top: number; bottom: number; scale
   return { top: Math.min(rect.top + clear, rect.bottom), bottom: rect.bottom, scale };
 }
 
-/** Preserve the visible message or tool while content is inserted above it. */
-export function captureTranscriptAnchor(transcript: HTMLElement): () => void {
+/** The transcript's rows crossing the band from `top` to `bottom`: a binary search, since they stack in order,
+ *  so a long thread costs a few reads rather than one per message. Hidden rows have no place and are stepped over. */
+function rowsInBand(transcript: HTMLElement, top: number, bottom: number, skip?: (row: Element) => boolean): Element[] {
+  // Rows `skip` names (set aside, out of layout, far from the band) are never read: reading one would lay it out.
+  const rows = skip ? [...transcript.children].filter(row => !skip(row)) : transcript.children;
+  let low = 0, high = rows.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    let at = middle;
+    while (at < high && !rows[at].getClientRects().length) at++;
+    if (at === high) high = middle;
+    else if (rows[at].getBoundingClientRect().bottom > top) high = middle;
+    else low = at + 1;
+  }
+  const found: Element[] = [];
+  for (let index = low; index < rows.length; index++) {
+    if (!rows[index].getClientRects().length) continue;
+    if (rows[index].getBoundingClientRect().top >= bottom) break;
+    found.push(rows[index]);
+  }
+  return found;
+}
+
+/** Preserve the visible message or tool while content is inserted above it. `skip` names rows the search must not read
+ *  (transcript-window.ts skipFarRows). The returned call takes what writes still to come will change above the
+ *  reader (holdPlace's `pending`). */
+export function captureTranscriptAnchor(transcript: HTMLElement, skip?: (row: Element) => boolean): (pending?: number) => void {
   const { top, bottom, scale } = viewport(transcript);
   const scrollTop = transcript.scrollTop, height = transcript.scrollHeight;
   const previous = scrollRounding.get(transcript);
@@ -29,7 +57,8 @@ export function captureTranscriptAnchor(transcript: HTMLElement): () => void {
   const attributes = ['data-message-id', 'data-tool-key', 'data-turn-key', 'data-change-key'];
   const selector = attributes.map(name => `[${name}]`).join(',');
   // Innermost anchors only: a turn wrapper grows when earlier messages join its turn, so it moves.
-  const anchors = [...transcript.querySelectorAll<HTMLElement>(selector)]
+  const anchors = rowsInBand(transcript, top, bottom, skip)
+    .flatMap(row => [...(row.matches(selector) ? [row as HTMLElement] : []), ...row.querySelectorAll<HTMLElement>(selector)])
     .filter(node => node.getClientRects().length && !node.querySelector(selector))
     .map(node => ({ node, rect: node.getBoundingClientRect() }))
     .filter(({ rect }) => rect.bottom > top && rect.top < bottom)
@@ -38,15 +67,16 @@ export function captureTranscriptAnchor(transcript: HTMLElement): () => void {
       const attribute = attributes.find(name => node.hasAttribute(name))!;
       return { selector: `[${attribute}="${CSS.escape(node.getAttribute(attribute)!)}"]`, offset: (rect.top - top) / scale };
     });
-  return () => {
+  return (pending = 0) => {
+    const later = scrollAnchors ? 0 : pending;
     for (const anchor of anchors) {
       const node = transcript.querySelector<HTMLElement>(anchor.selector);
       if (!node?.getClientRects().length) continue;
       const current = viewport(transcript);
-      restoreScrollTop(transcript, transcript.scrollTop + (node.getBoundingClientRect().top - current.top) / current.scale - anchor.offset + remainder);
+      restoreScrollTop(transcript, transcript.scrollTop + (node.getBoundingClientRect().top - current.top) / current.scale - anchor.offset + remainder + later);
       return;
     }
-    restoreScrollTop(transcript, scrollTop + transcript.scrollHeight - height + remainder);
+    restoreScrollTop(transcript, scrollTop + transcript.scrollHeight - height + remainder + later);
   };
 }
 

@@ -1,5 +1,5 @@
 //! ACP v1 transport for OpenCode, Kilo, Antigravity, Grok Build, Command Code, Cline,
-//! GitHub Copilot CLI and Devin. Kimi retains its provider-specific mode mapping.
+//! GitHub Copilot CLI, Devin, Hermes and Cursor. Kimi retains its provider-specific mode mapping.
 use super::*;
 use crate::slash_commands::claude::Pipe;
 
@@ -72,6 +72,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "cline" => super::cline::configure(command, config),
         "kilo" => super::kilo::configure(command),
         "devin" => super::devin::configure(command),
+        "cursor" => super::cursor::configure(command),
         "hermes" => super::hermes::configure(command, config),
         "antigravity" => antigravity_args(command),
         _ => {
@@ -81,11 +82,11 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
     }
 }
 
-/// The standalone server takes no subcommand; the `agy` CLI fallback serves ACP from `acp`.
+/// The `agy` CLI needs a worker per session to accept editor-configured HTTP MCP servers.
 pub(crate) fn antigravity_args(command: &mut Command) {
     let program = Path::new(command.as_std().get_program());
     if program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("agy")) {
-        command.arg("acp");
+        command.args(["acp", "--process-per-session"]);
     } else if cfg!(target_os = "linux") {
         command.arg("--uid=");
     }
@@ -180,6 +181,11 @@ pub(super) fn choices(option: &Value) -> Vec<&Value> {
         .take(MODEL_CATALOG_LIMIT)
         .collect()
 }
+/// Phrases of the ACP startup errors for a reasoning effort the harness refuses (no adjustable
+/// effort; a level it does not offer), shared with the team scheduler that relaunches a worker
+/// without the effort (`architect::model_efforts::rejected`). The messages read as before.
+pub(crate) const NO_ADJUSTABLE_EFFORT: &str = "does not advertise an adjustable reasoning effort";
+pub(crate) const UNADVERTISED_CHOICE: &str = "does not advertise the selected";
 fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result<Value, String> {
     let offered = choices(option);
     if !offered.iter().any(|entry| entry["value"] == value) {
@@ -203,7 +209,7 @@ fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result
             shown
         };
         return Err(format!(
-            "The harness does not advertise the selected {setting} \"{value}\". It offers: {offers}. Refresh its models or choose the harness default."
+            "The harness {UNADVERTISED_CHOICE} {setting} \"{value}\". It offers: {offers}. Refresh its models or choose the harness default."
         ));
     }
     Ok(
@@ -236,6 +242,9 @@ impl Protocol {
             }
             if self.config.provider == "devin" && value["error"]["code"] == -32000 {
                 return Err(super::devin::SIGN_IN.into());
+            }
+            if self.config.provider == "cursor" && (value["id"] == 7 || value["error"]["code"] == -32000) {
+                return Err(super::cursor::SIGN_IN.into());
             }
             if self.config.provider == "hermes" {
                 let err_str = value["error"]["data"].as_str()
@@ -332,6 +341,11 @@ impl Protocol {
                         let method = cached_auth_method(result).ok_or(GROK_SIGN_IN)?;
                         self.acp_pending_session = Some(session);
                         step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
+                    } else if let Some(method) = super::cursor::login_method(self.config.provider.as_str(), result) {
+                        // Cursor's documented flow is initialize, then authenticate
+                        // with the advertised cursor_login method, then the session.
+                        self.acp_pending_session = Some(session);
+                        step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
                     } else {
                         step.write.push(session);
                     }
@@ -403,6 +417,9 @@ impl Protocol {
         if self.config.provider == "devin" && super::devin::subagent_usage(&value) {
             return Ok(step);
         }
+        if self.config.provider == "cursor" && self.cursor_request(&value, &mut step) {
+            return Ok(step);
+        }
         if value["method"] == "session/request_permission" {
             if value["params"]["sessionId"]
                 .as_str()
@@ -426,9 +443,14 @@ impl Protocol {
             }
             let deepseek = self.config.provider == "deepseek";
             let copilot = self.config.provider == "github-copilot";
-            if self.config.provider == "kilo" {
+            let policy: Option<fn(&str, &str) -> Option<&'static str>> = match self.config.provider.as_str() {
+                "kilo" => Some(super::kilo::permission),
+                "cursor" => Some(super::cursor::permission),
+                _ => None,
+            };
+            if let Some(policy) = policy {
                 let tool = &value["params"]["toolCall"];
-                if let Some(wanted) = super::kilo::permission(&self.config.mode, field(tool, "kind")) {
+                if let Some(wanted) = policy(&self.config.mode, field(tool, "kind")) {
                     let selected = options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
                     let outcome = match selected {
                         Some(selected) => json!({"outcome":"selected","optionId":selected["optionId"]}),
@@ -683,6 +705,8 @@ impl Protocol {
             &[super::kilo::mode_id(&self.config.mode)]
         } else if self.config.provider == "devin" {
             &[super::devin::mode_id(&self.config.mode)]
+        } else if self.config.provider == "cursor" {
+            &[super::cursor::mode_id(&self.config.mode)]
         } else if self.config.provider == "hermes" {
             match self.config.mode.as_str() {
                 "auto" => &["accept_edits", "default"],
@@ -739,7 +763,7 @@ impl Protocol {
         };
         // On these harnesses the ACP mode is the approval policy, so a missing
         // one must fail the run rather than silently widen access.
-        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin");
+        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin" | "cursor");
         if let Some(option) = options(&self.acp_config, "mode") {
             let found = candidates
                 .iter()
@@ -768,10 +792,10 @@ impl Protocol {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
             self.mode_fallback()?;
-        } else if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "kilo" | "devin") {
+        } else if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "kilo" | "devin" | "cursor") {
             // With no mode information at all (a bare resumed session, for
             // instance) the run still fails rather than guess.
-            return Err(if matches!(self.config.provider.as_str(), "kilo" | "devin") {
+            return Err(if matches!(self.config.provider.as_str(), "kilo" | "devin" | "cursor") {
                 "This harness does not advertise the selected task mode."
             } else {
                 "This harness does not advertise a read-only planning mode."
@@ -810,10 +834,10 @@ impl Protocol {
         };
         Ok(())
     }
-    /// Devin keeps each setting on its saved session, so a resumed task skips
-    /// the round trip for any value it already has.
+    /// Devin and Cursor keep each setting on the session, so a run skips the
+    /// round trip (about a second on Cursor) for any value it already has.
     fn unchanged(&self, option: &Value, value: &str) -> bool {
-        self.config.provider == "devin" && option["currentValue"] == value
+        matches!(self.config.provider.as_str(), "devin" | "cursor") && option["currentValue"] == value
     }
     /// Devin's permission requests carry only the tool call ID and options, and
     /// several allow options grant standing access, so the generic path (which
@@ -885,7 +909,11 @@ impl Protocol {
     }
     fn acp_effort(&mut self, step: &mut Step) -> Result<(), String> {
         if let Some(effort) = &self.config.reasoning_effort {
-            let option = options(&self.acp_config, "thought_level").or_else(|| options(&self.acp_config, "effort"));
+            let option = if self.config.provider == "cursor" {
+                super::cursor::effort_option(&self.acp_config, Some(effort))
+            } else {
+                options(&self.acp_config, "thought_level").or_else(|| options(&self.acp_config, "effort"))
+            };
             match option {
                 Some(option) if self.unchanged(option, effort) => self.kimi_prompt(step),
                 Some(option) => step
@@ -893,7 +921,7 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 6, option, effort)?),
                 // Grok and Cline take the effort as a launch flag.
                 None if matches!(self.config.provider.as_str(), "grok" | "cline") => self.kimi_prompt(step),
-                None => return Err("This model does not advertise an adjustable reasoning effort. Choose harness settings.".into()),
+                None => return Err(format!("This model {NO_ADJUSTABLE_EFFORT}. Choose harness settings.")),
             }
         } else {
             self.kimi_prompt(step);
@@ -954,6 +982,7 @@ pub(super) fn parse_grok_models(state: &Value) -> Vec<ModelInfo> {
             .filter(|id| efforts.iter().any(|effort| effort.id == *id))
             .map(str::to_owned);
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.into(),
             name: model_text(entry["name"].as_str(), id, 160),
             description: model_text(entry["description"].as_str(), "", 500),
@@ -1011,6 +1040,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 continue;
             }
             models.push(ModelInfo {
+                speed_tiers: Vec::new(),
                 id: id.into(),
                 name: model_text(choice["name"].as_str(), id, 160),
                 description: model_text(choice["description"].as_str(), "", 500),
@@ -1026,6 +1056,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 continue;
             }
             models.push(ModelInfo {
+                speed_tiers: Vec::new(),
                 id: id.into(),
                 name: model_text(entry["name"].as_str(), id, 160),
                 description: model_text(entry["description"].as_str(), "", 500),
@@ -1340,7 +1371,7 @@ mod tests {
             agy.push(r"C:\Program Files\Antigravity\agy.exe");
         }
         for program in agy {
-            assert_eq!(args(program), ["acp"], "{program}");
+            assert_eq!(args(program), ["acp", "--process-per-session"], "{program}");
         }
         let server: &[&str] = if cfg!(target_os = "linux") { &["--uid="] } else { &[] };
         for program in ["agy_acp_server.par", "agy_acp_server.exe", "/opt/agy_acp_server.par", "/opt/agy/server", "agy-wrapper"] {
@@ -1963,7 +1994,10 @@ mod tests {
         assert_eq!(text, "Explain this project");
         let step = p.receive(grok_permission("edit", false)).unwrap();
         assert!(step.write.is_empty());
-        assert!(step.events.iter().any(|event| event.kind == "approval"));
+        let approval = step.events.iter().find(|event| event.kind == "approval").unwrap();
+        // Approving takes the one-time choice, never "allow all edits during this session".
+        assert!(approval.data.as_ref().is_none_or(|data| data[crate::providers::LASTING_ONLY].is_null()));
+        assert_eq!(p.approve(approval.request_id.as_ref().unwrap(), true).unwrap()["result"]["outcome"]["optionId"], "allow-once");
         let (mut p, text) = grok_ready("auto");
         assert!(!text.contains("Plan mode"));
         let step = p.receive(grok_permission("edit", false)).unwrap();
@@ -2347,7 +2381,7 @@ mod tests {
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
         let mut c = Command::new("/usr/local/bin/agy");
         configure(&mut c, &config("antigravity"));
-        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp"]);
+        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp", "--process-per-session"]);
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));

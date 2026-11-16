@@ -13,6 +13,8 @@ async function open(page: Page, url = '/', refuse: Record<string, string> = {}, 
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     const body = (await response.text()).replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'list_providers' && window.__noProviders) return [];
+      if (command === 'architect_configure') (window.__teamConfigs ??= []).push(structuredClone(args.config));
       if (command === 'architect_set_council') (window.__councilCalls ??= []).push(structuredClone(args.council));
       if (command === 'architect_start') (window.__councilStarts ??= []).push(args.text);
       if (command === 'architect_council_accept') (window.__councilAccepts ??= []).push(args.sessionId);
@@ -26,6 +28,10 @@ async function open(page: Page, url = '/', refuse: Record<string, string> = {}, 
   });
   await page.goto(url);
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeVisible({ timeout: 30_000 });
+  // The thread's composer is drawn at once, then again when its first page of messages arrives (renderTranscript then
+  // renderComposer, in one task). A click spanning that redraw presses the old Council button and releases on the new one,
+  // so no click reaches either; the transcript's messages mean the second draw is done.
+  await expect(page.locator('#transcript .message').first()).toBeVisible({ timeout: 30_000 });
 }
 const calls = (page: Page) => page.evaluate(() => (window as any).__councilCalls ?? []);
 const strip = (page: Page) => page.locator('#composer .council-strip');
@@ -788,4 +794,32 @@ for (const width of [1280, 560]) {
     }
   });
 }
+});
+
+test('Council waits for provider discovery before persisting the Router catalog', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__hold = { list_providers: new Promise(resolve => { (window as any).__releaseProviders = resolve; }) };
+  });
+  await open(page);
+  await button(page).click();
+  await toggle(page).click();
+  await expect(toggle(page)).toHaveAttribute('aria-busy', 'true');
+  expect(await page.evaluate(() => (window as any).__teamConfigs ?? [])).toEqual([]);
+  await page.evaluate(() => (window as any).__releaseProviders());
+  await expect(toggle(page)).toHaveAttribute('aria-busy', 'false');
+  await expect(toggle(page)).toBeChecked();
+  const configs = await page.evaluate(() => (window as any).__teamConfigs);
+  expect(configs).toHaveLength(1);
+  expect(configs[0].workers.length).toBeGreaterThan(0);
+  expect(configs[0].catalog.length).toBeGreaterThan(0);
+});
+
+test('Council never saves an empty catalog when no harnesses are available', async ({ page }) => {
+  await page.addInitScript(() => { (window as any).__noProviders = true; });
+  await open(page);
+  await button(page).click();
+  await toggle(page).click();
+  await expect(panel(page).getByRole('alert')).toHaveText('Council was not changed: No installed models are available. Open Settings to check your agents.');
+  expect(await page.evaluate(() => (window as any).__teamConfigs ?? [])).toEqual([]);
+  expect(await calls(page)).toEqual([]);
 });

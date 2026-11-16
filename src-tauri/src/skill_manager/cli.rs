@@ -145,7 +145,7 @@ pub(super) fn normalize_source(source: &str) -> Result<(String, Option<Vec<Strin
 
 pub(super) fn agent_id(harness: &str) -> Option<&'static str> {
     Some(match harness {
-        "claude" | "glm" | "mimo" => "claude-code",
+        "claude" | "glm" | "mimo" | "alibaba" => "claude-code",
         "codex" => "codex",
         "deepseek" | "muse" => "universal",
         "kimi" => "kimi-code-cli",
@@ -160,6 +160,7 @@ pub(super) fn agent_id(harness: &str) -> Option<&'static str> {
         "grok" => "grok",
         "hermes" => "hermes-agent",
         "zcode" => "zcode",
+        "cursor" => "cursor",
         _ => return None,
     })
 }

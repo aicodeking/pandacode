@@ -5,6 +5,7 @@ import type { TeamLibrary, TeamProfile } from './architect-types';
 import { escape, icon } from './dom';
 import { modelChoices } from './model-catalog';
 import { providerLogo } from './provider-logos';
+import { teamsChanged } from './team-profiles';
 import { classicTeamSetup, modelKey, namedTeams, namedTeamSetup, setClassicTeamSetup, teamDetail, TEAM_MODELS_MAX, type TeamModel } from './team-mode';
 import type { Provider, ProviderId, ProviderModel } from './types';
 
@@ -151,6 +152,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     try {
       const setup = namedTeamSetup(teamName, lead, included, editing?.setup.config ?? library?.lastSetup?.config);
       library = await options.call<TeamLibrary>('architect_save_profile', { id: editing?.id ?? null, name: teamName, setup });
+      teamsChanged(library);
       if (disposed) return;
       closeEditor(); renderList(); create.focus();
     } catch (cause) { if (!disposed) showError(cause); }
@@ -159,7 +161,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   async function remove(id: string): Promise<void> {
     if (busy) return;
     busy = true; error.hidden = true;
-    try { library = await options.call<TeamLibrary>('architect_delete_profile', { id }); if (!disposed) { renderList(); create.focus(); } }
+    try { library = await options.call<TeamLibrary>('architect_delete_profile', { id }); teamsChanged(library); if (!disposed) { renderList(); create.focus(); } }
     catch (cause) { if (!disposed) showError(cause); }
     finally { busy = false; }
   }

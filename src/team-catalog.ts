@@ -133,7 +133,6 @@ export function dupModelNames(models: readonly { name: string }[]): Set<string> 
 
 /** Installed harnesses with their discovered models (falling back to the built-in list), limited by `teamModels`. */
 export async function installedCatalog(providers: readonly { id: ProviderId; name: string; installed: boolean; models: ProviderModel[]; metadata?: ProviderMetadata }[], loadModels: (id: ProviderId) => Promise<ProviderModel[]>) {
-  // ZCode has no team-tools bridge yet; native architect::HARNESSES excludes it.
   const installed = providers.filter(p => p.installed && providerSupportsTeams(p));
   const loaded = await Promise.allSettled(installed.map(p => loadModels(p.id)));
   return buildTeamCatalog(installed.map((p, i) => ({ id: p.id, name: p.name, models: teamModels(p.id, loaded[i].status === 'fulfilled' ? loaded[i].value : p.models).models })));

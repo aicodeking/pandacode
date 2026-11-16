@@ -24,7 +24,7 @@ const MAX_NAME: usize = 60;
 // on task deletion if this ever matters.
 const MAX_TASKS: usize = 5000;
 const PROVIDERS: &[&str] = &[
-    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes",
+    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes", "cursor",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -249,7 +249,7 @@ pub async fn connection_new_account(provider: String) -> Result<NewAccount> {
 /// The folder variable each harness reads for its own config and login.
 fn config_dir_var(provider: &str) -> Option<&'static str> {
     match provider {
-        "claude" | "glm" | "mimo" => Some("CLAUDE_CONFIG_DIR"),
+        "claude" | "glm" | "mimo" | "alibaba" => Some("CLAUDE_CONFIG_DIR"),
         "codex" => Some("CODEX_HOME"),
         "pi" => Some("PI_CODING_AGENT_DIR"),
         "opencode" => Some("OPENCODE_CONFIG_DIR"),
@@ -462,7 +462,7 @@ pub async fn connection_delete(state: tauri::State<'_, crate::AppState>, id: Str
     // The running-agent check and the save happen under the agents lock (agents → connections,
     // the order `connection_assign` uses), so no task can start on this connection in between.
     let (snapshot, affected, removed) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut runtime = runtime()?;
         let affected: Vec<String> = runtime.data.tasks.iter().filter(|(_, c)| **c == id).map(|(task, _)| task.clone()).collect();
         if affected.iter().any(|task| agents.contains_key(task)) {
@@ -499,7 +499,7 @@ pub async fn connection_assign(
     session_id: String,
     connection_id: Option<String>,
 ) -> Result<Snapshot> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before changing its connection.".into());
     }
     if session_id.is_empty() || session_id.len() > 128 {
@@ -512,7 +512,13 @@ pub async fn connection_assign(
             fresh_context(&store, &session_id)?;
         }
     }
-    crate::blocking(move || save_assignment(session_id, connection_id)).await
+    let snapshot = crate::blocking({
+        let session_id = session_id.clone();
+        move || save_assignment(session_id, connection_id)
+    })
+    .await?;
+    crate::providers::discard_warm_agent(&session_id);
+    Ok(snapshot)
 }
 
 fn save_assignment(session_id: String, connection_id: Option<String>) -> Result<Snapshot> {

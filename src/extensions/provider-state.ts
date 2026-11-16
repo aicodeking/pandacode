@@ -17,9 +17,9 @@ export function setPackageProviders(values: Provider[]): void {
   for (const provider of values) providers.set(provider.id, provider);
 }
 export function packageProvider(id: ProviderId): Provider | undefined { return providers.get(id); }
-/** ZCode's built-in protocol has no team-tools bridge. Dynamic adapters must opt in. */
+/** Dynamic adapters must opt in. */
 export function providerSupportsTeams(provider: Pick<Provider, 'id' | 'metadata'>): boolean {
-  return provider.id.includes('/') ? provider.metadata?.teams === true : provider.id !== 'zcode';
+  return provider.id.includes('/') ? provider.metadata?.teams === true : true;
 }
 export function defaultProviderMetadata(): ProviderMetadata {
   return { modes: ['ask'], authentication: 'Authentication is managed by the trusted extension; no credentials are returned to PandaCode.', readiness: { state: 'ready', reason: 'Ready through its trusted extension.' }, usage: { context: false, limitsReason: 'This extension does not expose account limits. Check its provider dashboard.' } };

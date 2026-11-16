@@ -5,14 +5,16 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { memo, useEffect, useState, type ReactNode } from 'react';
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { Easing, Keyframe, LayoutAnimationConfig, ReduceMotion, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import { useHostAllows } from '../connect/api/capabilities.ts';
 import { connect } from '../connect/client.ts';
+import { AccessNote } from '../ui/AccessNote.tsx';
 import { outdated } from '../connect/rpc.ts';
 import { elapsedLabel, glanceOf } from '../store/inbox.ts';
 import { taskKey, useConnect, useModels } from '../store/index.ts';
 import { cutNote, teamResumable, workerClockEnd, workerLabel, workerActive, workerRunning, workersTitle, type Team, type TeamWorker } from '../store/team.ts';
 import { describeTool, subagentActive, subagentName, summarizeTools, traceText, type Subagent } from '../store/trace.ts';
 import { useColors } from '../ui/theme.ts';
-import { alpha, Banner, Button, Card, Chip, crossFadeIn, FADE_MS, useMotion, EmptyState, InnerCard, PressScale, Skeleton, springs, StatusDot, type as text, useStagger } from '../ui/ds/index.ts';
+import { alpha, Banner, Button, Card, Chip, crossFadeIn, FADE_MS, useMotion, EmptyState, geometry, InnerCard, PressScale, Skeleton, springs, StatusDot, type as text, useStagger } from '../ui/ds/index.ts';
 import { HarnessLogo } from '../ui/harness.tsx';
 import { Icon } from '../ui/Icon.tsx';
 import { useNow } from '../ui/Trace.tsx';
@@ -20,6 +22,7 @@ import { PUSHED_HEADER, PushedScroll, usePushedScroll } from '../ui/PushedScroll
 import { useIconSize } from '../ui/usePagePadding.ts';
 import { modelLabel } from '../ui/models.ts';
 import { useTeamLoad, useWatchWorkers } from '../ui/useTeam.ts';
+import { HeaderActions } from '../ui/HeaderActions.tsx';
 
 const NONE: Subagent[] = [];
 const MARK_POP = new Keyframe({ from: { opacity: 0, transform: [{ scale: 0.5 }] }, to: { opacity: 1, transform: [{ scale: 1 }], easing: Easing.out(Easing.back(2)) } }).duration(FADE_MS).reduceMotion(ReduceMotion.Never);
@@ -160,6 +163,7 @@ function TeamStatus({ deviceId, sessionId, team }: { deviceId: string; sessionId
   const colors = useColors();
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState('');
+  const canResume = useHostAllows(deviceId, 'task.teamResume');
   const resumable = teamResumable(team);
   if (!team.error && !resumable && !refused) return null;
   const resume = () => {
@@ -172,7 +176,8 @@ function TeamStatus({ deviceId, sessionId, team }: { deviceId: string; sessionId
       <InnerCard style={styles.status}>
         {!!team.error && <Text selectable style={[text.subhead, { color: team.status === 'failed' ? colors.danger : colors.muted }]}>{team.error}</Text>}
         {!!refused && <Text selectable style={[text.subhead, { color: colors.danger }]}>{refused}</Text>}
-        {resumable && <Button label={busy ? 'Resuming…' : 'Resume team'} icon={{ ios: 'play', android: 'play_arrow' }} loading={busy} onPress={resume} />}
+        {resumable && !canResume && <AccessNote device={deviceId} methods={['task.teamResume']} />}
+        {resumable && canResume && <Button label={busy ? 'Resuming…' : 'Resume team'} icon={{ ios: 'play', android: 'play_arrow' }} loading={busy} onPress={resume} />}
       </InnerCard>
     </Card>
   );
@@ -210,6 +215,7 @@ export default function AgentsScreen() {
   return (
     <PushedScroll scroll={scroll}>
       <Stack.Screen options={{ ...PUSHED_HEADER, title: 'Agents' }} />
+      <HeaderActions />
       {shown && <TeamStatus deviceId={device} sessionId={session} team={shown} />}
       <Banner visible={failed && !empty} title="Couldn’t load the team" body={error} action={{ label: 'Retry', onPress: retry }} />
       <Banner visible={team === 'outdated' && !empty} tone="info" title={`Team workers: ${outdated(computer)}`} />
@@ -237,12 +243,12 @@ export default function AgentsScreen() {
 }
 
 const styles = StyleSheet.create({
-  empty: { marginTop: 48 },
-  note: { textAlign: 'center', paddingHorizontal: 16 },
-  status: { padding: 12, gap: 10 },
+  empty: { marginTop: geometry.emptyTop },
+  note: { textAlign: 'center', paddingHorizontal: geometry.rowInset },
+  status: { padding: geometry.rowInset, gap: 10 },
   section: { gap: 6 },
-  head: { paddingHorizontal: 10, paddingTop: 6, paddingBottom: 4 },
-  agent: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  head: { paddingHorizontal: geometry.screenMargin, paddingTop: 6, paddingBottom: 4 },
+  agent: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingHorizontal: geometry.rowInset, paddingVertical: 10 },
   logo: { width: 26, height: text.bodyMedium.lineHeight, alignItems: 'center', justifyContent: 'center' },
   body: { flex: 1, minWidth: 0, gap: 3 },
   title: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -250,8 +256,8 @@ const styles = StyleSheet.create({
   name: { flex: 1 },
   model: { alignSelf: 'center', flexShrink: 1 },
   meta: { flexShrink: 1, fontVariant: ['tabular-nums'] },
-  progress: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, minHeight: 32 },
+  progress: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: geometry.screenMargin, minHeight: 32 },
   meter: { flex: 1, height: 4, borderRadius: 2, overflow: 'hidden' },
   meterFill: { width: '100%', height: '100%', transformOrigin: 'left' },
-  loading: { padding: 12, gap: 10 },
+  loading: { padding: geometry.rowInset, gap: 10 },
 });

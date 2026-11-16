@@ -32,6 +32,10 @@ export const geometry = {
   hairline: 0.5, screenMargin: 10, sectionGap: 10,
   cardRadius: 20, cardPadding: 6, innerRadius: 14, controlRadius: 12, chipRadius: 7,
   rowHeight: 44, rowHeightSubtitle: 58,
+  /** Above a screen's empty or error state, so it sits in the upper part of the page. */
+  emptyTop: 48,
+  /** Side padding inside a card's rows, as Row's. */
+  rowInset: 12,
 };
 
 export type IconName = Pick<ComponentProps<typeof Icon>, 'ios' | 'android'>;

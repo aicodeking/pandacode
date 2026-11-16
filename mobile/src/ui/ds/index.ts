@@ -8,7 +8,7 @@ export { AnimatedNumber, CrossFadeText, type AnimatedNumberProps, type CrossFade
 export { EmptyState, type EmptyStateProps } from './EmptyState.tsx';
 export { crossFadeIn, crossFadeOut, EXIT_MS, FADE_MS, haptic, springs, useMotion, useStagger, type HapticKind } from './motion.ts';
 export { STAGGER_CAP, staggerDelay } from './motion-math.ts';
-export { alpha, mix, type StateTone, type StatusTone, type Tone } from './palette.ts';
+export { alpha, mix, VIEWER, type StateTone, type StatusTone, type Tone } from './palette.ts';
 export { PressScale, type PressScaleProps } from './PressScale.tsx';
 export { usePulseStyle } from './pulse.ts';
 export { LARGE_TEXT_SCALE, Row, type RowProps } from './Row.tsx';
@@ -19,3 +19,4 @@ export { Skeleton, type SkeletonProps } from './Skeleton.tsx';
 export { StatusDot, type StatusDotProps } from './StatusDot.tsx';
 export { Toggle, type ToggleProps } from './Toggle.tsx';
 export { CHROME_FONT_SCALE, geometry, type, type IconName } from './type.ts';
+export { hideToast, showToast, TOAST_MS, ToastHost, type ToastSpec } from './Toast.tsx';

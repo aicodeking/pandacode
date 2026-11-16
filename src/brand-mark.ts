@@ -86,7 +86,7 @@ function makeMark() {
     </g></g></g>`.replace(/>\s+</g, '><');
   stage.append(word, panda);
   const parts = Object.fromEntries([...panda.querySelectorAll<SVGElement>('[data-part]')].map(el => [el.dataset.part!, el]));
-  return { stage, word, letters, baseline, panda, parts };
+  return { stage, word, letters, baseline, panda, parts, position: '', resting: false };
 }
 type Mark = ReturnType<typeof makeMark>;
 
@@ -101,10 +101,11 @@ function measure(mark: Mark) {
   return { ...desktopBrandLayout(spans, ascents, baseline), spans };
 }
 type Layout = ReturnType<typeof measure>;
-const transform = (el: SVGElement, value: string) => { el.setAttribute('transform', value); };
+const transform = (el: SVGElement, value: string) => { if (el.getAttribute('transform') !== value) el.setAttribute('transform', value); };
 
 function drawPanda(mark: Mark, p: Pose, x: number, feetY: number, scale = 1, spin = 0) {
-  mark.panda.style.transform = `translate(${x - PANDA_SIZE / 2}px,${feetY - PANDA_SIZE}px) scale(${scale})`;
+  const position = `translate(${x - PANDA_SIZE / 2}px,${feetY - PANDA_SIZE}px) scale(${scale})`;
+  if (mark.position !== position) { mark.panda.style.transform = position; mark.position = position; }
   const g = mark.parts;
   transform(g.lean, `rotate(${p.groundLean} 11 22)`);
   transform(g.spin, `rotate(${p.pitch + p.tilt + spin} 11 11)`);
@@ -120,9 +121,13 @@ function drawPanda(mark: Mark, p: Pose, x: number, feetY: number, scale = 1, spi
   transform(g.earR, `translate(${left * .5 - right + p.earsOut} ${p.earsR + right})`);
   transform(g.shade, `translate(${-p.look * 1.4} ${p.pitch * .06})`);
   transform(g.shine, `translate(${p.look * .9} ${-p.pitch * .06})`);
-  const eyeY = 1 - .85 * p.blink;
-  transform(g.eyeL, `translate(0 10.3) scale(1 ${eyeY}) translate(0 -10.3)`);
-  transform(g.eyeR, `translate(0 10.3) scale(1 ${eyeY}) translate(0 -10.3)`);
+  drawEyes(mark, p.blink);
+}
+
+function drawEyes(mark: Mark, blink: number) {
+  const eyeY = 1 - .85 * blink;
+  transform(mark.parts.eyeL, `translate(0 10.3) scale(1 ${eyeY}) translate(0 -10.3)`);
+  transform(mark.parts.eyeR, `translate(0 10.3) scale(1 ${eyeY}) translate(0 -10.3)`);
 }
 
 function drawHeader(mark: Mark, layout: Layout, t: number, trickAt = 0) {
@@ -131,13 +136,16 @@ function drawHeader(mark: Mark, layout: Layout, t: number, trickAt = 0) {
   mark.letters.forEach((el, i) => {
     const state = letter(t, layout.passes[i]);
     const perch = PERCH_LETTER.indexOf(i as (typeof PERCH_LETTER)[number]);
-    el.style.transform = `translateY(${state.dip * DIP}px)`;
-    el.style.setProperty('--brand-wipe', `${100 * (1 - Math.max(state.glow, perch < 0 ? 0 : perchGlow(t, perch)))}%`);
+    const dip = `translateY(${state.dip * DIP}px)`;
+    const wipe = `${100 * (1 - Math.max(state.glow, perch < 0 ? 0 : perchGlow(t, perch)))}%`;
+    if (el.style.transform !== dip) el.style.transform = dip;
+    if (el.style.getPropertyValue('--brand-wipe') !== wipe) el.style.setProperty('--brand-wipe', wipe);
   });
   const press = p.grounded && p.perch !== 0 ? letter(t, layout.passes[PERCH_LETTER[p.perch]]).dip * DIP : 0;
   drawPanda(mark, { ...p, sy: p.sy * q.sy * (1 + .04 * p.breath), earsL: p.earsL + q.earsL, earsR: p.earsR + q.earsR,
     earsOut: p.earsOut + q.earsOut, tuck: p.tuck + q.tuck, nod: p.nod + q.nod, arms: Math.max(p.arms, q.arms), brace: Math.max(p.brace, q.brace) },
   (compact ? 16 : p.x) + q.drift, layout.baseline - p.feet - q.lift * TRICK_JUMP + press + p.bob + q.bob, 1, q.spin);
+  mark.resting = t > SHOW_END + 8 && trickAt === 0;
 }
 
 const mounted = new WeakSet<HTMLElement>();
@@ -154,6 +162,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
   const root = document.documentElement;
   let frame = 0, timer = 0, last = 0, time = 0, trickAt = 0, ready = false, shown = false, scale = SCALE;
   let slowFrames = 0, constrained = false;
+  let focused = document.hasFocus();
   let launch: { el: HTMLElement; mark: Mark; layout: Layout; rest: Point; from: Point; starts: number[]; pushed: number; at: number; target: (Point & { scale: number }) | null; flying: boolean; input: AbortController } | null = null;
   const staticMotion = () => motion.matches || forced.matches;
   const visible = () => host.isConnected && host.getClientRects().length > 0 && getComputedStyle(host).visibility !== 'hidden';
@@ -180,7 +189,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
     launch = null;
     delete host.dataset.brandLaunch;
   };
-  const canRun = () => ready && shown && host.isConnected && !document.hidden && !staticMotion() && !constrained;
+  const canRun = () => ready && shown && host.isConnected && focused && !document.hidden && !staticMotion() && !constrained;
   const wake = () => {
     stop();
     if (!launch && !canRun()) return;
@@ -194,7 +203,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
   };
   const tick = (now: number) => {
     frame = 0;
-    if (document.hidden || staticMotion()) { endLaunch(); return; }
+    if (!focused || document.hidden || staticMotion()) { endLaunch(); return; }
     slowFrames = desktopBrandFramePressure(now - last, slowFrames);
     if (slowFrames === 3) {
       // SVG changes can invalidate expensive surrounding software-rendered surfaces. Do not
@@ -233,7 +242,8 @@ export function mountDesktopBrand(host: HTMLElement): void {
       if (!canRun()) return;
       time += dt;
       if (trickAt > 0) trickAt = trickAt + dt >= TRICK_S ? 0 : trickAt + dt;
-      drawHeader(mark, layout, time, trickAt);
+      if (mark.resting && time > SHOW_END + 8 && trickAt === 0) drawEyes(mark, pose(mark.stage.hasAttribute('data-compact') ? 0 : time, layout.px, layout.ph).blink);
+      else drawHeader(mark, layout, time, trickAt);
       if (!moving(time) && trickAt === 0) {
         const next = nextWake(time);
         timer = window.setTimeout(() => { time = next; wake(); }, (next - time) * 1000);
@@ -247,7 +257,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
     ready = true;
     gate.disconnect();
     syncLayout();
-    if (staticMotion() || document.hidden) { host.dataset.brandReady = ''; return; }
+    if (staticMotion() || document.hidden || !focused) { host.dataset.brandReady = ''; return; }
     const el = document.createElement('div');
     el.className = 'desktop-brand-launch';
     el.setAttribute('aria-hidden', 'true');
@@ -287,6 +297,8 @@ export function mountDesktopBrand(host: HTMLElement): void {
     endLaunch();
     if (!document.hidden) { syncLayout(); wake(); }
   });
+  window.addEventListener('blur', () => { focused = false; stop(); endLaunch(); });
+  window.addEventListener('focus', () => { focused = true; syncLayout(); wake(); });
   host.addEventListener('click', () => {
     if (constrained) { constrained = false; slowFrames = 0; delete host.dataset.brandMotion; }
     if (!canRun() || trickAt > 0) return;

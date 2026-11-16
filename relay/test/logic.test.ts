@@ -3,9 +3,9 @@ import { test } from "node:test";
 import { readJsonCapped } from "../src/body.ts";
 import { configured } from "../src/config.ts";
 import { fullBucket, take } from "../src/bucket.ts";
-import { byteLength, parseClientFrame, undeliverableFrame } from "../src/frames.ts";
+import { byteLength, parseClientFrame, scanSendTarget, undeliverableFrame } from "../src/frames.ts";
 import { githubUser } from "../src/github.ts";
-import { MAX_FRAME_BYTES, STALE_MS, TOKEN_TTL_SECONDS } from "../src/limits.ts";
+import { MAX_FRAME_BYTES, RATE_LIMITED_PARSE_CHARS, STALE_MS, TOKEN_TTL_SECONDS } from "../src/limits.ts";
 import { hostChanged, isStale, issuedAfterRegistration, keyChanged, tokenCurrent } from "../src/policy.ts";
 import { isKnownRoute } from "../src/routes.ts";
 import { signToken, verifyToken } from "../src/token.ts";
@@ -128,6 +128,25 @@ test("undeliverable reply echoes to and ref with a reason", () => {
   assert.deepEqual(JSON.parse(undeliverableFrame(ID, "offline", "r1")), { kind: "undeliverable", to: ID, ref: "r1", reason: "offline" });
   assert.deepEqual(JSON.parse(undeliverableFrame(ID, "rate", "r2")), { kind: "undeliverable", to: ID, ref: "r2", reason: "rate" });
   assert.deepEqual(JSON.parse(undeliverableFrame(ID, "offline")), { kind: "undeliverable", to: ID, reason: "offline" });
+});
+
+test("a large rate-limited send still yields its to and ref from a bounded scan of its ends", () => {
+  const body = "x".repeat(RATE_LIMITED_PARSE_CHARS * 4);
+  // The phone's order (to, body, ref) and the desktop's (to, body), plus ref first.
+  assert.deepEqual(scanSendTarget(JSON.stringify({ to: ID, body, ref: "req-1" })), { to: ID, ref: "req-1" });
+  assert.deepEqual(scanSendTarget(JSON.stringify({ to: ID.toUpperCase(), body })), { to: ID });
+  assert.deepEqual(scanSendTarget(JSON.stringify({ ref: "r2", to: ID, body })), { to: ID, ref: "r2" });
+  assert.deepEqual(scanSendTarget(JSON.stringify({ body, to: ID, ref: "r3" })), { to: ID, ref: "r3" });
+  assert.deepEqual(scanSendTarget(` { "to" : "${ID}" , "body":"${body}" , "ref" : "r4" } `), { to: ID, ref: "r4" });
+  // Members spelled inside the body string are escaped, so they never count.
+  assert.equal(scanSendTarget(JSON.stringify({ body: `${body}","to":"${ID}","ref":"fake"` })), null);
+  assert.deepEqual(scanSendTarget(JSON.stringify({ to: ID, body: `${body}","ref":"fake` })), { to: ID });
+  // to and ref are validated like a parsed frame: an overlong ref is dropped, a bad to gives nothing.
+  assert.deepEqual(scanSendTarget(JSON.stringify({ to: ID, body, ref: "r".repeat(65) })), { to: ID });
+  assert.equal(scanSendTarget(JSON.stringify({ to: "nope", body, ref: "r" })), null);
+  assert.equal(scanSendTarget(body), null);
+  // Members outside the scanned ends are not found (the scan stays bounded).
+  assert.equal(scanSendTarget(JSON.stringify({ a: "y".repeat(600), to: ID, body })), null);
 });
 
 test("socket staleness at 75 s", () => {

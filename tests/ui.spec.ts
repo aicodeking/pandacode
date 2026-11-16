@@ -314,7 +314,8 @@ async function installHistoryFixture(page: Page, total: number, formatted = fals
   });
   await page.reload();
   await chooseProjectFilter(page, 'pandacode');
-  await expect(page.locator('#transcript .message-content')).toHaveCount(Math.min(total, 100));
+  // A long thread draws a window of its newest turns, not the whole page.
+  await expect(page.locator(`#transcript [data-message-id="${500 + (total - 1) * 3}"]`)).toHaveCount(1);
   await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
 }
 const olderRequests = (page: Page) => page.evaluate(() => (window as any).__historyFixture.calls.filter((call: any) => call.beforeId));
@@ -324,6 +325,19 @@ const scrollHistoryTop = (page: Page) => page.locator('#transcript').evaluate(el
   element.scrollTop = 0;
   element.dispatchEvent(new Event('scroll'));
 });
+/** Scrolls up a step at a time until history message `index` (from 0) is drawn; checked in the task that scrolls, so a drawn page never asks for the next. */
+async function drawHistory(page: Page, index: number): Promise<void> {
+  const id = String(500 + index * 3);
+  await expect(async () => {
+    const drawn = await page.locator('#transcript').evaluate((element, wanted) => {
+      if (element.querySelector(`[data-message-id="${wanted}"]`)) return true;
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event('scroll'));
+      return false;
+    }, id);
+    expect(drawn).toBe(true);
+  }).toPass({ timeout: 15_000, intervals: [50] });
+}
 
 for (const total of [100, 101, 251]) {
   test(`automatically prepends a ${total}-message conversation without history buttons`, async ({ page }) => {
@@ -333,18 +347,21 @@ for (const total of [100, 101, 251]) {
     expect(await olderRequests(page)).toHaveLength(0);
     do {
       const previous = loaded;
+      // Held from before the top is reached: the scroll that gets there may already ask for the next page.
+      await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+      await drawHistory(page, total - loaded);
       const first = page.locator('#transcript [data-message-id]').first();
       const anchorId = await first.getAttribute('data-message-id');
       // Capture the first visible message after the user's upward scroll, before IPC resolves.
-      await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
       await scrollHistoryTop(page);
       const anchorY = await historyOffset(first);
       if (loaded < total) {
         await expect.poll(async () => (await olderRequests(page)).length).toBe(Math.ceil(previous / 100));
-        await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+        await page.evaluate(() => (window as any).__historyFixture.release());
         loaded = Math.min(total, loaded + 100);
-        await expect(content).toHaveCount(loaded);
+        await expect.poll(() => content.count()).toBeGreaterThan(previous);
         await expect.poll(async () => Math.abs(await historyOffset(page.locator(`#transcript [data-message-id="${anchorId}"]`)) - anchorY)).toBeLessThan(2);
+        await drawHistory(page, total - loaded);
       }
       await expect(content).toHaveText(Array.from({ length: loaded }, (_, index) => `History message ${total - loaded + index + 1}`));
     } while (loaded < total);
@@ -365,23 +382,28 @@ for (const total of [100, 101, 251]) {
 test('retains existing formatted response nodes when earlier history is prepended', async ({ page }) => {
   await installHistoryFixture(page, 251, true);
   const response = page.locator('#transcript [data-message-id="953"] .message-content');
+  await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+  await drawHistory(page, 151);
   await expect(response.locator('pre code')).toContainText('const retained = true;');
   const originalResponse = await response.elementHandle();
-  await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
   await scrollHistoryTop(page);
   await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
   const readingY = await historyOffset(response);
-  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await page.evaluate(() => (window as any).__historyFixture.release());
+  await expect.poll(() => page.locator('#transcript .message-content').count()).toBeGreaterThan(100);
+  await expect.poll(async () => Math.abs(await historyOffset(response) - readingY)).toBeLessThan(2);
+  await drawHistory(page, 51);
   await expect(page.locator('#transcript .message-content')).toHaveCount(200);
   expect(await originalResponse!.evaluate(node => node === document.querySelector('#transcript [data-message-id="953"] .message-content'))).toBe(true);
   await expect(page.locator('#transcript .message-content pre code')).toHaveCount(100);
-  await expect.poll(async () => Math.abs(await historyOffset(response) - readingY)).toBeLessThan(2);
   await expect(response.locator('pre code')).toContainText('const retained = true;');
 });
 
 test('deduplicates pending history loads and ignores pages from a previously selected thread', async ({ page }) => {
+  // Three pages, so the second lands with the third still to come: the partly loaded thread draws 52–251.
   await installHistoryFixture(page, 251);
   await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+  await drawHistory(page, 151);
   await scrollHistoryTop(page);
   await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
   await scrollHistoryTop(page);
@@ -391,15 +413,31 @@ test('deduplicates pending history loads and ignores pages from a previously sel
   await chooseProjectFilter(page, 'orbit');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await expect(page.locator('#transcript .markdown pre code')).toContainText('createSearchIndex');
-  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await page.evaluate(() => (window as any).__historyFixture.release());
   await expect(page.locator('#transcript')).not.toContainText('History message');
   await chooseProjectFilter(page, 'pandacode');
-  await expect(page.locator('#transcript .message-content')).toHaveCount(100);
+  // The page from the other thread was dropped, so this one is asked for again. Still held for the page after it.
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.release = undefined; });
+  await drawHistory(page, 151);
   await scrollHistoryTop(page);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__historyFixture.release)).toBe('function');
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; const go = fixture.release; fixture.release = undefined; go(); });
+  // Drawing to the top of the second page asks for the third, which stays held: the thread is partly loaded.
+  await drawHistory(page, 51);
   await expect(page.locator('#transcript .message-content')).toHaveCount(200);
   await expect(page.locator('#transcript .message-content').first()).toHaveText('History message 52');
   await expect(page.locator('#transcript .message-content').last()).toHaveText('History message 251');
-  expect(await olderRequests(page)).toHaveLength(2);
+  // The dropped page and its retry asked for the same messages, then the third page once: nothing else was asked for.
+  const asked = (await olderRequests(page)).map((call: { beforeId: number }) => call.beforeId);
+  expect(asked).toHaveLength(3);
+  expect(asked[1]).toBe(asked[0]);
+  expect(asked[2]).not.toBe(asked[1]);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__historyFixture.release)).toBe('function');
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await drawHistory(page, 0);
+  await expect(page.locator('#transcript .message-content')).toHaveCount(251);
+  await expect(page.locator('#transcript .message-content').first()).toHaveText('History message 1');
+  expect(await olderRequests(page)).toHaveLength(3);
 });
 
 for (const view of ['conversation', 'board'] as const) {
@@ -409,13 +447,27 @@ for (const view of ['conversation', 'board'] as const) {
       await showView(page, 'Board');
       await page.getByRole('button', { name: 'Open task: Explore the project', exact: true }).click();
     }
+    // The loaded page drawn, then the older one fetched: it lands above the reader, who still reads where they were.
+    // Held, since drawing the last loaded turn already brings the reader within reach of the top and asks for it.
+    await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+    await drawHistory(page, 51);
+    const anchor = page.locator('#transcript [data-message-id="653"]');
     await scrollHistoryTop(page);
+    await expect(anchor).toBeInViewport();
+    await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
+    const heldY = await historyOffset(anchor);
+    await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+    await expect(page.locator('#transcript [data-message-id="650"]')).toHaveCount(1);
+    await expect.poll(async () => Math.abs(await historyOffset(anchor) - heldY)).toBeLessThan(2);
+    await expect(anchor).toBeInViewport();
+    await drawHistory(page, 0);
     await expect(page.locator('#transcript .message-content')).toHaveCount(151);
     await page.evaluate(() => {
       const fixture = (window as any).__historyFixture;
       fixture.emit({ sessionId: 'session-4', kind: 'status', text: 'Starting agent' });
     });
-    const anchor = page.locator('#transcript [data-message-id="653"]');
+    // Drawing the rest went on to the top; the reader goes back to the same message for the streaming check.
+    await anchor.evaluate(node => node.scrollIntoView({ block: 'center' }));
     await expect(anchor).toBeInViewport();
     const readingY = await historyOffset(anchor);
     await page.evaluate(() => (window as any).__historyFixture.emit({ sessionId: 'session-4', kind: 'text', text: 'A live reply' }));
@@ -426,6 +478,7 @@ for (const view of ['conversation', 'board'] as const) {
     await page.evaluate(() => (window as any).__historyFixture.emit({ sessionId: 'session-4', kind: 'text', text: ' continues smoothly.' }));
     await expect(page.locator('#stream-region .live-text')).toHaveText('A live reply continues smoothly.');
     await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
+    await drawHistory(page, 0);
     await scrollHistoryTop(page);
     const first = page.locator('#transcript [data-message-id="500"]');
     const firstY = await historyOffset(first);
@@ -444,7 +497,7 @@ for (const view of ['conversation', 'board'] as const) {
 
 test('retains loaded history when a completed tool-heavy turn spans multiple pages', async ({ page }) => {
   await installHistoryFixture(page, 151);
-  await scrollHistoryTop(page);
+  await drawHistory(page, 0);
   await expect(page.locator('#transcript .user-message')).toHaveCount(151);
   await page.evaluate(() => {
     const fixture = (window as any).__historyFixture;
@@ -2995,15 +3048,16 @@ test('browses a file and includes its contents as attached message context', asy
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"name": "orbit"');
+  await expect(page.locator('.file-editor')).toContainText('"name": "orbit"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await expect(page.locator('#attachments')).toContainText('package.json');
   await prompt(page).fill('Explain this package configuration');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const chip = page.locator('.user-message').last().locator('.message-attachments .prompt-chip');
   await expect(chip).toHaveText(/package\.json\s*Project file/);
+  await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
   await chip.click();
-  await expect(page.locator('#inspector #file-view')).toContainText('"name": "orbit"');
+  await expect(page.locator('#file-view')).toContainText('"name": "orbit"');
   await expect(page.locator('#attachments')).toBeEmpty();
   await expect(prompt(page)).toBeEnabled();
 });
@@ -3203,7 +3257,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"checkout":"worktree"');
+  await expect(page.locator('.file-editor')).toContainText('"checkout":"worktree"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await prompt(page).fill('Read the package from this worktree');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -3216,8 +3270,6 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   for (const command of ['git_status', 'list_files', 'git_diff', 'read_file', 'start_terminal']) {
     expect(calls).toContainEqual(expect.objectContaining({ command, args: expect.objectContaining({ projectId: 'project-1', sessionId: taskId }) }));
   }
-  // Opened, attached, and re-read at run end because the file stays on screen in the inspector.
-  expect(calls.filter((call: any) => call.command === 'read_file' && call.args.sessionId === taskId)).toHaveLength(3);
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);
@@ -3385,13 +3437,22 @@ test('motion is short and never gates input, and presses keep a button in place'
 
 test('the toast sits in the bottom-right corner and wraps long text', async ({ page }) => {
   const toast = page.locator('#toast');
-  await page.evaluate(() => { const toast = document.querySelector<HTMLElement>('#toast')!; toast.textContent = 'Could not open /Users/someone/projects/a-really-long-folder-name/with/a/deep/path/src/components/SomethingReallyLongFileName.tsx'; toast.hidden = false; });
+  const text = 'Could not open /Users/someone/projects/a-really-long-folder-name/with/a/deep/path/src/components/SomethingReallyLongFileName.tsx';
+  // Through the real notify path (a bot notice), so the toast has its text, live region and close button.
+  await page.evaluate(text => (window as any).__previewEmit('bot-notification', { botId: 'b', text }), text);
+  await expect(toast.locator('.toast-text')).toHaveText(text);
   const box = (await toast.boundingBox())!, viewport = page.viewportSize()!;
   expect(box.width).toBeLessThanOrEqual(361);
   expect(viewport.width - (box.x + box.width)).toBeLessThan(40);
-  expect(viewport.height - (box.y + box.height)).toBeLessThan(40);
+  // Bottom-right corner, unless that would cover the composer: then just above it (placeToast, an 8px gap).
+  const composerTop = await page.locator('#composer-area').evaluate(el => el.getBoundingClientRect().top);
+  const bottom = box.y + box.height;
+  if (viewport.height - bottom >= 40) expect(Math.abs(composerTop - 8 - bottom)).toBeLessThan(2);
   expect(await toast.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-  await expect(toast).toHaveAttribute('role', 'status');
+  // The live region is the text alone, so the close button is never read with it.
+  await expect(toast.locator('.toast-text')).toHaveAttribute('role', 'status');
+  await expect(toast).not.toHaveAttribute('role', /.+/);
+  await expect(toast.locator('[role="status"] button')).toHaveCount(0);
 });
 
 test('switching back to a thread draws it at once: formatted, at the bottom, with no loading frame', async ({ page }) => {
@@ -3440,7 +3501,8 @@ test('⌘F finds text in the thread, in your messages and the agent’s, and ste
   // Matches come from both sides of the conversation, highlighted without touching the DOM.
   const owners = await page.evaluate(() => {
     const all = (CSS as any).highlights.get('thread-find');
-    return [...all].map((range: Range) => range.startContainer.parentElement!.closest('.message')!.classList.contains('user-message') ? 'user' : 'agent');
+    // A tool's details are searched too; those matches belong to neither side.
+    return [...all].map((range: Range) => { const owner = range.startContainer.parentElement!.closest('.message, .tool-activity-body')!; return owner.classList.contains('tool-activity-body') ? 'tool' : owner.classList.contains('user-message') ? 'user' : 'agent'; });
   });
   expect(owners).toContain('user'); expect(owners).toContain('agent');
   expect(await page.evaluate(() => (CSS as any).highlights.get('thread-find-current').size)).toBe(1);
@@ -3490,6 +3552,8 @@ test('a first visit keeps the old rows (inert, briefly) until the page or the lo
     await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match} if (window.__messageDelay) await new Promise(resolve => setTimeout(resolve, window.__messageDelay));`)) });
   });
   for (const [delay, target] of [[40, 'session-2'], [300, 'session-3']] as const) {
+    // Each launch starts on the newest thread, not the one this loop opened last time.
+    await page.evaluate(() => localStorage.removeItem('pandacode.openThread')).catch(() => undefined);
     await page.reload();
     await expect(page.locator('#transcript .message').first()).toBeVisible();
     const frames = await page.evaluate(({ delay, target }) => new Promise<Array<{ t: number; kind: string }>>(resolve => {
@@ -3597,4 +3661,98 @@ test('state pulses share one phase, whenever they mount', async ({ page }) => {
   const apart = (a: number, b: number) => Math.min(Math.abs(a - b), 1600 - Math.abs(a - b));
   expect(apart(phases[0], phases[1]), String(phases)).toBeLessThan(17);
   expect(apart(phases[0], phases[2]), String(phases)).toBeLessThan(17);
+});
+
+
+test('projects, thread and composer load while provider discovery is pending', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = /case ["']list_providers["']:/;
+    expect(source).toMatch(marker);
+    await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match}
+      await new Promise(resolve => { window.__releaseBootProviders = resolve; });
+    `)) });
+  });
+  await page.goto('/');
+  await expect(page.locator('#navigation .task-item').first()).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
+  await expect(page.locator('#transcript .message, #transcript .turn-card').first()).toBeVisible();
+  await page.getByRole('textbox', { name: 'Message your coding agent' }).fill('Draft kept during discovery');
+  expect(await page.evaluate(() => performance.getEntriesByType('resource').some(entry => /diff-viewer|worker\.js/.test(entry.name)))).toBe(false);
+  await page.evaluate(() => (window as any).__releaseBootProviders());
+  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toHaveValue('Draft kept during discovery');
+  await expect(page.getByRole('button', { name: /^Model: / })).toBeEnabled();
+test('a draft re-wraps when the pane narrows, so the prompt never clips it', async ({ page }) => {
+  // The prompt's text is not its fit's only input: how many lines it wraps to depends on the width it wraps at, and the fit
+  // is remembered per text (`resizePrompt` in src/main.ts), so a redraw or a focus change writes nothing. Only the prompt's
+  // own ResizeObserver re-measures it when that width changes, so the same draft must be re-wrapped on a narrower window:
+  // the box is exactly as tall as the text needs up to the 180 px cap, and scrolls only past it. The same textarea node
+  // throughout, so what changes is the fit and not a re-render that remeasured by another path.
+  //
+  // Every expectation is derived from the element — its own padding, border and line-height at this UI scale — never from a
+  // remembered wrap count: a font or UI-scale change moves those numbers together, so the only thing that can make them
+  // disagree is a fit that was not re-taken at the new width.
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect(prompt(page)).toBeEnabled();
+  const field = page.locator('#prompt');
+  const sentence = 'A draft that has to stay whole when the pane narrows: every line of it should stay in view after the window is made smaller, with no scrollbar until the box reaches its cap. ';
+  const draft = (sentence.repeat(2) + sentence.slice(0, 70)).trim();
+  await prompt(page).fill(draft);
+  await expect(prompt(page)).toHaveValue(draft);
+  // The one number the fit is measured against (`PROMPT_MAX_HEIGHT` in src/main.ts): the cap, not a wrap count.
+  const CAP = 180;
+  const fit = () => field.evaluate((node, cap) => {
+    const style = getComputedStyle(node), line = parseFloat(style.lineHeight) || 0;
+    // What a wrap count would subtract: this textarea's own vertical padding and border (16 + 6 px today, at UI scale 1),
+    // read from the live style rather than remembered, so a restyled composer cannot make the arithmetic wrong.
+    const inset = (['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'] as const)
+      .reduce((total, key) => total + (parseFloat(style[key]) || 0), 0);
+    const natural = node.scrollHeight;
+    // `lines` is diagnostic only, for the failure messages: nothing asserts a count.
+    return { width: node.clientWidth, height: node.clientHeight, natural, inline: node.style.height, overflow: style.overflowY, cap,
+      lines: line ? Math.round(((natural - inset) / line) * 10) / 10 : 0 };
+  }, CAP);
+  const fits = async (label: string) => {
+    const now = await fit();
+    // The whole rule, and the assertion that catches a fit never re-taken: the box is min(scrollHeight, cap). A stale fit
+    // is not that number — it is short of the text that re-wrapped (and hidden, with no scrollbar to reach the rest) or
+    // long for it.
+    expect(now.height, `${label}: the box is min(scrollHeight, ${now.cap}) — ${now.lines} lines, ${now.natural}px of text at ${now.width}px, inline ${now.inline}`)
+      .toBe(Math.min(now.natural, now.cap));
+    // Nothing is clipped in a box that carries no scrollbar.
+    if (now.overflow === 'hidden') expect(now.height + 1, `${label}: text hidden past the box's edge`).toBeGreaterThanOrEqual(now.natural);
+    expect(now.overflow, `${label}: a scrollbar exactly when the text is taller than the box`).toBe(now.natural > now.cap + 1 ? 'auto' : 'hidden');
+    return now;
+  };
+  const wide = await fits('wide');
+  // The precondition that makes a stale fit observable instead of merely scrolled: at this width the draft is under the
+  // cap, so the height it was fitted to is the text's own. Derived from the measurement — a wider font or UI scale makes
+  // this viewport fail this precondition (and then wrap counts are not the test's business) rather than failing the fit.
+  expect(wide.natural, `the draft is shorter than the ${wide.cap}px cap at ${wide.width}px, so a stale fit would be visible`).toBeLessThan(wide.cap);
+  await field.evaluate(node => { (window as any).__promptNode = node; });
+  // One notch narrower: the same text wraps to more lines, so the box grows with it. Ablation (checked by re-wrapping the
+  // text for a reason the observer cannot see — a `letter-spacing` override leaves the prompt's box width identical, as
+  // does removing the observer, and the box kept its old height of 150 px while the text needed 176): this is where
+  // `height === min(scrollHeight, cap)` breaks, because the re-wrapped draft needs more than the old fit had.
+  await page.setViewportSize({ width: 1340, height: 900 });
+  await expect.poll(async () => (await fit()).width, { message: 'the composer narrowed' }).toBeLessThan(wide.width - 20);
+  await expect.poll(async () => (await fit()).natural, { message: 'the same draft re-wrapped' }).toBeGreaterThan(wide.natural);
+  const narrow = await fits('narrow');
+  expect(narrow.natural, `the re-wrapped draft needs more than the fit at ${wide.width}px had (${wide.height}px)`).toBeGreaterThan(wide.height + 1);
+  expect(narrow.width).toBeLessThan(wide.width - 20);
+  // Narrower than the cap: the box stops at the cap and the text scrolls, never clipped in a box that would not grow. The
+  // width that gets there depends on the font, the UI scale and the pane, so step in until the measurement says so.
+  let tight = narrow;
+  for (const width of [1220, 1140, 1060, 980]) {
+    if (tight.natural > tight.cap + 1) break;
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(async () => (await fit()).width, { message: `the composer narrowed to ${width}px` }).toBeLessThan(tight.width - 20);
+    await expect.poll(async () => (await fit()).natural, { message: `the draft re-wrapped at ${width}px` }).toBeGreaterThan(tight.natural);
+    tight = await fits(`tight at ${width}px`);
+  }
+  expect(tight.natural, `the draft is taller than the ${tight.cap}px cap`).toBeGreaterThan(tight.cap + 1);
+  expect(tight.height, `the box stops at the ${tight.cap}px cap (inline ${tight.inline})`).toBe(tight.cap);
+  expect(tight.overflow, 'a scrollbar exactly when the text exceeds the cap').toBe('auto');
+  expect(await field.evaluate(node => node === (window as any).__promptNode), 'the same textarea, not a re-render').toBe(true);
 });

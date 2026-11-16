@@ -408,7 +408,7 @@ fn prepare_and_send(app: tauri::AppHandle, sid: String) {
 #[tauri::command]
 pub(crate) async fn cloud_agent_action(app: tauri::AppHandle, session_id: String, action: String) -> Result<Value> {
     let state = with_store(&app, |store| super::load(store, &session_id))?.ok_or("This task does not run on a cloud machine.")?;
-    let running = app.state::<AppState>().agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id);
+    let running = crate::run_requests::lock_agents(&app.state::<AppState>().agents).map_err(|e| e.to_string())?.contains_key(&session_id);
     if action == "open" {
         return Ok(json!({"machine": state.machine}));
     }

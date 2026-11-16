@@ -12,11 +12,15 @@ type ModelPickerOptions = {
   onTeamSelect?: (id: string) => Promise<void>;
   anchor: HTMLElement;
   providers: Provider[];
-  current: { provider: ProviderId; model: string; reasoningEffort?: string | null; contextUsage?: ContextUsage | null };
+  current: { provider: ProviderId; model: string; reasoningEffort?: string | null; serviceTier?: string | null; contextUsage?: ContextUsage | null };
   canSwitchProvider: boolean;
-  onSelect: (provider: ProviderId, model: string) => Promise<void>;
+  /** May hand back `saved`, settling once the change is stored: the picker closes at once and remembers the model only if it saved. */
+  onSelect: (provider: ProviderId, model: string) => Promise<void | { saved: Promise<boolean> }>;
   onEffortSelect?: (effort: string | null) => Promise<void>;
-  loadModels?: (provider: ProviderId) => Promise<ProviderModel[]>;
+  /** A speed tier from the model's `speedTiers`; null is the standard speed. */
+  onSpeedSelect?: (tier: string | null) => Promise<void>;
+  /** `onFresh` hears what became of a refresh behind a stale list that was answered first: the newer list, or why it failed. */
+  loadModels?: (provider: ProviderId, onFresh?: (update: ProviderModel[] | Error) => void) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
   loadProviders?: () => Promise<Provider[]>;
   /** Model IDs to list first in a shortened catalog, newest first; null lists every model. Search always covers all. */
@@ -52,14 +56,21 @@ let pickerCount = 0;
 /** A harness's catalog and availability. */
 type Group = { key: string; provider: Provider; name: string; locked: boolean; unavailable: boolean; failure: string };
 type Row = { group: Group; model: ProviderModel; custom?: boolean };
+/** The settings segments: reasoning effort and speed tier. */
+type Kind = 'effort' | 'speed';
+type Choice = { id: string; name: string; description: string };
 
 /** A transient picker with local state and listeners released on dismissal. */
 export function openModelPicker(options: ModelPickerOptions): () => void {
-  const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, loadModels, onClose } = options;
+  const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, onSpeedSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
   const teams = options.teams ?? [];
   const teamSelected = teams.some(team => team.selected);
   const catalogErrors = new Map<ProviderId, string>();
+  /** Harnesses whose list is an older one because its refresh failed (the reason, for the heading's tip). */
+  const catalogStale = new Map<ProviderId, string>();
+  /** Newer lists that landed while the pointer was over the rows: applied when it leaves (or on the next open). */
+  const deferredFresh = new Map<ProviderId, ProviderModel[]>();
   const catalogLoading = new Set<ProviderId>();
   const uid = `model-menu-${++pickerCount}`;
   const panel = document.createElement('section');
@@ -87,7 +98,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   let railMarkup = '';
   let settingsKey = '';
   let pendingEffort: string | null | undefined;
-  let hoveredEffort: string | null | undefined;
+  /** Effort saves in flight and the latest one's number: choices never wait on each other, only the latest one's outcome shows. */
+  let effortSaves = 0, effortSeq = 0;
+  let pendingSpeed: string | null | undefined;
+  let hoveredChoice: { kind: Kind; id: string | null } | undefined;
   let view = teamSelected ? 'teams' : `h:${current.provider}`;
 
   function restoreFocus(): void {
@@ -303,7 +317,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       if (group) {
         const visible = shortList(group.provider.id, models(group));
         total = visible.length;
-        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
+        const stale = catalogStale.get(group.provider.id);
+        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>'
+          // A failed refresh behind an older list: say so quietly, keep the list.
+          : stale !== undefined ? `<span class="model-menu-stale" data-tip="${escape(`${stale ? `${stale} ` : ''}Showing the saved list.`)}">Couldn't refresh</span>`
+          : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
@@ -318,6 +336,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const next = buttons.find(button => optionKey(button) === activeKey) ?? (query ? buttons[0] : buttons.find(button => button.getAttribute('aria-current') === 'true') ?? buttons[0]);
       setActive(next);
     }
+    // A first fetch shows a quiet "Loading…" even over the bundled list, so rows don't change unannounced. A stale list
+    // answers at once (its refresh lands silently through onFresh), so it clears before anything paints.
     list.querySelectorAll<HTMLElement>('[data-catalog-loading]').forEach(status => { status.hidden = !catalogLoading.has(status.dataset.catalogLoading as ProviderId); });
     updateControls();
     position();
@@ -376,72 +396,122 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     return { provider, model: modelChoices(current.provider, provider?.models ?? [], current.model).find(model => model.id === current.model)! };
   }
 
+  /** A choice saved earlier that the catalog no longer lists still shows as chosen. */
+  function withSaved(choices: Choice[], chosen: string | null): Choice[] {
+    return chosen && !choices.some(choice => choice.id === chosen) ? [...choices, { id: chosen, name: chosen, description: '' }] : choices;
+  }
+  const saved = (kind: Kind) => (kind === 'effort' ? current.reasoningEffort : current.serviceTier) ?? null;
+  const chosenOf = (kind: Kind) => kind === 'effort'
+    ? (pendingEffort !== undefined ? pendingEffort : saved('effort'))
+    : (pendingSpeed !== undefined ? pendingSpeed : saved('speed'));
+
+  function segmentRow(kind: Kind, label: string, choices: Choice[], modelDefault?: string | null): string {
+    return `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-${kind}">${label}</span><div class="model-menu-effort" data-kind="${kind}" role="radiogroup" aria-labelledby="${uid}-${kind}">${choices.map(choice => `<button type="button" role="radio" data-${kind}="${escape(choice.id)}" title="${escape(choice.description || choice.name)}"${choice.id && choice.id === modelDefault ? ' data-model-default=""' : ''}>${escape(choice.name)}</button>`).join('')}</div></div>`;
+  }
+
   function renderSettings(): void {
     const { provider, model } = currentModel();
-    const efforts = [...(model.reasoningEfforts ?? [])];
-    const chosen = pendingEffort !== undefined ? pendingEffort : current.reasoningEffort ?? null;
-    // A saved level the catalog no longer lists still shows as chosen.
-    if (chosen && !efforts.some(effort => effort.id === chosen)) efforts.push({ id: chosen, name: chosen, description: '' });
+    const efforts = withSaved(model.reasoningEfforts ?? [], chosenOf('effort'));
+    const tiers = model.speedTiers ?? [];
     const canSetEffort = Boolean(onEffortSelect && efforts.length);
-    settings.hidden = !canSetEffort && !teamSelected;
+    const canSetSpeed = Boolean(onSpeedSelect && tiers.length) && !teamSelected;
+    settings.hidden = !canSetEffort && !canSetSpeed && !teamSelected;
     const disabled = pending || !provider?.installed;
     const defaultEffort = efforts.find(effort => effort.id === model.defaultReasoningEffort);
-    const choices = [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts];
+    const choices: Record<Kind, Choice[]> = {
+      effort: [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts],
+      speed: [{ id: '', name: 'Standard', description: "The model's standard speed." }, ...withSaved(tiers, chosenOf('speed'))],
+    };
     const markup = teamSelected
       ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
-      : canSetEffort ? `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-effort">Effort</span><div class="model-menu-effort" role="radiogroup" aria-labelledby="${uid}-effort">${choices.map(effort => `<button type="button" role="radio" data-effort="${escape(effort.id)}" title="${escape(effort.description || effort.name)}"${effort.id && effort.id === model.defaultReasoningEffort ? ' data-model-default=""' : ''}>${escape(effort.name)}</button>`).join('')}</div></div><p class="model-menu-effort-hint"></p>` : '';
+      : canSetEffort || canSetSpeed ? `${canSetEffort ? segmentRow('effort', 'Effort', choices.effort, model.defaultReasoningEffort) : ''}${canSetSpeed ? segmentRow('speed', 'Speed', choices.speed) : ''}<p class="model-menu-effort-hint"></p>` : '';
     if (markup !== settingsKey) {
       const focused = settings.contains(document.activeElement);
       settings.innerHTML = markup;
       settingsKey = markup;
       if (focused) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
     }
-    const group = settings.querySelector<HTMLElement>('.model-menu-effort');
-    if (!group) return;
-    let selected: HTMLElement | null = null;
-    group.querySelectorAll<HTMLButtonElement>('[role="radio"]').forEach(button => {
-      const on = button.dataset.effort === (chosen ?? '');
-      if (on) selected = button;
-      button.setAttribute('aria-checked', String(on));
-      button.classList.toggle('selected', on);
-      button.tabIndex = on ? 0 : -1;
-      button.disabled = disabled;
+    settings.querySelectorAll<HTMLElement>('.model-menu-effort').forEach(group => {
+      const kind = group.dataset.kind as Kind;
+      const groupDisabled = disabled || (kind === 'speed' && effortSaves > 0);
+      let selected: HTMLElement | null = null;
+      group.querySelectorAll<HTMLButtonElement>('[role="radio"]').forEach(button => {
+        const on = button.dataset[kind] === (chosenOf(kind) ?? '');
+        if (on) selected = button;
+        button.setAttribute('aria-checked', String(on));
+        button.classList.toggle('selected', on);
+        button.tabIndex = on ? 0 : -1;
+        button.disabled = groupDisabled;
+      });
+      group.setAttribute('aria-disabled', String(groupDisabled));
+      trackSegment(group, selected);
     });
-    group.setAttribute('aria-disabled', String(disabled));
-    trackSegment(group, selected);
-    const shown = hoveredEffort !== undefined ? hoveredEffort : chosen;
-    const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint')!;
-    const text = choices.find(effort => effort.id === (shown ?? ''))?.description ?? '';
+    const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint');
+    if (!hint) return;
+    const kind: Kind = hoveredChoice?.kind ?? (canSetEffort ? 'effort' : 'speed');
+    const shown = hoveredChoice ? hoveredChoice.id : chosenOf(kind);
+    const text = choices[kind].find(choice => choice.id === (shown ?? ''))?.description ?? '';
     if (hint.textContent !== text) hint.textContent = text;
   }
 
   function updateControls(): void {
-    panel.setAttribute('aria-busy', String(pending));
-    pendingStatus.hidden = !pending;
-    list.querySelectorAll<HTMLButtonElement>('.model-menu-option[data-available="true"]').forEach(button => { button.disabled = pending; });
+    // Rows and effort choices stay live during an effort save (a model picked then saves after it, model-switch.ts);
+    // named teams cannot join that queue, so they wait until every effort save settles.
+    const busy = pending || effortSaves > 0;
+    panel.setAttribute('aria-busy', String(busy));
+    pendingStatus.hidden = !busy;
+    list.querySelectorAll<HTMLButtonElement>('.model-menu-option[data-available="true"]').forEach(button => { button.disabled = pending || (effortSaves > 0 && Boolean(button.dataset.team)); });
     renderSettings();
   }
 
-  async function saveEffort(effort: string | null): Promise<void> {
+  async function saveChoice(kind: Kind, id: string | null): Promise<void> {
     const provider = providers.find(provider => provider.id === current.provider);
-    if (pending || closed || !onEffortSelect || !provider?.installed) return;
-    const supported = provider.models.find(model => model.id === current.model)?.reasoningEfforts ?? [];
-    if (effort !== null && !supported.some(choice => choice.id === effort)) {
-      if (effort === current.reasoningEffort) return;
-      error.textContent = 'This reasoning effort is no longer available. Choose another level.';
+    const callback = kind === 'effort' ? onEffortSelect : onSpeedSelect;
+    if (pending || closed || !callback || !provider?.installed) return;
+    const model = provider.models.find(model => model.id === current.model);
+    const supported = (kind === 'effort' ? model?.reasoningEfforts : model?.speedTiers) ?? [];
+    if (id !== null && !supported.some(choice => choice.id === id)) {
+      if (id === saved(kind)) return;
+      error.textContent = kind === 'effort' ? 'This reasoning effort is no longer available. Choose another level.' : 'This speed is no longer available. Choose another speed.';
       error.hidden = false;
       renderSettings();
       return;
     }
-    if (effort === (current.reasoningEffort ?? null)) { renderSettings(); return; }
+    if (kind === 'effort') {
+      if (id === chosenOf('effort')) { renderSettings(); return; }
+      const seq = ++effortSeq;
+      effortSaves += 1;
+      pendingEffort = id;
+      error.hidden = true;
+      updateControls();
+      try {
+        await callback(id);
+        // Saves land in order, so each success is the last confirmed effort.
+        current.reasoningEffort = id;
+      } catch (reason) {
+        // A newer choice decides; an older one's refusal says nothing.
+        if (closed || seq !== effortSeq) return;
+        error.textContent = reason instanceof Error ? reason.message : String(reason);
+        error.hidden = false;
+      } finally {
+        effortSaves -= 1;
+        if (!closed) {
+          if (seq === effortSeq) pendingEffort = undefined;
+          updateControls();
+        }
+      }
+      return;
+    }
+    if (effortSaves > 0) return;
+    if (id === saved('speed')) { renderSettings(); return; }
     const focused = settings.contains(document.activeElement);
     pending = true;
-    pendingEffort = effort;
+    pendingSpeed = id;
     error.hidden = true;
     updateControls();
     try {
-      await onEffortSelect(effort);
-      current.reasoningEffort = effort;
+      await callback(id);
+      current.serviceTier = id;
     } catch (reason) {
       if (closed) return;
       error.textContent = reason instanceof Error ? reason.message : String(reason);
@@ -449,26 +519,33 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     } finally {
       if (!closed) {
         pending = false;
-        pendingEffort = undefined;
+        pendingSpeed = undefined;
         updateControls();
         // A disabled control loses focus during the save; leave deliberate navigation alone.
-        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
+        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>('[data-kind="speed"] .selected') ?? search).focus({ preventScroll: true });
       }
     }
+  }
+
+  /** The segment a radio belongs to and the choice it stands for. */
+  function radioChoice(radio: HTMLElement): { kind: Kind; id: string | null } {
+    const kind = radio.closest<HTMLElement>('[role="radiogroup"]')!.dataset.kind as Kind;
+    return { kind, id: radio.dataset[kind] || null };
   }
 
   // ----- Selection and events -----
 
   async function select(button: HTMLButtonElement): Promise<void> {
-    if (pending || closed || button.disabled) return;
+    if (pending || closed || button.disabled || (button.dataset.team && effortSaves > 0)) return;
     pending = true;
     error.hidden = true;
     updateControls();
     try {
       if (button.dataset.team) await options.onTeamSelect?.(button.dataset.team);
       else {
-        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!);
-        rememberRecent(button.dataset.provider as ProviderId, button.dataset.model!);
+        const providerId = button.dataset.provider as ProviderId, model = button.dataset.model!;
+        const result = await onSelect(providerId, model);
+        void (result?.saved ?? Promise.resolve(true)).then(saved => { if (saved) rememberRecent(providerId, model); }).catch(() => undefined);
       }
       close();
     } catch (reason) {
@@ -488,7 +565,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   }
 
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || isImeKey(event)) return;
     event.preventDefault();
     event.stopPropagation();
     // The first Esc clears the query; the next closes.
@@ -496,9 +573,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     close();
   }
 
-  /** Tab cycles search → rail → effort inside the picker and never leaves it. */
+  /** Tab cycles search → rail → effort → speed inside the picker and never leaves it. */
   function cycleFocus(back: boolean): void {
-    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), settings.hidden ? null : settings.querySelector<HTMLElement>('.selected:not(:disabled)'), [...extensions.querySelectorAll<HTMLElement>('button:not(:disabled)')].find(button => !button.hidden && button.getClientRects().length > 0) ?? null].filter((stop): stop is HTMLElement => Boolean(stop));
+    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), ...(settings.hidden ? [] : settings.querySelectorAll<HTMLElement>('.selected:not(:disabled)')), [...extensions.querySelectorAll<HTMLElement>('button:not(:disabled)')].find(button => !button.hidden && button.getClientRects().length > 0) ?? null].filter((stop): stop is HTMLElement => Boolean(stop));
     const index = stops.findIndex(stop => stop.contains(document.activeElement));
     stops[(index + (back ? -1 : 1) + stops.length) % stops.length].focus({ preventScroll: true });
   }
@@ -511,14 +588,14 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   });
   settings.addEventListener('click', event => {
     const radio = (event.target as Element).closest<HTMLButtonElement>('[role="radio"]');
-    if (radio && !radio.disabled) void saveEffort(radio.dataset.effort || null);
+    if (radio && !radio.disabled) { const { kind, id } = radioChoice(radio); void saveChoice(kind, id); }
   });
   settings.addEventListener('pointerover', event => {
     const radio = (event.target as Element).closest<HTMLElement>('[role="radio"]');
-    hoveredEffort = radio ? radio.dataset.effort || null : undefined;
+    hoveredChoice = radio ? radioChoice(radio) : undefined;
     renderSettings();
   });
-  settings.addEventListener('pointerleave', () => { hoveredEffort = undefined; renderSettings(); });
+  settings.addEventListener('pointerleave', () => { hoveredChoice = undefined; renderSettings(); });
   list.addEventListener('click', event => {
     const button = (event.target as Element).closest<HTMLButtonElement>('.model-menu-option');
     if (button) void select(button);
@@ -526,6 +603,16 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   list.addEventListener('pointermove', event => {
     const button = (event.target as Element).closest<HTMLButtonElement>('.model-menu-option');
     if (button && !pending && !button.disabled && !button.classList.contains('model-menu-active')) setActive(button);
+  });
+  // The pointer left the rows: apply the lists that landed meanwhile (renderChoices keeps the active row).
+  list.addEventListener('pointerleave', () => {
+    if (closed || !deferredFresh.size) return;
+    for (const [id, models] of deferredFresh) {
+      const entry = providers.find(provider => provider.id === id);
+      if (entry) { entry.models = models; catalogStale.delete(id); }
+    }
+    deferredFresh.clear();
+    renderChoices();
   });
   panel.addEventListener('click', event => event.stopPropagation());
   panel.addEventListener('keydown', event => {
@@ -536,14 +623,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     if (target !== search && key.length === 1 && key !== ' ' && !event.metaKey && !event.ctrlKey && !event.altKey) { search.focus({ preventScroll: true }); return; }
     const radio = target.closest<HTMLButtonElement>('[role="radio"]');
     if (radio) {
-      const radios = [...settings.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+      const radios = [...radio.closest('[role="radiogroup"]')!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
       const index = radios.indexOf(radio);
       const next = key === 'ArrowRight' || key === 'ArrowDown' ? Math.min(radios.length - 1, index + 1) : key === 'ArrowLeft' || key === 'ArrowUp' ? Math.max(0, index - 1) : key === 'Home' ? 0 : key === 'End' ? radios.length - 1 : -1;
       if (next < 0) return;
       event.preventDefault();
-      if (pending || radio.disabled) return;
+      if (radio.disabled) return;
       radios[next].focus({ preventScroll: true });
-      void saveEffort(radios[next].dataset.effort || null);
+      const { kind, id } = radioChoice(radios[next]);
+      void saveChoice(kind, id);
       return;
     }
     if (target.closest('[role="tab"]')) {
@@ -582,7 +670,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     for (const provider of providers) {
       if (!provider.installed || !canSwitchProvider && provider.id !== current.provider) continue;
       catalogLoading.add(provider.id);
-      void Promise.resolve().then(() => loadModels(provider.id)).then(models => {
+      const fresh = (update: ProviderModel[] | Error) => {
+        if (closed) return;
+        if (update instanceof Error) catalogStale.set(provider.id, update.message);
+        // Rows never move under the pointer: a refresh that lands meanwhile waits for it to leave.
+        else if (list.matches(':hover')) { deferredFresh.set(provider.id, update); return; }
+        else { catalogStale.delete(provider.id); provider.models = update; }
+        renderChoices();
+      };
+      void Promise.resolve().then(() => loadModels(provider.id, fresh)).then(models => {
         if (closed) return;
         provider.models = models;
       }).catch(reason => { if (!closed) catalogErrors.set(provider.id, reason instanceof Error ? reason.message : String(reason ?? '')); }).finally(() => {

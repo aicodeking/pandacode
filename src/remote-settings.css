@@ -3,7 +3,8 @@
 .remote-dot[data-online="true"]{background:var(--ds-success)}
 .remote-badge{display:inline-flex;align-items:center;height:20px;margin-left:6px;padding:0 7px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);color:var(--muted);font-size:var(--ds-text-chip);font-weight:var(--weight-medium)}
 .remote-note{margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--muted);font-size:var(--ds-text-meta)}
-.remote-error{margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--ds-danger);font-size:var(--ds-text-meta)}
+/* Banner = the shared .error-row card from styles.css; only its margin and size are set for this surface. */
+.message-error.error-row.remote-error-row{margin:8px 0 0;font-size:var(--ds-text-ui)}
 .remote-load-error{display:flex;align-items:center;gap:var(--ds-row-gap);margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--text);font-size:var(--ds-text-ui)}
 .remote-load-error>.icon{width:18px;height:18px;color:var(--ds-danger);flex:none}
 .remote-load-error>span{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}

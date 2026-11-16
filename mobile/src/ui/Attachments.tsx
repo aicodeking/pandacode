@@ -6,7 +6,7 @@ import { createContext, useContext, useState, type ComponentRef } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { attachmentsUnsupported } from '../connect/attachments.ts';
 import type { Attachment } from '../store/attachments.ts';
-import { Chip, PressScale, type as textStyle } from './ds/index.ts';
+import { Chip, PressScale, type as textStyle, VIEWER } from './ds/index.ts';
 import { Icon } from './Icon.tsx';
 import { imageKey, openViewer, useViewerHides, type ThumbRect, type ThumbSource } from './ImageViewer.tsx';
 import { useAttachment, type ViewerImage } from './useAttachment.ts';
@@ -63,6 +63,29 @@ export function ImageGrid({ images }: { images: Attachment[] }) {
       {shown.length === 2 && shown.map((_, i) => tile(i, { width: half, height: half }))}
       {shown.length === 3 && <>{tile(0, { width: GRID, height: GRID / 2 })}{tile(1, { width: half, height: half })}{tile(2, { width: half, height: half })}</>}
       {shown.length === 4 && shown.map((_, i) => tile(i, { width: half, height: half }))}
+    </View>
+  );
+}
+
+/** A sending bubble's images, from their files on this phone, laid out as ImageGrid lays out the stored copy's. */
+export function LocalImageGrid({ uris }: { uris?: readonly string[] }) {
+  const colors = useColors();
+  if (!uris?.length) return null;
+  const shown = uris.slice(0, 4);
+  const half = (GRID - GAP) / 2;
+  const more = uris.length - 4;
+  const tile = (i: number, style: object) => (
+    <View key={`${i}:${shown[i]}`} style={[styles.tile, style, { backgroundColor: colors.fill }]} accessible accessibilityRole="image" accessibilityLabel={`Image ${i + 1}`}>
+      <Image source={{ uri: shown[i] }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} accessibilityIgnoresInvertColors />
+      {i === 3 && more > 0 && <View style={styles.more}><Text style={styles.moreText}>+{more}</Text></View>}
+    </View>
+  );
+  return (
+    <View style={styles.grid}>
+      {shown.length === 1 && tile(0, { width: GRID, aspectRatio: 4 / 3 })}
+      {shown.length === 3
+        ? <>{tile(0, { width: GRID, height: GRID / 2 })}{tile(1, { width: half, height: half })}{tile(2, { width: half, height: half })}</>
+        : shown.length > 1 && shown.map((_, i) => tile(i, { width: half, height: half }))}
     </View>
   );
 }
@@ -166,8 +189,9 @@ const styles = StyleSheet.create({
   grid: { width: GRID, flexDirection: 'row', flexWrap: 'wrap', gap: GAP, marginBottom: 8, marginTop: 2 },
   hidden: { opacity: 0 },
   tile: { borderRadius: TILE_RADIUS, overflow: 'hidden', borderCurve: 'continuous' },
-  more: { position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
-  moreText: { ...textStyle.title3, color: '#fff' },
+  // "+N" over a photo: the image viewer's scheme-independent chrome and text.
+  more: { position: 'absolute', inset: 0, backgroundColor: VIEWER.chrome, alignItems: 'center', justifyContent: 'center' },
+  moreText: { ...textStyle.title3, color: VIEWER.text },
   failed: { position: 'absolute', inset: 0, alignItems: 'center', justifyContent: 'center', gap: 4, padding: 8 },
   failedText: { ...textStyle.caption, textAlign: 'center' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },

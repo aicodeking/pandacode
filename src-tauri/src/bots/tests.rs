@@ -355,6 +355,29 @@ fn schedules_validate_and_advance() {
 }
 
 #[test]
+fn scheduler_refreshes_only_after_advancing_due_state() {
+    let f = fixture();
+    let bot = bot(&f);
+    let scheduled = schedule::ScheduleInput { kind: "once".into(), prompt: "Check".into(), run_at: Some(10 * MINUTE), ..Default::default() };
+    schedule::create(&f.store, &bot.id, &scheduled, "user", 0).unwrap();
+    let (schedules, bots) = schedule::due(&f.store, 0).unwrap();
+    assert!(!schedule::advance_due(&f.store, &schedules, &bots, 0));
+    let (schedules, bots) = schedule::due(&f.store, 11 * MINUTE).unwrap();
+    assert!(schedule::advance_due(&f.store, &schedules, &bots, 11 * MINUTE));
+    let (schedules, bots) = schedule::due(&f.store, 12 * MINUTE).unwrap();
+    assert!(!schedule::advance_due(&f.store, &schedules, &bots, 12 * MINUTE));
+
+    let mut input = input("Heartbeat");
+    input.heartbeat_minutes = 60;
+    let bot = create(&f.store, &input, &f.root).unwrap();
+    let now = bot.next_heartbeat_at.unwrap();
+    let (schedules, bots) = schedule::due(&f.store, now).unwrap();
+    assert!(schedule::advance_due(&f.store, &schedules, &bots, now));
+    let (schedules, bots) = schedule::due(&f.store, now).unwrap();
+    assert!(!schedule::advance_due(&f.store, &schedules, &bots, now));
+}
+
+#[test]
 fn paused_bots_skip_heartbeats() {
     let f = fixture();
     let mut with_heartbeat = input("Watcher");
@@ -824,4 +847,37 @@ fn project_tasks_get_their_own_bot_brief_and_skill_union() {
     // A bot's own conversation is never relinked to another bot.
     let (thread, _) = thread_session(&f.store, &writer, DESKTOP, DESKTOP, "x").unwrap();
     assert!(assign_task(&f.store, &thread, Some(&reviewer.id)).is_err());
+}
+
+#[test]
+fn a_team_saved_after_the_early_check_refuses_the_turn_and_clears_its_images() {
+    let f = fixture();
+    let bot = bot(&f);
+    let task = f.store.create_session(&bot.project_id, "claude", "default", "ask").unwrap();
+    // The early check in `start_or_queue` passed: no team yet, so the images are remembered.
+    assert!(gateway::claim_turn(&f.store, &bot, &task.id, "hi").is_ok());
+    super::failover::remember_images(&task.id, &["img-1".to_string()]);
+    f.store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&task.id]).unwrap();
+    assert_eq!(gateway::claim_turn(&f.store, &bot, &task.id, "hi").unwrap_err(), gateway::TEAM_NEEDS_FULL_BOT);
+    assert_eq!(super::failover::remembered_images(&task.id), None);
+}
+
+#[test]
+fn an_unreadable_team_refuses_the_turn_without_promoting_its_request_or_keeping_images() {
+    let f = fixture();
+    let mut bot = bot(&f);
+    bot.mode = "full".into();
+    let scout = create(&f.store, &input("Scout"), &f.root).unwrap();
+    let task = f.store.create_session(&bot.project_id, "claude", "default", "ask").unwrap();
+    f.store.db.execute("INSERT INTO bot_messages(id,source_bot_id,target_bot_id,source_session_id,target_session_id,source_channel_id,source_external_id,text,status,depth,created_at,updated_at) VALUES('m',?1,?2,?3,?3,'desktop','desktop','do it','queued',1,1,1)", params![scout.id, bot.id, task.id]).unwrap();
+    f.store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'not json')", [&task.id]).unwrap();
+    super::failover::remember_images(&task.id, &["img-1".to_string()]);
+    assert!(gateway::claim_turn(&f.store, &bot, &task.id, "Message from Scout:\n\ndo it").unwrap_err().starts_with("Invalid saved team"));
+    assert_eq!(super::failover::remembered_images(&task.id), None);
+    let status: String = f.store.db.query_row("SELECT status FROM bot_messages WHERE id='m'", [], |row| row.get(0)).unwrap();
+    assert_eq!(status, "queued", "the request stays queued for the next turn");
+    // Once the team row is readable the same request is promoted.
+    f.store.db.execute("DELETE FROM architect_teams WHERE session_id=?1", [&task.id]).unwrap();
+    let (is_team, request) = gateway::claim_turn(&f.store, &bot, &task.id, "Message from Scout:\n\ndo it").unwrap();
+    assert_eq!((is_team, request), (false, Some(shared_channels::Running::Message("m".into()))));
 }

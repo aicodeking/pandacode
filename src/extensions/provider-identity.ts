@@ -1,6 +1,6 @@
 import type { ExtensionProviderId, ProviderId } from '../types';
 
-export const BUILTIN_PROVIDER_IDS = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'] as const;
+export const BUILTIN_PROVIDER_IDS = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'] as const;
 const extensionId = /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*\/[a-z][a-zA-Z0-9._-]*$/;
 /** Validation is independent of installation: uninstall must not invalidate saved history. */
 export function parseProviderId(value: unknown): ProviderId | undefined {

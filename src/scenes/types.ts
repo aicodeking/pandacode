@@ -34,6 +34,8 @@ export interface Scene {
   /** Stable id: the per-thread pick sorts by it, so renaming one reshuffles every thread. */
   id: string;
   label: string;
+  /** Fast particles, streaks or ripples need 15 fps (tiles 6); ambient scenes keep the low cadence. Both settle at idle. */
+  motion: 'ambient' | 'fast';
   /** GLSL appended to PRELUDE; defines `void main()`. */
   fragment: string;
   /** The CSS gradient (top, middle, bottom; sRGB 0..1) shown until WebGL paints or if it cannot; the layer's own

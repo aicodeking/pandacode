@@ -201,7 +201,7 @@ impl CommandCache {
                 // Process output stays behind the generic message.
                 let warning = if key.0 == "kimi" && error == kimi::AUTH_REQUIRED {
                     kimi::AUTH_REQUIRED
-                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes")
+                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor")
                     && error.starts_with(crate::providers::acp::ACP_STARTUP_TIMEOUT)
                 {
                     crate::providers::acp::ACP_STARTUP_TIMEOUT
@@ -240,7 +240,7 @@ impl CommandCache {
             .get(&key)
             .map(|entry| entry.terminal_names.clone())
             .unwrap_or_default();
-        if matches!(key.0.as_str(), "claude" | "glm" | "mimo") {
+        if matches!(key.0.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
             if let Some(names) = explicit_terminals {
                 terminal_names = names
                     .iter()
@@ -330,13 +330,18 @@ async fn unfiltered(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, 
 /// Local actions and the latest known catalog are available without starting a
 /// harness. A stale snapshot is for completion; command dispatch still validates.
 pub async fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
+    let catalog = known_unfiltered(provider, cwd)?;
+    skill_switches::for_path(provider, catalog, cwd).await
+}
+
+/// The latest cached catalog before switched-off skills are hidden; never discovers.
+fn known_unfiltered(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
     if let Some(catalog) = control_only_catalog(provider) { return Ok(catalog); }
-    let catalog = CACHE
+    Ok(CACHE
         .lock()
         .map_err(|_| "Command discovery is unavailable.".to_string())?
-        .snapshot(&catalog_key(provider, cwd));
-    skill_switches::for_path(provider, catalog, cwd).await
+        .snapshot(&catalog_key(provider, cwd)))
 }
 
 pub(crate) fn invalidate_provider(provider: &str) {
@@ -407,8 +412,8 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
         };
         let discovered = match provider {
             "claude" => claude::discover(cwd).await,
-            "glm" | "mimo" => claude::discover_for(provider, cwd).await,
-            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
+            "glm" | "mimo" | "alibaba" => claude::discover_for(provider, cwd).await,
+            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
                 acp::discover(provider, cwd).await
             }
             "deepseek" => deepseek::discover(cwd),
@@ -444,8 +449,8 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
         return true;
     }
     let value = match provider {
-        "claude" | "glm" | "mimo" => claude::parse_runtime(data),
-        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => acp::parse_runtime(provider, data),
+        "claude" | "glm" | "mimo" | "alibaba" => claude::parse_runtime(data),
+        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => acp::parse_runtime(provider, data),
         "kimi" => kimi::parse_runtime(data),
         _ => None,
     };
@@ -470,7 +475,7 @@ fn hashed_id(prefix: &str, name: &str, path: &str) -> String {
 }
 
 fn normalize(catalog: &mut Catalog, provider: &str) {
-    if matches!(provider, "glm" | "mimo") {
+    if matches!(provider, "glm" | "mimo" | "alibaba") {
         for command in &mut catalog.commands {
             if let Some(id) = command.id.strip_prefix("claude:") {
                 command.id = format!("{provider}:{id}");
@@ -711,6 +716,29 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
     // A switched-off skill is hidden from the catalog; typing it says so instead of "Unknown".
     let catalog = unfiltered(provider, cwd, false).await?;
     skill_switches::resolve_at(provider, text, catalog, cwd).await
+}
+
+/// [`resolve`] against the latest known catalog only: never starts the harness, for callers
+/// (a phone below the task's mode) that may not launch discovery in the project.
+pub async fn resolve_known(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
+    resolve_known_by(provider, cwd, text, |catalog| skill_switches::resolve_at(provider, text, catalog, cwd)).await
+}
+
+/// [`resolve_known`] with the switch check (`resolve_at`, which reads the user's settings)
+/// passed in, so a test can supply the switches.
+async fn resolve_known_by<F>(provider: &str, cwd: &Path, text: &str, switches: impl FnOnce(Catalog) -> F) -> Result<Resolution, String>
+where
+    F: std::future::Future<Output = Result<Resolution, String>>,
+{
+    let Some((name, _)) = split_command(text) else {
+        return Ok(plain_resolution(text));
+    };
+    if is_local_control(name) {
+        return resolve_from_catalog(provider, text, &Catalog::default());
+    }
+    // Unfiltered, so a switched-off skill gets the switched-off error, as in `resolve`.
+    let catalog = known_unfiltered(provider, cwd)?;
+    switches(catalog).await
 }
 
 /// A command may be removed after the picker cached it. Claude's fresh
@@ -1217,6 +1245,43 @@ mod tests {
         cache.snapshot(&recent);
         assert!(!cache.entries.contains_key(&waiting));
         assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// A phone below the task's mode resolves against the cache: a switched-off skill there
+    /// gets the switched-off error (not "Unknown command"), and a stale entry is never
+    /// refreshed, so no harness is launched.
+    #[tokio::test]
+    async fn resolve_known_reports_switched_off_skills_without_launching_a_harness() {
+        let cwd = PathBuf::from(format!("/resolve-known-{}", uuid::Uuid::new_v4()));
+        let key = catalog_key("claude", &cwd);
+        let skill = SlashCommand {
+            id: "test:/release".into(),
+            name: "/release".into(),
+            description: "Release".into(),
+            argument_hint: None,
+            kind: "prompt".into(),
+            source: "skill".into(),
+            reason: None,
+            invocation: Invocation::Skill { name: "release".into(), path: cwd.join(".claude/skills/release/SKILL.md") },
+        };
+        let stale = Instant::now() - CACHE_AGE;
+        let revision = {
+            let mut cache = CACHE.lock().unwrap();
+            let revision = cache.insert(key.clone(), Some(Catalog { commands: vec![skill], warnings: vec![] }), HashSet::new());
+            cache.entries.get_mut(&key).unwrap().updated = stale;
+            revision
+        };
+        let disabled: std::collections::BTreeSet<String> = ["release".to_string()].into();
+        let error = resolve_known_by("claude", &cwd, "/release now", |catalog| async {
+            skill_switches::resolve_with("claude", "/release now", catalog, &disabled, Default::default)
+        })
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error, crate::skill_manager::off_error(&disabled, "release"));
+        let cache = CACHE.lock().unwrap();
+        let entry = &cache.entries[&key];
+        assert_eq!((entry.revision, entry.updated), (revision, stale), "no discovery ran");
     }
 
     #[tokio::test]

@@ -22,7 +22,7 @@ pub const SLASH_UNSUPPORTED: &str = "UnsupportedCapability: this extension provi
 /// terminal enforces core approval policy. Only reviewed native CLI adapters can.
 pub fn require_console(id: &str) -> Result<(), String> {
     validate_identity(id)?;
-    if matches!(id, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") { Ok(()) }
+    if matches!(id, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "alibaba" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes" | "cursor") { Ok(()) }
     else { Err(CONSOLE_UNSUPPORTED.into()) }
 }
 

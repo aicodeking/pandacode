@@ -13,6 +13,7 @@ import { age, connectAdvice, isRecent, issuePrompt, PULL_ACTIONS, pullPrompt, ru
 import type { Project, Session, TaskLink } from './types';
 import { mountGithubHubPresentation } from './extensions/github-hub-host';
 import type { GithubHubRow } from './extensions/github-hub';
+import { errorText } from './error-text';
 
 export interface HubRepo { nameWithOwner: string; description: string; private: boolean; fork: boolean; archived: boolean; pushedAt: string; url: string; defaultBranch: string; openIssues: number; language: string }
 export interface HubPull { number: number; title: string; author: string; state: string; head: string; base: string; updatedAt: string; url: string; review: string; checks: string; additions: number; deletions: number; labels: string[] }
@@ -34,6 +35,7 @@ export interface HubHost {
   chooseFolder(title: string): Promise<string | null>;
   projectsChanged(): Promise<void>;
   notify(text: string): void;
+  notifyError?(text: string): void;
 }
 export interface HubView { render(): void; refresh(): void; dispose(): void; presentation: ReturnType<typeof mountGithubHubPresentation>['presentation']; dispatch: ReturnType<typeof mountGithubHubPresentation>['dispatch'] }
 
@@ -78,6 +80,9 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
         <label class="gh-filter gh-search">${icon('search')}<input type="search" data-gh-filter="items" placeholder="Search" aria-label="Search this tab" autocomplete="off" spellcheck="false"></label></div>
       <div class="gh-body"></div></section>`;
   const $ = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
+  /** A failed click action (open, start, clone) reports through the host's notice, like a failed clone does. */
+  const fail = (text: string): void => (host.notifyError ?? host.notify)(text);
+  const report = (cause: unknown): void => fail(errorText(cause, 'The action failed. Try again.'));
 
   const repo = () => repos?.find(item => item.nameWithOwner === selected);
   const projectFor = (name: string) => host.projects().find(project => project.id === mapping.get(name));
@@ -107,7 +112,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       if (current?.loading || (!force && current && Date.now() - current.at < STALE)) return;
       cache.set(name, { ...current, loading: true, at: current?.at ?? 0 });
       try { cache.set(name, { items: await host.call<T[]>(command, { repo: name }), loading: false, at: Date.now() }); }
-      catch (cause) { cache.set(name, { error: cause instanceof Error ? cause.message : String(cause), loading: false, at: Date.now() }); }
+      catch (cause) { cache.set(name, { error: errorText(cause), loading: false, at: Date.now() }); }
       if (!disposed && name === selected) render();
     };
     await Promise.all([fetch(pulls, 'github_repo_pulls'), fetch(issues, 'github_repo_issues'), fetch(runs, 'github_repo_runs')]);
@@ -244,7 +249,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       await host.projectsChanged();
       host.notify(`Cloned ${item.nameWithOwner}`);
       return added;
-    } catch (cause) { host.notify(cause instanceof Error ? cause.message : String(cause)); return undefined; }
+    } catch (cause) { fail(errorText(cause)); return undefined; }
     finally { cloning = ''; render(); }
   }
   const linkFor = (kind: 'pull' | 'issue', item: { number: number; url: string; title: string }, state: string): TaskLink => ({ kind, number: item.number, url: item.url, title: item.title, state, checkedAt: Date.now() });
@@ -282,7 +287,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       const summaries = Object.fromEntries(await Promise.all(jobs.map(async job => [job.id, await markdownHtml(job.summary)] as const)));
       details.set(key, { details: loaded, summaries });
     }
-    catch (cause) { details.set(key, { error: cause instanceof Error ? cause.message : String(cause) }); }
+    catch (cause) { details.set(key, { error: errorText(cause) }); }
     if (!disposed && name === selected) renderBody();
   }
 
@@ -298,7 +303,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[data-gh-open]') : null;
     if (!target || !root.contains(target) || (target as HTMLButtonElement).disabled) return;
     const data = target.dataset, row = target.closest<HTMLElement>('[data-gh-number]'), number = Number(row?.dataset.ghNumber);
-    if (data.ghOpen) { event.preventDefault(); void host.call('open_external_url', { url: data.ghOpen }); return; }
+    if (data.ghOpen) { event.preventDefault(); void host.call('open_external_url', { url: data.ghOpen }).catch(report); return; }
     if (data.ghRepo) { select(data.ghRepo); return; }
     if (data.ghTab) { showTab(data.ghTab as Tab); return; }
     if (data.ghRunPull) { filterRunsBy(Number(data.ghRunPull)); return; }
@@ -307,14 +312,14 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (data.ghTask) { host.openTask(data.ghTask); return; }
     if (data.gh === 'refresh') { void loadRepos(true); return; }
     if (data.gh === 'other') { otherOpen = target.getAttribute('aria-expanded') !== 'true'; store('pandacode.githubOther', otherOpen ? 'open' : 'closed'); renderRepos(); root.querySelector<HTMLElement>('[data-gh="other"]')?.focus(); return; }
-    if (data.gh === 'clone') { void ensureLocal(); return; }
+    if (data.gh === 'clone') { void ensureLocal().catch(report); return; }
     const pull = pulls.get(selected)?.items?.find(item => item.number === number);
     const issue = issues.get(selected)?.items?.find(item => item.number === number);
     if (data.ghPull && pull) { void operate(() => pullAction(data.ghPull as PullAction, pull)); return; }
     if ('ghPullRuns' in data && pull) { filterRunsBy(pull.number); return; }
     if ('ghPullMenu' in data && pull) {
       const name = selected;
-      void host.showChoices(target, { title: `Pull request #${pull.number}`, items: [...PULL_ACTIONS, { id: 'github', label: 'Open on GitHub', icon: 'external' }], onSelect: id => id === 'github' ? void host.call('open_external_url', { url: pull.url }) : operate(() => pullAction(id as PullAction, pull, name)) });
+      void host.showChoices(target, { title: `Pull request #${pull.number}`, items: [...PULL_ACTIONS, { id: 'github', label: 'Open on GitHub', icon: 'external' }], onSelect: id => { void (id === 'github' ? host.call('open_external_url', { url: pull.url }) : operate(() => pullAction(id as PullAction, pull, name))).catch(report); } }).catch(report);
       return;
     }
     if (data.ghIssue && issue) { void operate(() => issueAction(data.ghIssue as IssueAction, issue)); return; }

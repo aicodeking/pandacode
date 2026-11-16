@@ -1,14 +1,20 @@
 // Bots in the inbox and the Duo sidebar: avatar, name, paused/working state, computer and the
-// last message time. Tapping opens the bot's desktop conversation (bot.thread) as a task.
+// last message time. Tapping opens the bot's desktop conversation (bot.thread) as a task; a long press
+// offers Bot settings (bot-admin.tsx) when the computer serves bot.detail.
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { memo, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { capabilitiesOf } from '../connect/api/capabilities.ts';
+import { allows } from '../connect/api/hello.ts';
 import { connect } from '../connect/client.ts';
 import type { Bot } from '../connect/types.ts';
 import type { BotRow as Row } from '../store/inbox.ts';
 import { ROW_PRESS_DELAY_MS } from './InboxCard.tsx';
-import { CrossFadeText, PressScale, StatusDot, type } from './ds/index.ts';
+import { showActions } from './Menu.tsx';
+import type { SidebarOpen } from './sidebar-nav.ts';
+import { openFromSidebar } from './sidebar-open.ts';
+import { CrossFadeText, PressScale, StatusDot, type, VIEWER } from './ds/index.ts';
 import { ago } from './status.tsx';
 import { projectColor, useColors } from './theme.ts';
 
@@ -23,18 +29,29 @@ export function BotAvatar({ bot, size = 32 }: { bot: Pick<Bot, 'avatar' | 'name'
   );
 }
 
-/** Opens the bot's conversation; `replace` swaps the open task (the Duo's sidebar). */
-export async function openBot(deviceId: string, bot: Bot, replace?: boolean) {
+/** Opens the bot's conversation; `how` is the Duo sidebar's decision (sidebar-nav.ts), else a push. */
+export async function openBot(deviceId: string, bot: Bot, how?: SidebarOpen) {
   const sessionId = await connect.botThread(deviceId, bot.id);
   const href = { pathname: '/task/[device]/[session]' as const, params: { device: deviceId, session: sessionId } };
-  if (replace) router.replace(href);
-  else router.push(href);
+  openFromSidebar(href, how);
+}
+
+/** Opens the bot's settings screen. */
+export const openBotSettings = (deviceId: string, botId: string) => router.push({ pathname: '/bot-admin', params: { device: deviceId, bot: botId } });
+
+/** The long-press menu; Bot settings only while this phone may use bot.detail there (unknown counts as yes). */
+function botMenu(deviceId: string, bot: Bot, open: () => void) {
+  const settings = allows(capabilitiesOf(deviceId), 'bot.detail');
+  showActions(bot.name, [
+    { label: 'Open conversation', ios: 'bubble.left', android: 'chat', onPress: open },
+    ...(settings ? [{ label: 'Bot settings', ios: 'gearshape' as const, android: 'settings' as const, onPress: () => openBotSettings(deviceId, bot.id) }] : []),
+  ]);
 }
 
 /** Matches InboxRow: accessibility sizes wrap instead of truncating. */
 const LARGE_TEXT = 1.35;
 
-export const BotRow = memo(function BotRow({ row, showComputer, sidebar, selected, replace }: { row: Row; showComputer: boolean; minute: number; sidebar?: boolean; selected?: boolean; replace?: boolean }) {
+export const BotRow = memo(function BotRow({ row, showComputer, sidebar, selected, how }: { row: Row; showComputer: boolean; minute: number; sidebar?: boolean; selected?: boolean; how?: SidebarOpen }) {
   const colors = useColors();
   const { bot } = row;
   const [opening, setOpening] = useState(false);
@@ -42,7 +59,7 @@ export const BotRow = memo(function BotRow({ row, showComputer, sidebar, selecte
   const open = async () => {
     setOpening(true);
     try {
-      await openBot(row.deviceId, bot, replace);
+      await openBot(row.deviceId, bot, how);
     } catch (error) {
       Alert.alert('Could not open the bot', (error as Error).message);
     } finally {
@@ -54,8 +71,10 @@ export const BotRow = memo(function BotRow({ row, showComputer, sidebar, selecte
   const subtitle = [state, showComputer ? row.computer : ''].filter(Boolean).join(' · ');
   const large = useWindowDimensions().fontScale >= LARGE_TEXT;
   return (
-    <PressScale scale={1} unstable_pressDelay={ROW_PRESS_DELAY_MS} onPress={open} disabled={opening} onPressIn={() => setPressed(true)} onPressOut={() => setPressed(false)}
-      accessibilityLabel={[bot.name, state, row.computer].filter(Boolean).join(', ')} accessibilityHint="Opens the bot's conversation" accessibilityState={{ selected: !!selected, busy: opening }}
+    <PressScale scale={1} unstable_pressDelay={ROW_PRESS_DELAY_MS} onPress={open} onLongPress={() => botMenu(row.deviceId, bot, () => void open())} disabled={opening} onPressIn={() => setPressed(true)} onPressOut={() => setPressed(false)}
+      accessibilityLabel={[bot.name, state, row.computer].filter(Boolean).join(', ')} accessibilityHint="Opens the bot's conversation"
+      accessibilityActions={[{ name: 'longpress', label: 'Bot settings' }]} onAccessibilityAction={e => { if (e.nativeEvent.actionName === 'longpress') openBotSettings(row.deviceId, bot.id); }}
+      accessibilityState={{ selected: !!selected, busy: opening }}
       style={[styles.row, large && styles.rowLarge, (selected || pressed) && [styles.selected, { backgroundColor: colors.fill }]]}>
       <BotAvatar bot={bot} size={sidebar ? 24 : 28} />
       <View style={styles.text}>
@@ -68,11 +87,12 @@ export const BotRow = memo(function BotRow({ row, showComputer, sidebar, selecte
     </PressScale>
   );
 }, (a, b) => a.row.bot === b.row.bot && a.row.at === b.row.at && a.row.computer === b.row.computer && a.showComputer === b.showComputer && a.minute === b.minute
-  && a.sidebar === b.sidebar && a.selected === b.selected && a.replace === b.replace);
+  && a.sidebar === b.sidebar && a.selected === b.selected && a.how === b.how);
 
 const styles = StyleSheet.create({
   avatar: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  initial: { color: '#ffffff', fontWeight: '700' },
+  // White on the saturated tile colour in every scheme, as over a photo.
+  initial: { color: VIEWER.text, fontWeight: '700' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingVertical: 9 },
   rowLarge: { alignItems: 'flex-start' },
   selected: { borderRadius: 12, borderCurve: 'continuous' },

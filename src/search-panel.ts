@@ -8,6 +8,7 @@ import { createSearchPresentation, snapshotSearch, type SearchPresentation, type
 import { applySearchPresentation, componentProviders, componentSelection } from './extensions/replacement';
 import { extensionsSnapshot, extensionIdentity, onExtensionsChanged } from './extensions/manager';
 import { applyControlOrder, applyControlVisibility, layout } from './extensions/layout-host';
+import { errorText } from './error-text';
 
 type Context = { projectId: string; sessionId?: string };
 type TextMatch = { line: number; text: string; ranges: [number, number][] };
@@ -36,7 +37,6 @@ export function highlight(text: string, ranges: [number, number][]): string {
 }
 
 const split = (path: string) => { const at = path.lastIndexOf('/'); return { name: path.slice(at + 1), folder: at < 0 ? '' : path.slice(0, at) }; };
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function createSearchPanel(deps: Deps) {
   const state = { key: '', query: '', matchCase: false, wholeWord: false, regex: false, loading: false, error: '', files: [] as FileEntry[], text: null as TextSearchResult | null, collapsed: new Set<string>(), selected: '' };

@@ -13,6 +13,8 @@ export interface TaskSummary extends HostActivity {
   sessionId: string; title: string; status: TaskStatus; projectId: string; projectName: string;
   provider: string; model: string; effort: string | null; mode: string; pinned: boolean;
   updatedAt: number; lastPromptAt: number | null; branch?: string; chat?: boolean;
+  /** The desktop's task stage (`completed` once settled) and its legacy archive flag, from newer hosts. */
+  stage?: string; archived?: boolean;
   /** A bot's conversation: listed under Bots, not its project. */
   botId?: string; botName?: string;
   /** Approvals and questions waiting on the host now. */
@@ -57,8 +59,9 @@ export interface Provider { id: string; name: string; installed: boolean; path?:
 
 export interface ToolActivity { id: string; name: string; status: 'running' | 'completed' | 'failed'; input: string; output: string }
 
-/** The host's raw AgentEvent (src/types.ts). */
-export interface AgentEvent { sessionId: string; kind: string; text: string; requestId?: string; data?: unknown; tool?: ToolActivity; seq?: number }
+/** The host's raw AgentEvent (src/types.ts). Newer hosts (feature `prevSeq`) add `prev`: the `seq`
+ * of the task's previous agent event, so a viewer whose position is behind it knows it missed one. */
+export interface AgentEvent { sessionId: string; kind: string; text: string; requestId?: string; data?: unknown; tool?: ToolActivity; seq?: number; prev?: number }
 
 /** Newer hosts, architect tasks: `status` as tasks.list shows it ('running' while the team works),
  * `team` (`{ status, activeWorkers }`), and `teamSettled` on the extra run.finished sent when the team settles. */
@@ -68,6 +71,8 @@ export interface RunFinished { sessionId: string; successful: boolean; stopped: 
 export interface StartParams {
   repo?: string; projectId?: string; branch?: string; worktree: boolean; prompt: string;
   provider: string; model: string; mode?: string; effort?: string; startId?: string;
+  /** Images uploaded first (`image.upload*`) to attach to the first message. */
+  imageIds?: string[];
 }
 
 /** `task.startStatus`: how a start by `startId` stands on its host ('unknown': never seen, or forgotten after an hour or a restart). */

@@ -27,7 +27,154 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms};
+mod handshake_warm;
+mod codex_preload;
+pub use warm::{debounce as warm_debounce, touch as touch_warm_agent, epoch as warm_epoch, release as release_warm_ticket, reserve as reserve_warm_agent, reserved as warm_reserved, supported as warms};
+/// A send's launch, as `run_process_with_tools` counts and settles it.
+#[cfg(test)]
+pub(crate) fn warm_launched(session_id: &str) {
+    warm::launched(session_id);
+    warm::launch_settled(session_id);
+}
+pub use handshake_warm::{kept_across_switch as handshake_spare_kept, provider as handshake_warm_provider, supported as handshake_warms};
+
+/// The key a draft spare is stored under, and the key the first send uses to adopt it.
+/// Both sides pass through the same skill reminder and folder canonicalization as a real launch.
+#[cfg(test)]
+pub(crate) fn warm_spare_and_cold_keys_for_test(
+    spare: RunConfig,
+    mut cold: RunConfig,
+    tools: &[Value],
+) -> Result<(String, String), String> {
+    let spare_key = warm::keyed(spare, tools).1;
+    let disabled = crate::skill_manager::launch_disabled(
+        &cold.provider,
+        &cold.cwd,
+        crate::skill_manager::disabled_for(&cold.session_id),
+    );
+    crate::skill_manager::prepare_turn(&mut cold, &disabled)?;
+    cold.cwd = external_path(&cold.cwd);
+    Ok((spare_key, warm::key(&cold, tools)))
+}
+
+/// Start the next turn's warm agent: Claude's (`warm.rs`), or Codex's app-server or an ACP
+/// agent (`handshake_warm.rs`).
+pub async fn prewarm_agent(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
+    if !start_ahead() {
+        return Ok(());
+    }
+    // A turn just ended: a follow-up is likely.
+    warm::touch(&config.session_id);
+    if handshake_warm::supported(&config) {
+        return handshake_warm::prewarm(config, None, launch, tools, approval_tools).await;
+    }
+    warm::prewarm(config, tools, approval_tools, launch).await
+}
+
+/// A debounced first start (`reserve_warm_agent`): starts only if `ticket` is still the
+/// task's newest and no send came in meanwhile.
+pub async fn prewarm_reserved(ticket: u64, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
+    if !start_ahead() {
+        warm::release(&config.session_id, ticket);
+        return Ok(());
+    }
+    if handshake_warm::supported(&config) {
+        return handshake_warm::prewarm(config, Some(ticket), launch, tools, approval_tools).await;
+    }
+    warm::prewarm_reserved(ticket, config, tools, approval_tools, launch).await
+}
+
+/// A harness's idle spares: when each started, and how to drop one.
+type IdleSpares = (fn() -> Vec<(std::time::Instant, String)>, fn(&str, std::time::Instant));
+
+/// Idle spares of every harness share one budget (`warm::LIMIT`): the most recently wanted
+/// stay (`warm::touch`, else birth). Another
+/// harness adds its `births` and `evict` here.
+pub(super) fn limit_spares() {
+    let harnesses: [IdleSpares; 2] = [(warm::births, warm::evict), (handshake_warm::births, handshake_warm::evict)];
+    let mut idle: Vec<_> = harnesses
+        .iter()
+        .flat_map(|(births, evict)| births().into_iter().map(move |(born, id)| (born, id, *evict)))
+        .filter(|(_, id, _)| counts_toward_limit(id))
+        .collect();
+    // The most recently wanted stay: a task just used outlives two that were only warmed.
+    idle.sort_by_key(|(born, id, _)| std::cmp::Reverse(warm::recency(id, *born)));
+    for (born, id, evict) in idle.into_iter().skip(warm::LIMIT) {
+        evict(&id, born);
+    }
+}
+
+/// Every task's idle spare counts toward the shared limit.
+#[cfg(not(test))]
+fn counts_toward_limit(_: &str) -> bool {
+    true
+}
+
+/// Unit tests share the spare maps and run in parallel: only the limit test's tasks count, so
+/// one test's spares never evict another's.
+#[cfg(test)]
+fn counts_toward_limit(session_id: &str) -> bool {
+    session_id.starts_with("warm-limit-")
+}
+
+/// Settings → Agents → "Start agents ahead" (default on).
+pub fn start_ahead() -> bool {
+    crate::provider_settings::start_ahead()
+}
+
+/// The task has a warm agent for its current harness, or one starting or debouncing. A Claude
+/// agent kept while the task looks at another harness does not count.
+pub fn has_warm_agent(session: &crate::storage::Session) -> bool {
+    warm::pending_ticket(&session.id)
+        || match session.provider.as_str() {
+            "claude" => warm::present(&session.id),
+            provider => handshake_warm::provider(provider) && handshake_warm::present(&session.id),
+        }
+}
+
+/// Drop the task's pending first start, whatever its ticket: a later pick superseded it.
+pub fn cancel_warm_ticket(session_id: &str) {
+    warm::cancel_ticket(session_id);
+}
+
+/// Give the task a waiting Codex or ACP spare (a stand-in process); returns its pid.
+#[cfg(test)]
+pub(crate) fn handshake_insert_for_test(session_id: &str, provider: &str) -> u32 {
+    handshake_warm::insert_for_test(session_id, provider)
+}
+
+/// The pid of the task's waiting Codex or ACP spare.
+#[cfg(test)]
+pub(crate) fn handshake_spare_pid(session_id: &str) -> Option<u32> {
+    handshake_warm::spare_pid(session_id)
+}
+
+/// Record a Claude prewarm's inputs, as a turn end does, without starting anything.
+#[cfg(test)]
+pub(crate) fn warm_record_for_test(config: &RunConfig) {
+    warm::record_for_test(config);
+}
+
+/// Stop every agent started ahead ("Start agents ahead" was turned off).
+pub fn discard_all_warm_agents() {
+    warm::discard_all();
+    handshake_warm::discard_all();
+}
+
+/// Drop every warm agent a task has (its folder changed, or it was deleted).
+pub fn discard_warm_agent(session_id: &str) {
+    warm::discard(session_id);
+    handshake_warm::discard(session_id);
+}
+
+/// After a settings switch: Claude's agent follows it (`warm::retarget`). A Codex or ACP spare
+/// is kept across a quick harness flip, as Claude's is: it goes when another harness's start
+/// begins (`handshake_warm::other_start`) or a launch happens.
+pub fn retarget_warm_agent(session: &crate::storage::Session) -> bool {
+    // The user just picked a setting for this task.
+    warm::touch(&session.id);
+    warm::retarget(session)
+}
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
@@ -48,9 +195,11 @@ mod commandcode;
 mod extra_models;
 mod github_copilot;
 mod devin;
+mod cursor;
 pub(crate) mod hermes;
 mod glm;
 mod mimo;
+mod alibaba;
 mod muse;
 mod deepseek;
 mod kimi_models;
@@ -61,7 +210,7 @@ mod zcode;
 mod diagnostics;
 pub(crate) mod claude_auth;
 pub(crate) mod privacy;
-pub(crate) use launch::{command, pty_command, external_path, executable_path, widen_process_path};
+pub(crate) use launch::{command, pty_command, std_command, external_path, executable_path, widen_process_path};
 #[cfg(test)]
 mod kimi_stream_tests;
 #[cfg(test)]
@@ -101,7 +250,7 @@ const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 19] = [
+pub(crate) const PROVIDERS: [(&str, &str); 21] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -110,6 +259,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 19] = [
     ("antigravity", "Antigravity"),
     ("grok", "Grok Build"),
     ("mimo", "MiMo Token Plan"),
+    ("alibaba", "Alibaba Token Plan"),
     ("pi", "Pi"),
     ("deepseek", "DeepSeek"),
     ("commandcode", "Command Code"),
@@ -121,6 +271,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 19] = [
     ("devin", "Devin CLI"),
     ("zcode", "ZCode"),
     ("hermes", "Hermes Agent"),
+    ("cursor", "Cursor CLI"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
@@ -128,7 +279,7 @@ pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,Cron
 
 /// Never runs an agent-reviewed task under some other policy.
 fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
-    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
+    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo" | "alibaba") {
         return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
     }
     Ok(())
@@ -136,7 +287,7 @@ fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
 pub fn takes_system_instructions(provider: &str) -> bool {
-    matches!(provider, "claude" | "glm" | "mimo" | "pi" | "omp")
+    matches!(provider, "claude" | "glm" | "mimo" | "alibaba" | "pi" | "omp")
 }
 
 #[derive(Clone, Debug)]
@@ -370,6 +521,119 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or_default()
 }
 
+/// Name, input and output for Codex app-server items beyond commands, file
+/// changes and tool calls. Only named fields are copied, each one bounded.
+type CodexItemDetails = (String, Option<String>, Option<String>);
+type Fields = serde_json::Map<String, Value>;
+const CODEX_ITEM_TEXT_LIMIT: usize = 2048;
+
+fn put_text(target: &mut Fields, key: &str, value: &Value) {
+    if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+        target.insert(key.into(), limited(text, CODEX_ITEM_TEXT_LIMIT).into());
+    }
+}
+fn put_texts(target: &mut Fields, key: &str, value: &Value, count: usize) {
+    let Some(values) = value.as_array() else { return; };
+    let texts: Vec<Value> = values.iter().filter_map(Value::as_str).take(count)
+        .map(|text| limited(text, 512).into()).collect();
+    if !texts.is_empty() { target.insert(key.into(), texts.into()); }
+}
+fn fields_input(fields: Fields) -> Option<String> {
+    (!fields.is_empty()).then(|| preview_json(&Value::Object(fields), TOOL_INPUT_LIMIT))
+}
+fn text_output(value: &Value) -> Option<String> {
+    value.as_str().filter(|text| !text.is_empty()).map(|text| limited(text, TOOL_OUTPUT_LIMIT))
+}
+
+fn codex_item_details(item: &Value) -> Option<CodexItemDetails> {
+    let mut input = Fields::new();
+    let (name, output) = match field(item, "type") {
+        "imageView" => {
+            put_text(&mut input, "path", &item["path"]);
+            ("View image".to_owned(), None)
+        }
+        "webSearch" => {
+            put_text(&mut input, "query", &item["query"]);
+            let action = &item["action"];
+            if action.is_object() {
+                let mut summary = Fields::new();
+                for key in ["type", "query", "url", "pattern"] { put_text(&mut summary, key, &action[key]); }
+                put_texts(&mut summary, "queries", &action["queries"], 8);
+                if !summary.is_empty() { input.insert("action".into(), summary.into()); }
+            }
+            ("web_search".to_owned(), web_search_links(&item["results"]))
+        }
+        "sleep" => {
+            if let Some(ms) = item["durationMs"].as_u64() { input.insert("durationMs".into(), ms.into()); }
+            ("sleep".to_owned(), None)
+        }
+        "collabAgentToolCall" => {
+            for key in ["prompt", "model", "reasoningEffort"] { put_text(&mut input, key, &item[key]); }
+            put_texts(&mut input, "receiverThreadIds", &item["receiverThreadIds"], 16);
+            let tool = limited(field(item, "tool"), 128);
+            (if tool.is_empty() { "Agent".into() } else { format!("Agent · {tool}") }, agent_states(&item["agentsStates"]))
+        }
+        "subAgentActivity" => {
+            for key in ["agentPath", "kind", "model", "reasoningEffort"] { put_text(&mut input, key, &item[key]); }
+            ("Sub-agent".to_owned(), None)
+        }
+        "imageGeneration" => {
+            put_text(&mut input, "revisedPrompt", &item["revisedPrompt"]);
+            let failure = item["failure"].is_object().then(|| limited(field(&item["failure"], "type"), 256));
+            ("Generate image".to_owned(), text_output(&item["savedPath"]).or(failure))
+        }
+        "plan" => ("Plan".to_owned(), text_output(&item["text"])),
+        "enteredReviewMode" => {
+            put_text(&mut input, "review", &item["review"]);
+            ("Review".to_owned(), None)
+        }
+        "exitedReviewMode" => ("Review".to_owned(), text_output(&item["review"])),
+        "functionCallOutput" => {
+            let name = limited(field(item, "name"), 128);
+            let name = match field(item, "namespace") { "" => name, namespace => format!("{} · {name}", limited(namespace, 128)) };
+            let output = item.get("output").filter(|value| !value.is_null()).map(|value| output_json(value, TOOL_OUTPUT_LIMIT));
+            (name, output)
+        }
+        _ => return None,
+    };
+    Some((name, fields_input(input), output))
+}
+
+/// `Links: [{"title","url"}]`, the shape the window's web card reads. The list
+/// stops before the bound so the JSON always stays whole.
+fn web_search_links(results: &Value) -> Option<String> {
+    const PREFIX: &str = "Links: ";
+    let mut links = Vec::new();
+    let mut bytes = PREFIX.len() + 2;
+    for result in results.as_array()?.iter().take(50) {
+        let pick = |keys: &[&str]| keys.iter().find_map(|key| result[*key].as_str().filter(|text| !text.is_empty()));
+        let Some(url) = pick(&["url", "link", "href"]).filter(|url| url.len() <= 2048) else { continue; };
+        let mut link = json!({"title": limited(pick(&["title", "name"]).unwrap_or(url), 256), "url": url});
+        if let Some(snippet) = pick(&["snippet", "description"]) { link["snippet"] = limited(snippet, 300).into(); }
+        let size = serde_json::to_string(&link).map_or(usize::MAX, |text| text.len() + 1);
+        if bytes.saturating_add(size) > TOOL_OUTPUT_LIMIT { break; }
+        bytes += size;
+        links.push(link);
+    }
+    (!links.is_empty()).then(|| format!("{PREFIX}{}", Value::Array(links)))
+}
+
+fn agent_states(states: &Value) -> Option<String> {
+    let states = states.as_object().filter(|states| !states.is_empty())?;
+    let mut preview = Preview::new(TOOL_OUTPUT_LIMIT);
+    for (index, (thread, state)) in states.iter().take(32).enumerate() {
+        if index > 0 { preview.text("\n"); }
+        preview.text(&limited(thread, 256));
+        preview.text(": ");
+        preview.text(field(state, "status"));
+        if let Some(message) = state["message"].as_str().filter(|message| !message.is_empty()) {
+            preview.text(" — ");
+            preview.text(&limited(message, CODEX_ITEM_TEXT_LIMIT));
+        }
+    }
+    Some(preview.finish())
+}
+
 fn content_preview(value: &Value, limit: usize) -> String {
     fn content(value: &Value, preview: &mut Preview, depth: usize) {
         if preview.truncated {
@@ -538,6 +802,9 @@ pub struct ModelInfo {
     pub reasoning_efforts: Vec<ReasoningEffortInfo>,
     pub default_reasoning_effort: Option<String>,
     pub context_window: Option<u64>,
+    /// Faster service tiers beyond the standard speed (Codex `serviceTiers`, Claude fast mode).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub speed_tiers: Vec<ReasoningEffortInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -548,23 +815,130 @@ pub struct ReasoningEffortInfo {
     pub description: String,
 }
 
+/// Harnesses that take a steering message into the running turn (`RunInput::Steer`) rather than
+/// holding it for a new one: Claude-family stream input, Codex `turn/steer`, Pi `steer`, and
+/// OpenCode and Devin over ACP.
+pub(crate) fn steers_live(provider: &str) -> bool {
+    matches!(provider, "claude" | "glm" | "mimo" | "codex" | "pi" | "omp" | "opencode" | "devin")
+}
+
+/// The status a run's loop reports when it takes a stop (or pauses a goal on one), so the run's
+/// owner knows the stop, not the harness, ended the turn.
+pub(crate) const STOPPING_STATUS: &str = "Stopping agent";
+pub(crate) const PAUSING_GOAL_STATUS: &str = "Pausing goal";
+
+/// The event a pooled run reports when it moves to another account: the old account's open
+/// requests can no longer be answered, so the run's owner settles them (`account_switched`).
+pub(crate) const ACCOUNT_SWITCHED: &str = "account_switched";
+
+/// Whether the session's pooled run is changing accounts, so input waits for the next account.
+pub(crate) fn switching_accounts(session_id: &str) -> bool {
+    pool::switching(session_id)
+}
+
+/// The event a run reports when it could not apply an approval decision (`approval_step`).
+pub(crate) const UNANSWERED_APPROVAL: &str = "approval_unanswered";
+/// Phrases of the startup errors for a reasoning effort a harness refuses (Codex and Claude
+/// model checks, the provider-wide check), shared with `architect::model_efforts::rejected`.
+pub(crate) const MODEL_REFUSES_EFFORT: &str = "does not support this reasoning effort";
+pub(crate) const UNSUPPORTED_EFFORT: &str = "Unsupported reasoning effort";
+
+/// The decline a tool or harness gets when the user declines an approval.
+pub(crate) const USER_DECLINE: &str = "Declined by the user";
+/// Most decline texts one session keeps (its oldest goes first), so one session's burst of
+/// declines never evicts another's; and a safety cap over all sessions.
+const DECLINE_REASONS_PER_SESSION: usize = 16;
+const DECLINE_REASONS_MAX: usize = 1024;
+/// Decline texts PandaCode chose for approvals it answered itself (a team worker's always-ask tool),
+/// by session and the harness's approval ID. The tool host returns one instead of `USER_DECLINE`;
+/// a user's own decline registers none, so it reads exactly as before. Approval IDs can repeat
+/// across runs (Codex host-tool IDs are small integers), so a reason is scoped to its session
+/// and a session's reasons are dropped when its run ends (`forget_decline_reasons`).
+/// Kept apart from `worker_approvals`' run registry: the tool host claims it inside the run and
+/// knows only its session, not the team run.
+static DECLINE_REASONS: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
+
+pub(crate) fn set_decline_reason(session_id: &str, id: &str, reason: &str) {
+    let mut reasons = DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner());
+    reasons.retain(|(session, known, _)| !(session == session_id && known == id));
+    if reasons.iter().filter(|(session, _, _)| session == session_id).count() >= DECLINE_REASONS_PER_SESSION {
+        if let Some(oldest) = reasons.iter().position(|(session, _, _)| session == session_id) {
+            reasons.remove(oldest);
+        }
+    }
+    if reasons.len() >= DECLINE_REASONS_MAX {
+        reasons.remove(0);
+    }
+    reasons.push((session_id.to_owned(), id.to_owned(), reason.to_owned()));
+}
+
+/// Claims the reason registered for this approval, if any (also on approval, so none is left).
+pub(crate) fn take_decline_reason(session_id: &str, id: &str) -> Option<String> {
+    let mut reasons = DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner());
+    let index = reasons.iter().position(|(session, known, _)| session == session_id && known == id)?;
+    Some(reasons.remove(index).2)
+}
+
+/// Drops every reason left for a session (its run ended, so none can be claimed any more).
+pub(crate) fn forget_decline_reasons(session_id: &str) {
+    DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner()).retain(|(session, _, _)| session != session_id);
+}
+
+/// Sessions whose current run is a team worker's, so PandaCode's own tool hosts refuse the
+/// always-ask tools before any approval prompt (the request-text matcher in `worker_approvals`
+/// stays as a second line for hosts PandaCode does not run). Each entry is `(session, run)`: a
+/// run sets its session's mark as it starts and clears only its own (`RunLeftovers`), so an older
+/// run of the same task ending late never clears a newer run's mark.
+static WORKER_RUNS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn worker_runs() -> std::sync::MutexGuard<'static, Vec<(String, String)>> {
+    WORKER_RUNS.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// A run starts: its session's mark becomes this run's (or none, for a run that is not a worker's).
+pub(crate) fn mark_worker_run(session_id: &str, run_id: &str, worker: bool) {
+    let mut runs = worker_runs();
+    runs.retain(|(session, _)| session != session_id);
+    if worker {
+        runs.push((session_id.to_owned(), run_id.to_owned()));
+    }
+}
+
+/// A run ends: clears its session's mark only while the mark is still this run's.
+pub(crate) fn clear_worker_run(session_id: &str, run_id: &str) {
+    worker_runs().retain(|(session, run)| !(session == session_id && run == run_id));
+}
+
+/// The refusal a tool host returns when a team worker calls an always-ask tool.
+pub(crate) fn worker_tool_refusal(session_id: &str, tool: &str) -> Option<String> {
+    let tool = crate::cloud::deploy::ALWAYS_ASK.iter().find(|name| **name == tool)?;
+    worker_runs().iter().any(|(session, _)| session == session_id)
+        .then(|| crate::worker_approvals::ask_lead_reason(tool))
+}
+
+/// The text a declined approval returns: PandaCode's own reason, else the user's decline.
+pub(crate) fn decline_text(session_id: &str, id: &str) -> String {
+    take_decline_reason(session_id, id).unwrap_or_else(|| USER_DECLINE.into())
+}
+
 pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result<(), String> {
     if crate::extensions::providers::extension_owner(provider).is_some() {
         return dynamic_adapter::validate_effort(provider, effort);
     }
     let valid = match (provider, effort) {
         (
-            "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes",
+            "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo" | "alibaba"
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor",
             None,
         ) => true,
-        ("claude" | "glm" | "mimo", Some(value)) => {
+        ("claude" | "glm" | "mimo" | "alibaba", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
         // Kimi's thinking option lists on/off or the model's levels (low/high/max).
-        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes", Some(value)) => {
+        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes" | "cursor", Some(value)) => {
             !value.is_empty()
+                && !value.starts_with('-')
                 && value.len() <= 64
                 && value
                     .bytes()
@@ -577,7 +951,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     if valid {
         Ok(())
     } else {
-        Err("Unsupported reasoning effort for this provider".into())
+        Err(format!("{UNSUPPORTED_EFFORT} for this provider"))
     }
 }
 
@@ -604,6 +978,7 @@ impl ModelInfo {
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
             context_window: None,
+            speed_tiers: Vec::new(),
         }
     }
 }
@@ -613,7 +988,7 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     launch::find(executable_name(name))
-        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else if name == "zcode" { zcode::bundled() } else if name == "antigravity" { launch::find("agy") } else { None })
+        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "cursor" { cursor::agent_alias() } else if name == "devin" { devin::bundled() } else if name == "zcode" { zcode::bundled() } else if name == "antigravity" { launch::find("agy") } else { None })
 }
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
@@ -627,13 +1002,14 @@ pub(crate) fn provider_command(provider: &str, path: &Path) -> Result<Command, S
 
 fn executable_name(name: &str) -> &str {
     match name {
-        "glm" | "mimo" => "claude",
+        "glm" | "mimo" | "alibaba" => "claude",
         "antigravity" if cfg!(windows) => "agy_acp_server",
         "antigravity" => "agy_acp_server.par",
         "deepseek" => "dsh",
         "commandcode" => "command-code",
         "github-copilot" => "copilot",
         "hermes" => "hermes",
+        "cursor" => "cursor-agent",
         other => other,
     }
 }
@@ -687,6 +1063,14 @@ pub(crate) fn mimo_arguments() -> Result<Vec<String>, String> {
 
 pub(crate) fn mimo_environment() -> Result<Vec<(String, String)>, String> {
     mimo::environment()
+}
+
+pub(crate) fn alibaba_arguments() -> Vec<String> {
+    alibaba::arguments()
+}
+
+pub(crate) fn alibaba_environment() -> Result<Vec<(String, String)>, String> {
+    alibaba::environment()
 }
 
 pub(crate) fn mimo_endpoint_url(id: &str) -> Option<&'static str> {
@@ -856,6 +1240,8 @@ fn discover_provider(id: &str, name: &str) -> ProviderInfo {
             glm::models()
         } else if id == "mimo" {
             mimo::models()
+        } else if id == "alibaba" {
+            alibaba::models()
         } else if id == "opencode" {
             selected_opencode_models(
                 Vec::new(),
@@ -910,6 +1296,7 @@ fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec
     let mut models = vec![ModelInfo::default_choice()];
     for id in selected {
         models.push(available.remove(id).unwrap_or_else(|| ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.clone(),
             name: id.clone(),
             description: "Saved OpenCode model".into(),
@@ -1007,6 +1394,7 @@ fn parse_opencode_v2_models(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
                 return Err(INVALID.to_owned());
             }
             Ok(ModelInfo {
+                speed_tiers: Vec::new(),
                 name: model_text(entry["name"].as_str(), &id, 160),
                 description: id.clone(),
                 // The API lists variants least to most, unlike v1's sorted keys.
@@ -1037,7 +1425,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -1060,6 +1448,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "antigravity" => acp::models(&path).await,
         "grok" => acp::grok_models(&path).await,
         "mimo" => Ok(mimo::models()),
+        "alibaba" => Ok(alibaba::models()),
         "pi" | "omp" => pi::models(&path, provider).await,
         "deepseek" => deepseek::models(&path).await,
         "commandcode" => commandcode::models(&path).await,
@@ -1070,6 +1459,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "devin" => devin::models(&path).await,
         "zcode" => zcode::models(&path).await,
         "hermes" => hermes::models(&path).await,
+        "cursor" => cursor::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -1144,11 +1534,32 @@ fn parse_codex_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
                     default_reasoning_effort: default_effort,
                     // model/list does not report the effective window. Live usage does.
                     context_window: None,
+                    speed_tiers: codex_speed_tiers(&entry["serviceTiers"]),
                 });
             }
         }
     }
     Ok(models)
+}
+
+/// Every tier Codex reports, so new ones (Ultra Fast) appear without a release.
+fn codex_speed_tiers(tiers: &Value) -> Vec<ReasoningEffortInfo> {
+    let mut found: Vec<ReasoningEffortInfo> = Vec::new();
+    for tier in tiers.as_array().into_iter().flatten().take(8) {
+        let Some(id) = tier["id"].as_str().filter(|id| valid_service_tier(id)) else { continue };
+        if !found.iter().any(|known| known.id == id) {
+            found.push(ReasoningEffortInfo {
+                id: id.into(),
+                name: model_text(tier["name"].as_str(), id, 64),
+                description: model_text(tier["description"].as_str(), "", 500),
+            });
+        }
+    }
+    found
+}
+
+pub(crate) fn valid_service_tier(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
 }
 
 // SDK displayName can still be just "Sonnet". Format the provider's resolved
@@ -1212,6 +1623,12 @@ fn parse_claude_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
             continue;
         }
         let model = ModelInfo {
+            // Claude Code's catalog flags the models it can run in fast mode.
+            speed_tiers: if entry["supportsFastMode"] == true {
+                vec![ReasoningEffortInfo { id: "fast".into(), name: "Fast".into(), description: "Claude Code fast mode: faster output at a higher price.".into() }]
+            } else {
+                Vec::new()
+            },
             id: id.into(),
             name: claude_model_name(entry, id),
             description: model_text(entry["description"].as_str(), "", 1000),
@@ -1398,6 +1815,14 @@ struct Step {
 
 struct Protocol {
     config: RunConfig,
+    /// A warm Claude agent's switch requests still unanswered (`warm_switch.rs`): the first
+    /// message waits for their replies, which are not this turn's.
+    warm_switch: HashSet<String>,
+    /// The `initialize` reply held back until then.
+    held_start: Option<Value>,
+    /// The adopted agent refused its switch before the prompt was written: the run replaces
+    /// it with a cold launch.
+    warm_refused: bool,
     remote_id: String,
     turn_id: String,
     phase: u8,
@@ -1432,6 +1857,9 @@ struct Protocol {
     partial_tools: HashMap<(String, u64), PartialTool>,
     image_blocks: Vec<Value>,
     active_model: String,
+    /// A warm spare already loaded this Codex thread: `turn/start` carries the chosen model,
+    /// which the load may not have (`codex_preload.rs`).
+    codex_preloaded: bool,
     kimi_thinking_values: Vec<String>,
     acp_config: Value,
     // Grok Build authenticates before session calls; the session request waits here.
@@ -1494,6 +1922,22 @@ fn event_metadata(value: &Value) -> Option<Value> {
     }
 }
 
+/// Set on an approval event's data when approving can only grant a lasting permission (an ACP
+/// request offering `allow_always` but no `allow_once`).
+pub(crate) const LASTING_ONLY: &str = "lastingOnly";
+/// Beside `LASTING_ONLY`: whether the request also offers a reject choice, so a team worker's
+/// automatic answer can decline it instead of stopping the turn.
+pub(crate) const LASTING_DECLINABLE: &str = "lastingDeclinable";
+
+fn declinable(request: &Value) -> bool {
+    request["params"]["options"].as_array().into_iter().flatten().any(|option| matches!(option["kind"].as_str(), Some("reject_once" | "reject_always")))
+}
+
+fn lasting_only(request: &Value) -> bool {
+    let kinds = || request["params"]["options"].as_array().into_iter().flatten().filter_map(|option| option["kind"].as_str());
+    kinds().any(|kind| kind == "allow_always") && !kinds().any(|kind| kind == "allow_once")
+}
+
 impl Protocol {
     fn emit_text(&mut self, update: Option<text_stream::Update>, step: &mut Step) {
         let Some(update) = update else {
@@ -1536,7 +1980,11 @@ impl Protocol {
         Self {
             remote_id: config.resume_id.clone().unwrap_or_default(),
             active_model: config.model.clone(),
+            codex_preloaded: false,
             config,
+            warm_switch: HashSet::new(),
+            held_start: None,
+            warm_refused: false,
             turn_id: String::new(),
             phase: 0,
             steers: Default::default(),
@@ -1936,17 +2384,12 @@ impl Protocol {
                 };
                 self.tool_update(id, Some(&name), Some(status), input, output, step);
             }
-            _ => {
-                // Keep a label for other provider activities without forwarding
-                // arbitrary nested protocol payloads as tool details.
-                self.tool_update(
-                    id,
-                    Some(field(item, "type")),
-                    Some(status),
-                    None,
-                    None,
-                    step,
-                );
+            kind => {
+                // Known activities keep a few named, bounded fields; others keep
+                // only a label, never arbitrary nested protocol payloads.
+                let (name, input, output) = codex_item_details(item)
+                    .unwrap_or_else(|| (limited(kind, 256), None, None));
+                self.tool_update(id, Some(&name), Some(status), input, output, step);
             }
         }
     }
@@ -2018,15 +2461,8 @@ impl Protocol {
             "pi" | "omp" => json!({"type":"get_state","id":"pandacode-init"}),
             "zcode" => self.zcode_initial(),
             "muse" => self.muse_initial(),
-            "codex" => {
-                let mut request = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"}}});
-                request["params"]["capabilities"] =
-                    json!({"experimentalApi":true,"requestAttestation":false});
-                request
-            }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
-                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
-            }
+            "codex" => codex_initialize(),
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => acp_initialize(&self.config.provider),
             _ => {
                 json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
             }
@@ -2036,6 +2472,13 @@ impl Protocol {
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut event = self.event("approval", short(&text), Some(&value));
         event.request_id = Some(request_id.clone());
+        // Approving it grants more than this action (`approve`), so PandaCode never approves
+        // it automatically (a bot's allow rule asks instead; a team worker's is declined).
+        if lasting_only(&value) {
+            let data = event.data.get_or_insert_with(|| json!({}));
+            data[LASTING_ONLY] = json!(true);
+            data[LASTING_DECLINABLE] = json!(declinable(&value));
+        }
         self.pending.insert(request_id, value);
         step.events.push(event);
     }
@@ -2048,6 +2491,7 @@ impl Protocol {
             return Some(decision);
         }
         let request = self.pending.remove(id)?;
+        let declined = decline_text(&self.config.session_id, id);
         Some(match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
             "zcode" => zcode::permission_decision(&request, approved),
@@ -2061,7 +2505,7 @@ impl Protocol {
                 json!({"id":request["id"],"result":result})
             }
             "devin" => devin::decision(&request, approved),
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" | "cursor" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -2077,7 +2521,7 @@ impl Protocol {
                 json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
             }
             _ => {
-                json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":if approved {json!({"behavior":"allow","updatedInput":request["request"]["input"]})} else {json!({"behavior":"deny","message":"Declined by the user"})}}})
+                json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":if approved {json!({"behavior":"allow","updatedInput":request["request"]["input"]})} else {json!({"behavior":"deny","message":declined})}}})
             }
         })
     }
@@ -2089,7 +2533,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -2132,7 +2576,7 @@ impl Protocol {
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "zcode" => self.zcode(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2215,6 +2659,10 @@ impl Protocol {
                     if let Some(model) = value["result"]["model"].as_str() {
                         self.active_model = model.into();
                     }
+                    if self.codex_preloaded && self.config.model != "default" && !self.config.model.is_empty() {
+                        // Loaded with the model chosen then; this turn switches to today's.
+                        self.active_model = self.config.model.clone();
+                    }
                     self.goals.resolved_effort = value["result"]["reasoningEffort"]
                         .as_str()
                         .map(str::to_owned);
@@ -2248,7 +2696,7 @@ impl Protocol {
                                 .iter()
                                 .any(|option| &option.id == effort)
                         }) {
-                            return Err("The selected Codex model does not support this reasoning effort. Choose another effort or use harness settings.".into());
+                            return Err(format!("The selected Codex model {MODEL_REFUSES_EFFORT}. Choose another effort or use harness settings."));
                         }
                     }
                     self.codex_goal_ready(&mut step)?;
@@ -2366,6 +2814,9 @@ impl Protocol {
         }
         if let Some(effort) = &self.config.reasoning_effort {
             request["params"]["effort"] = json!(effort);
+        }
+        if self.codex_preloaded && self.config.model != "default" && !self.config.model.is_empty() {
+            request["params"]["model"] = json!(self.config.model);
         }
         step.write.push(request);
         self.phase = 1;
@@ -2595,6 +3046,30 @@ impl Protocol {
         match string(&value, "type").as_str() {
             "control_response" => {
                 let response = &value["response"];
+                // A reply to the adopted warm agent's switch: it applies the task's settings.
+                if let Some(id) = response["request_id"].as_str().filter(|id| self.warm_switch.contains(*id)).map(str::to_owned) {
+                    if response["subtype"] != "success" {
+                        // Nothing of the turn was written yet: start it cold instead (logged only).
+                        eprintln!("Warm Claude agent refused its switch ({}); starting cold.", string(response, "error"));
+                        self.warm_switch.clear();
+                        self.held_start = None;
+                        self.warm_refused = true;
+                        return Ok(step);
+                    }
+                    self.warm_switch.remove(&id);
+                    if !self.warm_switch.is_empty() {
+                        return Ok(step);
+                    }
+                    return match self.held_start.take() {
+                        Some(start) => self.claude(start),
+                        None => Ok(step),
+                    };
+                }
+                // Its first message waits until the switch is applied (`set_model` replies late).
+                if response["request_id"] == "pandacode-init" && !self.warm_switch.is_empty() {
+                    self.held_start = Some(value);
+                    return Ok(step);
+                }
                 if response["request_id"] == "pandacode-init" {
                     if response["subtype"] == "error" {
                         return Err(string(response, "error"));
@@ -2611,7 +3086,7 @@ impl Protocol {
                                     .iter()
                                     .any(|option| &option.id == effort)
                                 {
-                                    return Err("The selected Claude model does not support this reasoning effort. Choose another effort or use harness settings.".into());
+                                    return Err(format!("The selected Claude model {MODEL_REFUSES_EFFORT}. Choose another effort or use harness settings."));
                                 }
                             }
                         }
@@ -3013,6 +3488,10 @@ impl ProcessGroup {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .insert(pid);
+            // Stopped by the crash guard if the app dies before it can.
+            if let Err(error) = crate::crash_guard::child_started(pid) {
+                eprintln!("Agent process group {pid}: {error}");
+            }
         }
         Self(pid)
     }
@@ -3026,6 +3505,9 @@ impl Drop for ProcessGroup {
                 .remove(&pid)
             {
                 kill_group(pid);
+                if let Err(error) = crate::crash_guard::child_ended(pid) {
+                    eprintln!("Agent process group {pid}: {error}");
+                }
             }
         }
     }
@@ -3191,6 +3673,15 @@ pub async fn run(
 
 tokio::task_local! {
     static HARNESS: Arc<std::sync::atomic::AtomicBool>;
+    /// Set when the run's own loop takes a `RunInput::Stop` (`stop_taken`): its owner then knows
+    /// the stop, not the harness, ended the turn.
+    static STOP_TAKEN: Arc<std::sync::atomic::AtomicBool>;
+}
+
+/// The run's loop took a stop. Every loop that takes `RunInput::Stop` calls this (and still
+/// reports `STOPPING_STATUS` for the window).
+pub(crate) fn stop_taken() {
+    let _ = STOP_TAKEN.try_with(|taken| taken.store(true, std::sync::atomic::Ordering::SeqCst));
 }
 
 #[cfg(test)]
@@ -3226,13 +3717,27 @@ fn reached_harness() {
     let _ = HARNESS.try_with(|reached| reached.store(true, std::sync::atomic::Ordering::SeqCst));
 }
 
-/// `harness` is set once the run reaches the harness (`reached_harness`).
+/// `harness` is set once the run reaches the harness (`reached_harness`). Tests' entry point;
+/// the app runs `run_with_tools_reporting`.
+#[cfg(test)]
 pub async fn run_with_tools(
     config: RunConfig,
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
     host: Option<ToolHost>,
     harness: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    run_with_tools_reporting(config, sink, input, host, harness, Default::default()).await
+}
+
+/// `run_with_tools`, also setting `taken` once the run's loop takes a stop (`stop_taken`).
+pub async fn run_with_tools_reporting(
+    config: RunConfig,
+    sink: Sink,
+    input: UnboundedReceiver<RunInput>,
+    host: Option<ToolHost>,
+    harness: Arc<std::sync::atomic::AtomicBool>,
+    taken: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
     if crate::extensions::providers::extension_owner(&config.provider).is_some() {
@@ -3257,9 +3762,9 @@ pub async fn run_with_tools(
     // A goal operation is acknowledged by its own turn, so it is never continued elsewhere.
     let pooled = config.goal.is_none() && crate::account_pool::enabled(&config.provider) && !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let result = if pooled {
-        HARNESS.scope(harness, pool::run(config, sink.clone(), input, host)).await
+        STOP_TAKEN.scope(taken, HARNESS.scope(harness, pool::run(config, sink.clone(), input, host))).await
     } else {
-        HARNESS.scope(harness, run_inner(config, sink.clone(), input, host)).await
+        STOP_TAKEN.scope(taken, HARNESS.scope(harness, run_inner(config, sink.clone(), input, host))).await
     };
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
@@ -3297,6 +3802,18 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
     configure_command_with_skills(command, config, &Default::default());
 }
 
+/// Claude Code's `--permission-mode` for a PandaCode mode (also sent to a warm agent).
+pub(super) fn claude_permission_mode(mode: &str) -> &'static str {
+    match mode {
+        "auto" => "acceptEdits",
+        // Claude Code's auto mode: its safety reviewer approves routine actions.
+        "review" => "auto",
+        "plan" => "plan",
+        "full" => "bypassPermissions",
+        _ => "default",
+    }
+}
+
 /// Lists OpenCode's agents for this launch itself; `run_inner` passes its one scan instead.
 fn configure_command_with_skills(
     command: &mut Command,
@@ -3329,7 +3846,7 @@ fn configure_command_with_agents(
         "zcode" => zcode::configure(command),
         "muse" => muse::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
-        "github-copilot" | "devin" | "hermes" => acp::configure(command, config),
+        "github-copilot" | "devin" | "hermes" | "cursor" => acp::configure(command, config),
         "kimi" => {
             if use_model {
                 command.args(["--model", &config.model]);
@@ -3354,14 +3871,7 @@ fn configure_command_with_agents(
             if claude_lists_hook_events(command) {
                 command.arg("--include-hook-events");
             }
-            let permission_mode = match config.mode.as_str() {
-                "auto" => "acceptEdits",
-                // Claude Code's auto mode: its safety reviewer approves routine actions.
-                "review" => "auto",
-                "plan" => "plan",
-                "full" => "bypassPermissions",
-                _ => "default",
-            };
+            let permission_mode = claude_permission_mode(&config.mode);
             // Always override the resumed session's mode, including when the
             // user has moved from full access back to standard approvals.
             command.args(["--permission-mode", permission_mode]);
@@ -3379,9 +3889,15 @@ fn configure_command_with_agents(
                 command.args(["--model", glm::DEFAULT_MODEL]);
             } else if config.provider == "mimo" {
                 command.args(["--model", mimo::DEFAULT_MODEL]);
+            } else if config.provider == "alibaba" {
+                command.args(["--model", alibaba::DEFAULT_MODEL]);
             }
             if let Some(effort) = &config.reasoning_effort {
                 command.args(["--effort", effort]);
+            }
+            // The Speed row stores Claude's fast mode as the task's service tier.
+            if claude_fast_mode(config) {
+                command.args(["--settings", r#"{"fastMode":true}"#]);
             }
             if let Some(id) = &config.resume_id {
                 command.arg(format!("--resume={id}"));
@@ -3401,6 +3917,49 @@ fn configure_command_with_agents(
                 opencode_agents,
             ),
         );
+    }
+}
+
+pub(super) fn claude_fast_mode(config: &RunConfig) -> bool {
+    config.provider == "claude"
+        && config
+            .codex_settings
+            .as_ref()
+            .is_some_and(|settings| settings["serviceTier"] == "fast")
+}
+
+/// The ACP `initialize` request every ACP harness is sent first; a warm spare sends exactly
+/// this and nothing more.
+fn acp_initialize(provider: &str) -> Value {
+    let capabilities = if provider == "cursor" {
+        cursor::client_capabilities()
+    } else {
+        json!({})
+    };
+    json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":capabilities,"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
+}
+
+/// Codex's `initialize` request, shared by cold launches and warm spares.
+/// A spare may then preload a saved thread (`codex_preload.rs`).
+fn codex_initialize() -> Value {
+    json!({"id":1,"method":"initialize","params":{
+        "clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"},
+        "capabilities":{"experimentalApi":true,"requestAttestation":false},
+    }})
+}
+
+/// A named connection's arguments and environment win over the global setup.
+fn connect_command(
+    command: &mut Command,
+    provider: &str,
+    disabled: &std::collections::BTreeSet<String>,
+    connection: Option<&crate::connections::Launch>,
+) {
+    let Some(connection) = connection else { return };
+    connection.apply(command);
+    // A connection's own `-c skills.config=…` can't override the switches: merged, manager last.
+    if provider == "codex" {
+        command.args(crate::skill_manager::codex_connection_arguments(&connection.args, disabled));
     }
 }
 
@@ -3453,6 +4012,7 @@ async fn run_inner(
         "antigravity",
         "grok",
         "mimo",
+        "alibaba",
         "pi",
         "deepseek",
         "commandcode",
@@ -3464,6 +4024,7 @@ async fn run_inner(
         "devin",
         "zcode",
         "hermes",
+        "cursor",
     ]
     .contains(&config.provider.as_str())
     {
@@ -3509,7 +4070,7 @@ async fn run_inner(
     {
         return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
     }
-    let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
+    let connection = crate::connections::for_task(&config.session_id, &config.provider)
         .map(|connection| crate::connections::launch(&connection))
         .transpose()?;
     let path = connection
@@ -3522,47 +4083,13 @@ async fn run_inner(
         })?;
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
-    let mut command = provider_command(&config.provider, &path)?;
-    let mut command = {
-        let (config, disabled, agents) =
-            (config.clone(), disabled.clone(), opencode_agents.clone());
-        crate::blocking(move || {
-            configure_command_with_agents(&mut command, &config, &disabled, &agents);
-            Ok(command)
-        })
-        .await?
-    };
-    // A named connection's arguments and environment win over the global setup.
-    if let Some(connection) = &connection {
-        connection.apply(&mut command);
-        // A connection's own `-c skills.config=…` can't override the switches: merged, manager last.
-        if config.provider == "codex" {
-            command.args(crate::skill_manager::codex_connection_arguments(
-                &connection.args,
-                &disabled,
-            ));
-        }
-    }
-    if config.provider == "opencode" && !disabled.is_empty() {
-        enforce_opencode_after_connection(&mut command, &mut config, &disabled, &opencode_agents);
-    }
-    if config.provider == "kilo" {
-        let inline = kilo::configure_environment(&mut command, &config);
-        if let Some(connection) = &mut connection {
-            connection.secrets.push(inline);
-        }
-    }
-    let key = if config.provider == "glm" {
-        Some(glm::configure(&mut command)?)
-    } else if config.provider == "mimo" {
-        Some(mimo::configure(&mut command)?)
-    } else if config.provider == "deepseek" {
-        deepseek::configure(&mut command)?
-    } else if config.provider == "commandcode" {
-        commandcode::key_environment(&mut command)
-    } else {
-        None
-    };
+    // Reads saved keys and settings: off the runtime.
+    let (command, key, config, connection) = crate::blocking(move || {
+        let (mut config, mut connection) = (config, connection);
+        let (command, key) = local_command(&mut config, &path, &disabled, &opencode_agents, connection.as_mut())?;
+        Ok((command, key, config, connection))
+    })
+    .await?;
     run_process_with_tools(
         config,
         sink,
@@ -3578,6 +4105,38 @@ async fn run_inner(
             .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
         connection.as_ref().map_or(error.clone(), |connection| connection.redact(&error))
     })
+}
+
+/// The local command a run launches (`config.cwd` already external), and the saved key it
+/// carries, for redaction. Shared with the warm spares, so a spare is keyed by exactly this.
+fn local_command(
+    config: &mut RunConfig,
+    path: &Path,
+    disabled: &std::collections::BTreeSet<String>,
+    opencode_agents: &crate::skill_manager::OpenCodeAgents,
+    mut connection: Option<&mut crate::connections::Launch>,
+) -> Result<(Command, Option<String>), String> {
+    let mut command = provider_command(&config.provider, path)?;
+    configure_command_with_agents(&mut command, config, disabled, opencode_agents);
+    connect_command(&mut command, &config.provider, disabled, connection.as_deref());
+    if config.provider == "opencode" && !disabled.is_empty() {
+        enforce_opencode_after_connection(&mut command, config, disabled, opencode_agents);
+    }
+    if config.provider == "kilo" {
+        let inline = kilo::configure_environment(&mut command, config);
+        if let Some(connection) = &mut connection {
+            connection.secrets.push(inline);
+        }
+    }
+    let key = match config.provider.as_str() {
+        "glm" => Some(glm::configure(&mut command)?),
+        "mimo" => Some(mimo::configure(&mut command)?),
+        "alibaba" => Some(alibaba::configure(&mut command)?),
+        "deepseek" => deepseek::configure(&mut command)?,
+        "commandcode" => commandcode::key_environment(&mut command),
+        _ => None,
+    };
+    Ok((command, key))
 }
 
 #[cfg(all(test, unix))]
@@ -3648,6 +4207,26 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
     ((!host.tools.is_empty()).then_some(host), Some(jev))
 }
 
+/// Start the harness process itself for this launch (no warm agent).
+fn spawn_harness(command: &mut Command, config: &RunConfig, mcp: Option<&mcp_host::Server>) -> Result<(Child, ProcessGroup), String> {
+    if matches!(config.provider.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
+        if let Some(server) = mcp {
+            command.args(["--mcp-config", &server.claude_config().to_string()]);
+        }
+    }
+    command
+        .current_dir(&config.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.spawn().map_err(|e| format!("Could not start {}: {e}", config.provider))?;
+    let group = ProcessGroup::register(child.id());
+    Ok((child, group))
+}
+
 async fn run_process_with_tools(
     config: RunConfig,
     sink: Sink,
@@ -3666,64 +4245,126 @@ async fn run_process_with_tools(
             .collect()
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
+    // The run's own tool server starts meanwhile, in case the send goes cold: stopped (dropped)
+    // if the agent is adopted, which keeps its own server.
+    let mut speculative = None;
     let mut spare = match &host {
         Some(tools) if warm::supported(&config) => {
             // The key reads the task's switches and saved settings: off the runtime.
             let (keyed, catalog) = (config.clone(), tools.tools.clone());
-            let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;
-            warm::take(&config.session_id, &key)
-        }
-        _ => {
-            warm::launched(&config.session_id);
-            None
-        }
-    };
-    let (host, mcp) = match (config.provider.as_str(), host) {
-        ("claude", Some(host)) if spare.is_some() => {
-            let server = spare.as_mut().and_then(|spare| spare.server.take());
-            if let Some(server) = &server {
-                server.rebind(host, config.session_id.clone(), sink.clone(), &config.mode)?;
+            match crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await {
+                Ok(key) => {
+                    let server = mcp_host::Server::start_for_run(tools.clone(), config.session_id.clone(), sink.clone(), &config.mode);
+                    let (taken, server) = tokio::join!(warm::take(&config.session_id, &key), server);
+                    if taken.is_none() {
+                        speculative = Some(server);
+                    }
+                    taken
+                }
+                Err(error) => {
+                    // Still a launch: nothing waits for a spare it will never take.
+                    warm::launched(&config.session_id);
+                    warm::launch_settled(&config.session_id);
+                    return Err(error);
+                }
             }
-            (None, server)
         }
-        ("codex", host) => {
-            // Dynamic tools are fixed at thread creation. A per-run MCP override
-            // adds optional tools and title metadata to resumed conversations
-            // without discarding their history.
-            let (host, jev) = split_jev_host(host);
-            let server = if let Some(jev) = jev {
+        _ => None,
+    };
+    // A Codex or ACP spare already answered `initialize`; it is keyed by this exact command and
+    // the harness's config files (read off the runtime). The run's MCP host server starts
+    // meanwhile: for these harnesses it goes in `thread/start` or `session/new`, never on the
+    // command line, so it cannot change the key.
+    let claude_adopted = spare.is_some();
+    let had_host = host.is_some();
+    // The catalog a Codex spare's loaded thread must have been loaded with (`codex_preload`).
+    let codex_host = if config.provider == "codex" { host.clone() } else { None };
+    // The thread this send would load: a spare that loaded another is not waited for.
+    let codex_thread = codex_host.as_ref().map_or_else(
+        || codex_preload::expected(&config, &[], &HashSet::new()),
+        |host| codex_preload::expected(&config, &host.tools, &host.approval_tools),
+    );
+    let mut claude_server = spare.as_mut().and_then(|spare| spare.server.take());
+    let handshake_take = async {
+        if claude_adopted || !handshake_warm::supported(&config) {
+            return Ok(None);
+        }
+        let (launch, provider, cwd) = (handshake_warm::shape(&command), config.provider.clone(), config.cwd.clone());
+        let key = crate::blocking(move || Ok(launch.key(&provider, &cwd))).await?;
+        // A spare slow to answer `initialize` is raced by this run's own launch.
+        let cold = handshake_warm::Cold { command: &mut command, cwd: &config.cwd, provider: &config.provider };
+        Ok::<_, String>(handshake_warm::take(&config.session_id, &key, codex_thread.as_deref(), Some(cold)).await)
+    };
+    let host_start = async {
+        Ok::<_, String>(match (config.provider.as_str(), host) {
+            ("claude", Some(host)) if claude_adopted => {
+                if let Some(server) = &claude_server {
+                    server.rebind(host, config.session_id.clone(), sink.clone(), &config.mode)?;
+                }
+                (None, claude_server.take())
+            }
+            // Cold after all: the server started while the agent was looked for.
+            ("claude", Some(_)) if speculative.is_some() => (None, speculative.take().unwrap_or(Ok(None))?),
+            ("codex", host) => {
+                // Dynamic tools are fixed at thread creation. A per-run MCP override
+                // adds optional tools and title metadata to resumed conversations
+                // without discarding their history.
+                let (host, jev) = split_jev_host(host);
+                let server = if let Some(jev) = jev {
+                    mcp_host::Server::start_for_run(
+                        jev,
+                        config.session_id.clone(),
+                        sink.clone(),
+                        &config.mode,
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                (host.map(host_tools::HostTools::new).transpose()?, server)
+            }
+            (
+                "claude" | "glm" | "mimo" | "alibaba" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
+                | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "cursor" | "zcode",
+                Some(host),
+            ) => (
+                None,
                 mcp_host::Server::start_for_run(
-                    jev,
+                    host,
                     config.session_id.clone(),
                     sink.clone(),
                     &config.mode,
                 )
-                .await?
-            } else {
-                None
-            };
-            (host.map(host_tools::HostTools::new).transpose()?, server)
-        }
-        (
-            "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
-            Some(host),
-        ) => (
-            None,
-            mcp_host::Server::start_for_run(
-                host,
-                config.session_id.clone(),
-                sink.clone(),
-                &config.mode,
-            )
-            .await?,
-        ),
-        // ZCode bridging does not pass `mcpServers` in session/create yet, so a
-        // started server would sit unconsumed; drop host tools until it does.
-        ("zcode", Some(_)) => (None, None),
-        (_, None) => (None, None),
-        _ => return Err("Host tools are unavailable for this provider".into()),
+                .await?,
+            ),
+            (_, None) => (None, None),
+            _ => return Err("Host tools are unavailable for this provider".into()),
+        })
     };
+    let (codex_spare, started) = tokio::join!(handshake_take, host_start);
+    // Every launch counts (`warm::take` counted a Claude one), and ends any pending first start,
+    // whether or not keying or the host succeeded: nothing waits for a spare never taken.
+    if !warm::supported(&config) || !had_host {
+        warm::launched(&config.session_id);
+    }
+    warm::launch_settled(&config.session_id);
+    // A Codex or ACP spare this launch did not take is for another harness: one launch, no spare.
+    handshake_warm::discard(&config.session_id);
+    let mut codex_spare = codex_spare?;
+    let (host, mut mcp) = started?;
+    // A spare that loaded this exact thread: its MCP server (rebound to this run) replaces the
+    // one just started, and the requests it sent are not sent again.
+    let mut preloaded = Vec::new();
+    if let Some(thread) = codex_spare.as_mut().and_then(|spare| spare.thread.take()) {
+        match codex_preload::adopt(thread, &config, codex_host, mcp.is_some(), &sink) {
+            Some((server, sent)) => (mcp, preloaded) = (server, sent),
+            None => {
+                eprintln!("Warm Codex thread not used (this send loads it differently); starting cold.");
+                codex_spare = None;
+            }
+        }
+    }
+    let codex_ready = codex_spare.is_some();
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
@@ -3740,55 +4381,59 @@ async fn run_process_with_tools(
     reached_harness();
     let lingers = config.provider == "antigravity" && !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let mut agent_temp = None;
+    // What a warm agent printed while its settings were switched, for the parser below.
+    let mut bytes = Vec::new();
+    let mut warm_switch = HashSet::new();
+    // And what a handshake spare wrote to stderr while it waited, for this run's error reports.
+    let mut early_stderr = Vec::new();
     let (mut child, mut group) = if let Some(spare) = spare {
+        bytes = spare.pending;
+        warm_switch = spare.unanswered;
+        (spare.child, spare.group)
+    } else if let Some(spare) = codex_spare {
+        bytes = spare.pending;
+        early_stderr = spare.early_stderr;
         (spare.child, spare.group)
     } else {
         if lingers {
             end_lingering(&config.session_id).await;
             agent_temp = AgentTemp::redirect(&mut command);
         }
-        if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
-            if let Some(server) = &mcp {
-                command.args(["--mcp-config", &server.claude_config().to_string()]);
-            }
-        }
-        command
-            .current_dir(&config.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        command.process_group(0);
-        let child = command
-            .spawn()
-            .map_err(|e| format!("Could not start {}: {e}", config.provider))?;
-        let group = ProcessGroup::register(child.id());
-        (child, group)
+        spawn_harness(&mut command, &config, mcp.as_ref())?
     };
     let mut stdin = child.stdin.take().ok_or("Provider stdin unavailable")?;
     let mut stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
-    let mut stderr_task = StderrReader(tokio::spawn(read_stderr(stderr)));
+    let mut stderr_task = StderrReader(tokio::spawn(read_stderr(std::io::Cursor::new(early_stderr).chain(stderr))));
     let mut protocol = builtin_adapter::Session::new(config)?;
+    protocol.warm_switch = warm_switch;
     if crate::cloud_agents::transport::is_cloud(&protocol.config.session_id) {
         protocol.claude_over_cloud();
     }
     protocol.image_blocks = image_blocks;
     protocol.host = host;
     // Cline already has the server from its settings file, not from `session/new`.
-    protocol.mcp_server = mcp.as_ref().filter(|_| cline_settings.is_none()).map(mcp_host::Server::kimi_config);
+    // ZCode's entry rides `session/create` instead, and names session isolation
+    // plus always-load so the tools reach the model.
+    protocol.mcp_server = mcp.as_ref().filter(|_| cline_settings.is_none()).map(|server| {
+        if protocol.config.provider == "zcode" {
+            server.zcode_config()
+        } else {
+            server.kimi_config()
+        }
+    });
     protocol.mcp_required = mcp.as_ref().is_some_and(mcp_host::Server::required);
     protocol.codex_mcp_servers = mcp
         .as_ref()
         .filter(|_| protocol.config.provider == "codex")
         .map(mcp_host::Server::codex_config);
+    protocol.codex_preloaded = !preloaded.is_empty();
     // An optional bridge can fail to bind. In that case no local MCP tool is
     // registered, so a same-named user server must retain normal approvals.
     protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
     let mut jobs = tokio::task::JoinSet::new();
     let mut queued = VecDeque::new();
-    let mut bytes = Vec::new();
+    let mut rescan = !bytes.is_empty();
     let mut buf = [0u8; 8192];
     let mut stopped = false;
     let mut input_open = true;
@@ -3797,7 +4442,26 @@ async fn run_process_with_tools(
     let mut deadline = startup_deadline(started, started, step_limit);
     let mut answered = false;
     let result=async {
-        write_json(&mut stdin,&protocol.initial()).await?;
+        if codex_ready {
+            // The warm spare already sent `initialize`: replay its complete lines (the reply
+            // among them), as if they had just been read.
+            let end=bytes.iter().rposition(|b|*b==b'\n').map_or(0,|i|i+1);
+            let lines:Vec<u8>=bytes.drain(..end).collect();
+            for line in lines.split(|b|*b==b'\n').filter(|line|!line.iter().all(u8::is_ascii_whitespace)) {
+                let value:Value=serde_json::from_slice(line).map_err(|e|format!("Invalid provider JSON: {e}"))?;
+                answered=true;
+                let mut step=protocol.receive(value)?;
+                // A loaded thread: the spare already sent these, the same as built here.
+                let sent=step.write.len().min(preloaded.len());
+                for (request,method) in step.write.drain(..sent).zip(preloaded.drain(..sent)) {
+                    if request["method"]!=method.as_str() {return Err("The warm Codex agent loaded its thread differently. Send again.".into());}
+                }
+                if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
+            }
+            if !preloaded.is_empty() {return Err("The warm Codex agent did not finish loading its thread. Send again.".into());}
+        } else {
+            write_json(&mut stdin,&protocol.initial()).await?;
+        }
         if protocol.config.provider == "antigravity" {
             sink(protocol.event("status", "Waiting for Antigravity startup", None));
         }
@@ -3819,14 +4483,14 @@ async fn run_process_with_tools(
                             if let Some(server) = &mcp { server.stop(); }
                             if let Some(step)=protocol.stop_goal() {
                                 input_open=false;
-                                sink(protocol.event("status","Pausing goal",None));
+                                stop_taken();sink(protocol.event("status",PAUSING_GOAL_STATUS,None));
                                 jobs.abort_all(); queued.clear();
                                 let cancel=protocol.cancel_requests();
                                 apply_step(&mut protocol,cancel,&sink,&mut stdin,&mut jobs,&mut queued).await?;
                                 if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
                                 continue;
                             }
-                            input_open=false;stopped=true;sink(protocol.event("status","Stopping agent",None));
+                            input_open=false;stopped=true;stop_taken();sink(protocol.event("status",STOPPING_STATUS,None));
                             jobs.abort_all(); queued.clear();
                             let step=protocol.cancel_requests();
                             let _=tokio::time::timeout(Duration::from_millis(500),apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued)).await;
@@ -3878,7 +4542,8 @@ async fn run_process_with_tools(
                     let previous_len=bytes.len();
                     bytes.extend_from_slice(&buf[..count]);
                     let mut consumed=0;
-                    let mut scan=previous_len;
+                    // A warm agent's held-back lines are scanned once, with the first read.
+                    let mut scan=if std::mem::take(&mut rescan) {0} else {previous_len};
                     while let Some(offset)=bytes[scan..].iter().position(|b|*b==b'\n') {
                         let end=scan+offset;scan=end+1;
                         let line=&bytes[consumed..end];consumed=end+1;
@@ -3893,6 +4558,20 @@ async fn run_process_with_tools(
                         if protocol.phase==0 {deadline=startup_deadline(started,tokio::time::Instant::now(),step_limit);}
                         let step=protocol.receive(value)?;
                         if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
+                        if protocol.warm_refused {break;}
+                    }
+                    if std::mem::take(&mut protocol.warm_refused) {
+                        // The adopted warm agent refused its switch: replace it with the cold
+                        // launch this run would have made (the old process group is killed).
+                        (child, group) = spawn_harness(&mut command, &protocol.config, mcp.as_ref())?;
+                        stdin = child.stdin.take().ok_or("Provider stdin unavailable")?;
+                        stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
+                        let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
+                        stderr_task = StderrReader(tokio::spawn(read_stderr(std::io::Cursor::new(Vec::new()).chain(stderr))));
+                        bytes.clear();
+                        write_json(&mut stdin,&protocol.initial()).await?;
+                        deadline=startup_deadline(started,tokio::time::Instant::now(),step_limit);
+                        continue;
                     }
                     bytes.drain(..consumed);
                     if should_shrink(bytes.len(),bytes.capacity()){bytes.shrink_to(FRAME_KEEP);}
@@ -4092,6 +4771,7 @@ mod tests {
     #[test]
     fn opencode_choices_keep_only_saved_models_and_retain_unavailable_ids() {
         let model = super::ModelInfo {
+            speed_tiers: Vec::new(),
             id: "vendor/selected".into(),
             name: "Selected model".into(),
             description: "Provider metadata".into(),
@@ -4100,6 +4780,7 @@ mod tests {
             context_window: Some(200_000),
         };
         let unused = super::ModelInfo {
+            speed_tiers: Vec::new(),
             id: "vendor/not-selected".into(),
             ..model.clone()
         };
@@ -4147,6 +4828,16 @@ mod tests {
         assert!(validate_reasoning_effort("hermes", None).is_ok());
         assert!(validate_reasoning_effort("hermes", Some("high")).is_ok());
         assert!(validate_reasoning_effort("hermes", Some("bad\nflag")).is_err());
+    }
+
+    #[test]
+    fn cursor_is_registered_with_its_cli_and_catalog_defined_efforts() {
+        assert!(PROVIDERS.contains(&("cursor", "Cursor CLI")));
+        assert_eq!(executable_name("cursor"), "cursor-agent");
+        for effort in ["extra-high", "xhigh", "true", "none"] {
+            assert!(validate_reasoning_effort("cursor", Some(effort)).is_ok(), "{effort}");
+        }
+        assert!(validate_reasoning_effort("cursor", Some("bad\nflag")).is_err());
     }
 
     pub(super) fn config(provider: &str) -> RunConfig {
@@ -4329,13 +5020,81 @@ mod tests {
 
     #[test]
     fn approve_for_me_runs_only_where_the_harness_reviews_actions() {
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             assert!(review_supported(provider, "review").is_ok());
         }
-        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes"] {
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes", "cursor"] {
             assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
             assert!(review_supported(provider, "ask").is_ok());
         }
+    }
+
+    #[test]
+    fn one_sessions_burst_of_declines_never_evicts_anothers() {
+        set_decline_reason("quiet-session", "7", "Declined: team workers cannot run it.");
+        for i in 0..100 {
+            set_decline_reason("busy-session", &i.to_string(), "Declined: team workers cannot run it.");
+        }
+        assert!(take_decline_reason("quiet-session", "7").is_some(), "the other session keeps its reason");
+        assert!(take_decline_reason("busy-session", "99").is_some(), "the newest is kept");
+        assert!(take_decline_reason("busy-session", "0").is_none(), "the busy session's oldest went first");
+        forget_decline_reasons("busy-session");
+    }
+
+    /// A loop that takes a stop from the run's input must say so (`STOPPING_STATUS`), or a team
+    /// worker's automatic stop reads as "finished first" and its failure is lost.
+    #[test]
+    fn every_input_loop_that_takes_a_stop_reports_it() {
+        let marker = ["Some(RunInput", "::Stop)"].concat();
+        for (name, source) in [("providers.rs", include_str!("providers.rs")), ("providers/pool.rs", include_str!("providers/pool.rs"))] {
+            for (at, _) in source.match_indices(&marker) {
+                let arm = &source[at..(at + 1500).min(source.len())];
+                assert!(arm.contains("stop_taken()"), "{name}: an input loop takes a stop without marking it (`stop_taken`)");
+                assert!(arm.contains("STOPPING_STATUS"), "{name}: an input loop takes a stop without reporting STOPPING_STATUS");
+            }
+        }
+        // The pool's stop taken between accounts marks it as well.
+        let pool = include_str!("providers/pool.rs");
+        let between = pool.find("Stopped while the run changed accounts").expect("the pool's stop between accounts");
+        assert!(pool[between..between + 400].contains("stopped_between_accounts("));
+        let helper = pool.find("fn stopped_between_accounts(").unwrap();
+        assert!(pool[helper..helper + 200].contains("super::stop_taken();"));
+    }
+
+    #[tokio::test]
+    async fn a_taken_stop_sets_the_runs_flag_and_only_inside_its_run() {
+        let taken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        STOP_TAKEN.scope(taken.clone(), async { stop_taken() }).await;
+        assert!(taken.load(std::sync::atomic::Ordering::SeqCst));
+        // Outside any run it is a no-op.
+        stop_taken();
+    }
+
+    #[test]
+    fn a_decision_after_claude_cancelled_its_permission_reports_nothing() {
+        let mut p = Protocol::new(config("claude"));
+        let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}})).unwrap();
+        let id = step.events.iter().find(|e| e.kind == "approval").unwrap().request_id.clone().unwrap();
+        p.receive(json!({"type":"control_cancel_request","request_id":"r"})).unwrap();
+        // The automatic decision arrives late: nothing waits on it, so the worker keeps running.
+        let late = p.approval_step(&id, true);
+        assert!(late.events.is_empty() && late.write.is_empty(), "{:?}", late.events);
+    }
+
+    #[test]
+    fn claudes_permission_for_an_always_ask_tool_is_recognised_for_team_workers() {
+        let mut cfg = config("claude");
+        cfg.mode = "full".into();
+        let mut p = Protocol::new(cfg);
+        let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"mcp__pandacode__pandacode_cloud_cli","input":{"args":["deploy"]}}})).unwrap();
+        let event = step.events.iter().find(|e| e.kind == "approval").expect("Claude asks for it");
+        // The real label is the bare tool name; the data keeps only scalar keys.
+        assert_eq!(event.text, "mcp__pandacode__pandacode_cloud_cli");
+        assert_eq!(event.data.as_ref().unwrap()["type"], "control_request");
+        assert_eq!(crate::worker_approvals::always_ask_tool(event), Some("pandacode_cloud_cli"));
+        let mut other = event.clone();
+        other.text = "mcp__pandacode__pandacode_status".into();
+        assert_eq!(crate::worker_approvals::always_ask_tool(&other), None);
     }
 
     #[test]
@@ -4372,7 +5131,7 @@ mod tests {
 
     #[test]
     fn claude_preview_tools_never_inherit_the_metadata_permission_exemption() {
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             for mode in ["ask", "auto", "plan"] {
                 for name in ["pandacode_run_project", "pandacode_preview_file"] {
                     let name = format!("mcp__pandacode_architect__{name}");
@@ -4456,7 +5215,7 @@ mod tests {
     #[test]
     fn claude_title_permission_is_silent_only_for_the_registered_metadata_tool() {
         let title_name = format!("mcp__pandacode_architect__{}", crate::session_titles::TOOL);
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             for mode in ["ask", "auto", "plan"] {
                 for (registered, name) in [(true, title_name.as_str()), (false, title_name.as_str()), (true, "mcp__other__pandacode_title"), (true, "mcp__pandacode_architect__pandacode_open_browser")] {
                     let mut cfg = config(provider);
@@ -4578,6 +5337,11 @@ mod tests {
         assert!(validate_reasoning_effort("kimi", Some("high level")).is_err());
         assert!(validate_reasoning_effort("codex", Some("future_effort")).is_ok());
         assert!(validate_reasoning_effort("codex", Some("")).is_err());
+        for provider in ["grok", "cline", "codex"] {
+            assert!(validate_reasoning_effort(provider, Some("-x")).is_err(), "{provider}");
+            assert!(validate_reasoning_effort(provider, Some("--help")).is_err(), "{provider}");
+            assert!(validate_reasoning_effort(provider, Some("extra-high")).is_ok(), "{provider}");
+        }
     }
 
     #[test]
@@ -4624,7 +5388,7 @@ mod tests {
     #[test]
     fn skill_manager_claude_arbitrary_names_use_advisory_and_unrecoverable_prefs_block_skill_tools()
     {
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             let mut cfg = config(provider);
             let disabled = std::collections::BTreeSet::from(["Friendly 技能".into()]);
             crate::skill_manager::apply_instructions(&mut cfg, &disabled);
@@ -4766,7 +5530,7 @@ mod tests {
     #[test]
     fn skill_manager_claude_launch_has_one_merged_disallowed_tools_flag() {
         let disabled = std::collections::BTreeSet::from(["alpha".into(), "beta".into()]);
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             let mut command = Command::new("claude");
             configure_command_with_skills(&mut command, &config(provider), &disabled);
             let flags: Vec<_> = command
@@ -5404,6 +6168,41 @@ mod tests {
     }
 
     #[test]
+    fn model_catalogs_report_speed_tiers_from_the_harness() {
+        let models = parse_codex_models(&json!({"data":[
+            {"model":"fast","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed"},{"id":"ultrafast","name":"Ultra Fast"},{"id":"priority","name":"Dup"},{"id":""},{"id":"bad\nid"},{"name":"No id"}]},
+            {"model":"plain","serviceTiers":[]}
+        ]})).unwrap();
+        let tiers: Vec<_> = models[1].speed_tiers.iter().map(|tier| (tier.id.as_str(), tier.name.as_str(), tier.description.as_str())).collect();
+        assert_eq!(tiers, [("priority", "Fast", "1.5x speed"), ("ultrafast", "Ultra Fast", "")]);
+        assert!(models[2].speed_tiers.is_empty());
+        assert!(serde_json::to_value(&models[2]).unwrap().get("speedTiers").is_none());
+        assert_eq!(serde_json::to_value(&models[1]).unwrap()["speedTiers"][1]["id"], "ultrafast");
+        let many: Vec<_> = (0..20).map(|n| json!({"id":format!("t{n}")})).collect();
+        assert_eq!(parse_codex_models(&json!({"data":[{"model":"m","serviceTiers":many}]})).unwrap()[1].speed_tiers.len(), 8);
+
+        let claude = parse_claude_models(&json!({"models":[{"value":"opus","supportsFastMode":true},{"value":"haiku"}]})).unwrap();
+        assert_eq!(claude[1].speed_tiers.iter().map(|tier| tier.id.as_str()).collect::<Vec<_>>(), ["fast"]);
+        assert!(claude[2].speed_tiers.is_empty());
+    }
+
+    #[test]
+    fn claude_fast_mode_is_passed_as_a_flag_setting_only_when_chosen() {
+        let args = |provider: &str, settings: Option<Value>| {
+            let mut cfg = config(provider);
+            cfg.codex_settings = settings;
+            let mut command = Command::new("claude");
+            configure_command(&mut command, &cfg);
+            command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let fast = ["--settings".to_string(), r#"{"fastMode":true}"#.to_string()];
+        assert!(args("claude", Some(json!({"serviceTier":"fast"}))).windows(2).any(|pair| pair == fast));
+        for (provider, settings) in [("claude", None), ("claude", Some(json!({"serviceTier":null}))), ("glm", Some(json!({"serviceTier":"fast"})))] {
+            assert!(!args(provider, settings).iter().any(|arg| arg == "--settings"));
+        }
+    }
+
+    #[test]
     fn model_catalog_rejects_malformed_or_oversized_pages() {
         assert!(parse_codex_models(&json!({"models":[]})).is_err());
         assert!(parse_codex_models(&json!({"data":vec![json!({"model":"m"});101]})).is_err());
@@ -5596,6 +6395,44 @@ mod tests {
             p.approve(id, true).unwrap()["result"]["outcome"]["optionId"],
             "custom-yes"
         );
+    }
+
+    #[test]
+    fn only_the_run_that_owns_a_worker_mark_clears_it() {
+        let session = format!("worker-mark-{}", uuid::Uuid::new_v4());
+        let tool = crate::cloud::deploy::ALWAYS_ASK[0];
+        mark_worker_run(&session, "old", true);
+        // A newer run of the same task starts before the older one's leftovers drop.
+        mark_worker_run(&session, "new", true);
+        clear_worker_run(&session, "old");
+        assert!(worker_tool_refusal(&session, tool).is_some(), "the older run left the newer run's mark");
+        clear_worker_run(&session, "new");
+        assert!(worker_tool_refusal(&session, tool).is_none());
+        // A newer run that is not a worker's drops the older worker run's mark at once.
+        mark_worker_run(&session, "old", true);
+        mark_worker_run(&session, "new", false);
+        assert!(worker_tool_refusal(&session, tool).is_none());
+    }
+
+    #[test]
+    fn acp_approvals_take_a_one_time_choice_and_flag_lasting_only_requests() {
+        // Recorded option sets: Kimi, Grok and Cline (a one-time choice beside lasting ones; Grok's
+        // full handshake is in acp.rs), and a request offering only a lasting choice.
+        let kimi = json!([{"optionId":"custom-yes","kind":"allow_once"},{"optionId":"custom-no","kind":"reject_once"}]);
+        let grok = json!([{"optionId":"allow-edits-session","name":"Yes, allow all edits during this session","kind":"allow_always"},{"optionId":"allow-once","name":"Yes","kind":"allow_once"},{"optionId":"reject-once","name":"No, and tell Grok what to do differently","kind":"reject_once"}]);
+        let cline = json!([{"optionId":"allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"allow_always","name":"Allow always","kind":"allow_always"},{"optionId":"reject_once","name":"Reject","kind":"reject_once"}]);
+        let lasting = json!([{"optionId":"always","kind":"allow_always"},{"optionId":"reject","kind":"reject_once"}]);
+        let lasting_no_reject = json!([{"optionId":"always","kind":"allow_always"}]);
+        // One ACP choice path serves every harness; Kimi's protocol hands each set to it.
+        for (provider, options, chosen, lasting_only, declinable) in [("kimi", kimi, "custom-yes", false, false), ("grok", grok, "allow-once", false, false), ("cline", cline, "allow_once", false, false), ("only allow_always", lasting, "always", true, true), ("allow_always, no reject", lasting_no_reject, "always", true, false)] {
+            let mut p = Protocol::new(config("kimi"));
+            let step = p.receive(json!({"jsonrpc":"2.0","id":"req-1","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"title":"Edit file","kind":"edit"},"options":options}})).unwrap();
+            let event = step.events.iter().find(|event| event.kind == "approval").unwrap_or_else(|| panic!("{provider}: no approval"));
+            assert_eq!(event.data.as_ref().is_some_and(|data| data[LASTING_ONLY] == true), lasting_only, "{provider}");
+            assert_eq!(event.data.as_ref().is_some_and(|data| data[LASTING_DECLINABLE] == true), declinable, "{provider}");
+            let id = event.request_id.clone().unwrap();
+            assert_eq!(p.approve(&id, true).unwrap()["result"]["outcome"]["optionId"], chosen, "{provider}");
+        }
     }
 
     #[test]

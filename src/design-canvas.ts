@@ -7,6 +7,7 @@ import { applyControlOrder, applyControlVisibility, layout as extensionLayout } 
 import { DESIGN_CONTROLS } from './extensions/surfaces';
 import { mountExtensionActions } from './extensions/header';
 import { openContextActions } from './extensions/context-actions';
+import { errorText } from './error-text';
 
 /* The inspector's Design view: a pan/zoom canvas of the task's artboards
  * (`.pandacode/design/*.html`), each in a sandboxed iframe that runs no scripts.
@@ -20,6 +21,7 @@ export type DesignContext = { projectId: string; sessionId: string | null };
 export type DesignHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   /** The selected project and task, or null when none is open. */
   context(): DesignContext | null;
   /** Put a prompt in the composer without sending it. */
@@ -90,7 +92,6 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   const currentKey = () => { const c = host.context(); return c ? `${c.projectId}:${c.sessionId ?? ''}` : ''; };
 
   const args = (): Record<string, unknown> | null => { const c = host.context(); return c && { projectId: c.projectId, sessionId: c.sessionId }; };
-  const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
   function place(): void {
     revision++;
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
@@ -166,7 +167,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
       layout();
       if (!fitted && boards.length) { fitted = true; fit(); }
       say(boards.length ? '' : 'No artboards yet. Ask the agent to design a screen; it saves HTML artboards in .pandacode/design/.');
-    } catch (error) { if (!disposed && key === contextKey && key === currentKey()) say(failure(error)); }
+    } catch (error) { if (!disposed && key === contextKey && key === currentKey()) say(errorText(error)); }
     if (key === contextKey && key === currentKey()) renderComments();
   }
   function say(text: string): void { empty.textContent = text; empty.hidden = !text; }
@@ -223,7 +224,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
         if (added && selection === selected && version === draftVersion) { pick = null; selection = ''; }
       }
     }
-    catch (error) { if (!disposed) host.notify(`Could not save design comments: ${failure(error)}`); }
+    catch (error) { if (!disposed) (host.notifyError ?? host.notify)(`Could not save design comments: ${errorText(error)}`); }
     finally { busy = false; savingKey = ''; }
     renderComments();
   }

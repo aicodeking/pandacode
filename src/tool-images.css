@@ -1,0 +1,129 @@
+/* Images an agent viewed, in tool rows (src/tool-images.ts): an inline thumbnail beside the
+   file name, a larger card in an expanded row, and a viewer dialog. Tokens only. */
+
+/* Inline thumbnail: chip-sized, sits on the row's text line without growing it. */
+.tool-image-thumb{position:relative;display:inline-grid;place-items:center;flex:none;box-sizing:border-box;width:28px;height:20px;margin:-2px 0;padding:0;
+  vertical-align:middle;overflow:hidden;border:1px solid var(--ds-border);border-radius:var(--ds-radius-chip);background:var(--ds-card-inner);color:var(--muted);
+  cursor:zoom-in;transition:box-shadow var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out,scale var(--ds-ease-out) ease-out}
+.tool-image-thumb:hover{box-shadow:var(--ds-shadow-raised);transition-duration:var(--ds-ease-in)}
+.tool-image-thumb:active{scale:var(--ds-press)}
+.tool-image-thumb:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.tool-image-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.tool-image-thumb img[hidden]{display:none}
+.tool-image-thumb .tool-image-placeholder{width:12px;height:12px}
+.tool-image-thumb.is-loaded .tool-image-placeholder{visibility:hidden}
+.tool-image-thumb.is-missing{cursor:default;opacity:.7}
+.tool-image-name{margin-left:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Larger preview inside an expanded row card. */
+.tool-image-card{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin:0}
+.tool-image-card .tool-image-card-button{display:grid;width:auto;min-width:120px;max-width:100%;height:auto;min-height:72px;margin:0;border-radius:var(--ds-radius-inner);box-shadow:var(--ds-shadow-card)}
+.tool-image-card .tool-image-card-button img{position:static;width:auto;max-width:100%;height:auto;max-height:320px;object-fit:contain}
+.tool-image-card .tool-image-card-button.is-loaded .tool-image-placeholder{display:none}
+.tool-image-card .tool-image-placeholder{width:20px;height:20px}
+.tool-image-card-caption{min-width:0;max-width:100%;font-size:var(--ds-text-meta);color:var(--muted)}
+
+/* Viewer: the dialog stays transparent and untransformed; the plate carries the glass. */
+/* The plate has one fixed frame (--viewer-w × --viewer-h) whatever the image or its name, so stepping never moves
+   the header's controls; the image is centred and fitted inside it. */
+dialog.tool-image-viewer{--viewer-w:min(94vw,1200px);--viewer-h:min(92vh,900px);width:fit-content;max-width:none;max-height:none;margin:auto;padding:0;border:0;background:transparent;overflow:visible;color:var(--text)}
+dialog.tool-image-viewer:focus{outline:none}
+dialog.tool-image-viewer::backdrop{background:var(--scrim);backdrop-filter:blur(5px) saturate(1.05);-webkit-backdrop-filter:blur(5px) saturate(1.05)}
+.tool-image-viewer-plate{display:flex;flex-direction:column;gap:12px;box-sizing:border-box;width:var(--viewer-w);height:var(--viewer-h);padding:14px 16px 16px;
+  border:1px solid var(--glass-border);border-radius:var(--sheet-radius);background:var(--glass-warm);
+  backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);
+  box-shadow:0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near);animation:tool-image-in var(--ds-ease-out) ease-out}
+html[data-theme="dark"] .tool-image-viewer-plate{backdrop-filter:blur(54px) saturate(1.7) brightness(.92);-webkit-backdrop-filter:blur(54px) saturate(1.7) brightness(.92)}
+.tool-image-viewer-head{display:flex;align-items:center;gap:10px;flex:none;min-width:0;height:44px}
+/* The titles take whatever the controls leave (never their own width) and ellipsize. */
+.tool-image-viewer-titles{flex:1 1 0;min-width:0;overflow:hidden}
+/* File actions (Reveal, Copy): their own group before the controls; a Reveal that does not apply leaves it. */
+.tool-image-viewer-actions{display:flex;align-items:center;gap:10px;flex:none}
+/* Controls: one group pinned to the end whose width never changes while stepping. */
+.tool-image-viewer-controls{display:flex;align-items:center;gap:10px;flex:none;margin-inline-start:auto}
+.tool-image-viewer-name{margin:0;font-size:var(--ds-text-head);font-weight:var(--weight-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-image-viewer-meta{display:flex;gap:8px;min-width:0;margin:2px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
+.tool-image-viewer-path{display:flex;min-width:0;white-space:nowrap;user-select:text}
+.tool-image-viewer-path-head{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.tool-image-viewer-path-tail{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.tool-image-viewer-size{flex:none;font-variant-numeric:tabular-nums}
+.tool-image-viewer-size:empty{display:none}
+/* Previous / n of m / next. */
+.tool-image-viewer-nav{display:inline-flex;align-items:center;gap:2px;flex:none}
+.tool-image-viewer-nav[hidden]{display:none}
+.tool-image-viewer-count{min-width:4.5em;font-size:var(--ds-text-meta);color:var(--muted);text-align:center;font-variant-numeric:tabular-nums}
+.tool-image-viewer-step.is-prev .icon{rotate:180deg}
+.tool-image-viewer-step:disabled{opacity:.4;cursor:default}
+.tool-image-viewer-action{display:inline-flex;align-items:center;gap:6px;flex:none}
+/* A Reveal for a relative or network path leaves the layout: no empty slot beside Copy. */
+.tool-image-viewer-action[hidden]{display:none}
+/* Copy path / Copied: the shown label and a hidden copy of the other share one grid cell, so the button is as wide
+   as the wider label with the text centred, and never resizes or leaves a blank when they swap. */
+.tool-image-viewer-copy-label{display:inline-grid;justify-items:center}
+.tool-image-viewer-copy-label>span,.tool-image-viewer-copy-label::after{grid-area:1/1}
+.tool-image-viewer-copy-label::after{content:attr(data-alt);visibility:hidden}
+.tool-image-viewer-action .icon{width:15px;height:15px}
+/* Phone width: Reveal and Copy go icon-only (named by aria-label and title) so the name, path and size keep the header. */
+@media (max-width:640px){
+  dialog.tool-image-viewer .tool-image-viewer-action.ds-btn{justify-content:center;width:30px;padding:0}
+  .tool-image-viewer-action>span{display:none}
+}
+:is(.tool-image-viewer-close,.tool-image-viewer-step){display:grid;place-items:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);
+  transition:background var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--ds-ease-out) ease-out}
+:is(.tool-image-viewer-close,.tool-image-viewer-step):hover:not(:disabled){background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+:is(.tool-image-viewer-close,.tool-image-viewer-step):active:not(:disabled){scale:var(--ds-press)}
+:is(.tool-image-viewer-close,.tool-image-viewer-step) .icon{width:16px;height:16px}
+:is(.tool-image-viewer-close,.tool-image-viewer-step,.tool-image-viewer-action,.tool-image-viewer-zoom):focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.tool-image-viewer-stage{display:grid;flex:1 1 0;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain}
+/* The image opens fit to the window; clicking it shows actual size (the stage scrolls) and back. margin:auto centres
+   it while it fits and keeps its start reachable once it overflows. */
+.tool-image-viewer-zoom{display:block;margin:auto;padding:0;border:0;border-radius:var(--ds-radius-inner);background:transparent;cursor:zoom-in}
+.tool-image-viewer-zoom[hidden]{display:none}
+/* Inset, so the scrolling stage never clips the ring. */
+.tool-image-viewer-zoom:focus-visible{outline-offset:-2px}
+.tool-image-viewer.is-actual .tool-image-viewer-zoom{cursor:zoom-out}
+/* Already at actual size while fitted: nothing to zoom. */
+/* Overrides the app-wide `button:disabled` fade, which would dim the image inside to 45%. */
+.tool-image-viewer-zoom:disabled{opacity:1;cursor:default}
+.tool-image-viewer-image{display:block;max-width:calc(var(--viewer-w) - 34px);max-height:calc(var(--viewer-h) - 86px);object-fit:contain;border-radius:var(--ds-radius-inner)}
+.tool-image-viewer.is-actual .tool-image-viewer-image{max-width:none;max-height:none}
+.tool-image-viewer-image[hidden]{display:none}
+.tool-image-viewer-missing{margin:auto;color:var(--muted);font-size:var(--ds-text-meta)}
+@keyframes tool-image-in{from{opacity:0}to{opacity:1}}
+
+/* The launcher (overlay-thread.ts) loads neither motion.css nor design-system.css, and scopes its own tokens to
+   its components: its rows and its viewer (dialog.is-launcher, appended to body) take what they use from the
+   launcher's root tokens (overlay.css). Scoped to the images, so nothing else in the launcher changes. */
+:where(.launcher-thread :is(.tool-image-thumb,.tool-image-card),dialog.tool-image-viewer.is-launcher){--text:var(--launcher-text);--muted:var(--launcher-muted);
+  --bg:var(--launcher-solid);--panel:var(--launcher-solid);--border:var(--launcher-line);--focus:var(--launcher-accent);
+  --ds-border:var(--launcher-border);--ds-card-inner:var(--launcher-inner);--ds-row-hover:var(--launcher-hover);--ds-shadow-card:var(--launcher-shadow-card);
+  --ds-shadow-raised:var(--launcher-shadow-raised);--ds-radius-chip:6px;--ds-radius-control:8px;--ds-radius-inner:var(--launcher-radius-inner);
+  --ds-text-meta:var(--text-md);--ds-text-head:1.1071rem;--ds-ease-in:var(--launcher-ease-in);--ds-ease-out:var(--launcher-ease-out);--ds-press:.98}
+dialog.tool-image-viewer.is-launcher{--glass-warm:color-mix(in srgb,var(--launcher-solid) 72%,transparent);--glass-border:var(--launcher-border);
+  --glass-shadow-deep:color-mix(in srgb,var(--launcher-text) 30%,transparent);--glass-shadow-near:color-mix(in srgb,var(--launcher-text) 10%,transparent);
+  --scrim:color-mix(in srgb,var(--launcher-text) 14%,transparent);--sheet-radius:16px;--ds-raised:color-mix(in srgb,var(--bg) 92%,transparent)}
+html[data-theme="dark"] dialog.tool-image-viewer.is-launcher{--glass-shadow-deep:color-mix(in srgb,var(--launcher-solid) 80%,transparent);
+  --glass-shadow-near:color-mix(in srgb,var(--launcher-solid) 50%,transparent);--scrim:color-mix(in srgb,var(--launcher-solid) 45%,transparent);
+  --ds-raised:color-mix(in srgb,var(--text) 4.2%,transparent)}
+.tool-image-viewer.is-launcher .ds-btn{height:30px;padding:0 12px;border:0;border-radius:var(--ds-radius-inner);background:var(--ds-raised);color:var(--text);
+  font:inherit;font-size:var(--ds-text-meta);white-space:nowrap;cursor:pointer;box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised);
+  transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out,scale var(--ds-ease-out) ease-out}
+.tool-image-viewer.is-launcher .ds-btn:hover:not(:disabled){background:color-mix(in srgb,var(--text) 4%,var(--ds-raised));transition-duration:var(--ds-ease-in)}
+.tool-image-viewer.is-launcher .ds-btn:active:not(:disabled){scale:var(--ds-press)}
+.tool-image-viewer.is-launcher :is(.tool-image-viewer-close,.tool-image-viewer-step,.tool-image-viewer-zoom){font:inherit;cursor:pointer}
+
+@media (prefers-reduced-motion:reduce){
+  .tool-image-thumb,.tool-image-viewer-close,.tool-image-viewer-step,.tool-image-viewer.is-launcher .ds-btn{transition:none}
+  .tool-image-viewer-plate{animation:none}
+}
+@media (prefers-reduced-transparency:reduce){
+  .tool-image-viewer-plate,html[data-theme="dark"] .tool-image-viewer-plate{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}
+  dialog.tool-image-viewer::backdrop{backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media (prefers-contrast:more){
+  .tool-image-thumb{border-color:var(--border)}
+  .tool-image-viewer-plate,html[data-theme="dark"] .tool-image-viewer-plate{background:var(--bg);border-color:var(--border);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media (forced-colors:active){
+  .tool-image-thumb,.tool-image-viewer-plate{border:1px solid CanvasText;background:Canvas}
+}

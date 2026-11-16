@@ -59,7 +59,7 @@ fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
 pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSessions> {
     // Agent, harness, team and Jev admissions share this lock. No process or
     // filesystem operations happen here; running work must be stopped first.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is closing. Try again when it finishes.".into());
     }
@@ -85,6 +85,10 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     delete_owned(&store, sid, &ids)?;
+    drop(store);
+    for id in &ids {
+        crate::providers::discard_warm_agent(id);
+    }
     Ok(DeletedSessions {
         deleted_session_ids: ids,
     })
@@ -106,8 +110,6 @@ pub async fn delete_session(
     if window.label() != "main" {
         return Err("Only the main window can delete tasks.".into());
     }
-    // A deleted task never sends a follow-up; free its waiting agent.
-    crate::providers::discard_warm_agent(&session_id);
     // Lingering agents go first, so their folders can be removed. A refused deletion keeps them.
     let owned = {
         let state = app.state::<AppState>();

@@ -2,6 +2,7 @@ import type { VoiceConfiguration, VoiceProfileInput, VoiceEvent, VoiceFailure, V
 import { VOICE_CANCELLED } from './voice-types';
 import realVoiceCatalog from '../src-tauri/src/voice/local/catalog.json';
 import { previewHub, previewRepos } from './preview-github-hub';
+import { createPreviewFileExplorer } from './preview-file-explorer';
 import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessagePage, Project, Provider, ProviderId, ProviderModel, Session, TaskStage, ToolActivity } from './types';
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
@@ -12,6 +13,7 @@ import { requireProviderConsole, CONSOLE_UNSUPPORTED, SLASH_UNSUPPORTED } from '
 import { previewExtensionSnapshot, previewProviderStarted, previewProviderFinished } from './extensions/preview';
 import { createHarnessPreview } from './extensions/harness-preview';
 import { isPreviewableFile } from './file-links';
+import { DISMISS_BATCH } from './thread-errors';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
 import { namedTeamSetup } from './team-mode';
@@ -37,6 +39,7 @@ const previewWorkspaceFiles = ['index.html', '.gitignore', 'README.md', 'package
 const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters results as the query changes\n  ✓ preserves keyboard selection\n\nTests: 12 passed, 12 total\nTime: 0.8s\nSample output — no command was executed.';
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pandacode', path: '/Users/you/Projects/pandacode' }];
+const previewExplorer = createPreviewFileExplorer();
 let sessions: Session[] = [
   { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
   { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
@@ -154,6 +157,7 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
   return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: 'onnx', latencyMs: 12 };
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
+let previewClaudeRefresh = true;
 let previewTelemetryOff = false;
 /** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
 const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
@@ -167,13 +171,13 @@ const previewEnvState = { global: [] as [string, string][], providers: {} as Rec
 const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
 function previewProviderConfiguration(): Record<string, unknown> {
   return {
-    executablePaths: {}, claudeConnectionMode: previewClaudeMode,
+    executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
     providers: [...providers, ...packageHarnesses(previewExtensionSnapshot())].map(provider => [provider.id, provider.name]),
     extensionProviders: packageHarnesses(previewExtensionSnapshot()),
-    glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
+    glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, alibabaKeySaved: false, alibabaKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }
 const traceRoot = '/Users/you/Projects/orbit';
@@ -229,6 +233,7 @@ const providers: Provider[] = [
   { id: 'antigravity', name: 'Antigravity', installed: false, path: null, version: '', models: [] },
   { id: 'grok', name: 'Grok Build', installed: true, path: '/sample/bin/grok', version: 'grok 1.0.40 (sample)', models: [] },
   { id: 'mimo', name: 'MiMo Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
+  { id: 'alibaba', name: 'Alibaba Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
   { id: 'pi', name: 'Pi', installed: true, path: '/sample/bin/pi', version: 'Sample provider', models: [] },
   { id: 'deepseek', name: 'DeepSeek', installed: true, path: '/sample/bin/dsh', version: 'Sample provider', models: [] },
   { id: 'commandcode', name: 'Command Code', installed: true, path: '/sample/bin/command-code', version: '1.87.1 (sample)', models: [] },
@@ -240,6 +245,7 @@ const providers: Provider[] = [
   { id: 'devin', name: 'Devin CLI', installed: true, path: '/sample/bin/devin', version: 'devin 3000.11.216 (sample)', models: [] },
   { id: 'zcode', name: 'ZCode', installed: true, path: '/sample/bin/zcode', version: '3.16.3', models: [] },
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
+  { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -251,6 +257,7 @@ const previewMimoEndpoints = [
 let previewMimoEndpoint: string | null = null;
 const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
 let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
+let previewStartAhead = true;
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 const previewAgentsDockSnapshot = {
   agents: [
@@ -331,6 +338,13 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     // A long catalog (over the team limit of 10) for Settings → Model routing.
     ...Array.from({ length: 12 }, (_, i) => ({ id: `nous/sample-${i + 1}`, name: `Nous Sample ${i + 1}`, description: 'Sample Hermes provider model.' })),
   ],
+  // Shaped like `cursor-agent acp`'s parameterized catalog: each base model lists its own thinking levels.
+  cursor: ([
+    ['default', 'Default', [], '', 0], ['auto-smart', 'Auto', [], '', 0],
+    ['composer-2.5', 'Composer 2.5', [], '', 0],
+    ['claude-opus-5', 'Claude Opus 5', ['low', 'medium', 'high', 'xhigh', 'max'], 'high', 200000],
+    ['gpt-5.5', 'GPT-5.5', ['none', 'low', 'medium', 'high', 'extra-high'], 'medium', 272000],
+  ] as [string, string, string[], string, number][]).map(([id, name, efforts, effort, context]) => ({ id, name, description: id === 'default' ? 'Use the model last chosen in Cursor.' : '', reasoningEfforts: efforts.map(value => ({ id: value, name: value === 'xhigh' || value === 'extra-high' ? 'Extra High' : value[0].toUpperCase() + value.slice(1), description: '' })), ...(effort ? { defaultReasoningEffort: effort } : {}), ...(context ? { contextWindow: context } : {}) })),
   muse: ['muse-wonder-1.0', 'muse-spark-1.3'].map(id => ({ id, name: id, description: '', reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'high', contextWindow: 1007997 })),
   opencode: openCodePreviewModels,
   glm: [
@@ -345,14 +359,20 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
     { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
   ],
+  // Mirrors providers::alibaba::models (first entries).
+  alibaba: [
+    { id: 'qwen3.8-max', name: 'Qwen3.8-Max', description: 'Qwen flagship. Availability depends on your plan.' },
+    { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', description: 'Fast Qwen model; used for background work. Availability depends on your plan.' },
+    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview; retires after November 25, 2026. Availability depends on your plan.' },
+  ],
   antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
   claude: [
     { id: 'sonnet', name: 'Claude Sonnet 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 200000 },
-    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000 },
+    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000, speedTiers: [{ id: 'fast', name: 'Fast', description: 'Claude Code fast mode: faster output at a higher price.' }] },
     { id: 'haiku', name: 'Claude Haiku 4.5', description: 'Sample Claude Code model metadata.', contextWindow: 200000 },
   ],
   codex: [
-    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000 },
+    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000, speedTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed' }, { id: 'ultrafast', name: 'Ultra Fast', description: 'Sample experimental tier.' }] },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })) },
   ],
   kimi: [{ id: 'kimi-code/k3', name: 'K3', description: 'Sample configured Kimi model.', reasoningEfforts: [{ id: 'on', name: 'On', description: 'Enable thinking.' }, { id: 'off', name: 'Off', description: 'Disable thinking.' }], contextWindow: 256000 }],
@@ -854,6 +874,10 @@ if (new URLSearchParams(location.search).has('provider-history')) {
   const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
   (window as any).__extensionDialogTransport = transport;
 };
+// tests: `window.__previewInterrupted = ['session-2']` (set before load) starts those tasks Interrupted;
+// `__previewSetStatus(id, status)` changes one and announces it, as the native app does.
+for (const id of (window as any).__previewInterrupted ?? []) sessions = sessions.map(task => task.id === id ? { ...task, status: 'interrupted' } : task);
+(window as any).__previewSetStatus = (id: string, status: Session['status']) => { sessions = sessions.map(task => task.id === id ? { ...task, status } : task); emit('sessions-changed', null); };
 // Tests: how many listeners an event has now, e.g. to check a view stops listening when it should.
 (window as any).__previewListenerCount = (name: string) => listeners.get(name)?.size ?? 0;
 export function listen(name: string, callback: (event: any) => void): () => void { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(callback); return () => listeners.get(name)?.delete(callback); }
@@ -868,6 +892,17 @@ const harnessPreview = createHarnessPreview(event => {
 }, (id, content) => { const owner = providerOwner(session(id).provider); if (owner) previewProviderFinished(owner, emit); finish(id, content); });
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** tests: a live `error` event for any task, saved first like lib.rs `save_agent_activity` does: the row goes into the
+ * thread (newest id) and the event carries it as `data.messageId`; `{ saved: false }` is an event the backend could
+ * not save (no row, no id). Returns the saved id. */
+(window as any).__previewError = (sessionId: string, text: string, options: { saved?: boolean } = {}): number | undefined => {
+  if (options.saved === false) { agent({ sessionId, kind: 'error', text }); return undefined; }
+  const list = (messages[sessionId] ??= []);
+  id = Math.max(id, ...list.map(message => message.id)) + 1;
+  list.push({ id, sessionId, role: 'error', content: text.length > 8192 ? text.slice(-8192) : text, createdAt: Date.now() });
+  agent({ sessionId, kind: 'error', text, data: { messageId: id } });
+  return id;
+};
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -1254,8 +1289,10 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
     usage: [
       { provider: 'claude', status: 'ready', plan: 'Max', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
       { provider: 'codex', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 97, resetsAt: hours(0.6) }] },
+      ...((window as any).__trayExtraUsage ?? []),
     ],
     checking: false,
+    askingClaude: Boolean((window as any).__trayAskingClaude),
   };
 }
 /** The Running agents widget's commands (header and pinned window). */
@@ -1848,6 +1885,21 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
+  // Settings → Agents → Start agents ahead; tests read the saves from `__startAheadSaves`, can hold the read
+  // (`__startAheadGetHold`, a promise) and make either call fail (`__startAheadFail = { get?: message, set?: message }`).
+  if (command === 'start_ahead_get') {
+    const w = window as any;
+    if (w.__startAheadGetHold) await w.__startAheadGetHold;
+    if (w.__startAheadFail?.get) throw new Error(w.__startAheadFail.get);
+    return { on: previewStartAhead } as T;
+  }
+  if (command === 'start_ahead_set') {
+    if ((window as any).__startAheadFail?.set) throw new Error((window as any).__startAheadFail.set);
+    previewStartAhead = Boolean(args.on);
+    ((window as any).__startAheadSaves ??= []).push(previewStartAhead);
+    return { on: previewStartAhead } as T;
+  }
+  if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
@@ -1986,9 +2038,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
-    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
+    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo', 'alibaba'].includes(provider.id)).map(provider => {
       const version = provider.version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
+      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo', 'alibaba'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
@@ -2009,6 +2061,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (typeof args.off !== 'boolean') throw new Error('Choose on or off.');
       previewTelemetryOff = args.off; result = previewPrivacy(); break;
     }
+    case 'provider_set_claude_cli_refresh': previewClaudeRefresh = Boolean(args.enabled); return invoke<T>('provider_configuration', {});
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
@@ -2082,6 +2135,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       previewConnections = { ...previewConnections, tasks: args.connectionId ? { ...tasks, [args.sessionId]: args.connectionId } : tasks }; result = previewConnections; break;
     }
     case 'provider_claude_status': result = {mode: previewClaudeMode, source: 'Saved Claude login', environmentVariables: [], endpoint: null, savedLogin: 'signedIn', conflict: false}; break;
+    case 'agent_usage_asking_claude': result = Object.fromEntries(((args.connections ?? []) as string[]).map(id => [id, { asking: false, saved: null }])); break;
     case 'usage_ledger': result = sampleUsageLedger(); break;
     case 'prompt_activity': result = sampleUsageLedger().rows.filter((_, i) => i % 3 === 0).map(row => [row[0], i2p(row[1]), 1 + (row[0] % 7)]); break;
     case 'agent_usage': {
@@ -2143,7 +2197,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewMimoEndpoints.some(entry => entry.id === args.endpoint)) throw new Error('Choose one of the MiMo endpoints listed in Settings.');
       previewMimoEndpoint = args.endpoint;
       result = previewProviderConfiguration(); break;
-    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
+    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_save_alibaba_key': case 'provider_remove_alibaba_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
     case 'turn_change_summary': {
       session(args.sessionId);
       const summary = (messages[String(args.sessionId)] ?? []).find(m => m.turnChanges?.id === args.changeId)?.turnChanges;
@@ -2203,7 +2257,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'codex_command': result = commandPanel(codexTask(args.sessionId), args.request ?? {}); break;
     case 'codex_jobs': codexTask(args.sessionId); if (args.stopId) throw new Error('This sample task has no background jobs.'); result = { kind: 'jobs', jobs: [], notes: ['Browser preview · no commands are running.'] }; break;
     case 'set_task_preference': {
-      const task = codexTask(args.sessionId), request = args.request ?? {};
+      const request = args.request ?? {};
+      if (request.action === 'speed') {
+        // Mirrors native: the tier must be one the task's model lists.
+        const task = session(args.sessionId), tiers = catalogs[task.provider]?.find(model => model.id === task.model)?.speedTiers ?? [];
+        if (request.tier !== null && !tiers.some(tier => tier.id === request.tier)) throw new Error('This speed is not available for this model.');
+        task.codexSettings = { ...task.codexSettings, serviceTier: request.tier };
+        task.updatedAt = Date.now(); result = task; break;
+      }
+      const task = codexTask(args.sessionId);
       if (!['plan', 'fast'].includes(request.action) || typeof request.enabled !== 'boolean') throw new Error('Choose a valid task preference.');
       task.codexSettings ??= {};
       if (request.action === 'plan') task.codexSettings.collaborationMode = { mode: request.enabled ? 'plan' : 'default' };
@@ -2298,7 +2360,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       Object.assign(entry, { text: String(args.text ?? ''), attachments: args.attachments ?? [], updatedAt: Date.now() });
       savePreviewQueue(queue); result = entry; break;
     }
-    case 'queue_remove': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
+    case 'queue_remove': case 'queue_take_steered': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
     case 'queue_reorder': {
       const queue = previewQueue(), own = queue.filter(e => e.sessionId === args.sessionId);
       if ([...own.map(e => e.id)].sort().join() !== [...args.ids].sort().join()) throw new Error('The queue changed. Try reordering again.');
@@ -2325,7 +2387,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (w.__remoteSteerHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSteerRelease = () => { w.__remoteSteerHold = false; resolve(); }; });
       // Claude-family, Codex, Pi, Muse and Devin take it live; others hold it for the next turn of the same run.
       const text = String(args.text).trim(), steerId = `steer-${++id}`;
-      const mode = ['claude', 'glm', 'mimo', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
+      const mode = ['claude', 'glm', 'mimo', 'alibaba', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
       const report = (status: string) => agent({ sessionId: s.id, kind: 'steer' as AgentEvent['kind'], text, data: { id: steerId, status, mode } });
       window.setTimeout(() => report('pending'));
       window.setTimeout(() => {
@@ -2373,6 +2435,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       sessions = sessions.filter(item => item.id !== task.id); delete messages[task.id]; architect.remove([task.id]);
       result = true; break;
     }
+    case 'prewarm_draft_session': result = null; break;
     case 'pin_session': {
       const task = session(args.sessionId);
       if (typeof args.pinned !== 'boolean') throw new Error('Choose whether to pin this task.');
@@ -2442,7 +2505,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { if (!parseProviderId(args.provider)) throw new Error('Unknown provider.'); const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
+    case 'create_session': { if (!parseProviderId(args.provider)) throw new Error('Unknown provider.'); const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) { architect.inherit(s.id); const inherited = architect.get(s.id); if (inherited) emit('architect-event', inherited); } result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
       result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
@@ -2484,7 +2547,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'update_session': {
       const s = session(args.sessionId);
       if (args.archived === false && s.archived && s.taskStage === 'completed') s.completedAt = Date.now();
-      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId')), { updatedAt: Date.now() }); break;
+      // `warm` (optional) only asks native to restart the warm process; it is not a task field.
+      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId' && key !== 'warm')), { updatedAt: Date.now() }); break;
     }
     case 'set_reasoning_effort': {
       const s = session(args.sessionId);
@@ -2496,9 +2560,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
     }
+    // Warming a task's next turn ahead (native starts the harness process): nothing to start here.
+    case 'warm_task': session(args.sessionId); result = null; break;
     case 'configure_session': {
       const s = session(args.sessionId);
       if (![...providers, ...packageHarnesses(previewExtensionSnapshot())].some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      // `warm` (optional): only the model picker asks native to start the new model's process ahead.
+      if (args.warm !== undefined && typeof args.warm !== 'boolean') throw new Error('Invalid warm flag.');
       const projectId = args.projectId ?? s.projectId;
       if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
       if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');
@@ -2513,6 +2581,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
     }
+    case 'dismiss_error_messages': {
+      const ids: unknown = args.ids;
+      if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+      const wanted = new Set<number>(ids), list = messages[session(args.sessionId).id] ?? [];
+      const kept = list.filter(message => !(message.role === 'error' && wanted.has(message.id)));
+      messages[args.sessionId] = kept; result = list.length - kept.length; break;
+    }
     case 'get_messages': {
       const synced = mirrorSynced.get(args.sessionId);
       const history = (messages[args.sessionId] ?? []).filter(message => synced == null || message.id <= synced);
@@ -2526,6 +2601,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (providerOwner(session(args.sessionId).provider) && !packageHarnesses(previewExtensionSnapshot()).some(provider => provider.id === session(args.sessionId).provider)) throw new Error(PROVIDER_RECOVERY);
       if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
       const s = session(args.sessionId), w = window as any; assertIdle(s);
+      // Tests: `__previewSendFails` sends are rejected before anything is saved.
+      if (w.__previewSendFails > 0) { w.__previewSendFails -= 1; throw new Error('The agent could not start.'); }
       if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
       if (w.__remoteSendHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSendRelease = () => { w.__remoteSendHold = false; resolve(); }; });
       let moodboardContext = '';
@@ -2684,7 +2761,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!String(args.title ?? '').trim()) throw new Error('Give the pull request a title of up to 256 characters.');
       pushedBranches.add(checkout.branch);
       const number = previewGithub.nextNumber(s.projectId);
-      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: 'open', checkedAt: Date.now() };
+      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: args.draft ? 'draft' : 'open', checkedAt: Date.now() };
       previewGithub.pulls.push({ projectId: s.projectId, number, title: s.pullRequest.title, body: String(args.body ?? ''), base: args.base, head: checkout.branch });
       result = s; break;
     }
@@ -2787,7 +2864,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
-    case 'list_files': result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
+    case 'list_files': result = previewExplorer.list(args); break;
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
       const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
@@ -2867,6 +2944,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewWorkspaceFiles.includes(path) || !isPreviewableFile(path)) throw new Error('This file cannot be previewed in the browser.');
       result = { path, name: path.split('/').pop(), url: 'http://127.0.0.1:4179/preview/' + encodeURIComponent(args.sessionId ?? args.projectId) + '/' + path.split('/').map(encodeURIComponent).join('/') }; break;
     }
+    case 'tool_image': {
+      // A drawn stand-in for an image an agent viewed (tool-row thumbnails).
+      // Absolute or checkout-relative, like the real command; never `..` or network paths.
+      if (!/^(file:\/\/)?[^\\]*\.(png|jpe?g|gif|webp)$/i.test(String(args.path)) || /(^|\/)\.\.(\/|$)|^(file:)?\/\//.test(String(args.path).replace(/^file:\/\/(?=\/[^/])/, ''))) throw new Error('Only PNG, JPEG, GIF and WebP images can be shown');
+      const name = String(args.path).split('/').pop()?.replace(/[<>&"']/g, '') ?? '';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" rx="10" fill="#1f3a5f"/><rect x="16" y="16" width="288" height="24" rx="6" fill="#3d6aa8"/><rect x="16" y="52" width="180" height="132" rx="8" fill="#e8eef7"/><text x="250" y="124" fill="#fffcef" font-family="sans-serif" font-size="14" text-anchor="middle">${name}</text></svg>`;
+      result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
+    }
     case 'workspace_image': {
       // A drawn stand-in for any workspace image a question shows.
       if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(String(args.path)) || String(args.path).includes('..')) throw new Error('Only workspace images can be shown');
@@ -2883,7 +2968,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
     case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
-      result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
+      result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
+    case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
+    case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;
+    case 'write_workspace_file': {
+      const original = await invoke<string>('read_file', args);
+      previewExplorer.save(args, original); result = null; break;
+    }
+    case 'open_workspace_file': result = null; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = new URLSearchParams(location.search).has('terminal-coverage') && (window as any).__previewTerminalActivity || { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;

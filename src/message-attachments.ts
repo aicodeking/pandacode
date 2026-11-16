@@ -32,6 +32,9 @@ function documentHead(line: string): { name: string; path: string } | null {
 function parseBlock(block: string): MessageAttachment[] {
   const head = block.split('\n', 1)[0];
   let match: RegExpMatchArray | null;
+  if ((match = block.match(/^File context: (.+)\nSelected lines: (\d+)–(\d+)\n/))) {
+    return [{ kind: 'raw', name: baseName(match[1]), detail: `Selected lines ${match[2]}–${match[3]}`, raw: block }];
+  }
   if ((match = head.match(/^File context: (.+)$/))) return [{ kind: 'file', name: baseName(match[1]), detail: 'Project file', path: match[1] }];
   const document = documentHead(head);
   if (document) {

@@ -53,7 +53,7 @@ pub(crate) struct Rules {
 
 pub(crate) fn rules(harness: &str) -> Rules {
     let (exact, deny_all, console) = match harness {
-        "claude" | "glm" | "mimo" => (Exact::Identifiers, true, Console::ClaudeRules),
+        "claude" | "glm" | "mimo" | "alibaba" => (Exact::Identifiers, true, Console::ClaudeRules),
         "codex" => (Exact::All, false, Console::CodexConfig),
         "opencode" => (Exact::Identifiers, true, Console::OpenCodeConfig),
         "pi" | "omp" => (Exact::None, false, Console::Flag("--append-system-prompt")),
@@ -305,7 +305,7 @@ const CLAUDE_BUILTINS: &[&str] = &[
 /// name), so its `/name` commands are all its own.
 pub(crate) fn harness_builtin(harness: &str, name: &str) -> bool {
     match harness {
-        "claude" | "glm" | "mimo" => CLAUDE_BUILTINS.contains(&name),
+        "claude" | "glm" | "mimo" | "alibaba" => CLAUDE_BUILTINS.contains(&name),
         "codex" => true,
         _ => false,
     }

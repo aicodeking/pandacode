@@ -4,6 +4,7 @@ import { trackSegment } from './motion';
 import type { DiffViewerController } from './diff-viewer';
 import type { Session } from './types';
 import { mountPullPresentation } from './extensions/pull-host';
+import { errorText } from './error-text';
 
 /* The task's pull request as a view in the inspector: state, checks, reviews,
  * description, files with their diffs, and commits — read through the user's `gh`. */
@@ -28,12 +29,27 @@ export type PullHost = {
   /** The task came back with its link marked merged. */
   merged(session: Session): void;
   notify(message: string): void;
+  notifyError?(message: string): void;
 };
 
 type Section = 'overview' | 'files' | 'commits';
 type MergeMethod = 'squash' | 'merge' | 'rebase';
 const MERGE_LABEL: Record<MergeMethod, string> = { squash: 'Squash and merge', merge: 'Create a merge commit', rebase: 'Rebase and merge' };
 const FRESH_FOR = 60_000;
+const DETAIL_CACHE_COUNT = 20, PATCH_CACHE_BYTES = 16 * 1024 * 1024;
+/** Map insertion order is recency; the mounted PR remains usable even when oversized. */
+export function trimPullCaches(details: Map<string, unknown>, diffs: Map<string, { bytes: number }>, shown?: string): void {
+  for (const key of details.keys()) {
+    if (details.size <= DETAIL_CACHE_COUNT) break;
+    if (key !== shown) details.delete(key);
+  }
+  let bytes = 0;
+  for (const diff of diffs.values()) bytes += diff.bytes;
+  for (const [key, diff] of diffs) {
+    if (bytes <= PATCH_CACHE_BYTES && diffs.size <= DETAIL_CACHE_COUNT) break;
+    if (key !== shown) { diffs.delete(key); bytes -= diff.bytes; }
+  }
+}
 /* Status marks are circled glyphs, as in the reference's checks card. */
 const MARK: Record<string, string> = { check: 'm8.5 12.2 2.4 2.3 4.6-5', close: 'm9.5 9.5 5 5m0-5-5 5', pending: 'M12 8v4l2.5 1.5', info: 'M12 11v5M12 8v.01', alert: 'M12 7.5v5M12 16v.01' };
 const circled = (glyph: string) => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="${MARK[glyph] ?? MARK.info}"/></svg>`;
@@ -69,7 +85,7 @@ function checksSummary(checks: PullCheck[]): { tone: string; text: string } {
 
 export function createPullView(host: PullHost) {
   const details = new Map<string, { at: number; detail: PullDetail }>();
-  const diffs = new Map<string, Promise<PullDiff>>();
+  const diffs = new Map<string, { pending: Promise<PullDiff>; bytes: number }>();
   let mounted: { key: string; session: Session; root: HTMLElement; section: Section; viewers: Map<string, DiffViewerController>; request: number; merge: 'idle' | 'confirm' | 'merging'; method: MergeMethod; checks: boolean; failed: boolean; unlinking: boolean; presentation?: ReturnType<typeof mountPullPresentation> } | undefined;
   let requests = 0;
 
@@ -77,6 +93,7 @@ export function createPullView(host: PullHost) {
     mounted?.presentation?.dispose();
     mounted?.viewers.forEach(viewer => viewer.dispose());
     mounted = undefined;
+    trimPullCaches(details, diffs);
   }
 
   /** Captured host state for the extension contract; the view object never leaves this module. */
@@ -111,6 +128,7 @@ export function createPullView(host: PullHost) {
   async function load(force: boolean): Promise<void> {
     const view = mounted; if (!view) return;
     const hit = details.get(view.key);
+    if (hit) { details.delete(view.key); details.set(view.key, hit); }
     if (hit && !force && Date.now() - hit.at < FRESH_FOR) { await render(view, hit.detail); return; }
     const request = view.request = ++requests;
     if (hit) { await render(view, hit.detail); view.root.setAttribute('aria-busy', 'true'); }
@@ -118,15 +136,17 @@ export function createPullView(host: PullHost) {
     view.presentation?.refresh();
     try {
       const detail = await host.call<PullDetail>('github_pull_request', { sessionId: view.session.id });
+      details.delete(view.key);
       details.set(view.key, { at: Date.now(), detail });
       if (mounted === view && view.request === request) view.failed = false;
       if (force) diffs.delete(view.key);
+      trimPullCaches(details, diffs, mounted?.key);
       if (mounted === view && view.request === request) await render(view, detail);
     } catch (error) {
       if (mounted !== view || view.request !== request) return;
       view.failed = true;
       const url = view.session.pullRequest?.url ?? '';
-      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(error instanceof Error ? error.message : String(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
+      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(errorText(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
     } finally { if (mounted === view && view.request === request) { view.root.removeAttribute('aria-busy'); view.presentation?.refresh(); } }
   }
 
@@ -157,7 +177,7 @@ export function createPullView(host: PullHost) {
     } catch (error) {
       if (mounted !== view) return;
       view.merge = 'confirm'; await render(view, detail);
-      host.notify(`Couldn’t merge #${detail.number}: ${error instanceof Error ? error.message : String(error)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t merge #${detail.number}: ${errorText(error)}`);
     }
   }
 
@@ -266,15 +286,26 @@ export function createPullView(host: PullHost) {
     button.setAttribute('aria-expanded', 'true');
     diffHost.hidden = false; diffHost.innerHTML = '<p class="pull-muted pull-pad" role="status">Loading diff…</p>';
     try {
-      let pending = diffs.get(view.key);
-      if (!pending) { pending = host.call<PullDiff>('github_pull_request_diff', { sessionId: view.session.id }); diffs.set(view.key, pending); pending.catch(() => diffs.delete(view.key)); }
-      const [{ patch, truncated }, { mountDiffViewer }] = await Promise.all([pending, import('./diff-viewer')]);
+      const key = view.key;
+      let cached = diffs.get(key);
+      if (!cached) {
+        const entry = { pending: host.call<PullDiff>('github_pull_request_diff', { sessionId: view.session.id }), bytes: 0 };
+        cached = entry;
+        void entry.pending.then(diff => {
+          if (diffs.get(key) !== entry) return;
+          entry.bytes = diff.patch.length * 2;
+          trimPullCaches(details, diffs, mounted?.key);
+        }, () => { if (diffs.get(key) === entry) diffs.delete(key); });
+      }
+      diffs.delete(key); diffs.set(key, cached);
+      trimPullCaches(details, diffs, mounted?.key);
+      const [{ patch, truncated }, { mountDiffViewer }] = await Promise.all([cached.pending, import('./diff-viewer')]);
       if (mounted !== view || !diffHost.isConnected || button.getAttribute('aria-expanded') !== 'true') return;
       const section = fileSection(patch, path);
       if (!section) { diffHost.innerHTML = `<p class="pull-muted pull-pad">${truncated ? 'This diff is too large to show here; open it on GitHub.' : 'No textual changes (binary or renamed file).'}</p>`; return; }
       diffHost.replaceChildren();
       view.viewers.set(path, mountDiffViewer(diffHost, { patch: section, path, layout: 'unified', truncated: false }));
-    } catch (error) { if (diffHost.isConnected) diffHost.innerHTML = `<p class="pull-error pull-pad" role="alert">${escape(error instanceof Error ? error.message : String(error))}</p>`; }
+    } catch (error) { if (diffHost.isConnected) diffHost.innerHTML = `<p class="pull-error pull-pad" role="alert">${escape(errorText(error))}</p>`; }
   }
 
   async function onClick(event: MouseEvent): Promise<void> {

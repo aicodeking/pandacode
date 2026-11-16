@@ -80,7 +80,7 @@ pub async fn agents_dock_snapshot(state: State<'_, AppState>) -> crate::Result<A
 }
 
 fn snapshot(state: &AppState) -> crate::Result<AgentsDockSnapshot> {
-    let agents = state.agents.lock().map_err(|error| error.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|error| error.to_string())?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
     let projects: HashMap<_, _> = store
         .projects()?
@@ -221,6 +221,31 @@ fn read_preferences(bytes: Option<&[u8]>) -> AgentsDockPreferences {
     }
 }
 
+/// Tauri's own events put kind before text; stop before walking a potentially large text payload.
+fn event_changes_dock(payload: &str) -> bool {
+    struct Kind<'a>(&'a mut bool);
+    impl<'de> serde::de::Visitor<'de> for Kind<'_> {
+        type Value = ();
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an agent event")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "kind" {
+                    *self.0 = changes_dock(&map.next_value::<String>()?);
+                    return Ok(());
+                }
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+            Ok(())
+        }
+    }
+    let mut changed = false;
+    // The early return can fail serde's closing-brace check; we only need the visited kind.
+    let _ = serde::Deserializer::deserialize_map(&mut serde_json::Deserializer::from_str(payload), Kind(&mut changed));
+    changed
+}
+
 pub fn setup(app: &AppHandle, app_data: &Path) -> crate::Result<()> {
     let path = app_data.join("agents-dock.json");
     let preferences = read_preferences(std::fs::read(&path).ok().as_deref());
@@ -238,14 +263,12 @@ pub fn setup(app: &AppHandle, app_data: &Path) -> crate::Result<()> {
     // Elapsed time is counted by the windows themselves from the snapshot.
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let listener = wake.clone();
+    let dock = app.clone();
     app.listen_any("agent-event", move |event| {
-        #[derive(Deserialize)]
-        struct Kind {
-            kind: String,
+        if !dock.state::<DockState>().preferences.lock().is_ok_and(|preferences| preferences.enabled) {
+            return;
         }
-        if serde_json::from_str::<Kind>(event.payload())
-            .is_ok_and(|event| changes_dock(&event.kind))
-        {
+        if event_changes_dock(event.payload()) {
             listener.notify_one();
         }
     });
@@ -568,6 +591,15 @@ mod tests {
         changes_dock, read_preferences, shape_snapshot, AgentsDockPreferences, Candidate,
         DockStatus,
     };
+
+    #[test]
+    fn event_kind_peeking_stops_before_the_streamed_payload() {
+        assert!(super::event_changes_dock(r#"{"kind":"status","text":"unfinished"#));
+        assert!(!super::event_changes_dock(r#"{"kind":"delta","text":"unfinished"#));
+        assert!(super::event_changes_dock(r#"{"sessionId":"task","kind":"done"}"#));
+        assert!(!super::event_changes_dock("not json"));
+        assert!(!super::event_changes_dock(r#"{"text":"kind: status"}"#));
+    }
 
     #[test]
     fn the_widget_starts_off_and_stays_as_chosen_afterwards() {

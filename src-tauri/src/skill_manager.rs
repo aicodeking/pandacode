@@ -630,6 +630,10 @@ fn installed(id: &str) -> bool {
             crate::provider_settings::mimo_key(),
             crate::provider_settings::MIMO_KEY.env,
         ),
+        "alibaba" => configured_key(
+            crate::provider_settings::alibaba_key(),
+            crate::provider_settings::ALIBABA_KEY.env,
+        ),
         _ => true,
     }
 }

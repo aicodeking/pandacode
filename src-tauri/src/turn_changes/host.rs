@@ -12,7 +12,7 @@ pub(crate) fn instruction() -> &'static str {
 /// Keep the catalog stable across resumed turns; control-only turns have no tracker.
 pub(crate) fn with_host(
     base: Option<ToolHost>,
-    tracker: Option<Arc<Mutex<Tracker>>>,
+    tracker: Option<SharedTracker>,
     stopped: Arc<AtomicBool>,
 ) -> ToolHost {
     let mut tools = base
@@ -47,9 +47,8 @@ pub(crate) fn with_host(
                         return Err("Task has stopped.".into());
                     }
                     tracker
-                        .lock()
-                        .map_err(|_| "File tracking is unavailable.".to_string())?
-                        .report(args)
+                        .with(|tracker| tracker.report(args))
+                        .ok_or_else(|| "File tracking is unavailable.".to_string())?
                 })
                 .await
                 .map_err(|_| "File tracking could not complete.".to_string())?
@@ -175,7 +174,7 @@ mod tests {
     async fn reported_shell_batch_is_scoped_frozen_and_cannot_be_reused_by_another_task() {
         let f = crate::turn_changes::tests::Fixture::new(false);
         f.write("ours.txt", "dirty before batch\n");
-        let tracker = Arc::new(Mutex::new(Tracker::start(f.root.clone(), f.cache.clone())));
+        let tracker = SharedTracker::ready(Tracker::start(f.root.clone(), f.cache.clone()));
         let stopped = Arc::new(AtomicBool::new(false));
         let host = with_host(None, Some(tracker.clone()), stopped.clone());
         let begun = (host.handler)(TOOL.into(), json!({"action":"begin","paths":["ours.txt"]}))
@@ -192,21 +191,25 @@ mod tests {
             output: String::new(),
             write_paths: Some(vec!["ours.txt".into()]),
         };
-        tracker.lock().unwrap().observe_tool("native", &native);
-        tracker.lock().unwrap().observe_tool(
-            "native",
-            &ToolActivity {
-                status: "completed".into(),
-                ..native
-            },
-        );
+        tracker.with(|t| t.observe_tool("native", &native)).unwrap();
+        tracker
+            .with(|t| {
+                t.observe_tool(
+                    "native",
+                    &ToolActivity {
+                        status: "completed".into(),
+                        ..native
+                    },
+                )
+            })
+            .unwrap();
         f.write("external.txt", "someone else\n");
         let other = with_host(
             None,
-            Some(Arc::new(Mutex::new(Tracker::start(
+            Some(SharedTracker::ready(Tracker::start(
                 f.root.clone(),
                 f.cache.clone(),
-            )))),
+            ))),
             stopped.clone(),
         );
         let completed =
@@ -225,7 +228,7 @@ mod tests {
             .unwrap();
         assert!((host.handler)(TOOL.into(), completed).await.is_err());
         f.write("ours.txt", "later editor change\n");
-        let captured = tracker.lock().unwrap().finish().unwrap();
+        let captured = tracker.with(|t| t.finish()).unwrap().unwrap();
         assert_eq!(captured.summary.files.len(), 1);
         assert_eq!(captured.summary.files[0].path, "ours.txt");
         assert_eq!(
@@ -239,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn report_tool_rejects_traversal_and_stopped_tasks_and_preserves_base_tools() {
         let f = crate::turn_changes::tests::Fixture::new(false);
-        let tracker = Arc::new(Mutex::new(Tracker::start(f.root.clone(), f.cache.clone())));
+        let tracker = SharedTracker::ready(Tracker::start(f.root.clone(), f.cache.clone()));
         let stopped = Arc::new(AtomicBool::new(false));
         let base = ToolHost {
             tools: vec![],

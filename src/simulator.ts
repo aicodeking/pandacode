@@ -1,5 +1,6 @@
 import './simulator.css';
 import { icon, isImeKey } from './dom';
+import { errorText } from './error-text';
 import { androidOnly, isWindows } from './platform';
 import type { Device3D, DeviceButton, DuoPose, DeviceShape, ScreenGesture } from './simulator-3d';
 import { chosenFinish, modelSpec, rememberFinish } from './simulator-models';
@@ -30,6 +31,7 @@ export type SimulatorHost = {
   context?(): { projectId: string; sessionId: string };
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   choose(anchor: HTMLElement, title: string, items: ChoiceItem[], onSelect: (id: string) => void): void | (() => void);
   /** Native progress events, e.g. Android setup. */
   listen?(name: 'android-setup', callback: (event: AndroidSetup) => void): Promise<() => void>;
@@ -108,6 +110,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     device?.setLoading(true);
     if (flat) { flat.removeAttribute('src'); flat.alt = 'Loading display…'; }
   }
+  const fail = (text: string): void => (host.notifyError ?? host.notify)(text);
   function say(text: string): void { statusLine.textContent = text; statusLine.hidden = !text; }
 
   async function ensureView(): Promise<void> {
@@ -179,7 +182,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       await view;
       render();
       pump();
-    } catch (error) { loadingStatus = false; revision++; say(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { loadingStatus = false; revision++; say(errorText(error)); }
   }
 
   /* Frames: a long-poll loop while visible and running. */
@@ -203,7 +206,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
           }
         } catch (error) {
           if (generation !== pumpGeneration) return;
-          if (++failures >= 3) { message('Screen unavailable'); say(error instanceof Error ? error.message : String(error)); await sleep(2000); void refresh(); return; }
+          if (++failures >= 3) { message('Screen unavailable'); say(errorText(error)); await sleep(2000); void refresh(); return; }
           await sleep(500);
         }
       }
@@ -212,9 +215,9 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
 
   async function input(value: Input): Promise<void> {
     const udid = status?.selected; if (!udid || !booted()) return;
-    if (status && !status.axe && current()?.platform !== 'android') { if (!warnedAxe) { warnedAxe = true; host.notify(`Touch input needs AXe: ${status.axeInstall}`); } return; }
+    if (status && !status.axe && current()?.platform !== 'android') { if (!warnedAxe) { warnedAxe = true; fail(`Touch input needs AXe: ${status.axeInstall}`); } return; }
     try { await host.call<string>('simulator_input', { udid, input: value }); }
-    catch (error) { host.notify(error instanceof Error ? error.message : String(error)); }
+    catch (error) { fail(errorText(error)); }
   }
   async function send(gesture: ScreenGesture): Promise<void> {
     stage.focus({ preventScroll: true });
@@ -264,7 +267,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     try {
       status = await call('simulator_power', { udid: chosen.udid, on });
       seq = 0;
-    } catch (error) { host.notify(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { fail(errorText(error)); }
     finally { busy = false; render(); pump(); }
   }
   async function capture(): Promise<void> {
@@ -273,7 +276,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       const png = await host.call<ArrayBuffer>('simulator_capture', { udid });
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
       host.notify('Simulator screenshot copied');
-    } catch (error) { host.notify(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { fail(errorText(error)); }
   }
   function chooseDevice(anchor: HTMLElement): void {
     if (!status) return;
@@ -288,7 +291,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     host.choose(anchor, 'Devices', items, id => {
       if (id === SETUP) { void setupAndroid(); return; }
       if (id === ADD_DUO) { void addDuo(); return; }
-      void selectDevice(id).catch(error => host.notify(String(error)));
+      void selectDevice(id).catch(error => fail(errorText(error)));
     });
   }
   async function selectDevice(udid: string): Promise<void> {
@@ -314,7 +317,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   async function addDuo(): Promise<void> {
     say('Adding iPhone Duo…');
     try { status = await call('simulator_create_duo'); seq = 0; say(''); render(); pump(); }
-    catch (error) { say(''); host.notify(error instanceof Error ? error.message : String(error)); }
+    catch (error) { say(''); fail(errorText(error)); }
   }
   /** The hinge moves on click; the simulator follows in the background one fold at a
    * time, always to the newest pose asked for, and the new display shows a spinner until
@@ -339,7 +342,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
           if (poseWanted) continue;
           // The old display's newest frame replaces the spinner.
           if (status?.selected === udid) { status = { ...status, pose: held }; device?.setPose(held, true); seq = 0; }
-          host.notify(error instanceof Error ? error.message : String(error));
+          fail(errorText(error));
         }
       }
     } finally { poseBusy = false; poseWanted = undefined; render(); pump(); }
@@ -373,7 +376,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       status = await call('simulator_select', { udid: `android:${avd}` });
       seq = 0; render(); pump();
     } catch (error) {
-      say(error instanceof Error ? error.message : String(error));
+      say(errorText(error));
     } finally { settingUp = false; stop?.(); }
   }
 
@@ -471,7 +474,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       case 'recents': void press('recents'); break;
       case 'lock': void press('lock'); break;
       case 'appearance': {
-        void toggleAppearance().catch(error => host.notify(String(error)));
+        void toggleAppearance().catch(error => fail(errorText(error)));
         break;
       }
       case 'capture': void capture(); break;

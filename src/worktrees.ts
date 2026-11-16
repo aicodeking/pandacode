@@ -7,6 +7,7 @@ import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeSt
 import { mountWorktreePresentation, type WorktreeHostControl, type WorktreeHostState } from './extensions/worktree-host';
 import { WORKTREE_ENTRY_CONTROLS, type WorktreeAction, type WorktreeControl, type WorktreePending } from './extensions/worktree';
 import { WORKTREE_CONTROLS } from './extensions/surfaces';
+import { errorText } from './error-text';
 
 /* One branch control for every task. The chip above the prompt names the checkout
  * and opens the only worktree menu; dialogs convert an unstarted task in place,
@@ -18,6 +19,7 @@ export type WorktreeHost = {
   modal(title: string, body: string, cls?: string, request?: DialogRequest): HTMLDialogElement;
   closeModal(): void;
   notify(text: string): void;
+  notifyError?(text: string): void;
   showChoices(anchor: HTMLElement, options: { title: string; items: ChoiceItem[]; actions?: boolean; width?: number; searchPlaceholder?: string; onSelect: (id: string) => void | Promise<void>; extensionSurface?: { location: 'panda.worktree.actions'; context: { projectId: string; revision: number; selection: { kind: 'task'; ids: string[] } }; isAlive?: () => boolean; pinned?: readonly string[]; width?: number } }): Promise<void>;
   session(): Session | undefined;
   project(): Project | undefined;
@@ -218,7 +220,7 @@ export function createWorktrees(host: WorktreeHost) {
       // Refresh once the menu has closed: an open menu keeps the context bar from redrawing its chip.
       window.setTimeout(() => void host.branchChanged(), 0);
     } catch (cause) {
-      host.notify(`Couldn’t switch branches: ${cause instanceof Error ? cause.message : String(cause)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t switch branches: ${errorText(cause)}`);
     }
   }
 
@@ -335,7 +337,7 @@ export function createWorktrees(host: WorktreeHost) {
       if (!result) return;
       merged = result;
     } catch (cause) {
-      host.notify(`Couldn’t merge: ${cause instanceof Error ? cause.message : String(cause)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t merge: ${errorText(cause)}`);
       return;
     }
     const moved = merged.switchedFrom ? ` (the project checkout moved from ${merged.switchedFrom})` : '';

@@ -1,5 +1,6 @@
 import { call, subscribe } from './bridge';
 import { escape, isImeKey, morph } from './dom';
+import { errorText } from './error-text';
 import {
   ALL_LANGUAGES, browserTitle, catalogLanguages, destinationOptionsHtml, destinationValue, emptyModelsText, filterModels, languageNote, languageOptionsHtml,
   languagesHtml, parseDestination, setupModel, sortModels, usableModel,
@@ -15,7 +16,7 @@ import type {
 const TYPEAHEAD_MS = 600;
 /** The most rows PageUp/PageDown move in the Languages list. */
 const LANGUAGE_PAGE_MAX = 10;
-const message = (cause: unknown) => String(cause instanceof Error ? cause.message : cause);
+const message = (cause: unknown) => errorText(cause, 'An unexpected error occurred.');
 const testModel = <T = unknown>(request: VoiceLocalTestRequest) => call<T>('voice_local_test_model', request);
 
 /** Voice preferences shared by the Input and Transcription cards. Reloads and saves share one queue, so neither a late
@@ -306,7 +307,7 @@ export class LocalModelsView {
     this.render();
     if (event.state === 'installed') {
       this.showMessage(`${this.model(event.modelId)?.name ?? 'Model'} downloaded.`);
-      void this.reloadSelection().catch(() => {});
+      void this.reloadSelection().catch(cause => { this.state.errors.set(event.modelId, `Downloaded, but couldn’t refresh voice settings: ${message(cause)}`); this.render(); });
     }
     if (focusedCancel && event.state === 'downloadable') this.focusCard(event.modelId, '[data-voice-model-download]');
   }
@@ -382,7 +383,8 @@ export class LocalModelsView {
       this.updateModel(modelId, { state: 'downloadable', downloaded: 0, active: false });
       this.showMessage(`${this.model(modelId)?.name ?? 'Model'} deleted.`);
       // Deleting the selected model clears native's selection: Language and the composer's setup state follow it.
-      await this.reloadSelection().catch(() => {});
+      // The delete already happened: a failed refresh is shown on this model's card, not as a failed delete.
+      await this.reloadSelection().catch(cause => { this.state.errors.set(modelId, `Deleted, but couldn’t refresh voice settings: ${message(cause)}`); });
     }).then(() => this.focusCard(modelId, '[data-voice-model-download]'));
   }
 

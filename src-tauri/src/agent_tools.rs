@@ -525,7 +525,7 @@ fn project_page(state: &AppState) -> Result<Value> {
 }
 
 fn task_page(state: &AppState, project_id: &str, offset: u64, archived: bool) -> Result<Value> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let offset = offset.min(1_000_000) as i64;
     // Filter the project before LIMIT: global recent-task lists cannot paginate a project.
@@ -551,7 +551,7 @@ fn read_task_page(
     sid: &str,
     before_id: Option<i64>,
 ) -> Result<Value> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     // Project validation and the complete read share a lock. SQL bounds previews
     // before allocation, including a large latest response and task description.
@@ -688,7 +688,7 @@ fn mutate_task(
 ) -> Result<Value> {
     // Matches prepare_task_run/configure_session: neither Start nor a project
     // change can race between scope checking and the mutation.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     if stopped.load(Ordering::SeqCst) {
         return Err("Task has stopped.".into());
@@ -714,6 +714,32 @@ fn mutate_task(
         }
         _ => Err("Unknown task mutation.".into()),
     }
+}
+
+/// Told to an agent that would prompt a team lead (queue, steer, start, message) while a phone may drive its thread.
+const CROSS_TEAM_REMOTE: &str = "That thread leads a team, and team workers run with full access. While this computer hosts remote devices, queue, steer, start or message it only with Full access for remote tasks on (the host's Connect settings).";
+/// Told to an agent in a bot's thread that would prompt a team lead.
+const CROSS_TEAM_BOT: &str = "That thread leads a team, and team workers run with full access. A bot's thread can queue, steer, start or message it only when the bot is set to Full access.";
+
+/// Queueing, steering, starting or messaging another thread prompts it, so the gates that bind whoever drives this
+/// thread bind it too, as for agent-made schedules (`schedules::tools`): while this computer hosts
+/// remote devices (which turns a phone drove is not recorded) a team lead takes it only with
+/// Full access for remote tasks, and a bot's thread reaches one only on a Full access bot.
+fn allow_cross_thread_team(store: &crate::storage::Store, caller: &str, target: &str, hosting: bool, remote_full_access: bool) -> Result<()> {
+    if caller == target {
+        return Ok(());
+    }
+    let leads_team = crate::architect::leads_team(store, target)?;
+    if !leads_team {
+        return Ok(());
+    }
+    if hosting && !remote_full_access {
+        return Err(CROSS_TEAM_REMOTE.into());
+    }
+    if crate::bots::owner_of(store, caller)?.is_some_and(|(bot, _)| bot.mode != "full") {
+        return Err(CROSS_TEAM_BOT.into());
+    }
+    Ok(())
 }
 
 async fn dispatch(
@@ -800,6 +826,9 @@ async fn dispatch(
             if target.id == sid {
                 return Err("Cannot start the current running task again.".into());
             }
+            // Read before the store lock: the remote state is never locked while the store is.
+            let (hosting, remote_full_access) = (crate::remote::hosting(&app), crate::remote::full_access_for_remote_tasks(&app));
+            allow_cross_thread_team(&*crate::run_requests::lock_store(&state.store)?, sid, &target.id, hosting, remote_full_access)?;
             let text = if name.ends_with("send_message") {
                 Some(string(&args, "text"))
             } else {
@@ -847,7 +876,10 @@ async fn dispatch(
             queue_previews(crate::message_queue::list(&store, Some(&target.id))?)
         }
         "pandacode_queue_message" => {
-            let store = state.store.lock().map_err(|e| e.to_string())?;
+            // Read before the store lock: the remote state is never locked while the store is.
+            let (hosting, remote_full_access) = (crate::remote::hosting(&app), crate::remote::full_access_for_remote_tasks(&app));
+            let store = crate::run_requests::lock_store(&state.store)?;
+            allow_cross_thread_team(&store, sid, &target.id, hosting, remote_full_access)?;
             let entry = crate::message_queue::add(&store, &target.id, &string(&args, "text"), &json!([]))?;
             drop(store);
             let _ = app.emit("queue-changed", json!({"sessionId": target.id}));
@@ -861,7 +893,7 @@ async fn dispatch(
             if store.session(&owner)?.project_id != current.project_id {
                 return Err("That queued message belongs to a different project.".into());
             }
-            crate::message_queue::remove(&store, &id)?;
+            crate::message_queue::remove_delivered(&store, &id)?;
             drop(store);
             let _ = app.emit("queue-changed", json!({"sessionId": owner}));
             crate::headless::queue_changed(&app, &owner);
@@ -872,6 +904,8 @@ async fn dispatch(
                 return Err("Use this on another task; the current task is already running this turn.".into());
             }
             if name == "pandacode_steer_task" {
+                let (hosting, remote_full_access) = (crate::remote::hosting(&app), crate::remote::full_access_for_remote_tasks(&app));
+                allow_cross_thread_team(&*crate::run_requests::lock_store(&state.store)?, sid, &target.id, hosting, remote_full_access)?;
                 let reply = crate::message_queue::steer_task(app.clone(), state, target.id.clone(), string(&args, "text")).await.map_err(|error| crate::message_queue::steer_refusal(&error, "Use queue_message."))?;
                 let _ = app.emit("sessions-changed", ());
                 reply
@@ -1015,6 +1049,46 @@ pub fn resolve_agent_ui_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cross_thread_queue_and_steer_reach_a_team_lead_only_past_the_drivers_gates() {
+        let root = std::env::temp_dir().join(format!("pandacode-cross-team-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = crate::bots::BotInput { name: "Scout".into(), role: "r".into(), instructions: "i".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let bot = crate::bots::create(&store, &input, &root).unwrap();
+        let (bot_thread, _) = crate::bots::thread_session(&store, &bot, "telegram", "chat-1", "Scout · Ana").unwrap();
+        let project = store.session(&bot_thread).unwrap().project_id;
+        let plain = store.create_session(&project, "claude", "default", "ask").unwrap().id;
+        let lead = store.create_session(&project, "claude", "default", "ask").unwrap().id;
+        let gate = |caller: &str, target: &str, hosting: bool, full: bool| allow_cross_thread_team(&store, caller, target, hosting, full);
+        // No team: nothing changes, hosting or not, bot or not.
+        assert!(gate(&plain, &bot_thread, true, false).is_ok());
+        assert!(gate(&bot_thread, &plain, true, false).is_ok());
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead]).unwrap();
+        assert!(gate(&plain, &lead, false, false).is_ok(), "not hosting, not a bot: the desktop drives it");
+        assert_eq!(gate(&plain, &lead, true, false), Err(CROSS_TEAM_REMOTE.into()));
+        assert!(gate(&plain, &lead, true, true).is_ok(), "the host switch allows it");
+        assert_eq!(gate(&bot_thread, &lead, false, false), Err(CROSS_TEAM_BOT.into()));
+        assert_eq!(gate(&bot_thread, &lead, true, true), Err(CROSS_TEAM_BOT.into()));
+        store.db.execute("UPDATE bots SET mode='full' WHERE id=?1", [&bot.id]).unwrap();
+        assert!(gate(&bot_thread, &lead, false, false).is_ok(), "a Full access bot may");
+        assert!(gate(&lead, &lead, true, false).is_ok(), "the lead's own thread is gated where it is driven");
+        // Both tools check it before anything is queued or steered.
+        let source = include_str!("agent_tools.rs");
+        let queue = &source[source.find("\"pandacode_queue_message\" => {").unwrap()..];
+        assert!(queue.find("allow_cross_thread_team(").unwrap() < queue.find("message_queue::add(").unwrap());
+        let steer = &source[source.find("if name == \"pandacode_steer_task\" {").unwrap()..];
+        assert!(steer.find("allow_cross_thread_team(").unwrap() < steer.find("message_queue::steer_task(").unwrap());
+        let start = &source[source.find("\"pandacode_start_task\" | \"pandacode_send_message\" => {").unwrap()..];
+        assert!(start.find("allow_cross_thread_team(").unwrap() < start.find("launch_task_in_project(").unwrap());
+        // The remote flags are read before the store is locked (remote code locks remote, then store).
+        for path in [queue, steer, start] {
+            let lock = path.find("lock_store(").unwrap();
+            assert!(path.find("remote::hosting(").unwrap() < lock && path.find("remote::full_access_for_remote_tasks(").unwrap() < lock);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn shared_tool_descriptions_do_not_require_codex() {
         for tool in catalog() {
