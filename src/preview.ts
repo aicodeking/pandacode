@@ -597,6 +597,10 @@ if (new URLSearchParams(location.search).has('vm-coverage') && !new URLSearchPar
 if (new URLSearchParams(location.search).has('window-menus')) {
   (window as any).__previewWindowMenusSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
+// Explicit bot thread and shared channel conversation fixture only: safe mode while a bot thread or channel is open.
+if (new URLSearchParams(location.search).has('bot-conversation')) {
+  (window as any).__previewBotConversationSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+}
 if (new URLSearchParams(location.search).has('task-menus')) {
   previewCloud.connect('vercel', 'preview-only', {});
   previewCloud.connect('netlify', 'preview-only', {});

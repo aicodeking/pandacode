@@ -420,7 +420,7 @@ pub fn validate_contract(kind: &str, value: &Value) -> Value {
         if bytes > SCHEMA["x-dataLimits"]["bytes"].as_u64().unwrap() { return Err(fail("LimitExceeded", "$", vec![])); }
         let mut diagnostics = vec![];
         let value = if kind == "packages" || kind == "packageFiles" { manifests(value, &mut diagnostics, kind == "packageFiles")? }
-            else if ["windowMenusPresentation", "windowMenusAction", "taskMenusPresentation", "taskMenusAction", "commandsPresentation", "commandsAction", "tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
+            else if ["botConversationPresentation", "botConversationAction", "windowMenusPresentation", "windowMenusAction", "taskMenusPresentation", "taskMenusAction", "commandsPresentation", "commandsAction", "tilesPresentation", "tilesAction", "projectPickerPresentation", "projectPickerAction", "threadExtrasPresentation", "threadExtrasAction", "composerAttachPresentation", "composerAttachAction", "composerPanelsPresentation", "composerPanelsAction", "composerPresentation", "composerAction", "statusPresentation", "statusAction", "rosterPresentation", "rosterAction", "dockPresentation", "dockAction", "sidebarPresentation", "sidebarAction", "sidebarBotsPresentation", "sidebarBotsAction", "settingsPresentation", "settingsAction", "dialogAccessory", "machinesPresentation", "machinesAction", "cloudPresentation", "cloudAction", "moodboardPresentation", "moodboardAction", "worktreePresentation", "worktreeAction", "pullPresentation", "pullAction", "githubHubPresentation", "githubHubAction", "boardPresentation", "boardAction", "btwPresentation", "btwAction", "designPresentation", "designAction", "command", "surface", "contribution", "context", "error", "expression", "dialog", "selectOptions", "view", "viewControl", "documentPresentation", "documentAction", "changesPresentation", "changesAction", "searchPresentation", "searchAction", "browserPresentation", "browserAction", "terminalPresentation", "terminalAction", "simulatorPresentation", "simulatorAction", "vmPresentation", "vmAction", "projectScope"].contains(&kind) { shape(value, &SCHEMA["$defs"][kind], "$", &mut diagnostics)? }
             else { return Err(invalid("$")); };
         if kind == "dialog" { dialog_fields(&value, "$")?; }
         if kind == "projectScope" {
@@ -802,6 +802,36 @@ mod tests {
         assert_eq!(super::validate_contract("context", &credential)["ok"], false);
         let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 65]);
         assert_eq!(super::validate_contract("taskMenusPresentation", &oversized)["ok"], false);
+    }
+    #[test]
+    fn bot_conversation_state_action_locations_and_selection_kinds_share_native_schema() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/bot-conversation/extension.json")).unwrap();
+        assert_eq!(super::validate_contract("packages", &json!([manifest]))["ok"], true);
+        let state: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/bot-conversation/state.json")).unwrap();
+        let request: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/bot-conversation/action.json")).unwrap();
+        assert_eq!(super::validate_contract("botConversationPresentation", &state)["ok"], true);
+        assert_eq!(super::validate_contract("botConversationAction", &request)["ok"], true);
+        for field in ["selector", "ipc", "text", "draft", "name", "token", "html"] {
+            let mut forged = request.clone(); forged[field] = json!("raw");
+            assert_eq!(super::validate_contract("botConversationAction", &forged)["ok"], false, "{field}");
+            let mut raw = state.clone(); raw[field] = json!("raw");
+            assert_eq!(super::validate_contract("botConversationPresentation", &raw)["ok"], false, "{field}");
+        }
+        // Stop, deletion, credentials, settings and membership changes, sending and the draft have no public control id.
+        for control in ["bot-stop", "channel-stop", "bot-delete", "bot-credentials", "bot-settings-save", "channel-settings-save", "channel-membership", "channel-delete", "message-send", "draft-write"] {
+            let mut forged = request.clone(); forged["controlId"] = json!(control);
+            assert_eq!(super::validate_contract("botConversationAction", &forged)["ok"], false, "{control}");
+        }
+        let mut layout = manifest.clone(); layout["contributes"]["layouts"][0]["location"] = json!("panda.bot.conversation.protected");
+        assert_eq!(super::validate_contract("packages", &json!([layout]))["ok"], false);
+        for (surface, kind, ids) in [("panda.bot.thread.actions", "bot", json!(["bot-1"])), ("panda.bot.channel.actions", "channel", json!(["channel-1"]))] {
+            let context = json!({"schemaVersion": 1, "windowId": "main", "surfaceId": surface, "sessionId": "task-1", "revision": 1, "selection": {"kind": kind, "ids": ids}});
+            assert_eq!(super::validate_contract("context", &context)["ok"], true, "{surface}");
+        }
+        let mut view = state.clone(); view["view"] = json!("web");
+        assert_eq!(super::validate_contract("botConversationPresentation", &view)["ok"], false);
+        let mut oversized = state.clone(); oversized["controls"] = json!(vec![state["controls"][0].clone(); 129]);
+        assert_eq!(super::validate_contract("botConversationPresentation", &oversized)["ok"], false);
     }
     #[test]
     fn window_menus_state_action_locations_and_selection_kinds_share_native_schema() {

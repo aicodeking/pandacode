@@ -775,6 +775,21 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     },
     rerender: () => renderBots(),
   });
+  // A bot thread's header and welcome and a shared channel's conversation controls: action slots, order and visibility
+  // of the eligible controls, and captured actions that run the original handlers. Pausing, settings, Stop,
+  // credentials, messages and the draft stay here, in bot-thread.ts and in bot-shared-channels.ts.
+  botConversation = (await import('./extensions/bot-conversation-host')).mountBotConversationAdoption({
+    breadcrumb: $('#breadcrumb'), transcript: $('#transcript'), area: $('#composer-area'), onContextChanged, notify,
+    state: () => {
+      if (state.sharedChannelId) {
+        const channel = state.sharedChannelDetail?.id === state.sharedChannelId ? state.sharedChannelDetail : null;
+        return { view: 'channel', channel: state.sharedChannelId, channelName: channel ? `#${channel.name}` : undefined, detail: channel ? JSON.stringify([channel.updatedAt, channel.archived, channel.memberIds, channel.activeBotIds, channel.messages.map(message => [message.id, message.status]), channel.hasMore ?? false]) : '', busy: state.sharedChannelPosting.has(state.sharedChannelId), generation: state.generation };
+      }
+      const bot = botForThread(), s = session();
+      return bot && s ? { view: 'bot-thread', project: bot.projectId, bot: bot.id, botName: bot.name, paused: bot.paused, session: s.id, busy: Boolean(modelPickerCleanup), generation: state.generation } : { view: 'none', busy: false, generation: state.generation };
+    },
+    rerender: () => { renderHeader(); renderTranscript(true); renderComposer(); },
+  });
   // Action dock items and groups, the Workers line's parts and its context menu: presentation only. Placement, motion,
   // the flyout's panels, team state, approvals and Stop stay in action-dock.ts, team-progress.ts and here.
   dockAdoption = (await import('./extensions/dock-host')).mountDockAdoption({
@@ -958,6 +973,8 @@ let unreviewed: Set<string> | undefined;
 let sidebarAdoption: ReturnType<typeof import('./extensions/sidebar-host').mountSidebarAdoption> | undefined;
 /** Bots panel adoption (docs/extensions/sidebar.md#bots-panel), mounted once extensions load. */
 let botsAdoption: ReturnType<typeof import('./extensions/sidebar-bots-host').mountSidebarBotsAdoption> | undefined;
+/** Bot thread and shared channel conversation adoption (docs/extensions/bot-conversation.md), mounted once extensions load. */
+let botConversation: ReturnType<typeof import('./extensions/bot-conversation-host').mountBotConversationAdoption> | undefined;
 /** Composer controls adoption (docs/extensions/composer.md), mounted once extensions load. */
 let composerAdoption: ReturnType<typeof import('./extensions/composer-host').mountComposerAdoption> | undefined;
 /** Queue, token saver and council panels adoption (docs/extensions/composer-panels.md), mounted once extensions load. */
@@ -1201,6 +1218,10 @@ if (preview && new URLSearchParams(location.search).has('sidebar-coverage')) {
   (window as any).__previewSidebarAction = (input: unknown) => sidebarAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
   (window as any).__previewSidebarBots = () => botsAdoption?.presentation();
   (window as any).__previewSidebarBotsAction = (input: unknown) => botsAdoption?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
+if (preview && new URLSearchParams(location.search).has('bot-conversation')) {
+  (window as any).__previewBotConversation = () => botConversation?.presentation();
+  (window as any).__previewBotConversationAction = (input: unknown) => botConversation?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
 }
 if (preview && new URLSearchParams(location.search).has('settings-coverage')) {
   (window as any).__previewSettings = () => settingsView?.adoption()?.presentation();
@@ -2430,7 +2451,7 @@ function botCrumb(bot: import('./bots').Bot): string {
   // Channel threads and scheduled work name where they come from; the bot's own chat needs no label.
   const where = s && s.id !== bot.desktopSession ? s.title.split(' · ').slice(1).join(' · ') : '';
   const next = s && isRunning(s.id) ? botThread.nextModel(s.id) : undefined;
-  return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
+  return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined, layout: botConversation?.threadLayout() });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
 function workerSlot(turn: { user?: Message; coordination?: Message; workerStart?: number }, sessionId = state.sessionId): string {
@@ -2586,7 +2607,7 @@ function renderTranscript(preservePosition = false): void {
   if (state.sharedChannelId) {
     releaseTranscriptHold(transcript, false);
     const channel = state.sharedChannelDetail;
-    transcript.innerHTML = channel ? sharedChannelThreadHtml(channel, sidebarBots) : '<p class="history-notice" role="status">Loading channel…</p>';
+    transcript.innerHTML = channel ? sharedChannelThreadHtml(channel, sidebarBots, botConversation?.channelLayout()) : '<p class="history-notice" role="status">Loading channel…</p>';
     if (channel) {
       for (const node of transcript.querySelectorAll<HTMLElement>('.bc-message-text[data-message-id]')) {
         const message = channel.messages.find(item => item.id === node.dataset.messageId);
@@ -2622,7 +2643,7 @@ function renderTranscript(preservePosition = false): void {
   }
   const bot = botForThread();
   if (newTaskView() && bot && !isRunning(s.id)) {
-    transcript.innerHTML = `${botThread.welcomeHtml(bot)}<div id="stream-region"></div>`;
+    transcript.innerHTML = `${botThread.welcomeHtml(bot, botConversation?.threadLayout())}<div id="stream-region"></div>`;
     botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
     if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
     return;
@@ -3513,7 +3534,7 @@ function renderComposer(): void {
     const channel = state.sharedChannelDetail;
     // Refreshes rewrite the actions; an open Reassign menu for the same message stays open.
     const reassign = document.querySelector<HTMLElement>('#composer-area .bc-reassign-menu:not([hidden]) [data-message]')?.dataset.message;
-    $('#composer-area').innerHTML = channel ? `${sharedChannelActionsHtml(channel, sidebarBots)}${sharedChannelComposerHtml(channel)}` : '';
+    $('#composer-area').innerHTML = channel ? `${sharedChannelActionsHtml(channel, sidebarBots, botConversation?.channelLayout())}${sharedChannelComposerHtml(channel)}` : '';
     const menu = reassign ? document.querySelector<HTMLElement>(`#composer-area .bc-reassign-menu:has([data-message="${CSS.escape(reassign)}"])`) : null;
     if (menu) { menu.hidden = false; menu.previousElementSibling?.setAttribute('aria-expanded', 'true'); }
     const prompt = document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt');

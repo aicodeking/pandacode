@@ -46,6 +46,11 @@ and a captured, unrevoked context. Platform limits that are not visible here are
 | `panda.board.detail` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.board.header` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.bot.assignment` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.bot.channel.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.bot.channel.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.bot.conversation.protected` | data | inspect | button | main | — |
+| `panda.bot.thread.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.bot.thread.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.browser` | data | inspect, replace, move | controls-below | main | — |
 | `panda.browser.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.browser.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |

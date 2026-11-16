@@ -18,6 +18,8 @@ mod development;
 mod storage;
 #[path = "updates.rs"]
 mod updates;
+#[path = "projections.rs"]
+pub(crate) mod projections;
 pub(crate) use updates::pin as pin_provider;
 pub(crate) use updates::{configure_notifications, updates_changed};
 
@@ -1381,6 +1383,31 @@ mod tests {
         packages.enable("sample.task-menus", true).unwrap();
         // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
         assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert!(storage.packages(false).snapshot().packages[0].enabled);
+    }
+    #[test]
+    fn bot_conversation_archive_install_restart_disable_and_safe_mode() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/bot-conversation/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice())])).unwrap();
+        assert!(!packages.snapshot().packages[0].enabled);
+        packages.enable("sample.bot-conversation", true).unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert!(restarted.packages[0].enabled);
+        let contributes = &restarted.packages[0].manifest["contributes"];
+        let locations: Vec<&str> = contributes["menus"].as_array().unwrap().iter().map(|menu| menu["location"].as_str().unwrap()).collect();
+        assert_eq!(locations, ["panda.bot.thread.actions", "panda.bot.channel.actions"]);
+        assert_eq!(contributes["components"][0]["slot"], "panda.transcript");
+        assert_eq!(contributes["layouts"][0]["location"], "panda.bot.thread.controls");
+        assert_eq!(contributes["layouts"][1]["location"], "panda.bot.channel.controls");
+        assert_eq!(projections::bot_web(&storage.packages(false))["state"], "withheld");
+        packages.enable("sample.bot-conversation", false).unwrap();
+        assert!(!storage.packages(false).snapshot().packages[0].enabled);
+        assert_eq!(projections::bot_web(&storage.packages(false))["state"], "none");
+        packages.enable("sample.bot-conversation", true).unwrap();
+        // Safe mode lists nothing and keeps the stored enable preference for the next normal launch.
+        assert!(storage.packages(true).snapshot().packages.is_empty());
+        assert_eq!(projections::bot_web(&storage.packages(true))["state"], "none");
         assert!(storage.packages(false).snapshot().packages[0].enabled);
     }
     #[test]

@@ -2,7 +2,11 @@ import type { Bot } from './bots';
 import { botAvatarHtml } from './bot-avatars';
 import { escape, icon } from './dom';
 import type { DialogRequest } from './extensions/owned-dialogs';
+import type { BotConversationLayout } from './extensions/surfaces';
 import { WORKING_LABELS } from './bot-thread';
+
+/** A control the user hid through the extension layout keeps its node, out of view and inert. */
+const layoutHidden = (layout: BotConversationLayout | undefined, id: string) => layout?.hidden.includes(id) ? ' data-layout-hidden inert' : '';
 
 export interface SharedChannelSummary {
   id: string;
@@ -92,18 +96,21 @@ function workingHtml(channel: SharedChannelDetail, bots: Bot[]): string {
   return `<div class="bc-working bot-working" data-shimmer><span class="bc-working-faces">${faces(ids, bots)}</span><span class="bot-working-label">${escape(WORKING_LABELS[0])}</span><span class="bc-working-status sr-only" role="status">${escape(label)}</span></div>`;
 }
 
-export function sharedChannelThreadHtml(channel: SharedChannelDetail, bots: Bot[]): string {
+/** A channel's header and messages. `layout` is the user's extension arrangement (the settings button hides in place). */
+export function sharedChannelThreadHtml(channel: SharedChannelDetail, bots: Bot[], layout?: BotConversationLayout): string {
   const members = channel.memberIds.map(id => bots.find(bot => bot.id === id)).filter((bot): bot is Bot => Boolean(bot));
   const empty = channel.messages.length === 0;
   const messages = channel.messages.map(message => messageHtml(message, bots)).join('');
   return `<section class="bc-channel" data-channel-id="${escape(channel.id)}">
-    <header class="bc-header"><span class="bc-title">${channelFaceCluster(channel.memberIds, bots)}<span class="bc-member-names">${escape(members.map(bot => bot.name).join(', ') || 'No members')}</span></span>${channel.archived ? '' : `<button type="button" class="icon-button bc-settings" data-action="shared-channel-settings" aria-label="Channel settings">${icon('settings')}</button>`}</header>
+    <header class="bc-header"><span class="bc-title">${channelFaceCluster(channel.memberIds, bots)}<span class="bc-member-names">${escape(members.map(bot => bot.name).join(', ') || 'No members')}</span></span>${channel.archived ? '' : `<button type="button" class="icon-button bc-settings" data-action="shared-channel-settings" aria-label="Channel settings"${layoutHidden(layout, 'settings')}>${icon('settings')}</button>`}</header>
     ${channel.archived ? '<div class="bc-archived" role="status">Deleted channel. Preview only.</div>' : ''}
     <div class="bc-history" aria-label="Channel messages">${channel.hasMore ? '<button type="button" class="secondary-button bc-earlier" data-shared-action="earlier">Show earlier messages</button>' : ''}${empty ? `<div class="bc-empty">${channelFaceCluster([], bots)}<p>${members.length ? 'No messages yet. @mention a bot or write to the lead.' : 'Add bots in channel settings to start work.'}</p></div>` : messages}${workingHtml(channel, bots)}</div>
   </section>`;
 }
 
-export function sharedChannelActionsHtml(channel: SharedChannelDetail, bots: Bot[]): string {
+/** The conversation controls under a channel. `layout` is the user's extension arrangement
+ * (docs/extensions/bot-conversation.md); without one they draw as they always have. Stop keeps its place first. */
+export function sharedChannelActionsHtml(channel: SharedChannelDetail, bots: Bot[], layout?: BotConversationLayout): string {
   if (channel.archived) return '<div class="bc-channel-actions"><span role="status">Deleted channel · preview only</span></div>';
   // A stopped or failed post can run again; the thread above already says who is working.
   const stopped = [...channel.messages].reverse().find(message => (message.status === 'Stopped' || message.status === 'Failed') && message.kind === 'user');
@@ -111,7 +118,15 @@ export function sharedChannelActionsHtml(channel: SharedChannelDetail, bots: Bot
   const queued = channel.messages.filter(message => message.kind === 'assigned' && message.status === 'Queued').map(message => message.authorBotId ?? '');
   const busy = [...new Set([...channel.activeBotIds, ...queued])].map(id => bots.find(bot => bot.id === id)?.name ?? 'bot');
   const stop = busy.length ? `<button type="button" class="secondary-button" data-shared-action="stop">${escape(`Stop ${busy.length > 1 ? `${busy.slice(0, -1).join(', ')} and ${busy.at(-1)}` : busy[0]}`)}</button>` : '';
-  const stoppedRow = stopped && members.length ? `<span>${stopped.status === 'Failed' ? 'This message failed.' : 'This message stopped.'}</span><button type="button" class="secondary-button" data-shared-action="continue" data-message="${escape(stopped.id)}">Continue</button><button type="button" class="secondary-button" data-shared-action="reassign-toggle" aria-expanded="false">Reassign ${icon('down')}</button><div class="bc-reassign-menu" hidden>${members.map(bot => `<button type="button" data-shared-action="reassign" data-message="${escape(stopped.id)}" data-bot="${escape(bot.id)}">${botAvatarHtml(bot.avatar, bot.name, 'bc-pick-face', bot.color)}${escape(bot.name)}</button>`).join('')}</div>` : '';
+  // Continue never hides; Reassign (its toggle with the bot menu right after it) hides and swaps places with Continue
+  // through the user's extension layout.
+  const hidden = layoutHidden(layout, 'reassign');
+  const parts: Record<string, string> = stopped ? {
+    continue: `<button type="button" class="secondary-button" data-shared-action="continue" data-message="${escape(stopped.id)}">Continue</button>`,
+    reassign: `<button type="button" class="secondary-button" data-shared-action="reassign-toggle" aria-expanded="false"${hidden}>Reassign ${icon('down')}</button><div class="bc-reassign-menu" hidden${hidden}>${members.map(bot => `<button type="button" data-shared-action="reassign" data-message="${escape(stopped.id)}" data-bot="${escape(bot.id)}">${botAvatarHtml(bot.avatar, bot.name, 'bc-pick-face', bot.color)}${escape(bot.name)}</button>`).join('')}</div>`,
+  } : {};
+  const order = layout ? [...layout.order.filter(key => key in parts), ...Object.keys(parts).filter(key => !layout.order.includes(key))] : Object.keys(parts);
+  const stoppedRow = stopped && members.length ? `<span>${stopped.status === 'Failed' ? 'This message failed.' : 'This message stopped.'}</span>${order.map(key => parts[key]).join('')}` : '';
   return stop || stoppedRow ? `<div class="bc-channel-actions" role="group" aria-label="Channel activity">${stop}${stoppedRow}</div>` : '';
 }
 

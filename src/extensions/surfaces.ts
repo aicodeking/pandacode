@@ -663,7 +663,47 @@ export const WINDOW_MENUS_PROTECTED = [
   ['filter-change', 'Changing the project filter', 'A package request to filter by a project or clear the filter needs a fresh host choice that runs the original handler once, and it never carries a project name or path.'],
   ['filter-project-actions', 'Project row actions', 'The right-click menu of a project row (rename, remove, reveal) stays in the host; nothing in a request carries a project path.'],
 ] as const;
-export type ActionLocation = typeof WINDOW_MENUS_ACTION_SURFACES[number] | typeof TASK_MENUS_ACTION_SURFACES[number] |typeof COMMANDS_ACTION_SURFACES[number] |typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
+/** A bot thread's header and welcome, and a shared channel's conversation controls (docs/extensions/bot-conversation.md).
+ * Each view carries an action slot after the header breadcrumb (mounted by bot-conversation-host.ts with the captured bot,
+ * session or channel) and an order/visibility location for its own controls, applied by bot-thread.ts and
+ * bot-shared-channels.ts when they draw. Pausing, settings, Stop, credentials and messages stay in main.ts. */
+export const BOT_CONVERSATION_ACTION_SURFACES = ['panda.bot.thread.actions', 'panda.bot.channel.actions'] as const;
+export type BotConversationActionLocation = typeof BOT_CONVERSATION_ACTION_SURFACES[number];
+export const BOT_THREAD_LOCATION = 'panda.bot.thread.controls';
+export const BOT_CHANNEL_LOCATION = 'panda.bot.channel.controls';
+export const BOT_CONVERSATION_PROTECTED_LOCATION = 'panda.bot.conversation.protected';
+/** A bot thread's header buttons and welcome groups: [id, label]. */
+export const BOT_THREAD_CONTROLS = [['pause', 'Pause or resume'], ['settings', 'Bot settings button'], ['suggestions', 'Welcome suggestions'], ['setup', 'Welcome setup shortcuts']] as const;
+/** A shared channel's conversation controls: [id, label]. Reassign is the toggle with its bot menu. */
+export const BOT_CHANNEL_CONTROLS = [['stop', 'Stop channel work'], ['continue', 'Continue'], ['reassign', 'Reassign'], ['earlier', 'Show earlier messages'], ['settings', 'Channel settings button']] as const;
+/** Controls that never hide, with the reason. They still reorder unless also fixed. */
+export const BOT_CONVERSATION_PINNED: Readonly<Record<string, string | undefined>> = {
+  [`${BOT_THREAD_LOCATION}/pause`]: 'Pause is how the user holds a bot\'s schedules, check-ins and channel messages; it never hides.',
+  [`${BOT_CHANNEL_LOCATION}/stop`]: 'Stop ends the channel\'s live work; it never hides and keeps its place first.',
+  [`${BOT_CHANNEL_LOCATION}/continue`]: 'Continue is how a stopped or failed message runs again; it never hides.',
+  [`${BOT_CHANNEL_LOCATION}/earlier`]: 'Show earlier messages is the only way to older channel history; it never hides and stays above the messages.',
+};
+/** Controls that keep their place, with the reason. */
+export const BOT_CONVERSATION_FIXED: Readonly<Record<string, string | undefined>> = {
+  [`${BOT_THREAD_LOCATION}/suggestions`]: 'The welcome suggestions stay where the empty conversation draws them; they hide as a group.',
+  [`${BOT_THREAD_LOCATION}/setup`]: 'The welcome setup shortcuts stay under the suggestions; they hide as a group (the header still opens settings).',
+  [`${BOT_CHANNEL_LOCATION}/stop`]: 'Stop ends the channel\'s live work; it never hides and keeps its place first.',
+  [`${BOT_CHANNEL_LOCATION}/earlier`]: 'Show earlier messages is the only way to older channel history; it never hides and stays above the messages.',
+  [`${BOT_CHANNEL_LOCATION}/settings`]: 'The channel settings button stays in the channel header; it hides in place (the channel row menu still opens settings).',
+};
+/** Protected bot conversation behavior: [id, label, reason]. Inspect-only; never a layout item or a public action. */
+export const BOT_CONVERSATION_PROTECTED = [
+  ['bot-identity', 'Bot name button', 'The bot\'s name in the header always shows and opens its settings, so a hidden settings button keeps its path.'],
+  ['stop', 'Stopping bot or channel work', 'Stop, Escape and /stop end live work; they stay the user\'s own controls and a package request is refused.'],
+  ['pause-change', 'Pausing or resuming a bot', 'Pause holds schedules, check-ins and channel messages; a package request needs a fresh host choice that runs the original handler once.'],
+  ['settings-change', 'Bot and channel settings changes', 'Instructions, models, schedules, rules, a channel\'s name, members and lead change only in the host settings dialogs; a package request is refused.'],
+  ['credentials', 'Bot credentials and pairing', 'Messaging tokens, web chat links and pairing codes stay in bot settings and never reach a package.'],
+  ['messages', 'Messages, replies and drafts', 'Message text, the draft, replies and reactions stay in the host; packages see opaque bot, session and channel handles only.'],
+  ['web-projection', 'Bot web chat projection', 'The shared web chat is a text-only projection: no extension action, contribution or desktop HTML is forwarded, and its history reports the withheld state with a stable reason.'],
+] as const;
+/** The user's order and hidden controls of one view, as bot-thread.ts and bot-shared-channels.ts apply them (local ids). */
+export type BotConversationLayout = Readonly<{ order: readonly string[]; hidden: readonly string[] }>;
+export type ActionLocation = typeof BOT_CONVERSATION_ACTION_SURFACES[number] | typeof WINDOW_MENUS_ACTION_SURFACES[number] |typeof TASK_MENUS_ACTION_SURFACES[number] |typeof COMMANDS_ACTION_SURFACES[number] |typeof TILES_PICKER_ACTION_SURFACES[number] | typeof THREAD_EXTRAS_ACTION_SURFACES[number] |typeof ATTACH_ACTION_SURFACES[number] | typeof PANEL_ACTION_SURFACES[number] | typeof COMPOSER_ACTION_SURFACES[number] |typeof STATUS_ACTION_SURFACES[number] | typeof ROSTER_ACTION_SURFACES[number] |typeof DOCK_ACTION_SURFACES[number] | typeof SIDEBAR_ACTION_SURFACES[number] | typeof SETTINGS_CORE_ACTION_SURFACES[number] | typeof MACHINES_ACTION_SURFACES[number] | typeof CLOUD_ACTION_SURFACES[number] | typeof MOODBOARD_ACTION_SURFACES[number] | typeof WORKTREE_ACTION_SURFACES[number] | typeof PULL_ACTION_SURFACES[number] | typeof GITHUB_HUB_ACTION_SURFACES[number] | typeof BOARD_ACTION_SURFACES[number] | 'panda.workspace.header.actions' | 'panda.sidebar.footer' | 'panda.inspector.actions' | 'panda.status.items' | `panda.dialog.${MainDialogId}.actions` | typeof BTW_ACTION_SURFACES[number] | typeof DESIGN_ACTION_SURFACES[number] | typeof VIEW_ACTION_SURFACES[number] | typeof DOCUMENT_ACTION_SURFACES[number] | typeof CHANGES_ACTION_SURFACES[number] | typeof BROWSER_ACTION_SURFACES[number] | typeof TERMINAL_ACTION_SURFACES[number] | typeof SIMULATOR_ACTION_SURFACES[number] | typeof VM_ACTION_SURFACES[number] | ThreadActionLocation | WindowActionLocation;
 
 /** Reserve room for core actions; oversized extension trees never break the legacy menu. */
 export function boundedContextActions<T extends { children?: T[] }>(core: T[], contributed: T[], limit = 128): { items: T[]; omitted: number } {

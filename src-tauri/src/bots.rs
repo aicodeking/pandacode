@@ -862,6 +862,33 @@ fn preview(content: &str) -> String {
     cut
 }
 
+/// The shared bot web chat's projection (channels/web.rs, docs/extensions/bot-conversation.md#bot-web-chat-projection):
+/// the bot's public face and the latest user and assistant text of its web thread, nothing else. No extension
+/// contribution, action, view or desktop HTML is read here, so none can reach the page; `extensions` is the host's
+/// policy report (crate::extensions::packages::projections) and the only extension field the page receives. Returns
+/// the thread's session (for busy checks) and the payload. The link's token and revocation stay in channels::web.
+pub(crate) fn web_projection(store: &Store, bot_id: &str, channel_id: &str, thread: &str, extensions: Value) -> (Option<String>, Value) {
+    let bot = get(store, bot_id).ok();
+    let session: Option<String> = store
+        .db
+        .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", params![bot_id, channel_id, thread], |r| r.get(0))
+        .ok();
+    let messages: Vec<Value> = session
+        .as_deref()
+        .and_then(|session| {
+            let mut statement = store.db.prepare("SELECT role,content,created_at FROM (SELECT id,role,content,created_at FROM messages WHERE session_id=?1 AND role IN ('user','assistant') ORDER BY id DESC LIMIT 80) ORDER BY id").ok()?;
+            let rows = statement.query_map([session], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).ok()?;
+            Some(rows.flatten().map(|(role, content, at)| json!({"role": role, "text": if role == "user" { channels::web::visible(&content) } else { content }, "at": at})).collect())
+        })
+        .unwrap_or_default();
+    let payload = json!({
+        "bot": bot.map(|bot| json!({"name": bot.name, "role": bot.role, "avatar": bot.avatar, "paused": bot.paused})),
+        "messages": messages,
+        "extensions": extensions,
+    });
+    (session, payload)
+}
+
 fn last_message(store: &Store, session: &str) -> Result<Option<LastMessage>> {
     store
         .db

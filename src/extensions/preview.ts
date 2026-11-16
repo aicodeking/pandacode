@@ -45,6 +45,7 @@ import tilesPickerManifest from '../../tests/fixtures/extensions/tiles-picker/ex
 import commandsExtrasManifest from '../../tests/fixtures/extensions/commands-extras/extension.json';
 import taskMenusManifest from '../../tests/fixtures/extensions/task-menus/extension.json';
 import windowMenusManifest from '../../tests/fixtures/extensions/window-menus/extension.json';
+import botConversationManifest from '../../tests/fixtures/extensions/bot-conversation/extension.json';
 import rosterManifest from '../../tests/fixtures/extensions/agent-roster/extension.json';
 import statusManifest from '../../tests/fixtures/extensions/status/extension.json';
 import moodboardManifest from '../../tests/fixtures/extensions/moodboards/extension.json';
@@ -245,6 +246,11 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (new URLSearchParams(location.search).has('window-menus')) {
       if (snapshot.packages.some(item => item.manifest.id === windowMenusManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: windowMenusManifest as unknown as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('bot-conversation')) {
+      if (snapshot.packages.some(item => item.manifest.id === botConversationManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: botConversationManifest as unknown as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('task-menus')) {

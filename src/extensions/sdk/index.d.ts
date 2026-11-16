@@ -317,6 +317,21 @@ export interface WindowMenusAction { readonly contractVersion: 1; readonly windo
 export type WindowMenusAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
 /** `selection.kind` of these menus' contexts: `workspace-view` (ids = [the open view]), `sidebar-sort` (ids = [the task order, `per-<count>`]) and `project-filter` (ids = [the filtered project, or `all-projects`]). */
 export type WindowMenusSelectionKind = 'workspace-view' | 'sidebar-sort' | 'project-filter';
+/** Experimental bot thread header and shared channel conversation controls (owner: the selected `panda.transcript` provider; docs/extensions/bot-conversation.md).
+ * Pausing or resuming a bot, opening bot or channel settings, putting a suggestion in the draft, Continue and Reassign run
+ * the original handler once, only after a fresh host choice. Stop, deletion, credentials, settings and membership
+ * changes, sending and the draft are never public. Contributed `panda.bot.thread.actions` capture `selection.kind`
+ * `bot` (ids = [the bot]) with the bot's conversation as `sessionId`; `panda.bot.channel.actions` capture `channel`
+ * (ids = [the channel]). */
+export type BotConversationControl = 'bot-pause' | 'bot-settings' | 'bot-suggest' | 'channel-earlier' | 'channel-continue' | 'channel-reassign-open' | 'channel-reassign' | 'channel-settings';
+/** Named but never run: refused with `PermissionDenied`. */
+export type BotConversationProtectedControl = 'bot-stop' | 'channel-stop' | 'bot-delete' | 'bot-credentials' | 'bot-settings-save' | 'channel-settings-save' | 'channel-membership' | 'channel-delete' | 'message-send' | 'draft-write';
+/** `bot`, `session` and `channel` are opaque handles of the open bot thread or shared channel ('' when not open). Switching bot, conversation or channel, pausing, a channel refresh or a redraw changes `revision`. */
+export interface BotConversationPresentation { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly view: 'none' | 'bot-thread' | 'channel'; readonly project: string; readonly bot: string; readonly session: string; readonly channel: string; readonly revision: number; readonly visible: boolean; readonly busy: boolean; readonly safeMode: boolean; readonly controls: readonly { readonly id: string; readonly controlId: BotConversationControl; readonly resource: string; readonly enabled: boolean; readonly hidden: boolean }[]; readonly truncated: boolean }
+export interface BotConversationAction { readonly contractVersion: 1; readonly window: 'main'; readonly context: string; readonly project: string; readonly bot: string; readonly session: string; readonly channel: string; readonly revision: number; readonly control: string; readonly controlId: BotConversationControl; readonly resource: string; readonly requestId: string }
+export type BotConversationAdmission = { readonly ok: true } | { readonly ok: false; readonly reason: 'Revoked' | 'WrongOwner' | 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidArguments' | 'StaleContext' | 'AlreadyApplied' | 'Busy' };
+/** The bot web chat's history reports `extensions` as `{ apiVersion: 1, projected: [], state: 'none' | 'withheld', reason? }`: nothing a package contributes is forwarded to it. */
+export interface BotWebExtensionPolicy { readonly apiVersion: 1; readonly projected: readonly []; readonly state: 'none' | 'withheld'; readonly reason?: string }
 /** Experimental closed agent roster recipe (subagent view, team profiles, main-window Running agents widget). Children, their streams and lineage, profiles, Stop, the widget's preference and its pinned window stay host-owned; actions run the original roster handlers. */
 export interface AgentRosterComponent { readonly id: string; readonly title: string; readonly slot: 'panda.roster'; readonly contractVersion: 1; readonly presentation: 'running-first'; readonly capabilities: readonly ['host-rows', 'host-lineage', 'original-actions'] }
 export type RosterControl = 'subagents' | 'subagent-open' | 'subagents-back' | 'subagents-close' | 'subagents-retry' | 'profile-picker' | 'profile-select' | 'profile-manage' | 'profile-create' | 'profile-update' | 'widget' | 'widget-open';

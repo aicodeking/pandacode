@@ -6,6 +6,8 @@
 .extension-action-slot:empty, .extension-action-slot:has(> [hidden]) { display: none; }
 .extension-action-slot { display: inline-flex; align-items: center; max-width: 100%; }
 .extension-action-slot .extension-header-actions { flex-wrap: wrap; }
+/* A bot thread's or shared channel's action slot follows the header breadcrumb as one more header item. */
+.bot-conversation-actions { display: contents; }
 .extension-action-button, .extension-action-status, .extension-action-badge { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); }
 .extension-action-status { color: var(--muted); }
 /* Compact windows have no global [hidden] rule; a hidden contribution must not keep its inline-flex display. */

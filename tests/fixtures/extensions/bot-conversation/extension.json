@@ -1,0 +1,96 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.bot-conversation",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.transcript.read",
+    "tasks.tools.read"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.bot-conversation/timeline",
+        "title": "Timeline bot conversation",
+        "slot": "panda.transcript",
+        "contractVersion": 1,
+        "presentation": "timeline",
+        "capabilities": [
+          "streaming",
+          "tool-output",
+          "questions",
+          "approvals",
+          "team-progress",
+          "usage",
+          "stop-resume",
+          "host-history"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.bot-conversation/thread-notes",
+        "title": "Bot notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Bot notes",
+            "successMessage": "Bot notes kept.",
+            "cancelMessage": "The bot's messages and settings stay with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Bot tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.bot-conversation/channel-notes",
+        "title": "Channel notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Channel notes",
+            "successMessage": "Channel notes kept.",
+            "cancelMessage": "The channel's messages and members stay with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Channel tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.bot-conversation/thread",
+        "command": "sample.bot-conversation/thread-notes",
+        "location": "panda.bot.thread.actions",
+        "presentation": "button",
+        "text": "Bot notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "bot" }
+      },
+      {
+        "id": "sample.bot-conversation/channel",
+        "command": "sample.bot-conversation/channel-notes",
+        "location": "panda.bot.channel.actions",
+        "presentation": "button",
+        "text": "Channel notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "channel" }
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.bot-conversation/settings-first",
+        "title": "Bot settings before Pause",
+        "location": "panda.bot.thread.controls",
+        "rules": [{ "id": "panda.bot.thread.controls/settings", "target": "panda.bot.thread.controls/pause", "side": "before" }]
+      },
+      {
+        "id": "sample.bot-conversation/reassign-first",
+        "title": "Reassign before Continue",
+        "location": "panda.bot.channel.controls",
+        "rules": [{ "id": "panda.bot.channel.controls/reassign", "target": "panda.bot.channel.controls/continue", "side": "before" }]
+      }
+    ]
+  }
+}

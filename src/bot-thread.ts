@@ -4,6 +4,7 @@
 import { failoverCardHtml, modelSwitchMarkerHtml, type Activity, type Bot, type FailoverAsk } from './bots';
 import { botAvatarHtml } from './bot-avatars';
 import { escape, icon } from './dom';
+import type { BotConversationLayout } from './extensions/surfaces';
 import { formatDuration } from './turn-activity';
 
 type SavedMessage = { id: number; role: string; content: string; createdAt: number };
@@ -30,15 +31,24 @@ function readJson<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? '') as T; } catch { return fallback; }
 }
 
-/** The header: the bot (a button to its settings), where the thread comes from, and compact controls. */
-export function crumbHtml(bot: Bot, options: { where: string; status: string; nextModel?: { running: string; next: string } }): string {
-  const id = escape(bot.id), name = escape(bot.name);
+/** A control the user hid through the extension layout keeps its node, out of view and inert. */
+const layoutHidden = (layout: BotConversationLayout | undefined, id: string) => layout?.hidden.includes(id) ? ' data-layout-hidden inert' : '';
+
+/** The header: the bot (a button to its settings), where the thread comes from, and compact controls. `layout` is the
+ *  user's extension arrangement (docs/extensions/bot-conversation.md); without one the header draws as it always has. */
+export function crumbHtml(bot: Bot, options: { where: string; status: string; nextModel?: { running: string; next: string }; layout?: BotConversationLayout }): string {
+  const id = escape(bot.id), name = escape(bot.name), layout = options.layout;
   const next = options.nextModel ? `${escape(options.nextModel.running)} finishes this turn. ${escape(options.nextModel.next)} starts with the next one.` : '';
+  const controls: Record<string, string> = {
+    // Pause never hides: it is how the user holds the bot's work.
+    pause: `<button class="icon-button bot-crumb-action" data-action="bot-pause" data-bot="${id}" aria-label="${bot.paused ? 'Resume' : 'Pause'} ${name}" title="${bot.paused ? 'Resume: schedules, check-ins and channels continue' : 'Pause: stop work and hold schedules and messages'}" aria-pressed="${bot.paused}">${icon(bot.paused ? 'play' : 'pause')}</button>`,
+    settings: `<button class="icon-button bot-crumb-action" data-action="bot-settings" data-bot="${id}" aria-label="${name} settings" title="Settings"${layoutHidden(layout, 'settings')}>${icon('settings')}</button>`,
+  };
+  const order = layout ? [...layout.order.filter(key => key in controls), ...Object.keys(controls).filter(key => !layout.order.includes(key))] : Object.keys(controls);
   return `<span class="bot-crumb"><button class="bot-crumb-who" data-action="bot-settings" data-bot="${id}" aria-label="View bot settings" title="Profile, memory, schedules, channels and rules">${botAvatarHtml(bot.avatar, bot.name, 'bot-crumb-avatar', bot.color)}<strong>${name}</strong></button>`
     + `${options.where ? `<span class="bot-crumb-where">${escape(options.where)}</span>` : ''}<span class="bot-crumb-state sr-only">${escape(options.status)}</span>`
     + `${next ? `<span class="bot-next-model" tabindex="0" role="note" aria-label="${next}" title="${next}">${CLOCK}After this turn</span>` : ''}</span>`
-    + `<button class="icon-button bot-crumb-action" data-action="bot-pause" data-bot="${id}" aria-label="${bot.paused ? 'Resume' : 'Pause'} ${name}" title="${bot.paused ? 'Resume: schedules, check-ins and channels continue' : 'Pause: stop work and hold schedules and messages'}" aria-pressed="${bot.paused}">${icon(bot.paused ? 'play' : 'pause')}</button>`
-    + `<button class="icon-button bot-crumb-action" data-action="bot-settings" data-bot="${id}" aria-label="${name} settings" title="Settings">${icon('settings')}</button>`;
+    + order.map(key => controls[key]).join('');
 }
 
 /** Three things to ask, matched to what the bot is for. */
@@ -55,12 +65,12 @@ export function suggestions(role: string): string[] {
 }
 
 /** An empty bot conversation: who it is, three things to ask, and small settings shortcuts. */
-export function welcomeHtml(bot: Bot): string {
+export function welcomeHtml(bot: Bot, layout?: BotConversationLayout): string {
   const id = escape(bot.id);
   const setup = ([['profile', 'edit', 'Instructions'], ['memory', 'leaf', 'Memory'], ['schedules', 'refresh', 'Schedules'], ['channels', 'globe', 'Connections']] as const)
     .map(([tab, glyph, label]) => `<button data-action="bot-settings" data-bot="${id}" data-tab="${tab}">${icon(glyph)}${label}</button>`).join('');
   const chips = suggestions(`${bot.role} ${bot.name}`).map(text => `<button class="bot-suggestion" data-action="suggest" data-text="${escape(text)}">${escape(text)}</button>`).join('');
-  return `<div class="new-task-welcome bot-welcome">${botAvatarHtml(bot.avatar, bot.name, 'bot-welcome-avatar', bot.color)}<h1>${escape(bot.name)} is ready.</h1><p>Ask, then watch it work.</p><div class="bot-suggestions" role="group" aria-label="Suggestions">${chips}</div><div class="bot-welcome-setup" role="group" aria-label="Set up ${escape(bot.name)}">${setup}</div></div>`;
+  return `<div class="new-task-welcome bot-welcome">${botAvatarHtml(bot.avatar, bot.name, 'bot-welcome-avatar', bot.color)}<h1>${escape(bot.name)} is ready.</h1><p>Ask, then watch it work.</p><div class="bot-suggestions" role="group" aria-label="Suggestions"${layoutHidden(layout, 'suggestions')}>${chips}</div><div class="bot-welcome-setup" role="group" aria-label="Set up ${escape(bot.name)}"${layoutHidden(layout, 'setup')}>${setup}</div></div>`;
 }
 
 /** "Today 3:04 PM", "Yesterday 9:12 AM", "Tue, Oct 6 3:04 PM". */
