@@ -8,7 +8,9 @@
 //! own tool records names it in an image-bearing place (`tool_images_auth`), it is a
 //! PNG/JPEG/GIF/WebP whose bytes really are that image, and it is at most 25 MB.
 //! Network paths (`\\host\share`, `//host/share`, the `/net` and `/Network`
-//! automounts) are never opened.
+//! automounts) are never opened. On Windows a canonical `\\?\C:\…` is this
+//! computer's disk, while `\\?\UNC\…` (a share, or a mapped network drive once
+//! resolved) is a network path; the open handle's own path is checked there too.
 //!
 //! Thumbnails ask with a longest edge (`load_sized`): once the path is authorized
 //! the image is decoded under `image::Limits` and returned downscaled, so rows and
@@ -79,10 +81,36 @@ pub enum Requested {
     Relative(PathBuf),
 }
 
-/// True for UNC and other network spellings: two leading separators of either kind.
+/// True for UNC and other network spellings: two leading separators of either kind,
+/// except Windows' verbatim spelling of a local disk (see [`is_verbatim_local_disk`]).
 pub fn is_network_path(path: &str) -> bool {
     let mut chars = path.chars();
-    matches!((chars.next(), chars.next()), (Some('/' | '\\'), Some('/' | '\\')))
+    matches!((chars.next(), chars.next()), (Some('/' | '\\'), Some('/' | '\\'))) && !is_verbatim_local_disk(path)
+}
+
+/// Windows spells a canonical local path `\\?\C:\…` (what `canonicalize` returns for a
+/// checkout or a temporary folder): two leading separators, yet this computer's own disk.
+/// Every other such spelling stays a network path: `\\host\share`, `\\?\UNC\host\share`
+/// (also what a mapped network drive canonicalizes to), `\\.\` devices and volume GUIDs.
+#[cfg(windows)]
+fn is_verbatim_local_disk(path: &str) -> bool {
+    matches!(Path::new(path).components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)))
+}
+
+#[cfg(not(windows))]
+fn is_verbatim_local_disk(_path: &str) -> bool {
+    false
+}
+
+/// A verbatim local-disk spelling without its `\\?\` (`C:\…`), as agents print it.
+#[cfg(windows)]
+fn plain_disk_spelling(path: &str) -> Option<String> {
+    is_verbatim_local_disk(path).then(|| path[4..].to_owned())
+}
+
+#[cfg(not(windows))]
+fn plain_disk_spelling(_path: &str) -> Option<String> {
+    None
 }
 
 /// True for paths under a macOS network automount (`/net/…`, `/Network/…`, any
@@ -112,6 +140,11 @@ pub fn requested_path(raw: &str) -> Result<Requested, String> {
         return Err(ERR_NETWORK.into());
     }
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(ERR_BAD_PATH.into());
+    }
+    // A verbatim path is never normalized (and `/` is no separator in it), so its
+    // `..` and `.` are refused by their text.
+    if is_verbatim_local_disk(stripped) && stripped.split(['/', '\\']).any(|part| part == ".." || part == ".") {
         return Err(ERR_BAD_PATH.into());
     }
     if image_extension(path).is_none() {
@@ -147,9 +180,10 @@ pub fn relative_spellings(relative: &Path, root: &Path) -> Vec<String> {
 /// along the way) leads outside the checkout or into a network mount.
 pub fn resolve_relative(root: &Path, relative: &Path) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|_| ERR_MISSING.to_string())?;
+    let joined = join_relative(&root, relative);
     // A recorded name that links into a network mount is refused before resolving.
-    refuse_network_hops(&root.join(relative))?;
-    let target = root.join(relative).canonicalize().map_err(|_| ERR_MISSING.to_string())?;
+    refuse_network_hops(&joined)?;
+    let target = joined.canonicalize().map_err(|_| ERR_MISSING.to_string())?;
     if target.starts_with(&root) {
         Ok(target)
     } else {
@@ -157,10 +191,19 @@ pub fn resolve_relative(root: &Path, relative: &Path) -> Result<PathBuf, String>
     }
 }
 
+/// `root` joined with each plain component of a validated relative request. A
+/// canonical Windows root (`\\?\C:\…`) takes `/` and `.` literally, so `a/b.png`
+/// is joined part by part; elsewhere the result names the same file as `join`.
+fn join_relative(root: &Path, relative: &Path) -> PathBuf {
+    relative.components().filter(|part| matches!(part, Component::Normal(_))).fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
 /// The spellings a tool record may use for the same file: macOS links `/tmp`
-/// and `/var` into `/private`, and agents print either form.
+/// and `/var` into `/private`, and agents print either form. On Windows a
+/// canonical `\\?\C:\…` also goes by `C:\…`, the form agents print.
 pub fn path_spellings(path: &str) -> Vec<String> {
     let mut spellings = vec![path.to_owned()];
+    spellings.extend(plain_disk_spelling(path));
     for root in ["/tmp", "/var"] {
         if let Some(rest) = path.strip_prefix("/private").filter(|rest| starts_under(rest, root)) {
             spellings.push(rest.to_owned());
@@ -238,8 +281,9 @@ fn encode_within(path: &Path, within: Option<&Path>, limit: u64, max_edge: Optio
 fn open_checked(path: &Path, within: Option<&Path>, limit: u64) -> Result<File, String> {
     refuse_network_hops(path)?;
     let target = path.canonicalize().map_err(|_| ERR_MISSING.to_string())?;
-    // A link into an automounted share is refused before the file is opened.
-    if is_autofs_path(&target) {
+    // A link into an automounted share is refused before the file is opened, as is a
+    // Windows path whose canonical form is a share (`\\?\UNC\…`, a mapped network drive).
+    if is_autofs_path(&target) || is_network_path(&target.to_string_lossy()) {
         return Err(ERR_NETWORK.into());
     }
     if within.is_some_and(|root| !target.starts_with(root)) {
@@ -277,6 +321,12 @@ fn open_no_follow(path: &Path) -> std::io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
     }
+    // Windows: a link swapped in is opened as itself (not a regular file), as `O_NOFOLLOW`.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT.0);
+    }
     options.open(path)
 }
 
@@ -300,7 +350,21 @@ fn opened_path(file: &File) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows: the handle's final path (`\\?\C:\…`, or `\\?\UNC\…` on a share).
+#[cfg(windows)]
+fn opened_path(file: &File) -> Option<PathBuf> {
+    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED},
+    };
+    let mut buffer = vec![0u16; 32768];
+    // SAFETY: the handle is this open file's own, and the buffer is writable for its length.
+    let length = unsafe { GetFinalPathNameByHandleW(HANDLE(file.as_raw_handle()), &mut buffer, FILE_NAME_NORMALIZED) } as usize;
+    (length > 0 && length < buffer.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn opened_path(_file: &File) -> Option<PathBuf> {
     None
 }
@@ -313,7 +377,7 @@ fn check_opened(file: &File, within: Option<&Path>) -> Result<(), String> {
         if on_network_filesystem(file) {
             return Err(ERR_NETWORK.into());
         }
-        let known = cfg!(any(target_os = "macos", target_os = "linux"));
+        let known = cfg!(any(target_os = "macos", target_os = "linux", windows));
         return if known && within.is_some() { Err(ERR_MISSING.into()) } else { Ok(()) };
     };
     if is_autofs_path(&opened) || on_network_filesystem(file) {
@@ -353,7 +417,14 @@ fn on_network_filesystem(file: &File) -> bool {
     is_network_magic(stat_magic(stat.f_type as i64))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows: the open handle's final path names a share (a mapped network drive
+/// resolves to `\\?\UNC\host\share\…`).
+#[cfg(windows)]
+fn on_network_filesystem(file: &File) -> bool {
+    opened_path(file).is_some_and(|path| is_network_path(&path.to_string_lossy()))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn on_network_filesystem(_file: &File) -> bool {
     false
 }
@@ -728,3 +799,120 @@ pub fn load_sized(
 #[cfg(test)]
 #[path = "tool_images_tests.rs"]
 mod tests;
+
+/// S04A2: authorized and denied tool-image paths after the upstream merge, from the
+/// bounded fixture shared with tests/upstream-semantic-remote-images.spec.ts. A package
+/// provider's task gets exactly the built-in rules: no permanent exclusion either way.
+#[cfg(test)]
+mod upstream_semantic_tests {
+    use super::*;
+    use crate::storage::Store;
+    use crate::tool_images_auth::{ensure_on_this_machine, session_viewed};
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0\x90\x77\x53\xde\0\0\0\x0cIDAT\x78\xda\x63\x60\x60\x60\0\0\0\x04\0\x01\xc8\xea\xeb\xf9\0\0\0\0IEND\xae\x42\x60\x82";
+
+    fn fixture() -> Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/extensions/upstream-semantic-remote-images/tool-images.json")).unwrap()
+    }
+
+    fn error_text<'a>(fixture: &'a Value, key: &str) -> &'a str {
+        fixture["errors"][key].as_str().unwrap_or_else(|| panic!("no error {key}"))
+    }
+
+    #[test]
+    fn upstream_semantic_requested_paths_follow_the_fixture() {
+        let fixture = fixture();
+        let platform = if cfg!(windows) { "windows" } else { "unix" };
+        for case in fixture["requests"].as_array().unwrap() {
+            let raw = case["path"].as_str().unwrap();
+            let got = requested_path(raw);
+            match case[platform].as_str().unwrap() {
+                "absolute" => assert!(matches!(got, Ok(Requested::Absolute(_))), "{raw}: {got:?}"),
+                "relative" => assert!(matches!(got, Ok(Requested::Relative(_))), "{raw}: {got:?}"),
+                error => assert_eq!(got.unwrap_err(), error_text(&fixture, error), "{raw}"),
+            }
+        }
+    }
+
+    #[test]
+    fn upstream_semantic_disk_paths_follow_the_fixture() {
+        let fixture = fixture();
+        let disk = &fixture["disk"];
+        let base = std::env::temp_dir().join(format!("s04a2-tool-images-{}", uuid::Uuid::new_v4()));
+        let checkout = base.join("repo");
+        for (name, kind) in disk["files"].as_object().unwrap() {
+            let file = checkout.join(name);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, if kind == "png" { PNG } else { b"not an image".as_slice() }).unwrap();
+        }
+        std::fs::write(base.join("seen.png"), PNG).unwrap();
+        let canonical = checkout.canonicalize().unwrap().to_string_lossy().into_owned();
+        // The checkout as agents print it: on Windows without the verbatim prefix.
+        let printed = plain_disk_spelling(&canonical).unwrap_or_else(|| canonical.clone());
+        let sep = std::path::MAIN_SEPARATOR;
+        let fill = |text: &str| text.replace("<root>/", &format!("{printed}{sep}")).replace("<canonical>/", &format!("{canonical}{sep}"));
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(Path::new(&printed)).unwrap();
+        let mut sessions = Vec::new();
+        for provider in disk["providers"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()) {
+            let session = store.create_session(&project.id, "claude", "sonnet", "auto").unwrap();
+            store.db.execute("UPDATE sessions SET provider=?1 WHERE id=?2", [provider, session.id.as_str()]).unwrap();
+            sessions.push((provider.to_owned(), session.id));
+        }
+        for place in disk["elsewhere"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()) {
+            let session = store.create_session(&project.id, "claude", "sonnet", "auto").unwrap();
+            let column = if place == "cloud" { "cloud='{}'" } else { "remote_device='host', remote_session='h1'" };
+            store.db.execute(&format!("UPDATE sessions SET {column} WHERE id=?1"), [&session.id]).unwrap();
+            sessions.push((place.to_owned(), session.id));
+        }
+        for (_, sid) in &sessions {
+            for record in disk["records"].as_array().unwrap() {
+                let input: serde_json::Map<String, Value> = record["input"].as_object().unwrap().iter().map(|(key, value)| (key.clone(), json!(fill(value.as_str().unwrap())))).collect();
+                let content = json!({"type": "tool_activity", "version": 1, "name": record["name"], "status": "completed", "input": input, "output": ""});
+                store.message(sid, "tool", &content.to_string()).unwrap();
+            }
+        }
+        let store = Mutex::new(store);
+        for (owner, sid) in &sessions {
+            let elsewhere = disk["elsewhere"].as_array().unwrap().iter().any(|place| place == owner.as_str());
+            for case in disk["requests"].as_array().unwrap() {
+                let raw = fill(case["path"].as_str().unwrap());
+                let key = raw.trim().to_owned();
+                // As the `tool_image` command: the machine check first, then authorization and the file.
+                let got = ensure_on_this_machine(&store, sid).and_then(|_| {
+                    let root = || {
+                        let store = store.lock().map_err(|e| e.to_string())?;
+                        store.workspace_root(&project.id, Some(sid))
+                    };
+                    load_sized(&raw, root, |spellings| session_viewed(&store, sid, &key, spellings), TOOL_IMAGE_LIMIT, Some(64))
+                });
+                match (elsewhere, case["outcome"].as_str().unwrap()) {
+                    (true, _) => assert_eq!(got.unwrap_err(), error_text(&fixture, "elsewhere"), "{owner} {raw}"),
+                    (false, "image") => assert!(got.as_deref().is_ok_and(|url| url.starts_with("data:image/")), "{owner} {raw}: {got:?}"),
+                    (false, error) => assert_eq!(got.unwrap_err(), error_text(&fixture, error), "{owner} {raw}"),
+                }
+            }
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn upstream_semantic_network_targets_are_refused_after_resolving() {
+        // A canonical target on a share is refused even when its request looked local.
+        assert!(is_network_path(r"\\?\UNC\host\share\x.png"));
+        assert_eq!(is_network_path(r"\\?\C:\x.png"), !cfg!(windows));
+        let base = std::env::temp_dir().join(format!("s04a2-open-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let png = base.join("x.png");
+        std::fs::write(&png, PNG).unwrap();
+        let file = open_checked(&png, None, TOOL_IMAGE_LIMIT).unwrap();
+        assert!(!on_network_filesystem(&file), "a local file is not on a share");
+        if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
+            let opened = opened_path(&file).expect("the open handle names its file");
+            assert_eq!(opened, png.canonicalize().unwrap());
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+}

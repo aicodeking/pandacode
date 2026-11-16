@@ -1097,7 +1097,8 @@ mod tests {
         checkout(&clone, "main").unwrap();
         checkout(&clone, "feature").unwrap();
         assert_eq!(git(&clone, &["branch", "--show-current"], GIT).unwrap(), "feature");
-        discard(&clone, &made, workspace::Trust::Desktop);
+        // The worktree was made under the canonical root; it is removed under the same one.
+        discard(&root, &made, workspace::Trust::Desktop);
         assert!(!made.path.exists());
         let _ = std::fs::remove_dir_all(&base);
     }

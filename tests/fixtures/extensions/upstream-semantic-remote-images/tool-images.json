@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "about": "Tool-image authorization after the upstream 0.3.128 merge, on every platform the product ships. Read by tool_images::upstream_semantic_tests (native) and tests/upstream-semantic-remote-images.spec.ts (webview). 'unix'/'windows' give the outcome per platform: 'absolute', 'relative', or the exact refusal. In 'disk', <root> is the checkout as agents print it (on Windows without the \\\\?\\ prefix) and <canonical> its canonical spelling.",
+  "errors": {
+    "network": "Network image paths are not shown",
+    "badPath": "This image path cannot be shown",
+    "extension": "Only PNG, JPEG, GIF and WebP images can be shown",
+    "notViewed": "This image was not viewed in this task",
+    "notImage": "The file is not a PNG, JPEG, GIF or WebP image",
+    "elsewhere": "This image is on another machine"
+  },
+  "requests": [
+    { "path": "shot.png", "unix": "relative", "windows": "relative" },
+    { "path": "./test-results/a b.png", "unix": "relative", "windows": "relative" },
+    { "path": "\\\\host\\share\\x.png", "unix": "network", "windows": "network" },
+    { "path": "//host/share/x.png", "unix": "network", "windows": "network" },
+    { "path": "file://host/share/x.png", "unix": "network", "windows": "network" },
+    { "path": "\\\\?\\UNC\\host\\share\\x.png", "unix": "network", "windows": "network" },
+    { "path": "\\\\.\\C:\\x.png", "unix": "network", "windows": "network" },
+    { "path": "/net/host/share/x.png", "unix": "network", "windows": "network" },
+    { "path": "\\\\?\\C:\\shots\\x.png", "unix": "network", "windows": "absolute" },
+    { "path": "\\\\?\\C:\\shots\\..\\x.png", "unix": "network", "windows": "badPath" },
+    { "path": "\\\\?\\C:\\shots/../x.png", "unix": "network", "windows": "badPath" },
+    { "path": "C:\\shots\\x.png", "unix": "relative", "windows": "absolute" },
+    { "path": "a/../../x.png", "unix": "badPath", "windows": "badPath" },
+    { "path": "~/shot.png", "unix": "badPath", "windows": "badPath" },
+    { "path": "notes.txt", "unix": "extension", "windows": "extension" },
+    { "path": "/tmp/x.svg", "unix": "extension", "windows": "extension" }
+  ],
+  "disk": {
+    "files": { "seen.png": "png", "unseen.png": "png", "fake.png": "text", "shots/rel.png": "png" },
+    "records": [
+      { "name": "Read", "input": { "file_path": "<root>/seen.png" } },
+      { "name": "Read", "input": { "file_path": "<root>/fake.png" } },
+      { "name": "Read", "input": { "path": "shots/rel.png" } }
+    ],
+    "providers": ["claude", "sample.harness/agent"],
+    "requests": [
+      { "path": "<root>/seen.png", "outcome": "image" },
+      { "path": "<canonical>/seen.png", "outcome": "image" },
+      { "path": "<root>/unseen.png", "outcome": "notViewed" },
+      { "path": "<root>/fake.png", "outcome": "notImage" },
+      { "path": "shots/rel.png", "outcome": "image" },
+      { "path": "./shots/rel.png", "outcome": "image" },
+      { "path": "unseen.png", "outcome": "notViewed" },
+      { "path": "../seen.png", "outcome": "badPath" }
+    ],
+    "elsewhere": ["remote_device", "cloud"]
+  },
+  "webview": {
+    "about": "The webview never asks for a network spelling; a permanent refusal is shown once with its own words; a package provider's thread asks exactly as a built-in one does.",
+    "rows": [
+      { "id": "s04a2-seen", "path": "/tmp/s04a2-seen.png", "answer": "image" },
+      { "id": "s04a2-elsewhere", "path": "/tmp/s04a2-elsewhere.png", "answer": "elsewhere" },
+      { "id": "s04a2-unviewed", "path": "/tmp/s04a2-unviewed.png", "answer": "notViewed" },
+      { "id": "s04a2-share", "path": "//host/share/s04a2-share.png", "answer": "never-asked" }
+    ],
+    "providers": ["claude", "sample.harness/agent"]
+  }
+}

@@ -870,6 +870,11 @@ if (new URLSearchParams(location.search).has('provider-history')) {
     call: (command: string, args: Record<string, unknown>) => invoke(command, args),
   };
 }
+// tests (S04A2): `__extensionsBaseline.seedMessages = { [sessionId]: Message[] }`, set before load, adds saved
+// rows (tool records naming images) to a thread under `?extensions-baseline` only.
+if (new URLSearchParams(location.search).has('extensions-baseline')) {
+  for (const [sessionId, rows] of Object.entries((window as any).__extensionsBaseline?.seedMessages ?? {})) (messages[sessionId] ??= []).push(...(rows as Message[]));
+}
 (window as any).__previewExtensionDialogTransport = async () => {
   const transport = (await import('./extensions/preview-dialogs')).installPreviewDialogTransport();
   (window as any).__extensionDialogTransport = transport;
@@ -1866,6 +1871,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       await new Promise<void>(resolve => { fixture.releaseCommand = resolve; });
       fixture.releaseCommand = undefined;
     }
+    // tests (S04A2): `toolImageRefusals[path]` is `tool_image`'s refusal for that path, as tool_images.rs words it.
+    if (command === 'tool_image' && fixture.toolImageRefusals?.[String(args.path)]) throw new Error(fixture.toolImageRefusals[String(args.path)]);
     if (command === 'open_support') return undefined as T;
     if (command === 'get_terminal_activity' && fixture.terminalRunning) return { running: true, processNames: ['preview-job'], uncertain: false } as T;
     if (command === 'get_run_script' && fixture.runScript) {

@@ -2269,17 +2269,52 @@ async fn start_once(app: &tauri::AppHandle, from: &str, request: start::Start) -
     start_keyed_bound(from, &id, Some(binding), move |cancel| async move { start::run_cancellable(&app, &viewer, request, cancel).await }).await
 }
 
+/// A `startId` and, for a package provider's start, the captured operation it is bound to.
+/// A plain id (`&str`) is unbound: upstream's once-per-(viewer, id) rule, unchanged.
+pub(super) struct StartKey<'a> {
+    id: &'a str,
+    binding: Option<[u8; 32]>,
+}
+
+impl<'a> From<&'a str> for StartKey<'a> {
+    fn from(id: &'a str) -> Self {
+        Self { id, binding: None }
+    }
+}
+
+impl<'a> From<&'a String> for StartKey<'a> {
+    fn from(id: &'a String) -> Self {
+        Self { id, binding: None }
+    }
+}
+
+impl<'a> StartKey<'a> {
+    /// The key of a start that names its provider (`chat.start`, `team.start`,
+    /// `github.startTask`): bound to everything the start captured (provider, project,
+    /// prompt, mode, the admitted Full access switch) when `provider` belongs to a package,
+    /// as `task.start` binds its request; a built-in provider's start stays unbound.
+    pub(super) fn captured(id: &'a str, provider: &str, captured: &impl std::fmt::Debug) -> Self {
+        let binding = crate::extensions::providers::extension_owner(provider).is_some().then(|| debug_binding(captured));
+        Self { id, binding }
+    }
+}
+
 /// [`start_once`] with what a start does handed in.
-pub(super) async fn start_keyed<F, Run>(from: &str, id: &str, run: F) -> Result<Value>
+pub(super) async fn start_keyed<'a, F, Run>(from: &str, key: impl Into<StartKey<'a>>, run: F) -> Result<Value>
 where F: FnOnce(Arc<start::Cancel>) -> Run + Send + 'static,
     Run: std::future::Future<Output = Result<Value>> + Send + 'static,
 {
-    start_keyed_bound(from, id, None, run).await
+    let key = key.into();
+    start_keyed_bound(from, key.id, key.binding, run).await
 }
 
 fn operation_binding(request: &start::Start) -> [u8; 32] {
+    debug_binding(request)
+}
+
+fn debug_binding(captured: &impl std::fmt::Debug) -> [u8; 32] {
     use sha2::{Digest, Sha256};
-    Sha256::digest(format!("{request:?}").as_bytes()).into()
+    Sha256::digest(format!("{captured:?}").as_bytes()).into()
 }
 
 async fn start_keyed_bound<F, Run>(from: &str, id: &str, binding: Option<[u8; 32]>, run: F) -> Result<Value>
@@ -2291,8 +2326,10 @@ where
         let mut starts = host_starts().lock().unwrap_or_else(|e| e.into_inner());
         let (entry, fresh) = claim_start(&mut starts, id, from, Instant::now())?;
         let mut captured = entry.binding.lock().unwrap_or_else(|e| e.into_inner());
-        if captured.is_some() && *captured != binding { return Err("Conflict: startId belongs to a different operation, project or provider.".into()); }
-        if captured.is_none() { *captured = binding; }
+        // A retry must be the operation its id started: a bound start never answers an
+        // altered retry, and a bound retry never adopts an earlier unbound start's task.
+        if !fresh && *captured != binding { return Err(START_CONFLICT.into()); }
+        if fresh { *captured = binding; }
         drop(captured);
         (entry, fresh)
     };
@@ -2315,6 +2352,7 @@ where
 }
 
 const START_ENDED: &str = "The start ended unexpectedly.";
+const START_CONFLICT: &str = "Conflict: startId belongs to a different operation, project or provider.";
 
 /// Settles a host start with its result, or, dropped first (the start panicked or was
 /// dropped), with [`START_ENDED`], so `task.startStatus` never reports it running forever.
@@ -5006,6 +5044,121 @@ mod tests {
         assert_eq!(jobs.load(Ordering::SeqCst), 1);
     }
 
+    /// S04A2: remote send/steer retries, start binding and provider projection after the
+    /// upstream merge, from the bounded fixture that docs/extensions/upstream-semantic-remote-images.md
+    /// describes. Upstream's once-per-sendId rule is unchanged; package starts on upstream's newer
+    /// start methods are bound to their captured operation as `task.start` is.
+    #[tokio::test]
+    async fn upstream_semantic_remote_sends_follow_the_fixture() {
+        use std::sync::atomic::AtomicUsize;
+        fn after<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            let rest = &source[source.find(start).unwrap_or_else(|| panic!("{start}"))..];
+            &rest[..rest.find(end).unwrap_or(rest.len())]
+        }
+        let fixture: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/upstream-semantic-remote-images/remote-sends.json")).unwrap();
+        let run_id = uuid::Uuid::new_v4().simple().to_string();
+        for case in fixture["sends"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let runs = Arc::new(AtomicUsize::new(0));
+            for (index, step) in case["steps"].as_array().unwrap().iter().enumerate() {
+                let (method, viewer) = (step["method"].as_str().unwrap(), step["viewer"].as_str().unwrap());
+                let mut params = json!({"sessionId": step["sessionId"], "text": "hi"});
+                if let Some(id) = step["sendId"].as_str() {
+                    params["sendId"] = json!(format!("{id}-{run_id}"));
+                }
+                // The key `run_one` uses for the parsed call is the key a late copy is known by.
+                let key = match parse(true, method, &params).unwrap() {
+                    Call::Send { session_id, send_id, .. } | Call::Steer { session_id, send_id, .. } => send_key(viewer, &session_id, send_id.as_deref()),
+                    other => panic!("{name}: {other:?}"),
+                };
+                assert_eq!(key, request_send_key(viewer, &json!({"method": method, "params": params})), "{name} step {index}");
+                let before = runs.load(Ordering::SeqCst);
+                let (counter, scripted) = (runs.clone(), step.clone());
+                let answer = once_per_send(key, async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    if let Some(error) = scripted["error"].as_str() {
+                        return Err(error.to_owned());
+                    }
+                    if let Some(error) = scripted["savedError"].as_str() {
+                        return Err(saved_failure(error.to_owned()));
+                    }
+                    Ok(scripted["reply"].clone())
+                })
+                .await;
+                let ran = runs.load(Ordering::SeqCst) > before;
+                match step["outcome"].as_str().unwrap() {
+                    "ran" => assert!(ran && answer == Ok(step["reply"].clone()), "{name} step {index}: {answer:?}"),
+                    "error" => assert!(ran && answer.as_ref().err().map(String::as_str) == step["error"].as_str().or(step["savedError"].as_str()), "{name} step {index}: {answer:?}"),
+                    "remembered" => {
+                        assert!(!ran, "{name} step {index} ran again");
+                        let expected = step["answerError"].as_str().map_or_else(|| Ok(step["answer"].clone()), |error| Err(error.to_owned()));
+                        assert_eq!(answer, expected, "{name} step {index}");
+                    }
+                    other => panic!("{name}: unknown outcome {other}"),
+                }
+            }
+            assert_eq!(runs.load(Ordering::SeqCst) as u64, case["runs"].as_u64().unwrap(), "{name}");
+        }
+        for case in fixture["starts"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let runs = Arc::new(AtomicUsize::new(0));
+            for (index, step) in case["steps"].as_array().unwrap().iter().enumerate() {
+                let id = format!("{}-{run_id}", step["startId"].as_str().unwrap());
+                let provider = step["provider"].as_str().unwrap();
+                let captured = json!({"provider": provider, "operation": step["operation"]});
+                let before = runs.load(Ordering::SeqCst);
+                let counter = runs.clone();
+                let answer = start_keyed(step["viewer"].as_str().unwrap(), StartKey::captured(&id, provider, &captured), move |_| async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"sessionId": "made-once"}))
+                })
+                .await;
+                let ran = runs.load(Ordering::SeqCst) > before;
+                match step["outcome"].as_str().unwrap() {
+                    "ran" => assert!(ran && answer == Ok(json!({"sessionId": "made-once"})), "{name} step {index}: {answer:?}"),
+                    "remembered" => assert!(!ran && answer == Ok(json!({"sessionId": "made-once"})), "{name} step {index}: {answer:?}"),
+                    "conflict" => assert!(!ran && answer.as_ref().err().map(String::as_str) == Some(START_CONFLICT), "{name} step {index}: {answer:?}"),
+                    "error" => assert!(!ran && answer.is_err() && answer.as_ref().err().map(String::as_str) != Some(START_CONFLICT), "{name} step {index}: {answer:?}"),
+                    other => panic!("{name}: unknown outcome {other}"),
+                }
+            }
+            assert_eq!(runs.load(Ordering::SeqCst) as u64, case["runs"].as_u64().unwrap(), "{name}");
+        }
+        // Upstream's newer start methods key a start by what it captured, before it runs.
+        for (file, source, marker) in [
+            ("projects.rs", include_str!("methods/projects.rs"), "impl Run for ChatStart"),
+            ("team.rs", include_str!("methods/team.rs"), "impl Run for TeamStart"),
+            ("github.rs", include_str!("methods/github.rs"), "impl Run for StartTask"),
+        ] {
+            let run = after(source, marker, "\n}\n");
+            let keyed = run.find("host::StartKey::captured(&id, ").unwrap_or_else(|| panic!("{file}"));
+            assert!(keyed < run.find("host::start_keyed(ctx.from, key, ").unwrap_or_else(|| panic!("{file}")), "{file}");
+        }
+        // Projection: package identities reach the phone verbatim; a legacy catalog keeps built-ins only.
+        let projection = &fixture["projection"];
+        let ids = |key: &str| projection[key].as_array().unwrap().iter().map(|id| id.as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let (packages, builtins) = (ids("packageIds"), ids("builtinIds"));
+        for id in packages.iter().chain(&builtins) {
+            assert_eq!(crate::extensions::providers::extension_owner(id).is_some(), packages.contains(id), "{id}");
+            assert_eq!(parse(true, "providers.models", &json!({"provider": id})), Ok(Call::Models { provider: id.clone(), force: false }), "{id}");
+        }
+        for id in ids("refusedIds") {
+            assert!(parse(true, "providers.models", &json!({"provider": id})).is_err(), "{id}");
+        }
+        let home = Path::new("/Users/someone");
+        let mut rows = Value::Array(packages.iter().chain(&builtins).map(|id| json!({"id": id, "path": "/Users/someone/bin/agent", "models": []})).collect());
+        let mut legacy = rows.clone();
+        phone_provider_paths(&mut rows, Some(home));
+        fit_providers(&mut rows);
+        let projected: Vec<&str> = rows.as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
+        assert_eq!(projected, packages.iter().chain(&builtins).map(String::as_str).collect::<Vec<_>>());
+        legacy_catalog(&mut legacy, false);
+        assert_eq!(legacy.as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>(), builtins);
+        let host = include_str!("host.rs");
+        assert!(after(host, "fn tasks_list(", "\n}\n").contains("\"provider\": task.provider,"), "tasks.list projects the stored identity");
+        assert!(host.contains("\"provider\": worker.provider,"), "team workers project the stored identity");
+    }
+
     #[test]
     fn read_only_request_classification_is_explicit() {
         for method in [
@@ -6605,7 +6758,9 @@ diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-x\n+y\n";
         phone_provider_paths(&mut rows, Some(home));
         assert_eq!(rows, json!([{"id": "claude", "path": "~/bin/claude"}, {"id": "codex", "path": null}, {"id": "x"}]));
         let source = include_str!("host.rs");
-        let call = &source[source.find("Call::Providers { force } => {").unwrap()..];
+        // Finding (S04A2): the extension build's `providers.list` also carries the additive
+        // `extensionApiVersion` opt-in, so the arm binds `extensions` too; the assertion is upstream's.
+        let call = &source[source.find("Call::Providers { force, extensions } => {").unwrap()..];
         assert!(call[..call.find("Ok(providers)").unwrap()].contains("phone_provider_paths(&mut providers"));
     }
 

@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "about": "Remote send/steer retry and start binding after the upstream 0.3.128 merge. Read by remote::host::tests::upstream_semantic_remote_sends_follow_the_fixture. Send ids and start ids get a per-run suffix so the process-wide memories never collide. 'outcome' is 'ran' (this step ran and answered its own reply), 'remembered' (answered from the first step without running), 'error' (its own error) or 'conflict'.",
+  "sends": [
+    {
+      "name": "a repeated task.send runs once and answers the first reply",
+      "steps": [
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-a", "reply": { "queued": false }, "outcome": "ran" },
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-a", "reply": { "queued": true }, "outcome": "remembered", "answer": { "queued": false } }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "a repeated task.steer runs once",
+      "steps": [
+        { "viewer": "phone", "method": "task.steer", "sessionId": "s1", "sendId": "steer-a", "reply": { "steered": true }, "outcome": "ran" },
+        { "viewer": "phone", "method": "task.steer", "sessionId": "s1", "sendId": "steer-a", "reply": { "steered": false }, "outcome": "remembered", "answer": { "steered": true } }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "a send without a sendId always runs (older viewers)",
+      "steps": [
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "reply": { "queued": false }, "outcome": "ran" },
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "reply": { "queued": false }, "outcome": "ran" }
+      ],
+      "runs": 2
+    },
+    {
+      "name": "the memory is per viewer and per task",
+      "steps": [
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-b", "reply": { "queued": false }, "outcome": "ran" },
+        { "viewer": "tablet", "method": "task.send", "sessionId": "s1", "sendId": "send-b", "reply": { "queued": false }, "outcome": "ran" },
+        { "viewer": "phone", "method": "task.send", "sessionId": "s2", "sendId": "send-b", "reply": { "queued": false }, "outcome": "ran" }
+      ],
+      "runs": 3
+    },
+    {
+      "name": "a failure before anything was saved is retried",
+      "steps": [
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-c", "error": "No such task.", "outcome": "error" },
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-c", "reply": { "queued": false }, "outcome": "ran" },
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-c", "reply": { "queued": true }, "outcome": "remembered", "answer": { "queued": false } }
+      ],
+      "runs": 2
+    },
+    {
+      "name": "a failure after the prompt was saved is answered again, never sent twice",
+      "steps": [
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-d", "savedError": "Could not start the agent.", "outcome": "error" },
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-d", "reply": { "queued": false }, "outcome": "remembered", "answerError": "Could not start the agent." }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "a sendId names one prompt on its task, whichever of send or steer carries it",
+      "steps": [
+        { "viewer": "phone", "method": "task.send", "sessionId": "s1", "sendId": "send-e", "reply": { "queued": true }, "outcome": "ran" },
+        { "viewer": "phone", "method": "task.steer", "sessionId": "s1", "sendId": "send-e", "reply": { "steered": true }, "outcome": "remembered", "answer": { "queued": true } }
+      ],
+      "runs": 1
+    }
+  ],
+  "starts": [
+    {
+      "name": "a package provider's chat.start retried unchanged runs once",
+      "steps": [
+        { "viewer": "phone", "startId": "start-a", "provider": "sample.fake-harness/recorded", "operation": { "method": "chat.start", "projectId": "p1", "prompt": "Captured", "mode": "ask" }, "outcome": "ran" },
+        { "viewer": "phone", "startId": "start-a", "provider": "sample.fake-harness/recorded", "operation": { "method": "chat.start", "projectId": "p1", "prompt": "Captured", "mode": "ask" }, "outcome": "remembered" }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "a package provider's start retried with another provider, prompt or admitted switch conflicts",
+      "steps": [
+        { "viewer": "phone", "startId": "start-b", "provider": "sample.fake-harness/recorded", "operation": { "method": "team.start", "projectId": "p1", "prompt": "Captured", "fullAccess": true }, "outcome": "ran" },
+        { "viewer": "phone", "startId": "start-b", "provider": "sample.other/recorded", "operation": { "method": "team.start", "projectId": "p1", "prompt": "Captured", "fullAccess": true }, "outcome": "conflict" },
+        { "viewer": "phone", "startId": "start-b", "provider": "sample.fake-harness/recorded", "operation": { "method": "team.start", "projectId": "p1", "prompt": "Altered", "fullAccess": true }, "outcome": "conflict" },
+        { "viewer": "phone", "startId": "start-b", "provider": "sample.fake-harness/recorded", "operation": { "method": "team.start", "projectId": "p1", "prompt": "Captured", "fullAccess": false }, "outcome": "conflict" },
+        { "viewer": "phone", "startId": "start-b", "provider": "claude", "operation": { "method": "team.start", "projectId": "p1", "prompt": "Captured", "fullAccess": true }, "outcome": "conflict" }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "a built-in provider's start keeps upstream's unbound once-per-id rule",
+      "steps": [
+        { "viewer": "phone", "startId": "start-c", "provider": "claude", "operation": { "method": "chat.start", "projectId": "p1", "prompt": "First" }, "outcome": "ran" },
+        { "viewer": "phone", "startId": "start-c", "provider": "claude", "operation": { "method": "chat.start", "projectId": "p1", "prompt": "Retyped" }, "outcome": "remembered" }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "a package retry never adopts an earlier built-in start's task",
+      "steps": [
+        { "viewer": "phone", "startId": "start-d", "provider": "codex", "operation": { "method": "github.startTask", "projectId": "p1", "issue": 7 }, "outcome": "ran" },
+        { "viewer": "phone", "startId": "start-d", "provider": "sample.fake-harness/recorded", "operation": { "method": "github.startTask", "projectId": "p1", "issue": 7 }, "outcome": "conflict" }
+      ],
+      "runs": 1
+    },
+    {
+      "name": "another viewer's start id is refused",
+      "steps": [
+        { "viewer": "phone", "startId": "start-e", "provider": "sample.fake-harness/recorded", "operation": { "method": "chat.start", "projectId": "p1", "prompt": "Captured" }, "outcome": "ran" },
+        { "viewer": "tablet", "startId": "start-e", "provider": "sample.fake-harness/recorded", "operation": { "method": "chat.start", "projectId": "p1", "prompt": "Captured" }, "outcome": "error" }
+      ],
+      "runs": 1
+    }
+  ],
+  "projection": {
+    "packageIds": ["sample.fake-harness/recorded", "sample.harness/agent", "retired.package/agent"],
+    "builtinIds": ["claude", "codex", "alibaba", "cursor", "zcode"],
+    "refusedIds": ["panda.core/zcode", "../bin/sh", "not-a-provider"]
+  }
+}

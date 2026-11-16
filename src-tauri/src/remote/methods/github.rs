@@ -602,7 +602,9 @@ impl Run for StartTask {
             // Once per (viewer, startId), like `task.start`: a retry after a lost reply starts no
             // second task, `task.startStatus` follows it and a panicked start still settles.
             let id = task.start_id.clone();
-            super::super::host::start_keyed(ctx.from, &id, move |cancel| async move { solve_issue(&app, &from, full_access, task, cancel).await }).await
+            // A package provider's start is bound to what it captured, as `task.start` is.
+            let key = super::super::host::StartKey::captured(&id, task.start["provider"].as_str().unwrap_or_default(), &task);
+            super::super::host::start_keyed(ctx.from, key, move |cancel| async move { solve_issue(&app, &from, full_access, task, cancel).await }).await
         })
     }
 }

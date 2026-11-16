@@ -227,7 +227,9 @@ impl Run for TeamStart {
             request.start.full_access = Some(ctx.full_access);
             let (app, from) = (ctx.app.clone(), ctx.from.to_owned());
             let id = request.start.start_id.clone().ok_or("Missing startId.")?;
-            super::super::host::start_keyed(ctx.from, &id, move |cancel| async move { start_team(&app, &from, request, cancel).await }).await
+            // A package lead's start is bound to what it captured, as `task.start` is.
+            let key = super::super::host::StartKey::captured(&id, &request.start.provider, &request);
+            super::super::host::start_keyed(ctx.from, key, move |cancel| async move { start_team(&app, &from, request, cancel).await }).await
         })
     }
 }

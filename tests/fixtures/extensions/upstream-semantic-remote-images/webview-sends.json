@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "about": "The desktop composer's send, as upstream 0.3.128 src/main.ts sends it (send_message with sessionId, text, imageIds, moodboardIds). Read by tests/upstream-semantic-remote-images.spec.ts.",
+  "text": "S04A2 baseline send",
+  "argKeys": ["sessionId", "text", "imageIds", "moodboardIds"],
+  "args": { "sessionId": "session-1", "imageIds": [], "moodboardIds": [] }
+}

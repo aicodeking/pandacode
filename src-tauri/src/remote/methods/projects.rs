@@ -373,7 +373,9 @@ impl Run for ChatStart {
             // Once per (viewer, startId), like `task.start`: a retry after a lost reply makes no
             // second chat, `task.startStatus` follows it and a panicked start still settles.
             let id = start.start_id.clone();
-            super::super::host::start_keyed(ctx.from, &id, move |cancel| async move { start_chat(&app, &from, full_access, start, &cancel).await }).await
+            // A package provider's chat is bound to what it captured, as `task.start` is.
+            let key = super::super::host::StartKey::captured(&id, &start.provider, &start);
+            super::super::host::start_keyed(ctx.from, key, move |cancel| async move { start_chat(&app, &from, full_access, start, &cancel).await }).await
         })
     }
 }
