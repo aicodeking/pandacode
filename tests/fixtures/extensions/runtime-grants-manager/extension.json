@@ -1,0 +1,9 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.grants-manager",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["tasks.start", "harness.hooks.decide", "credentials.use"],
+  "contributes": {}
+}

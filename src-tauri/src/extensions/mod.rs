@@ -11,6 +11,8 @@ pub mod jobs;
 pub mod connections;
 pub mod services;
 pub mod runtime_grants;
+#[cfg(test)]
+mod runtime_grants_manager;
 pub mod runtime_native_consents;
 pub mod runtime_family_consents;
 pub mod providers;

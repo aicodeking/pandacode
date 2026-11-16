@@ -207,6 +207,9 @@ impl RuntimeGrants {
                 record.trusted_digest = if package["executable"]["trusted"] == true { digest.map(str::to_owned) } else { None };
                 record.archived = safe || package["enabled"] != true;
             }
+            // Safe mode reports no packages: that is a suspension, not an uninstall, so every record is kept
+            // (archived) and its grants come back with the next normal launch.
+            if safe { for record in file.packages.values_mut() { record.archived = true; } return Ok(()); }
             file.packages.retain(|id, _| present.contains(id));
             file.migrations.retain(|id, done| present.contains(id) && !done.is_empty());
             Ok(())

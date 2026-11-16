@@ -107,6 +107,7 @@ config.testMatch.push('**/extensions-window-menus-coverage.spec.ts');
 config.testMatch.push('**/extensions-bot-conversation-coverage.spec.ts');
 config.testMatch.push('**/extensions-gap-closure.spec.ts');
 config.testMatch.push('**/extensions-runtime-grants.spec.ts');
+config.testMatch.push('**/extensions-runtime-grants-manager.spec.ts');
 config.testMatch.push('**/extensions-runtime-native-consents.spec.ts');
 config.testMatch.push('**/extensions-runtime-family-consents.spec.ts');
 export default defineConfig(config, {

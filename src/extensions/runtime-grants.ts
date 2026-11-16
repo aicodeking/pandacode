@@ -28,6 +28,11 @@ const TOOL_KIND_SCOPED = new Set(['harness.hooks.decide']);
 const ITEM_SCOPED = new Set(['credentials.use']);
 const DIMENSIONS = [['projects', PROJECT_SCOPED, 'project'], ['toolKinds', TOOL_KIND_SCOPED, 'toolKind'], ['items', ITEM_SCOPED, 'item']] as const;
 
+/** The scope dimensions the user can narrow for a permission (empty when it has none). */
+export function scopeDimensions(permission: string): ('projects' | 'toolKinds' | 'items')[] {
+  return DIMENSIONS.filter(([, scoped]) => scoped.has(permission)).map(([key]) => key);
+}
+
 export const UNAVAILABLE_GRANTS: GrantsProjection = Object.freeze({ schemaVersion: 1, available: false, revision: 0, vocabulary: [...GRANT_PERMISSIONS], packages: [] }) as GrantsProjection;
 
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
