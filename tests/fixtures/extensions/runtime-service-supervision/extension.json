@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.service-supervision",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.service-supervision/crash", "title": "Crash the supervised service", "action": { "kind": "runCommand" } },
+      { "id": "sample.service-supervision/state", "title": "Supervised service state", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [{ "id": "sample.service-supervision/header", "location": "panda.workspace.header.actions", "command": "sample.service-supervision/state", "presentation": "button", "text": "Service state" }]
+  }
+}

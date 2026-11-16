@@ -16,6 +16,7 @@ import { createConnectionsPreview } from './connections-preview';
 import { createServicesPreview } from './services-preview';
 import * as runtimeGrants from './runtime-grants';
 import { createServiceLifetimePreview } from './runtime-service-lifetime';
+import * as serviceSupervision from './runtime-service-supervision';
 import { createPrivateSecretsPreview } from './runtime-private-secrets';
 import { createSignInPreview } from './runtime-sign-in';
 import { call } from '../bridge';
@@ -118,6 +119,18 @@ export function previewProviderFinished(id: string, notify: (name: string, value
 const previewServiceLifetime = createServiceLifetimePreview();
 if (windowLabel === 'main') previewServiceLifetime.launch();
 if (new URLSearchParams(location.search).has('service-lifetime')) (window as unknown as { __extensionServiceLifetime?: unknown }).__extensionServiceLifetime = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+// Service supervision (R0106): labelled stand-in on a simulated clock; crashes are scripted by a test hook only.
+const previewServiceSupervision = serviceSupervision.createServiceSupervisionPreview();
+if (new URLSearchParams(location.search).has('service-supervision')) (window as unknown as { __extensionServiceSupervision?: unknown }).__extensionServiceSupervision = { ...serviceSupervision, call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function serviceSupervisionPreview(args: Record<string, unknown>): unknown {
+  const id = String(args.id);
+  switch (args.op) {
+    case 'crash': return previewServiceSupervision.crash(id, typeof args.code === 'string' ? args.code : undefined);
+    case 'hang': previewServiceSupervision.hang(id); return null;
+    case 'advance': previewServiceSupervision.advance(Number(args.ms)); return null;
+    default: throw new Error('InvalidArguments');
+  }
+}
 // Private package secrets (R0802): labelled stand-in of the native owner; service calls come from a test hook only.
 const previewPrivateSecrets = createPrivateSecretsPreview();
 if (new URLSearchParams(location.search).has('private-secrets')) (window as unknown as { __extensionPrivateSecrets?: unknown }).__extensionPrivateSecrets = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
@@ -156,6 +169,7 @@ function reconcileServices(): void {
   const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
   if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
   previewServiceLifetime.reconcile(snapshot, (id, version) => grants.check(id, version, 'runtime.service') === 'ok');
+  previewServiceSupervision.reconcile(previewServiceLifetime.projection());
 }
 export function previewExtensions(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void = () => undefined): unknown {
   if (command === 'extensions_private_secrets') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewPrivateSecrets.projection(); }
@@ -165,7 +179,10 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_sign_in_cancel') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return { cancelled: previewSignIn.cancel(String(args.id)) }; }
   if (command === 'extensions_sign_in_paste') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); previewSignIn.paste(String(args.id), String(args.url)); return null; }
   if (command === 'extensions_uninstall') previewPrivateSecrets.removePackage(String(args.id));
-  if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceLifetime.projection(); }
+  if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceSupervision.decorate(previewServiceLifetime.projection()); }
+  if (command === 'extensions_service_supervision_preview') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return serviceSupervisionPreview(args); }
+  // Enable is the retry of a parked, restarting or never-settled service (native `runtime::retry`).
+  if (command === 'extensions_enable' && args.enabled === true) previewServiceSupervision.retry(String(args.id));
   try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') { reconcileServices(); reconcileSignIns(); } }
 }
 function previewExtensionCommand(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void): unknown {

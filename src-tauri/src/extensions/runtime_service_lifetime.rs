@@ -6,9 +6,9 @@
 //! (update), loss of trust or of the grant, safe mode and quit. The host asks the service to stop, gives its
 //! `onStop` handlers at most two seconds, then ends the whole process tree (the job object).
 //!
-//! What this slice does NOT do (named owners): crash restart with backoff and parking (R0106), the Running list
-//! and the quit confirmation (R0107), the duplex channel that dispatches owned commands, context queries and host
-//! events into the service (R0201).
+//! What this slice does NOT do (named owners): the Running list and the quit confirmation (R0107). Crash restart with
+//! backoff, parking, the start state and memory measurement are R0106 (`runtime_service_supervision.rs`, applied in
+//! `supervise` and `run` below).
 //!
 //! R0105 runs the service from its checksum-qualified code directory (`runtime.files`), with the user's environment
 //! minus `NODE_OPTIONS` and the host's `PANDACODE_*` variables, and serves `storage.directory`
@@ -34,6 +34,10 @@ use self::runtime_workspace_events::WorkspaceEvents;
 // Package settings and the content resources of tasks, served to the service natively (R0203).
 #[path = "runtime_content_resources.rs"]
 pub mod runtime_content_resources;
+// Crash restart with backoff, parking, the start state and memory measurement (R0106).
+#[path = "runtime_service_supervision.rs"]
+pub mod runtime_service_supervision;
+use self::runtime_service_supervision::{self as supervision, Clock, CrashHistory, Decision, Memory};
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use super::packages::runtime_code_folders;
@@ -116,20 +120,30 @@ pub fn stop_reason(snapshot: &Value, id: &str, digest: &str, granted: impl Fn(&s
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum State { Starting, Running, Stopping, Failed }
+enum State { Starting, Running, Stopping, Failed, Restarting, Parked }
 impl State {
-    fn as_str(self) -> &'static str { match self { Self::Starting => "starting", Self::Running => "running", Self::Stopping => "stopping", Self::Failed => "failed" } }
+    fn as_str(self) -> &'static str {
+        match self { Self::Starting => "starting", Self::Running => "running", Self::Stopping => "stopping", Self::Failed => "failed", Self::Restarting => "restarting", Self::Parked => "parked" }
+    }
+    /// No process belongs to the entry: a start that never reached a process, a scheduled crash restart or a parked
+    /// service (R0106).
+    fn idle(self) -> bool { matches!(self, Self::Failed | Self::Restarting | Self::Parked) }
 }
 struct Entry {
     generation: u64, version: String, digest: String, reason: StartReason, restarts: u32, state: State,
     status: Option<(String, bool)>, error: Option<String>, stop: watch::Sender<Option<StopReason>>,
     /// The package's own `runCommand` ids (the only commands that may be dispatched into this service).
     commands: Vec<String>, calls: mpsc::Sender<HostCall>,
+    /// Supervision (R0106): the crashes since the user last started it, when this process started and became ready
+    /// (clock time), the scheduled restart `(delay, at)` and whether it is due, the parking explanation and the
+    /// measured memory.
+    history: CrashHistory, started_at: Duration, ready_at: Option<Duration>, restart: Option<(Duration, Duration)>, due: bool, parked: Option<String>, memory: Option<Memory>,
 }
 #[derive(Default)]
 struct Counters { starts: BTreeMap<&'static str, u64>, stops: BTreeMap<&'static str, u64>, last_stop: Option<(&'static str, bool)> }
 /// A start that waits for the previous process of the same package to end (one service per package).
-struct Queued { want: Want, source: String, reason: StartReason, work: Work, code: Code }
+/// `restarts` and `history` carry a crash restart's count and crash history into the next process (R0106).
+struct Queued { want: Want, source: String, reason: StartReason, work: Work, code: Code, restarts: u32, history: CrashHistory }
 /// What the service's code directory and data directory need (R0105): the app data directory, the archive checksum,
 /// the entry point and code folders read from the stored archive, and the `storage.private` grant work (absent when
 /// the grant is not held; cancelled when it is revoked).
@@ -152,11 +166,30 @@ pub struct ServiceLifetime {
     dispatch: Arc<Mutex<Option<Dispatch>>>,
     /// Subscriptions and queues of the workspace events of every running service.
     events: Arc<WorkspaceEvents>,
+    /// The supervisor's time source (a `ManualClock` in tests, R0106).
+    clock: Arc<dyn Clock>,
+    /// What runs when a crash restart is due: the app reconciles (tests reconcile their own packages).
+    restart_hook: Arc<Mutex<Option<RestartHook>>>,
 }
+/// Runs when a scheduled crash restart is due.
+pub type RestartHook = Arc<dyn Fn() + Send + Sync>;
+fn millis(duration: Duration) -> u64 { u64::try_from(duration.as_millis()).unwrap_or(u64::MAX) }
 
 impl ServiceLifetime {
     pub fn new(runtimes: Vec<PathBuf>) -> Self {
-        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), parent: Arc::default(), dispatch: Arc::default(), events: Arc::default() }
+        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), parent: Arc::default(), dispatch: Arc::default(), events: Arc::default(), clock: Arc::new(supervision::SystemClock::default()), restart_hook: Arc::default() }
+    }
+    /// Replaces the supervisor's clock (tests: backoff and the crash window on a controlled clock).
+    #[cfg(test)]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+    /// Installs what runs when a crash restart is due (the app reconciles).
+    pub fn set_restart_hook(&self, hook: RestartHook) { if let Ok(mut slot) = self.restart_hook.lock() { *slot = Some(hook); } }
+    /// Another handle on the same manager, for the tasks it spawns.
+    fn share(&self) -> Self {
+        Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), parent: self.parent.clone(), dispatch: self.dispatch.clone(), events: self.events.clone(), clock: self.clock.clone(), restart_hook: self.restart_hook.clone() }
     }
     /// Replaces the user environment the service inherits (tests: canary variables without touching the process).
     #[cfg(test)]
@@ -198,7 +231,8 @@ impl ServiceLifetime {
     /// Brings the running services in line with the package state and the grants. Stops what may no longer run
     /// (with the matching reason), starts what should run and is not running yet. Never waits for a process.
     /// The first call of a manager is the app start (`appStart`); later starts are `enable`, and a changed digest
-    /// restarts with `update`. A failed service is not restarted here; `retry` (enable, development reload) does it.
+    /// restarts with `update`. A failed start and a parked service are not restarted here; `retry` (enable,
+    /// development reload) or an update does it. A crash restart whose backoff has passed starts with `restart` (R0106).
     pub fn reconcile(&self, packages: &Packages, grants: &RuntimeGrants) {
         let snapshot = serde_json::to_value(packages.snapshot()).unwrap_or(Value::Null);
         let Ok(mut inner) = self.inner.lock() else { return };
@@ -206,19 +240,22 @@ impl ServiceLifetime {
         let first = !std::mem::replace(&mut inner.launched, true);
         // Package-state reasons first, before the grants sync cancels the services' grant work, so that a disable,
         // an untrust or an update is reported as itself and not as a grant loss.
-        Self::stop_where(&mut inner, &snapshot, |_: &str, _: &str| true);
+        let mut updated = Self::stop_where(&mut inner, &snapshot, |_: &str, _: &str| true);
         // Safe mode loads no package, so its snapshot is empty: never let that erase the grants file.
         if snapshot["safeMode"] != true { let _ = grants.sync(&snapshot); }
         let headless = crate::headless::active();
         let granted = |id: &str, version: &str| !headless && grants.check(id, version, PERMISSION, &Target::default()).is_ok();
-        Self::stop_where(&mut inner, &snapshot, granted);
+        updated.extend(Self::stop_where(&mut inner, &snapshot, granted));
         let wanted = desired(&snapshot, granted);
         inner.queued.retain(|id, queued| wanted.get(id).is_some_and(|want| want.digest == queued.want.digest));
         for (id, want) in wanted {
             // A start behind a process that is still stopping waits for it (one service per package).
-            let reason = match inner.entries.get(&id) {
-                None => if first { StartReason::AppStart } else { StartReason::Enable },
-                Some(entry) if entry.state == State::Stopping && !inner.queued.contains_key(&id) => if entry.digest != want.digest { StartReason::Update } else { StartReason::Enable },
+            let (reason, restarts, history) = match inner.entries.get(&id) {
+                None if updated.contains(&id) => (StartReason::Update, 0, CrashHistory::default()),
+                None => (if first { StartReason::AppStart } else { StartReason::Enable }, 0, CrashHistory::default()),
+                Some(entry) if entry.state == State::Stopping && !inner.queued.contains_key(&id) => (if entry.digest != want.digest { StartReason::Update } else { StartReason::Enable }, 0, CrashHistory::default()),
+                // A crash restart whose backoff has passed, of the same content: the crash history goes on (R0106).
+                Some(entry) if entry.state == State::Restarting && entry.due && entry.digest == want.digest => (StartReason::Restart, entry.restarts.saturating_add(1), entry.history.clone()),
                 Some(_) => continue,
             };
             let Ok((digest, source)) = packages.executable_source(&id) else { continue };
@@ -229,29 +266,36 @@ impl ServiceLifetime {
             let Ok(work) = grants.begin(&id, &want.version, PERMISSION, &Target::default()) else { continue };
             let storage = grants.begin(&id, &want.version, runtime_code_folders::STORAGE_PERMISSION, &Target::default()).ok();
             let code = Code { app_data: packages.app_data(), checksum, files, storage };
-            if inner.entries.contains_key(&id) { inner.queued.insert(id, Queued { want, source, reason, work, code }); }
-            else { self.start(&mut inner, id, Queued { want, source, reason, work, code }); }
+            let queued = Queued { want, source, reason, work, code, restarts, history };
+            if inner.entries.get(&id).is_some_and(|entry| entry.state == State::Stopping) { inner.queued.insert(id, queued); }
+            else { self.start(&mut inner, id, queued); }
         }
         drop(inner);
         self.changed.notify_waiters();
     }
 
-    fn stop_where(inner: &mut Inner, snapshot: &Value, granted: impl Fn(&str, &str) -> bool + Copy) {
+    /// Returns the packages whose idle entry (no process) was removed for an update: their next start is `update`.
+    fn stop_where(inner: &mut Inner, snapshot: &Value, granted: impl Fn(&str, &str) -> bool + Copy) -> Vec<String> {
         let stopping: Vec<(String, StopReason)> = inner.entries.iter()
             .filter(|(_, entry)| entry.state != State::Stopping)
             .filter_map(|(id, entry)| stop_reason(snapshot, id, &entry.digest, granted).map(|reason| (id.clone(), reason)))
             .collect();
+        let mut updated = Vec::new();
         for (id, reason) in stopping {
             let Some(entry) = inner.entries.get_mut(&id) else { continue };
-            if entry.state == State::Failed { inner.entries.remove(&id); continue; }
+            // No process: a failed start, a parked service or a scheduled restart, which is cancelled here (its timer
+            // finds nothing to restart).
+            if entry.state.idle() { inner.entries.remove(&id); if reason == StopReason::Update { updated.push(id); } continue; }
             entry.state = State::Stopping;
             let _ = entry.stop.send(Some(reason));
         }
+        updated
     }
 
-    /// Clears a failed service so the next `reconcile` starts it again (the explicit retry of enable).
+    /// Clears a failed start, a scheduled crash restart or a parked service so the next `reconcile` starts it again
+    /// at once, with a clean crash history (the explicit retry of enable and development reload).
     pub fn retry(&self, id: &str) {
-        if let Ok(mut inner) = self.inner.lock() { if inner.entries.get(id).is_some_and(|entry| entry.state == State::Failed) { inner.entries.remove(id); } }
+        if let Ok(mut inner) = self.inner.lock() { if inner.entries.get(id).is_some_and(|entry| entry.state.idle()) { inner.entries.remove(id); } }
     }
 
     /// Asks every service to stop with `reason`; after `quit` nothing starts again in this manager.
@@ -260,7 +304,7 @@ impl ServiceLifetime {
         if let Ok(mut inner) = self.inner.lock() {
             if reason == StopReason::Quit { inner.quitting = true; }
             inner.queued.clear();
-            inner.entries.retain(|_, entry| entry.state != State::Failed);
+            inner.entries.retain(|_, entry| !entry.state.idle());
             for entry in inner.entries.values_mut() { if entry.state != State::Stopping { entry.state = State::Stopping; let _ = entry.stop.send(Some(reason)); } }
         }
         self.changed.notify_waiters();
@@ -271,14 +315,17 @@ impl ServiceLifetime {
         let deadline = tokio::time::Instant::now() + limit;
         loop {
             let notified = self.changed.notified();
-            if self.inner.lock().map(|inner| inner.entries.values().all(|entry| entry.state == State::Failed)).unwrap_or(true) { return true; }
+            if self.inner.lock().map(|inner| inner.entries.values().all(|entry| entry.state.idle())).unwrap_or(true) { return true; }
             if tokio::time::timeout_at(deadline, notified).await.is_err() { return false; }
         }
     }
 
     /// The read projection (`extensions_service_lifetime`): state, start reason, status line, last error and the
-    /// start/stop counters of every lifetime reason. Nothing secret, no package output beyond its status line.
+    /// start/stop counters of every lifetime reason, and the supervision object (R0106: crashes in the window, the
+    /// scheduled restart, the parking explanation, the start state and the measured memory). Nothing secret, no
+    /// package output beyond its status line.
     pub fn projection(&self) -> Value {
+        let now = self.clock.now();
         let Ok(inner) = self.inner.lock() else { return json!({"schemaVersion":1,"available":false,"services":[]}) };
         let mut ids: Vec<&String> = inner.entries.keys().chain(inner.counters.keys()).collect();
         ids.sort(); ids.dedup();
@@ -296,24 +343,36 @@ impl ServiceLifetime {
                 "starts": counters.map(|counters| json!(counters.starts)).unwrap_or_else(|| json!({})),
                 "stops": counters.map(|counters| json!(counters.stops)).unwrap_or_else(|| json!({})),
                 "lastStop": counters.and_then(|counters| counters.last_stop).map(|(reason, acknowledged)| json!({"reason": reason, "acknowledged": acknowledged})),
+                "supervision": entry.map(|entry| {
+                    let restart = entry.restart.filter(|_| entry.state == State::Restarting);
+                    json!({
+                        "crashes": entry.history.recent(now),
+                        "backoffMs": restart.map(|(delay, _)| millis(delay)),
+                        "restartInMs": restart.map(|(_, at)| millis(at.saturating_sub(now))),
+                        "parked": entry.parked,
+                        "startup": matches!(entry.state, State::Starting | State::Running).then(|| supervision::start_state(entry.state == State::Starting, entry.started_at, entry.ready_at, now)),
+                        "memory": entry.memory.map(|memory| memory.projection()),
+                    })
+                }),
             })
         }).collect();
         json!({"schemaVersion":1,"available":true,"services":services})
     }
 
-    fn start(&self, inner: &mut Inner, id: String, queued: Queued) {
+    fn start(&self, inner: &mut Inner, id: String, mut queued: Queued) {
         inner.next += 1;
         let generation = inner.next;
         let (stop, stopped) = watch::channel(None);
         let (calls, incoming_calls) = mpsc::channel(CALL_QUEUE);
         *inner.counters.entry(id.clone()).or_default().starts.entry(queued.reason.as_str()).or_default() += 1;
-        inner.entries.insert(id.clone(), Entry { generation, version: queued.want.version.clone(), digest: queued.want.digest.clone(), reason: queued.reason, restarts: 0, state: State::Starting, status: None, error: None, stop, commands: queued.want.commands.clone(), calls });
-        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), parent: self.parent.clone(), dispatch: self.dispatch.clone(), events: self.events.clone() };
+        inner.entries.insert(id.clone(), Entry { generation, version: queued.want.version.clone(), digest: queued.want.digest.clone(), reason: queued.reason, restarts: queued.restarts, state: State::Starting, status: None, error: None, stop, commands: queued.want.commands.clone(), calls,
+            history: std::mem::take(&mut queued.history), started_at: self.clock.now(), ready_at: None, restart: None, due: false, parked: None, memory: None });
+        let manager = self.share();
         tauri::async_runtime::spawn(async move { manager.supervise(id, generation, queued, stopped, incoming_calls).await });
     }
 
     async fn supervise(self, id: String, generation: u64, queued: Queued, stopped: watch::Receiver<Option<StopReason>>, mut calls: mpsc::Receiver<HostCall>) {
-        let Queued { want, source, reason, work, code } = queued;
+        let Queued { want, source, reason, work, code, restarts, .. } = queued;
         let Code { app_data, checksum, files, storage } = code;
         let directories = self.runtimes.clone();
         let runtime = tauri::async_runtime::spawn_blocking(move || directories.iter().find_map(|directory| supervisor::Runtime::packaged(directory).ok())).await.ok().flatten();
@@ -324,7 +383,7 @@ impl ServiceLifetime {
         let outcome = match (runtime, materialized) {
             (Some(runtime), Ok(directory)) => {
                 let entry = directory.join("main.cjs");
-                let init = json!({"lifetime": {"reason": reason.as_str(), "restarts": 0, "commands": want.commands}});
+                let init = json!({"lifetime": {"reason": reason.as_str(), "restarts": restarts, "commands": want.commands}});
                 let parent: Vec<(OsString, OsString)> = match self.parent.as_ref() { Some(parent) => parent.clone(), None => std::env::vars_os().collect() };
                 let code = ServiceCode { directory, entry, parent, app_data: app_data.clone(), storage: storage.as_ref() };
                 // The subscription lives exactly as long as the process: a stop, crash, disable or safe mode leaves no listener.
@@ -333,8 +392,8 @@ impl ServiceLifetime {
                 self.events.detach(&id, generation);
                 outcome
             }
-            (None, _) => Outcome::Failed("UnsupportedRuntime"),
-            (Some(_), Err(code)) => Outcome::Failed(code),
+            (None, _) => Outcome::Unstarted("UnsupportedRuntime"),
+            (Some(_), Err(code)) => Outcome::Unstarted(code),
         };
         drop(storage);
         // Uninstall removed the record while this process ran from its code directory: remove the code now.
@@ -357,12 +416,37 @@ impl ServiceLifetime {
                     counters.last_stop = Some((reason.as_str(), acknowledged));
                     if let Some(next) = inner.queued.remove(&id) { self.start(&mut inner, id, next); }
                 }
-                Outcome::Failed(code) => {
-                    // The package stays enabled with a visible error; enable retries (R0106 adds backoff and parking).
+                Outcome::Unstarted(code) => {
+                    // No process was reached: the package stays enabled with a visible error until enable retries it.
                     let counters = inner.counters.entry(id.clone()).or_default();
                     *counters.stops.entry("crash").or_default() += 1;
                     if let Some(entry) = inner.entries.get_mut(&id) { entry.state = State::Failed; entry.error = Some(code.to_owned()); }
                     if let Some(next) = inner.queued.remove(&id) { inner.entries.remove(&id); self.start(&mut inner, id, next); }
+                }
+                Outcome::Failed(code) => {
+                    // A crash (R0106): restart after the backoff, or park after five crashes in ten minutes. The
+                    // package stays enabled; nothing else waits for it.
+                    let now = self.clock.now();
+                    *inner.counters.entry(id.clone()).or_default().stops.entry("crash").or_default() += 1;
+                    if let Some(next) = inner.queued.remove(&id) { inner.entries.remove(&id); self.start(&mut inner, id, next); }
+                    else {
+                        let decision = inner.entries.get_mut(&id).map(|entry| { entry.error = Some(code.to_owned()); entry.memory = None; entry.history.record(&id, now, code) });
+                        match decision {
+                            Some(Decision::Restart { delay, at }) => {
+                                if let Some(entry) = inner.entries.get_mut(&id) { entry.state = State::Restarting; entry.restart = Some((delay, at)); entry.due = false; }
+                                let manager = self.share();
+                                tauri::async_runtime::spawn(async move { manager.clock.sleep_until(at).await; manager.restart_due(&id, generation); });
+                            }
+                            Some(Decision::Park { explanation }) => {
+                                if let Some(entry) = inner.entries.get_mut(&id) { entry.state = State::Parked; entry.parked = Some(explanation); entry.restart = None; }
+                                let counters = inner.counters.entry(id).or_default();
+                                *counters.stops.entry("park").or_default() += 1;
+                                // The process already ended: no `onStop` ran for the parking.
+                                counters.last_stop = Some((StopReason::Park.as_str(), false));
+                            }
+                            None => {}
+                        }
+                    }
                 }
             }
         }
@@ -370,12 +454,24 @@ impl ServiceLifetime {
         self.changed.notify_waiters();
     }
 
+    /// A crash restart's backoff has passed: mark it due and run the restart hook, which reconciles and so starts it
+    /// when it is still wanted. A disable, safe mode or retry in between removed the entry: nothing happens.
+    fn restart_due(&self, id: &str, generation: u64) {
+        let due = self.inner.lock().ok().is_some_and(|mut inner| inner.entries.get_mut(id).filter(|entry| entry.generation == generation && entry.state == State::Restarting).map(|entry| entry.due = true).is_some());
+        self.changed.notify_waiters();
+        if !due { return; }
+        let hook = self.restart_hook.lock().ok().and_then(|hook| hook.clone());
+        if let Some(hook) = hook { hook(); }
+    }
+
     fn event(&self, id: &str, generation: u64, event: Event) {
+        let now = self.clock.now();
         if let Ok(mut inner) = self.inner.lock() {
             if let Some(entry) = inner.entries.get_mut(id).filter(|entry| entry.generation == generation) {
                 match event {
-                    Event::Ready => if entry.state == State::Starting { entry.state = State::Running; },
+                    Event::Ready => if entry.state == State::Starting { entry.state = State::Running; entry.ready_at = Some(now); },
                     Event::Status(text, working) => entry.status = Some((text, working)),
+                    Event::Memory(bytes) => entry.memory.get_or_insert_with(Memory::default).sample(bytes),
                 }
             }
         }
@@ -383,9 +479,10 @@ impl ServiceLifetime {
     }
 }
 
-enum Event { Ready, Status(String, bool) }
+enum Event { Ready, Status(String, bool), Memory(u64) }
+/// `Failed` is a crash of a process that ran (supervised, R0106); `Unstarted` never reached a process.
 #[derive(Debug, PartialEq)]
-enum Outcome { Stopped(StopReason, bool), Failed(&'static str) }
+enum Outcome { Stopped(StopReason, bool), Failed(&'static str), Unstarted(&'static str) }
 
 /// What the process loop needs besides the process: who the service is, who serves its requests and the queue of
 /// host to service calls.
@@ -409,10 +506,10 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     for (name, value) in env { command.env(name, value); }
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let Ok(mut child) = command.spawn() else { return Outcome::Failed("HostUnavailable") };
+    let Ok(mut child) = command.spawn() else { return Outcome::Unstarted("HostUnavailable") };
     #[cfg(windows)]
-    let job = match supervisor::job::Job::attach_with(&child, None) { Ok(job) => job, Err(error) => { let _ = child.kill().await; let _ = child.wait().await; return Outcome::Failed(error); } };
-    let (Some(mut stdin), Some(mut stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else { let _ = child.kill().await; return Outcome::Failed("HostUnavailable") };
+    let job = match supervisor::job::Job::attach_with(&child, None) { Ok(job) => job, Err(error) => { let _ = child.kill().await; let _ = child.wait().await; return Outcome::Unstarted(error); } };
+    let (Some(mut stdin), Some(mut stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else { let _ = child.kill().await; return Outcome::Unstarted("HostUnavailable") };
     // Frames are read by their own task so that a stop or a grant change never cuts a frame in half.
     let (frames, mut incoming) = mpsc::channel::<supervisor::Result<Value>>(8);
     let reader = tauri::async_runtime::spawn(async move { loop { let frame = duplex::read_frame(&mut stdout).await; let end = frame.is_err(); if frames.send(frame).await.is_err() || end { break; } } });
@@ -423,6 +520,9 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     let mut acknowledged = false;
     let mut grace = Box::pin(tokio::time::sleep(Duration::from_secs(365 * 24 * 3600)));
     let mut poll = tokio::time::interval(GRANT_POLL);
+    // Memory is measured, never capped (R0106): the resident set of the whole job (the host process elsewhere).
+    let pid = child.id();
+    let mut sample = tokio::time::interval(supervision::MEMORY_SAMPLE);
     let mut failure: Option<&'static str> = None;
     if supervisor::write_frame(&mut stdin, &json!({"token": token, "source": source, "entry": entry.to_string_lossy(), "context": init}), 300_000).await.is_err() { failure = Some("HostUnavailable"); }
     // Every later frame goes through one writer task, so a service that stops reading never blocks this loop.
@@ -532,6 +632,13 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
             changed = stop.changed(), if requested.is_none() => { ask = if changed.is_ok() { *stop.borrow() } else { Some(StopReason::Quit) }; }
             // A cancelled grant work is a grant or trust loss, unless the host already named the reason.
             _ = poll.tick(), if requested.is_none() => { if work.is_cancelled() { ask = Some(stop.borrow().unwrap_or(StopReason::Trust)); } }
+            _ = sample.tick(), if requested.is_none() => {
+                #[cfg(windows)]
+                let pids = { let mut pids = job.process_ids(); if pids.is_empty() { pids.extend(pid); } pids };
+                #[cfg(not(windows))]
+                let pids: Vec<u32> = pid.into_iter().collect();
+                if let Some(bytes) = supervision::resident_bytes(&pids) { events(Event::Memory(bytes)); }
+            }
             () = &mut grace, if requested.is_some() => break,
         }
         // Events leave the queue in order, one frame each, while the writer has room (calls and answers keep a
@@ -587,6 +694,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         use tauri::Manager;
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
+        { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
@@ -766,6 +874,15 @@ mod tests {
         assert_eq!(check(&undeclared)["error"]["code"], "PermissionDenied");
     }
 
+    const SUPERVISION_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/runtime-service-supervision/extension.json");
+    /// R0106: the supervision fixture is a valid service package.
+    #[test]
+    fn the_supervision_fixture_is_a_valid_service_package() {
+        let manifest: Value = serde_json::from_str(SUPERVISION_MANIFEST).unwrap();
+        let checked = super::super::contracts::validate_contract("packages", &json!([manifest]));
+        assert_eq!(checked["ok"], true, "{checked}");
+    }
+
     #[tokio::test]
     async fn nothing_starts_before_trust_enable_and_grant_and_reconcile_never_waits_for_a_failed_start() {
         let dir = Dir::new();
@@ -785,6 +902,7 @@ mod tests {
         assert!(reconcile() < Duration::from_millis(500), "reconcile only spawns");
         let failed = wait_for(&manager, "a failed start", |service| service["state"] == "failed").await;
         assert_eq!(failed["error"], "UnsupportedRuntime"); assert_eq!(failed["starts"], json!({"enable": 1})); assert_eq!(failed["stops"], json!({"crash": 1}));
+        assert_eq!(failed["supervision"]["crashes"], 0, "a start that never reached a process is not a supervised crash (R0106)");
         let snapshot = serde_json::to_value(packages.0.lock().unwrap().snapshot()).unwrap();
         assert_eq!(snapshot["packages"][0]["enabled"], true, "a service that does not start leaves the package enabled");
         reconcile(); assert_eq!(service(&manager)["starts"], json!({"enable": 1}), "a failed service is not restarted by another change");
@@ -1168,7 +1286,7 @@ mod tests {
             let gaps: Vec<&Value> = seen.iter().filter(|event| event["kind"] == "gap").collect();
             assert!(!gaps.is_empty() && gaps.iter().all(|gap| gap["dropped"].as_u64().unwrap() > 0), "{gaps:?}");
             let turns = seen.iter().filter(|event| event["kind"] == "turn.started").count();
-            assert!(turns >= 1 && turns < 400, "the oldest were dropped: {turns}");
+            assert!((1..400).contains(&turns), "the oldest were dropped: {turns}");
             let sequences: Vec<u64> = seen.iter().map(|event| event["sequence"].as_u64().unwrap()).collect();
             assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "order holds across the loss: {sequences:?}");
             // Resynchronized: a new event arrives right after the gap.
@@ -1208,13 +1326,22 @@ mod tests {
             let grants = RuntimeGrants::open(&dir.0);
             { let packages = packages.0.lock().unwrap(); packages.install(&archive(MANIFEST, SOURCE)).unwrap(); let digest = digest(&packages); packages.trust(ID, &digest, true).unwrap(); packages.enable(ID, true).unwrap(); }
             let reconcile = |manager: &ServiceLifetime| { let packages = packages.0.lock().unwrap(); let started = Instant::now(); manager.reconcile(&packages, &grants); started.elapsed() };
-            let hanging = ServiceLifetime::new(vec![runtime_dir()]).with_env(&[("PANDA_FIXTURE_MODE", "hang")]);
+            let clock = supervision::ManualClock::new();
+            let hanging = ServiceLifetime::new(vec![runtime_dir()]).with_env(&[("PANDA_FIXTURE_MODE", "hang")]).with_clock(clock.clone());
             reconcile(&hanging);
             grants.grant(ID, PERMISSION, Scope::default()).unwrap();
             assert!(reconcile(&hanging) < Duration::from_millis(500));
             wait_for(&hanging, "the status line of a hanging service", |service| service["status"].is_object()).await;
             tokio::time::sleep(Duration::from_millis(1500)).await;
             assert_eq!(service(&hanging)["state"], "starting", "a service function that never settles is never waited for");
+            // R0106: still starting after 10 s on the controlled clock is a slow start, reported and never waited for.
+            assert_eq!(service(&hanging)["supervision"]["startup"], json!({"elapsedMs": 0, "slow": false, "readyMs": null}));
+            clock.advance(Duration::from_millis(9_999));
+            assert_eq!(service(&hanging)["supervision"]["startup"]["slow"], false);
+            clock.advance(Duration::from_millis(1));
+            let slow = service(&hanging);
+            assert_eq!((slow["state"].as_str(), slow["supervision"]["startup"].clone()), (Some("starting"), json!({"elapsedMs": 10_000, "slow": true, "readyMs": null})));
+            assert!(reconcile(&hanging) < Duration::from_millis(500), "a slow start never delays reconcile");
             // The same package's short activation runs beside its service: services hold no activation slot.
             let source = packages.0.lock().unwrap().executable_source(ID).unwrap().1;
             let context = json!({"schemaVersion":1,"windowId":"main","surfaceId":"panda.workspace.header.actions","commandId":"sample.service-lifetime/long","revision":1});
@@ -1222,14 +1349,157 @@ mod tests {
             hanging.stop_all(StopReason::Quit); assert!(hanging.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
             assert_eq!(service(&hanging)["lastStop"], json!({"reason": "quit", "acknowledged": true}));
 
-            let broken = ServiceLifetime::new(vec![runtime_dir()]).with_env(&[("PANDA_FIXTURE_MODE", "throw")]);
+            // A service that throws is a crash (R0106): a restart is scheduled after 1 s on the controlled clock.
+            let clock = supervision::ManualClock::new();
+            let broken = ServiceLifetime::new(vec![runtime_dir()]).with_env(&[("PANDA_FIXTURE_MODE", "throw")]).with_clock(clock.clone());
             assert!(reconcile(&broken) < Duration::from_millis(500));
-            let failed = wait_for(&broken, "a broken service", |service| service["state"] == "failed").await;
-            assert_eq!(failed["error"], "HostUnavailable"); assert_eq!(failed["starts"], json!({"appStart": 1}));
+            let crashed = wait_for(&broken, "a broken service", |service| service["state"] == "restarting").await;
+            assert_eq!(crashed["error"], "HostUnavailable"); assert_eq!(crashed["starts"], json!({"appStart": 1}));
+            assert_eq!((crashed["supervision"]["backoffMs"].as_u64(), crashed["supervision"]["crashes"].as_u64()), (Some(1_000), Some(1)));
             assert_eq!(serde_json::to_value(packages.0.lock().unwrap().snapshot()).unwrap()["packages"][0]["enabled"], true);
-            reconcile(&broken); assert_eq!(service(&broken)["starts"], json!({"appStart": 1}), "no automatic restart in this slice (R0106)");
+            reconcile(&broken); assert_eq!(service(&broken)["starts"], json!({"appStart": 1}), "no restart before its backoff");
             broken.retry(ID); reconcile(&broken);
-            wait_for(&broken, "the explicit retry", |service| service["state"] == "failed" && service["starts"] == json!({"appStart": 1, "enable": 1})).await;
+            wait_for(&broken, "the explicit retry", |service| service["state"] == "restarting" && service["starts"] == json!({"appStart": 1, "enable": 1})).await;
+            broken.stop_all(StopReason::Quit); assert!(broken.wait_idle(Duration::from_secs(1)).await);
+        }
+
+        const SUPERVISION_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/runtime-service-supervision/main.cjs");
+        const SUPERVISED: &str = "sample.service-supervision";
+        const CRASH: &str = "sample.service-supervision/crash";
+        fn entry_of(manager: &ServiceLifetime, id: &str) -> Value {
+            manager.projection()["services"].as_array().unwrap().iter().find(|service| service["id"] == id).cloned().unwrap_or(Value::Null)
+        }
+        async fn wait_id(manager: &ServiceLifetime, id: &str, what: &str, check: impl Fn(&Value) -> bool) -> Value {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let notified = manager.changed.notified();
+                let current = entry_of(manager, id);
+                if check(&current) { return current; }
+                assert!(Instant::now() < deadline, "timed out waiting for {what}: {current}");
+                let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
+            }
+        }
+        fn digest_of(packages: &Packages, id: &str) -> String {
+            serde_json::to_value(packages.snapshot()).unwrap()["packages"].as_array().unwrap().iter().find(|package| package["manifest"]["id"] == id).unwrap()["executable"]["digest"].as_str().unwrap().to_owned()
+        }
+        /// A running process of the supervised fixture, `restarts` crash restarts in, with its status line written.
+        async fn live(manager: &ServiceLifetime, restarts: u64, what: &str) -> Value {
+            wait_id(manager, SUPERVISED, what, |service| service["state"] == "running" && service["restarts"] == restarts && service["status"].is_object()).await
+        }
+        async fn crash(manager: &ServiceLifetime) { let _ = manager.call_command(SUPERVISED, CRASH, json!({}), None).await; }
+        async fn settle() { tokio::time::sleep(Duration::from_millis(300)).await; }
+
+        /// R0106 acceptance: crashes of a real service on a controlled clock back off 1, 2, 4 and 8 s and the fifth
+        /// inside ten minutes parks it with a named explanation; no process survives a crash (Q035); an unrelated
+        /// service keeps running and is measured; retry, enable and update restart a parked service; disable and safe
+        /// mode cancel a scheduled restart.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn crashes_back_off_on_a_controlled_clock_park_after_five_and_restart_on_retry_enable_and_update() {
+            let dir = Dir::new();
+            let packages = Arc::new(ExtensionPackages::new(&dir.0, false));
+            let grants = Arc::new(RuntimeGrants::open(&dir.0));
+            let clock = supervision::ManualClock::new();
+            let manager = Arc::new(ServiceLifetime::new(vec![runtime_dir()]).with_env(&[("PANDA_FIXTURE_HELPER", "1")]).with_clock(clock.clone()));
+            // The app's restart hook reconciles; here it reconciles the test's own packages and grants.
+            {
+                let (weak, packages, grants) = (Arc::downgrade(&manager), packages.clone(), grants.clone());
+                manager.set_restart_hook(Arc::new(move || if let Some(manager) = weak.upgrade() { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }));
+            }
+            let reconcile = || { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); };
+            {
+                let packages = packages.0.lock().unwrap();
+                packages.install(&archive(SUPERVISION_MANIFEST, SUPERVISION_SOURCE)).unwrap();
+                packages.install(&archive(MANIFEST, SOURCE)).unwrap();
+                for id in [SUPERVISED, ID] { let digest = digest_of(&packages, id); packages.trust(id, &digest, true).unwrap(); packages.enable(id, true).unwrap(); }
+            }
+            reconcile();
+            for id in [SUPERVISED, ID] { grants.grant(id, PERMISSION, Scope::default()).unwrap(); }
+            reconcile();
+            let other = wait_for(&manager, "the unrelated service", |service| service["state"] == "running" && service["status"].is_object()).await;
+
+            // Four crashes: each restart waits exactly its backoff on the clock; every crash ends host and helper.
+            for (index, delay) in [1_000u64, 2_000, 4_000, 8_000].into_iter().enumerate() {
+                let index = index as u64;
+                let running = live(&manager, index, "a supervised start").await;
+                let status: Value = serde_json::from_str(running["status"]["text"].as_str().unwrap()).unwrap();
+                assert_eq!((status["restarts"].as_u64(), status["reason"].as_str()), (Some(index), Some(if index == 0 { "enable" } else { "restart" })), "lifetime.reason and lifetime.restarts");
+                let handles = processes(&running);
+                crash(&manager).await;
+                let crashed = wait_id(&manager, SUPERVISED, "a scheduled restart", |service| service["state"] == "restarting").await;
+                assert_eq!((crashed["supervision"]["backoffMs"].as_u64(), crashed["supervision"]["restartInMs"].as_u64()), (Some(delay), Some(delay)));
+                assert_eq!((crashed["supervision"]["crashes"].as_u64(), crashed["error"].as_str(), crashed["restarts"].as_u64()), (Some(index + 1), Some("HostUnavailable"), Some(index)));
+                gone(handles, "crash").await;
+                clock.advance(Duration::from_millis(delay - 1)); settle().await;
+                let waiting = entry_of(&manager, SUPERVISED);
+                assert_eq!((waiting["state"].as_str(), waiting["starts"]["restart"].as_u64().unwrap_or(0)), (Some("restarting"), index), "nothing starts before the backoff");
+                clock.advance(Duration::from_millis(1));
+            }
+            let running = live(&manager, 4, "the fourth restart").await;
+            let handles = processes(&running);
+            crash(&manager).await;
+            let parked = wait_id(&manager, SUPERVISED, "parking", |service| service["state"] == "parked").await;
+            gone(handles, "the parking crash").await;
+            assert_eq!(parked["supervision"]["parked"], "The service of sample.service-supervision was parked after 5 crashes in 10 minutes (HostUnavailable x5). Retry, enable or update the package to start it again.");
+            assert_eq!(parked["starts"], json!({"enable": 1, "restart": 4})); assert_eq!(parked["stops"], json!({"crash": 5, "park": 1}));
+            assert_eq!(parked["lastStop"], json!({"reason": "park", "acknowledged": false})); assert_eq!(parked["restarts"], 4);
+            // No loop: an hour on the clock and another reconcile leave it parked.
+            clock.advance(Duration::from_secs(3600)); settle().await; reconcile();
+            let still = entry_of(&manager, SUPERVISED);
+            assert_eq!((still["state"].as_str(), still["starts"].clone()), (Some("parked"), json!({"enable": 1, "restart": 4})));
+            // The unrelated service never noticed: same process, no stop, and its memory is measured (not capped).
+            let unrelated = wait_for(&manager, "a memory sample", |service| service["supervision"]["memory"]["samples"].as_u64().unwrap_or(0) >= 1).await;
+            assert_eq!((unrelated["state"].as_str(), unrelated["status"].clone(), unrelated["stops"].clone(), unrelated["restarts"].as_u64()), (Some("running"), other["status"].clone(), json!({}), Some(0)));
+            let memory = &unrelated["supervision"]["memory"];
+            assert!(memory["residentBytes"].as_u64().unwrap() > 1024 * 1024 && memory["peakBytes"].as_u64() >= memory["residentBytes"].as_u64(), "{memory}");
+            println!("SERVICE_SUPERVISION_MEMORY {memory}");
+
+            // Retry (enable) restarts the parked service with a clean history.
+            manager.retry(SUPERVISED); reconcile();
+            let retried = live(&manager, 0, "the retried start").await;
+            assert_eq!((retried["reason"].as_str(), retried["supervision"]["crashes"].as_u64(), retried["supervision"]["parked"].clone()), (Some("enable"), Some(0), Value::Null));
+            assert!(retried["supervision"]["startup"]["readyMs"].is_u64(), "{retried}");
+            // Disable cancels a scheduled restart.
+            crash(&manager).await;
+            wait_id(&manager, SUPERVISED, "a scheduled restart", |service| service["state"] == "restarting").await;
+            packages.0.lock().unwrap().enable(SUPERVISED, false).unwrap(); reconcile();
+            assert_eq!(entry_of(&manager, SUPERVISED)["state"], "stopped");
+            clock.advance(Duration::from_secs(120)); settle().await; reconcile();
+            assert_eq!(entry_of(&manager, SUPERVISED)["state"], "stopped", "disable cancelled the restart");
+            packages.0.lock().unwrap().enable(SUPERVISED, true).unwrap(); reconcile();
+            live(&manager, 0, "enable after disable").await;
+            // Safe mode cancels a scheduled restart.
+            crash(&manager).await;
+            wait_id(&manager, SUPERVISED, "a scheduled restart", |service| service["state"] == "restarting").await;
+            packages.0.lock().unwrap().safe = true; reconcile();
+            assert_eq!(entry_of(&manager, SUPERVISED)["state"], "stopped");
+            wait_for(&manager, "safe mode stops the unrelated service", |service| service["state"] == "stopped").await;
+            clock.advance(Duration::from_secs(120)); settle().await;
+            assert_eq!(entry_of(&manager, SUPERVISED)["state"], "stopped", "safe mode cancelled the restart");
+            packages.0.lock().unwrap().safe = false; reconcile();
+            live(&manager, 0, "after safe mode").await;
+            // Park again, then an update restarts the parked service.
+            for (index, delay) in [1_000u64, 2_000, 4_000, 8_000].into_iter().enumerate() {
+                live(&manager, index as u64, "a restart before parking again").await;
+                crash(&manager).await;
+                wait_id(&manager, SUPERVISED, "a scheduled restart", |service| service["state"] == "restarting").await;
+                clock.advance(Duration::from_millis(delay));
+            }
+            live(&manager, 4, "the last restart before parking again").await;
+            crash(&manager).await;
+            wait_id(&manager, SUPERVISED, "parked again", |service| service["state"] == "parked").await;
+            let mut next: Value = serde_json::from_str(SUPERVISION_MANIFEST).unwrap(); next["version"] = json!("1.1.0");
+            let staged = dir.0.join("update.zip"); std::fs::write(&staged, archive(&next.to_string(), SUPERVISION_SOURCE)).unwrap();
+            {
+                let packages = packages.0.lock().unwrap(); packages.stage_update(SUPERVISED, &staged).unwrap();
+                let snapshot = serde_json::to_value(packages.snapshot()).unwrap();
+                let digest = snapshot["packages"].as_array().unwrap().iter().find(|package| package["manifest"]["id"] == SUPERVISED).unwrap()["update"]["digest"].as_str().unwrap().to_owned();
+                packages.review_update(SUPERVISED, &digest).unwrap();
+            }
+            reconcile();
+            let updated = live(&manager, 0, "the update start").await;
+            assert_eq!((updated["reason"].as_str(), updated["version"].as_str(), updated["supervision"]["parked"].clone()), (Some("update"), Some("1.1.0"), Value::Null));
+            println!("SERVICE_SUPERVISION {}", json!({"starts": updated["starts"], "stops": updated["stops"]}));
+            manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
         }
     }
 }

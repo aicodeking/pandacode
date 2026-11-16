@@ -116,6 +116,7 @@ config.testMatch.push('**/extensions-runtime-private-secrets.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-events.spec.ts');
 config.testMatch.push('**/extensions-runtime-sign-in.spec.ts');
 config.testMatch.push('**/extensions-runtime-code-folders.spec.ts');
+config.testMatch.push('**/extensions-runtime-service-supervision.spec.ts');
 config.testMatch.push('**/extensions-runtime-content-resources.spec.ts');
 config.testMatch.push('**/upstream-semantic-remote-images.spec.ts');
 export default defineConfig(config, {

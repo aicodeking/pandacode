@@ -155,6 +155,15 @@ pub(crate) mod job {
             }
         }
         pub fn terminate(&self) -> Result<()> { unsafe { TerminateJobObject(HANDLE(self.0.as_raw_handle()), 1).map_err(|_| "HostUnavailable") } }
+        /// The ids of the processes in the job, at most 64 (a service's memory is measured over its whole tree, R0106).
+        pub fn process_ids(&self) -> Vec<u32> {
+            #[repr(C)]
+            struct List { assigned: u32, listed: u32, ids: [usize; 64] }
+            let mut list = List { assigned: 0, listed: 0, ids: [0; 64] };
+            let queried = unsafe { QueryInformationJobObject(Some(HANDLE(self.0.as_raw_handle())), JobObjectBasicProcessIdList, std::ptr::from_mut(&mut list).cast(), std::mem::size_of::<List>() as u32, None) };
+            if queried.is_err() { return Vec::new(); }
+            list.ids.iter().take((list.listed as usize).min(64)).filter_map(|id| u32::try_from(*id).ok()).collect()
+        }
     }
     impl Drop for Job { fn drop(&mut self) { let _ = self.terminate(); } }
 }

@@ -8,20 +8,24 @@
  * package code, so its services are labelled stand-ins that follow the same rule and keep the same counters.
  */
 import { call } from '../bridge';
+import type { ServiceSupervision } from './runtime-service-supervision';
 
 export type ServiceStartReason = 'appStart' | 'enable' | 'restart' | 'update';
 export type ServiceStopReason = 'disable' | 'uninstall' | 'update' | 'trust' | 'safeMode' | 'quit' | 'stop' | 'park';
-export type ServiceState = 'starting' | 'running' | 'stopping' | 'failed' | 'stopped';
+// `restarting` (a crash restart is scheduled) and `parked` (five crashes in ten minutes) come from R0106.
+export type ServiceState = 'starting' | 'running' | 'stopping' | 'restarting' | 'parked' | 'failed' | 'stopped';
 export type ServiceEntry = {
   id: string; version: string | null; state: ServiceState; reason: ServiceStartReason | null; restarts: number;
   status: { text: string; working: boolean } | null; error: string | null;
   starts: Partial<Record<ServiceStartReason, number>>; stops: Partial<Record<ServiceStopReason | 'crash', number>>;
   lastStop: { reason: ServiceStopReason; acknowledged: boolean } | null;
+  /** Crash supervision, start state and measured memory (R0106, `src/extensions/runtime-service-supervision.ts`). */
+  supervision?: ServiceSupervision | null;
 };
 export type ServiceLifetimeProjection = { schemaVersion: 1; available: boolean; services: ServiceEntry[] };
 
 export const UNAVAILABLE_SERVICES: ServiceLifetimeProjection = Object.freeze({ schemaVersion: 1, available: false, services: [] }) as ServiceLifetimeProjection;
-const STATES = ['starting', 'running', 'stopping', 'failed', 'stopped'];
+const STATES = ['starting', 'running', 'stopping', 'restarting', 'parked', 'failed', 'stopped'];
 const isCounts = (value: unknown) => !!value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(count => Number.isInteger(count) && (count as number) >= 0);
 
 /** Strict reader: a shape this build does not know is unavailable, never partially trusted. */
@@ -30,6 +34,8 @@ export function parseServiceLifetime(value: unknown): ServiceLifetimeProjection 
   if (!root || root.schemaVersion !== 1 || typeof root.available !== 'boolean' || !Array.isArray(root.services)) return UNAVAILABLE_SERVICES;
   for (const item of root.services as Record<string, unknown>[]) {
     if (!item || typeof item.id !== 'string' || !STATES.includes(item.state as string) || !Number.isInteger(item.restarts) || !isCounts(item.starts) || !isCounts(item.stops)) return UNAVAILABLE_SERVICES;
+    const supervision = item.supervision as Record<string, unknown> | null | undefined;
+    if (supervision != null && (typeof supervision !== 'object' ||!Number.isInteger(supervision.crashes) || !(supervision.parked === null || typeof supervision.parked === 'string'))) return UNAVAILABLE_SERVICES;
   }
   return root as ServiceLifetimeProjection;
 }

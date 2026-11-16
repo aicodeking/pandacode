@@ -117,6 +117,12 @@ jobs:
       - name: Code folders and package data (WebKit)
         env: { PW_PORT: '15862', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-code-folders.spec.ts --workers=1
+      - name: Service supervision (Chromium)
+        env: { PW_PORT: '15961', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-service-supervision.spec.ts --workers=1
+      - name: Service supervision (WebKit)
+        env: { PW_PORT: '15962', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-service-supervision.spec.ts --workers=1
       - name: Settings and content resources (Chromium)
         env: { PW_PORT: '15941', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-content-resources.spec.ts --workers=1
