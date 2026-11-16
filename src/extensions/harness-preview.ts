@@ -3,9 +3,13 @@ import type { AgentEvent, Session } from '../types';
 type Recording = { session: Session; requestId: string; phase: 'approval' | 'question'; content: string };
 export function createHarnessPreview(emit: (event: AgentEvent) => void, finish: (id: string, content: string) => void) {
   const runs = new Map<string, Recording>();
+  /** Package process starts by task: the only start is a send (`start`); nothing is pre-started (S03B). */
+  const starts = new Map<string, number>();
   const send = (id: string, kind: AgentEvent['kind'], text = '', extra: Partial<AgentEvent> = {}) => emit({ sessionId: id, kind, text, ...extra });
   return {
+    starts: (id?: string) => id === undefined ? [...starts.values()].reduce((sum, count) => sum + count, 0) : starts.get(id) ?? 0,
     start(session: Session) {
+      starts.set(session.id, (starts.get(session.id) ?? 0) + 1);
       const content = session.resumeId ? 'Resumed recorded harness. ' : 'Started recorded harness. ';
       session.resumeId ||= 'recorded-conversation';
       const run: Recording = { session, requestId: crypto.randomUUID(), phase: 'approval', content }; runs.set(session.id, run);

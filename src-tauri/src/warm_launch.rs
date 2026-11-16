@@ -370,6 +370,56 @@ mod tests {
         assert!(plain_launch(&store, &session).is_none());
     }
 
+    /// A package harness is never started ahead (no opt-in exists yet; R0807 adds the explicit
+    /// one), however often its task is picked, switched away and back, or typed in, and a start
+    /// pending from a built-in pick is cancelled by picking it. Its first send starts it once.
+    #[tokio::test]
+    async fn a_package_harness_is_never_started_ahead_and_its_first_send_starts_it_once() {
+        let (store, project) = store();
+        provider_settings::START_AHEAD_FORCE.with(|force| force.set(Some(true)));
+        // An identity no test installs: the send's start is counted, then refused with recovery.
+        let package = "sample.warm-counter/recorded";
+        let task = store.create_session(&project, package, "recorded-model", "ask").unwrap();
+        for round in 0..3 {
+            // A pick to a built-in plans its start; picking the package back cancels it.
+            store.configure(&task.id, "claude", "claude-sonnet-5-5", None).unwrap();
+            let claude = plan_current(&store, &task.id).expect("a Claude start is planned");
+            store.configure(&task.id, package, "recorded-model", None).unwrap();
+            let session = store.session(&task.id).unwrap();
+            assert!(!eligible(&session), "round {round}");
+            // Model, effort and permission picks (`configure_session`, `set_reasoning_effort`,
+            // `update_session` with `warm`) and a first keystroke (`warm_task`) all plan here.
+            for _ in 0..4 {
+                assert!(plan_current(&store, &task.id).is_none(), "round {round}");
+            }
+            assert!(!providers::warm_reserved(&task.id, claude.ticket), "the built-in start will not run");
+            assert!(!providers::has_warm_agent(&session));
+            // A turn end's prewarm and a debounced start that got through anyway do nothing.
+            let launch = local_launch(&store, &session).expect("a local package task");
+            assert!(!providers::warms(&launch) && !providers::handshake_warms(&launch));
+            providers::prewarm_agent(launch.clone(), Vec::new(), Default::default(), providers::warm_epoch(&task.id)).await.unwrap();
+            let ticket = providers::reserve_warm_agent(&task.id);
+            providers::prewarm_reserved(ticket, launch, Vec::new(), Default::default(), providers::warm_epoch(&task.id)).await.unwrap();
+            assert!(!providers::warm_reserved(&task.id, ticket), "the ticket is given back");
+            assert!(!providers::retarget_warm_agent(&session));
+            assert!(!providers::has_warm_agent(&session));
+            assert_eq!(providers::package_starts::count(&task.id), 0, "round {round}");
+        }
+        provider_settings::START_AHEAD_FORCE.with(|force| force.set(None));
+        // The first send is the first start.
+        let session = store.session(&task.id).unwrap();
+        let config = RunConfig { prompt: "First send".into(), ..local_launch(&store, &session).unwrap() };
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let (_input, input) = tokio::sync::mpsc::unbounded_channel();
+        let result = providers::run_with_tools(config, Arc::new(move |event| sink_events.lock().unwrap().push(event)), input, None, Arc::new(AtomicBool::new(false))).await;
+        assert_eq!(providers::package_starts::count(&task.id), 1);
+        // Not installed here: recovery, not an unknown identity.
+        assert_eq!(result.unwrap_err(), crate::extensions::providers::PROVIDER_RECOVERY);
+        let kinds: Vec<String> = events.lock().unwrap().iter().map(|event| event.kind.clone()).collect();
+        assert_eq!(kinds, ["error", "done"]);
+    }
+
     #[tokio::test]
     async fn with_start_ahead_off_nothing_is_planned_or_started() {
         let (store, project) = store();

@@ -573,9 +573,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     close();
   }
 
-  /** Tab cycles search → rail → effort → speed inside the picker and never leaves it. */
+  /** Tab cycles search → rail → effort → speed → each contributed action inside the picker and never leaves it. */
   function cycleFocus(back: boolean): void {
-    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), ...(settings.hidden ? [] : settings.querySelectorAll<HTMLElement>('.selected:not(:disabled)')), [...extensions.querySelectorAll<HTMLElement>('button:not(:disabled)')].find(button => !button.hidden && button.getClientRects().length > 0) ?? null].filter((stop): stop is HTMLElement => Boolean(stop));
+    const actions = [...extensions.querySelectorAll<HTMLElement>('button:not(:disabled)')].filter(button => !button.hidden && button.getClientRects().length > 0);
+    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), ...(settings.hidden ? [] : settings.querySelectorAll<HTMLElement>('.selected:not(:disabled)')), ...actions].filter((stop): stop is HTMLElement => Boolean(stop));
     const index = stops.findIndex(stop => stop.contains(document.activeElement));
     stops[(index + (back ? -1 : 1) + stops.length) % stops.length].focus({ preventScroll: true });
   }

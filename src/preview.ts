@@ -1780,7 +1780,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return await (window as any).__extensionSharedContext(args.request) as T;
   }
   if (new URLSearchParams(location.search).has('extension-harness')) {
-    (window as any).__extensionHarness ??= { call: (command: string, args: Record<string, unknown>) => invoke(command, args), task: () => structuredClone(session('session-1')), messages: () => structuredClone(messages['session-1'] ?? []) };
+    (window as any).__extensionHarness ??= { call: (command: string, args: Record<string, unknown>) => invoke(command, args), task: () => structuredClone(session('session-1')), messages: () => structuredClone(messages['session-1'] ?? []), starts: (id?: string) => harnessPreview.starts(id) };
   }
   // Opt-in native test-process transport. Never evaluates source in the browser and is not
   // installed-WebView evidence; ordinary preview explicitly reports UnsupportedRuntime.

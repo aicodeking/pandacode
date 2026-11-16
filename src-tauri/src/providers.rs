@@ -3717,6 +3717,21 @@ fn reached_harness() {
     let _ = HARNESS.try_with(|reached| reached.store(true, std::sync::atomic::Ordering::SeqCst));
 }
 
+/// Package provider starts by task. A package process is started only here, by a send
+/// (`dynamic_adapter::run`): no warm agent, draft, pick or catalog read starts one. Tests count
+/// the starts to prove a package harness gets none ahead of its first send.
+#[cfg(test)]
+pub(crate) mod package_starts {
+    use std::{collections::HashMap, sync::{LazyLock, Mutex}};
+    static STARTS: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Default::default);
+    pub(super) fn record(session_id: &str) {
+        *STARTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(session_id.to_owned()).or_default() += 1;
+    }
+    pub(crate) fn count(session_id: &str) -> usize {
+        STARTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(session_id).copied().unwrap_or(0)
+    }
+}
+
 /// `harness` is set once the run reaches the harness (`reached_harness`). Tests' entry point;
 /// the app runs `run_with_tools_reporting`.
 #[cfg(test)]
@@ -3741,6 +3756,8 @@ pub async fn run_with_tools_reporting(
 ) -> Result<(), String> {
     // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
     if crate::extensions::providers::extension_owner(&config.provider).is_some() {
+        #[cfg(test)]
+        package_starts::record(&config.session_id);
         let result = dynamic_adapter::run(config.clone(), sink.clone(), input, host, harness).await;
         let event = |kind: &str, text: String| AgentEvent { session_id: config.session_id.clone(), kind: kind.into(), text, request_id: None, data: None, tool: None };
         if let Err(error) = &result { sink(event("error", error.clone())); }

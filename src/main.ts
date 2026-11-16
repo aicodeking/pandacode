@@ -7614,6 +7614,19 @@ function localTarget(task: Session): boolean {
   return !task.remoteDevice && !task.cloud && !(task.id === state.sessionId && newTaskView() && remoteChoice !== LOCAL);
 }
 /** A task's effort or permissions changed: its labels (side thread: the panel) and the launcher's context. */
+/** Mounts a picker's contributed action row now, or once a package contributing there activates while the picker is
+ *  open (packages can finish loading after it opened); the returned dispose ends both. */
+function mountWhenContributed(mount: () => (() => void) | undefined): () => void {
+  let dispose = mount(), ended = false, stop = () => {};
+  if (dispose) return dispose;
+  const retry = () => { if (ended || dispose) return; dispose = mount(); if (dispose) stop(); };
+  // The manager is already loaded wherever a composer adoption exists; the import only reaches it lazily.
+  void import('./extensions/manager').then(({ onExtensionsChanged }) => {
+    if (ended || dispose) return;
+    stop = onExtensionsChanged(retry); retry();
+  });
+  return () => { ended = true; stop(); dispose?.(); dispose = undefined; };
+}
 function paintTaskChoice(id: string, inPanel: boolean): void {
   if (inPanel) { btwPanel.refresh(); return; }
   const task = state.sessions.find(item => item.id === id);
@@ -7660,10 +7673,18 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   // The startup history load can repaint this same task while the module/library is loading or the picker is open.
   // Preserve that interaction only while its actual target is unchanged; navigation and explicit dismissal still
   // invalidate the existing menu epoch. Compare snapshots because startup refreshes mutate the Session in place.
-  const targetContext = composerPickerContext(anchor, botNext);
+  let targetContext = composerPickerContext(anchor, botNext);
   const context = !inPanel && anchor.id === 'model-picker-trigger' ? { anchor, current: () =>
     targetContext.current() && Boolean(modelPickerCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
   composerPickerLifecycle = context;
+  /** The picker's own effort choice changes the task it targets: carry the open picker over to that change only, so
+   *  a later composer repaint does not close it. `before` is the target key taken while the picker was current. */
+  const followOwnEffort = (before: string | undefined, effort: string | null) => {
+    const task = session();
+    if (before === undefined || !task || composerPickerLifecycle !== context || epoch !== menuEpoch
+      || composerPickerTargetKey({ ...task, reasoningEffort: effort }) !== before) return;
+    targetContext = composerPickerContext(anchor, botNext);
+  };
   // Open with the cached team library (team saves update it) and refresh it behind; wait only when none is cached.
   const library$ = modelCatalogs.pickerTeamLibrary();
   void refreshNamedConnections().catch(() => undefined);
@@ -7697,12 +7718,14 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
     },
     // The user's order and visibility of the rail's entries, and contributed actions captured for this task and model.
     entries: composerAdoption ? keys => composerAdoption!.modelEntries(keys, { provider: selected.provider, team: Boolean(named.some(profile => isTeam(teams.get(selected.id)?.config, profile))) }) : undefined,
-    mountActions: composerAdoption ? host => composerAdoption?.modelActions(host, { projectId: selected.projectId || undefined, sessionId: selected.id }, `${selected.provider}:${selected.model || 'default'}`, generation) : undefined,
+    mountActions: composerAdoption ? host => mountWhenContributed(() => composerAdoption?.modelActions(host, { projectId: selected.projectId || undefined, sessionId: selected.id }, `${selected.provider}:${selected.model || 'default'}`, generation)) : undefined,
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       // Shows at once and saves behind (model-switch.ts); side threads never warm.
-      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => paintTaskChoice(selected.id, inPanel) });
+      const task = session(), effortBefore = task?.reasoningEffort ?? null;
+      const before = task?.id === selected.id && context?.current() ? composerPickerTargetKey(task) : undefined;
+      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => { paintTaskChoice(selected.id, inPanel); followOwnEffort(before, effortBefore); } });
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
