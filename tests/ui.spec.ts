@@ -2194,6 +2194,25 @@ test('reports a token count in /status without inventing an unavailable context 
   expect(text).not.toContain('%');
 });
 
+test('runs /status while an agent works and keeps the reported context current', async ({ page }) => {
+  const sessionId = await startControlledStatusStream(page);
+  // Enter queues messages during a run; a command that only reads this app runs at once.
+  await prompt(page).fill('/status ');
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Task status' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('This harness has not reported context usage yet.');
+  await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: 200000 } }]);
+  await expect(dialog).toContainText('24,000 of 200,000 context tokens (12%)');
+  await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 26000, contextWindow: 200000 } }]);
+  await expect(dialog).toContainText('26,000 of 200,000 context tokens (13%)');
+  // The status line arrived while the agent works; the command never went into its queue.
+  await expect(prompt(page)).toHaveValue('');
+  await expect(page.locator('.queue-row')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
 test('updates live startup and retry status only when real response text arrives', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page);
   const status = page.locator('.live-status');
