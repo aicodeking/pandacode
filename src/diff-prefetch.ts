@@ -19,28 +19,34 @@ export function preloadDiffsAfterPaint(): void {
   requestAnimationFrame(() => setTimeout(() => { afterPaint = false; void preloadDiffs(); }, 0));
 }
 
-/** With no diff asked for, the engine starts this long after boot, at the next idle moment. */
+/** With no diff asked for, the engine starts this long after boot, at the next idle moment, if the current project's git
+ *  status has changes (noteChangedPaths); with none it waits for intent or for a change to appear. */
 export const DIFF_IDLE_AFTER = 15_000;
 /** Pointing at or focusing one of these is a diff about to be opened: change rows, Open diff, the Changes tab. */
 export const DIFF_INTENT = '.turn-changes, [data-action="open-turn-diff"], [data-action="tab-changes"], .cv-file, .change-review-files';
 let disarm: () => void = () => {};
+/** Set once the idle moment passed with nothing changed: the first changes noted later start the idle preload. */
+let idleWithoutChanges: (() => void) | undefined;
 
 /**
  * Starts the engine only when a diff is likely: something matching DIFF_INTENT is hovered or
- * focused, `preloadDiffsAfterPaint()` is called (the Changes tab or a file or diff view opened),
- * or DIFF_IDLE_AFTER has passed and the page is idle. A diff opened before any of these still
- * renders: mounting starts the engine itself.
+ * focused (keyboard focus counts), `preloadDiffsAfterPaint()` is called (the Changes tab or a file
+ * or diff view opened), or DIFF_IDLE_AFTER has passed, the page is idle and the current project's
+ * git status has changes. A diff opened before any of these still renders: mounting starts the
+ * engine itself.
  */
 export function preloadDiffsWhenWanted(doc: Pick<Document, 'addEventListener' | 'removeEventListener'> = document, win: Pick<Window, 'setTimeout' | 'clearTimeout'> & { requestIdleCallback?: (run: () => void, options?: { timeout: number }) => number } = window): void {
   if (preloaded || afterPaint) return;
   disarm();
   const near = (event: Event) => { if ((event.target as Element | null)?.closest?.(DIFF_INTENT)) preloadDiffsAfterPaint(); };
-  const idle = () => { if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(preloadDiffsAfterPaint, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
+  const whenIdle = () => { if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(() => { if (changedNames.length) preloadDiffsAfterPaint(); }, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
+  const idle = () => { if (changedNames.length) whenIdle(); else idleWithoutChanges = whenIdle; };
   const timer = win.setTimeout(idle, DIFF_IDLE_AFTER);
   doc.addEventListener('pointerover', near, { passive: true });
   doc.addEventListener('focusin', near);
   disarm = () => {
     disarm = () => {};
+    idleWithoutChanges = undefined;
     win.clearTimeout(timer);
     doc.removeEventListener('pointerover', near);
     doc.removeEventListener('focusin', near);
@@ -51,6 +57,8 @@ let changedNames: string[] = [];
 /** File names in the current git status, so the pool warms their grammars first. */
 export function noteChangedPaths(paths: string[]): void {
   changedNames = paths.slice(0, 50).map(path => path.slice(path.lastIndexOf('/') + 1));
+  const waiting = idleWithoutChanges;
+  if (waiting && changedNames.length) { idleWithoutChanges = undefined; waiting(); }
 }
 export function likelyFileNames(): string[] { return changedNames; }
 

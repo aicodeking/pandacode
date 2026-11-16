@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { twinkleIdleFps, type Scene } from './types';
 
 /** Open sea: a clock-coloured sky over a calm sea of long swells seen in perspective, with a glitter path under the sun
  * (or the moon at night), thin stratus and soft mist on the horizon. The wind raises the swell and quickens the chop
@@ -7,6 +7,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'ocean',
   label: 'Ocean',
+  // Stars twinkle at night (and the first ones at dusk).
+  idleFps: twinkleIdleFps,
   fallback: colors => [colors.top, colors.horizon, [.1, .36, .42]],
   fragment: `
 const float H=.4,F=1.25;

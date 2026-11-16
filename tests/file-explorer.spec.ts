@@ -184,13 +184,20 @@ async function expectQuiet(page: Page, polls: () => Promise<number>, why: string
   expect(await polls(), why).toBe(from);
 }
 
-test('file explorer: the poll pauses while the window is unfocused or hidden and refreshes at once on return', async ({ page }) => {
-  test.setTimeout(45_000);
+test('file explorer: the poll slows while the window is unfocused, pauses while hidden, and refreshes at once on return', async ({ page }) => {
+  test.setTimeout(60_000);
   const polls = await countPolls(page);
   let from = await polls();
   await expect.poll(polls, { timeout: 5000, message: 'focused with the tree on screen, it polls' }).toBeGreaterThan(from);
+  // Shown beside another app (unfocused): the tree and the open file still follow the disk, every 8 s instead of 2.
+  const blurredAt = Date.now();
   await page.evaluate(() => { document.hasFocus = () => false; dispatchEvent(new Event('blur')); });
-  await expectQuiet(page, polls, 'no poll while the window is unfocused');
+  await expectQuiet(page, polls, 'no 2 s poll while the window is unfocused');
+  from = await polls();
+  await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'an unfocused, visible window still polls' }).toBeGreaterThan(from);
+  const slowTick = Date.now() - blurredAt;
+  expect(slowTick, `the first unfocused poll came ${slowTick} ms after the blur`).toBeGreaterThan(7000);
+  expect(slowTick).toBeLessThan(10_000);
   from = await polls();
   await page.evaluate(() => { document.hasFocus = () => true; dispatchEvent(new Event('focus')); });
   await expect.poll(polls, { timeout: 500, message: 'focus refreshes at once' }).toBeGreaterThan(from);

@@ -432,6 +432,39 @@ mod read_scan_tests {
         drop(shared);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The app store's path is kept at startup: a scan runs while a writer holds the store lock.
+    #[test]
+    fn the_app_store_scans_while_a_writer_holds_its_lock() {
+        let dir = std::env::temp_dir().join(format!("pandacode-read-scan-held-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        store.message(&task.id, "user", "Count me.").unwrap();
+        let since = storage::now() - 86_400_000;
+        let expected = store.prompt_activity(since).unwrap();
+        let path = store.path.clone();
+        let shared = Arc::new(Mutex::new(store));
+        // Stands in for the app store, which lives for the whole process: its address is never reused.
+        std::mem::forget(shared.clone());
+        assert!(remember_db_path(&shared, path), "only this test keeps a path");
+
+        let held = shared.lock().unwrap();
+        let (done, answer) = std::sync::mpsc::channel();
+        let scanning = shared.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(tauri::async_runtime::block_on(read_scan(scanning, move |reader| reader.prompt_activity(since))));
+        });
+        let activity = answer.recv_timeout(std::time::Duration::from_secs(30)).expect("the scan waited for the store lock");
+        drop(held);
+        assert_eq!(activity.unwrap(), expected);
+
+        // Any other store still finds its own path, under its lock.
+        let other = Arc::new(Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap()));
+        assert_eq!(db_path(&other).unwrap(), PathBuf::from(":memory:"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -794,12 +827,32 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
         .map_err(|e| e.to_string())?
 }
 
+/// The app's task database path, kept at startup beside its one shared store (`remember_db_path`)
+/// so a read-only scan never waits on the store lock (held by a long write) just to learn it.
+/// Keyed by that store's `Arc` address: the app store lives for the whole process, so the
+/// address is never reused, and any other store (tests, a second `AppState`) is not mistaken
+/// for it.
+static DB_PATH: std::sync::OnceLock<(usize, PathBuf)> = std::sync::OnceLock::new();
+
+/// Remembers `path` as `store`'s database. Once per process; a later call changes nothing.
+fn remember_db_path(store: &Arc<Mutex<Store>>, path: PathBuf) -> bool {
+    DB_PATH.set((Arc::as_ptr(store) as usize, path)).is_ok()
+}
+
+/// `store`'s database path: the one kept at startup for the app store, read without its lock;
+/// any other store's copied under its lock.
+fn db_path(store: &Arc<Mutex<Store>>) -> Result<PathBuf> {
+    match DB_PATH.get() {
+        Some((owner, path)) if *owner == Arc::as_ptr(store) as usize => Ok(path.clone()),
+        _ => Ok(store.lock().map_err(|e| e.to_string())?.path.clone()),
+    }
+}
+
 /// Runs a long read (a scan of the messages table) on its own read-only connection to the task
-/// database, never under the shared store lock: that lock is held only to copy the database
-/// path, and released before the connection opens. Call it on the blocking pool (`read_scan`).
-fn scan_read_only<T>(store: &Mutex<Store>, scan: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
-    let path = store.lock().map_err(|e| e.to_string())?.path.clone();
-    scan(&Store::open_read_only(&path)?)
+/// database, never under the shared store lock: the app store's path is known without it.
+/// Call it on the blocking pool (`read_scan`).
+fn scan_read_only<T>(store: &Arc<Mutex<Store>>, scan: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
+    scan(&Store::open_read_only(&db_path(store)?)?)
 }
 
 /// `scan_read_only` on the blocking pool.
@@ -932,8 +985,7 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     architect::wake(app);
     Ok(())
 }
-/// Scans a year of messages: on its own read-only connection (`read_scan`), so the store lock
-/// is held only to read the database path.
+/// Scans a year of messages: on its own read-only connection (`read_scan`), without the store lock.
 #[tauri::command]
 async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String, u64)>> {
     let since = storage::now() - 366 * 86_400_000;
@@ -4382,8 +4434,11 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     if let Err(error) = store.discard_empty_drafts() {
         eprintln!("Could not clear unsent new tasks: {error}");
     }
+    let db_path = store.path.clone();
+    let store = Arc::new(Mutex::new(store));
+    remember_db_path(&store, db_path);
     app.manage(AppState {
-        store: Arc::new(Mutex::new(store)),
+        store,
         agents: Arc::new(Mutex::new(HashMap::new())),
         terminals: Arc::new(Mutex::new(HashMap::new())),
         shutdown: AtomicU8::new(0),

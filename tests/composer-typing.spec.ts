@@ -142,3 +142,27 @@ test('IME composition still types, commits and keeps the height exact', async ({
   // Nothing was sent.
   await expect(field).toHaveValue(`abc 日本${'語'.repeat(120)}`);
 });
+
+test('typing resolves the prompt\'s styles once, not on every keystroke', async ({ page }) => {
+  const field = await openComposer(page);
+  await field.fill('first\nsecond');
+  await field.press('End');
+  await field.evaluate(el => {
+    const w = window as Window & { __styleReads?: number };
+    w.__styleReads = 0;
+    const own = window.getComputedStyle.bind(window);
+    window.getComputedStyle = ((target: Element, pseudo?: string | null) => { if (target === el) w.__styleReads!++; return own(target, pseudo); }) as typeof window.getComputedStyle;
+  });
+  const reads = () => page.evaluate(() => (window as Window & { __styleReads?: number }).__styleReads ?? 0);
+  // Multi-line text typed at the end, then one plain line: each keystroke fits the box without resolving its styles.
+  await field.pressSequentially(' and a few more words');
+  await field.fill('');
+  await field.pressSequentially('one plain line of text');
+  const typed = await reads();
+  expect(typed, 'style reads while typing 43 characters').toBeLessThanOrEqual(2);
+  await expectExact(field);
+  // A resize still re-reads them, and the height stays exact.
+  await page.setViewportSize({ width: 900, height: 800 });
+  await field.pressSequentially(' and more');
+  await expectExact(field);
+});

@@ -110,3 +110,36 @@ test('menu bar shows "Asking Claude Code…" on the Claude row while PandaCode r
   await expect(claude.locator('.tray-asking')).toHaveText('Asking Claude Code…');
   await expect(page.locator('.tray-usage', { hasText: 'Codex' }).locator('.tray-asking')).toHaveCount(0);
 });
+
+test('an older tray snapshot that answers late never replaces a newer one', async ({page}) => {
+  await page.setViewportSize({width:340,height:560});
+  // Each tray_snapshot waits for the spec to release it (window.__trayRelease(index, patch)), so replies can be reordered.
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const marker = /\(window\.__trayCalls \?\?= \[\]\)\.push\(\{ command, args \}\);/;
+    expect(source).toMatch(marker);
+    await route.fulfill({response, body: source.replace(marker, match => `${match}
+      if (command === 'tray_snapshot' && window.__trayHold && !window.__trayInner) {
+        const pending = (window.__trayPending ??= []);
+        return new Promise(resolve => pending.push(patch => { window.__trayInner = true; try { resolve({ ...trayCommand(command, args), ...patch }); } finally { window.__trayInner = false; } }));
+      }`)});
+  });
+  await page.goto('/?view=tray');
+  await expect(page.locator('.tray-row')).toHaveCount(5);
+  await page.evaluate(() => { (window as any).__trayHold = true; });
+  const emit = () => page.evaluate(() => (window as any).__previewEmit('tray-changed', {}));
+  const pending = () => page.evaluate(() => ((window as any).__trayPending ?? []).length as number);
+  const release = (index: number, patch: Record<string, unknown>) => page.evaluate(([at, value]) => (window as any).__trayPending[at as number](value), [index, patch] as const);
+  // Two loads: the first (older) one reports a check still running, the second (newer) one that it finished.
+  await emit(); await emit();
+  await expect.poll(pending).toBe(2);
+  await release(1, { checking: false, running: [] });
+  await expect(page.locator('.tray-summary')).toHaveText('3 to review');
+  await expect(page.locator('.tray-refresh.checking')).toHaveCount(0);
+  await release(0, { checking: true });
+  // The stale reply is dropped: no spinner, and the newer task list stays.
+  await page.waitForTimeout(200);
+  await expect(page.locator('.tray-refresh.checking')).toHaveCount(0);
+  await expect(page.locator('.tray-summary')).toHaveText('3 to review');
+  await expect(page.locator('.tray-row')).toHaveCount(3);
+});

@@ -17,8 +17,9 @@ type Deps = {
   report(error: unknown): void;
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-/** How often the open tree and the file on screen are re-read while someone can see them. */
-const POLL_MS = 2000;
+/** How often the open tree and the file on screen are re-read while someone can see them: every 2 s while the window is
+ * focused, every 8 s while it is shown but another app has focus (PandaCode beside an editor still shows the edits). */
+const POLL_MS = 2000, UNFOCUSED_POLL_MS = 8000;
 /** What the poll keeps fresh: the Files tree in the inspector, and the open-file panel (tabs or a floating window). */
 const WATCHED = '#inspector-content .file-explorer, #file-panel';
 
@@ -31,22 +32,24 @@ function watchedVisible(): boolean {
   return false;
 }
 
-/** The 2 s poll (`list_files` for the tree, `workspace_file_stamp` for the file on screen). It runs only while the window
- * is focused and shown, so a background or hidden window costs no timer and no IPC at all, and each tick skips the
- * refresh unless the Files tree or an open file is visible. Coming back (focus, or the document shown again) refreshes
- * at once and restarts the poll. */
+/** The poll (`list_files` for the tree, `workspace_file_stamp` for the file on screen): every POLL_MS while the window is
+ * focused, every UNFOCUSED_POLL_MS while it is shown without focus, and none while it is hidden, so a hidden window costs
+ * no timer and no IPC at all. Each tick skips the refresh unless the Files tree or an open file is visible. Coming back
+ * (focus, or the document shown again) refreshes at once and restarts the poll at the matching rate. */
 function startPolling(refresh: () => void): void {
-  let timer = 0, focused = true;
+  let timer = 0, period = 0, focused = true;
   const sync = (): void => {
-    const live = focused && !document.hidden;
-    if (live && !timer) timer = window.setInterval(() => { if (watchedVisible()) refresh(); }, POLL_MS);
-    else if (!live && timer) { window.clearInterval(timer); timer = 0; }
+    const next = document.hidden ? 0 : focused ? POLL_MS : UNFOCUSED_POLL_MS;
+    if (next === period) return;
+    if (timer) { window.clearInterval(timer); timer = 0; }
+    period = next;
+    if (period) timer = window.setInterval(() => { if (watchedVisible()) refresh(); }, period);
   };
   window.addEventListener('focus', () => { focused = true; sync(); refresh(); });
   // A blur also fires when focus moves into one of the app's own frames (the browser panel, a preview); the document
   // still has focus then, so read it once the move has landed rather than trusting the event.
   window.addEventListener('blur', () => { window.setTimeout(() => { focused = document.hasFocus(); sync(); }, 0); });
-  document.addEventListener('visibilitychange', () => { sync(); if (!document.hidden && focused) refresh(); });
+  document.addEventListener('visibilitychange', () => { sync(); if (!document.hidden) refresh(); });
   sync();
 }
 

@@ -501,7 +501,7 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
 async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
-  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, loadModels)]);
+  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), Promise.resolve(knownProviders()).then(providers => installedCatalog(providers, loadModels))]);
   const limits = base ?? library?.lastSetup?.config;
   return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
 }
@@ -626,7 +626,11 @@ const github = createGithub({
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
-    const harness = pickHarness(state.providers);
+    // Synchronous for github.ts: before the harness list is known (and with no last-launch list to rely on) say so
+    // instead of choosing from an empty list or calling the agents missing.
+    const choice = providersForChoice();
+    if (!Array.isArray(choice)) throw new Error('Agent harnesses are still loading. Try again in a moment.');
+    const harness = pickHarness(choice);
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     return { provider: harness.id, model: rememberedModel(harness.id) };
   },
@@ -1278,7 +1282,7 @@ async function restoreSelectedFile(): Promise<void> {
 }
 function clearWorkspaceInspector(render = true): void {
   ++inspectorRequest; ++fileRequest;
-  state.git = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
+  state.git = null; noteChangedPaths([]); state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
   state.openFolders = new Set(); state.folderFiles = new Map(); state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
   state.browserUrl = '';
   selectedFileContext = undefined;
@@ -1321,6 +1325,13 @@ function session(): Session | undefined { return state.sessions.find(s => s.id =
 /** The harness a new task starts with: the default one if installed, else the first installed, else the first listed. */
 function pickHarness(providers: Provider[]): Provider | undefined {
   return providers.find(p => p.id === state.defaultProvider && p.installed) ?? providers.find(p => p.installed) ?? providers[0];
+}
+/** A harness's name as messages sign it: the listed one (the last launch's until list_providers answers), else its
+ *  built-in short name, so nothing reads 'Agent' while the list is out. */
+function authorName(id: ProviderId): string { return provider(id)?.name || shortProvider(id) || 'Agent'; }
+/** Messages signed before the harness list landed take its names in place: no redraw, so open menus stay open. */
+function refreshAuthorNames(): void {
+  document.querySelectorAll<HTMLElement>('[data-author]').forEach(label => { const name = authorName(label.dataset.author as ProviderId); if (label.textContent !== name) label.textContent = name; });
 }
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
@@ -2695,7 +2706,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
   if (m.role === 'system') return accountSwitchHtml(m) ?? `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong${isUser ? '' : ` data-author="${escape(author)}"`}>${isUser ? 'You' : escape(authorName(author))}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
 // read-only chips under what you said; each opens its attachment (see message-attachments.ts).
@@ -2812,7 +2823,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   let parts = streamParts.get(region);
   if (region.dataset.sessionId !== sessionId || !parts || !region.contains(parts.output)) {
     const thinkingHtml = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>`;
-    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
+    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong data-author="${escape(harness)}">${escape(authorName(harness))}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
     const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
@@ -3556,6 +3567,9 @@ type PromptOneLine = { prompt: HTMLTextAreaElement; rows: number; limits: string
 let promptOneLine: PromptOneLine | undefined;
 let promptBoxWidth = -1;
 let promptObserved: HTMLTextAreaElement | null = null;
+/** The prompt's last computed metrics (`promptMetrics`): a keystroke reuses them instead of resolving styles. Forgotten on
+ *  every composer render, a resize, an interface-scale, theme or palette change and when web fonts load. */
+let promptMetricsCache: { prompt: HTMLTextAreaElement; metrics: PromptMetrics } | undefined;
 const promptResize = new ResizeObserver(entries => {
   const width = entries.at(-1)?.contentRect.width ?? 0;
   // No box to fit (a view without a composer, the prompt hidden or collapsed): forget the width, so the width it comes back
@@ -3585,7 +3599,8 @@ function watchPrompt(prompt: HTMLTextAreaElement | null): void {
 function resizePrompt(remeasure = false): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   watchPrompt(prompt);
-  if (!prompt) { promptFit = undefined; promptOneLine = undefined; return; }
+  if (!prompt) { promptFit = undefined; promptOneLine = undefined; promptMetricsCache = undefined; return; }
+  if (remeasure) promptMetricsCache = undefined;
   const fit = promptFit?.prompt === prompt ? promptFit : undefined;
   // An empty prompt is one line at any width (docs/agent-reference.md). Every composer render asks, and resolving
   // min/max height here would restyle the page on each one, so an empty box that is already fitted returns before that
@@ -3606,7 +3621,8 @@ function resizePrompt(remeasure = false): void {
   // — the pane shown again, or the prompt's observer seeing it at a real width — measures instead of trusting it.
   if (!natural) { promptFit = undefined; promptOneLine = undefined; promptBoxWidth = -1; return; }
   applyPromptHeight(prompt, natural);
-  const metrics = promptMetrics(prompt);
+  // Laid out already: fresh metrics cost no extra style pass here, and keep the cache honest.
+  const metrics = promptMetrics(prompt, true);
   promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
   if (promptBoxWidth > 0 && oneLineText(prompt.value, metrics.font, promptBoxWidth)) promptOneLine = { prompt, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
 }
@@ -3645,7 +3661,13 @@ function fitTyped(prompt: HTMLTextAreaElement, fit: PromptFit, metrics: PromptMe
 /** The computed styles the fit depends on besides text and width: the height limits and, when the canvas can measure
  *  the text the way the box lays it out, the font (empty otherwise). One getComputedStyle, no layout. */
 type PromptMetrics = { key: string; font: string };
-function promptMetrics(prompt: HTMLTextAreaElement): PromptMetrics {
+function promptMetrics(prompt: HTMLTextAreaElement, fresh = false): PromptMetrics {
+  if (!fresh && promptMetricsCache?.prompt === prompt) return promptMetricsCache.metrics;
+  const metrics = readPromptMetrics(prompt);
+  promptMetricsCache = { prompt, metrics };
+  return metrics;
+}
+function readPromptMetrics(prompt: HTMLTextAreaElement): PromptMetrics {
   const style = getComputedStyle(prompt);
   const plain = style.letterSpacing === 'normal' && style.wordSpacing === '0px' && style.textTransform === 'none' && style.textIndent === '0px' && (style.fontStretch === '100%' || style.fontStretch === 'normal');
   const font = plain ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '';
@@ -3668,6 +3690,9 @@ function oneLineText(text: string, font: string, width: number): boolean {
 // the root font while the actions keep their px widths), so the observer above stays silent and the fit has to be re-taken
 // from the event.
 window.addEventListener('pandacode-ui-scale-change', () => resizePrompt(true));
+const forgetPromptMetrics = () => { promptMetricsCache = undefined; };
+for (const change of ['resize', 'pandacode-theme-change', 'pandacode-palette-change']) window.addEventListener(change, forgetPromptMetrics);
+document.fonts?.addEventListener('loadingdone', forgetPromptMetrics);
 function renderComposer(): void {
   refreshTeamProgress();
   syncProgressPip();
@@ -3737,7 +3762,7 @@ function renderComposer(): void {
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
   $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
   if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
-  renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
+  renderApprovalBar(); renderBotFailover(); syncOrchestration(); promptMetricsCache = undefined; resizePrompt();
   trayStateChanged();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
@@ -5842,7 +5867,8 @@ async function refreshInspector(): Promise<void> {
   const git = results[0].status === 'fulfilled' ? results[0].value : null;
   state.git = git && state.git && JSON.stringify(git) === JSON.stringify(state.git) ? state.git : git;
   inspectorLoaded = results.every(result => result.status === 'fulfilled') ? { key, at: Date.now() } : undefined;
-  if (state.git) noteChangedPaths(state.git.files.map(file => file.path));
+  // Also what the idle diff preload asks: a project with nothing changed never starts the engine at idle.
+  noteChangedPaths(state.git?.files.map(file => file.path) ?? []);
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
@@ -6434,9 +6460,11 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     },
-    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
+    // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
+    // an empty list or the last launch's (which may name CLIs no longer installed).
+    anchor, providers: device || !providersKnown ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
-    loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
+    loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : providersKnown ? undefined : () => providersReady,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
@@ -6545,19 +6573,20 @@ async function startTask(projectId: string): Promise<void> {
   closeModelPicker();
   closeProjectPicker();
   const generation = state.generation;
-  const harness = pickHarness(await providersForChoice());
-  if (generation !== state.generation) return;
-  if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  // An untouched draft is replaced so current defaults apply. Coming from elsewhere, a kept draft
-  // (typed text or a worktree) is reopened; from inside one, New task starts another.
-  const current = state.sessionId;
-  leaveDraft('');
-  // A settled draft (its worktree removed) is never reopened.
-  const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
-  if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
+  // Held from before the harness list is awaited until the draft exists: a second New task meanwhile makes no second draft.
   creatingTask = true;
   let created: Session;
   try {
+    const harness = pickHarness(await providersForChoice());
+    if (generation !== state.generation) return;
+    if (!harness) { notify('Open Settings to check your installed agents.'); return; }
+    // An untouched draft is replaced so current defaults apply. Coming from elsewhere, a kept draft
+    // (typed text or a worktree) is reopened; from inside one, New task starts another.
+    const current = state.sessionId;
+    leaveDraft('');
+    // A settled draft (its worktree removed) is never reopened.
+    const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
+    if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
     created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
@@ -6576,13 +6605,14 @@ async function createChat(from?: Session): Promise<void> {
     if (state.projectFilter) setProjectFilter('');
     state.query = ''; closeModal(); await selectSession(unused.id, true); return;
   }
-  const harness = pickHarness(await providersForChoice());
-  if (generation !== state.generation) return;
-  if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  if (!from) leaveDraft('');
+  // Held from before the harness list is awaited until the chat exists: a second click meanwhile makes no second chat.
   creatingTask = true;
   let created: Session;
   try {
+    const harness = pickHarness(await providersForChoice());
+    if (generation !== state.generation) return;
+    if (!harness) { notify('Open Settings to check your installed agents.'); return; }
+    if (!from) leaveDraft('');
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
     // Fresh pooled conversations choose their own account when the native run starts.
@@ -6953,6 +6983,7 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
   state.providers = providers;
   // A Settings refresh answers the boot question too (the boot list may have failed or still be out).
   if (!providersKnown) { providersKnown = true; settleProviders(providers); }
+  refreshAuthorNames();
   return providers;
 }
 /** Settings is a full page over the workspace; Back or Escape returns to where you were. */
@@ -7190,9 +7221,11 @@ async function showConversationImport(): Promise<void> {
   try {
     const { mountConversationImport } = await import('./conversation-import');
     if (!dialog.open || !host.isConnected) return;
+    const installed = (await knownProviders()).filter(p => p.installed).map(p => p.id);
+    if (!dialog.open || !host.isConnected) return;
     conversationImportCleanup = mountConversationImport(host, {
       call,
-      installed: state.providers.filter(p => p.installed).map(p => p.id),
+      installed,
       defaultModel: provider => rememberedModel(provider),
       openTask: id => { closeModal(); run(selectSession(id, true)); },
       onImported: result => run((async () => {
@@ -8559,6 +8592,11 @@ const providersReady = new Promise<Provider[]>(resolve => { settleProviders = re
 function providersForChoice(): Promise<Provider[]> | Provider[] {
   return providersKnown || state.providers.some(p => p.installed) ? state.providers : providersReady;
 }
+/** The real harness list, for anything that enumerates what is installed (team rosters, import sources): never the last
+ *  launch's list, which may name CLIs removed since. */
+function knownProviders(): Promise<Provider[]> | Provider[] {
+  return providersKnown ? state.providers : providersReady;
+}
 function lastProviderCatalog(): Provider[] {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(PROVIDER_CATALOG_KEY) ?? '[]');
@@ -8571,16 +8609,28 @@ function keepProviderCatalog(providers: Provider[]): void {
   try { localStorage.setItem(PROVIDER_CATALOG_KEY, JSON.stringify(providers.map(({ id, name, installed, models }) => ({ id, name, installed, models })))); }
   catch { /* the next launch waits for the list, as the first one does */ }
 }
+/** After a failed `list_providers`, boot asks again this long after each failure; the last failure is reported. Waiting
+ *  choices are answered with the last known list at the first failure, so nothing hangs on the retries. A Settings
+ *  refresh (discoverSettingsProviders) answers it too and ends the retries. */
+const PROVIDER_RETRY_MS = [2_000, 5_000, 15_000];
 function loadBootProviders(): void {
   if (!state.providers.length) state.providers = lastProviderCatalog();
+  askBootProviders(0);
+}
+function askBootProviders(attempt: number): void {
   const discovery = settingsDiscoveryGeneration;
-  run(call<Provider[]>('list_providers').then(found => providersLanded(found, discovery), error => { settleProviders(state.providers); throw error; }));
+  run(call<Provider[]>('list_providers').then(found => providersLanded(found, discovery), error => {
+    settleProviders(state.providers);
+    if (providersKnown) return;
+    const wait = PROVIDER_RETRY_MS[attempt];
+    if (wait === undefined) throw error;
+    console.warn(`Could not list agent harnesses; trying again in ${wait / 1000} s:`, error);
+    window.setTimeout(() => { if (!providersKnown) askBootProviders(attempt + 1); }, wait);
+  }));
 }
 function providersLanded(found: Provider[], discovery: number): void {
   if (!Array.isArray(found)) { settleProviders(state.providers); return; }
   keepProviderCatalog(found);
-  // Names the transcript painted from the last launch's list (or 'Agent' with none) are redrawn only when they differ.
-  const renamed = found.length !== state.providers.length || found.some(entry => provider(entry.id)?.name !== entry.name);
   // A Settings refresh meanwhile has the newer list; otherwise models already discovered this launch stay.
   if (discovery === settingsDiscoveryGeneration) {
     for (const entry of found) { const previous = provider(entry.id); if (previous && modelCatalogs.has(entry.id)) entry.models = previous.models; }
@@ -8590,8 +8640,9 @@ function providersLanded(found: Provider[], discovery: number): void {
   settleProviders(state.providers);
   const s = session();
   if (s && !s.remoteDevice && provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
-  refreshModelLabels(); renderHeader(); refreshTeamProgress();
-  if (renamed && s && !state.messagesLoading && transcriptVisible()) renderTranscript(true);
+  // Names painted from the last launch's list (or the built-in short names) change in place: no transcript redraw, so a
+  // menu open over it stays open.
+  refreshModelLabels(); refreshAuthorNames(); renderHeader(); refreshTeamProgress();
   if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
   // Restored queues name the agent they wait for.
   if (s && state.queues.get(s.id)?.length) renderComposer();

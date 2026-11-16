@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { SMOOTH_IDLE_FPS, type Scene } from './types';
 
 /** Underwater lagoon, seen from just below the surface: the rippling surface overhead (bright through the window, a
  * mirror of the deep beyond it), god rays slanting down through turquoise water onto a sandy floor in perspective,
@@ -8,6 +8,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'lagoon',
   label: 'Lagoon',
+  // Bubbles rise through the water at any hour.
+  idleFps: () => SMOOTH_IDLE_FPS,
   fallback: () => [[.35, .8, .85], [.08, .5, .6], [.3, .45, .45]],
   fragment: `
 /* A caustic web: where two drifting, warped noise fields cross the same level the light focuses into bright lines;

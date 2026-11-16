@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { twinkleIdleFps, type Scene } from './types';
 
 /** Alpine valley in mist: five mountain ridges receding in atmospheric perspective (slate peaks with snow far off, sage
  * and teal forested ridges nearer, a pine silhouette along the nearest), low fog banks lying in the valleys between the
@@ -7,6 +7,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'alpine',
   label: 'Alpine',
+  // Stars twinkle at night.
+  idleFps: twinkleIdleFps,
   fallback: colors => [colors.top, colors.horizon, [.36, .5, .48]],
   fragment: `
 /* Ridged noise: sharp peaks, soft valleys; sharp blends ridged (mountains) against smooth (forested hills). */

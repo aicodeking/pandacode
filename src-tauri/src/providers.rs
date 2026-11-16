@@ -925,10 +925,18 @@ pub(crate) fn mimo_endpoints() -> &'static [(&'static str, &'static str, &'stati
     &mimo::ENDPOINTS
 }
 
+/// How many `--version` probes run at once: all of them at once made a loaded machine push
+/// more of them past `VERSION_TIMEOUT`.
+const VERSION_PROBES_AT_ONCE: usize = 4;
+/// Slow CLIs take several seconds to print a version (cline and commandcode about 9 s when cold).
+/// Boot does not wait on discovery, and an answer is remembered afterwards.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// `--version` for each path, in order ("" when absent or failing). Every distinct binary is
-/// probed once, all at the same time, so discovery waits for the slowest CLI rather than the
-/// sum of them (GLM, MiMo and Alibaba share Claude's binary). Plain scoped threads: no locks
-/// are held and nothing is shared between probes.
+/// probed once (GLM, MiMo and Alibaba share Claude's binary), at most `VERSION_PROBES_AT_ONCE`
+/// at a time, and a binary already answered this process (same file, size and mtime) is not
+/// run again. Plain scoped threads; the version cache is a leaf lock taken only for a lookup
+/// or an insert, never across a probe.
 fn versions(paths: &[Option<&Path>]) -> Vec<String> {
     let mut distinct: Vec<&Path> = Vec::new();
     for path in paths.iter().flatten() {
@@ -936,11 +944,17 @@ fn versions(paths: &[Option<&Path>]) -> Vec<String> {
             distinct.push(path);
         }
     }
-    let found: Vec<Option<String>> = std::thread::scope(|scope| {
-        let probes: Vec<_> = distinct.iter().map(|path| scope.spawn(move || version(path))).collect();
-        // A probe that panicked reports no version, like one that failed.
-        probes.into_iter().map(|probe| probe.join().ok().flatten()).collect()
-    });
+    let stamps: Vec<Option<BinaryStamp>> = distinct.iter().map(|path| BinaryStamp::of(path)).collect();
+    let mut found: Vec<Option<String>> = stamps.iter().map(|stamp| stamp.as_ref().and_then(cached_version)).collect();
+    let pending: Vec<usize> = (0..distinct.len()).filter(|index| found[*index].is_none()).collect();
+    let probed = probe_limited(&pending, VERSION_PROBES_AT_ONCE, |index| version(distinct[*index]));
+    for (index, answer) in pending.into_iter().zip(probed) {
+        // Only an answer is remembered: a timeout or failure says nothing lasting about the CLI.
+        if let (Some(stamp), Some(answer)) = (&stamps[index], &answer) {
+            remember_version(stamp, answer);
+        }
+        found[index] = answer;
+    }
     paths
         .iter()
         .map(|path| {
@@ -951,8 +965,70 @@ fn versions(paths: &[Option<&Path>]) -> Vec<String> {
         .collect()
 }
 
+/// Runs `probe` on every item, at most `limit` at a time, and returns the answers in item order.
+/// Workers take the next item from a shared counter, so one slow probe holds a single slot.
+fn probe_limited<T: Sync>(items: &[T], limit: usize, probe: impl Fn(&T) -> Option<String> + Sync) -> Vec<Option<String>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut found: Vec<Option<String>> = vec![None; items.len()];
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..limit.max(1).min(items.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut answers = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(index) else { break };
+                        answers.push((index, probe(item)));
+                    }
+                    answers
+                })
+            })
+            .collect();
+        // A worker that panicked reports no version for what it had answered, like a failed probe;
+        // the others keep taking items, so nothing is left unprobed but its own item.
+        for worker in workers {
+            for (index, answer) in worker.join().unwrap_or_default() {
+                found[index] = answer;
+            }
+        }
+    });
+    found
+}
+
+/// One build of a binary: its resolved path, size and modification time. An update changes it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct BinaryStamp {
+    path: PathBuf,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl BinaryStamp {
+    fn of(path: &Path) -> Option<Self> {
+        let path = std::fs::canonicalize(path).ok()?;
+        let metadata = std::fs::metadata(&path).ok()?;
+        Some(Self { size: metadata.len(), modified: metadata.modified().ok(), path })
+    }
+}
+
+/// Versions answered this process. Leaf lock: held only to read or write the map.
+static VERSION_CACHE: std::sync::LazyLock<Mutex<HashMap<BinaryStamp, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_version(stamp: &BinaryStamp) -> Option<String> {
+    VERSION_CACHE.lock().ok()?.get(stamp).cloned()
+}
+
+fn remember_version(stamp: &BinaryStamp, version: &str) {
+    if let Ok(mut cache) = VERSION_CACHE.lock() {
+        // An older build of the same file is never asked for again.
+        cache.retain(|known, _| known.path != stamp.path);
+        cache.insert(stamp.clone(), version.to_owned());
+    }
+}
+
 fn version(path: &Path) -> Option<String> {
-    capture(launch::std_command(path).ok()?, &["--version"], Duration::from_secs(2))
+    capture(launch::std_command(path).ok()?, &["--version"], VERSION_TIMEOUT)
         .map(|text| text.chars().take(150).collect())
 }
 
@@ -4355,17 +4431,87 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_millis(1600), "probes ran serially: {elapsed:?}");
     }
 
-    /// Times `discover()` against the CLIs installed on this machine.
+    /// A stand-in CLI at `root/name` running `body` (after logging its start and end to `log`).
+    #[cfg(unix)]
+    fn fake_cli(root: &std::path::Path, name: &str, log: &std::path::Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = root.join(name);
+        std::fs::write(&script, format!(
+            "#!/bin/sh\necho 'start {name}' >> '{log}'\n{body}\necho 'end {name}' >> '{log}'\n",
+            log = log.display(),
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    /// Ten slow stand-in CLIs: never more than four run at once, they still overlap, and every
+    /// answer lands in its own place.
+    #[cfg(unix)]
+    #[test]
+    fn version_probes_run_at_most_four_at_once() {
+        let root = std::env::temp_dir().join(format!("pandacode-version-cap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let scripts: Vec<_> = (0..10)
+            .map(|index| fake_cli(&root, &format!("cli{index}"), &log, &format!("sleep 0.3\necho 'cli{index} 2.{index}.0'")))
+            .collect();
+        let paths: Vec<_> = scripts.iter().map(|script| Some(script.as_path())).collect();
+        let versions = super::versions(&paths);
+        let runs = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let expected: Vec<_> = (0..10).map(|index| format!("cli{index} 2.{index}.0")).collect();
+        assert_eq!(versions, expected);
+        let (mut running, mut most) = (0usize, 0usize);
+        for line in runs.lines() {
+            if line.starts_with("start ") { running += 1; } else { running -= 1; }
+            most = most.max(running);
+        }
+        assert_eq!(runs.lines().count(), 20, "every CLI started and ended once: {runs}");
+        assert!(most <= super::VERSION_PROBES_AT_ONCE, "{most} probes ran at once:\n{runs}");
+        assert!(most >= 2, "probes ran one at a time:\n{runs}");
+    }
+
+    /// A second discovery starts no process for an answered binary; touching the file asks again,
+    /// and a failing CLI is never remembered.
+    #[cfg(unix)]
+    #[test]
+    fn version_answers_are_cached_per_build() {
+        let root = std::env::temp_dir().join(format!("pandacode-version-cache-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("runs.log");
+        let good = fake_cli(&root, "good", &log, "echo 'good 3.0.0'");
+        let bad = fake_cli(&root, "bad", &log, "exit 1");
+        let paths = [Some(good.as_path()), Some(bad.as_path())];
+        let starts = |name: &str| std::fs::read_to_string(&log).unwrap().lines().filter(|line| *line == format!("start {name}")).count();
+
+        assert_eq!(super::versions(&paths), ["good 3.0.0", ""]);
+        assert_eq!((starts("good"), starts("bad")), (1, 1));
+        assert_eq!(super::versions(&paths), ["good 3.0.0", ""]);
+        assert_eq!((starts("good"), starts("bad")), (1, 2), "the answer is reused; the failure is asked again");
+
+        let file = std::fs::File::options().write(true).open(&good).unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000)).unwrap();
+        drop(file);
+        assert_eq!(super::versions(&paths), ["good 3.0.0", ""]);
+        let good_runs = starts("good");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(good_runs, 2, "a new mtime is a new build");
+    }
+
+    /// Times `discover()` twice against the CLIs installed on this machine: the second call
+    /// answers from the version cache.
     #[test]
     #[ignore = "Runs --version on every installed agent CLI"]
     fn installed_discover_timing() {
-        let started = std::time::Instant::now();
-        let providers = super::discover();
-        let elapsed = started.elapsed();
-        for provider in &providers {
-            println!("{:>16} {:<5} {}", provider.id, provider.installed, provider.version.lines().next().unwrap_or(""));
+        for call in ["first", "second"] {
+            let started = std::time::Instant::now();
+            let providers = super::discover();
+            let elapsed = started.elapsed();
+            for provider in &providers {
+                println!("{:>16} {:<5} {}", provider.id, provider.installed, provider.version.lines().next().unwrap_or(""));
+            }
+            println!("{call} discover() took {elapsed:?}");
         }
-        println!("discover() took {elapsed:?}");
     }
     /// Recorded from `opencode --standalone api model.list` 2.2.5 (trimmed to two models).
     const OPENCODE_V2_MODELS: &str = r#"{"location":{"directory":"/tmp"},"data":[{"id":"flint-40b-free","modelID":"flint-40b-free","providerID":"opencode","type":"chat","family":"flint","name":"Flint 40B Free","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[{"id":"low","settings":{"reasoningEffort":"low"}},{"id":"medium","settings":{"reasoningEffort":"medium"}},{"id":"high","settings":{"reasoningEffort":"high"}},{"id":"xhigh","settings":{"reasoningEffort":"xhigh"}},{"id":"max","settings":{"reasoningEffort":"max"}}],"time":{"released":1792540800000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":262144,"output":65536}},{"id":"big-pickle","modelID":"big-pickle","providerID":"opencode","type":"chat","family":"big-pickle","name":"Big Pickle","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[],"time":{"released":1760659200000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":200000,"input":160000,"output":32000}}]}"#;

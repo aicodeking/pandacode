@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { SMOOTH_IDLE_FPS, type Scene } from './types';
 
 /** Deep space: billowing emission gas (magenta, indigo, teal) over a domain-warped flow, cut by dark dust lanes, with a
  * two-layer parallax star field and a few bright stars with soft diffraction glints. The wind swirls the gas faster
@@ -8,6 +8,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'nebula',
   label: 'Nebula',
+  // The star fields twinkle at any hour.
+  idleFps: () => SMOOTH_IDLE_FPS,
   fallback: () => [[.06, .04, .16], [.22, .07, .26], [.05, .16, .2]],
   fragment: `
 /* One star layer: a jittered point per cell, sized and tinted by its hash. */

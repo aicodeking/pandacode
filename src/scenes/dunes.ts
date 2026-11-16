@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { twinkleIdleFps, type Scene } from './types';
 
 /** Desert dunes: four ranges of sharp-crested dunes receding into a warm haze, each with a crisp knife-edge where the
  * lit windward slope meets the shaded slip face (the light side follows the sun across the day), fine wind ripples on
@@ -8,6 +8,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'dunes',
   label: 'Dunes',
+  // Stars twinkle at night.
+  idleFps: twinkleIdleFps,
   fallback: colors => [colors.top, colors.horizon, [.86, .6, .42]],
   fragment: `
 /* A dune range's crest height at x (w = cell coordinate): a convex windward rise to a sharp crest at fraction a, then

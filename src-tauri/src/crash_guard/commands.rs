@@ -214,31 +214,32 @@ pub async fn set_crash_restart_enabled(app: tauri::AppHandle, enabled: bool) -> 
     crate::blocking(move || save_restart_setting(&app, enabled)).await
 }
 
-/// Held while the setting file and `ENABLED` change together, so two fast toggles never leave
-/// them disagreeing. A leaf lock: nothing else is locked or called under it.
+/// Held while the setting file, `ENABLED` and the guard's `arm`/`disarm` change together, so two
+/// fast toggles never leave them disagreeing and reach the guard in the order they were saved.
+/// Lock order: `SAVING`, then the link's lock (`link::send`), under which only the link's own
+/// leaf locks (its child list, the held notice) are taken; nothing under either takes `SAVING`
+/// or the store. A respawn of a dead guard under the link lock only delays the next toggle.
 static SAVING: Mutex<()> = Mutex::new(());
 
 fn save_restart_setting(app: &tauri::AppHandle, enabled: bool) -> crate::Result<()> {
     let path = data_dir(app)?.join(state::SETTINGS_FILE);
-    let armed = save_in_order(&SAVING, &path, enabled, &super::ENABLED)?;
     // Saved either way: with no guard (off by env, failed to start, gone) it applies next launch.
-    // After `SAVING` is released (the link has its own lock). Sends the flag as it is now, as
-    // the link's resync does, so a slower overlapping call never sends a stale value last.
-    if link::connected() && link::send(if armed { &Message::Arm } else { &Message::Disarm }) != link::Sent::Delivered {
-        eprintln!("Crash guard did not get the new setting; it applies from the next launch.");
-    }
-    Ok(())
+    save_in_order(&SAVING, &path, enabled, &super::ENABLED, |armed| {
+        if link::connected() && link::send(if armed { &Message::Arm } else { &Message::Disarm }) != link::Sent::Delivered {
+            eprintln!("Crash guard did not get the new setting; it applies from the next launch.");
+        }
+    })
 }
 
-/// Writes `path` and then `flag` under `saving` alone; the flag only moves when the file was
-/// saved. Returns the flag as it stands once the lock is released.
-fn save_in_order(saving: &Mutex<()>, path: &std::path::Path, enabled: bool, flag: &AtomicBool) -> crate::Result<bool> {
-    {
-        let _saving = saving.lock().unwrap_or_else(|p| p.into_inner());
-        state::save(path, &Settings { enabled }).map_err(|e| format!("Could not save the setting: {e}"))?;
-        flag.store(enabled, Ordering::SeqCst);
-    }
-    Ok(flag.load(Ordering::SeqCst))
+/// Writes `path`, then moves `flag` and calls `tell` with it, all under `saving`: the flag only
+/// moves (and the guard only hears of it) when the file was saved, and the last `tell` of
+/// overlapping calls is always the flag's final value.
+fn save_in_order(saving: &Mutex<()>, path: &std::path::Path, enabled: bool, flag: &AtomicBool, tell: impl FnOnce(bool)) -> crate::Result<()> {
+    let _saving = saving.lock().unwrap_or_else(|p| p.into_inner());
+    state::save(path, &Settings { enabled }).map_err(|e| format!("Could not save the setting: {e}"))?;
+    flag.store(enabled, Ordering::SeqCst);
+    tell(enabled);
+    Ok(())
 }
 
 /// The frontend matches `/no crash report/i` on this text.
@@ -281,13 +282,26 @@ mod tests {
         let path = dir.join(state::SETTINGS_FILE);
         let (saving, flag) = (Mutex::new(()), AtomicBool::new(true));
         for round in 0..20 {
+            // Stands in for the guard: what it heard, in the order it heard it.
+            let sent = Mutex::new(Vec::new());
             std::thread::scope(|scope| {
                 for enabled in [true, false, true, false] {
-                    let (saving, flag, path) = (&saving, &flag, &path);
-                    scope.spawn(move || save_in_order(saving, path, enabled, flag).unwrap());
+                    let (saving, flag, path, sent) = (&saving, &flag, &path, &sent);
+                    scope.spawn(move || {
+                        save_in_order(saving, path, enabled, flag, |armed| {
+                            // Widens the window a late send would slip through.
+                            std::thread::yield_now();
+                            sent.lock().unwrap().push(armed);
+                        })
+                        .unwrap()
+                    });
                 }
             });
-            assert_eq!(state::saved_setting(&dir), Some(flag.load(Ordering::SeqCst)), "round {round}");
+            let flag = flag.load(Ordering::SeqCst);
+            assert_eq!(state::saved_setting(&dir), Some(flag), "round {round}");
+            let sent = sent.into_inner().unwrap();
+            assert_eq!(sent.len(), 4, "round {round}");
+            assert_eq!(sent.last(), Some(&flag), "round {round}: the guard last heard {sent:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

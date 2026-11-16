@@ -23,7 +23,7 @@ const PINNED = {
   'src/turn-card.ts': ['replyHtml', 'timeHtml'],
   'src/transcript-host.ts': ['lastHandoff', 'turnMessages', 'markupShared'],
 };
-const RECORDED = 'c36b8439088d258f';
+const RECORDED = 'defc61c94ff0daca';
 
 /** A top-level function's text in `file`, from its declaration to the next top-level statement. */
 function functionText(file, name) {

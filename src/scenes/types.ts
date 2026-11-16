@@ -39,7 +39,17 @@ export interface Scene {
   /** The CSS gradient (top, middle, bottom; sRGB 0..1) shown until WebGL paints or if it cannot; the layer's own
    * overlay grades it per theme. Called with the clock's palette. */
   fallback(colors: SkyColors): readonly [Rgb, Rgb, Rgb];
+  /** The slowest rate (fps) the resting scene still reads as continuous at, for the clock's `night` (0..1). After a quiet
+   * stretch the host drops a resting scene to this rate (kept within 3..8; 8 is the rest rate, so it never slows), at the
+   * same scene pace. Leave it out for a scene whose resting motion is all slow drift (3 fps); fast motion — falling or
+   * rising drops, shimmer, star twinkle — steps visibly at 3, so declare 6 (`SMOOTH_IDLE_FPS`) or 8 (`REST_IDLE_FPS`). */
+  idleFps?(night: number): number;
 }
+
+/** Idle rates a scene can declare (`Scene.idleFps`): smooth enough for a twinkle or a shimmer, or the full rest rate. */
+export const SMOOTH_IDLE_FPS = 6, REST_IDLE_FPS = 8;
+/** Stars twinkle (`time`) only where `night` shows them: smooth at night, the plain idle rate by day. */
+export const twinkleIdleFps = (night: number): number => night > .02 ? SMOOTH_IDLE_FPS : 3;
 
 export const VERTEX = `attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
 export const UNIFORMS = ['res', 'aspect', 'drift', 'time', 'wind', 'ptr', 'ptrVel', 'ptrAmt', 'dark', 'floorY', 'ceilY',

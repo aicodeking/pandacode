@@ -122,9 +122,22 @@ function render(): void {
   resize();
 }
 
+/** The latest `load` request: `tray_snapshot` is async, so two loads (a burst of `tray-changed`) can answer out of order,
+ * and only the latest request's reply (or failure) may land — an older snapshot would put back a stale state, such as a
+ * finished check's 'checking' spinner. */
+let loadTicket = 0;
 async function load(): Promise<void> {
-  try { snapshot = await call<TraySnapshot>('tray_snapshot'); if (loadFailed) { loadFailed = false; setFailure(''); } render(); }
-  catch (error) { setFailure(errorText(error)); loadFailed = true; }
+  const ticket = ++loadTicket;
+  try {
+    const next = await call<TraySnapshot>('tray_snapshot');
+    if (ticket !== loadTicket) return;
+    snapshot = next;
+    if (loadFailed) { loadFailed = false; setFailure(''); }
+    render();
+  } catch (error) {
+    if (ticket !== loadTicket) return;
+    setFailure(errorText(error)); loadFailed = true;
+  }
 }
 
 host.addEventListener('click', event => {
