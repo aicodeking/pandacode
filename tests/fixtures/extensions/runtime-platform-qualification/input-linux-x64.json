@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-platform-qualification-input",
+  "target": "linux-x64",
+  "runner": { "id": "runner-a" },
+  "runtime": { "kind": "node", "version": "v26.1.0" },
+  "probes": ["bundle", "launch"],
+  "scenarios": [
+    { "id": "executable-host", "fixture": "tests/fixtures/extensions/runtime-service-lifetime", "backends": [] },
+    { "id": "service", "fixture": "tests/fixtures/extensions/runtime-service-lifetime", "backends": ["fake-daemon"] },
+    { "id": "rich-panel", "fixture": "tests/fixtures/extensions/runtime-service-lifetime", "backends": ["fake-daemon"] }
+  ],
+  "r2": { "state": "not-adopted", "packages": [] },
+  "credentials": "none"
+}

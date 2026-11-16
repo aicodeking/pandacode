@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-platform-qualification-result",
+  "target": "windows-x64",
+  "host": { "os": "windows", "arch": "x86_64" },
+  "runner": { "id": "runner-win" },
+  "runtime": { "kind": "node", "version": "v26.1.0" },
+  "evidence": "installed",
+  "bundle": { "status": "passed" },
+  "launch": { "status": "passed" },
+  "scenarios": [
+    { "id": "executable-host", "outcome": "passed" },
+    { "id": "service", "outcome": "failed", "reason": "service did not stop on quit" },
+    { "id": "rich-panel", "outcome": "passed" }
+  ]
+}
