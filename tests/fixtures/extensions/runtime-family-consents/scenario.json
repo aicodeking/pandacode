@@ -1,0 +1,19 @@
+{
+  "packages": [
+    { "manifest": { "id": "sample.family-holder", "version": "1.0.0", "permissions": ["btw.content", "btw.taskControl", "tasks.control", "tasks.start", "workspace.manage"] }, "enabled": true, "executable": null },
+    { "manifest": { "id": "sample.family-api1", "version": "1.0.0", "permissions": ["ui.contribute"] }, "enabled": true, "executable": null },
+    { "manifest": { "id": "sample.family-other", "version": "1.0.0", "permissions": ["workspace.manage"] }, "enabled": true, "executable": null }
+  ],
+  "families": [
+    { "family": "btwContent", "covering": ["btw.content"] },
+    { "family": "btwControl", "covering": ["btw.taskControl"] },
+    { "family": "machineControl", "covering": ["tasks.control"] },
+    { "family": "cloudControl", "covering": ["workspace.manage"] },
+    { "family": "moodboardControl", "covering": ["workspace.manage"] },
+    { "family": "branchControl", "covering": ["workspace.manage"] },
+    { "family": "pullControl", "covering": ["workspace.manage"] },
+    { "family": "taskControl", "covering": ["tasks.start", "tasks.control"] }
+  ],
+  "irreversible": ["projects.remove", "tasks.remove", "bots.remove", "channels.remove", "recipes.remove", "wakeups.remove", "cloud.machines.remove", "worktrees.remove", "branches.remove", "moodboards.remove", "pulls.merge"],
+  "userOnly": ["pairing", "pair", "remoteAccess"]
+}

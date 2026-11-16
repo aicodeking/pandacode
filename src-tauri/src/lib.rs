@@ -4841,6 +4841,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     extensions::packages::configure_notifications(app.handle().clone());
     providers::dynamic_adapter::configure(&app.state::<extensions::packages::ExtensionPackages>().0, app.path().resource_dir().ok().map(|path| path.join("extension-runtime")));
     app.manage(extensions::runtime_grants::RuntimeGrants::open(&dir));
+    app.manage(extensions::runtime_family_consents::FamilyConsents::open(&dir));
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
     app.manage(extensions::jobs::ExtensionJobs::default());
@@ -5156,6 +5157,7 @@ pub fn run() {
                 extensions::runtime_grants::extensions_runtime_grants,
                 extensions::runtime_grants::extensions_runtime_grant,
                 extensions::runtime_native_consents::extensions_runtime_native_consents,
+                extensions::runtime_family_consents::extensions_family_consents,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,
                 extensions::packages::extensions_install,

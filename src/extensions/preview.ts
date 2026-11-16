@@ -16,6 +16,10 @@ import { createConnectionsPreview } from './connections-preview';
 import { createServicesPreview } from './services-preview';
 import * as runtimeGrants from './runtime-grants';
 import * as nativeConsents from './runtime-native-consents';
+import * as familyConsents from './runtime-family-consents';
+// One store per page, so a ticket minted by a gate is the one the choice presents; a reload is the preview's restart.
+const previewFamilyConsents = familyConsents.createFamilyConsentsPreview(runtimeGrants.createRuntimeGrantsPreview());
+(window as unknown as { __extensionFamilyConsents?: unknown }).__extensionFamilyConsents = { ...familyConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
 // Test hook of the preview only (the production build has no module paths): the grants module and the validator.
 (window as unknown as { __extensionRuntimeGrants?: unknown }).__extensionRuntimeGrants = { ...runtimeGrants, validateContract };
 (window as unknown as { __extensionNativeConsents?: unknown }).__extensionNativeConsents = { ...nativeConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
@@ -147,6 +151,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_snapshot') return snapshot;
   if (command === 'extensions_runtime_grants' || command === 'extensions_runtime_grant') return runtimeGrants.createRuntimeGrantsPreview().call(command, args, snapshot);
   if (command === 'extensions_runtime_native_consents') return nativeConsents.createNativeConsentsPreview().call(command, snapshot);
+  if (command === 'extensions_family_consents') return previewFamilyConsents.call(args, snapshot);
   if (command === 'extensions_rich_view_open') return { opened: false, reason: 'Rich HTML views are disabled: installed native isolation qualification is pending. Use the host-rendered view instead.' };
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');
   if (command === 'extensions_runtime') {
