@@ -262,7 +262,7 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(viewer.locator('.tool-image-viewer-count')).toHaveText('2 of 2');
     await expect(viewer.locator('[data-tool-image-action="reveal"]')).toBeHidden();
     await expect(viewer.locator('.tool-image-viewer-image')).toHaveAttribute('src', /^data:image\//);
-    await expect.poll(boxes).toEqual(first);
+    expect(await boxes()).toEqual(first);
     expect(await plate()).toEqual(firstPlate);
     // The long name ellipsizes inside the header instead of widening it.
     const name = viewer.locator('.tool-image-viewer-name');

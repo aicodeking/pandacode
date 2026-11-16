@@ -7,7 +7,6 @@ import type { Scene } from './types';
  * luminous tints; both graded by the prelude. */
 export const scene: Scene = {
   id: 'nebula',
-  motion: 'ambient',
   label: 'Nebula',
   fallback: () => [[.06, .04, .16], [.22, .07, .26], [.05, .16, .2]],
   fragment: `

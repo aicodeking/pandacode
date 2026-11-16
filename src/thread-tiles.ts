@@ -21,8 +21,6 @@ export interface TileHost {
   focusPrompt(): void;
   /** Draws (or redraws) a thread's read-only rows. */
   draw(id: string, rows: HTMLElement, scroller: HTMLElement): void;
-  /** Releases the read-only page when its tile leaves the layout. */
-  drop(id: string): void;
   /** The reader neared the top of a view: draws more of its older turns, holding their place. */
   more(id: string, rows: HTMLElement, scroller: HTMLElement): void;
   /** The thread's scene, in its tile. */
@@ -110,7 +108,6 @@ export function mountThreadTiles(host: TileHost) {
     const tile = tiles.get(id);
     if (!tile) return;
     clearTimeout(tile.timer); tile.resize.disconnect(); tile.scene.dispose(); tile.el.remove(); tiles.delete(id);
-    host.drop(id);
   }
   function bars(): void {
     for (const [id, tile] of tiles) {

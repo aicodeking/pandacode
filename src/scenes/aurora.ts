@@ -6,7 +6,6 @@ import type { Scene } from './types';
  * luminous tinted curtains over white snow; both graded by the prelude. */
 export const scene: Scene = {
   id: 'aurora',
-  motion: 'ambient',
   label: 'Aurora',
   fallback: () => [[.03, .06, .14], [.05, .16, .2], [.1, .32, .3]],
   fragment: `

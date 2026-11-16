@@ -7,17 +7,12 @@ import { preserveTranscriptPosition } from './transcript-scroll.ts';
 // the value this stream registered with the cache (its latest), so a finished reply draws without
 // a whole parse. `scheduled` is set while a paint waits for the next frame.
 // `code` is set while the tail is one open code fence, `cost` is how long the last paint took.
-type Paint = { target: HTMLElement; value: string; rendered: string; pending: boolean; scheduled: boolean; formatted: boolean; html: MarkdownState; nodes: number; code?: CodeTail; cost: number; deferred?: string; context?: object; scroll?: HTMLElement };
+type Paint = { target: HTMLElement; value: string; rendered: string; pending: boolean; scheduled: boolean; formatted: boolean; source: string; settledHtml: string[]; nodes: number; scan?: BlockScan; code?: CodeTail; cost: number; deferred?: string; context?: object; scroll?: HTMLElement };
 // An open code fence that is the whole tail (`at`, opened by the `opener` line): the code of its
 // complete lines up to `end` (`source` is the text to there) sits in `settled` and is never parsed
 // again; `open` holds the code of the line still streaming.
 type CodeTail = { at: number; opener: string; end: number; source: string; settled: Text; open: Text };
-type MarkdownState = { source: string; settledHtml: string[]; scan?: BlockScan };
 const paints = new WeakMap<HTMLElement, Paint>();
-// A separate closure scope keeps cached builders from retaining the painter's DOM.
-function deferredHtml(state: MarkdownState, value: string): () => Promise<string> {
-  return () => finalHtml(state, value);
-}
 // A hidden or occluded window gets no animation frames; text still paints after this long.
 const FRAME_FALLBACK_MS = 100;
 // A paint slower than this (a tail that is one giant block) waits as long again before the next one.
@@ -111,7 +106,7 @@ export function reconcile(parent: Node, children: Node[], from = 0): void {
 }
 
 function restart(state: Paint): void {
-  state.html.source = ''; state.html.settledHtml = []; state.nodes = 0; state.code = undefined;
+  state.source = ''; state.settledHtml = []; state.nodes = 0; state.code = undefined;
 }
 
 function parsed(html: string): HTMLTemplateElement {
@@ -176,7 +171,7 @@ function codeTail(state: Paint, value: string, tailAt: number): CodeTail | undef
 async function paintCode(state: Paint, value: string, tailAt: number): Promise<boolean> {
   const code = state.code!, end = value.lastIndexOf('\n') + 1, added = value.slice(code.end);
   // Line breaks other than \n and NUL do not map one line to one line of code.
-  if (code.at !== tailAt || !state.html.scan?.fence || state.html.scan.fenceAt !== tailAt || !code.settled.isConnected || !value.startsWith(code.source) || /[\r\0]/.test(added)) return false;
+  if (code.at !== tailAt || !state.scan?.fence || state.scan.fenceAt !== tailAt || !code.settled.isConnected || !value.startsWith(code.source) || /[\r\0]/.test(added)) return false;
   const rendered = fenceCode((await markdownNodes(code.opener + added)).content);
   if (!state.target.isConnected || state.value !== value) return true;
   const text = rendered?.textContent ?? '', cut = rendered ? afterLines(text, lineCount(value.slice(code.end, end))) : -1;
@@ -193,7 +188,7 @@ async function paintCode(state: Paint, value: string, tailAt: number): Promise<b
 
 /** The finished reply's HTML: the settled blocks' HTML plus one render of the rest (blockBoundaries
  * makes the join equal the whole). Read only when the reply is drawn again. Exported for tests. */
-export async function finalHtml(state: MarkdownState, value: string, render = (text: string) => markdownHtml(text, false)): Promise<string> {
+export async function finalHtml(state: Pick<Paint, 'source' | 'settledHtml' | 'scan'>, value: string, render = (text: string) => markdownHtml(text, false)): Promise<string> {
   const ends = blockBoundaries(value, scanBlocks(value, state.scan));
   const kept = state.source && value.startsWith(state.source) && ends.includes(state.source.length) ? state.source : '';
   const parts = kept ? state.settledHtml.join('') : '';
@@ -205,14 +200,14 @@ async function paint(state: Paint): Promise<void> {
   const value = state.value, started = performance.now();
   state.pending = true;
   try {
-    state.html.scan = scanBlocks(value, state.html.scan);
-    const ends = blockBoundaries(value, state.html.scan), tailAt = ends.at(-1) ?? 0;
+    state.scan = scanBlocks(value, state.scan);
+    const ends = blockBoundaries(value, state.scan), tailAt = ends.at(-1) ?? 0;
     // Settled blocks stay painted while the text only grows past them; any other change repaints all.
-    if (!value.startsWith(state.html.source) || (state.html.source && !ends.includes(state.html.source.length))) restart(state);
+    if (!value.startsWith(state.source) || (state.source && !ends.includes(state.source.length))) restart(state);
     if (state.code) { if (await paintCode(state, value, tailAt)) return; state.code = undefined; }
-    const fresh = value.slice(state.html.source.length, tailAt), tail = value.slice(tailAt), shown = settledMarkdown(tail);
+    const fresh = value.slice(state.source.length, tailAt), tail = value.slice(tailAt), shown = settledMarkdown(tail);
     // A reply opened whole (a thread reopened) draws from the cache; the next change settles its blocks.
-    const known = state.html.source ? undefined : markdownCache.get(value);
+    const known = state.source ? undefined : markdownCache.get(value);
     const [fresher, open] = known !== undefined ? [undefined, parsed(known)]
       : await Promise.all([fresh ? markdownNodes(fresh) : undefined, markdownNodes(shown)]);
     if (!state.target.isConnected || state.value !== value) return;
@@ -221,8 +216,8 @@ async function paint(state: Paint): Promise<void> {
     const settled = fresher ? prepare(fresher.content, state.target) : [];
     const restore = state.scroll ? preserveTranscriptPosition(state.scroll, state.target) : undefined;
     reconcile(state.target, [...settled, ...prepare(open.content, state.target, shown !== tail)], state.nodes);
-    if (known === undefined) { state.nodes += settled.length; state.html.source = value.slice(0, tailAt); if (settledHtml !== undefined) state.html.settledHtml.push(settledHtml); }
-    if (known === undefined && shown === tail && state.html.scan.fence && state.html.scan.fenceAt === tailAt) state.code = codeTail(state, value, tailAt);
+    if (known === undefined) { state.nodes += settled.length; state.source = value.slice(0, tailAt); if (settledHtml !== undefined) state.settledHtml.push(settledHtml); }
+    if (known === undefined && shown === tail && state.scan.fence && state.scan.fenceAt === tailAt) state.code = codeTail(state, value, tailAt);
     // Toggling a class that is already set still queues a mutation record.
     if (!state.formatted) state.target.classList.add('markdown');
     state.formatted = true; state.rendered = value;
@@ -241,7 +236,7 @@ export function streamMarkdown(target: HTMLElement, value: string, scroll?: HTML
   const context = captureFileLinkContext(target);
   let state = paints.get(target);
   if (!state) {
-    state = { target, value: '', rendered: '', pending: false, scheduled: false, formatted: false, html: { source: '', settledHtml: [] }, nodes: 0, cost: 0, context };
+    state = { target, value: '', rendered: '', pending: false, scheduled: false, formatted: false, source: '', settledHtml: [], nodes: 0, cost: 0, context };
     paints.set(target, state);
   }
   if (state.context !== context) {
@@ -249,8 +244,9 @@ export function streamMarkdown(target: HTMLElement, value: string, scroll?: HTML
   }
   state.value = value; state.scroll = scroll;
   if (state.deferred !== value) {
+    const paint = state;
     if (state.deferred !== undefined) markdownCache.forgo(state.deferred);
-    if (value) markdownCache.defer(value, deferredHtml(state.html, value));
+    if (value) markdownCache.defer(value, () => finalHtml(paint, value));
     state.deferred = value || undefined;
   }
   if (!value) {

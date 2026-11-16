@@ -52,8 +52,9 @@ use std::time::Duration;
 pub const FORCE_ENV: &str = "PANDACODE_CRASH_GUARD";
 /// Turns the guard off, in any build.
 pub const OPT_OUT_ENV: &str = "PANDACODE_NO_CRASH_GUARD";
-/// The resolved app data directory, passed explicitly to the guard child.
-const DATA_DIR_ENV: &str = "PANDACODE_CRASH_GUARD_DATA_DIR";
+/// The app's identifier (tauri.conf.json): its data dir is `<data dir>/<identifier>`, as
+/// Tauri's `app_data_dir`. A constant so the guard can derive the dir without the app context.
+pub const IDENTIFIER: &str = "ai.pandacode.desktop";
 
 /// CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB: no console
 /// window, no Ctrl-C from the app's console, and not ended with a job the app was put in.
@@ -88,23 +89,12 @@ pub fn app_data_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(tests::DIR_ENV) {
         return Some(PathBuf::from(dir));
     }
-    let context = crate::app_context();
-    data_dir_for_config(dirs::data_dir(), context.config())
-}
-
-/// Match Tauri's default `app_data_dir`, using the generated (including merged) config.
-fn data_dir_for_config(base: Option<PathBuf>, config: &tauri::Config) -> Option<PathBuf> {
-    base.map(|dir| dir.join(&config.identifier))
+    dirs::data_dir().map(|dir| dir.join(IDENTIFIER))
 }
 
 /// Starts the guard for this process. The desktop app calls it once the single-instance
 /// plugin has let this process go on; `serve` once the app is built, before its run loop.
 pub fn start(mode: Mode) {
-    // An explicit opt-out disables all crash-file work, including pruning and taking notices.
-    // Check before resolving the directory, so isolated runs never touch another app's data.
-    if !allowed(false, None, std::env::var(OPT_OUT_ENV).ok().as_deref()) {
-        return;
-    }
     let dir = app_data_dir();
     // Whether or not a guard runs: old reports and logs must not outlive their age limit.
     if let Some(dir) = &dir {
@@ -303,7 +293,7 @@ fn sent(result: link::Sent) -> Result<(), String> {
 
 #[cfg(test)]
 mod gate_tests {
-    use super::{allowed, prune_due, serve_notice, take_notice, with_focus, Mode, PRUNE_EVERY_MS};
+    use super::{allowed, prune_due, serve_notice, take_notice, with_focus, Mode, IDENTIFIER, PRUNE_EVERY_MS};
     use super::state::{self, GuardState, NotRestarted, Pending};
 
     #[test]
@@ -316,7 +306,7 @@ mod gate_tests {
         // A guarded desktop run takes it out of the file at setup and holds it for its webview…
         assert_eq!(take_notice(Mode::Desktop, &dir, true, 1, None), Some(pending.clone()));
         assert_eq!(state::load::<GuardState>(&path).pending, None);
-        // …an unguarded one (systemd, PID 1) drops it. An explicit opt-out never takes it.
+        // …an unguarded one (opted out, systemd, PID 1) drops it.
         state::save(&path, &GuardState { crashes: Vec::new(), pending: Some(pending) }).unwrap();
         assert_eq!(take_notice(Mode::Desktop, &dir, false, 1, None), None);
         assert_eq!(state::load::<GuardState>(&path).pending, None);
@@ -354,50 +344,10 @@ mod gate_tests {
         assert!(prune_due(&last, start - 1));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn opted_out_start_entry() {
-        if std::env::var_os("PANDACODE_CRASH_GUARD_TEST_OPT_OUT").is_some() {
-            super::start(Mode::Desktop);
-            assert_eq!(super::LAST_PRUNE.load(std::sync::atomic::Ordering::SeqCst), 0);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn opting_out_leaves_notices_reports_and_the_directory_untouched() {
-        let dir = std::env::temp_dir().join(format!("pandacode-opt-out-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("crash-reports")).unwrap();
-        let state_path = dir.join(state::STATE_FILE);
-        let report_path = dir.join("crash-reports/1-crash.txt");
-        let pending = Pending { crashed_at: 1, summary: None, has_report: true, restarts_paused: false, restarted: false, report: None, relaunching: false, agents_interrupted: false, not_restarted: None };
-        state::save(&state_path, &GuardState { crashes: Vec::new(), pending: Some(pending) }).unwrap();
-        std::fs::write(&report_path, "old report").unwrap();
-        let before = std::fs::read(&state_path).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "crash_guard::gate_tests::opted_out_start_entry", "--nocapture", "--test-threads=1"])
-            .env("PANDACODE_CRASH_GUARD_TEST_OPT_OUT", "1")
-            .env(super::tests::DIR_ENV, &dir)
-            .env(super::FORCE_ENV, "1")
-            .env(super::OPT_OUT_ENV, "1")
-            .output().unwrap();
-        let unchanged = std::fs::read(&state_path).ok().as_deref() == Some(before.as_slice())
-            && std::fs::read_to_string(&report_path).ok().as_deref() == Some("old report")
-            && std::fs::read_dir(&dir).unwrap().count() == 2;
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert!(output.status.success() && unchanged, "opt-out touched crash data: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    }
-
-    #[test]
-    fn the_directory_uses_the_generated_config_identifier() {
-        let context = crate::app_context();
-        let base = std::env::temp_dir().join("app-data");
-        assert_eq!(super::data_dir_for_config(Some(base.clone()), context.config()), Some(base.join(&context.config().identifier)));
-        for identifier in ["ai.pandacode.bench", "org.example.fork"] {
-            let config = tauri::Config { identifier: identifier.into(), ..Default::default() };
-            assert_eq!(super::data_dir_for_config(Some(base.clone()), &config), Some(base.join(identifier)));
-            assert_eq!(super::data_dir_for_config(None, &config), None);
-        }
+    fn the_identifier_matches_tauri_conf() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["identifier"], IDENTIFIER);
     }
 
     #[test]

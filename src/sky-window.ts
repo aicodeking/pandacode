@@ -7,9 +7,9 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * fallback) behind the conversation, picked per thread by `setThread` and crossfaded (~300 ms) on a switch.
  * Wind follows the open thread's run (`#transcript[data-running]`), the pointer parts the clouds, and it renders
  * only while visible: about 8 fps at rest (on a timer, not rAF), 30 while only the wind moves, 60 while the pointer does,
- * and, once the wind has arrived, 4 fps for a steady run (2 on a tile, 15 for a fast scene, 6 on a fast tile). A transcript
- * that is still growing stays at 8 fps, and the pointer's 60 fps burst is held back for the whole run. After eight quiet
- * seconds, and after a ten-second pause, the last frame is copied onto a 2D canvas and the WebGL context is released. It
+ * and 8 again while a run is churning the transcript (`churning`: it is streaming, or the scroller's content height moved
+ * within GROWTH_MS) — a thread relaying out on every frame cannot also pay a canvas frame every other frame, and the wind
+ * still follows the run there, just a quarter as often, with the pointer's 60 fps burst held back for the same reason. It
  * also stands still while the reader moves a transcript or types in a composer — the pane's or any tile's — and for
  * HOLD_MS after the last such input: the canvas is the backdrop of the whole transcript, so every frame it paints makes
  * the compositor redo the region above it. The scene's glass is a plain fill on the surfaces that scroll with the text and
@@ -50,10 +50,7 @@ export interface SkyController {
 const FADE_MS = 300;
 
 const css = (c: Rgb): string => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
-const IDLE_FPS = 8, WIND_FPS = 30, RUN_FPS = 4, TILE_FPS = 2, FAST_FPS = 15, FAST_TILE_FPS = 6;
-/** Quiet this long with nothing moving, and the sky snapshots itself and releases WebGL. A covered sky waits this long
- * before the same park, so a brief settings glance keeps the live context. */
-const SETTLE_MS = 8000, PAUSE_PARK_MS = 10_000, CLOCK_MS = 3 * 60_000;
+const IDLE_FPS = 8, WIND_FPS = 30;
 /** Reader input holds frames this long past the last piece of it (a wheel, a touch drag, a press or a key on a
  * transcript, a keystroke or text input in a composer): long enough to span the gap between two wheel notches or two
  * keystrokes, short enough to read as an instant resume, and re-armed by the next one. */
@@ -142,23 +139,19 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   const layer = document.createElement('div');
   layer.className = 'thread-sky';
   layer.setAttribute('aria-hidden', 'true');
-  let canvas = document.createElement('canvas');
-  // Settled, static and long-paused skies copy the last WebGL frame here so the WebGL context can be released at rest.
-  const stillCanvas = document.createElement('canvas');
-  stillCanvas.className = 'thread-sky-still';
-  stillCanvas.hidden = true; stillCanvas.width = 0; stillCanvas.height = 0;
+  const canvas = document.createElement('canvas');
   // The outgoing scene's last frame, copied here on a thread switch and faded out over the new one (opacity only).
   const fade = document.createElement('canvas');
   fade.className = 'thread-sky-fade';
-  fade.hidden = true; fade.width = 0; fade.height = 0;
-  layer.append(canvas, stillCanvas, fade);
+  fade.hidden = true;
+  layer.append(canvas, fade);
   pane.prepend(layer);
   const pointerRoot = options.tileRoot ?? pane;
   const transcript = (): HTMLElement | null => pane.querySelector('#transcript');
   // One WebGL context; each scene's program compiles on first use (`programFor`).
   let ctx: Context | null | undefined, bound: Program | null = null, fades = 0;
   let scene: Scene = sceneById(options.pinnedScene) ?? sceneFor(null), hadThread = false, fading: Animation | null = null;
-  let frame = 0, timer = 0, pauseParkTimer = 0, stillKey = '', stillShape = '', settled = false, woken = false, last = 0, frames = 0, disposed = false, shown = false, visible = true, focused = true;
+  let frame = 0, timer = 0, last = 0, frames = 0, disposed = false, shown = false, visible = true, focused = true;
   // Size from the ResizeObserver, so a paint never reads layout.
   let paneWidth = 0, paneHeight = 0;
   // The governor: recent paint times (GPU timer query where the driver has one, else the rAF interval past a 60 Hz frame).
@@ -166,7 +159,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   // Preview only (`__sky.forcePaintMs`, `__sky.quietMs`): specs drive the governor with made-up paint times.
   let forcePaintMs: number | null = null, quietMs = QUIET_MS, gpuMs: number | null = null, gpuCosts: number[] = [];
   // The precompile (`precompile`): the idle callback or poll timer it is waiting on, and the last user input.
-  let idle = 0, idleTimer = 0, inputAt = 0, activityAt = performance.now();
+  let idle = 0, idleTimer = 0, inputAt = 0;
   // The reader-input hold (`hold`): no frame is painted before this time, and `resumeIn` marks the frame that ends it
   // (armed by `armResume`, cleared by the frame it fires).
   let holdUntil = 0, resumeIn = false;
@@ -183,8 +176,6 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   const covered = (): boolean => workspace.matches('.settings-open,.board-view,.github-view') || pane.querySelector('.conversation-pane')?.hasAttribute('inert') === true;
   const active = (): boolean => shown && visible && !document.hidden && focused && !covered();
   const minutes = (): number => options.fixedMinutes ?? minutesOf(new Date());
-  const currentStillShape = (): string => `${scene.id}:${document.documentElement.dataset.theme ?? ''}:${Math.round(paneWidth)}x${Math.round(paneHeight)}`;
-  const currentStillKey = (): string => `${scene.id}:${options.fixedMinutes ?? Math.floor(minutes() / (CLOCK_MS / 60_000))}:${document.documentElement.dataset.theme ?? ''}:${Math.round(paneWidth)}x${Math.round(paneHeight)}`;
 
   function paint(): void {
     const m = minutes(), colors = skyColorsAt(m), sun = sunPosition(m), moon = moonPosition(m);
@@ -199,9 +190,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     }
     setData('night', String(colors.night > .5));
     setData('threadScene', scene.id);
-    if (shown && ctx === undefined) ctx = context(canvas);
     const program = ctx ? programFor(ctx, scene) ?? null : null;
-    if (!ctx || !program) { clearStill(); layer.removeAttribute('data-gl'); return; }
+    if (!ctx || !program) { layer.removeAttribute('data-gl'); return; }
     const { gl } = ctx, u = program.locations;
     if (bound !== program) { gl.useProgram(program.program); bound = program; }
     // 0.6 of the device pixels (0.45 when the governor drops it; at least 0.75 per CSS pixel), so the near clouds stay crisp.
@@ -321,12 +311,12 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       const v = velocity + (k * (target - value) - c * velocity) * h;
       return [value + v * h, v];
     };
-    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, or a slow
-    // cadence frame up to .5 s — and that is past what explicit Euler can take on the parting spring's rising branch
-    // (k = 280, c = 33: stable to about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8
-    // where the scene contract is 0..1, and from mid-ramp it inverts the velocity). So the frame is split into equal
-    // substeps of at most 1/60 s, which advances the scene by exactly `dt` (each substep is `dt / substeps`, so no
-    // time is lost and none is counted twice). Everything that is per frame rather than per step (the `data-wind`
+    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, or a slow frame —
+    // and that is past what explicit Euler can take on the parting spring's rising branch (k = 280, c = 33: stable to
+    // about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8 where the scene contract is 0..1,
+    // and from mid-ramp it inverts the velocity). So the frame is split into equal substeps of at most 1/60 s — six at
+    // most, since `tick` clamps `dt` at .1 s — which advances the scene by exactly `dt` (each substep is `dt / substeps`,
+    // so no time is lost and none is counted twice). Everything that is per frame rather than per step (the `data-wind`
     // write, `drift`/`time`, the settling reset, `stirring`) stays below the loop and runs once.
     const substeps = Math.max(1, Math.ceil(dt / FIXED_DT - 1e-9));
     const h = dt / substeps;
@@ -369,7 +359,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // 60 fps while the pointer is live and while the parting closes fast; its last slow stretch is fine at the wind's 30 —
     // and none of it while a run churns the transcript, where `tick` keeps the timer at IDLE_FPS instead.
     stirring = settling && (pointer.target > 0 || Math.abs(pointer.amtVelocity) > 1.5);
-    return windVelocity !== 0 || settling;
+    return windVelocity !== 0 || wind > 0 || settling;
   }
   let stirring = false;
   /** One frame: on rAF while anything moves, else on a timer at IDLE_FPS, so the idle sky never wakes every vsync. */
@@ -391,165 +381,66 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     sampleGrowth(now);
     const churn = churning(now);
     const interval = now - (last || now);
-    // Only the frame that ends a reader hold is clamped at .1 s: that wait is not scene time. A slow cadence
-    // (4 fps, 2 on a tile) still advances the shader clock with the wall gap, capped at .5 s so a backgrounded
-    // tab does not integrate a long stall. `step` splits either span into 1/60 s substeps.
-    const dt = Math.min(resumeIn ? .1 : .5, interval / 1000);
+    const dt = Math.min(.1, interval / 1000);
     last = now;
-    // A held tick returned above, before `paint()` and this sample; its wait is never sampled. A timer frame is costed by
-    // how long the paint itself took, not by the intentional gap between idle ticks, so a quiet sky does not trip the governor.
-    const started = performance.now();
+    // Without a GPU timer, a 60 Hz frame that took longer than its slot is the paint cost showing. A held tick returned
+    // above, before `paint()` and this sample; its wait is never sampled: the wake is a timer (`onFrame` false), and
+    // `schedule()`, the only path that queues a frame across a hold, zeroes `last`.
+    if (forcePaintMs !== null) sample(forcePaintMs);
+    else if (onFrame && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
     const busy = step(dt, resumeIn);
     resumeIn = false;
     paint();
-    if (forcePaintMs !== null) sample(forcePaintMs);
-    else if (onFrame && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
-    else if (!ctx?.timer) sample(Math.max(0, performance.now() - started));
-    if (!busy && !running() && now - activityAt >= SETTLE_MS) { still('settled'); return; }
-    setData('skyState', busy || running() ? 'moving' : 'idle');
-    // The pointer's rAF burst stays gated by `churn` (any run, or a transcript that just grew): a streaming thread already
-    // relays out every frame, and 60 canvas frames on top of that pin a core. A steady run that is not growing uses its
-    // scene cadence instead of the wind's 30. A growing transcript stays at the idle 8.
-    const growing = now - grewAt < GROWTH_MS;
+    setData('skyState', busy ? 'moving' : 'idle');
+    // Full frame rate only while the pointer stirs the clouds and the transcript is not churning under it; the wind alone
+    // moves slowly enough for 30, and a streaming thread, relaying out every frame, gets the idle 8 — the wind keeps
+    // following the run there, it just paints a quarter of the frames.
+    //
+    // The pointer's rAF burst is gated by `churn` too, deliberately: while a run streams the thread relays out on every
+    // frame, and 60 canvas frames a second make the compositor redo the pane's region 60 times a second on top of that
+    // relayout — the owner's "pins a core while streaming". Waggling the mouse over the sky through a run must not reopen
+    // it, so a run is a heavy state and the scene answers the pointer at 8 fps there. Nothing is lost but smoothness: the
+    // parting's springs integrate the real elapsed time (`step`), so at 8 fps the parting still arrives in its ~150 ms,
+    // drawn one or two paints, and the moment the churn window closes the burst comes back — the parting is still live
+    // then, so it finishes at 60 fps.
     if (busy && stirring && !churn) frame = requestAnimationFrame(tick);
-    else {
-      const fps = growing ? IDLE_FPS
-        : busy ? WIND_FPS
-        : scene.motion === 'fast' ? (options.tileRoot ? FAST_TILE_FPS : FAST_FPS)
-        : options.tileRoot ? TILE_FPS
-        : running() ? RUN_FPS
-        : IDLE_FPS;
-      timer = window.setTimeout(() => tick(performance.now()), 1000 / fps);
-    }
-  }
-  function stopPrecompile(): void {
-    if (idle) cancelIdleCallback(idle);
-    window.clearTimeout(idleTimer); idle = 0; idleTimer = 0;
-  }
-  function clearPausePark(): void {
-    if (pauseParkTimer) { window.clearTimeout(pauseParkTimer); pauseParkTimer = 0; }
-  }
-  function clearStill(): void {
-    stillKey = ''; stillShape = ''; settled = false;
-    if (stillCanvas.hidden && !stillCanvas.width && !stillCanvas.height) return;
-    stillCanvas.hidden = true; stillCanvas.width = 0; stillCanvas.height = 0;
-  }
-  function clearFade(): void {
-    fading?.cancel(); fading = null;
-    fade.hidden = true; fade.width = 0; fade.height = 0;
-    delete layer.dataset.fading;
-  }
-  function loseWebglCanvas(): void {
-    stopPrecompile();
-    const oldContext = ctx, old = canvas;
-    ctx = undefined; bound = null; query = null;
-    if (oldContext === undefined && !old.width && !old.height) return;
-    old.removeEventListener('webglcontextlost', contextLost);
-    canvas = document.createElement('canvas'); canvas.width = 0; canvas.height = 0;
-    canvas.addEventListener('webglcontextlost', contextLost);
-    old.replaceWith(canvas);
-    (oldContext?.gl.getExtension('WEBGL_lose_context') as { loseContext(): void } | null)?.loseContext();
-    old.width = 0; old.height = 0;
-  }
-  function snapshotAndPark(): boolean {
-    if (!ctx || canvas.width <= 0 || canvas.height <= 0) {
-      if (ctx) { loseWebglCanvas(); if (stillCanvas.hidden) layer.removeAttribute('data-gl'); }
-      return !stillCanvas.hidden;
-    }
-    const g = stillCanvas.getContext('2d', { alpha: false });
-    if (!g) return false;
-    if (stillCanvas.width !== canvas.width || stillCanvas.height !== canvas.height) {
-      stillCanvas.width = canvas.width;
-      stillCanvas.height = canvas.height;
-    }
-    g.drawImage(canvas, 0, 0);
-    stillCanvas.hidden = false;
-    stillKey = currentStillKey();
-    stillShape = currentStillShape();
-    layer.setAttribute('data-gl', '');
-    loseWebglCanvas();
-    return true;
-  }
-  function releaseContext(): void {
-    clearPausePark(); clearFade(); clearStill();
-    loseWebglCanvas();
-    costs = []; gpuCosts = []; gpuMs = null; timing = 'frame';
-    layer.removeAttribute('data-gl');
-  }
-  function still(state: 'static' | 'settled'): void {
-    last = 0;
-    const parked = ctx ? snapshotAndPark() : true;
-    setData('skyState', state);
-    timer = window.setInterval(() => {
-      if (active()) {
-        paint();
-        settled = (!ctx || snapshotAndPark()) && state === 'settled';
-      }
-    }, CLOCK_MS);
-    if (!parked) return;
-    settled = state === 'settled';
+    else timer = window.setTimeout(() => tick(performance.now()), 1000 / (busy && !churn ? WIND_FPS : IDLE_FPS));
   }
   function stop(): void {
-    clearPausePark();
     window.clearTimeout(timer); window.clearInterval(timer); timer = 0;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
   }
   function schedule(): void {
-    const wasWoken = woken;
-    woken = false;
     stop();
-    stopPrecompile();
     last = 0;
     if (!shown) { setData('skyState', 'off'); return; }
-    if (!active()) {
-      clearFade();
-      setData('skyState', 'paused');
-      if (ctx) {
-        pauseParkTimer = window.setTimeout(() => {
-          pauseParkTimer = 0;
-          if (disposed || !shown || active() || !ctx) return;
-          if (paneWidth > 0 && paneHeight > 0) {
-            paint();
-            snapshotAndPark();
-          } else {
-            clearStill();
-            loseWebglCanvas();
-            layer.removeAttribute('data-gl');
-          }
-        }, PAUSE_PARK_MS);
-      }
-      return;
-    }
+    if (!active()) { setData('skyState', 'paused'); return; }
     if (reducedMotion.matches) {
+      // One still frame for the current time, refreshed every few minutes.
       wind = 0; windVelocity = 0; pointer.amt = 0; setData('wind', '0');
-      clearFade();
-      if (stillCanvas.hidden || stillKey !== currentStillKey()) paint();
-      still('static');
+      paint(); setData('skyState', 'static');
+      timer = window.setInterval(() => { if (active()) paint(); }, 3 * 60_000);
       return;
     }
-    if (settled && !wasWoken && !running() && wind === 0 && windVelocity === 0 && pointer.amt === 0 && pointer.target === 0 && fading === null && fade.hidden && !stillCanvas.hidden && stillShape === currentStillShape()) {
-      if (stillKey !== currentStillKey()) paint();
-      still('settled');
-      return;
-    }
-    settled = false;
-    activityAt = performance.now();
-    clearStill();
-    if (!ctx) paint();
-    precompile();
     frame = requestAnimationFrame(tick);
   }
-  /** Wakes the loop at once (pointer, wind). A settled sky leaves its snapshot only on this path. A run keeps the
-   * pointer off the 60 fps burst (`churning`); an urgent wake (the run flipping) still gets one frame. */
+  /** Wakes the loop at once (pointer, wind); a frame already queued on rAF is left alone. While a run churns the transcript
+   * (`churning`) a pointer move must not queue a frame of its own — the burst is gated by churn on purpose (see `tick`) — so
+   * it is dropped: the loop's own IDLE_FPS timer paints within 125 ms and steps the parting then, by the real elapsed time.
+   * A run flipping still gets its frame (`urgent`, `windChanged`): one rAF, with the clock kept (`last` untouched, unlike
+   * `schedule`) so that frame advances the wind by the time since the last paint. */
   function wake(urgent = false): void {
-    activityAt = performance.now();
-    settled = false;
     if (frame || !active() || reducedMotion.matches) return;
-    // A parked snapshot stays on top of the live canvas until it is cleared. A run wakes through the churn path
-    // below, which does not go through `schedule`, so the still has to come down here.
-    if (!stillCanvas.hidden) clearStill();
-    if (holding()) { armResume(); return; }
+    // Held by the reader: a rAF burst now would only be skipped, and its frames counted. The hold's own wake starts the
+    // burst (and, through `step`, lets the parting settle) the moment the input stops.
+    if (holding()) {
+      armResume();
+      return;
+    }
     if (churning(performance.now())) {
+      // Nothing queued at all (the loop was stopped and this is the first nudge back): arm one idle tick, never a burst.
+      // Say so now. The previous state could stay `idle` until that tick (up to 125 ms) while the pointer was already
+      // parting the clouds.
       if (!urgent) {
         setData('skyState', 'moving');
         if (!timer) timer = window.setTimeout(() => tick(performance.now()), 1000 / IDLE_FPS);
@@ -557,15 +448,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       }
       window.clearTimeout(timer); timer = 0;
       setData('skyState', 'moving');
-      woken = true;
       frame = requestAnimationFrame(tick);
       return;
     }
-    woken = true;
     setData('skyState', 'moving');
-    const previous = last;
     schedule();
-    last = previous;
   }
   /** The run flipped: the wind starts moving on this frame (a small push, still eased by its spring), not a beat later. */
   function windChanged(): void {
@@ -581,7 +468,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       layer.hidden = !want;
       if (want && ctx === undefined) ctx = context(canvas);
       if (want && !paneWidth) { paneWidth = layer.clientWidth; paneHeight = layer.clientHeight; }
-      if (want) paint(); else releaseContext();
+      if (want) paint();
     }
     syncScene();
     schedule();
@@ -600,40 +487,25 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     if (id) hadThread = true;
     if (next === scene) return;
     const animate = !first && shown && active() && !reducedMotion.matches && layer.hasAttribute('data-gl') && document.documentElement.hasAttribute('data-ready');
-    clearFade();
-    let fadeSource: HTMLCanvasElement | null = null;
-    if (animate) {
-      if (ctx) {
-        paint();
-        if (canvas.width > 0 && canvas.height > 0) fadeSource = canvas;
-      } else if (!stillCanvas.hidden && stillCanvas.width > 0 && stillCanvas.height > 0) {
-        fadeSource = stillCanvas;
-      }
-    }
-    if (fadeSource) {
+    fading?.cancel(); fading = null; fade.hidden = true;
+    if (animate && ctx) {
+      // The drawing buffer is still the last frame within this task: paint it once more and copy it before it is gone.
+      paint();
       const g = fade.getContext('2d');
       if (g) {
-        if (fade.width !== fadeSource.width || fade.height !== fadeSource.height) { fade.width = fadeSource.width; fade.height = fadeSource.height; }
-        g.drawImage(fadeSource, 0, 0);
+        if (fade.width !== canvas.width || fade.height !== canvas.height) { fade.width = canvas.width; fade.height = canvas.height; }
+        g.drawImage(canvas, 0, 0);
         fade.hidden = false;
         setData('fading', 'true'); fades++;
         fading = fade.animate([{ opacity: 1 }, { opacity: 0 }], { duration: FADE_MS, easing: 'cubic-bezier(.33,0,.2,1)' });
         const done = fading;
-        const finish = (): void => { if (fading === done) clearFade(); };
-        void done.finished.then(finish, finish);
+        void done.finished.then(() => { if (fading === done) { fade.hidden = true; fading = null; delete layer.dataset.fading; } }, () => {});
       }
     } else delete layer.dataset.fading;
     scene = next;
     shownGradient = '';
-    if (shown && active()) {
-      if (reducedMotion.matches) { schedule(); return; }
-      clearStill();
-      paint();
-      wake();
-    } else if (shown) {
-      clearStill();
-      if (!ctx) layer.removeAttribute('data-gl');
-    } else clearStill();
+    // Paused: the loop paints the new scene when it resumes.
+    if (shown && (active() || !ctx)) paint();
   }
   function move(event: PointerEvent): void {
     if (!shown || reducedMotion.matches || event.pointerType === 'touch') return;
@@ -669,32 +541,22 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   const observer = new MutationObserver(records => {
     for (const record of records) {
       if (record.attributeName === 'data-running') windChanged();
-      if (record.attributeName === 'data-focused') { schedule(); return; }
       if (record.attributeName === 'class' || record.attributeName === 'inert' || record.attributeName === 'data-wallpaper') { syncScene(); schedule(); return; }
-      if (record.attributeName === 'data-theme' && active()) { paint(); if (reducedMotion.matches) snapshotAndPark(); else wake(); }
+      if (record.attributeName === 'data-theme' && shown) paint();
     }
   });
   observer.observe(workspace, { attributes: true, attributeFilter: ['class', 'data-wallpaper'] });
-  observer.observe(pane, { attributes: true, subtree: true, attributeFilter: ['data-running', 'inert', 'data-focused'] });
+  observer.observe(pane, { attributes: true, subtree: true, attributeFilter: ['data-running', 'inert'] });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   const intersection = new IntersectionObserver(entries => { visible = entries.at(-1)?.isIntersecting ?? true; schedule(); });
   intersection.observe(layer);
   const resize = new ResizeObserver(entries => {
     const box = entries.at(-1)?.contentRect;
-    if (!box || (!box.width && !box.height)) return;
-    const changed = box.width !== paneWidth || box.height !== paneHeight;
-    paneWidth = box.width; paneHeight = box.height;
-    if (!changed && !stillCanvas.hidden) return;
-    if (active()) { paint(); if (reducedMotion.matches) snapshotAndPark(); else wake(); }
+    if (box) { paneWidth = box.width; paneHeight = box.height; }
+    if (shown) paint();
   });
   resize.observe(layer);
-  function contextLost(event: Event): void {
-    event.preventDefault();
-    if (event.target !== canvas) return;
-    stopPrecompile(); ctx = null; bound = null; query = null;
-    if (stillCanvas.hidden) layer.removeAttribute('data-gl');
-  }
-  canvas.addEventListener('webglcontextlost', contextLost);
+  canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); ctx = null; bound = null; layer.removeAttribute('data-gl'); });
   for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.addEventListener(type, input, { capture: true, passive: true });
   // The reader's own input holds frames (`hold`); a scroll that arrives without one of these is the app's and holds nothing.
   // On `document`, never on `pane` or on #transcript/#composer-area: no single instance's pane holds them all — a tile's
@@ -725,9 +587,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     dispose(): void {
       disposed = true;
       stop();
-      stopPrecompile();
-      clearFade();
-      clearStill();
+      if (idle) cancelIdleCallback(idle);
+      window.clearTimeout(idleTimer);
       for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.removeEventListener(type, input, { capture: true });
       for (const type of ['wheel', 'touchmove', 'pointerdown'] as const) document.removeEventListener(type, readerMoves, { capture: true });
       for (const type of ['keydown', 'input'] as const) document.removeEventListener(type, readerTypes, { capture: true });
@@ -739,7 +600,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       window.removeEventListener('blur', onFocus);
       reducedMotion.removeEventListener('change', schedule);
       lessTransparency.removeEventListener('change', refresh);
-      loseWebglCanvas();
+      (ctx?.gl.getExtension('WEBGL_lose_context') as { loseContext(): void } | null)?.loseContext();
       layer.remove();
     },
   };

@@ -612,11 +612,8 @@ fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
     }
     lean
 }
-pub(crate) fn emit_snapshot(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    let _ = app.emit("architect-event", &event_payload(team));
-}
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    emit_snapshot(app, team);
+    let _ = app.emit("architect-event", &event_payload(team));
     let _ = app.emit("sessions-changed", ());
 }
 pub(crate) fn parent_of(store: &Store, sid: &str) -> Result<Option<String>> {
@@ -920,7 +917,6 @@ pub async fn architect_configure(
         architect,
         profile_id.as_deref(),
     )?;
-    crate::providers::discard_warm_agent(&session_id);
     if let Some(team) = &changed {
         emit(&app, team);
         wake(app.clone());
@@ -941,7 +937,6 @@ pub async fn architect_set_council(
     council: Option<CouncilConfig>,
 ) -> Result<Option<TeamSnapshot>> {
     let team = council::set(&state, &session_id, council)?;
-    crate::providers::discard_warm_agent(&session_id);
     emit(&app, &team);
     wake(app);
     Ok(Some(team))

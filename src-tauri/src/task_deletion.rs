@@ -85,10 +85,6 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     delete_owned(&store, sid, &ids)?;
-    drop(store);
-    for id in &ids {
-        crate::providers::discard_warm_agent(id);
-    }
     Ok(DeletedSessions {
         deleted_session_ids: ids,
     })
@@ -110,6 +106,8 @@ pub async fn delete_session(
     if window.label() != "main" {
         return Err("Only the main window can delete tasks.".into());
     }
+    // A deleted task never sends a follow-up; free its waiting agent.
+    crate::providers::discard_warm_agent(&session_id);
     // Lingering agents go first, so their folders can be removed. A refused deletion keeps them.
     let owned = {
         let state = app.state::<AppState>();

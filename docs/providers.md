@@ -95,13 +95,12 @@ and resumable conversation. Existing per-task assignments remain saved in the
 connections file; a task without one, or whose harness no longer matches its
 connection, uses the harness's global setup unless its account pool is enabled.
 
-At launch (`run_inner` in `providers.rs`, and warm spares in
-`providers/warm.rs` for Claude and `providers/handshake_warm.rs` for Codex and
-the ACP harnesses) the connection's executable replaces the discovered one,
+At launch (`run_inner` in `providers.rs`, and warm Claude agents in
+`providers/warm.rs`) the connection's executable replaces the discovered one,
 its arguments are appended and its environment, including the config folder
 variable, is set after the harness's own configuration. Secret values are
 removed from any error the run returns. The warm-agent key includes the
-connection id and its revision (a handshake spare's, the whole environment), so another connection, or a saved change to the
+connection id and its revision, so another connection, or a saved change to the
 same one, never adopts an idle process. Agent usage reads each Claude Code and
 Codex connection through its own config folder and environment (see
 [agent-usage.md](agent-usage.md)); model catalogs and slash command discovery
@@ -264,9 +263,9 @@ at this point), then a named connection's environment, whose variables land
 after the scrub.
 
 The effective set is applied to everything that spawns the harness: tasks
-(`run_inner` in `providers.rs`), warm spares (`providers/warm.rs` for Claude,
-`providers/handshake_warm.rs` for Codex and the ACP harnesses, keyed in
-`providers/handshake_key.rs`; their adoption key carries the saved variables, so an edit always starts the next turn cold), the harness console in the terminal panel
+(`run_inner` in `providers.rs`), warm Claude agents (`providers/warm.rs`, whose
+adoption key carries a fingerprint of the saved variables, so an edit always
+starts the next turn cold), the harness console in the terminal panel
 (`terminal.rs`), model catalogs and slash command discovery, Claude login and
 usage probes, and Codex integration discovery. Tasks running on another
 computer use that computer's environment instead. Saving a variable refreshes
@@ -337,13 +336,6 @@ Running tasks and active architect/worker configurations retain their existing
 configuration guards. Provider-specific goal/settings state and a previous
 harness's native resume ID are not reused by a different harness.
 
-Model and permission picks show immediately while their changes save. Effort
-changes save in order, and a model pick waits for any effort save already in
-flight. Composer and `/btw` side-panel sends, board starts, Continue after a usage
-limit and Council's Keep fixing wait for pending configuration saves. If that
-wait reports a refusal, the waiting start or send stops; typed messages stay in
-the composer or return to the side-panel box.
-
 The saved provider session ID is reused across ordinary turns and app restarts.
 Changing a task's team settings retains Claude/Kimi's native context. Codex only
 supports registering dynamic tools when a thread is created; enabling or disabling
@@ -376,9 +368,6 @@ in thread configuration and `turn/start.effort`. Catalog validation runs before
 sending the prompt. The installed app-server's generated v2 JSON schemas were used
 to verify these fields; see [app-server reference](https://developers.openai.com/codex/app-server).
 
-Picking the same harness and model again preserves the task's effort override.
-Choosing a different harness or model clears it to **Default**.
-
 The installed Kimi ACP adapter exposes a `thinking` configuration option with
 on/off values. Only those advertised settings are offered; a model declaring
 `always_thinking` cannot select Off. Although Kimi configuration can name numeric
@@ -401,21 +390,8 @@ installed version. Unknown usage is hidden. Counts are last reported snapshots a
 may decrease after compaction; the UI does not estimate them from conversation text.
 
 Each active turn owns one process. Completed turns close stdin and release that
-process; the next turn resumes the saved provider session and may adopt a spare
-started ahead. Codex and supported ACP harnesses can initialize ahead; a saved
-Codex thread can also load ahead, without sending a prompt or turn. A send can
-race a spare still initializing with its own launch. Once a matching Codex spare
-is loading its thread, the send waits for that bounded load and drops any
-speculative cold initialize; a failed or expired load falls back to a cold start.
-Launch and thread keys are checked before waiting for a load or adopting a spare,
-and a late preload from an earlier turn is not retained after another launch.
-Discarding an empty New task stops its spare and pending start. Settings → Agents
-→ **Start agents ahead** turns warming off and stops existing spares. See the
-[warm-spare details](agent-reference.md#providers-and-harnesses) for exclusions
-and limits.
-
-Stop sends the provider's interruption message, then terminates its process group
-after a short grace period.
+process; the next turn resumes the saved provider session. Stop sends the provider's
+interruption message, then terminates its process group after a short grace period.
 Closing the app also drops the input channel and stops the group. Runtime output
 uses bounded frames (4 MiB maximum) and a 16 KiB stderr tail. No Node/Python SDK host
 or network bridge runs inside PandaCode.
@@ -1190,8 +1166,7 @@ request gets the shared unsupported-request answer.
 
 **Fewer round trips.** `session/new` and `session/load` report the mode, model and
 effort, so a setting that is already in place is not sent again. `session/load`
-replays the conversation before it answers; that replay is ignored. Cursor tasks
-start cold (its own config and sign-in files are not keyed into warm spares).
+replays the conversation before it answers; that replay is ignored.
 
 **Turn data.** Text, thoughts, tool calls, cancel, images
 (`promptCapabilities.image`) and steering (held for the next turn) use the common

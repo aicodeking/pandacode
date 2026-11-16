@@ -1,3 +1,28 @@
+// Warm paths for the inspector's Changes view: the viewer module, its worker pool and
+// themes start after the app's first paint, and the pool warms the grammars of the
+// files in the current git status first. The patch splitting here is shared with
+// mounting, so every viewer derives the same pool cache keys.
+
+let preloaded: Promise<unknown> | undefined;
+/** Imports the diff viewer and starts @pierre/diffs, its worker pool and themes, once. */
+export function preloadDiffs(): Promise<unknown> {
+  preloaded ??= import('./diff-viewer').then(viewer => viewer.preloadDiffViewer()).catch(() => { preloaded = undefined; });
+  return preloaded;
+}
+
+/** preloadDiffs() right after the next paint, so it never delays the list it belongs to. */
+export function preloadDiffsAfterPaint(): void {
+  if (preloaded) return;
+  requestAnimationFrame(() => setTimeout(() => void preloadDiffs(), 0));
+}
+
+let changedNames: string[] = [];
+/** File names in the current git status, so the pool warms their grammars first. */
+export function noteChangedPaths(paths: string[]): void {
+  changedNames = paths.slice(0, 50).map(path => path.slice(path.lastIndexOf('/') + 1));
+}
+export function likelyFileNames(): string[] { return changedNames; }
+
 /** cyrb53 (53 bits) plus the length: a reopened, unchanged patch reuses its highlighted rows. */
 export function patchKey(path: string, text: string): string {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;

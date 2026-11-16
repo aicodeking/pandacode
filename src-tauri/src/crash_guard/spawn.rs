@@ -44,8 +44,6 @@ pub const GUARD_LOG: &str = "crash-guard.log";
 /// this executable as `… (deleted)`.
 pub fn guard_command(config: &Config) -> std::io::Result<Command> {
     let mut command = base_command(config)?;
-    // Replace any inherited value: the child must use exactly the directory resolved here.
-    command.env(super::DATA_DIR_ENV, &config.data_dir);
     command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(guard_log(&config.data_dir));
     detach(&mut command);
     Ok(command)
@@ -81,21 +79,4 @@ fn base_command(config: &Config) -> std::io::Result<Command> {
     command.env(super::tests::GUARD_ARGS_ENV, std::ffi::OsStr::from_bytes(&joined));
     command.env_remove(super::tests::APP_ENV);
     Ok(command)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_guard_child_receives_the_resolved_directory_explicitly() {
-        let dir = std::env::temp_dir().join(format!("pandacode-guard-env-{}", uuid::Uuid::new_v4()));
-        let config = super::Config {
-            pid: 42, data_dir: dir.clone(), target: "/unused".into(), mode: super::super::Mode::Desktop,
-            launched_at: 1, armed: true, wrapper: None, args: Vec::new(),
-        };
-        let command = super::guard_command(&config).unwrap();
-        let passed = command.get_envs().find(|(name, _)| *name == super::super::DATA_DIR_ENV).unwrap().1;
-        assert_eq!(passed, Some(dir.as_os_str()));
-        drop(command);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }

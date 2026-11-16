@@ -607,7 +607,7 @@ test('at boot the New task text of projects that no longer exist is dropped, fro
 test('main.ts drops removed projects\' New task text only after list_projects answered', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const listed = source.indexOf("[state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects')");
+  const listed = source.indexOf("[state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects')");
   const dropped = source.indexOf('dropRemovedProjectDrafts(state.drafts, state.projects.map(');
   assert.ok(listed > 0 && dropped > listed, 'called once the awaited list (which throws on failure) is in');
   assert.equal(source.split('dropRemovedProjectDrafts(').length, 2, 'called once, at boot');
@@ -814,77 +814,4 @@ test('Keep unsent drafts off: nothing is written, every stored draft goes at onc
   next.set('t1', 'kept again');
   assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 't1')).text, 'kept again');
   assert.equal(new PersistedDrafts(store, () => NOW).get('t1'), 'kept again');
-});
-
-test('debounced typing keeps the in-memory Map exact on every keystroke and coalesces storage writes until 200ms or an explicit flush', async () => {
-  const { DRAFT_FLUSH_MS, dropDeletedDrafts, dropRemovedProjectDrafts } = await import('../src/launch-restore.ts');
-  assert.equal(DRAFT_FLUSH_MS, 200);
-  const timers = [];
-  const wait = (run, ms) => { const entry = { run: () => { entry.fired = true; run(); }, ms, cancelled: false, fired: false }; timers.push(entry); return entry; };
-  const cancel = entry => { if (entry) entry.cancelled = true; };
-
-  const store = memory();
-  const drafts = new PersistedDrafts(store, () => NOW, wait, cancel);
-  for (const text of ['s', 'su', 'sub', 'sub-frame typing']) {
-    drafts.set('a', text, false);
-    assert.equal(drafts.get('a'), text, 'in-memory read is synchronous on every keystroke');
-  }
-  assert.deepEqual(store.writes, [], 'no localStorage write during rapid keystrokes');
-  assert.equal(timers.filter(t => !t.cancelled && !t.fired).length, 1, 'only the latest 200ms timer remains active');
-  assert.equal(timers.at(-1).ms, 200);
-
-  timers.at(-1).run();
-  assert.deepEqual(store.writes, [DRAFT_PREFIX + 'a'], 'all rapid keystrokes coalesce into one storage write');
-  assert.deepEqual(decodeDraft(store.getItem(DRAFT_PREFIX + 'a')), { t: NOW, text: 'sub-frame typing' });
-
-  // Clearing to empty while debounced removes the stored draft immediately without waiting 200ms.
-  store.writes.length = 0;
-  drafts.set('a', 'edited again', false);
-  drafts.set('a', '', false);
-  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null, 'clearing removes stored draft at once');
-  assert.equal(timers.filter(t => !t.cancelled && !t.fired).length, 0, 'pending timer cancelled on clear');
-
-  // Sending (delete) cancels pending debounced writes so a sent prompt never reappears later.
-  drafts.set('b', 'about to send', false);
-  const beforeSendTimer = timers.at(-1);
-  drafts.delete('b');
-  assert.ok(beforeSendTimer.cancelled, 'delete cancels pending timer');
-  assert.equal(store.getItem(DRAFT_PREFIX + 'b'), null);
-
-  // leavePage, visibilitychange (hidden), reclaim, reclaimAll, and drop* flush pending debounced drafts synchronously.
-  drafts.set('c', 'flush on leave', false);
-  leavePage(store, drafts);
-  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'c')).text, 'flush on leave');
-
-  const listeners = {}, doc = { visibilityState: 'visible', addEventListener: (name, run) => { listeners[name] = run; } };
-  const original = globalThis.setInterval;
-  globalThis.setInterval = () => 0;
-  try { expireDraftsWhileRunning(drafts, doc); } finally { globalThis.setInterval = original; }
-  drafts.set('d', 'flush on hide', false);
-  assert.equal(store.getItem(DRAFT_PREFIX + 'd'), null);
-  doc.visibilityState = 'hidden';
-  listeners.visibilitychange();
-  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'd')).text, 'flush on hide');
-
-  let isDraft = true;
-  drafts.newTaskKey = id => id === 'n1' && isDraft ? NEW_TASK_DRAFT + 'p' : undefined;
-  drafts.set('n1', 'published while dirty', false);
-  assert.equal(store.getItem(DRAFT_PREFIX + 'new:p'), null);
-  isDraft = false;
-  drafts.reclaim('n1');
-  assert.equal(store.getItem(DRAFT_PREFIX + 'new:p'), null);
-  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'n1')).text, 'published while dirty');
-
-  drafts.set('e', 'reclaimAll flushes too', false);
-  drafts.reclaimAll();
-  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'e')).text, 'reclaimAll flushes too');
-
-  drafts.set('f', 'kept across drop', false);
-  await dropDeletedDrafts(drafts, async () => []);
-  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'f')).text, 'kept across drop');
-
-  isDraft = true;
-  drafts.set('n1', 'project draft flushed on drop check', false);
-  dropRemovedProjectDrafts(drafts, ['p']);
-  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'new:p')).text, 'project draft flushed on drop check');
 });

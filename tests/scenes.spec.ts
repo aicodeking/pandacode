@@ -54,7 +54,6 @@ test('a switch crossfades, first paint does not, and no thread shows the sky', a
   expect(Number(await fade.evaluate(node => getComputedStyle(node).opacity))).toBeLessThan(1.01);
   await expect(layer(page)).not.toHaveAttribute('data-fading', { timeout: 1000 });
   await expect(fade).toBeHidden();
-  expect(await fade.evaluate(node => [node.width, node.height])).toEqual([0, 0]);
   expect(await sky<number>(page, 'fades')).toBe(before + 1);
   await expect(layer(page)).toHaveAttribute('data-thread-scene', b[1]);
   // The new-task page has no thread: the sky.
@@ -85,15 +84,13 @@ test('reduced motion switches scenes at once', async ({ page }) => {
   await expect(layer(page)).toHaveAttribute('data-sky-state', 'static');
 });
 
-test('every scene paints within the 8 ms GPU budget at 1440×900, and only one neighbor compiles ahead on idle', async ({ page }) => {
+test('every scene paints within the 8 ms GPU budget at 1440×900, and all compile ahead on idle', async ({ page }) => {
   test.slow();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await open(page, '&scene=sky');
+  await open(page);
   const ids = await sky<string[]>(page, 'scenes');
-  // The current scene and one neighbor warm without allocating programs for the entire catalog.
-  await expect.poll(() => sky<string[]>(page, 'compiled').then(list => list.length), { timeout: 10_000 }).toBe(2);
-  await page.waitForTimeout(1500);
-  expect((await sky<string[]>(page, 'compiled')).length).toBe(2);
+  // The precompile compiles every scene once the app is idle, so a first visit never stalls on a compile.
+  await expect.poll(() => sky<string[]>(page, 'compiled').then(list => list.length), { timeout: 10_000 }).toBe(ids.length);
   for (const id of ids) {
     await open(page, `&scene=${id}`);
     // Pointer over the bare scene: full frame rate, so the timer queries come in quickly.

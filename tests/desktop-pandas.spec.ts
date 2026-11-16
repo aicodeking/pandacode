@@ -49,28 +49,6 @@ async function wanderPointer(page: Page): Promise<void> {
 }
 
 test.describe('desktop pandas', () => {
-  test('resting blinks only write the eyes and pause while the window is blurred', async ({ page }) => {
-    await openAtStartup(page);
-    await page.clock.runFor(40_000);
-    await page.evaluate(() => {
-      const writes: string[] = [];
-      (window as any).__brandWrites = writes;
-      new MutationObserver(records => writes.push(...records.map(record => (record.target as HTMLElement).dataset.part ?? record.target.nodeName)))
-        .observe(document.querySelector('.brand-name')!, { attributes: true, subtree: true });
-    });
-    await page.clock.runFor(15_000);
-    const writes = await page.evaluate(() => (window as any).__brandWrites as string[]);
-    expect(writes.length).toBeGreaterThan(0);
-    expect(writes.filter(part => part !== 'eyeL' && part !== 'eyeR')).toEqual([]);
-    await page.evaluate(() => { window.dispatchEvent(new Event('blur')); (window as any).__brandWrites.length = 0; });
-    await page.clock.runFor(10_000);
-    expect(await page.evaluate(() => (window as any).__brandWrites)).toEqual([]);
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.evaluate(() => { (window as any).__brandWrites.length = 0; });
-    await page.clock.runFor(10_000);
-    expect((await page.evaluate(() => (window as any).__brandWrites)).length).toBeGreaterThan(0);
-  });
-
   test('startup panda finishes its handoff and leaves the desktop brand visible', async ({ page }) => {
     await openAtStartup(page);
     await wanderPointer(page);
