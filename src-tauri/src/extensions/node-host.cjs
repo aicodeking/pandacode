@@ -5,7 +5,7 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 // A short activation keeps 64 KiB frames and 16 pending requests; a service's duplex channel allows 2 MiB frames and
 // 64 pending requests per direction (runtime_duplex_channel.rs).
 let maxFrame = 65536, maxPending = 16;
-let buffer = Buffer.alloc(0), init, sequence = 0, stopService, serveCall, stopping = false;
+let buffer = Buffer.alloc(0), init, sequence = 0, stopService, serveCall, serveEvent, stopping = false;
 const pending = new Map();
 const invocations = new AsyncLocalStorage();
 const write = process.stdout.write.bind(process.stdout);
@@ -78,9 +78,65 @@ process.stdin.on('data', chunk => {
             },
             setStatus: status => rpc('serviceStatus', { text: String(status?.text ?? '').slice(0, 200), working: status?.working === true }),
           });
+          // Workspace events (events.workspace): one-way frames in order. A handler runs to its end before the next
+          // event reaches any handler, so the order the host sent is the order the package sees; a handler's failure
+          // never stops the stream. The host is told about the first and last handler of a kind only.
+          const listeners = new Map();
+          const events = Object.freeze({
+            on(kind, handler) {
+              if (typeof kind !== 'string' || typeof handler !== 'function') throw new TypeError('events.on needs a kind and a function');
+              const entry = { handler };
+              const set = listeners.get(kind) ?? new Set();
+              if (!set.size) {
+                listeners.set(kind, set);
+                // A refusal (no grant, unknown kind) leaves this kind without listeners: nothing will ever arrive.
+                rpc('events', { op: 'subscribe', kind }).catch(() => { listeners.delete(kind); });
+              }
+              set.add(entry);
+              let live = true;
+              return Object.freeze({ dispose: () => {
+                if (!live) return;
+                live = false;
+                const current = listeners.get(kind);
+                if (!current?.delete(entry) || current.size) return;
+                listeners.delete(kind);
+                rpc('events', { op: 'unsubscribe', kind }).catch(() => {});
+              } });
+            },
+          });
+          // At most 256 events wait for a slow handler. Past that the oldest are dropped, and one `gap` (standing for
+          // the numbers it covers, so it carries the last of them) tells the package to read the state again.
+          const waiting = [];
+          let pumping = false, lost = 0, lastLost = 0, lostAt = 0;
+          const dispatchEvent = async envelope => {
+            for (const { handler } of [...(listeners.get(envelope.kind) ?? [])]) {
+              try { await handler(freeze(envelope)); } catch { /* a failing handler never blocks the stream */ }
+            }
+          };
+          const pump = async () => {
+            if (pumping) return;
+            pumping = true;
+            try {
+              while (waiting.length || lost) {
+                if (lost) {
+                  const gap = { schemaVersion: 1, kind: 'gap', sequence: lastLost, at: lostAt, dropped: lost };
+                  lost = 0;
+                  await dispatchEvent(gap);
+                  continue;
+                }
+                await dispatchEvent(waiting.shift());
+              }
+            } finally { pumping = false; }
+          };
+          serveEvent = envelope => {
+            if (waiting.length >= 256) { const oldest = waiting.shift(); lost += 1; lastLost = oldest.sequence; lostAt = oldest.at; }
+            waiting.push(envelope);
+            void pump();
+          };
           // Handlers registered here live in the service's shared state; owned commands only.
           const servicePanda = Object.freeze({
             apiVersion: '1.0.0',
+            events,
             commands: Object.freeze({ register(id, handler) {
               if (!invocation.lifetime.commands.includes(id) || typeof handler !== 'function' || commands.has(id)) throw new Error('PermissionDenied');
               commands.set(id, handler);
@@ -157,6 +213,9 @@ process.stdin.on('data', chunk => {
     } else if (value && typeof value.stop === 'string' && init.context?.lifetime) {
       // The host's stop request: run onStop handlers, acknowledge, exit. The host waits at most 2 s.
       if (stopService) void stopService(value.stop); else process.exit(0);
+    } else if (value && value.event && init.context?.lifetime) {
+      // A workspace event. The host sends one only after the service subscribed, so a handler exists by then.
+      if (serveEvent) serveEvent(value.event); else process.exit(2);
     } else if (value && value.call && init.context?.lifetime) {
       // A host to service call (an owned command). Before the service function has registered, there is no handler.
       if (serveCall) void serveCall(value.call); else process.exit(2);

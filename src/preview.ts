@@ -2350,7 +2350,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (args.enabled && !(s.limitedAt && s.limitedUntil)) throw new Error('This task has no usage limit with a known reset time.');
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
-    case 'tray_seen': result = null; break;
+    case 'tray_seen': case 'extensions_workspace_task_shown': result = null; break;
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {

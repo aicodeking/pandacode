@@ -23,6 +23,10 @@
 #[path = "runtime_duplex_channel.rs"]
 pub mod runtime_duplex_channel;
 use self::runtime_duplex_channel as duplex;
+// Ordered, scoped workspace events pushed into the service over the same pipe (R0202).
+#[path = "runtime_workspace_events.rs"]
+pub mod runtime_workspace_events;
+use self::runtime_workspace_events::WorkspaceEvents;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
@@ -42,6 +46,8 @@ pub type Dispatch = Arc<dyn Fn(DispatchRequest) -> Pin<Box<dyn Future<Output = V
 struct HostCall { method: &'static str, params: Value, handle: Option<String>, reply: oneshot::Sender<Result<Value, String>> }
 /// Calls queued for the channel loop; the 64-pending bound is the channel's, so this never fills first.
 const CALL_QUEUE: usize = 128;
+/// Writer slots kept free for answers and calls while events drain (the writer holds 512 frames).
+const EVENT_RESERVE: usize = 64;
 
 /// The permission a package must hold for its service to start.
 pub const PERMISSION: &str = "runtime.service";
@@ -129,12 +135,16 @@ pub struct ServiceLifetime {
     env: Arc<Vec<(String, String)>>,
     /// Serves the service's requests (context queries and subscriptions); installed by the app, a fake in tests.
     dispatch: Arc<Mutex<Option<Dispatch>>>,
+    /// Subscriptions and queues of the workspace events of every running service.
+    events: Arc<WorkspaceEvents>,
 }
 
 impl ServiceLifetime {
     pub fn new(runtimes: Vec<PathBuf>) -> Self {
-        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), dispatch: Arc::default() }
+        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), dispatch: Arc::default(), events: Arc::default() }
     }
+    /// Where the app reports workspace events (`publish`) and where the grant gate is installed.
+    pub fn events(&self) -> Arc<WorkspaceEvents> { self.events.clone() }
     /// Installs the server of service requests. Services started before it only see `UnsupportedCapability` replies.
     pub fn set_dispatch(&self, dispatch: Dispatch) { if let Ok(mut slot) = self.dispatch.lock() { *slot = Some(dispatch); } }
 
@@ -157,6 +167,13 @@ impl ServiceLifetime {
         let (reply, answer) = oneshot::channel();
         calls.try_send(HostCall { method: "command", params: json!({"commandId": command_id, "args": args}), handle, reply }).map_err(|error| match error { mpsc::error::TrySendError::Full(_) => "LimitExceeded", mpsc::error::TrySendError::Closed(_) => "HostUnavailable" })?;
         answer.await.unwrap_or_else(|_| Err("HostUnavailable".into()))
+    }
+    /// Tests only: the parent environment a service process is started from, as the app's own environment would be.
+    /// Added by R0202 to unblock R0105's installed test; R0105 owns what the service does with it.
+    #[cfg(test)]
+    pub fn with_parent_env(mut self, parent: Vec<(std::ffi::OsString, std::ffi::OsString)>) -> Self {
+        self.env = Arc::new(parent.into_iter().map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())).collect());
+        self
     }
     #[cfg(test)]
     pub fn with_env(mut self, env: &[(&str, &str)]) -> Self {
@@ -272,7 +289,7 @@ impl ServiceLifetime {
         let (calls, incoming_calls) = mpsc::channel(CALL_QUEUE);
         *inner.counters.entry(id.clone()).or_default().starts.entry(queued.reason.as_str()).or_default() += 1;
         inner.entries.insert(id.clone(), Entry { generation, version: queued.want.version.clone(), digest: queued.want.digest.clone(), reason: queued.reason, restarts: 0, state: State::Starting, status: None, error: None, stop, commands: queued.want.commands.clone(), calls });
-        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), dispatch: self.dispatch.clone() };
+        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), dispatch: self.dispatch.clone(), events: self.events.clone() };
         tauri::async_runtime::spawn(async move { manager.supervise(id, generation, queued, stopped, incoming_calls).await });
     }
 
@@ -283,10 +300,13 @@ impl ServiceLifetime {
         let init = json!({"lifetime": {"reason": reason.as_str(), "restarts": 0, "commands": want.commands}});
         let events = |event: Event| self.event(&id, generation, event);
         let dispatch = self.dispatch.lock().ok().and_then(|slot| slot.clone());
+        // The subscription lives exactly as long as the process: a stop, crash, disable or safe mode leaves no listener.
+        let wake = self.events.attach(&id, &want.version, generation);
         let outcome = match runtime {
-            Some(runtime) => run(&runtime, &source, init, stopped, &work, Wiring { owner: id.clone(), dispatch, calls: &mut calls, env: &self.env }, events).await,
+            Some(runtime) => run(&runtime, &source, init, stopped, &work, Wiring { owner: id.clone(), dispatch, calls: &mut calls, env: &self.env, subscriptions: self.events.clone(), wake }, events).await,
             None => Outcome::Failed("UnsupportedRuntime"),
         };
+        self.events.detach(&id, generation);
         // Whatever the outcome, no caller of this process is left waiting.
         calls.close();
         while let Ok(call) = calls.try_recv() { let _ = call.reply.send(Err("HostUnavailable".into())); }
@@ -333,14 +353,14 @@ enum Outcome { Stopped(StopReason, bool), Failed(&'static str) }
 
 /// What the process loop needs besides the process: who the service is, who serves its requests and the queue of
 /// host to service calls.
-struct Wiring<'a> { owner: String, dispatch: Option<Dispatch>, calls: &'a mut mpsc::Receiver<HostCall>, env: &'a [(String, String)] }
+struct Wiring<'a> { owner: String, dispatch: Option<Dispatch>, calls: &'a mut mpsc::Receiver<HostCall>, env: &'a [(String, String)], subscriptions: Arc<WorkspaceEvents>, wake: Arc<Notify> }
 
 /// One service process: no deadline, no heap flag, no message budget (the 2 MiB frame bound and the 64-pending
 /// and rate bounds of the duplex channel stay). Ends when the host asks it to stop (after at most `STOP_GRACE`),
 /// when its grant work is cancelled, or when it exits or breaks the protocol. The whole job is always terminated
 /// and the child reaped before this returns, and every call still outstanding is settled first.
 async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop: watch::Receiver<Option<StopReason>>, work: &Work, wiring: Wiring<'_>, mut events: impl FnMut(Event)) -> Outcome {
-    let Wiring { owner, dispatch, calls, env } = wiring;
+    let Wiring { owner, dispatch, calls, env, subscriptions, wake } = wiring;
     let mut command = tokio::process::Command::new(&runtime.binary);
     command.args(["--input-type=commonjs", "--eval", supervisor::BOOTSTRAP]).current_dir(&runtime.directory)
         .env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -412,6 +432,16 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
                             }
                             "serviceStopped" if requested.is_some() => { acknowledged = true; let _ = answer(id, &ok); }
                             "failed" if params.is_null() => { failure = Some("HostUnavailable"); break; }
+                            // `events.on` / dispose: the service's own subscription, checked against its grant here.
+                            "events" => {
+                                let reply = match (params["op"].as_str(), params["kind"].as_str()) {
+                                    (Some("subscribe"), Some(kind)) => subscriptions.subscribe(&owner, kind),
+                                    (Some("unsubscribe"), Some(kind)) => subscriptions.unsubscribe(&owner, kind),
+                                    _ => Err("InvalidShape"),
+                                };
+                                let envelope = match reply { Ok(()) => ok.clone(), Err(code) => super::context::failure(code) };
+                                if !answer(id, &envelope) && requested.is_none() { failure = Some("HostUnavailable"); }
+                            }
                             _ => match channel.begin_request(id, Instant::now()) {
                                 // Over a bound the one request is refused; the service keeps running.
                                 Err(code) => { if !answer(id, &super::context::failure(code)) && requested.is_none() { failure = Some("HostUnavailable"); } }
@@ -449,10 +479,20 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
                     if !answer(id, &reply) && requested.is_none() { failure = Some("HostUnavailable"); }
                 }
             }
+            // An event was queued for this service; the pass below writes it.
+            _ = wake.notified(), if requested.is_none() => {}
             changed = stop.changed(), if requested.is_none() => { ask = if changed.is_ok() { *stop.borrow() } else { Some(StopReason::Quit) }; }
             // A cancelled grant work is a grant or trust loss, unless the host already named the reason.
             _ = poll.tick(), if requested.is_none() => { if work.is_cancelled() { ask = Some(stop.borrow().unwrap_or(StopReason::Trust)); } }
             () = &mut grace, if requested.is_some() => break,
+        }
+        // Events leave the queue in order, one frame each, while the writer has room (calls and answers keep a
+        // reserve); a service that stops reading leaves them queued, where the 256 bound and the gap apply.
+        if requested.is_none() && failure.is_none() {
+            while out.capacity() > EVENT_RESERVE {
+                let Some(envelope) = subscriptions.next_frame(&owner) else { break };
+                if let Ok(frame) = duplex::encode(&runtime_workspace_events::event_frame(&envelope)) { if out.try_send(frame).is_err() { failure = Some("HostUnavailable"); break; } }
+            }
         }
         if let (Some(reason), None) = (ask, requested) {
             requested = Some(reason);
@@ -499,6 +539,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         use tauri::Manager;
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
+        services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
     });
@@ -971,6 +1012,122 @@ mod tests {
             grants.revoke(DUPLEX_ID, PERMISSION).unwrap();
             assert_eq!(tokio::time::timeout(Duration::from_secs(8), pending).await.expect("hung").unwrap(), Err("Cancelled".into()));
             assert!(manager.wait_idle(Duration::from_secs(5)).await);
+        }
+
+        const EVENTS_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/runtime-workspace-events/extension.json");
+        const EVENTS_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/runtime-workspace-events/main.cjs");
+        const EVENTS_ID: &str = "sample.workspace-events";
+        const CONTROL: &str = "sample.workspace-events/control";
+
+        async fn events_service(dir: &Dir) -> (ServiceLifetime, ExtensionPackages, Arc<RuntimeGrants>) {
+            let packages = ExtensionPackages::new(&dir.0, false);
+            let grants = Arc::new(RuntimeGrants::open(&dir.0));
+            { let packages = packages.0.lock().unwrap(); packages.install(&archive(EVENTS_MANIFEST, EVENTS_SOURCE)).unwrap(); let digest = digest(&packages); packages.trust(EVENTS_ID, &digest, true).unwrap(); packages.enable(EVENTS_ID, true).unwrap(); }
+            let manager = ServiceLifetime::new(vec![runtime_dir()]);
+            let (dispatch, _) = fake_context();
+            manager.set_dispatch(dispatch);
+            let gated = grants.clone();
+            manager.events().set_gate(Arc::new(move |owner, version, project| crate::extensions::runtime_service_lifetime::runtime_workspace_events::allowed(&gated, owner, version, project)));
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let projects = |names: &[&str]| Scope { projects: Some(names.iter().map(|name| (*name).to_owned()).collect()), ..Scope::default() };
+            grants.grant(EVENTS_ID, PERMISSION, Scope::default()).unwrap();
+            grants.grant(EVENTS_ID, "events.workspace", projects(&["A", "B"])).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !manager.serves(EVENTS_ID, CONTROL) || manager.events().listeners(EVENTS_ID) < 14 { assert!(Instant::now() < deadline, "the service never subscribed"); tokio::time::sleep(Duration::from_millis(25)).await; }
+            (manager, packages, grants)
+        }
+        async fn control(manager: &ServiceLifetime, args: Value) -> Value { manager.call_command(EVENTS_ID, CONTROL, args, None).await.unwrap() }
+        async fn wait_received(manager: &ServiceLifetime, what: &str, enough: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let seen = control(manager, json!({"op": "received"})).await["received"].as_array().cloned().unwrap_or_default();
+                if enough(&seen) { return seen; }
+                assert!(Instant::now() < deadline, "timed out waiting for {what}: {} events", seen.len());
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
+        /// R0202 acceptance: a real service sees the thirteen events in sequence, an out-of-grant project delivers
+        /// nothing, a paused consumer overflows into a gap and resynchronizes, and stop leaves no listener.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn workspace_events_arrive_in_order_scoped_bounded_and_leave_no_listener() {
+            let dir = Dir::new();
+            let (manager, packages, grants) = events_service(&dir).await;
+            let hub = manager.events();
+            let script = [
+                json!({"kind": "project.opened", "projectId": "A"}),
+                json!({"kind": "task.created", "taskId": "t1", "projectId": "A", "harness": "claude", "startedBy": "user"}),
+                json!({"kind": "task.shown", "windowId": "w1", "taskId": "t1", "projectId": "A"}),
+                json!({"kind": "turn.started", "taskId": "t1", "projectId": "A", "index": 1}),
+                json!({"kind": "turn.finished", "taskId": "t1", "projectId": "A", "index": 1}),
+                json!({"kind": "turn.failed", "taskId": "t1", "projectId": "A", "index": 2}),
+                json!({"kind": "task.idle", "taskId": "t1", "projectId": "A"}),
+                json!({"kind": "task.compacted", "taskId": "t1", "projectId": "A"}),
+                json!({"kind": "task.stopped", "taskId": "t1", "projectId": "A", "by": "user"}),
+                json!({"kind": "task.removed", "taskId": "t1", "projectId": "A"}),
+                json!({"kind": "settings.changed", "page": "main", "revision": 2}),
+                json!({"kind": "app.focus", "focused": true}),
+                json!({"kind": "project.closed", "projectId": "A"}),
+            ];
+            for (position, event) in script.iter().enumerate() {
+                // Events of a project outside the grant, interleaved, are never delivered.
+                assert_eq!(hub.publish(&json!({"kind": "task.idle", "taskId": "x", "projectId": "C"}), None, 1).unwrap(), crate::extensions::runtime_service_lifetime::runtime_workspace_events::Published::default());
+                assert_eq!(hub.publish(event, None, 100 + position as u64).unwrap().queued, 1, "{event}");
+            }
+            let seen = wait_received(&manager, "the thirteen events", |seen| seen.len() >= script.len()).await;
+            assert_eq!(seen.len(), 13);
+            assert_eq!(seen.iter().map(|event| event["kind"].as_str().unwrap()).collect::<Vec<_>>(), script.iter().map(|event| event["kind"].as_str().unwrap()).collect::<Vec<_>>());
+            assert_eq!(seen.iter().map(|event| event["sequence"].as_u64().unwrap()).collect::<Vec<_>>(), (1..=13).collect::<Vec<_>>());
+            assert!(seen.iter().all(|event| event["schemaVersion"] == 1 && event.get("projectId") != Some(&json!("C"))));
+            assert_eq!(control(&manager, json!({"op": "received"})).await["overlap"], 1, "handlers never overlap: order is the order of the pipe");
+
+            // Unsubscribing one kind leaves the others; nothing of that kind is queued any more.
+            assert_eq!(control(&manager, json!({"op": "off", "kind": "task.idle"})).await["listening"].as_array().unwrap().len(), 13);
+            assert_eq!(hub.listeners(EVENTS_ID), 13);
+            assert_eq!(hub.publish(&json!({"kind": "task.idle", "taskId": "t2", "projectId": "A"}), None, 1).unwrap().queued, 0);
+            control(&manager, json!({"op": "on", "kind": "task.idle"})).await;
+            for _ in 0..200 { if hub.listeners(EVENTS_ID) == 14 { break; } tokio::time::sleep(Duration::from_millis(25)).await; }
+            assert_eq!(hub.listeners(EVENTS_ID), 14);
+
+            // A consumer that cannot keep up: 400 events overflow the bounded queues into a gap, the newest survive.
+            control(&manager, json!({"op": "reset"})).await; control(&manager, json!({"op": "pause"})).await;
+            for index in 0..400u64 { hub.publish(&json!({"kind": "turn.started", "taskId": "t3", "projectId": "B", "index": index}), None, 1_000 + index).unwrap(); }
+            for _ in 0..200 { if hub.pending(EVENTS_ID) == 0 { break; } tokio::time::sleep(Duration::from_millis(25)).await; }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            control(&manager, json!({"op": "resume"})).await;
+            let seen = wait_received(&manager, "the gap and the newest event", |seen| seen.iter().any(|event| event["kind"] == "gap") && seen.iter().any(|event| event["index"] == 399)).await;
+            let gaps: Vec<&Value> = seen.iter().filter(|event| event["kind"] == "gap").collect();
+            assert!(!gaps.is_empty() && gaps.iter().all(|gap| gap["dropped"].as_u64().unwrap() > 0), "{gaps:?}");
+            let turns = seen.iter().filter(|event| event["kind"] == "turn.started").count();
+            assert!(turns >= 1 && turns < 400, "the oldest were dropped: {turns}");
+            let sequences: Vec<u64> = seen.iter().map(|event| event["sequence"].as_u64().unwrap()).collect();
+            assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "order holds across the loss: {sequences:?}");
+            // Resynchronized: a new event arrives right after the gap.
+            hub.publish(&json!({"kind": "app.focus", "focused": false}), None, 5_000).unwrap();
+            wait_received(&manager, "the event after the gap", |seen| seen.last().is_some_and(|event| event["kind"] == "app.focus" && event["focused"] == false)).await;
+
+            // Narrowing the grant to A stops B at once; revoking the grant stops everything.
+            let only_a = Scope { projects: Some(["A".to_owned()].into_iter().collect()), ..Scope::default() };
+            grants.narrow(EVENTS_ID, "events.workspace", only_a).unwrap();
+            assert_eq!(hub.publish(&json!({"kind": "project.opened", "projectId": "B"}), None, 1).unwrap().queued, 0);
+            assert_eq!(hub.publish(&json!({"kind": "project.opened", "projectId": "A"}), None, 1).unwrap().queued, 1);
+
+            // Disable ends the service and its listeners; enabling starts a new one with a fresh, empty subscription.
+            packages.0.lock().unwrap().enable(EVENTS_ID, false).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            assert!(manager.wait_idle(Duration::from_secs(5)).await);
+            assert_eq!((hub.attached(), hub.listeners(EVENTS_ID), hub.pending(EVENTS_ID)), (0, 0, 0), "a stopped service leaves zero listeners");
+            assert_eq!(hub.publish(&json!({"kind": "project.opened", "projectId": "A"}), None, 1).unwrap().queued, 0);
+            packages.0.lock().unwrap().enable(EVENTS_ID, true).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while hub.listeners(EVENTS_ID) < 14 { assert!(Instant::now() < deadline, "the restarted service never subscribed"); tokio::time::sleep(Duration::from_millis(25)).await; }
+            assert_eq!(hub.pending(EVENTS_ID), 0);
+            assert_eq!(control(&manager, json!({"op": "received"})).await["received"].as_array().unwrap().len(), 0, "a restart starts from nothing");
+            manager.stop_all(StopReason::Quit);
+            assert!(manager.wait_idle(Duration::from_secs(5)).await);
+            assert_eq!(hub.attached(), 0);
         }
 
         /// A service whose function never settles stays "starting" and is not waited for; a service that throws is

@@ -771,7 +771,12 @@ async fn delete_session_with_attachment_cleanup(
     window: tauri::WebviewWindow,
     session_id: String,
 ) -> Result<task_deletion::DeletedSessions> {
+    let project = app.try_state::<AppState>().and_then(|state| state.store.lock().ok().and_then(|store| store.session(&session_id).ok().map(|task| task.project_id)));
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
+    for removed in &deleted.deleted_session_ids {
+        extensions::runtime_service_lifetime::runtime_workspace_events::forget_task(removed);
+        if let Some(project) = &project { extensions::runtime_service_lifetime::runtime_workspace_events::task_removed(&app, removed, project); }
+    }
     match app.path().app_data_dir() {
         Ok(data_dir) => {
             let sessions = deleted.deleted_session_ids.clone();
@@ -799,17 +804,18 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
     state.store.lock().map_err(|e| e.to_string())?.projects()
 }
 #[tauri::command]
-async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project> {
+async fn add_project(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<Project> {
     let project = state
         .store
         .lock()
         .map_err(|e| e.to_string())?
         .add_project(&PathBuf::from(path));
     skill_manager::projects_changed();
+    if let Ok(project) = &project { extensions::runtime_service_lifetime::runtime_workspace_events::project_opened(&app, &project.id); }
     project
 }
 #[tauri::command]
-async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
+async fn remove_project(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String) -> Result<()> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     for session_id in agents.keys() {
@@ -823,6 +829,8 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
     }
     let removed = store.remove_project(&project_id);
     skill_manager::projects_changed();
+    drop(store);
+    if removed.is_ok() { extensions::runtime_service_lifetime::runtime_workspace_events::project_closed(&app, &project_id); }
     removed
 }
 #[tauri::command]
@@ -1071,6 +1079,7 @@ async fn create_session(
     if let Some(ref team) = inherited {
         architect::emit_snapshot(&app, team);
     }
+    extensions::runtime_service_lifetime::runtime_workspace_events::task_created(&app, &created.id, &created.project_id, &created.provider);
     Ok(created)
 }
 /// Deletes a New task draft that was left before its first prompt. A task
@@ -1652,6 +1661,7 @@ fn emit_coalesced(
     event: AgentEvent,
 ) {
     if matches!(event.kind.as_str(), "text" | "status" | "tool") { extensions::context::record_job(app, &event.session_id, "progress", "running"); }
+    if let Some(tool) = &event.tool { extensions::runtime_service_lifetime::runtime_workspace_events::observe_tool(app, &event.session_id, &tool.id, &tool.name, &tool.status); }
     let mut buffer = coalescer.lock().unwrap_or_else(|poison| poison.into_inner());
     let now = std::time::Instant::now();
     for event in buffer.push(event, now) {
@@ -2733,6 +2743,7 @@ async fn launch_operation_admitted(
     let cloud = cloud_agents::transport::is_cloud(&session_id);
     extensions::context::record_job(&app, &session_id, "progress", "running");
     let _ = app.emit("agent-event", event(&session_id, "status", "running"));
+    extensions::runtime_service_lifetime::runtime_workspace_events::turn_started(&app, &session_id);
     tray::refresh(&app);
     let store = state.store.clone();
     let agents = state.agents.clone();
@@ -3336,6 +3347,7 @@ async fn launch_operation_admitted(
         tray::finished(&app, &session_id, ended_stopped, successful);
         extensions::context::record_job(&app, &session_id, "terminal", if ended_stopped { "stopped" } else if successful { "completed" } else { "failed" });
         let _ = app.emit("agent-event", event(&session_id, "done", done));
+        extensions::runtime_service_lifetime::runtime_workspace_events::turn_ended(&app, &session_id, successful, ended_stopped);
         remote::run_finished(&app, &session_id, successful, ended_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).
         let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
@@ -4906,7 +4918,10 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     // A closed window may never send its blur.
     if let tauri::RunEvent::WindowEvent { label, event: window_event, .. } = &event {
         match window_event {
-            tauri::WindowEvent::Focused(focused) => crash_guard::window_focused(label, *focused),
+            tauri::WindowEvent::Focused(focused) => {
+                crash_guard::window_focused(label, *focused);
+                if label == "main" { extensions::runtime_service_lifetime::runtime_workspace_events::app_focus(app, *focused); }
+            }
             tauri::WindowEvent::Destroyed => crash_guard::window_focused(label, false),
             _ => {}
         }
@@ -5294,6 +5309,7 @@ pub fn run() {
                 agent_usage::agent_usage,
                 agent_usage::agent_usage_asking_claude,
                 tray::tray_seen,
+                extensions::runtime_service_lifetime::runtime_workspace_events::extensions_workspace_task_shown,
                 usage_ledger::usage_ledger,
                 capabilities::capabilities_inventory,
                 capabilities::cache_alignment,

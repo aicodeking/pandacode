@@ -5249,6 +5249,8 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
+// Tells extension services (events.workspace) which task this window shows now; the host sends ids only.
+function reportTaskShown(sessionId: string): void { void call('extensions_workspace_task_shown', { sessionId }).catch(() => undefined); }
 function selectSession(id: string, focusComposer = false, restoring = false): Promise<void> {
   if (!restoring) threadNavigation++;
   if (id !== state.sessionId) voiceDictation.detach();
@@ -5280,7 +5282,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
   const nextWorkspaceKey = `${s.projectId}:${s.worktreePath ?? ''}`;
   const keepFreshWorkspace = freshCreated && changingTask && state.projectId === s.projectId && inspectorLoaded?.key === nextWorkspaceKey && Date.now() - inspectorLoaded.at < INSPECTOR_FRESH_MS && !state.inspectorLoading && Boolean(state.git) && !state.gitError && !state.filesError;
-  state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s, keepFreshWorkspace); state.attachments = [];
+  state.sessionId = s.id; markTraySeen(s.id); if (changingTask) reportTaskShown(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s, keepFreshWorkspace); state.attachments = [];
   // Marked until it has painted, however it is opened: one that takes the app down is held back at the next boot.
   beginThreadRestore(localStorage, id);
   // The thread boot kept closed is open now, by the crash notice's button or any other way.

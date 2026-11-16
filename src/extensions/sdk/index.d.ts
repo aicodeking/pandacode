@@ -450,7 +450,24 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents }
+/** Workspace events (`events.workspace`, service only; narrowable per project): ids only, in order, at most 256 waiting, then one `gap`. See docs/extensions/runtime-workspace-events.md. */
+export type WorkspaceEventKind = 'task.created' | 'task.removed' | 'task.shown' | 'task.stopped' | 'task.idle' | 'task.compacted' | 'turn.started' | 'turn.finished' | 'turn.failed' | 'project.opened' | 'project.closed' | 'settings.changed' | 'app.focus';
+export type WorkspaceEventStarter = 'user' | 'bot' | 'schedule' | 'team' | { readonly package: string };
+export type WorkspaceEvent = { readonly schemaVersion: 1; readonly sequence: number; readonly at: number } & (
+  | { readonly kind: 'task.created'; readonly taskId: string; readonly projectId: string; readonly harness: string; readonly startedBy: WorkspaceEventStarter }
+  | { readonly kind: 'task.removed' | 'task.idle' | 'task.compacted'; readonly taskId: string; readonly projectId: string }
+  | { readonly kind: 'task.shown'; readonly windowId: string; readonly taskId: string | null; readonly projectId: string | null }
+  | { readonly kind: 'task.stopped'; readonly taskId: string; readonly projectId: string; readonly by: 'user' | { readonly package: string } }
+  | { readonly kind: 'turn.started' | 'turn.finished' | 'turn.failed'; readonly taskId: string; readonly projectId: string; readonly index: number }
+  | { readonly kind: 'project.opened' | 'project.closed'; readonly projectId: string }
+  | { readonly kind: 'settings.changed'; readonly page: string; readonly revision: number }
+  | { readonly kind: 'app.focus'; readonly focused: boolean }
+  | { readonly kind: 'gap'; readonly dropped: number });
+export interface WorkspaceEvents {
+  /** The handler of one event finishes before the next event reaches any handler. A refused subscription (no grant) leaves the kind without listeners. */
+  on<K extends WorkspaceEventKind | 'gap'>(kind: K, handler: (event: Extract<WorkspaceEvent, { kind: K }>) => void | Promise<void>): Disposable;
+}
 /** The package's own secrets (`secrets.private`, service only): scoped to this package by the host, at most 64 keys (`^[a-z][a-z0-9-]{0,63}$`) of 16 KiB each, kept across disable and update, removed on uninstall. Not a host credential; see docs/extensions/runtime-private-secrets.md. */
 export interface PrivateSecrets {
   get(options: { key: string }): Promise<{ readonly value: string | null }>;
