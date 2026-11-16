@@ -450,7 +450,13 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext }
+/** `panda.settings.get`: the values and revision of one of the package's OWN settings pages (another page is `NotFound`). */
+export interface PackageSettings { get(options: { page: string }): Promise<{ readonly schemaVersion: 1; readonly revision: number; readonly values: Readonly<Record<string, Json>> }> }
+/** The one-shot task reads of a service: `tasks.summary`, `tasks.transcript.read` and `tasks.tools.read` (the last for `tools` and `changes`). */
+export type ContentResource = 'tasks' | 'transcript' | 'tools' | 'changes';
+export interface ResourcePage { readonly schemaVersion: 1; readonly state: 'Ready'; readonly revision: string; readonly items: readonly Json[]; readonly nextCursor: number | null }
+export interface ServiceContext { query(options: { resource: ContextResource | ContentResource; taskId?: string; limit?: number; cursor?: number; revision?: string }): Promise<SummaryPage | ResourcePage> }
 /** Browser sign-in (`auth.signIn`, service only; see docs/extensions/runtime-sign-in.md): the host opens the system browser, listens on a loopback address for the redirect and returns the whole redirected address (it carries the authorization code, so keep it in the service). `{redirect_uri}` in `authorizeUrl` is replaced by the encoded listening address. At most one flow per package; a taken port or a second flow answers `Conflict`, a missing browser `HostUnavailable` unless `manual` is true. */
 export interface SignInOptions {
   readonly authorizeUrl: string;

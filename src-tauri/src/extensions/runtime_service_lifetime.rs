@@ -31,6 +31,9 @@ use self::runtime_duplex_channel as duplex;
 #[path = "runtime_workspace_events.rs"]
 pub mod runtime_workspace_events;
 use self::runtime_workspace_events::WorkspaceEvents;
+// Package settings and the content resources of tasks, served to the service natively (R0203).
+#[path = "runtime_content_resources.rs"]
+pub mod runtime_content_resources;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use super::packages::runtime_code_folders;
@@ -601,6 +604,10 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
         Box::pin(async move {
             use tauri::Manager;
             if request.method == "storageDirectory" { return storage_directory(&app, request); }
+            // `panda.settings.get` and the task content reads: answered from the grants file, no captured context needed.
+            if matches!(request.method.as_str(), "settingsGet" | "contentQuery") {
+                return tauri::async_runtime::spawn_blocking(move || runtime_content_resources::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
             if request.method != "context" { return super::context::failure("UnsupportedCapability"); }
             let Some(handle) = request.handle else { return super::context::failure("StaleContext") };
             let result = (|| {

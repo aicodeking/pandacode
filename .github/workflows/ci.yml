@@ -117,6 +117,12 @@ jobs:
       - name: Code folders and package data (WebKit)
         env: { PW_PORT: '15862', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-code-folders.spec.ts --workers=1
+      - name: Settings and content resources (Chromium)
+        env: { PW_PORT: '15941', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-content-resources.spec.ts --workers=1
+      - name: Settings and content resources (WebKit)
+        env: { PW_PORT: '15942', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-content-resources.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1

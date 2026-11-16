@@ -244,7 +244,18 @@ impl Packages {
             _ => Ok(Value::Null),
         }
     }
-    fn settings_set(&self, id: &str, page: &str, values: &Value) -> Result<()> {
+    /// The values `panda.settings.get` serves: the stored ones, or the declared defaults when nothing was saved (R0203).
+    pub(super) fn settings_values(&self, id: &str, page: &str) -> Result<Value> {
+        let definition = self.settings_page(id, page)?;
+        match self.settings_get(id, page)? {
+            Value::Null => Ok(Value::Object(definition["fields"].as_array().into_iter().flatten().map(|field| {
+                let fallback = match field["kind"].as_str() { Some("select") => if field["multiple"] == true { json!([]) } else { json!("") }, Some("switch") => json!(false), _ => json!("") };
+                (field["id"].as_str().unwrap_or_default().to_owned(), if field["kind"] == "select" { fallback } else { field.get("value").cloned().unwrap_or(fallback) })
+            }).collect())),
+            stored => Ok(stored),
+        }
+    }
+    pub(super) fn settings_set(&self, id: &str, page: &str, values: &Value) -> Result<()> {
         let definition = self.settings_page(id, page)?;
         if !valid_settings_values(&definition, values) { return Err("Invalid extension settings values.".into()); }
         let mut record = self.settings_record(id)?; record[page] = values.clone();
@@ -468,8 +479,11 @@ pub fn extensions_settings_get(state: tauri::State<'_, ExtensionPackages>, id: S
     state.0.lock().map_err(|_| "Extension manager unavailable.")?.settings_get(&id, &page)
 }
 #[tauri::command]
-pub fn extensions_settings_set(state: tauri::State<'_, ExtensionPackages>, id: String, page: String, values: Value) -> Result<()> {
-    state.0.lock().map_err(|_| "Extension manager unavailable.")?.settings_set(&id, &page, &values)
+pub fn extensions_settings_set(app: tauri::AppHandle, state: tauri::State<'_, ExtensionPackages>, id: String, page: String, values: Value) -> Result<()> {
+    state.0.lock().map_err(|_| "Extension manager unavailable.")?.settings_set(&id, &page, &values)?;
+    // The package's service reads the page again: the notice names the page and the revision, never the values (R0203).
+    super::runtime_service_lifetime::runtime_content_resources::settings_changed(&app, &id, &page, &values);
+    Ok(())
 }
 
 #[tauri::command]

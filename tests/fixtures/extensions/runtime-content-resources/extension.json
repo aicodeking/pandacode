@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.content-resources",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "tasks.summary", "tasks.transcript.read", "tasks.tools.read"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.content-resources/control", "title": "Content resources control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [{ "id": "sample.content-resources/header", "location": "panda.workspace.header.actions", "command": "sample.content-resources/control", "presentation": "button", "text": "Content resources" }],
+    "settings": [{ "id": "sample.content-resources/preferences", "title": "Content resources preferences", "fields": [
+      { "id": "label", "kind": "text", "label": "Report label", "value": "Local report", "required": true },
+      { "id": "enabled", "kind": "switch", "label": "Include summary", "value": true },
+      { "id": "format", "kind": "select", "label": "Report format", "options": [{ "value": "short", "label": "Short" }, { "value": "long", "label": "Long" }] }
+    ] }]
+  }
+}

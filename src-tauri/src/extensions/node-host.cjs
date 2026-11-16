@@ -156,11 +156,14 @@ process.stdin.on('data', chunk => {
             // The same context surface a short activation has. Requests made while an owned command runs are
             // answered for the context that command was invoked from; anywhere else they are stale.
             context: Object.freeze({
-              query: params => rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'query', invocation: invocations.getStore() }),
+              // The four task reads are answered natively from the grants file (R0203); the rest keep the broker path.
+              query: params => (['tasks', 'transcript', 'tools', 'changes'].includes(params?.resource) ? rpc('contentQuery', { ...params, limit: params?.limit === undefined ? 10 : params.limit }) : rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'query', invocation: invocations.getStore() })),
               subscribe: params => rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'subscribe', invocation: invocations.getStore() }),
               events: params => rpc('context', { ...params, op: 'events', invocation: invocations.getStore() }),
               unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe', invocation: invocations.getStore() }),
             }),
+            // The package's own settings pages (R0203): the owner is the connection's, never the request's.
+            settings: Object.freeze({ get: options => rpc('settingsGet', options === undefined || options === null ? {} : { ...options }) }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.
             storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
           });
