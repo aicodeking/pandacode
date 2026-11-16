@@ -79,7 +79,7 @@ impl ContextBroker {
                 else { (menu["id"] == invocation.id).then(|| menu["command"].clone()) }
             }).ok_or("PermissionDenied")?
         };
-        if !contributes["commands"].as_array().into_iter().flatten().any(|command| command["id"] == command_id && command["action"]["kind"] == "runCommand") || !manifest["runtime"]["activationEvents"].as_array().is_some_and(|events| events.contains(&command_id)) { return Err("PermissionDenied"); }
+        if !contributes["commands"].as_array().into_iter().flatten().any(|command| command["id"] == command_id && command["action"]["kind"] == "runCommand") || !(manifest["runtime"]["activationEvents"].as_array().is_some_and(|events| events.contains(&command_id)) || (manifest["runtime"].get("service").is_some() && manifest["runtime"].get("activationEvents").is_none())) { return Err("PermissionDenied"); }
         let mut context = invocation.context.clone(); context["commandId"] = command_id;
         Ok((invocation.owner.clone(), invocation.version.clone(), context))
     }

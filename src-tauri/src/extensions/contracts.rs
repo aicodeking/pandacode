@@ -298,7 +298,10 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             }
         }
         let events = strings(&manifest["runtime"]["activationEvents"]);
-        if manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id)) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
+        // A background service takes its commands from the service itself, so activationEvents may be left out (R0201);
+        // when listed they still have to match the package's executable commands.
+        let service_without_events = manifest["runtime"].get("service").is_some() && manifest["runtime"].get("activationEvents").is_none();
+        if !service_without_events && (manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id))) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
         // A background service is a named permission: it must be declared to be granted (runtime-service-lifetime.md).
         if manifest["runtime"].get("service").is_some() && !strings(&manifest["permissions"]).contains(&"runtime.service".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id])); }
         let mut owned = BTreeSet::new();

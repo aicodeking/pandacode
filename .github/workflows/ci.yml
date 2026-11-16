@@ -87,6 +87,12 @@ jobs:
       - name: Background service lifetime (WebKit)
         env: { PW_PORT: '15442', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-service-lifetime.spec.ts --workers=1
+      - name: Duplex service channel (Chromium)
+        env: { PW_PORT: '15443', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-duplex-channel.spec.ts --workers=1
+      - name: Duplex service channel (WebKit)
+        env: { PW_PORT: '15444', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-duplex-channel.spec.ts --workers=1
       - name: Trusted development preview (Chromium)
         env:
           PW_PORT: '1435'

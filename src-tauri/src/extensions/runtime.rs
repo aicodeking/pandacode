@@ -210,11 +210,27 @@ pub async fn extensions_runtime(window: tauri::WebviewWindow, app: tauri::AppHan
             })();
             let (owner, version, digest, source, captured, cancel) = match admitted { Ok(value) => value, Err(code) => return context::failure(code) };
             let captured_project = captured["projectId"].as_str().map(str::to_owned);
+            let captured_command = captured["commandId"].as_str().unwrap_or_default().to_owned();
+            let captured_args = captured.get("args").cloned().unwrap_or_else(|| json!({}));
             let directory = app.path().resource_dir().ok().map(|path| path.join("extension-runtime"));
             let mut runtime = directory.as_deref().and_then(|path| supervisor::Runtime::packaged(path).ok());
             // Explicit checkout-local developer packaging, never PATH or a package-controlled path.
             if cfg!(debug_assertions) && runtime.is_none() { runtime = supervisor::Runtime::packaged(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).ok(); }
-            let result = if let Some(runtime) = runtime {
+            // An owned command of a running background service runs inside it, in the state it built (R0201).
+            let command_id = captured_command.clone();
+            let service = app.try_state::<super::runtime_service_lifetime::ServiceLifetime>().filter(|services| services.serves(&owner, &command_id));
+            let result = if let Some(services) = service {
+                let args = captured_args;
+                let call = services.call_command(&owner, &command_id, args, Some(handle.clone()));
+                tokio::pin!(call);
+                let outcome = loop {
+                    tokio::select! {
+                        reply = &mut call => break reply,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => if cancel.load(Ordering::Acquire) { break Err("Cancelled".to_owned()); },
+                    }
+                };
+                outcome.map(|_| Vec::new()).map_err(|code| super::runtime_service_lifetime::runtime_duplex_channel::known_code(&code))
+            } else if let Some(runtime) = runtime {
                 supervisor::run(&runtime, &source, captured, cancel.clone(), |method, params| {
                     let result = (|| {
                         if cancel.load(Ordering::Acquire) { return Err("Cancelled"); }

@@ -15,11 +15,33 @@
 //! window or a captured context, so a task switch, a released handle or a closed main window leaves them running.
 //! Nothing here waits for a service: `reconcile` only spawns, so a starting, hanging or broken service never
 //! delays the app.
+//!
+//! The duplex channel (R0201, `runtime_duplex_channel.rs`) runs over the same pipe: the host dispatches owned
+//! commands into the service (`ServiceLifetime::call_command`) while the service's own requests (context queries
+//! and subscriptions) are served concurrently, each direction bounded and every outstanding call settled when the
+//! process ends.
+#[path = "runtime_duplex_channel.rs"]
+pub mod runtime_duplex_channel;
+use self::runtime_duplex_channel as duplex;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
-use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio, sync::{Arc, Mutex}, time::Duration};
-use tokio::{io::AsyncReadExt, sync::{mpsc, watch, Notify}};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
+use tokio::{io::AsyncReadExt, sync::{mpsc, oneshot, watch, Notify}, task::JoinSet};
+
+/// A request the service made to the host, after the channel admitted it.
+pub struct DispatchRequest {
+    pub owner: String,
+    pub method: String,
+    pub params: Value,
+    /// The captured context handle of the command invocation the request was made from (never chosen by the package).
+    pub handle: Option<String>,
+}
+/// Serves service requests other than the lifecycle ones; resolves to the broker envelope `{ok, value|error}`.
+pub type Dispatch = Arc<dyn Fn(DispatchRequest) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync>;
+/// One host to service call waiting for its turn on the channel.
+struct HostCall { method: &'static str, params: Value, handle: Option<String>, reply: oneshot::Sender<Result<Value, String>> }
+/// Calls queued for the channel loop; the 64-pending bound is the channel's, so this never fills first.
+const CALL_QUEUE: usize = 128;
 
 /// The permission a package must hold for its service to start.
 pub const PERMISSION: &str = "runtime.service";
@@ -87,6 +109,8 @@ impl State {
 struct Entry {
     generation: u64, version: String, digest: String, reason: StartReason, restarts: u32, state: State,
     status: Option<(String, bool)>, error: Option<String>, stop: watch::Sender<Option<StopReason>>,
+    /// The package's own `runCommand` ids (the only commands that may be dispatched into this service).
+    commands: Vec<String>, calls: mpsc::Sender<HostCall>,
 }
 #[derive(Default)]
 struct Counters { starts: BTreeMap<&'static str, u64>, stops: BTreeMap<&'static str, u64>, last_stop: Option<(&'static str, bool)> }
@@ -103,11 +127,36 @@ pub struct ServiceLifetime {
     runtimes: Arc<Vec<PathBuf>>,
     /// Extra variables for the service process. Only tests set them (to hand a fixture its fake back end).
     env: Arc<Vec<(String, String)>>,
+    /// Serves the service's requests (context queries and subscriptions); installed by the app, a fake in tests.
+    dispatch: Arc<Mutex<Option<Dispatch>>>,
 }
 
 impl ServiceLifetime {
     pub fn new(runtimes: Vec<PathBuf>) -> Self {
-        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default() }
+        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), dispatch: Arc::default() }
+    }
+    /// Installs the server of service requests. Services started before it only see `UnsupportedCapability` replies.
+    pub fn set_dispatch(&self, dispatch: Dispatch) { if let Ok(mut slot) = self.dispatch.lock() { *slot = Some(dispatch); } }
+
+    /// `true` while the service of `id` is running and `command_id` is one of its owned commands.
+    pub fn serves(&self, id: &str, command_id: &str) -> bool {
+        self.inner.lock().is_ok_and(|inner| inner.entries.get(id).is_some_and(|entry| entry.state == State::Running && entry.commands.iter().any(|command| command == command_id)))
+    }
+    /// Dispatches an owned command into the running service, where it reaches the state the service built (`args`
+    /// arrive as `context.args`). Never queues behind another call: calls interleave with each other and with the
+    /// service's own requests, bounded to 64 pending. Settled with an error code when the service stops, crashes or
+    /// is disconnected. `handle` is the captured context the command runs for; the service's context queries made
+    /// while it runs are answered against it.
+    pub async fn call_command(&self, id: &str, command_id: &str, args: Value, handle: Option<String>) -> Result<Value, String> {
+        let calls = {
+            let inner = self.inner.lock().map_err(|_| "HostUnavailable".to_owned())?;
+            let entry = inner.entries.get(id).filter(|entry| entry.state == State::Running).ok_or("HostUnavailable")?;
+            if !entry.commands.iter().any(|command| command == command_id) { return Err("PermissionDenied".into()); }
+            entry.calls.clone()
+        };
+        let (reply, answer) = oneshot::channel();
+        calls.try_send(HostCall { method: "command", params: json!({"commandId": command_id, "args": args}), handle, reply }).map_err(|error| match error { mpsc::error::TrySendError::Full(_) => "LimitExceeded", mpsc::error::TrySendError::Closed(_) => "HostUnavailable" })?;
+        answer.await.unwrap_or_else(|_| Err("HostUnavailable".into()))
     }
     #[cfg(test)]
     pub fn with_env(mut self, env: &[(&str, &str)]) -> Self {
@@ -220,22 +269,27 @@ impl ServiceLifetime {
         inner.next += 1;
         let generation = inner.next;
         let (stop, stopped) = watch::channel(None);
+        let (calls, incoming_calls) = mpsc::channel(CALL_QUEUE);
         *inner.counters.entry(id.clone()).or_default().starts.entry(queued.reason.as_str()).or_default() += 1;
-        inner.entries.insert(id.clone(), Entry { generation, version: queued.want.version.clone(), digest: queued.want.digest.clone(), reason: queued.reason, restarts: 0, state: State::Starting, status: None, error: None, stop });
-        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone() };
-        tauri::async_runtime::spawn(async move { manager.supervise(id, generation, queued, stopped).await });
+        inner.entries.insert(id.clone(), Entry { generation, version: queued.want.version.clone(), digest: queued.want.digest.clone(), reason: queued.reason, restarts: 0, state: State::Starting, status: None, error: None, stop, commands: queued.want.commands.clone(), calls });
+        let manager = Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), dispatch: self.dispatch.clone() };
+        tauri::async_runtime::spawn(async move { manager.supervise(id, generation, queued, stopped, incoming_calls).await });
     }
 
-    async fn supervise(self, id: String, generation: u64, queued: Queued, stopped: watch::Receiver<Option<StopReason>>) {
+    async fn supervise(self, id: String, generation: u64, queued: Queued, stopped: watch::Receiver<Option<StopReason>>, mut calls: mpsc::Receiver<HostCall>) {
         let Queued { want, source, reason, work } = queued;
         let directories = self.runtimes.clone();
         let runtime = tauri::async_runtime::spawn_blocking(move || directories.iter().find_map(|directory| supervisor::Runtime::packaged(directory).ok())).await.ok().flatten();
         let init = json!({"lifetime": {"reason": reason.as_str(), "restarts": 0, "commands": want.commands}});
         let events = |event: Event| self.event(&id, generation, event);
+        let dispatch = self.dispatch.lock().ok().and_then(|slot| slot.clone());
         let outcome = match runtime {
-            Some(runtime) => run(&runtime, &source, init, stopped, &work, &self.env, events).await,
+            Some(runtime) => run(&runtime, &source, init, stopped, &work, Wiring { owner: id.clone(), dispatch, calls: &mut calls, env: &self.env }, events).await,
             None => Outcome::Failed("UnsupportedRuntime"),
         };
+        // Whatever the outcome, no caller of this process is left waiting.
+        calls.close();
+        while let Ok(call) = calls.try_recv() { let _ = call.reply.send(Err("HostUnavailable".into())); }
         drop(work);
         let Ok(mut inner) = self.inner.lock() else { return };
         if inner.entries.get(&id).is_some_and(|entry| entry.generation == generation) {
@@ -277,14 +331,16 @@ enum Event { Ready, Status(String, bool) }
 #[derive(Debug, PartialEq)]
 enum Outcome { Stopped(StopReason, bool), Failed(&'static str) }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Message { schema_version: u8, token: String, id: u32, method: String, params: Value }
+/// What the process loop needs besides the process: who the service is, who serves its requests and the queue of
+/// host to service calls.
+struct Wiring<'a> { owner: String, dispatch: Option<Dispatch>, calls: &'a mut mpsc::Receiver<HostCall>, env: &'a [(String, String)] }
 
-/// One service process: no deadline, no heap flag, no message budget (the frame size bound stays). Ends when the
-/// host asks it to stop (after at most `STOP_GRACE`), when its grant work is cancelled, or when it exits or breaks
-/// the protocol. The whole job is always terminated and the child reaped before this returns.
-async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop: watch::Receiver<Option<StopReason>>, work: &Work, env: &[(String, String)], mut events: impl FnMut(Event)) -> Outcome {
+/// One service process: no deadline, no heap flag, no message budget (the 2 MiB frame bound and the 64-pending
+/// and rate bounds of the duplex channel stay). Ends when the host asks it to stop (after at most `STOP_GRACE`),
+/// when its grant work is cancelled, or when it exits or breaks the protocol. The whole job is always terminated
+/// and the child reaped before this returns, and every call still outstanding is settled first.
+async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop: watch::Receiver<Option<StopReason>>, work: &Work, wiring: Wiring<'_>, mut events: impl FnMut(Event)) -> Outcome {
+    let Wiring { owner, dispatch, calls, env } = wiring;
     let mut command = tokio::process::Command::new(&runtime.binary);
     command.args(["--input-type=commonjs", "--eval", supervisor::BOOTSTRAP]).current_dir(&runtime.directory)
         .env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -299,7 +355,7 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     let (Some(mut stdin), Some(mut stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else { let _ = child.kill().await; return Outcome::Failed("HostUnavailable") };
     // Frames are read by their own task so that a stop or a grant change never cuts a frame in half.
     let (frames, mut incoming) = mpsc::channel::<supervisor::Result<Value>>(8);
-    let reader = tauri::async_runtime::spawn(async move { loop { let frame = supervisor::read_frame(&mut stdout).await; let end = frame.is_err(); if frames.send(frame).await.is_err() || end { break; } } });
+    let reader = tauri::async_runtime::spawn(async move { loop { let frame = duplex::read_frame(&mut stdout).await; let end = frame.is_err(); if frames.send(frame).await.is_err() || end { break; } } });
     // Package output is never shown; drain stderr so the service cannot block on a full pipe.
     let noise = tauri::async_runtime::spawn(async move { let mut chunk = [0; 4096]; while stderr.read(&mut chunk).await.is_ok_and(|count| count > 0) {} });
     let token = uuid::Uuid::new_v4().to_string();
@@ -309,28 +365,89 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     let mut poll = tokio::time::interval(GRANT_POLL);
     let mut failure: Option<&'static str> = None;
     if supervisor::write_frame(&mut stdin, &json!({"token": token, "source": source, "context": init}), 300_000).await.is_err() { failure = Some("HostUnavailable"); }
-    if let (Some(reason), None) = (requested, failure) { if supervisor::write_frame(&mut stdin, &json!({"stop": reason.as_str()}), supervisor::MAX_FRAME).await.is_err() { failure = Some("HostUnavailable"); } grace.as_mut().reset(tokio::time::Instant::now() + STOP_GRACE); }
-    let mut expected = 1u32;
+    // Every later frame goes through one writer task, so a service that stops reading never blocks this loop.
+    let (out, mut outgoing) = mpsc::channel::<Vec<u8>>(512);
+    let writer = tauri::async_runtime::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        while let Some(frame) = outgoing.recv().await { if stdin.write_all(&frame).await.is_err() || stdin.flush().await.is_err() { break; } }
+    });
+    let send = |value: &Value| duplex::encode(value).is_ok_and(|frame| out.try_send(frame).is_ok());
+    // An answer too large for a frame becomes a `LimitExceeded` refusal of that one request.
+    let answer = |id: u64, reply: &Value| {
+        let frame = duplex::encode(&duplex::answer_frame(id, reply)).or_else(|_| duplex::encode(&duplex::answer_frame(id, &super::context::failure("LimitExceeded"))));
+        frame.is_ok_and(|frame| out.try_send(frame).is_ok())
+    };
+    if let (Some(reason), None) = (requested, failure) { if !send(&json!({"stop": reason.as_str()})) { failure = Some("HostUnavailable"); } grace.as_mut().reset(tokio::time::Instant::now() + STOP_GRACE); }
+    let mut channel = duplex::Channel::<oneshot::Sender<Result<Value, String>>>::default();
+    // The captured context each in-flight command runs for, by host call id.
+    let mut handles: BTreeMap<u64, String> = BTreeMap::new();
+    let mut serving: JoinSet<(u64, Value)> = JoinSet::new();
+    let mut calls_open = true;
+    let mut expected = 1u64;
     while failure.is_none() {
         let mut ask = None;
         tokio::select! {
             frame = incoming.recv() => {
-                let message = match frame { Some(Ok(raw)) => serde_json::from_value::<Message>(raw).map_err(|_| "InvalidShape"), Some(Err(code)) => Err(code), None => Err("HostUnavailable") };
-                let message = match message { Ok(message) => message, Err(code) => { failure = Some(code); break; } };
-                if message.schema_version != 1 { failure = Some("IncompatibleApi"); break; }
-                if message.token != token || message.id != expected { failure = Some("PermissionDenied"); break; }
-                expected = expected.wrapping_add(1);
-                match message.method.as_str() {
-                    "serviceReady" if message.params.is_null() => events(Event::Ready),
-                    "serviceStatus" => {
-                        let text = message.params["text"].as_str().unwrap_or_default().chars().take(200).collect::<String>();
-                        events(Event::Status(text, message.params["working"] == true));
+                let message = match frame { Some(Ok(raw)) => duplex::classify(&raw), Some(Err(code)) => Err(code), None => Err("HostUnavailable") };
+                match message {
+                    Err(code) => { failure = Some(code); break; }
+                    Ok(duplex::Incoming::Reply { schema_version, token: sent, id, result }) => {
+                        if schema_version != 1 { failure = Some("IncompatibleApi"); break; }
+                        if sent != token { failure = Some("PermissionDenied"); break; }
+                        handles.remove(&id);
+                        // A late, repeated or unknown id resolves nothing; it never settles another call.
+                        if let Some(reply) = channel.settle(id) { let _ = reply.send(result); }
                     }
-                    "serviceStopped" if requested.is_some() => acknowledged = true,
-                    "failed" if message.params.is_null() => { failure = Some("HostUnavailable"); break; }
-                    _ => { failure = Some("UnsupportedCapability"); break; }
+                    Ok(duplex::Incoming::Request { schema_version, token: sent, id, method, params }) => {
+                        if schema_version != 1 { failure = Some("IncompatibleApi"); break; }
+                        if sent != token || id != expected { failure = Some("PermissionDenied"); break; }
+                        expected += 1;
+                        let ok = json!({"ok": true, "value": null});
+                        match method.as_str() {
+                            "serviceReady" if params.is_null() => { events(Event::Ready); if !answer(id, &ok) && requested.is_none() { failure = Some("HostUnavailable"); } }
+                            "serviceStatus" => {
+                                let text = params["text"].as_str().unwrap_or_default().chars().take(200).collect::<String>();
+                                events(Event::Status(text, params["working"] == true));
+                                if !answer(id, &ok) && requested.is_none() { failure = Some("HostUnavailable"); }
+                            }
+                            "serviceStopped" if requested.is_some() => { acknowledged = true; let _ = answer(id, &ok); }
+                            "failed" if params.is_null() => { failure = Some("HostUnavailable"); break; }
+                            _ => match channel.begin_request(id, Instant::now()) {
+                                // Over a bound the one request is refused; the service keeps running.
+                                Err(code) => { if !answer(id, &super::context::failure(code)) && requested.is_none() { failure = Some("HostUnavailable"); } }
+                                Ok(()) => {
+                                    // Context requests run for the command they were made from, never for a handle the package names.
+                                    let handle = if method == "context" { params.get("invocation").and_then(Value::as_u64).and_then(|call| handles.get(&call).cloned()) } else { None };
+                                    let mut params = params;
+                                    if let Some(object) = params.as_object_mut() { object.remove("invocation"); }
+                                    let served = dispatch.as_ref().map(|dispatch| dispatch(DispatchRequest { owner: owner.clone(), method, params, handle }));
+                                    serving.spawn(async move { (id, match served { Some(served) => served.await, None => super::context::failure("UnsupportedCapability") }) });
+                                }
+                            },
+                        }
+                    }
                 }
-                if supervisor::write_frame(&mut stdin, &json!({"id": message.id, "reply": {"ok": true, "value": null}}), supervisor::MAX_FRAME).await.is_err() && requested.is_none() { failure = Some("HostUnavailable"); }
+            }
+            call = calls.recv(), if requested.is_none() && calls_open => {
+                match call {
+                    None => calls_open = false,
+                    Some(call) => match channel.begin_call(Instant::now(), call.reply) {
+                        Err((code, reply)) => { let _ = reply.send(Err(code.into())); }
+                        Ok(id) => match duplex::encode(&duplex::call_frame(id, call.method, &call.params)) {
+                            Err(code) => { if let Some(reply) = channel.settle(id) { let _ = reply.send(Err(code.into())); } }
+                            Ok(frame) => {
+                                if let Some(handle) = call.handle { handles.insert(id, handle); }
+                                if out.try_send(frame).is_err() { failure = Some("HostUnavailable"); break; }
+                            }
+                        },
+                    },
+                }
+            }
+            done = serving.join_next(), if !serving.is_empty() => {
+                if let Some(Ok((id, reply))) = done {
+                    channel.finish_request(id);
+                    if !answer(id, &reply) && requested.is_none() { failure = Some("HostUnavailable"); }
+                }
             }
             changed = stop.changed(), if requested.is_none() => { ask = if changed.is_ok() { *stop.borrow() } else { Some(StopReason::Quit) }; }
             // A cancelled grant work is a grant or trust loss, unless the host already named the reason.
@@ -341,10 +458,16 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
             requested = Some(reason);
             grace.as_mut().reset(tokio::time::Instant::now() + STOP_GRACE);
             // A process that already left still counts as stopped for this reason.
-            let _ = supervisor::write_frame(&mut stdin, &json!({"stop": reason.as_str()}), supervisor::MAX_FRAME).await;
+            let _ = send(&json!({"stop": reason.as_str()}));
         }
     }
-    drop(stdin);
+    // Disconnect, disable and trust loss settle every outstanding call and refuse the queued ones: nothing hangs.
+    let settled = if requested.is_some() { "Cancelled" } else { "HostUnavailable" };
+    for (_, reply) in channel.settle_all() { let _ = reply.send(Err(settled.into())); }
+    calls.close();
+    while let Ok(call) = calls.try_recv() { let _ = call.reply.send(Err(settled.into())); }
+    serving.abort_all();
+    writer.abort();
     #[cfg(windows)]
     let disposed = job.terminate();
     #[cfg(not(windows))]
@@ -375,9 +498,36 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
+        services.set_dispatch(app_dispatch(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
     });
+}
+
+/// Serves the service's context queries and subscriptions exactly as a short activation's are: against the
+/// captured context of the command the request was made from, through the same broker call, so the public behaviour
+/// (limits, scope, stale handles) and the job events are the legacy ones, recorded once. Nothing else is served here:
+/// other methods stay with their own slices and answer `UnsupportedCapability`.
+fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
+    let app = app.clone();
+    Arc::new(move |request: DispatchRequest| {
+        let app = app.clone();
+        Box::pin(async move {
+            use tauri::Manager;
+            if request.method != "context" { return super::context::failure("UnsupportedCapability"); }
+            let Some(handle) = request.handle else { return super::context::failure("StaleContext") };
+            let result = (|| {
+                let packages = app.state::<super::packages::ExtensionPackages>(); let packages = packages.0.try_lock().map_err(|_| "Timeout")?;
+                let snapshot = packages.snapshot();
+                let broker = app.state::<super::context::ContextBroker>();
+                let (owner, _, _) = broker.local_binding(&app, &snapshot, &handle)?;
+                if owner != request.owner { return Err("PermissionDenied"); }
+                let state = app.state::<crate::AppState>(); let store = state.store.try_lock().map_err(|_| "Timeout")?;
+                Ok(broker.runtime_call(&snapshot, &store, &handle, request.params))
+            })();
+            result.unwrap_or_else(super::context::failure)
+        }) as Pin<Box<dyn Future<Output = Value> + Send>>
+    })
 }
 /// Enable and development reload: clear a failed service, then reconcile.
 pub fn retry_app(app: &tauri::AppHandle, owner: &str) {
@@ -488,6 +638,23 @@ mod tests {
         packages.install(&archive(MANIFEST, SOURCE)).unwrap();
         let mut legacy = manifest; legacy["entrypoint"] = json!("main.js"); legacy["id"] = json!("sample.service-legacy");
         assert!(packages.install(&archive(&legacy.to_string(), SOURCE)).unwrap_err().starts_with("UnsupportedRuntime: Declarative-only:"));
+    }
+
+    /// R0201 (Q120 retained refusals): a service package needs no `activationEvents`; a listed set must still match the
+    /// executable commands, and without a service the events stay required.
+    #[test]
+    fn activation_events_are_optional_only_for_a_service_package() {
+        let manifest: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/runtime-duplex-channel/extension.json")).unwrap();
+        let check = |manifest: &Value| super::super::contracts::validate_contract("packages", &json!([manifest]));
+        assert_eq!(check(&manifest)["ok"], true, "{}", check(&manifest));
+        let mut listed = manifest.clone(); listed["runtime"]["activationEvents"] = json!(["sample.duplex-channel/echo", "sample.duplex-channel/other"]);
+        assert_eq!(check(&listed)["ok"], true);
+        let mut partial = manifest.clone(); partial["runtime"]["activationEvents"] = json!(["sample.duplex-channel/echo"]);
+        assert_eq!(check(&partial)["error"]["code"], "UnsupportedRuntime");
+        let mut plain = manifest.clone(); plain["runtime"].as_object_mut().unwrap().remove("service");
+        assert_eq!(check(&plain)["error"]["code"], "UnsupportedRuntime");
+        let mut undeclared = manifest; undeclared["permissions"] = json!(["ui.contribute"]);
+        assert_eq!(check(&undeclared)["error"]["code"], "PermissionDenied");
     }
 
     #[tokio::test]
@@ -685,6 +852,125 @@ mod tests {
             println!("SERVICE_LIFETIME {}", json!({"starts": last["starts"], "stops": last["stops"], "elapsedMs": started.elapsed().as_millis()}));
             manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(Duration::from_secs(1)).await);
             b1.stop().await;
+        }
+
+        const DUPLEX_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/runtime-duplex-channel/extension.json");
+        const DUPLEX_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/runtime-duplex-channel/main.cjs");
+        const DUPLEX_ID: &str = "sample.duplex-channel";
+        const ECHO: &str = "sample.duplex-channel/echo";
+
+        /// The host's fake answer to context requests: waits `hostMs`, echoes the request and the command handle it was
+        /// made for, and refuses a request made outside any command like the broker does for a stale handle.
+        fn fake_context() -> (Dispatch, Arc<Mutex<Vec<String>>>) {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let log = seen.clone();
+            let dispatch: Dispatch = Arc::new(move |request: DispatchRequest| {
+                let log = log.clone();
+                Box::pin(async move {
+                    let Some(handle) = request.handle else { return crate::extensions::context::failure("StaleContext") };
+                    tokio::time::sleep(Duration::from_millis(request.params["hostMs"].as_u64().unwrap_or(0))).await;
+                    log.lock().unwrap().push(format!("{}:{}", request.params["tag"].as_str().unwrap_or(""), handle));
+                    json!({"ok": true, "value": {"tag": request.params["tag"], "handle": handle, "owner": request.owner}})
+                }) as Pin<Box<dyn Future<Output = Value> + Send>>
+            });
+            (dispatch, seen)
+        }
+        async fn duplex_service(dir: &Dir, dispatch: Dispatch) -> (ServiceLifetime, ExtensionPackages, RuntimeGrants) {
+            let packages = ExtensionPackages::new(&dir.0, false);
+            let grants = RuntimeGrants::open(&dir.0);
+            { let packages = packages.0.lock().unwrap(); packages.install(&archive(DUPLEX_MANIFEST, DUPLEX_SOURCE)).unwrap(); let digest = digest(&packages); packages.trust(DUPLEX_ID, &digest, true).unwrap(); packages.enable(DUPLEX_ID, true).unwrap(); }
+            let manager = ServiceLifetime::new(vec![runtime_dir()]);
+            manager.set_dispatch(dispatch);
+            // The first reconcile syncs the grants file with the installed package; only then can the grant be given.
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            grants.grant(DUPLEX_ID, PERMISSION, Scope::default()).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !manager.serves(DUPLEX_ID, ECHO) { assert!(Instant::now() < deadline, "the service never became ready"); tokio::time::sleep(Duration::from_millis(25)).await; }
+            (manager, packages, grants)
+        }
+
+        /// R0201 acceptance: the fixture service answers two interleaved calls in either direction, receives its owned
+        /// command with `context.args` in the one state it keeps, and every bound and shutdown behaves.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn duplex_channel_interleaves_commands_and_host_requests_and_enforces_every_bound() {
+            let dir = Dir::new();
+            let (dispatch, seen) = fake_context();
+            let (manager, packages, grants) = duplex_service(&dir, dispatch).await;
+            let manager = Arc::new(manager);
+            let call = |manager: &Arc<ServiceLifetime>, args: Value, handle: &str| { let manager = manager.clone(); let handle = handle.to_owned(); tokio::spawn(async move { manager.call_command(DUPLEX_ID, ECHO, args, Some(handle)).await }) };
+
+            // Only the package's own commands, and only while running.
+            assert_eq!(manager.call_command(DUPLEX_ID, "sample.duplex-channel/missing", json!({}), None).await, Err("PermissionDenied".into()));
+            assert_eq!(manager.call_command("other.package", ECHO, json!({}), None).await, Err("HostUnavailable".into()));
+
+            // args arrive as context.args in the shared state; the startup query was refused as stale.
+            let first = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "delay", "ms": 1, "tag": "one"}), Some("h1".into())).await.unwrap();
+            assert_eq!(first, json!({"tag": "one", "ran": 1, "commandId": ECHO}));
+            let other = manager.call_command(DUPLEX_ID, "sample.duplex-channel/other", json!({"k": [1, 2]}), None).await.unwrap();
+            assert_eq!(other, json!({"other": true, "ran": 1, "args": {"k": [1, 2]}}));
+            let state = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "state"}), None).await.unwrap();
+            assert_eq!((state["ran"].as_u64(), state["startup"].as_str()), (Some(2), Some("StaleContext")), "{state}");
+
+            // Direction 1: a command that asks the host (400 ms) does not hold back a command started after it.
+            let slow = call(&manager, json!({"op": "ask", "hostMs": 400, "tag": "slow"}), "h-slow");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let started = Instant::now();
+            let quick = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "delay", "ms": 5, "tag": "quick"}), Some("h-quick".into())).await.unwrap();
+            assert_eq!(quick["tag"], "quick"); assert!(started.elapsed() < Duration::from_millis(300), "the second call waited for the first: {:?}", started.elapsed());
+            assert!(!slow.is_finished(), "the slow call is still waiting for the host");
+            let slow = slow.await.unwrap().unwrap();
+            assert_eq!(slow["answer"]["handle"], "h-slow", "the request was answered for the command it was made from");
+            assert_eq!(slow["answer"]["owner"], DUPLEX_ID);
+            // Direction 2: two requests of one command resolve in the order the host answers them, not the order sent.
+            let two = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "two", "first": 300, "second": 5}), Some("h-two".into())).await.unwrap();
+            assert_eq!(two["resolved"], json!(["second", "first"]));
+            assert!(seen.lock().unwrap().iter().any(|entry| entry == "first:h-two"));
+            // Several commands in flight at once.
+            let many: Vec<_> = (0..5).map(|index| call(&manager, json!({"op": "delay", "ms": 200, "tag": format!("m{index}")}), "h-many")).collect();
+            for task in many { task.await.unwrap().unwrap(); }
+            let state = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "state"}), None).await.unwrap();
+            assert!(state["peak"].as_u64().unwrap() >= 5, "{state}");
+
+            // The 2 MiB boundary: a result of 1 MiB passes, an argument or a result over 2 MiB is LimitExceeded and the service lives.
+            let big = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "big", "size": 1024 * 1024}), None).await.unwrap();
+            assert_eq!(big.as_str().unwrap().len(), 1024 * 1024);
+            assert_eq!(manager.call_command(DUPLEX_ID, ECHO, json!({"op": "delay", "pad": "x".repeat(duplex::MAX_FRAME_BYTES)}), None).await, Err("LimitExceeded".into()));
+            assert_eq!(manager.call_command(DUPLEX_ID, ECHO, json!({"op": "big", "size": duplex::MAX_FRAME_BYTES + 10}), None).await, Err("LimitExceeded".into()));
+            assert_eq!(manager.call_command(DUPLEX_ID, ECHO, json!({"op": "delay", "ms": 0, "tag": "alive"}), None).await.unwrap()["tag"], "alive");
+
+            // 64 pending service requests: 70 concurrent context requests from one command, 6 are refused by the service's own bound.
+            let flood = manager.call_command(DUPLEX_ID, ECHO, json!({"op": "flood", "count": 70, "hostMs": 300}), Some("h-flood".into())).await.unwrap();
+            assert_eq!(flood, json!({"ok": 64, "LimitExceeded": 6}));
+
+            // 64 pending calls: 70 hanging commands, exactly 6 refused at once.
+            let hung: Vec<_> = (0..70).map(|_| call(&manager, json!({"op": "hang"}), "h-hang")).collect();
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let refused = hung.iter().filter(|task| task.is_finished()).count();
+            assert_eq!(refused, 6, "the 65th and later pending calls are LimitExceeded at once");
+
+            // Disable settles every outstanding call without hanging, and nothing can be dispatched afterwards.
+            packages.0.lock().unwrap().enable(DUPLEX_ID, false).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let mut codes = BTreeMap::new();
+            for task in hung { let code = tokio::time::timeout(Duration::from_secs(8), task).await.expect("a call hung after disable").unwrap().unwrap_err(); *codes.entry(code).or_insert(0) += 1; }
+            assert_eq!(codes, BTreeMap::from([("Cancelled".to_owned(), 64), ("LimitExceeded".to_owned(), 6)]));
+            assert!(manager.wait_idle(Duration::from_secs(5)).await);
+            assert_eq!(manager.call_command(DUPLEX_ID, ECHO, json!({}), None).await, Err("HostUnavailable".into()));
+        }
+
+        /// Loss of the `runtime.service` grant (trust loss) settles a pending call the same way.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn duplex_channel_settles_calls_when_the_grant_is_revoked() {
+            let dir = Dir::new();
+            let (dispatch, _) = fake_context();
+            let (manager, _packages, grants) = duplex_service(&dir, dispatch).await;
+            let manager = Arc::new(manager);
+            let pending = { let manager = manager.clone(); tokio::spawn(async move { manager.call_command(DUPLEX_ID, ECHO, json!({"op": "hang"}), None).await }) };
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            grants.revoke(DUPLEX_ID, PERMISSION).unwrap();
+            assert_eq!(tokio::time::timeout(Duration::from_secs(8), pending).await.expect("hung").unwrap(), Err("Cancelled".into()));
+            assert!(manager.wait_idle(Duration::from_secs(5)).await);
         }
 
         /// A service whose function never settles stays "starting" and is not waited for; a service that throws is

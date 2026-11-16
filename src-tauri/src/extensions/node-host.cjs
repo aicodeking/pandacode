@@ -1,18 +1,22 @@
 // App-owned bootstrap. Normal-account trusted execution, NOT a sandbox.
 const { Module } = require('node:module');
 const { join } = require('node:path');
-const MAX_FRAME = 65536;
-let buffer = Buffer.alloc(0), init, sequence = 0, stopService, stopping = false;
+const { AsyncLocalStorage } = require('node:async_hooks');
+// A short activation keeps 64 KiB frames and 16 pending requests; a service's duplex channel allows 2 MiB frames and
+// 64 pending requests per direction (runtime_duplex_channel.rs).
+let maxFrame = 65536, maxPending = 16;
+let buffer = Buffer.alloc(0), init, sequence = 0, stopService, serveCall, stopping = false;
 const pending = new Map();
+const invocations = new AsyncLocalStorage();
 const write = process.stdout.write.bind(process.stdout);
 function send(value) {
   const body = Buffer.from(JSON.stringify(value));
-  if (body.length > MAX_FRAME) throw new Error('LimitExceeded');
+  if (body.length > maxFrame) throw new Error('LimitExceeded');
   const header = Buffer.alloc(4); header.writeUInt32LE(body.length);
   write(Buffer.concat([header, body]));
 }
 function rpc(method, params) {
-  if (pending.size >= 16) return Promise.reject(new Error('LimitExceeded'));
+  if (pending.size >= maxPending) return Promise.reject(new Error('LimitExceeded'));
   const id = ++sequence;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -25,11 +29,12 @@ process.stdin.on('data', chunk => {
   buffer = Buffer.concat([buffer, chunk]);
   while (buffer.length >= 4) {
     const length = buffer.readUInt32LE(0);
-    if (length > (init ? MAX_FRAME : 300000)) return process.exit(2);
+    if (length > (init ? maxFrame : 300000)) return process.exit(2);
     if (buffer.length < length + 4) break;
     const value = JSON.parse(buffer.subarray(4, length + 4)); buffer = buffer.subarray(length + 4);
     if (!init) {
       init = value;
+      if (init.context?.lifetime) { maxFrame = 2 * 1024 * 1024; maxPending = 64; }
       const commands = new Map();
       const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
       const invocation = freeze(init.context);
@@ -81,7 +86,28 @@ process.stdin.on('data', chunk => {
               commands.set(id, handler);
               return Object.freeze({ dispose: () => commands.delete(id) });
             } }),
+            // The same context surface a short activation has. Requests made while an owned command runs are
+            // answered for the context that command was invoked from; anywhere else they are stale.
+            context: Object.freeze({
+              query: params => rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'query', invocation: invocations.getStore() }),
+              subscribe: params => rpc('context', { ...params, limit: params?.limit === undefined ? 10 : params.limit, op: 'subscribe', invocation: invocations.getStore() }),
+              events: params => rpc('context', { ...params, op: 'events', invocation: invocations.getStore() }),
+              unsubscribe: params => rpc('context', { ...params, op: 'unsubscribe', invocation: invocations.getStore() }),
+            }),
           });
+          // Host to service calls interleave freely with the service's own requests: each runs on its own.
+          serveCall = async call => {
+            const reply = body => send({ schemaVersion: 1, token: init.token, reply: { id: call.id, ...body } });
+            const code = error => { const text = error?.code ?? error?.message; return typeof text === 'string' && /^[A-Z][A-Za-z]{0,63}$/.test(text) ? text : 'HostUnavailable'; };
+            try {
+              const handler = call.method === 'command' ? commands.get(call.params?.commandId) : undefined;
+              if (!handler) return reply({ ok: false, error: { code: 'PermissionDenied' } });
+              const value = await invocations.run(call.id, () => handler(freeze({ commandId: call.params.commandId, args: call.params.args ?? null })));
+              reply({ ok: true, value: value ?? null });
+            } catch (error) {
+              try { reply({ ok: false, error: { code: code(error) } }); } catch { process.exit(2); }
+            }
+          };
           stopService = async reason => {
             if (stopping) return;
             stopping = true;
@@ -131,6 +157,9 @@ process.stdin.on('data', chunk => {
     } else if (value && typeof value.stop === 'string' && init.context?.lifetime) {
       // The host's stop request: run onStop handlers, acknowledge, exit. The host waits at most 2 s.
       if (stopService) void stopService(value.stop); else process.exit(0);
+    } else if (value && value.call && init.context?.lifetime) {
+      // A host to service call (an owned command). Before the service function has registered, there is no handler.
+      if (serveCall) void serveCall(value.call); else process.exit(2);
     } else {
       const waiter = pending.get(value.id); if (!waiter) return process.exit(2);
       pending.delete(value.id);

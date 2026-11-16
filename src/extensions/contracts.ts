@@ -273,7 +273,11 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (models.some(model => new TextEncoder().encode(String(model.id)).length > 200)) error('LimitExceeded', `${path}/contributes/providers/models`);
       if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length)) error('DuplicateId', path, [id]);
     }
-    if (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id))) error('UnsupportedRuntime', path, [id]);
+    // A background service takes its commands from the service itself, so activationEvents may be left out (R0201);
+    // when listed they still have to match the package's executable commands.
+    const runtime = manifest.runtime as ObjectValue | undefined;
+    const serviceWithoutEvents = Boolean(runtime?.service) && runtime?.activationEvents === undefined;
+    if (!serviceWithoutEvents && (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id)))) error('UnsupportedRuntime', path, [id]);
     // A background service is a named permission: it must be declared to be granted (runtime-service-lifetime.md).
     if ((manifest.runtime as ObjectValue | undefined)?.service && !((manifest.permissions ?? []) as Json[]).includes('runtime.service')) error('PermissionDenied', `${path}/permissions`, [id]);
     const owned = new Set<string>();

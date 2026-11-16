@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.duplex-channel",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.duplex-channel/echo", "title": "Duplex channel echo", "action": { "kind": "runCommand" } },
+      { "id": "sample.duplex-channel/other", "title": "Duplex channel second command", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [{ "id": "sample.duplex-channel/header", "location": "panda.workspace.header.actions", "command": "sample.duplex-channel/echo", "presentation": "button", "text": "Duplex echo" }]
+  }
+}
