@@ -298,7 +298,13 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
                 let placeholders_ok = command.iter().chain(launch["env"].as_object().into_iter().flat_map(|env| env.values()).filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>().iter())
                     .all(|value| { let mut rest = value.as_str(); loop { let Some(start) = rest.find('{') else { return true }; let Some(end) = rest[start..].find('}') else { return false }; if !["node", "package", "data"].contains(&&rest[start + 1..start + end]) { return false; } rest = &rest[start + end + 1..]; } });
                 if command.is_empty() || command[0].is_empty() || !placeholders_ok || launch["env"].as_object().is_some_and(|env| env.len() > 32 || env.keys().any(|name| name.is_empty() || name.contains(['=', '\0']))) { return Err(fail("InvalidShape", &format!("{path}/contributes/providers/launch"), vec![text(provider, "id").into()])); }
-            } else if items(provider, "models").is_empty() { return Err(fail("InvalidShape", &format!("{path}/contributes/providers/models"), vec![text(provider, "id").into()])); }
+            } else if items(provider, "models").is_empty() && provider["metadata"]["signIn"].is_null() { return Err(fail("InvalidShape", &format!("{path}/contributes/providers/models"), vec![text(provider, "id").into()])); }
+            // `metadata.signIn` / `signOut` bind the provider's Sign in and Sign out actions to commands of this package (R0806).
+            for action in ["signIn", "signOut"] {
+                if let Some(command) = provider["metadata"][action]["command"].as_str() {
+                    if !items(contributions, "commands").iter().any(|item| item["id"] == command) { return Err(fail("UnknownReference", &format!("{path}/contributes/providers/metadata/{action}"), vec![command.into()])); }
+                }
+            }
             let modes = strings(&provider["metadata"]["modes"]);
             if modes.iter().collect::<BTreeSet<_>>().len() != modes.len() { return Err(fail("DuplicateId", &path, vec![])); }
             if let Some(icon) = provider["metadata"]["icon"].as_str() {

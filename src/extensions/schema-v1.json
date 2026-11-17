@@ -168,8 +168,11 @@
       "teams": { "type": "boolean" },
       "icon": { "$ref": "#/$defs/id" },
       "readiness": { "type": "object", "additionalProperties": false, "required": ["state", "reason"], "properties": { "state": { "enum": ["ready", "signedOut", "unavailable"] }, "reason": { "$ref": "#/$defs/text" } } },
-      "usage": { "type": "object", "additionalProperties": false, "required": ["context", "limitsReason"], "properties": { "context": { "type": "boolean" }, "limitsReason": { "$ref": "#/$defs/text" } } }
+      "usage": { "type": "object", "additionalProperties": false, "required": ["context", "limitsReason"], "properties": { "context": { "type": "boolean" }, "limitsReason": { "$ref": "#/$defs/text" } } },
+      "signIn": { "$ref": "#/$defs/providerAction" },
+      "signOut": { "$ref": "#/$defs/providerAction" }
     } },
+    "providerAction": { "type": "object", "additionalProperties": false, "required": ["command"], "properties": { "command": { "$ref": "#/$defs/id" } } },
     "discoveryRoot": { "type": "object", "additionalProperties": false, "required": ["kind", "scope", "path"], "properties": { "kind": { "enum": ["skills", "rules", "config"] }, "scope": { "enum": ["user", "project"] }, "path": { "type": "string", "minLength": 1, "maxLength": 256 } } },
     "provider": { "type": "object", "additionalProperties": false, "required": ["id", "name", "apiVersion", "models"], "properties": { "id": { "$ref": "#/$defs/id" }, "name": { "$ref": "#/$defs/text" }, "apiVersion": { "const": 1 }, "metadata": { "$ref": "#/$defs/providerMetadata" }, "discovery": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/discoveryRoot" } }, "models": { "type": "array", "minItems": 0, "maxItems": 32, "items": { "$ref": "#/$defs/providerModel" } }, "launch": { "$ref": "#/$defs/providerLaunch" } } },
     "providerLaunch": { "type": "object", "additionalProperties": false, "required": ["protocol", "command"], "properties": { "protocol": { "const": "acp" }, "command": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } }, "env": { "type": "object", "maxProperties": 32, "additionalProperties": { "type": "string", "maxLength": 1024 } } } },

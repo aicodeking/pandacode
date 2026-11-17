@@ -3,6 +3,7 @@ import { parseProviderId } from './provider-identity.ts';
 import type { ExtensionSnapshot } from './manager';
 import { defaultProviderMetadata, type ProviderMetadata } from './provider-state.ts';
 import type { DiscoveryRoot } from './provider-discovery.ts';
+import { applyProviderState } from './runtime-provider-state.ts';
 
 export type HarnessContribution = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; discovery?: DiscoveryRoot[]; models: { id: string; name: string; efforts: string[]; contextWindow?: number; speedTiers?: { id: string; name: string; description?: string }[] }[] };
 /** Catalog metadata only. The native host separately admits executable content. */
@@ -10,7 +11,8 @@ export function packageHarnesses(snapshot: ExtensionSnapshot, placement: 'deskto
   if (snapshot.safeMode) return [];
   return snapshot.packages.filter(item => item.enabled && !item.update?.draining && item.executable?.trusted && (placement === 'desktop' || ['workspace', 'split'].includes(String(item.manifest.extensionKind)))).flatMap(item => {
     const contributions = item.manifest.contributes as typeof item.manifest.contributes & { providers?: HarnessContribution[] };
-    return (contributions.providers ?? []).map(provider => ({
+    // What the package's service published (readiness, account, models, limits) replaces the manifest's until it stops (R0806).
+    return (contributions.providers ?? []).map(provider => applyProviderState({
       id: parseProviderId(provider.id)!, name: provider.name, installed: (provider.metadata?.readiness.state ?? 'ready') === 'ready', path: null, version: item.manifest.version,
       metadata: provider.metadata ?? defaultProviderMetadata(),
       models: provider.models.map(model => ({ id: model.id, name: model.name, description: '', reasoningEfforts: model.efforts.map(id => ({ id, name: id, description: '' })), defaultReasoningEffort: null, contextWindow: model.contextWindow ?? null, speedTiers: (model.speedTiers ?? []).map(tier => ({ id: tier.id, name: tier.name, description: tier.description ?? '' })) })),

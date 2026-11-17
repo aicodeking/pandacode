@@ -1,0 +1,35 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.provider-state",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "ui.dynamic", "auth.signIn", "secrets.private"],
+  "requiredContributions": ["providers"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.provider-state/sign-in", "title": "Sign in to the fixture provider", "action": { "kind": "runCommand" } },
+      { "id": "sample.provider-state/sign-out", "title": "Sign out of the fixture provider", "action": { "kind": "runCommand" } }
+    ],
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.provider-state/agent",
+      "name": "Fixture account agent",
+      "metadata": {
+        "modes": ["ask"],
+        "authentication": "Sign in with the fixture account. The package keeps its own token; PandaCode never sees it.",
+        "readiness": { "state": "signedOut", "reason": "Sign in to use the fixture provider." },
+        "usage": { "context": true, "limitsReason": "Limits appear after signing in to the fixture account." },
+        "signIn": { "command": "sample.provider-state/sign-in" },
+        "signOut": { "command": "sample.provider-state/sign-out" }
+      },
+      "models": [],
+      "launch": {
+        "protocol": "acp",
+        "command": ["{node}", "__FAKE_AGENT__"],
+        "env": { "FAKE_AGENT_LOG": "{data}/frames.log" }
+      }
+    }]
+  }
+}

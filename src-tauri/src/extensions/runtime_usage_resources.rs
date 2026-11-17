@@ -165,7 +165,7 @@ pub trait Facts {
     fn metrics(&self, store: &Store) -> Value;
 }
 
-fn known_harness(id: &str) -> bool { crate::providers::PROVIDERS.iter().any(|(known, _)| *known == id) }
+fn known_harness(id: &str) -> bool { crate::providers::PROVIDERS.iter().any(|(known, _)| *known == id) || crate::extensions::runtime_provider_state::is_published(id) }
 fn harness_ids(only: Option<&str>) -> Vec<&'static str> {
     crate::providers::PROVIDERS.iter().map(|(id, _)| *id).filter(|id| only.is_none_or(|only| only == *id)).collect()
 }
@@ -180,6 +180,8 @@ impl Facts for Live<'_> {
                 if let Some(usage) = crate::agent_usage::peek_connection(&connection.id, connection.revision) { rows.push(limit_row(id, &connection.id, &usage)); }
             }
         }
+        // Providers of packages whose service published limits (R0806): one source with the model picker's roster.
+        rows.extend(crate::extensions::runtime_provider_state::limit_rows(harness));
         rows
     }
     fn accounts(&self, harness: Option<&str>) -> Vec<Value> {
@@ -192,6 +194,7 @@ impl Facts for Live<'_> {
                 rows.push(account_row(id, &connection.id, active.as_deref() == Some(connection.id.as_str()), Some(&connection.name), crate::agent_usage::peek_connection(&connection.id, connection.revision).as_ref()));
             }
         }
+        rows.extend(crate::extensions::runtime_provider_state::account_rows(harness));
         rows
     }
     fn metrics(&self, store: &Store) -> Value {

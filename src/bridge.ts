@@ -46,6 +46,7 @@ export async function subscribe(name: 'extensions-runtime-notices', callback: (e
 export async function subscribe(name: 'extensions-runtime-dialog', callback: (event: { id: string; owner: string; dialog: import('./extensions/dialog-state').DialogDefinition }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-dialog-close', callback: (event: { id: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-reveal', callback: (event: { owner: string; target: import('./extensions/runtime-dialog-navigation').RevealTarget }) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-provider-state', callback: (event: unknown) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
   if (preview) return (await import('./preview')).listen(name, callback);

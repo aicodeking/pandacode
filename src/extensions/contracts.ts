@@ -279,7 +279,12 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
         const placeholdersOk = values.every(value => { let rest = String(value); for (;;) { const start = rest.indexOf('{'); if (start < 0) return true; const end = rest.indexOf('}', start); if (end < 0 || !['node', 'package', 'data'].includes(rest.slice(start + 1, end))) return false; rest = rest.slice(end + 1); } });
         const env = Object.keys((launch.env ?? {}) as ObjectValue);
         if (!command.length || !command[0] || !placeholdersOk || env.length > 32 || env.some(name => !name || /[=\0]/.test(name))) error('InvalidShape', `${path}/contributes/providers/launch`, [String(provider.id)]);
-      } else if (!((provider.models ?? []) as Json[]).length) error('InvalidShape', `${path}/contributes/providers/models`, [String(provider.id)]);
+      } else if (!((provider.models ?? []) as Json[]).length && (provider.metadata as ObjectValue | undefined)?.signIn === undefined) error('InvalidShape', `${path}/contributes/providers/models`, [String(provider.id)]);
+      // `metadata.signIn` / `signOut` bind the provider's Sign in and Sign out actions to commands of this package (R0806).
+      for (const action of ['signIn', 'signOut']) {
+        const command = ((provider.metadata as ObjectValue | undefined)?.[action] as ObjectValue | undefined)?.command;
+        if (command !== undefined && !((contributions.commands ?? []) as ObjectValue[]).some(item => item.id === command)) error('UnknownReference', `${path}/contributes/providers/metadata/${action}`, [String(command)]);
+      }
       const metadata = provider.metadata as ObjectValue | undefined;
       const modes = metadata?.modes as Json[] | undefined;
       if (modes && new Set(modes).size !== modes.length) error('DuplicateId', path, [id]);

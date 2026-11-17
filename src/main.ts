@@ -949,6 +949,8 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   });
   // Notices that background services raise (ui.notify): a list above the toast, each row led by its package name.
   void import('./extensions/runtime-notifications').then(notices => notices.mountRuntimeNotices());
+  // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
+  void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
   // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and
   // activated through the original buttons. Error text, the dismissal journal, Undo and the toast text stay here and in
   // thread-errors.ts and toast-model.ts.

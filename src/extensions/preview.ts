@@ -21,6 +21,7 @@ import { createPrivateSecretsPreview } from './runtime-private-secrets';
 import { createSignInPreview } from './runtime-sign-in';
 import { createConnectionAdaptersPreview, type Transport } from './runtime-connection-adapters';
 import { createHeldCredentialsPreview } from './runtime-held-credentials';
+import { createProviderStatePreview, setProviderStates } from './runtime-provider-state';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
@@ -174,6 +175,35 @@ function signInService(args: Record<string, unknown>): unknown {
 function reconcileSignIns(): void {
   for (const flow of previewSignIn.projection().flows) if (signInGrant(flow.id) !== 'ok') previewSignIn.revoke(flow.id);
 }
+// Dynamic provider state (R0806): a labelled stand-in of the native overlay; the service's `providers.update` comes from a test hook only.
+const previewProviderState = createProviderStatePreview();
+if (new URLSearchParams(location.search).has('provider-state')) (window as unknown as { __extensionProviderState?: unknown }).__extensionProviderState = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function providerStateService(args: Record<string, unknown>): unknown {
+  const owner = String(args.id ?? ''), snapshot = read(), found = snapshot.packages.find(item => item.manifest.id === owner);
+  switch (args.op) {
+    case 'update': {
+      const grants = runtimeGrants.createRuntimeGrantsPreview();
+      if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+      const live = !snapshot.safeMode && !!found?.enabled;
+      if (!live) throw new Error('NotFound'); // a disabled, absent or safe-mode package raises nothing, as natively
+      const providers = ((found?.manifest.contributes as { providers?: { id: string }[] } | undefined)?.providers ?? []);
+      const revision = previewProviderState.update(owner, String(args.provider), args.state, { granted: live && grants.check(owner, found?.manifest.version ?? '', 'ui.dynamic') === 'ok', declared: live && providers.some(item => item.id === args.provider) }, args.caller === 'panel' ? 'panel' : 'service');
+      setProviderStates(previewProviderState.projection());
+      return revision;
+    }
+    case 'stop': { const moved = previewProviderState.clearOwner(owner, 'service-stopped'); setProviderStates(previewProviderState.projection()); return moved; }
+    default: throw new Error('InvalidArguments');
+  }
+}
+/** After every extension command: a package that is disabled, uninstalled, in safe mode or without `ui.dynamic` loses its overlay. */
+function reconcileProviderState(): void {
+  const snapshot = read();
+  if (!previewProviderState.projection().providers.length) return;
+  const grants = runtimeGrants.createRuntimeGrantsPreview();
+  if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+  const moved = previewProviderState.sweep(owner => { const found = snapshot.packages.find(item => item.manifest.id === owner); return !snapshot.safeMode && !!found?.enabled && !!found.executable?.trusted && grants.check(owner, found.manifest.version, 'ui.dynamic') === 'ok'; }, snapshot.safeMode ? 'safe-mode' : 'revoked-or-disabled');
+  if (moved) setProviderStates(previewProviderState.projection());
+}
 // Held credentials used without being read, the activity list and account switching (R0805): a labelled stand-in; the
 // credentials are seeded by a test, the grant is checked per item on every use and while a request runs.
 const previewHeld = createHeldCredentialsPreview();
@@ -228,6 +258,16 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_sign_in_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return signInService(args); }
   if (command === 'extensions_sign_in_cancel') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return { cancelled: previewSignIn.cancel(String(args.id)) }; }
   if (command === 'extensions_sign_in_paste') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); previewSignIn.paste(String(args.id), String(args.url)); return null; }
+  if (command === 'extensions_provider_state') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileProviderState(); return previewProviderState.projection(); }
+  if (command === 'extensions_provider_state_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return providerStateService(args); }
+  if (command === 'extensions_provider_action') {
+    if (windowLabel !== 'main') throw new Error('PermissionDenied');
+    const provider = String(args.provider), action = String(args.action), owner = provider.split('/')[0], found = read().packages.find(item => item.manifest.id === owner && item.enabled);
+    const contributes = found?.manifest.contributes as { providers?: { id: string; metadata?: Record<string, { command?: string }> }[]; commands?: { id: string }[] } | undefined;
+    const command = (action === 'signIn' || action === 'signOut') ? contributes?.providers?.find(item => item.id === provider)?.metadata?.[action]?.command : undefined;
+    if (!command || !contributes?.commands?.some(item => item.id === command)) throw new Error('NotFound');
+    return { provider, action, command, owner };
+  }
   if (command === 'extensions_credential_activity') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewHeld.activity(String(args.id)); }
   if (command === 'extensions_held_credentials_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return heldService(args); }
   if (command === 'extensions_connection_adapters_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return connectionAdaptersCall(args); }
@@ -236,7 +276,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_service_supervision_preview') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return serviceSupervisionPreview(args); }
   // Enable is the retry of a parked, restarting or never-settled service (native `runtime::retry`).
   if (command === 'extensions_enable' && args.enabled === true) previewServiceSupervision.retry(String(args.id));
-  try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') { reconcileServices(); reconcileSignIns(); } }
+  try { return previewExtensionCommand(command, args, notify); } finally { if (windowLabel === 'main') { reconcileServices(); reconcileSignIns(); reconcileProviderState(); } }
 }
 function previewExtensionCommand(command: string, args: Record<string, unknown>, notify: (name: string, value: unknown) => void): unknown {
   if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_uninstall') previewServices.stop(String(args.id));

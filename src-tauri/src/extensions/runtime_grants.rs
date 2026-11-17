@@ -332,6 +332,8 @@ pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_
     super::runtime_service_lifetime::reconcile_app(&app);
     // A revoked or narrowed ui.notify takes the package's notices off both surfaces at once (R0207).
     super::runtime_notifications::sweep_app(&app);
+    // A revoked or narrowed ui.dynamic returns the package's providers to their manifest values (R0806).
+    super::runtime_provider_state::sweep_app(&app);
     Ok(grants.projection())
 }
 

@@ -9,6 +9,12 @@ export interface ProviderMetadata {
   readiness: { state: 'ready' | 'signedOut' | 'unavailable'; reason: string };
   icon?: string;
   usage: { context: boolean; limitsReason: string };
+  /** Commands of the same package that the provider's Sign in and Sign out actions run (R0806). */
+  signIn?: { command: string };
+  signOut?: { command: string };
+  /** Published by the package's service while it runs (`panda.providers.update`): the signed-in account's label and its limits. Never a credential. */
+  account?: { label: string };
+  limits?: { windows: { id: string; label: string; usedPercent: number; resetsAt?: string }[]; credits?: unknown };
 }
 export const UNAVAILABLE_PROVIDER = 'This extension provider is unavailable. Enable or reinstall its extension in Settings → Extensions, or choose another provider.';
 const providers = new Map<ProviderId, Provider>();

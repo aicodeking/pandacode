@@ -490,7 +490,7 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly ui: ServiceUi }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi }
 /** What the user answered a service's dialog (R0206). A dialog that was closed, or whose service ended, is `cancelled`. */
 export type DialogAnswer = { readonly status: 'confirmed'; readonly values: Readonly<Record<string, string | boolean | readonly string[]>> } | { readonly status: 'cancelled' };
 /** Where `reveal` takes the window: a view or settings page of this package, a task, or a file of a project (relative path). */
@@ -519,6 +519,14 @@ export type UsageResource = 'usage' | 'limits' | 'accounts' | 'metrics';
  * account `NotFound`. It resolves to `null`: the host does the switch, no credential is returned or replaced (ADR-0006), and
  * the `accounts` resource shows the new `active` flags under a new revision. Each switch is written to the package's activity list.
  */
+/** What a package service publishes for one of its own providers with `panda.providers.update` (needs `runtime.service` and `ui.dynamic`). A `signedOut` or `unavailable` readiness empties the account, models and limits in the same step; the values return to the manifest's when the service stops. No credential belongs in any field. See docs/extensions/runtime-provider-state.md. */
+export interface ProviderState {
+  readiness?: { state: 'ready' | 'signedOut' | 'unavailable'; reason: string };
+  account?: { label: string } | null;
+  models?: readonly { id: string; name: string; efforts: readonly string[]; contextWindow?: number; speedTiers?: readonly { id: string; name: string; description?: string }[] }[];
+  limits?: { windows: readonly { id: string; label: string; usedPercent: number; resetsAt?: string }[]; credits?: unknown } | null;
+}
+export interface ServiceProviders { update(id: string, state: ProviderState): Promise<null> }
 export interface ServiceHarnesses { refreshLimits(options?: { harness?: string }): Promise<null>; switchAccount(options: { harness: string; account: string }): Promise<null> }
 export interface ResourcePage { readonly schemaVersion: 1; readonly state: 'Ready'; readonly revision: string; readonly items: readonly Json[]; readonly nextCursor: number | null }
 export interface ServiceContext { query(options: { resource: ContextResource | ContentResource | UsageResource; taskId?: string; harness?: string; limit?: number; cursor?: number; revision?: string }): Promise<SummaryPage | ResourcePage> }

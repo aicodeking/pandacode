@@ -191,6 +191,8 @@ process.stdin.on('data', chunk => {
               // Makes another account of a harness the active one (R0805, credentials.use for that account): a host operation, no credential crosses.
               switchAccount: options => rpc('accountSwitch', options === undefined || options === null ? {} : { ...options }),
             }),
+            // Publishes what is true for the package's own providers (R0806, ui.dynamic): readiness, account, models, limits.
+            providers: Object.freeze({ update: (id, state) => rpc('providerUpdate', { id, state }) }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.
             storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
             // Declared connection requests (R0804): the host builds, authenticates and runs them; the grant is checked per call.

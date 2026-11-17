@@ -759,7 +759,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); })); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_provider_state::service_stopped(&app, owner); })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
@@ -796,6 +796,10 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.ui.notify` and `panda.ui.withdraw` (R0207): `ui.notify` is checked natively per call.
             if request.method == "notice" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
+            // `panda.providers.update` (R0806): `ui.dynamic` and the provider's owner are checked natively per call.
+            if request.method == "providerUpdate" {
+                return tauri::async_runtime::spawn_blocking(move || super::runtime_provider_state::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
             // `panda.ui.showDialog` (waits for the user's answer) and `panda.ui.reveal` (R0206): `ui.dynamic` is checked natively per call.
             if matches!(request.method.as_str(), "uiDialog" | "uiReveal") { return super::runtime_dialog_navigation::serve(app, request).await; }

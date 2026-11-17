@@ -49,7 +49,8 @@ fn launch_places(owner: &str, provider: &str) -> launch::Places {
     launch::Places { node: node_runtime().map(|runtime| runtime.binary), package: facts.as_ref().and_then(|facts| facts.package.clone()), data: facts.and_then(|facts| facts.data) }
 }
 fn catalog(definition: &Value) -> Vec<ModelInfo> {
-    definition["models"].as_array().into_iter().flatten().map(|model| ModelInfo {
+    // The models a service published with `panda.providers.update` (R0806) replace the manifest's until it stops.
+    crate::extensions::runtime_provider_state::effective_models(definition["id"].as_str().unwrap_or_default(), definition).iter().map(|model| ModelInfo {
         id: model["id"].as_str().unwrap_or_default().into(), name: model["name"].as_str().unwrap_or_default().into(), description: String::new(),
         reasoning_efforts: model["efforts"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|effort| ReasoningEffortInfo { id: effort.into(), name: effort.into(), description: String::new() }).collect(),
         default_reasoning_effort: None, context_window: model["contextWindow"].as_u64(),
@@ -71,7 +72,8 @@ pub(crate) fn discovery_definitions() -> Vec<Value> {
     registrations().into_iter().map(|registration| registration.definition).collect()
 }
 fn metadata(definition: &Value) -> Value {
-    let base = declared_metadata(definition);
+    // Published readiness, account and limits (R0806) come before the launch check, so an executable that cannot start still wins over a published `ready`.
+    let base = crate::extensions::runtime_provider_state::apply_metadata(definition["id"].as_str().unwrap_or_default(), declared_metadata(definition));
     let id = definition["id"].as_str().unwrap_or_default();
     match (launch::declared(definition), crate::extensions::providers::extension_owner(id)) {
         (Some(_), Some(owner)) => launch::overlay(owner, definition, base, &launch_places(owner, id)),

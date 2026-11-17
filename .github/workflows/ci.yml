@@ -189,6 +189,12 @@ jobs:
       - name: Replaceable notifications (WebKit)
         env: { PW_PORT: '16142', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-notifications.spec.ts --workers=1
+      - name: Dynamic provider state (Chromium)
+        env: { PW_PORT: '16161', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-provider-state.spec.ts --workers=1
+      - name: Dynamic provider state (WebKit)
+        env: { PW_PORT: '16162', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-provider-state.spec.ts --workers=1
       - name: Service logic in the browser preview (Chromium)
         env: { PW_PORT: '16151', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-preview.spec.ts --workers=1

@@ -19,6 +19,7 @@ pub mod runtime_notifications;
 pub mod runtime_dialog_navigation;
 pub mod runtime_private_secrets;
 pub mod runtime_sign_in;
+pub mod runtime_provider_state;
 pub mod runtime_connection_adapters;
 pub mod runtime_native_consents;
 pub mod runtime_family_consents;
