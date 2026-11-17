@@ -440,7 +440,11 @@ pub fn runs(counters: &Value) -> Value {
 pub fn report(harnesses: &[Harness], counters: &Value, only: Option<&str>) -> Value {
     let rows: Vec<Value> = harnesses.iter().filter(|harness| only.is_none_or(|id| harness.id == id)).map(row).collect();
     // R0505: `tool.before` decisions are delivered (approve, deny, ask, rewrite where `can` lists it).
-    json!({"schemaVersion": SCHEMA_VERSION, "decisions": "delivered", "harnesses": rows, "runs": runs(counters)})
+    let lifecycle = super::runtime_companion_lifetime::registry().lock()
+        .map(|companions| companions.report())
+        .unwrap_or_else(|_| json!({"code": "HostUnavailable"}));
+    json!({"schemaVersion": SCHEMA_VERSION, "decisions": "delivered", "harnesses": rows,
+        "runs": runs(counters), "companionLifecycle": lifecycle})
 }
 
 /// The built-in roster and the package providers of enabled, trusted packages (`snapshot` is `extensions_snapshot`

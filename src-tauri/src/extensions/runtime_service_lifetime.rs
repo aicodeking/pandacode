@@ -791,9 +791,18 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
+        let safe_mode = packages.0.lock().map(|packages| packages.snapshot().safe_mode).unwrap_or(true);
+        if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+            companions.set_safe_mode(safe_mode);
+            companions.retry_cleanup();
+        }
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_terminals::service_stopped(&app, owner); super::runtime_internal_unstable::service_stopped(&app, owner); super::runtime_harness_console::service_stopped(&app, owner);super::runtime_workspace_cloud::service_stopped(&app, owner);super::runtime_workspace_projects::service_stopped(&app, owner);super::runtime_provider_state::service_stopped(&app, owner); super::runtime_hook_registration::service_stopped(&app, owner); super::runtime_model_tools::service_stopped(owner); super::runtime_model_call::service_stopped(owner); super::runtime_sign_in::service_stopped(&app, owner); })); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| {
+            if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+                companions.end_owner(owner, super::runtime_companion_lifetime::StopReason::ServiceFailure);
+            }
+            super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_terminals::service_stopped(&app, owner); super::runtime_internal_unstable::service_stopped(&app, owner); super::runtime_harness_console::service_stopped(&app, owner);super::runtime_workspace_cloud::service_stopped(&app, owner);super::runtime_workspace_projects::service_stopped(&app, owner);super::runtime_provider_state::service_stopped(&app, owner); super::runtime_hook_registration::service_stopped(&app, owner); super::runtime_model_tools::service_stopped(owner); super::runtime_model_call::service_stopped(owner); super::runtime_sign_in::service_stopped(&app, owner); })); }
         // Hook deliveries (R0503) go into the running service as one-way host calls.
         { let app = app.clone(); super::runtime_hook_registration::registry().set_deliver(Arc::new(move |owner: &str, frame: Value| { use tauri::Manager; app.try_state::<ServiceLifetime>().ok_or("HostUnavailable")?.send_hook(owner, frame).map(drop) })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
@@ -942,12 +951,18 @@ pub fn retry_app(app: &tauri::AppHandle, owner: &str) {
 }
 /// Quit: ask every service to stop now; `quit_wait` bounds how long the exit waits for them.
 pub fn quit(app: &tauri::AppHandle) {
+    if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+        companions.stop();
+    }
     use tauri::Manager;
     if let Some(services) = app.try_state::<ServiceLifetime>() { services.stop_all(StopReason::Quit); }
 }
 pub async fn quit_wait(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(services) = app.try_state::<ServiceLifetime>() { services.wait_idle(STOP_GRACE + Duration::from_millis(500)).await; }
+    if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+        companions.retry_cleanup();
+    }
 }
 
 #[tauri::command]

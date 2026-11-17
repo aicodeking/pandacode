@@ -328,6 +328,15 @@ pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_
         (Some("revokeAll"), _) => grants.revoke_all(id)?,
         _ => return Err("InvalidArguments".into()),
     }
+    if matches!(request["op"].as_str(), Some("narrow" | "revoke" | "revokeAll"))
+        && (request["op"] == "revokeAll"
+            || permission.is_some_and(|name| matches!(name,
+                "harness.hooks.observe" | "harness.hooks.decide" | "runtime.service")))
+    {
+        if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+            companions.end_owner(id, super::runtime_companion_lifetime::StopReason::Revoked);
+        }
+    }
     // A new `runtime.service` grant starts the service; a revoked one already cancelled its grant work.
     super::runtime_service_lifetime::reconcile_app(&app);
     // A revoked or narrowed ui.notify takes the package's notices off both surfaces at once (R0207).

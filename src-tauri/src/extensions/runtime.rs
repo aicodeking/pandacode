@@ -61,6 +61,17 @@ fn project_scope(scope: &Value) -> Result<Option<Vec<String>>, String> {
     Ok(match checked["value"]["mode"].as_str() { Some("selected") => Some(checked["value"]["projects"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_owned)).collect()), _ => None })
 }
 pub fn stop(app: &tauri::AppHandle, owner: Option<&str>) {
+    let safe_mode = app.state::<ExtensionPackages>().0.lock()
+        .map(|packages| packages.snapshot().safe_mode).unwrap_or(true);
+    if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+        use super::runtime_companion_lifetime::StopReason;
+        companions.set_safe_mode(safe_mode);
+        match owner {
+            Some(owner) => companions.end_owner(owner, StopReason::Disabled),
+            None => companions.end_all(StopReason::Disabled),
+        }
+        companions.retry_cleanup();
+    }
     crate::providers::dynamic_adapter::stop(owner);
     stop_presentation_work(app, owner);
     // Disable, uninstall, untrust, rollback and safe mode: the background service follows the package state.
@@ -81,6 +92,9 @@ fn stop_presentation_work(app: &tauri::AppHandle, owner: Option<&str>) {
 /// Called after atomic selection/removal, outside the package lock. Never cancel
 /// core provider runs: their leases own the version barrier.
 pub(in crate::extensions) fn package_changed(app: &tauri::AppHandle, owner: &str) {
+    if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
+        companions.end_owner(owner, super::runtime_companion_lifetime::StopReason::Disabled);
+    }
     stop_presentation_work(app, Some(owner)); context::invalidate(app, Some(owner));
     super::runtime_service_lifetime::reconcile_app(app);
 }

@@ -1,0 +1,22 @@
+{
+  "evidence": "synthetic",
+  "profile": {
+    "id": "fixture.companion.v1",
+    "harness": "fixture",
+    "versions": ["1.0.0"],
+    "api": "fixture.perRunPlugin.v1",
+    "protocol": 1,
+    "evidence": "synthetic"
+  },
+  "installed": { "harness": "fixture", "version": "1.0.0", "apis": ["fixture.perRunPlugin.v1"] },
+  "negotiation": [
+    { "installed": { "harness": "fixture", "version": "1.0.0", "apis": ["fixture.perRunPlugin.v1"] }, "state": "ready" },
+    { "installed": { "harness": "fixture", "version": null, "apis": ["fixture.perRunPlugin.v1"] }, "state": "unsupported" },
+    { "installed": { "harness": "fixture", "version": "0.9.0", "apis": ["fixture.perRunPlugin.v1"] }, "state": "unsupported" },
+    { "installed": { "harness": "fixture", "version": "2.0.0", "apis": ["fixture.perRunPlugin.v1"] }, "state": "unsupported" },
+    { "installed": { "harness": "fixture", "version": "1.0.0", "apis": [] }, "state": "unsupported" },
+    { "installed": { "harness": "other", "version": "1.0.0", "apis": ["fixture.perRunPlugin.v1"] }, "state": "unsupported" },
+    { "installed": { "harness": "fixture", "version": "1.0.0", "apis": ["fixture.perRunPlugin.v1"] }, "noProfile": true, "state": "unsupported" }
+  ],
+  "stopReasons": ["runEnded", "disabled", "revoked", "serviceFailure", "safeMode", "hostShutdown"]
+}

@@ -2869,6 +2869,10 @@ async fn launch_operation_admitted(
         let settle_id = run_id.clone();
         // Whatever ends this task before the run settles forgets what was kept for the run.
         let mut leftovers = RunLeftovers { run_id: run_id.clone(), session_id: session_id.clone(), settled: false };
+        let companion_key = extensions::runtime_companion_lifetime::RunKey {
+            task_id: session_id.clone(), run_id: settle_id.clone(),
+        };
+        let _companion_guard = extensions::runtime_companion_lifetime::RunGuard::new(companion_key.clone());
         // PandaCode's tool hosts refuse a worker's always-ask tools by this mark.
         providers::mark_worker_run(&session_id, &run_id, team_worker);
         let own_run = worker_approvals::Run {
@@ -3124,6 +3128,15 @@ async fn launch_operation_admitted(
         // prompt, and `full` asks at the harness and is answered at the host while a deciding hook is held. Unchanged
         // when no hook is attached.
         let (config, sink) = extensions::runtime_hook_decisions::wrap(&app, config, sink, own_input.clone(), stopped.clone());
+        let companion_owners = extensions::runtime_hook_decisions::companion_owners(&app, &session_id);
+        if !companion_owners.is_empty() && !cloud {
+            use extensions::runtime_companion_lifetime::{InstalledApi, registry};
+            let installed = InstalledApi { harness: config.provider.clone(), version: None, apis: vec![] };
+            if let Ok(mut companions) = registry().lock() {
+                let _ = companions.begin(companion_key.clone(), &companion_owners, &installed, None,
+                    |_| Err("No qualified host companion adapter.".into()));
+            }
+        }
         let (host, team_tools_missing) = task_tool_host(&app, &session_id, &stopped, team.as_ref(), cloud, tracker.clone(), title_run.as_ref());
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
@@ -3148,6 +3161,9 @@ async fn launch_operation_admitted(
         } else {
             providers::run_with_tools_reporting(config, sink, rx, host, reached_harness.clone(), loop_took_stop.clone()).await
         };
+        if let Ok(mut companions) = extensions::runtime_companion_lifetime::registry().lock() {
+            companions.end(&companion_key, extensions::runtime_companion_lifetime::StopReason::RunEnded);
+        }
         if let Ok(mut slot) = subagent_flush_handle.lock() {
             if let Some(handle) = slot.take() {
                 handle.abort();

@@ -448,6 +448,13 @@ pub(crate) async fn run_chain(registry: &HookRegistry, env: &Env, chain: &Chain,
 /// The owners of attached `tool.before` hooks that make a `full` launch ask at the harness: the hook's `match`
 /// accepts the run's harness and run kind, and the package holds `harness.hooks.observe` and, for some tool kind,
 /// `harness.hooks.decide` for the run's project.
+/// Current native hook sponsors for a run's companion observation.
+pub fn companion_owners(app: &tauri::AppHandle, task: &str) -> Vec<String> {
+    let registry = hooks::registry();
+    let env = app_env(app);
+    registry.run(task).map(|facts| holders(registry, &env.decides, &facts)).unwrap_or_default()
+}
+
 pub fn holders(registry: &HookRegistry, decides: &Decides, facts: &RunFacts) -> Vec<String> {
     let kind = facts.run["kind"].as_str().unwrap_or("task");
     let mut owners: Vec<String> = registry.attached(EVENT).into_iter().filter(|target| {
