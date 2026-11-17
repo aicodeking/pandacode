@@ -18,6 +18,7 @@
     { "dir": "upstream-api", "id": "sample.upstream-api", "categories": ["api", "service", "harness"], "executable": true },
     { "dir": "upstream-team-tools", "id": "sample.upstream-team-tools", "categories": ["tool", "harness"], "executable": true },
     { "dir": "live-board", "id": "sample.live-board", "categories": ["service", "workspace-surfaces"], "executable": true },
+    { "dir": "usage", "id": "sample.usage", "categories": ["service", "workspace-surfaces"], "executable": true },
     { "dir": "signin", "id": "sample.signin", "categories": ["service", "harness"], "executable": true },
     { "dir": "guard", "id": "sample.guard", "categories": ["service", "harness"], "executable": true }
   ],

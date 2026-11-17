@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "usage-band-scenario",
+  "task": "R1208",
+  "provenance": "synthetic: figures written for this example; the B5 scripted harness emits the same `usage` steps and B3 serves /v1/usage and /control/usage. Nothing here was captured from a real harness or account.",
+  "projects": [{ "id": "p1" }],
+  "tasks": [
+    { "id": "t1", "projectId": "p1", "harness": "claude" },
+    { "id": "t2", "projectId": "p1", "harness": "codex" },
+    { "id": "t3", "projectId": "p1", "harness": "claude" }
+  ],
+  "harnesses": {
+    "claude": { "compact": "request" },
+    "codex": { "compact": "none" }
+  },
+  "readings": {
+    "claude": { "status": "ready", "stale": false, "plan": "Pro", "email": "canary-user@example.test", "windows": [{ "label": "5h", "usedPercent": 37, "resetHours": 2 }, { "label": "week", "usedPercent": 12, "resetHours": 96 }] },
+    "codex": { "status": "ready", "stale": false, "windows": [{ "label": "5h", "usedPercent": 70, "resetHours": 3 }, { "label": "week", "usedPercent": 20, "resetHours": 48 }] }
+  },
+  "connection": { "id": "conn-work", "harness": "claude", "name": "Work account", "revision": 1, "reading": { "status": "ready", "stale": false, "windows": [{ "label": "5h", "usedPercent": 91, "resetHours": 1 }, { "label": "week", "usedPercent": 60, "resetHours": 30 }] } },
+  "api": { "windows": [{ "id": "5h", "label": "Five hours", "usedPercent": 37 }, { "id": "week", "label": "Week", "usedPercent": 12 }], "afterControl": [{ "id": "5h", "label": "Five hours", "usedPercent": 96 }, { "id": "week", "label": "Week", "usedPercent": 12 }] },
+  "credential": { "handle": "handle-usage-api", "canary": "tok-canary-never-in-a-package" },
+  "turns": [
+    { "task": "t1", "turn": 1, "usedTokens": 2000, "contextWindow": 10000, "expect": { "fill": 20, "tone": "success" } },
+    { "task": "t1", "turn": 2, "usedTokens": 5500, "contextWindow": 10000, "expect": { "fill": 55, "tone": "info" } },
+    { "task": "t1", "turn": 3, "usedTokens": 7400, "contextWindow": 10000, "expect": { "fill": 74, "tone": "warning" } },
+    { "task": "t1", "turn": 4, "usedTokens": 8300, "contextWindow": 10000, "expect": { "fill": 83, "tone": "danger" } },
+    { "task": "t2", "turn": 1, "usedTokens": 1000, "contextWindow": 4000, "expect": { "fill": 25, "tone": "success" } }
+  ],
+  "behaviors": {
+    "1": "band shows fill and tightest window within 1 s of a usage report",
+    "2": "another task shows its own numbers; a task without usage shows no fill",
+    "3": "tone thresholds; one notice at 80% per task and crossing",
+    "4": "one request per interval through the declared connection; none while no task exists",
+    "5": "limits notice after a reply per the afterReply setting",
+    "6": "report panel data from the ledger recorded at each turn end",
+    "7": "context note above 70%, at most once per five minutes and three times per task",
+    "8": "start fresh needs two clicks; insert checkpoint writes the draft only",
+    "9": "clean up shown only where the harness can compact",
+    "10": "no grant, disable, safe mode: no band, no subscriptions"
+  }
+}

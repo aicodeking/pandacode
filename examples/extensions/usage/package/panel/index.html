@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Usage report</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+    header { padding: 8px 10px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    header button[aria-pressed="true"] { font-weight: 600; outline: 1px solid currentColor; }
+    #status { margin-left: auto; opacity: .7; }
+    canvas { width: 100%; height: 160px; display: block; }
+    #groups { overflow-y: auto; padding: 4px 10px; }
+    .group { display: grid; grid-template-columns: 1fr 5em 4em; gap: 8px; padding: 2px 0; }
+    .group span:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
+    #empty { padding: 10px; opacity: .7; }
+  </style>
+</head>
+<body>
+  <header>
+    <button id="today" type="button" aria-pressed="false">Today</button>
+    <button id="d7" type="button" aria-pressed="true">7 days</button>
+    <button id="d30" type="button" aria-pressed="false">30 days</button>
+    <span id="status" role="status">Waiting for the ledger</span>
+  </header>
+  <canvas id="chart" width="640" height="160" role="img" aria-label="Tokens per day"></canvas>
+  <div id="groups"><div id="empty">No turn has been recorded yet.</div></div>
+  <script src="./app.js"></script>
+</body>
+</html>

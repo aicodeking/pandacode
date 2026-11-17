@@ -1,0 +1,50 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.usage",
+  "version": "1.0.0",
+  "name": "Usage band",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.presentation", "ui.richViews",
+    "tasks.usage.read", "harnesses.limits.read", "harnesses.accounts.read", "tasks.summary", "storage.private",
+    "connections.request", "harness.hooks.observe", "harness.hooks.context",
+    "tasks.start", "tasks.draft", "tasks.control"
+  ],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.usage/report", "title": "Usage report", "action": { "kind": "openView", "view": "sample.usage/report" } },
+      { "id": "sample.usage/startFresh", "title": "Start fresh", "action": { "kind": "runCommand" } },
+      { "id": "sample.usage/insertCheckpoint", "title": "Insert checkpoint", "action": { "kind": "runCommand" } },
+      { "id": "sample.usage/cleanUp", "title": "Clean up", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.usage/band", "location": "panda.composer.band", "command": "sample.usage/report", "presentation": "status", "text": "Usage" },
+      { "id": "sample.usage/report-button", "location": "panda.workspace.header.actions", "command": "sample.usage/report", "presentation": "button", "text": "Usage report" }
+    ],
+    "slashCommands": [
+      { "id": "sample.usage/slash-report", "name": "/usage-report", "description": "Open the usage report: tokens per day, harness and model.", "command": "sample.usage/report" }
+    ],
+    "views": [
+      { "id": "sample.usage/report", "title": "Usage report", "text": "Reading the usage ledger.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } }
+    ],
+    "hooks": [
+      { "id": "sample.usage/prompt-note", "event": "prompt.submit", "onFailure": "continue", "budgetMs": 2000 },
+      { "id": "sample.usage/turn-finish", "event": "turn.finish", "onFailure": "continue", "budgetMs": 2000 }
+    ],
+    "connections": [
+      {
+        "id": "sample.usage/api", "command": "sample.usage/report", "title": "Usage API", "authentication": "header", "headerName": "x-api-key",
+        "credential": { "source": "host" }, "adapter": "json", "maxResponseBytes": 65536, "timeoutMs": 5000,
+        "operations": [{ "id": "usage", "method": "GET", "url": "http://127.0.0.1:19474/v1/usage", "headers": { "x-client": "sample.usage" } }]
+      }
+    ],
+    "settings": [
+      { "id": "sample.usage/options", "title": "Usage band", "fields": [
+        { "id": "minIntervalSeconds", "kind": "text", "label": "Seconds between reads of the usage API", "value": "300", "required": true },
+        { "id": "afterReply", "kind": "select", "label": "Limits notice after a reply (none chosen: when a window is at 20% or less)", "placeholder": "When a window is at 20% or less", "options": [{ "value": "off", "label": "Never" }, { "value": "low", "label": "When a window is at 20% or less" }, { "value": "always", "label": "After every reply" }] }
+      ] }
+    ]
+  }
+}

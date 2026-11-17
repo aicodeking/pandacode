@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "usage-band-evidence-columns",
+  "task": "R1208",
+  "note": "Every column below is prepared and was NOT run when written (binding user decision of 2026-11-16: no tests, no installed-app or browser runs until the final test phase). Nothing here is an observation.",
+  "columns": {
+    "preview": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "spec": "tests/extensions-example-usage.spec.ts",
+      "grep": "usage band preview:",
+      "engines": {
+        "chromium": { "status": "prepared, not run (deferred to the final test phase)", "port": 16671, "command": "npx.cmd playwright test tests/extensions-example-usage.spec.ts --workers=1" },
+        "webkit": { "status": "prepared, not run (deferred to the final test phase)", "port": 16672, "command": "npx.cmd playwright test -c playwright.webkit.config.ts tests/extensions-example-usage.spec.ts --workers=1" }
+      },
+      "environment": { "PW_PORT": "16671 (Chromium) / 16672 (WebKit)", "PW_PROD": "1", "PW_WORKERS": "2", "PANDACODE_TEST_CHROME": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "PLAYWRIGHT_BROWSERS_PATH": "D:\\panda-code\\_work\\00-tmp\\playwright-browsers" },
+      "stands in for": "the host's grants, resources, live items and notices (the preview twins); the connection, hooks, draft, compact and harness list are stand-ins written in the spec and labelled so"
+    },
+    "native": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "needs": "B3 fake cloud started with --api-port 19474 (the connection's fixed address), B5 scripted harness with `usage` steps, the real package flow with the 18 permissions the install lists",
+      "scenarios": [
+        { "id": "interval", "expect": "B3's request log shows one GET /v1/usage per minIntervalSeconds (1 in the test), the header x-api-key carries the host's credential, the service's own log and every answer it received never contain it, and no request is made while no task exists" },
+        { "id": "resources", "expect": "usage, limits and accounts of the band equal the resource pages the service reads, after a B5 turn and after a B3 /control/usage change" },
+        { "id": "hooks", "expect": "prompt.submit returns the context note on the real hook path above 70% (at most once in five minutes, three per task); turn.finish records one ledger row per turn" },
+        { "id": "grants", "expect": "each of ui.presentation, tasks.usage.read, harnesses.limits.read, tasks.draft, tasks.control, tasks.start, connections.request revoked on its own removes only its part; the band is gone without ui.presentation, and nothing else of the package stops" }
+      ]
+    },
+    "installedWindows": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "runner": "tests/fixtures/extensions/runtime-windows-panels/qualify.mjs (R0306, reused; no second runner)",
+      "command": "node tests/fixtures/extensions/runtime-windows-panels/qualify.mjs --build",
+      "profile": "a dedicated Windows account or a Windows Sandbox with PANDACODE_QUALIFICATION_PROFILE=dedicated",
+      "stage": {
+        "package": "examples/extensions/usage/package (zip it like stagePackages does; sample.usage)",
+        "grants": ["runtime.service", "ui.presentation", "ui.dynamic", "events.workspace", "tasks.usage.read", "harnesses.limits.read", "harnesses.accounts.read", "ui.richViews", "ui.notify"],
+        "integration": "stage.mjs PACKAGES and expected.json belong to R0306: the final phase adds one `usage` entry there; this fixture does not edit them"
+      },
+      "scenarios": [
+        { "id": "band-layout", "steps": "run a B5 task with usage steps; open the composer at the minimum window width", "expect": { "oneSegment": true, "progressBar": true, "composerLayoutEqualsBaselineWithout": true } },
+        { "id": "report-panel", "steps": "run /usage-report after three turns", "expect": { "canvasDrawn": true, "rangesToggle": ["today", "7 days", "30 days"] } },
+        { "id": "account-switch", "steps": "switch the active account of the harness in the host", "expect": { "bandFollowsWithin": "the next read (focus, turn end or interval)", "noCredentialInAnyFrame": true } },
+        { "id": "cleanup", "steps": "disable the package; re-enable and revoke ui.presentation; enter safe mode", "expect": { "noBandSegment": true, "composerEqualsBaseline": true, "noLiveItems": true } }
+      ],
+      "closes": "R1208's installed column, only once these scenarios have run and passed"
+    }
+  }
+}

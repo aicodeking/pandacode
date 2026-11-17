@@ -639,6 +639,12 @@ jobs:
       - name: Work board example, service and dynamic UI (WebKit preview)
         env: { PW_PORT: '16172', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-live-board.spec.ts --workers=1
+      - name: Usage band example, per-task usage and limits (Chromium preview)
+        env: { PW_PORT: '16671', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-example-usage.spec.ts --workers=1
+      - name: Usage band example, per-task usage and limits (WebKit preview)
+        env: { PW_PORT: '16672', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-usage.spec.ts --workers=1
       - name: Command guard example, hooks and decisions (Chromium preview)
         env: { PW_PORT: '16631', PW_PROD: '1' }
         run: npx playwright test tests/extensions-example-guard.spec.ts --workers=1
