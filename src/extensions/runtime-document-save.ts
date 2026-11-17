@@ -92,7 +92,11 @@ export class DocumentSave {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
-  constructor(private readonly editors: DocumentEditors, private readonly env: SaveEnv) {
+  private readonly editors: DocumentEditors;
+  private readonly env: SaveEnv;
+  constructor(editors: DocumentEditors, env: SaveEnv) {
+    this.editors = editors;
+    this.env = env;
     this.streaks = env.streaks ?? new FailureStreaks();
     this.now = env.now ?? Date.now;
     this.sleep = env.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));

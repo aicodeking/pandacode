@@ -482,6 +482,10 @@ process.stdin.on('data', chunk => {
             storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
             // Declared connection requests (R0804): the host builds, authenticates and runs them; the grant is checked per call.
             connections: Object.freeze(Object.fromEntries(['status', 'start', 'poll', 'cancel'].map(op => [op, options => rpc('connectionsRequest', { ...options, op, invocation: invocations.getStore() })]))),
+            // The package's own secrets (R0802, secrets.private, service only): the host scopes them to this package and checks the grant on every call.
+            secrets: Object.freeze(Object.fromEntries(['get', 'set', 'delete', 'list'].map(op => [op, options => rpc('secrets', { ...options, op })]))),
+            // Browser sign-in (R0803, auth.signIn, service only): the host opens the browser, listens on loopback and returns the redirected address.
+            auth: Object.freeze({ signIn: options => rpc('authSignIn', options) }),
             // Panel instances (R0303, ui.richViews): post to every live instance of a view or to one, list them, hear them.
             views: Object.freeze({
               post: (viewId, message, options) => rpc('views', { op: 'post', viewId, message: message === undefined ? null : message, ...(options && options.instance !== undefined ? { instance: options.instance } : {}) }),

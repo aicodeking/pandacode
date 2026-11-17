@@ -18,7 +18,7 @@
     "site:build": "npm --prefix website run build",
     "site:preview": "npm --prefix website run preview",
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.erasable.json && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
     "tauri": "tauri",
     "desktop": "tauri dev",

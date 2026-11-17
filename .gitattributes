@@ -1,2 +1,18 @@
+* text=auto eol=lf
+AGENTS.md eol=crlf
+docs/agent-reference.md eol=crlf
+playwright.config.ts eol=crlf
+playwright.webkit.config.ts eol=crlf
+src-tauri/src/bots/channels/web.rs eol=crlf
+src-tauri/src/slash_commands.rs eol=crlf
+src/action-dock.ts eol=crlf
+src/agent-usage.ts eol=crlf
+src/github-hub.ts eol=crlf
+src/model-picker.ts eol=crlf
+src/preview.ts eol=crlf
+src/settings.ts eol=crlf
+src/sky-window.ts eol=crlf
+src/thread-find.ts eol=crlf
+tests/sky.spec.ts eol=crlf
 tests/fixtures/*.pdf binary
 src-tauri/src/voice/local/catalog.json text eol=lf

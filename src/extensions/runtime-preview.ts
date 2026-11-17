@@ -41,7 +41,8 @@ export type Loaders = Readonly<Record<string, () => Promise<ServiceModule>>>;
 
 /** The failure a rejected call raises in the service: the same `code` the native envelope carries. */
 export class PandaError extends Error {
-  constructor(readonly code: string) { super(code); this.name = 'PandaError'; }
+  readonly code: string;
+  constructor(code: string) { super(code); this.code = code; this.name = 'PandaError'; }
 }
 
 export interface PreviewLifetime {

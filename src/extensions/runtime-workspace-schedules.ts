@@ -18,7 +18,7 @@ export const MAX_LIST = 1024, MAX_ORIGINS = 4096, MAX_STEPS_SEEN = 1000, MAX_STE
 
 export type Code = 'NotFound' | 'InvalidShape' | 'LimitExceeded' | 'PermissionDenied' | 'UnsupportedCapability' | 'HostUnavailable' | 'Cancelled' | 'Conflict';
 export type Reply<T = Json> = { ok: true; value: T } | { ok: false; error: { schemaVersion: 1; code: Code; path: string; ids: string[] } };
-class Refusal extends Error { constructor(readonly code: Code, readonly path = '$', readonly ids: string[] = []) { super(code); } }
+class Refusal extends Error { readonly code: Code; readonly path: string; readonly ids: string[]; constructor(code: Code, path = '$', ids: string[] = []) { super(code); this.code = code; this.path = path; this.ids = ids; } }
 const fail = (refusal: Refusal): Reply<never> => ({ ok: false, error: { schemaVersion: 1, code: refusal.code, path: refusal.path, ids: refusal.ids } });
 const denied = () => new Refusal('PermissionDenied', PERMISSION);
 

@@ -203,7 +203,8 @@ const TIMED_OUT: unique symbol = Symbol('timed out');
 
 export class ModelToolRegistry {
   private readonly handlers = new Set<string>();
-  constructor(private readonly wiring: Wiring) {}
+  private readonly wiring: Wiring;
+  constructor(wiring: Wiring) { this.wiring = wiring; }
   private key = (owner: string, id: string) => `${owner}\u0000${id}`;
 
   /** `panda.modelTools.register(id)`: `UnknownReference`, `PermissionDenied`, `DuplicateId`, `HostUnavailable`. */

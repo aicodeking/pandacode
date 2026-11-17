@@ -149,7 +149,11 @@ export function modeVerdict(mode: string, userAllows: boolean): Verdict {
 }
 
 export class CoreBridge {
-  constructor(private readonly host: ToolHost, private readonly resolve: (name: string) => Lookup, private readonly approver: ((facts: CallFacts) => Verdict) | null, private readonly trace: Obj[]) {}
+  private readonly host: ToolHost;
+  private readonly resolve: (name: string) => Lookup;
+  private readonly approver: ((facts: CallFacts) => Verdict) | null;
+  private readonly trace: Obj[];
+  constructor(host: ToolHost, resolve: (name: string) => Lookup, approver: ((facts: CallFacts) => Verdict) | null, trace: Obj[]) { this.host = host; this.resolve = resolve; this.approver = approver; this.trace = trace; }
   /** The tools the run offers now: the host's own list without a package tool that is no longer offered. */
   list(): Obj[] {
     const out: Obj[] = [];

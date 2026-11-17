@@ -218,7 +218,8 @@ export class WorkspaceManager {
   readonly events: Json[] = [];
   readonly asked: { action: string; what: string; package: string }[] = [];
   private serial = 0;
-  constructor(readonly world: WorkspaceWorld) {}
+  readonly world: WorkspaceWorld;
+  constructor(world: WorkspaceWorld) { this.world = world; }
 
   private describe(admitted: Admitted): string {
     const text = (key: string) => String(admitted.input[key] ?? '');

@@ -24,7 +24,7 @@ const ID_BYTES = 512;
 
 export interface Refusal { code: string; path: string }
 const refusal = (code: string, path = '$'): Refusal => ({ code, path });
-export class Refused extends Error { constructor(readonly refusal: Refusal) { super(refusal.code); } }
+export class Refused extends Error { readonly refusal: Refusal; constructor(refusal: Refusal) { super(refusal.code); this.refusal = refusal; } }
 
 // ---- Parsing -----------------------------------------------------------------------------------------------------------
 

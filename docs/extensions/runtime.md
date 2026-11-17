@@ -2,6 +2,113 @@
 
 Authoring and selected-folder reload: [Trusted extension development and typed SDK](development.md).
 
+## Runtime pages
+
+One page per runtime slice; each states its permission, its native checks and its limits.
+
+**Grants, services and the duplex channel**
+
+- [Runtime grants](runtime-grants.md)
+- [Reviewing and managing grants](runtime-grants-manager.md)
+- [Native consents migration](runtime-native-consents.md)
+- [Native consent of the BTW and family controls](runtime-family-consents.md)
+- [Background services (`runtime.service`)](runtime-service-lifetime.md)
+- [Service supervision (`runtime.service`)](runtime-service-supervision.md)
+- [Running services and the quit confirmation (`runtime.service`)](runtime-service-status.md)
+- [Duplex channel of background services](runtime-duplex-channel.md)
+- [Code folders, the service environment and the data directory](runtime-code-folders.md)
+- [Services beside remote and headless executors (R0108)](runtime-executor-placement.md)
+- [Workspace events for background services](runtime-workspace-events.md)
+
+**Live contributions, panels and presentation**
+
+- [Scoped live contributions](runtime-dynamic-items.md)
+- [Replaceable, attributed notifications](runtime-notifications.md)
+- [Dialog answers and host navigation](runtime-dialog-navigation.md)
+- [Package settings and content resources (runtime phase R2, slice R0203)](runtime-content-resources.md)
+- [Usage, limits, accounts and metrics (runtime phase R2, slice R0204)](runtime-usage-resources.md)
+- [A live, task-scoped composer band (`ui.presentation`)](runtime-composer-band.md)
+- [Rich panels mounted in host surfaces (R0301)](runtime-rich-mount.md)
+- [Panel folders on isolated, persistent origins (R0302)](runtime-rich-assets.md)
+- [Panel instances and the panel-service channel (R0303)](runtime-rich-channel.md)
+- [Panel focus, keys, hidden panels and size (R0304)](runtime-rich-focus.md)
+- [A panel without a service (R0305)](runtime-panel-only.md)
+- [Rich panels on installed Windows (R0306)](runtime-windows-panels.md)
+- [Selectable presentations (`ui.presentation`)](runtime-transcript-presentation.md)
+- [Attributed notes and protected-dialog extras (runtime slice R1003)](runtime-protected-presentation.md)
+- [Replacing built-in tool rows and exposing risk signals](runtime-tool-row-replacement.md)
+- [Custom editors bound to host buffers (runtime slice R0901)](runtime-document-editors.md)
+- [Saving host buffers through bounded package hooks (runtime slice R0902)](runtime-document-save.md)
+- [Templated new files and the editor of a revealed file (runtime slice R0903)](runtime-new-file-templates.md)
+
+**Tasks, workspace and terminals**
+
+- [Attributed task start (`tasks.start`)](runtime-tasks-start.md)
+- [Messages, notes and the revisioned queue (`tasks.message`)](runtime-tasks-messages.md)
+- [Edit drafts and attachments without sending (`tasks.draft`)](runtime-tasks-drafts.md)
+- [Task control: stop, set mode, configure and compact (`tasks.control`)](runtime-tasks-control.md)
+- [Councils, workers and usage-limit pauses (`tasks.control`)](runtime-tasks-flow.md)
+- [Bots and shared channels (`workspace.bots`, `workspace.channels`)](runtime-workspace-automation.md)
+- [Recipes and wake-ups (`workspace.recipes`, `workspace.wakeups`)](runtime-workspace-schedules.md)
+- [Workspace settings (`workspace.settings`)](runtime-workspace-settings.md)
+- [Projects, worktrees, branches, tasks, pulls and project checks (`workspace.manage`, `projects.checks.run`)](runtime-workspace-projects.md)
+- [Manage moodboards and cloud machines (`workspace.manage`)](runtime-workspace-cloud.md)
+- [Read and operate terminals (`terminals.read`, `terminals.write`)](runtime-terminals.md)
+- [Control virtual machine, simulator and browser guests (`guests.control`)](runtime-guests.md)
+- [Open harness consoles and run command-center actions (`harness.console`)](runtime-harness-console.md)
+
+**Harness hooks and model tools**
+
+- [Hooks declared, attached and observed (runtime slice R0503)](runtime-hook-registration.md)
+- [Complete tool inputs and approval answers (runtime slice R0502)](runtime-hook-payload.md)
+- [Prompt context, result rewrites and compaction answers (runtime slice R0504)](runtime-hook-context.md)
+- [Tool decisions: approve, deny, ask, rewrite, and scoped full mode (runtime slice R0505)](runtime-hook-decisions.md)
+- [Hook chains across packages: order, budgets and failure policy (runtime slice R0506)](runtime-hook-resolution.md)
+- [Pending approvals and questions as durable events (runtime slice R0507)](runtime-pending-requests.md)
+- [Answering open requests after the hook budget (runtime slice R0508)](runtime-late-responses.md)
+- [Hook fixtures and recorded-frame provenance](runtime-hook-fixtures.md)
+- [Run coverage and harness capabilities (runtime slice R0509)](runtime-harness-coverage.md)
+- [Intent rules for package command-line tools](runtime-cli-intent.md)
+- [Model tools served by a package service (runtime slice R0701)](runtime-model-tools.md)
+- [Tool servers declared by a package (runtime slice R0702)](runtime-tool-servers.md)
+- [Package tools across the provider paths (runtime slice R0703)](runtime-model-tool-parity.md)
+- [One bounded model answer: `panda.models.call` (runtime slice R0704)](runtime-model-call.md)
+- [The unstable internal interface (`internal.unstable`)](runtime-internal-unstable.md)
+
+**Providers, credentials, secrets and connections**
+
+- [Declared ACP harnesses (`contributes.providers[].launch`)](runtime-provider-launch.md)
+- [Dynamic provider state (`panda.providers.update`)](runtime-provider-state.md)
+- [Speed tiers and warm spares of declared harnesses (R0807)](runtime-provider-speed.md)
+- [Held credentials used without being read, and account switching (`credentials.use`)](runtime-held-credentials.md)
+- [Private package secrets (`secrets.private`)](runtime-private-secrets.md)
+- [Browser sign-in (`auth.signIn`)](runtime-sign-in.md)
+- [Declared connection requests and the JSON adapter (`connections.request`)](runtime-connection-adapters.md)
+
+**Platforms, parity and previews**
+
+- [Runtime preview](runtime-preview.md)
+- [Runtime platform qualification (prepared, not enabled)](runtime-platform-qualification.md)
+- [Runtime platform evidence: macOS and Linux (R1102)](runtime-platform-evidence.md)
+- [Thirty-plugin parity and the uncovered-contract map (R1212)](runtime-parity.md)
+- [Runtime acceptance map (R1302)](runtime-acceptance.md)
+
+## Pages for the upstream surfaces
+
+How each surface that came with the upstream merge is opened to extensions.
+
+- [Floating code editor after the upstream merge](upstream-editor.md)
+- [Thread errors and the toast after the upstream merge v1 (experimental)](upstream-errors.md)
+- [Project explorer (the Files tab)](upstream-explorer.md)
+- [Application menu, settings and usage after the upstream merge](upstream-menu-usage.md)
+- [Crash restart and quit, for extension authors](upstream-recovery.md)
+- [Upstream remote methods and the phone (S0610)](upstream-remote.md)
+- [Remote sends and tool images after the upstream merge](upstream-semantic-remote-images.md)
+- [Provider speed tiers v1 (experimental)](upstream-speed.md)
+- [Tool image viewer extras (experimental)](upstream-tool-images.md)
+- [Tool rows and result cards after the upstream merge](upstream-tool-rows.md)
+- [Workers panel and Running agents dock after the upstream merge](upstream-workers.md)
+
 ## Window and retry ownership (API 1)
 
 Global package definitions and core workspace provider tasks are not owned by a

@@ -245,7 +245,8 @@ export function merge<T extends Obj>(host: T, result: Classification): T | (T & 
 /** The preview registry: the grant is checked on every classification, like the native one. */
 export interface Wiring { source: () => Entry[]; holds: (owner: string, version: string, permission: string, project: string | null) => boolean }
 export class CliIntentRegistry {
-  constructor(private readonly wiring: Wiring) {}
+  private readonly wiring: Wiring;
+  constructor(wiring: Wiring) { this.wiring = wiring; }
   usable(project: string | null): Listed[] { return resolve(this.wiring.source()).available.filter(listed => this.wiring.holds(listed.owner, listed.version, PERMISSION, project)); }
   conflicts(): Conflict[] { return resolve(this.wiring.source()).conflicts; }
   classify(project: string | null, line: string): Classification { return classify(this.usable(project), line); }

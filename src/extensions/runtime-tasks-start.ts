@@ -229,7 +229,8 @@ export class TaskStarter {
   readonly tasks: StartedTask[] = [];
   readonly events: Json[] = [];
   private serial = 0;
-  constructor(private world: StartWorld) {}
+  private world: StartWorld;
+  constructor(world: StartWorld) { this.world = world; }
 
   /** `panda.tasks.start`. A refusal creates no task; the recheck of the grant sits between the defaults and the creation. */
   start(owner: string, checks: Checks, raw: unknown, between: () => void = () => undefined): Reply<Started> {

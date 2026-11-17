@@ -125,7 +125,8 @@ export class OutputLog {
   start = 0;
   running = true;
   exitCode: number | null = null;
-  constructor(readonly capacity = LOG_BYTES) {}
+  readonly capacity: number;
+  constructor(capacity = LOG_BYTES) { this.capacity = capacity; }
   get end(): number { return this.start + this.bytes.length; }
   push(text: string): void {
     for (const byte of new TextEncoder().encode(text)) this.bytes.push(byte);

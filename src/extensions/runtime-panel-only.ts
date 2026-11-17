@@ -76,8 +76,10 @@ export class PanelOnlyPages implements PanelService {
   readonly work = new PageWork();
   private pages = new Map<string, Page>();
   private mounts = new Map<string, Mounted>();
+  readonly host: PreviewPanelHost;
+  private release: (label: string) => void;
   /** `release(label)` gives the keyboard back to the app control that had it before panel `label`. */
-  constructor(readonly host: PreviewPanelHost, private release: (label: string) => void = () => {}) { host.setService(this); }
+  constructor(host: PreviewPanelHost, release: (label: string) => void = () => {}) { this.host = host; this.release = release; host.setService(this); }
 
   /** Registers (or replaces, for a new version) the page of a package without a service. Never starts anything. */
   register(options: PageOptions): RuntimePreview {

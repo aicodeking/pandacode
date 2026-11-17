@@ -62,7 +62,12 @@ export class Subagents {
   /** Presentation order of the list rows (docs/extensions/agent-roster.md); undefined is start order. */
   private arrange?: (rows: readonly { id: string; active: boolean }[]) => string[];
 
-  constructor(private host: HTMLElement, private panelId = 'subagents-panel', private fileContext?: (sessionId: string) => FileLinkContext | undefined) {
+  private host: HTMLElement;
+  private panelId: string;
+  private fileContext?: (sessionId: string) => FileLinkContext | undefined;
+
+  constructor(host: HTMLElement, panelId = 'subagents-panel', fileContext?: (sessionId: string) => FileLinkContext | undefined) {
+    this.host = host; this.panelId = panelId; this.fileContext = fileContext;
     host.innerHTML = `<button type="button" class="subagents-trigger" aria-label="Subagents" aria-expanded="false" aria-controls="subagents-panel" title="View subagent work" hidden>${icon('branch')}<span></span>${icon('chevron')}</button>`;
     this.trigger = host.querySelector('button')!;
     this.trigger.setAttribute('aria-controls', panelId);

@@ -83,7 +83,8 @@ export class ModelCalls {
   private readonly lanes = new Map<string, Lane>();
   private readonly live = new Map<string, Live>();
   private readonly log: Usage[] = [];
-  constructor(private readonly wiring: Wiring) {}
+  private readonly wiring: Wiring;
+  constructor(wiring: Wiring) { this.wiring = wiring; }
   private key = (owner: string, id: string) => `${owner}\u0000${id}`;
   private lane(owner: string): Lane { let lane = this.lanes.get(owner); if (!lane) { lane = { running: 0, queue: [] }; this.lanes.set(owner, lane); } return lane; }
 

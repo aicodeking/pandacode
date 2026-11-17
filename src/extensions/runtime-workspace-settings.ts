@@ -146,7 +146,7 @@ export class WorkspaceSettingsStore {
     entry.applied = true; return true;
   }
 }
-class StoreError extends Error { constructor(readonly code: Code, readonly path: string) { super(code); } }
+class StoreError extends Error { readonly code: Code; readonly path: string; constructor(code: Code, path: string) { super(code); this.code = code; this.path = path; } }
 const refusalOf = (error: unknown): Reply<never> => error instanceof StoreError ? failure(error.code, error.path) : failure('HostUnavailable');
 
 /** The service-side call, as `serve` answers it: `{ok, value}` or the refusal envelope. */

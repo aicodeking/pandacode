@@ -35,7 +35,7 @@ export type ConnectionJson = { schemaVersion: 1; status: number; body: Json };
 export type ConnectionRequest = { schemaVersion: 1; request: string; state: 'running' | 'completed' | 'failed'; response: ConnectionSummary | ConnectionJson | null; error: string | null };
 export type Transport = (request: PreparedRequest) => Promise<{ status: number; text: string; redirected?: boolean }>;
 
-class Refusal extends Error { constructor(readonly code: string) { super(code); } }
+class Refusal extends Error { readonly code: string; constructor(code: string) { super(code); this.code = code; } }
 const refuse = (code: string): never => { throw new Refusal(code); };
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const byteLength = (text: string) => new TextEncoder().encode(text).length;

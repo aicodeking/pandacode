@@ -143,7 +143,8 @@ const sizeOf = (content: Content) => ('text' in content ? encoder.encode(content
 
 export class NewFiles {
   readonly audit: Audit[] = [];
-  constructor(private readonly env: Env) {}
+  private readonly env: Env;
+  constructor(env: Env) { this.env = env; }
   private record(entry: Audit) { if (this.audit.length >= MAX_AUDIT) this.audit.splice(0, MAX_AUDIT / 2); this.audit.push(entry); }
 
   /** Which editor opens a file and how the choice was made. */

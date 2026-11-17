@@ -2,7 +2,7 @@
 
 What the user granted to a package is kept natively, in one file, and every native call site asks it. The
 webview only reads it and sends the user's changes. A manifest `permissions` list is a ceiling; a grant is what a
-call needs ([ADR-0005](../../_work/10-docs/adr/0005-trust-in-the-author-not-restriction.md): trust in the author is
+call needs ([ADR-0005](../agent-reference.md#extensions): trust in the author is
 given at install, and a package holding the permission is never asked again per action).
 
 ## The vocabulary

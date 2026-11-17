@@ -43,8 +43,8 @@ closed.
 | Floating editor dock button | `toggle-file-editor` (the editor body is `panda.documents`, already a table row) | S0602 |
 | Grouped thread errors | `dismiss-error`, `dismiss-errors`, `dismiss-failover-error`, `toggle-error` in `src/main.ts`; `dismiss-error` in `src/bots.ts` and `src/agents-dock-window.ts`; `models-retry` in `src/bots.ts` | S0607 (S0605 owns the dock window file) |
 
-Named exceptions, with provenance (`_work/30-plan/upstream-sync/PLAN-upstream-content.md`, sections 1
-and 5). An exception is a decision with a reason, not a closure, and none of them is a security
+Named exceptions, with provenance (the upstream content plan, sections 1
+and 5, kept in the project's work folder outside this repository). An exception is a decision with a reason, not a closure, and none of them is a security
 restriction (ADR-0005):
 
 | Item | Why it is not a location | Owner of the record |
@@ -113,6 +113,7 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.composer.attach.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.attach.protected` | data | inspect | button | main | — |
 | `panda.composer.attachments` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.composer.band` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.council.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.council.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.model.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |

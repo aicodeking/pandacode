@@ -268,7 +268,8 @@ export class PreviewPanelHost {
   private bound = new Map<string, Bound>();
   private service: PanelService | undefined;
   private listening = false;
-  constructor(private now: () => number = () => performance.now()) {}
+  private now: () => number;
+  constructor(now: () => number = () => performance.now()) { this.now = now; }
 
   setService(service: PanelService | undefined) { this.service = service; }
   /** Connects the shell in `frame` as mount `label`; the returned disposal closes the instance (keeping its state). */
@@ -360,7 +361,10 @@ export class PreviewViews {
   private messages = new Map<string, Set<(message: Json, from: PanelInstance) => unknown>>();
   private events = new Map<string, Set<(instance: PanelInstance) => unknown>>();
   readonly faults: string[] = [];
-  constructor(private host: PreviewPanelHost, private owner: string, private granted: () => boolean) {}
+  private host: PreviewPanelHost;
+  private owner: string;
+  private granted: () => boolean;
+  constructor(host: PreviewPanelHost, owner: string, granted: () => boolean) { this.host = host; this.owner = owner; this.granted = granted; }
   private check() { if (!this.granted()) throw new ChannelError('PermissionDenied'); }
   post(viewId: string, message: Json, options?: { instance?: string }): Promise<{ delivered: number }> {
     return new Promise(resolve => { this.check(); resolve(this.host.post(this.owner, viewId, message, options?.instance)); });

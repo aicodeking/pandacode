@@ -87,7 +87,7 @@ The built-in bot controls that extension *contributions* cannot overlay (`delete
 and Q104) keep refusing a package's captured UI action. The reason is functional, not security: a contributed button on a
 built-in surface acts through the page's own handlers and has no native seam to check a grant against. The permissioned
 path for the same power is this namespace (and `tasks.*` for messages and stop), where every call is checked natively.
-See `_work/10-docs/extension-runtime-receipt.md` for each row.
+The extension runtime receipt (kept in the project's work folder, outside this repository) lists each row.
 
 ## Preview
 

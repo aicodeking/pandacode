@@ -156,7 +156,8 @@ const bounded = (text: string) => [...text].slice(0, MAX_ERROR).join('');
 
 export class ToolServerRegistry {
   private readonly slots = new Map<string, Held & { run: string; owner: string }>();
-  constructor(private readonly wiring: Wiring) {}
+  private readonly wiring: Wiring;
+  constructor(wiring: Wiring) { this.wiring = wiring; }
   private key = (run: string, owner: string, id: string) => `${run}\u0000${owner}\u0000${id}`;
 
   /** The servers a run of `project` may be offered, by the grant checked now. */

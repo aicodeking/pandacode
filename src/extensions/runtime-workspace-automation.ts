@@ -198,7 +198,7 @@ function previewRefusal(message: string): Refusal {
     : text.includes('personality') ? 'soul' : text.includes('color') ? 'color' : text.includes('lead') ? 'leadBotId' : text.includes('member') ? 'memberIds' : '';
   return path ? refuse('InvalidShape', path) : refuse('HostUnavailable');
 }
-class Native extends Error { constructor(readonly refusal: Refusal) { super(refusal.code); } }
+class Native extends Error { readonly refusal: Refusal; constructor(refusal: Refusal) { super(refusal.code); this.refusal = refusal; } }
 const native = (message: string): never => { throw new Native(previewRefusal(message)); };
 
 function previewBotForm(form: Record<string, unknown>): void {

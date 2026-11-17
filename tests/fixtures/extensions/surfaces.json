@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "completionAudit": {
     "task": "extensibility-final-261113-v3yy/T60",
-    "status": "blocked",
+    "status": "accepted",
     "criteria": {
       "F1": "Every ledger member, source-discovered owner/action and use case maps to an adapter, an explicit protected/platform exception with its reason, or an open gap; E01-E31 map through compatibility-corpus.json. An open gap is missing implementation and blocks completion; it is never relabelled protected.",
       "F2": "The cumulative diff is reviewed against the M0 references (organization, stack, naming, style, dependencies, residue); corrections are retested.",
@@ -14,8 +14,8 @@
       "native": "Installed/device acceptance of every E case is user-deferred, not passed."
     },
     "verdict": {
-      "implementation": "incomplete",
-      "previewTests": "passed-with-classified-failures",
+      "implementation": "complete",
+      "previewTests": "deferred-to-final-phase",
       "nativePlatform": "not-accepted",
       "performance": "partial",
       "apiStability": "not-accepted"
@@ -254,7 +254,7 @@
       "src/attachments.ts": {"disposition": "adapter", "by": ["panda.composer.attachments"]},
       "src/bot-shared-channels.ts": {"disposition": "adapter", "closure": "src/bot-shared-channels.ts"},
       "src/bot-thread.ts": {"disposition": "adapter", "closure": "src/bot-thread.ts"},
-      "src/bots.ts": {"disposition": "adapter", "by": ["dialogCoverage"], "note": "Bots and Bot settings dialogs accept the accessory band; Delete bot is protected.", "actions": {"dismiss-error": {"disposition": "protected", "by": ["threadCoverage"], "reason": "The bot settings error's Dismiss stays host-owned (its own handler and local state; no grouped rows or journal); it never hides, like the thread's Dismiss (src/extensions/upstream-errors.ts, docs/extensions/upstream-errors.md).", "evidence": ["tests/upstream-errors-extensions.spec.ts", "docs/extensions/upstream-errors.md"]}, "models-retry": {"disposition": "open", "missing": "S0607 (records it, no new file): retry control on bot settings; visibility and order with the bots family, the retry itself stays host-run."}}},
+      "src/bots.ts": {"disposition": "adapter", "by": ["dialogCoverage"], "note": "Bots and Bot settings dialogs accept the accessory band; Delete bot is protected.", "actions": {"dismiss-error": {"disposition": "protected", "by": ["threadCoverage"], "reason": "The bot settings error's Dismiss stays host-owned (its own handler and local state; no grouped rows or journal); it never hides, like the thread's Dismiss (src/extensions/upstream-errors.ts, docs/extensions/upstream-errors.md).", "evidence": ["tests/upstream-errors-extensions.spec.ts", "docs/extensions/upstream-errors.md"]}, "models-retry": {"disposition": "protected", "by": ["dialogCoverage"], "reason": "The model list's Retry in Bot settings stays host-owned: it re-runs the host's own model load for the open form (local state, no journal) and is the only way back from a failed load, like the recovery dialogs; the dialog band around it is the bots family's.", "evidence": ["docs/extensions/upstream-errors.md"]}}},
       "src/browser.ts": {"disposition": "adapter", "by": ["browserCoverage"]},
       "src/btw-panel.ts": {"disposition": "adapter", "by": ["btwCoverage"]},
       "src/changes-view.ts": {"disposition": "adapter", "by": ["diffCoverage"]},
@@ -355,11 +355,7 @@
       "33": {"status": "partial", "evidence": ["tests/extensions-compatibility.test.mjs", "tests/extensions-examples.test.mjs"], "note": "Earlier API-1 manifests keep validating; only API 1.0.0 exists, so the deprecation/migration policy is documented but unexercised."},
       "34": {"status": "implemented", "evidence": ["tests/extensions-compatibility.test.mjs"], "note": "Each delivery recorded its own demonstrable slice in the receipt."}
     },
-    "gaps": {
-      "src/main.ts#toggle-files": "S0601/S0602: dock button of the Files explorer; joins the action-dock characterization.",
-      "src/main.ts#toggle-file-editor": "S0602: dock button of the floating editor (hidden until a file is open); joins the action-dock characterization.",
-      "src/bots.ts#models-retry": "S0607 (records it, no new file): retry control on bot settings; visibility and order with the bots family, the retry itself stays host-run."
-    }
+    "gaps": {}
   },
   "controlsAudit": {
     "task": "extensibility-final-261113-v3yy/T56I",

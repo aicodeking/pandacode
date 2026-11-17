@@ -159,7 +159,9 @@ export class Assembler {
   private expected = 0;
   private parts: Uint8Array[] = [];
   private received = 0;
-  constructor(private readonly encoding: 'text' | 'bytes', private readonly hostRevision: () => number) {}
+  private readonly encoding: 'text' | 'bytes';
+  private readonly hostRevision: () => number;
+  constructor(encoding: 'text' | 'bytes', hostRevision: () => number) { this.encoding = encoding; this.hostRevision = hostRevision; }
   get open() { return this.transfer !== null; }
   /** The panel closed mid-transfer, or the host gave up: the partial assembly is gone. */
   discard() { this.transfer = null; this.parts = []; this.received = 0; this.expected = 0; }
@@ -212,7 +214,15 @@ export class HostBuffer {
   conflict: Content | null = null;
   private content: Content;
   private disk: Content;
-  constructor(readonly projectId: string, readonly path: string, readonly encoding: 'text' | 'bytes', public readOnly: boolean, disk: Content) {
+  readonly projectId: string;
+  readonly path: string;
+  readonly encoding: 'text' | 'bytes';
+  readOnly: boolean;
+  constructor(projectId: string, path: string, encoding: 'text' | 'bytes', readOnly: boolean, disk: Content) {
+    this.projectId = projectId;
+    this.path = path;
+    this.encoding = encoding;
+    this.readOnly = readOnly;
     this.disk = copy(disk); this.content = copy(disk);
   }
   get limit() { return this.encoding === 'text' ? MAX_TEXT_BYTES : MAX_BYTES_BYTES; }
@@ -271,7 +281,8 @@ export class DocumentEditors {
   readonly audit: Audit[] = [];
   /** Replacement events a mount's panel receives (the page callback `onDidReplace`), per mount id. */
   readonly replaced = new Map<string, Replace[]>();
-  constructor(private readonly wiring: Wiring) {}
+  private readonly wiring: Wiring;
+  constructor(wiring: Wiring) { this.wiring = wiring; }
 
   private record(action: string, owner: string | null, buffer: HostBuffer, bytes: number, detail?: string) {
     this.audit.push({ action, owner, projectId: buffer.projectId, path: buffer.path, revision: buffer.revision, bytes, ...(detail ? { detail } : {}) });

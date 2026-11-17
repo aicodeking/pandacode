@@ -264,7 +264,8 @@ export class TaskMessenger {
   private queues = new Map<string, (QueueRow & { raw: string[] })[]>();
   private serial = 0;
   private clock = 0;
-  constructor(private world: MessengerWorld) {}
+  private world: MessengerWorld;
+  constructor(world: MessengerWorld) { this.world = world; }
 
   private task(id: string) { return this.world.tasks.find(task => task.id === id); }
   private worldFor(owner: string, checks: Checks): World {

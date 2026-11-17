@@ -2,7 +2,7 @@
 
 A trusted package declares a connection in its manifest and asks the host to run it. The host builds the HTTP request,
 attaches the credential, runs it and hands back the answer; the package never names an address, a header or a
-credential, and no credential value ever comes back to it ([ADR-0006](../../_work/10-docs/adr/0006-credentials-used-not-read.md)).
+credential, and no credential value ever comes back to it ([ADR-0006](../agent-reference.md#extensions)).
 It is runtime slice R0804, on top of the private package secrets (R0802) and the duplex channel (R0201).
 
 ```json

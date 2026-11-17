@@ -58,7 +58,7 @@ type Options = {
   harnesses?: Record<string, string[]>;
   now?: () => number;
 };
-class Refusal extends Error { constructor(readonly code: string) { super(code); } }
+class Refusal extends Error { readonly code: string; constructor(code: string) { super(code); this.code = code; } }
 const refuse = (code: string): never => { throw new Refusal(code); };
 
 /**

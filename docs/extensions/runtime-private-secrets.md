@@ -33,7 +33,7 @@ Types: `ServicePandaCode.secrets` in `src/extensions/sdk/index.d.ts`. Fixture:
 ## A package secret is not a host credential
 
 PandaCode's own credentials (provider keys, sign-in tokens) live in the host secret store and are never handed to a
-package: there is no `credentials.read` permission or call ([ADR-0006](../../_work/10-docs/adr/0006-credentials-used-not-read.md)).
+package: there is no `credentials.read` permission or call ([ADR-0006](../agent-reference.md#extensions)).
 A package that needs one uses `credentials.use`, where the host attaches the credential to the request. The two never
 share storage or a key space, so a package secret named like a host credential reads and writes only the package's
 own record. This page's secrets are the ones the package owns.

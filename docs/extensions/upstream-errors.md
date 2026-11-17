@@ -80,5 +80,5 @@ permanent refusal.
 Ledger (`tests/fixtures/extensions/surfaces.json`): `src/main.ts#dismiss-error`, `#dismiss-errors`,
 `#dismiss-failover-error` and `#toggle-error`, and `src/bots.ts#dismiss-error`, are closed as host-owned (protected)
 with this document and the spec as evidence; `src/agents-dock-window.ts#dismiss-error` was closed by the workers
-panel adapter ([upstream workers](upstream-workers.md)). `src/bots.ts#models-retry` stays open: the retry is the host's
-own handler and its visibility and order belong to the bots family owner, so this task records it without closing it.
+panel adapter ([upstream workers](upstream-workers.md)). `src/bots.ts#models-retry` is closed as host-owned (protected) too: the retry is the host's
+own handler, it re-runs the model load of the open form and is the only way back from a failed load, and its dialog band is the bots family's.

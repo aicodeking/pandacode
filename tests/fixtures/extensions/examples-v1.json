@@ -20,7 +20,12 @@
     { "dir": "live-board", "id": "sample.live-board", "categories": ["service", "workspace-surfaces"], "executable": true },
     { "dir": "usage", "id": "sample.usage", "categories": ["service", "workspace-surfaces"], "executable": true },
     { "dir": "signin", "id": "sample.signin", "categories": ["service", "harness"], "executable": true },
-    { "dir": "guard", "id": "sample.guard", "categories": ["service", "harness"], "executable": true }
+    { "dir": "guard", "id": "sample.guard", "categories": ["service", "harness"], "executable": true },
+    { "dir": "arcade", "id": "sample.arcade", "categories": ["workspace-surfaces"], "executable": false },
+    { "dir": "inbox", "id": "sample.inbox", "categories": ["service", "harness", "workspace-surfaces"], "executable": true },
+    { "dir": "memory", "id": "sample.memory", "categories": ["service", "tool", "harness"], "executable": true },
+    { "dir": "monitor", "id": "sample.monitor", "categories": ["service", "workspace-surfaces"], "executable": true },
+    { "dir": "sql-notebook", "id": "sample.sql-notebook", "categories": ["service", "workspace-surfaces"], "executable": true }
   ],
   "permissions": ["btw.content", "btw.taskControl", "services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.presentation", "tasks.start", "tasks.message", "tasks.draft", "tasks.control", "tasks.usage.read", "harnesses.limits.read", "harnesses.accounts.read", "harness.hooks.observe", "harness.hooks.decide", "harness.hooks.context", "harness.companions", "harness.console", "tools.model", "models.call", "secrets.private", "credentials.use", "auth.signIn", "documents.editors", "workspace.manage", "workspace.settings", "terminals.read", "terminals.write", "guests.control", "projects.checks.run", "metrics.read", "internal.unstable"],
   "priorFixtures": [

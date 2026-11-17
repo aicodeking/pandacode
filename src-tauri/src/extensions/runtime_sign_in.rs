@@ -290,6 +290,22 @@ pub fn open_browser(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// The duplex channel's entry (`runtime_service_lifetime::app_dispatch`). Blocks until the flow ends, so the dispatcher
+/// runs it on a blocking task. The caller's identity comes from the connection; the grant is rechecked natively while
+/// the flow waits. Answers the broker envelope `{ok, value|error}`; the redirected address is only in the reply.
+pub fn serve_request(app: &tauri::AppHandle, owner: &str, params: &Value) -> Value {
+    use tauri::Manager;
+    let result = super::runtime_private_secrets::installed_version(app, owner).and_then(|version| app.state::<SignIns>().sign_in(&app.state::<RuntimeGrants>(), owner, &version, Caller::Service, params, &open_browser));
+    match result { Ok(value) => json!({"ok": true, "value": value}), Err(code) => super::context::failure(&code) }
+}
+
+/// The service ended (stop, crash, disable, trust loss): its waiting sign-in ends as `cancelled` and frees the port,
+/// so the restarted service is not met with `Conflict`.
+pub fn service_stopped(app: &tauri::AppHandle, owner: &str) {
+    use tauri::Manager;
+    if let Some(flows) = app.try_state::<SignIns>() { flows.cancel(owner); }
+}
+
 fn main_window(window: &tauri::WebviewWindow) -> Result<()> {
     if crate::headless::active() || window.label() != "main" { return Err("PermissionDenied".into()); }
     Ok(())

@@ -95,7 +95,9 @@ export class GuestsModel {
   /** The paths written, oldest first. */
   private written: string[] = [];
   private serial = 0;
-  constructor(readonly caps: Capabilities, readonly dataDir = '/data/sample.runtime-guests/global') {}
+  readonly caps: Capabilities;
+  readonly dataDir: string;
+  constructor(caps: Capabilities, dataDir = '/data/sample.runtime-guests/global') { this.caps = caps; this.dataDir = dataDir; }
 
   add(guest: Guest): void { this.guests.set(guestId(guest), guest); }
   private of(kind: Kind): Guest[] { return [...this.guests.values()].filter(guest => guest.kind === kind); }

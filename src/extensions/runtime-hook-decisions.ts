@@ -41,7 +41,7 @@ export type Decision =
   | { decision: 'ask'; reason: string | null }
   | { decision: 'rewrite'; input: Json };
 export interface Parsed { decision: Decision; note: string | null }
-class Invalid extends Error { constructor(readonly code: string) { super(code); } }
+class Invalid extends Error { readonly code: string; constructor(code: string) { super(code); this.code = code; } }
 
 /** A `ToolDecision`, strictly, in the native order: keys, reason, note, decision, input. */
 export function parseDecision(value: Json | undefined): Parsed | null {
@@ -106,7 +106,8 @@ export class DecisionFold {
   denied: Verdict | null = null;
   notes: [string, string][] = [];
   private drafts: Draft[] = [];
-  constructor(readonly can: readonly string[]) {}
+  readonly can: readonly string[];
+  constructor(can: readonly string[]) { this.can = can; }
   stopped(): boolean { return this.denied !== null; }
   payload(base: Obj): Obj {
     const payload: Obj = { ...base, can: [...this.can] };

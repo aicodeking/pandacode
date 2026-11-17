@@ -29,7 +29,7 @@ hooks ([hook context](../runtime-hook-context.md)). It combines them into the us
 - Permissions (eighteen): `ui.contribute`, `runtime.service`, `events.workspace`, `ui.dynamic`, `ui.notify`, `ui.presentation`,
   `ui.richViews`, `tasks.usage.read`, `harnesses.limits.read`, `harnesses.accounts.read`, `tasks.summary`, `storage.private`,
   `connections.request`, `harness.hooks.observe`, `harness.hooks.context`, `tasks.start`, `tasks.draft`, `tasks.control`. No
-  `credentials.*` and no `secrets.private`: the package holds no credential and no secret of its own ([ADR-0006](../../../_work/10-docs/adr/0006-credentials-used-not-read.md)).
+  `credentials.*` and no `secrets.private`: the package holds no credential and no secret of its own ([ADR-0006](../../agent-reference.md#extensions)).
 - Revoking a grant removes only its part and is rechecked natively on every call: the band without `ui.presentation` (the host
   strips it), the buttons without their grants, the numbers without the read grants (`Usage unavailable`). Disable, safe mode and
   stop remove the band, the hooks and the subscriptions; the composer, the draft and a running task are untouched.

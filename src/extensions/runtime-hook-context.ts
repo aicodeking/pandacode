@@ -32,7 +32,7 @@ const oneLine = (text: string) => text.split(/\s+/).filter(Boolean).join(' ');
 export interface Step { owner: string; name: string; onFailure?: string; grants: readonly string[]; answer: { value: Json } | { error: string } }
 export interface Receipt { owner: string; applied: boolean; code?: string; refused?: Record<string, string> }
 
-class Shape extends Error { constructor(readonly code: string) { super(code); } }
+class Shape extends Error { readonly code: string; constructor(code: string) { super(code); this.code = code; } }
 function boundedText(value: Json | undefined, limit: number, allowEmpty: boolean): string {
   if (typeof value !== 'string') throw new Shape('InvalidShape');
   if (bytes(value) > limit) throw new Shape('LimitExceeded');
@@ -53,7 +53,8 @@ function fields(value: Json, keys: readonly string[]): Obj | null {
 }
 class Draft {
   applied = false; refused: Record<string, string> = {};
-  constructor(readonly owner: string) {}
+  readonly owner: string;
+  constructor(owner: string) { this.owner = owner; }
   refuse(key: string, code: string) { if (!(key in this.refused)) this.refused[key] = code; }
   finish(): Receipt {
     const receipt: Receipt = { owner: this.owner, applied: this.applied };
@@ -75,7 +76,8 @@ export const blockedMessage = (blocked: Blocked) => blocked.failed ? `Not sent: 
 
 export class PromptFold implements Fold {
   contexts: [string, string][] = []; rewrittenBy: string[] = []; notes: [string, string][] = []; blocked: Blocked | null = null; receipts: Receipt[] = [];
-  constructor(public text: string) {}
+  text: string;
+  constructor(text: string) { this.text = text; }
   payload(base: Obj): Obj { return { ...base, text: preview(this.text) }; }
   stopped() { return this.blocked !== null; }
   private failed(step: Step, code: string) {
@@ -124,7 +126,9 @@ export function compose(text: string, contexts: readonly (readonly [string, stri
 
 export class ToolAfterFold implements Fold {
   output: Json | undefined = undefined; by: string[] = []; notes: [string, string][] = []; receipts: Receipt[] = [];
-  constructor(readonly can: readonly string[], readonly original: Json) {}
+  readonly can: readonly string[];
+  readonly original: Json;
+  constructor(can: readonly string[], original: Json) { this.can = can; this.original = original; }
   payload(base: Obj): Obj { return { ...base, can: [...this.can], ...(this.output !== undefined ? { output: this.output } : {}) }; }
   stopped() { return false; }
   step(step: Step): void {
@@ -154,7 +158,8 @@ export const compactionCan = (harness: string): string[] => ['claude', 'glm', 'm
 
 export class CompactionFold implements Fold {
   cancel: [string, string] | null = null; instructions: [string, string][] = []; summaries: [string, string][] = []; receipts: Receipt[] = [];
-  constructor(readonly can: readonly string[]) {}
+  readonly can: readonly string[];
+  constructor(can: readonly string[]) { this.can = can; }
   payload(base: Obj): Obj { return { ...base, can: [...this.can] }; }
   stopped() { return this.cancel !== null; }
   step(step: Step): void {

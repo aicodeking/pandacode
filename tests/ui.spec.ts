@@ -3683,6 +3683,8 @@ test('projects, thread and composer load while provider discovery is pending', a
   await page.evaluate(() => (window as any).__releaseBootProviders());
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toHaveValue('Draft kept during discovery');
   await expect(page.getByRole('button', { name: /^Model: / })).toBeEnabled();
+});
+
 test('a draft re-wraps when the pane narrows, so the prompt never clips it', async ({ page }) => {
   // The prompt's text is not its fit's only input: how many lines it wraps to depends on the width it wraps at, and the fit
   // is remembered per text (`resizePrompt` in src/main.ts), so a redraw or a focus change writes nothing. Only the prompt's

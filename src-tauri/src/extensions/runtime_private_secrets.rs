@@ -134,6 +134,27 @@ impl PrivateSecrets {
     }
 }
 
+/// The installed version of a package, read from the app's package snapshot: the caller's identity comes from the
+/// connection, never from the request.
+pub(in crate::extensions) fn installed_version(app: &tauri::AppHandle, owner: &str) -> Result<String> {
+    use tauri::Manager;
+    let packages = app.state::<super::packages::ExtensionPackages>();
+    let packages = packages.0.try_lock().map_err(|_| "Timeout".to_owned())?;
+    let snapshot = packages.snapshot();
+    drop(packages);
+    let version = snapshot.packages.iter().find(|package| package.manifest["id"] == owner).and_then(|package| package.manifest["version"].as_str().map(str::to_owned)).ok_or_else(|| "PermissionDenied".to_owned())?;
+    Ok(version)
+}
+
+/// The duplex channel's entry (`runtime_service_lifetime::app_dispatch`): `method` is `secrets.get|set|delete|list`.
+/// Resolves the caller's installed version, rechecks the grant natively and answers the broker envelope
+/// `{ok, value|error}`. A value is only ever in the reply to the package that owns it (ADR-0006); it is not logged.
+pub fn serve(app: &tauri::AppHandle, owner: &str, method: &str, params: &Value) -> Value {
+    use tauri::Manager;
+    let result = installed_version(app, owner).and_then(|version| app.state::<PrivateSecrets>().handle(&app.state::<RuntimeGrants>(), owner, &version, Caller::Service, method, params));
+    match result { Ok(value) => json!({"ok": true, "value": value}), Err(code) => super::context::failure(&code) }
+}
+
 /// Package-owned secrets as the webview may see them (main window only; key names and counts, never a value).
 #[tauri::command]
 pub fn extensions_private_secrets(window: tauri::WebviewWindow, secrets: tauri::State<'_, PrivateSecrets>) -> Result<Value> {

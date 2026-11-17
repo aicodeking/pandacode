@@ -43,7 +43,8 @@ export class Notices {
   private revision_ = 0;
   private seq = 0;
   private entries: RecorderEntry[] = [];
-  constructor(private os: OsChannel = noOsChannel) {}
+  private os: OsChannel;
+  constructor(os: OsChannel = noOsChannel) { this.os = os; }
   revision() { return this.revision_; }
   count(owner: string) { const layer = this.layers.get(owner); return layer ? layer.notices.size + (layer.merged ? 1 : 0) : 0; }
 

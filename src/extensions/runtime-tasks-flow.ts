@@ -175,7 +175,8 @@ export class FlowController {
   /** What the window did for the rounds only it can run (follow-ups sent, strips dismissed). */
   readonly followUps: { taskId: string; text: string }[] = [];
   private clock = 0;
-  constructor(private world: FlowWorld) {}
+  private world: FlowWorld;
+  constructor(world: FlowWorld) { this.world = world; }
 
   task(id: string): PreviewFlowTask | undefined { return this.world.tasks.find(entry => entry.id === id); }
 

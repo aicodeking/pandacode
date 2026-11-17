@@ -1,8 +1,8 @@
 # Thirty-plugin parity and the uncovered-contract map (R1212)
 
-Owner: runtime task R1212. Source of the study: `_work/30-plan/extension-runtime/PLAN-gaps.md`. Gap tables G1-G8, A1-A7, F1-F8 and
-the S06xx handoffs: `_work/30-plan/upstream-sync/PLAN-upstream-content.md` (S07C). Per-task evidence: the sections of
-`_work/10-docs/extension-runtime-receipt.md`.
+Owner: runtime task R1212. Source of the study: the extension runtime plan's gap study (`PLAN-gaps.md`), kept in the project's
+work folder, which is not part of this repository. Gap tables G1-G8, A1-A7, F1-F8 and the S06xx handoffs: the upstream content
+plan, section S07C, in the same folder. Per-task evidence: the sections of the extension runtime receipt there.
 
 ## How to read the evidence
 
@@ -127,6 +127,12 @@ These are recorded in the receipt and make the affected rows "implemented, call-
 | Per-run providers do not read `mcp_entries` | R0702, R0703 | Tool servers and package tools in built-in harnesses: attachment pending |
 | `main.ts` does not supply `details`/`decision` callbacks to the tool-row mount | R1004 | Hook-derived chips, `{input}`/`{output}` empty |
 | Notices have no click action; no OS-notice flag | R1210, R1206 | Inbox, monitor |
+| Panel `storage.*` is not routed through the rich channel (a panel answers `UnsupportedCapability`; the service holds the storage) | R0303 | Panels that expected their own storage keep it in the service |
+| The webview usage view does not draw the limit windows a package publishes | R0806 | `sample.usage` windows reach the host state, not the usage band |
+| The older brokers (`context.rs`, `jobs.rs`, `connections.rs`, `services.rs`) do not call the native grant `gate` of the runtime | R0102 | Short activations keep their own earlier checks; the service paths rely on the gate |
+| The ZCode bridge is not wired (A5) | R0701-R0703 | Package tools are not offered to ZCode; a person decides |
+
+`panda.secrets.*` (R0802) and `panda.auth.signIn` (R0803) were declared and implemented natively but not reachable from a running service until R1302 wired them through the service request path (`secrets` and `authSignIn` in `runtime_service_lifetime.rs`, the `secrets` and `auth` objects of `node-host.cjs`); the grant is rechecked natively on every call, a secret value is only in the reply to its own package, and a service that ends cancels its waiting sign-in. The rows that depend on them (Orca 8, OpenCode 2, 5, 8, 9, `sample.signin`, `sample.memory`) remain "written, not run".
 
 ## Example deviations (stated, not parity gaps)
 

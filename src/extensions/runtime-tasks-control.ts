@@ -215,7 +215,8 @@ export class TaskController {
   readonly stoppedBy = new Map<string, string>();
   readonly events: Json[] = [];
   private clock = 0;
-  constructor(private world: ControlWorld) {}
+  private world: ControlWorld;
+  constructor(world: ControlWorld) { this.world = world; }
 
   task(id: string): PreviewTask | undefined { return this.world.tasks.find(entry => entry.id === id); }
 
