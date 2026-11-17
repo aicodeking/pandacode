@@ -175,6 +175,10 @@ process.stdin.on('data', chunk => {
               },
               update: (id, patch) => rpc('ui', { op: 'update', id, patch }),
               updateView: (id, patch) => rpc('ui', { op: 'updateView', id, patch }),
+              // Resolves with the user's answer, `{ status: 'confirmed', values }` or `{ status: 'cancelled' }` (R0206); a second dialog while one is open answers Conflict.
+              showDialog: dialog => rpc('uiDialog', dialog),
+              // Shows a view or settings page of the package, a task, or a file of a project; an unknown or stale target answers NotFound.
+              reveal: target => rpc('uiReveal', target),
             }),
             // The package's own settings pages (R0203): the owner is the connection's, never the request's.
             settings: Object.freeze({ get: options => rpc('settingsGet', options === undefined || options === null ? {} : { ...options }) }),

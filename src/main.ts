@@ -720,7 +720,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     return explorerAdapter.explorerSurface(context, path, directory, opened, () => opened === state.generation && context.projectId === state.projectId && (context.sessionId ?? '') === state.sessionId);
   };
   const { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } = await import('./extensions/views-state');
-  const { registerInspectorViewOpener } = await import('./extensions/view-navigation');
+  const { registerInspectorViewOpener, requestInspectorView } = await import('./extensions/view-navigation');
   mountExtensionView = (await import('./extensions/views')).mountInspectorView;
   extensionViewVisible = id => !layout.isHidden(id, state.projectId ?? undefined);
   extensionViewOrder = ids => orderedControls(INSPECTOR_VIEW_LOCATION, ids) as InspectorView[];
@@ -731,6 +731,17 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     inspectorSuppressed = false; state.inspector = true; state.inspectorTab = id; state.selectedKind = '';
     renderInspector(); return true;
   });
+  // Dialogs a background service asked and the places it reveals (R0206): the host performs each navigation.
+  void import('./extensions/runtime-dialog-navigation').then(navigation => navigation.startRuntimeDialogNavigation({
+    selectTask: async id => { if (!state.sessions.some(task => task.id === id)) return false; await selectSession(id); return state.sessionId === id; },
+    openView: id => requestInspectorView(id),
+    openFile: async (projectId, path) => {
+      if (projectId !== state.projectId) await selectProject(projectId);
+      if (projectId !== state.projectId) return false;
+      await openFile(path, 'file'); return true;
+    },
+    openSettingsPage: async id => { await showSettings(id as import('./settings').SettingsSection); return true; },
+  }));
   registerLayoutContext(() => state.projectId ?? undefined);
   const { registerPlacementHosts, placements } = await import('./extensions/placement-host');
   const placementDock = document.createElement('div'); placementDock.className = 'extension-placement-dock'; $('#inspector').append(placementDock);

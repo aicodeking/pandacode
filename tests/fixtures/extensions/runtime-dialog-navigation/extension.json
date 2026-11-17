@@ -1,0 +1,23 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.dialog-navigation",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.dialog-navigation/control", "title": "Dialog and navigation control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.dialog-navigation/header", "location": "panda.workspace.header.actions", "command": "sample.dialog-navigation/control", "presentation": "button", "text": "Dialog navigation" }
+    ],
+    "views": [
+      { "id": "sample.dialog-navigation/board", "title": "Answers", "text": "No answer yet." }
+    ],
+    "settings": [
+      { "id": "sample.dialog-navigation/settings", "title": "Dialog navigation", "fields": [{ "id": "name", "label": "Name", "kind": "text" }] }
+    ]
+  }
+}

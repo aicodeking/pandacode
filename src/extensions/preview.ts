@@ -284,6 +284,9 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   if (command === 'extensions_runtime_native_consents') return nativeConsents.createNativeConsentsPreview().call(command, snapshot);
   // No service runs in the preview: the live layer is empty (the spec drives runtime-dynamic-items.ts directly).
   if (command === 'extensions_runtime_items') return { revision: 0, owners: {} };
+  // No service runs in the preview: no dialog is pending; answers are recorded for the spec (runtime-dialog-navigation.ts).
+  if (command === 'extensions_runtime_dialogs') return [];
+  if (command === 'extensions_runtime_dialog_answer') { ((window as unknown as { __runtimeDialogAnswers?: unknown[] }).__runtimeDialogAnswers ??= []).push(args); return null; }
   if (command === 'extensions_family_consents')return previewFamilyConsents.call(args, snapshot);
   if (command === 'extensions_rich_view_open') return { opened: false, reason: 'Rich HTML views are disabled: installed native isolation qualification is pending. Use the host-rendered view instead.' };
   if (safeMode) throw new Error('Safe mode: package loading is bypassed.');

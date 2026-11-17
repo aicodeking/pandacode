@@ -481,7 +481,21 @@ export interface ServiceLifetime {
   setStatus(status: { text: string; working?: boolean }): Promise<null>;
 }
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly ui: ServiceUi }
+/** What the user answered a service's dialog (R0206). A dialog that was closed, or whose service ended, is `cancelled`. */
+export type DialogAnswer = { readonly status: 'confirmed'; readonly values: Readonly<Record<string, string | boolean | readonly string[]>> } | { readonly status: 'cancelled' };
+/** Where `reveal` takes the window: a view or settings page of this package, a task, or a file of a project (relative path). */
+export type RevealTarget = { readonly view: string } | { readonly taskId: string } | { readonly projectId: string; readonly path: string; readonly line?: number; readonly editor?: string } | { readonly settingsPage: string };
+/** The `ui` of a background service (needs `runtime.service` and the `ui.dynamic` grant, checked on every call). */
+export interface ServiceUi {
+  /** Shows the dialog and resolves with the user's answer. One dialog may be open per package: a second call while one is open rejects with Conflict. A dialog waits while another one is open. */
+  showDialog(dialog: DialogDefinition): Promise<DialogAnswer>;
+  register(item: RuntimeContribution): Promise<RuntimeItem>;
+  update(id: string, patch: RuntimePatch): Promise<null>;
+  updateView(id: string, patch: RuntimePatch): Promise<null>;
+  /** Opens one of the package's views or settings pages, selects a task, or opens a project file in the editor (`editor`: the package's own, `line` where the editor supports it). Never moves the keyboard out of a text field; an unknown or stale target rejects with NotFound and nothing is sent to any task. */
+  reveal(target: RevealTarget): Promise<null>;
+}
 /** `panda.settings.get`: the values and revision of one of the package's OWN settings pages (another page is `NotFound`). */
 export interface PackageSettings { get(options: { page: string }): Promise<{ readonly schemaVersion: 1; readonly revision: number; readonly values: Readonly<Record<string, Json>> }> }
 /** The one-shot task reads of a service: `tasks.summary`, `tasks.transcript.read` and `tasks.tools.read` (the last for `tools` and `changes`). */

@@ -4866,6 +4866,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
     app.manage(extensions::runtime_dynamic_items::DynamicItems::default());
+    app.manage(extensions::runtime_dialog_navigation::DialogSlots::default());
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
     app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
     extensions::runtime_service_lifetime::reconcile_app(app.handle());
@@ -5330,6 +5331,8 @@ pub fn run() {
                 tray::tray_seen,
                 extensions::runtime_service_lifetime::runtime_workspace_events::extensions_workspace_task_shown,
                 extensions::runtime_dynamic_items::extensions_runtime_items,
+                extensions::runtime_dialog_navigation::extensions_runtime_dialog_answer,
+                extensions::runtime_dialog_navigation::extensions_runtime_dialogs,
                 usage_ledger::usage_ledger,
                 capabilities::capabilities_inventory,
                 capabilities::cache_alignment,

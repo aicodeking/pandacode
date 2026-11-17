@@ -759,7 +759,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| super::runtime_dynamic_items::service_stopped(&app, owner))); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
@@ -793,6 +793,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if request.method == "ui" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_dynamic_items::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
+            // `panda.ui.showDialog` (waits for the user's answer) and `panda.ui.reveal` (R0206): `ui.dynamic` is checked natively per call.
+            if matches!(request.method.as_str(), "uiDialog" | "uiReveal") { return super::runtime_dialog_navigation::serve(app, request).await; }
             // `panda.settings.get` and the task content reads: answered from the grants file, no captured context needed.
             if matches!(request.method.as_str(), "settingsGet" | "contentQuery") {
                 return tauri::async_runtime::spawn_blocking(move || runtime_content_resources::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
@@ -1673,6 +1675,78 @@ mod tests {
             manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
             assert_eq!(items.count(DYNAMIC_ID), 0, "the layer ends with the process");
             assert!(items.snapshot()["owners"].get(DYNAMIC_ID).is_none() || items.snapshot()["owners"][DYNAMIC_ID]["menus"] == json!([]));
+            b1.stop().await;
+        }
+
+        const NAVIGATION_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/runtime-dialog-navigation/extension.json");
+        const NAVIGATION_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/runtime-dialog-navigation/main.cjs");
+        const NAVIGATION_ID: &str = "sample.dialog-navigation";
+
+        /// R0206 acceptance: an installed service, told by B1 signals, asks a dialog that waits for the host's answer (a second
+        /// one answers Conflict), receives the answer, and reveals a task (an unknown one is NotFound and nothing moves); the
+        /// process ending resolves a pending dialog as cancelled.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn dialog_navigation_installed_service_receives_the_answer_conflicts_a_second_dialog_and_reveals_by_signal() {
+            use crate::extensions::runtime_dialog_navigation::{check_reveal, failure, DialogSlots, World};
+            let runtime = supervisor::Runtime::packaged(&runtime_dir()).unwrap();
+            let b1 = B1::start(&runtime).await;
+            let dir = Dir::new();
+            let packages = ExtensionPackages::new(&dir.0, false);
+            let grants = RuntimeGrants::open(&dir.0);
+            let slots = Arc::new(DialogSlots::default());
+            let revealed: Arc<Mutex<Vec<Value>>> = Arc::default();
+            let dispatch: Dispatch = { let (slots, revealed) = (slots.clone(), revealed.clone()); Arc::new(move |request: DispatchRequest| {
+                let (slots, revealed) = (slots.clone(), revealed.clone());
+                Box::pin(async move {
+                    match request.method.as_str() {
+                        "uiDialog" => match slots.begin(&request.owner, request.params.clone()) { Ok((_, answer)) => json!({"ok": true, "value": answer.await.unwrap_or_else(|_| json!({"status": "cancelled"}))}), Err(code) => failure(code) },
+                        "uiReveal" => {
+                            let (views, pages) = (vec![format!("{NAVIGATION_ID}/board")], vec![format!("{NAVIGATION_ID}/settings")]);
+                            let world = World { granted: true, views: &views, settings_pages: &pages, task_exists: &|id| id == "t1", project_dir: &|_| None, file_exists: &|_| false };
+                            match check_reveal(&request.owner, &world, &request.params) { Ok(target) => { revealed.lock().unwrap().push(target); json!({"ok": true, "value": null}) } Err(code) => failure(code) }
+                        }
+                        _ => failure("UnsupportedCapability"),
+                    }
+                }) as Pin<Box<dyn Future<Output = Value> + Send>>
+            }) };
+            { let packages = packages.0.lock().unwrap(); packages.install(&archive(NAVIGATION_MANIFEST, NAVIGATION_SOURCE)).unwrap(); let digest = digest(&packages); packages.trust(NAVIGATION_ID, &digest, true).unwrap(); packages.enable(NAVIGATION_ID, true).unwrap(); }
+            let env = [("PANDA_FIXTURE_B1", b1.socket.as_str())];
+            let manager = ServiceLifetime::new(vec![runtime_dir()]).with_env(&env);
+            manager.set_dispatch(dispatch);
+            { let slots = slots.clone(); manager.set_ended_hook(Arc::new(move |owner: &str| { slots.cancel_owner(owner); })); }
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            grants.grant(NAVIGATION_ID, "ui.dynamic", Scope::default()).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !manager.serves(NAVIGATION_ID, "sample.dialog-navigation/control") { assert!(Instant::now() < deadline, "the service never became ready"); tokio::time::sleep(Duration::from_millis(25)).await; }
+            let held = |text: &Value| text.as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).unwrap_or(Value::Null);
+
+            // Ask: the dialog is open for the interface and the service waits.
+            b1.order(json!({"op": "ask"})).await;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while slots.count(NAVIGATION_ID) == 0 { assert!(Instant::now() < deadline, "the dialog never opened"); tokio::time::sleep(Duration::from_millis(25)).await; }
+            // A second dialog of the same owner is a Conflict; the first stays open.
+            b1.order(json!({"op": "ask"})).await;
+            wait_for(&manager, "the second dialog was refused", |service| held(&service["status"]["text"])["refused"] == json!(["Conflict"])).await;
+            assert_eq!(slots.count(NAVIGATION_ID), 1);
+            // The answer reaches the awaiting service exactly once.
+            let id = slots.pending()[0]["id"].as_str().unwrap().to_owned();
+            slots.answer(&id, &json!({"status": "confirmed", "values": {"name": "Ada", "sure": true}})).unwrap();
+            wait_for(&manager, "the answer arrived", |service| held(&service["status"]["text"])["answers"] == json!([{"status": "confirmed", "values": {"name": "Ada", "sure": true}}])).await;
+            assert_eq!(slots.answer(&id, &json!({"status": "cancelled"})), Err("NotFound"));
+
+            // Reveal: a task that exists is sent to the window; an unknown one is NotFound and nothing is sent.
+            b1.order(json!({"op": "reveal", "target": {"taskId": "t1"}})).await;
+            b1.order(json!({"op": "reveal", "target": {"taskId": "ghost"}})).await;
+            wait_for(&manager, "the refusal was recorded", |service| held(&service["status"]["text"])["refused"] == json!(["Conflict", "NotFound"])).await;
+            assert_eq!(*revealed.lock().unwrap(), vec![json!({"taskId": "t1"})]);
+
+            // The process ends while a dialog waits: it resolves as cancelled and the slot is free.
+            b1.order(json!({"op": "ask"})).await;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while slots.count(NAVIGATION_ID) == 0 { assert!(Instant::now() < deadline, "the dialog never opened"); tokio::time::sleep(Duration::from_millis(25)).await; }
+            manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
+            assert_eq!(slots.count(NAVIGATION_ID), 0, "the dialog ends with the process");
             b1.stop().await;
         }
     }
