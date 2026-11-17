@@ -78,8 +78,10 @@ pub(super) fn retargeted(session_id: &str, apply: impl FnOnce(&mut RunConfig)) -
     if epoch(session_id) != target.launch {
         targets.remove(session_id);
         drop(targets);
-        spares().remove(session_id);
+        let stale = spares().remove(session_id);
         changed();
+        // Killed outside the lock.
+        drop(stale);
         return None;
     }
     let mut config = target.config.clone();

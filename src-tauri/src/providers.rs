@@ -53,8 +53,10 @@ pub(crate) fn warm_spare_and_cold_keys_for_test(
     Ok((spare_key, warm::key(&cold, tools)))
 }
 
-/// Start the next turn's warm agent: Claude's (`warm.rs`), or Codex's app-server or an ACP
-/// agent (`handshake_warm.rs`).
+/// Start the next turn's warm agent without a ticket: Claude's (`warm.rs`), or Codex's
+/// app-server or an ACP agent (`handshake_warm.rs`). The app starts every one through a ticket
+/// (`prewarm_reserved`), so a pick landing while it is prepared turns it away.
+#[cfg(test)]
 pub async fn prewarm_agent(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
     if !start_ahead() {
         return Ok(());
@@ -157,10 +159,22 @@ pub fn discard_all_warm_agents() {
     handshake_warm::discard_all();
 }
 
+/// A task's warm agents, taken out of their maps. Dropping it kills their processes, so a
+/// caller holding the store or the agent registry drops it only after releasing them.
+#[must_use = "dropping it kills the agents: drop it after releasing any lock"]
+pub struct TakenWarmAgents {
+    _claude: Option<warm::Spare>,
+    _handshake: Option<handshake_warm::Spare>,
+}
+
+/// Take out every warm agent and pending start a task has, to drop outside any lock.
+pub fn take_warm_agents(session_id: &str) -> TakenWarmAgents {
+    TakenWarmAgents { _claude: warm::take_out(session_id), _handshake: handshake_warm::take_out(session_id) }
+}
+
 /// Drop every warm agent a task has (its folder changed, or it was deleted).
 pub fn discard_warm_agent(session_id: &str) {
-    warm::discard(session_id);
-    handshake_warm::discard(session_id);
+    drop(take_warm_agents(session_id));
 }
 
 /// After a settings switch: Claude's agent follows it (`warm::retarget`). A Codex or ACP spare

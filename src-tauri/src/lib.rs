@@ -397,15 +397,90 @@ mod task_agent_tests {
         providers::handshake_insert_for_test(&task.id, "codex");
         providers::reserve_warm_agent(&task.id);
         assert!(providers::has_warm_agent(&session));
-        assert!(release_draft(&store, &task.id).unwrap(), "still an empty draft");
+        let released = release_draft(&store, &task.id).unwrap().expect("still an empty draft");
+        drop(released);
         assert_eq!(providers::handshake_spare_pid(&task.id), None, "its process is stopped");
         assert!(!providers::has_warm_agent(&session), "and its pending start is gone");
         // A task that is not an empty draft is left alone.
         let kept = store.create_session(&project.id, "codex", "default", "ask").unwrap();
         providers::handshake_insert_for_test(&kept.id, "codex");
-        assert!(!release_draft(&store, &kept.id).unwrap());
+        assert!(release_draft(&store, &kept.id).unwrap().is_none());
         assert!(providers::handshake_spare_pid(&kept.id).is_some());
         providers::discard_warm_agent(&kept.id);
+    }
+
+    fn settings_state() -> (AppState, String) {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap().id;
+        let state = AppState {
+            store: Arc::new(Mutex::new(store)),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            shutdown: AtomicU8::new(0),
+        };
+        (state, project)
+    }
+
+    #[tokio::test]
+    async fn a_model_or_mode_switch_keeps_the_warm_spare_and_archiving_drops_it() {
+        let (state, project) = settings_state();
+        let codex = state.store.lock().unwrap().create_session(&project, "codex", "default", "ask").unwrap();
+        let pid = providers::handshake_insert_for_test(&codex.id, "codex");
+        save_session_update(&state, &codex.id, None, None, None, Some("full".into())).unwrap();
+        assert_eq!(providers::handshake_spare_pid(&codex.id), Some(pid), "a mode change keeps the same spare");
+        save_session_update(&state, &codex.id, None, None, Some("gpt-5.5".into()), None).unwrap();
+        assert_eq!(providers::handshake_spare_pid(&codex.id), Some(pid), "so does a model change");
+        save_session_update(&state, &codex.id, Some("Renamed".into()), None, None, None).unwrap();
+        assert_eq!(providers::handshake_spare_pid(&codex.id), Some(pid));
+        // A Claude task's recorded agent stays, for the rewarm to switch in place.
+        let claude = state.store.lock().unwrap().create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        providers::warm_record_for_test(&launch_config(&claude, std::env::temp_dir()));
+        save_session_update(&state, &claude.id, None, None, None, Some("plan".into())).unwrap();
+        let switched = state.store.lock().unwrap().session(&claude.id).unwrap();
+        assert!(providers::has_warm_agent(&switched), "the Claude agent was not discarded");
+        // Archiving stops what was started ahead.
+        save_session_update(&state, &codex.id, None, Some(true), None, None).unwrap();
+        assert_eq!(providers::handshake_spare_pid(&codex.id), None);
+        save_session_update(&state, &claude.id, None, Some(true), None, None).unwrap();
+        assert!(!providers::has_warm_agent(&switched));
+    }
+
+    #[test]
+    fn a_stale_running_row_without_an_agent_does_not_block_a_settings_change() {
+        let (state, project) = settings_state();
+        let task = state.store.lock().unwrap().create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        let stale = |status: &str| {
+            state.store.lock().unwrap().db.execute("UPDATE sessions SET status=?2 WHERE id=?1", rusqlite::params![task.id, status]).unwrap();
+        };
+        // The run's end was never saved, and no agent is registered: reconciled, not refused.
+        stale("running");
+        save_reasoning_effort(&state, &task.id, None).expect("the effort is saved");
+        stale("waiting");
+        save_session_update(&state, &task.id, None, None, None, Some("plan".into())).expect("the mode is saved");
+        stale("running");
+        let session = save_configuration(&state, &task.id, "claude", "claude-opus-5-5", None).expect("the model is saved");
+        assert_eq!((session.model.as_str(), session.mode.as_str()), ("claude-opus-5-5", "plan"));
+        assert_eq!(session.status, "interrupted");
+    }
+
+    #[tokio::test]
+    async fn a_pick_after_a_start_ahead_is_reserved_turns_that_start_away() {
+        let (state, project) = settings_state();
+        let task = state.store.lock().unwrap().create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        // The turn end (or draft) reserved its start, then read the row...
+        let ticket = providers::reserve_warm_agent(&task.id);
+        let config = launch_config(&task, std::env::temp_dir());
+        // ...and a pick landed before it recorded: `plan_rewarm` superseded or cancelled it.
+        providers::cancel_warm_ticket(&task.id);
+        providers::prewarm_reserved(ticket, config, Vec::new(), HashSet::new(), providers::warm_epoch(&task.id)).await.unwrap();
+        assert!(!providers::has_warm_agent(&task), "nothing was started for the old settings");
+        let superseded = providers::reserve_warm_agent(&task.id);
+        let pick = providers::reserve_warm_agent(&task.id);
+        let codex = RunConfig { provider: "codex".into(), ..launch_config(&task, std::env::temp_dir()) };
+        providers::prewarm_reserved(superseded, codex, Vec::new(), HashSet::new(), providers::warm_epoch(&task.id)).await.unwrap();
+        assert!(providers::warm_reserved(&task.id, pick), "the pick's own start is untouched");
+        assert_eq!(providers::handshake_spare_pid(&task.id), None);
+        providers::release_warm_ticket(&task.id, pick);
     }
 
     #[test]
@@ -975,6 +1050,9 @@ fn spawn_draft_prewarm(app: &tauri::AppHandle, state: &AppState, session_id: &st
         return;
     }
     let launch = providers::warm_epoch(session_id);
+    // Reserved before the row is read: a pick after this supersedes or cancels the ticket
+    // (`warm_launch::plan_rewarm`), so this start never warms settings the draft has left.
+    let ticket = providers::reserve_warm_agent(session_id);
     let app = app.clone();
     let store = state.store.clone();
     let agents = state.agents.clone();
@@ -1017,9 +1095,13 @@ fn spawn_draft_prewarm(app: &tauri::AppHandle, state: &AppState, session_id: &st
             let still_draft = agents.lock().is_ok_and(|running| running.is_empty())
                 && store.lock().is_ok_and(|db| db.is_empty_draft(&session_id).unwrap_or(false));
             if still_draft {
-                let _ = providers::prewarm_agent(config, tools, approvals, launch).await;
+                // A stale ticket starts nothing; every path releases it.
+                providers::touch_warm_agent(&session_id);
+                let _ = providers::prewarm_reserved(ticket, config, tools, approvals, launch).await;
             }
         }
+        // Whatever happened, this ticket's start is over: a waiting send stops waiting for it.
+        providers::release_warm_ticket(&session_id, ticket);
     });
 }
 
@@ -1081,10 +1163,12 @@ async fn discard_draft(app: tauri::AppHandle, window: tauri::WebviewWindow, sess
     }
     blocking(move || {
         let state = app.state::<AppState>();
-        if !release_draft(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)? {
+        let released = release_draft(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)?;
+        // The store lock is released: stopping the agents never holds it up.
+        let Some(released) = released else {
             return Ok(false);
-        }
-        providers::discard_warm_agent(&session_id);
+        };
+        drop(released);
         task_deletion::delete_state(&state, &session_id)?;
         Ok(true)
     })
@@ -1092,14 +1176,14 @@ async fn discard_draft(app: tauri::AppHandle, window: tauri::WebviewWindow, sess
 }
 
 /// Whether the task is still an empty draft; if so, whatever was started ahead for it (a warm
-/// agent with its tool servers, a pending start) is stopped first, so a New task left before
-/// its first prompt keeps nothing running and frees its spare slot.
-fn release_draft(store: &Store, session_id: &str) -> Result<bool> {
+/// agent with its tool servers, a pending start) is taken out, for the caller to stop once it
+/// releases the store, so a New task left before its first prompt keeps nothing running and
+/// frees its spare slot.
+fn release_draft(store: &Store, session_id: &str) -> Result<Option<providers::TakenWarmAgents>> {
     if !store.is_empty_draft(session_id)? {
-        return Ok(false);
+        return Ok(None);
     }
-    providers::discard_warm_agent(session_id);
-    Ok(true)
+    Ok(Some(providers::take_warm_agents(session_id)))
 }
 #[tauri::command]
 async fn create_board_task(
@@ -1244,22 +1328,33 @@ async fn configure_session(
         remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
     }
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if agents.contains_key(&session_id) {
-        return Err("Stop the agent before changing its project, provider, or model.".into());
-    }
-    let session = state.store.lock().map_err(|e| e.to_string())?.configure(
-        &session_id,
-        &provider,
-        &model,
-        project_id.as_deref(),
-    )?;
-    drop(agents);
-    // A new folder changes everything about the launch.
+    let session = save_configuration(&state, &session_id, &provider, &model, project_id.as_deref())?;
+    // A new folder changes everything about the launch. Every lock is released by now, so
+    // stopping the agent never holds up the store.
     if project_id.is_some() {
         providers::discard_warm_agent(&session_id);
     }
     Ok(session)
+}
+
+/// A row still `running` or `waiting` with no agent registered is a run whose end was never
+/// saved: reconciled under the caller's locks (`reconcile_inactive_task`), so a settings
+/// change is refused only while an agent really runs.
+fn reconcile_for_settings(store: &Store, agents: &HashMap<String, RunningAgent>, session_id: &str) -> Result<()> {
+    if !agents.contains_key(session_id) {
+        reconcile_inactive_task(store, agents, store.session(session_id)?);
+    }
+    Ok(())
+}
+
+fn save_configuration(state: &AppState, session_id: &str, provider: &str, model: &str, project_id: Option<&str>) -> Result<Session> {
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    if agents.contains_key(session_id) {
+        return Err("Stop the agent before changing its project, provider, or model.".into());
+    }
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    reconcile_for_settings(&store, &agents, session_id)?;
+    store.configure(session_id, provider, model, project_id)
 }
 async fn set_reasoning_effort(
     app: tauri::AppHandle,
@@ -1268,19 +1363,19 @@ async fn set_reasoning_effort(
     reasoning_effort: Option<String>,
 ) -> Result<Session> {
     remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"effort": reasoning_effort})).await?;
+    save_reasoning_effort(&state, &session_id, reasoning_effort.as_deref())
+}
+
+fn save_reasoning_effort(state: &AppState, session_id: &str, reasoning_effort: Option<&str>) -> Result<Session> {
     // Match send/configure's lock order so a send cannot capture the old
     // configuration halfway through a settings change.
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if agents.contains_key(&session_id) {
+    if agents.contains_key(session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    let session = state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())?;
-    drop(agents);
-    Ok(session)
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    reconcile_for_settings(&store, &agents, session_id)?;
+    store.set_reasoning_effort(session_id, reasoning_effort)
 }
 async fn update_session(
     app: tauri::AppHandle,
@@ -1308,23 +1403,42 @@ async fn update_session(
             return task_controls::rename_task(&state, &session_id, title).await;
         }
     }
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
-        return Err("Stop the agent before changing its model or permissions.".into());
-    }
     let restored = archived == Some(false);
-    let discard_warm = model.is_some() || mode.is_some() || archived == Some(true);
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)?;
-    if discard_warm {
-        providers::discard_warm_agent(&session_id);
-    }
-    drop(agents);
+    save_session_update(&state, &session_id, title, archived, model, mode)?;
     if restored {
         remote::orchestrate::retry(&app, &session_id);
+    }
+    Ok(())
+}
+
+/// Saves a task's title, archive state, model or permissions. Only archiving drops its warm
+/// agents, after every lock is released: a model or permission switch leaves them to
+/// `warm_launch::update_session`'s rewarm, which switches a waiting Claude agent in place
+/// (`set_model`, `set_permission_mode`) and keeps a Codex spare these never reach. A send
+/// still adopts an agent only when its launch matches exactly (`warm::take`).
+fn save_session_update(
+    state: &AppState,
+    session_id: &str,
+    title: Option<String>,
+    archived: Option<bool>,
+    model: Option<String>,
+    mode: Option<String>,
+) -> Result<()> {
+    let switched = model.is_some() || mode.is_some();
+    let archive = archived == Some(true);
+    {
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        if switched && agents.contains_key(session_id) {
+            return Err("Stop the agent before changing its model or permissions.".into());
+        }
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        if switched {
+            reconcile_for_settings(&store, &agents, session_id)?;
+        }
+        store.update(session_id, title, archived, model, mode)?;
+    }
+    if archive {
+        providers::discard_warm_agent(session_id);
     }
     Ok(())
 }
@@ -3387,18 +3501,30 @@ async fn launch_operation_admitted(
             let waiting_on_workers = lead && store.lock().ok().and_then(|db| architect::load(&db, &session_id).ok().flatten()).is_some_and(|snapshot| {
                 snapshot.workers.iter().any(|worker| !worker.abandoned && architect::unsettled(&worker.status))
             });
-            let task = store.lock().ok().filter(|_| replied && !waiting_on_workers).and_then(|db| db.session(&session_id).ok());
-            if let Some(task) = task {
-                next.resume_id = task.resume_id;
-                next.model = task.model;
-                next.mode = task.mode;
-                next.reasoning_effort = task.reasoning_effort;
-                next.codex_settings = task.codex_settings;
-                next.prompt.clear();
-                next.images.clear();
-                tauri::async_runtime::spawn(async move {
-                    let _ = providers::prewarm_agent(next, tools, approvals, launch).await;
-                });
+            // Reserved before the row is read: a pick landing before the start records supersedes
+            // or cancels the ticket (`warm_launch::plan_rewarm`), so the spare never carries
+            // settings the task has left; a pick after it retargets the recorded agent.
+            let ticket = (replied && !waiting_on_workers).then(|| providers::reserve_warm_agent(&session_id));
+            let task = store.lock().ok().filter(|_| ticket.is_some()).and_then(|db| db.session(&session_id).ok());
+            match (ticket, task) {
+                (Some(ticket), Some(task)) => {
+                    next.resume_id = task.resume_id;
+                    next.model = task.model;
+                    next.mode = task.mode;
+                    next.reasoning_effort = task.reasoning_effort;
+                    next.codex_settings = task.codex_settings;
+                    next.prompt.clear();
+                    next.images.clear();
+                    // A turn just ended: a follow-up is likely.
+                    providers::touch_warm_agent(&session_id);
+                    tauri::async_runtime::spawn(async move {
+                        let id = next.session_id.clone();
+                        let _ = providers::prewarm_reserved(ticket, next, tools, approvals, launch).await;
+                        providers::release_warm_ticket(&id, ticket);
+                    });
+                }
+                (Some(ticket), None) => providers::release_warm_ticket(&session_id, ticket),
+                (None, _) => {}
             }
         }
     });

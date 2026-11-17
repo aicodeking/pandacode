@@ -3901,6 +3901,8 @@ function renderComposer(): void {
       if (pickerFocused) pickerAnchor.focus({ preventScroll: true });
     } else closeMenus();
   }
+  // A busy trigger, permissions button or send button redrawn mid-save carries on its pulse rather than blinking.
+  modelSwitch.joinPulses(document.querySelector('#composer'));
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -4666,6 +4668,8 @@ function reloadSessions(): Promise<void> {
 }
 async function loadSessions(): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
+  // Picks made from here on are newer than this listing (model-switch.ts heldChoices).
+  const picks = modelSwitch.listingStamp();
   const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
   if (request !== sessionsReload) return;
@@ -4674,7 +4678,7 @@ async function loadSessions(): Promise<void> {
   // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
   const listedIds = new Set(sessions.map(task => task.id));
   const drafts = state.sessions.filter(task => task.draft && !listedIds.has(task.id)).map(task => task.id === selectedId && details ? details : task);
-  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id));
+  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id)).map(task => modelSwitch.heldChoices(task, picks));
   // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
   state.drafts.reclaimAll();
   scheduleLimitResumes();
@@ -6816,20 +6820,27 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
         renderHeader(); return;
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      // The model already in use only closes the picker: nothing saves, nothing pulses, an automatic team keeps its roster.
+      // A named team's lead is not that model's row: picking it leaves the team (model-switch.ts leaveTeam).
+      const now = (inPanel ? btwSideTask() ?? btwDraftTask() : state.sessions.find(item => item.id === selected.id)) ?? selected;
+      const sameModel = providerId === now.provider && (model || 'default') === (now.model || 'default');
+      if (sameModel && !teams.get(selected.id)?.config.rosterOnly) return;
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       // The switch shows at once and saves behind; a failure puts the previous model back and says why (model-switch.ts).
       // Side threads never warm. A same-harness change touches only the composer and header (the sidebar shows the
       // harness, not the model), and once saved only the labels and the trigger's busy cue.
       const shown = () => !inPanel && selected.id === state.sessionId && generation === state.generation;
-      const paint = (harness: boolean) => {
-        if (inPanel) { if (current()) btwPanel.harnessChanged(); }
+      // The side thread re-reads its rows only once a harness change has saved; until then (and for a model change
+      // within its harness) only its composer repaints.
+      const paint = (harness: boolean, reread = false) => {
+        if (inPanel) { if (current()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); } }
         else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
       };
-      const harness = providerId !== selected.provider;
+      const harness = providerId !== now.provider;
       const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
         show: () => { paint(harness); if (shown()) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
         repaint: saved => {
-          if (!saved || harness || inPanel) paint(harness);
+          if (!saved || harness || inPanel) paint(harness, saved && harness);
           else if (shown()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
         },
       });
@@ -7238,10 +7249,11 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const { openModelPicker } = await import('./model-picker').finally(release);
-  if (epoch !== menuEpoch || !anchor.isConnected) return;
+  // A transcript paint held while this picker was opening or open (model-switch.ts deferTranscript) paints once it is gone.
+  if (epoch !== menuEpoch || !anchor.isConnected) { modelSwitch.flushTranscript(); return; }
   modelPickerCleanup = openModelPicker({
     anchor, providers: state.providers, current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
-    canSwitchProvider: true, loadModels, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
+    canSwitchProvider: true, loadModels, placement: 'below', onClose: () => { modelPickerCleanup = undefined; modelSwitch.flushTranscript(); },
     onSelect: async (providerId, model) => {
       state.defaultProvider = providerId;
       localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);

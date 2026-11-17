@@ -211,10 +211,7 @@ async fn prewarm_launched(config: RunConfig, ticket: Option<u64>, epoch: u64, to
     super::limit_spares();
     tokio::spawn(async move {
         tokio::time::sleep(warm::IDLE).await;
-        let mut state = self::state();
-        if state.spares.get(&session_id).is_some_and(|spare| spare.born == born) {
-            state.spares.remove(&session_id);
-        }
+        evict(&session_id, born);
     });
     Ok(())
 }
@@ -238,11 +235,14 @@ fn store(session_id: &str, generation: u64, launch: u64, spare: Option<Spare>) -
     // Another launch began meanwhile (it counts before it drops what it did not take): this
     // spare's thread would miss that turn.
     let kept = current && start_ahead() && warm::epoch(session_id) == launch && spare.is_some();
-    if let Some(spare) = spare.filter(|_| kept) {
-        state.spares.insert(session_id.to_owned(), spare);
-    }
+    // A turned-away spare, or one this replaces, is killed outside the lock.
+    let stale = match spare {
+        Some(spare) if kept => state.spares.insert(session_id.to_owned(), spare),
+        other => other,
+    };
     drop(state);
     warm::changed();
+    drop(stale);
     kept
 }
 
@@ -324,26 +324,34 @@ pub(super) fn births() -> Vec<(std::time::Instant, String)> {
 /// Drop the task's idle spare if it is still the one born then; dropping kills its process.
 pub(super) fn evict(session_id: &str, born: std::time::Instant) {
     let mut state = state();
-    if state.spares.get(session_id).is_some_and(|spare| spare.born == born) {
-        state.spares.remove(session_id);
-    }
+    let evicted = state.spares.get(session_id).is_some_and(|spare| spare.born == born).then(|| state.spares.remove(session_id)).flatten();
+    drop(state);
+    drop(evicted);
 }
 
 /// Drop every task's spare and pending start.
 pub(super) fn discard_all() {
     let mut state = state();
-    state.spares.clear();
+    let stale = std::mem::take(&mut state.spares);
     state.starting.clear();
     state.spawned.clear();
     state.loading.clear();
     drop(state);
     warm::changed();
+    // Killed outside the lock.
+    drop(stale);
 }
 
-/// The task has a spare waiting or starting.
+/// The task has a live spare waiting, or one starting. A waiting spare whose process exited
+/// goes now, so the next pick or keystroke starts a new one.
 pub(super) fn present(session_id: &str) -> bool {
-    let state = state();
-    state.spares.contains_key(session_id) || state.starting.contains_key(session_id)
+    let mut state = state();
+    let exited = state.spares.get_mut(session_id).is_some_and(|spare| !matches!(spare.child.try_wait(), Ok(None)));
+    let stale = exited.then(|| state.spares.remove(session_id)).flatten();
+    let present = state.spares.contains_key(session_id) || state.starting.contains_key(session_id);
+    drop(state);
+    drop(stale);
+    present
 }
 
 #[cfg(test)]
@@ -390,14 +398,21 @@ pub(super) fn other_start(session_id: &str) {
     discard(session_id);
 }
 
-/// Drop a task's spare (it left these harnesses, changed folder, or was deleted).
-pub fn discard(session_id: &str) {
+/// Take out a task's spare and pending start (it left these harnesses, changed folder, or was
+/// deleted). Dropping the spare kills it: callers holding a lock drop it after releasing it.
+pub(super) fn take_out(session_id: &str) -> Option<Spare> {
     let mut state = state();
-    state.spares.remove(session_id);
+    let stale = state.spares.remove(session_id);
     state.starting.remove(session_id);
     state.loading.remove(session_id);
     drop(state);
     warm::changed();
+    stale
+}
+
+/// Drop a task's spare (it left these harnesses, changed folder, or was deleted).
+pub fn discard(session_id: &str) {
+    drop(take_out(session_id));
 }
 
 #[cfg(test)]

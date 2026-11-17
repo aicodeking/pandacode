@@ -736,6 +736,71 @@ test('opening another task during a held switch does not send the draft there, s
   await expect(page.locator('#prompt')).toHaveValue('meant for the first task');
 });
 
+/** The task as stored, read from a listing (get_task may be held). */
+const listed = (page: Page) => page.evaluate(async () => {
+  const { invoke } = await import((window as any).__pandacodePreviewUrl);
+  return (await invoke('list_sessions')).find((item: { id: string }) => item.id === 'session-1');
+});
+/** Starts a task listing (sessions-changed, as any worker change sends) and keeps it from landing: its list is read now,
+ *  before what comes next is saved, and lands on `releaseCall(page, 'get_task')`. */
+async function staleListing(page: Page): Promise<void> {
+  await holdCall(page, 'get_task');
+  await page.evaluate(() => (window as any).__previewEmit('sessions-changed', {}));
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.get_task)), { message: 'a listing waiting to land' }).toBe(true);
+}
+// A listing read before a pick saved landed after it and put the old model back, the trigger flickering between them.
+for (const [label, query, option, model] of [
+  ['within a harness', 'opus', 'Claude Code · Claude Opus 5', 'Claude Opus 5'],
+  ['to another harness', 'astra', 'Codex · GPT-6-Astra', 'GPT-6-Astra'],
+] as const) {
+  test(`a listing read before a pick ${label} saved does not put the old model back`, async ({ page }) => {
+    await loadHeld(page);
+    await staleListing(page);
+    await openSettled(page);
+    await search(page).fill(query);
+    await picker(page).getByRole('option', { name: option, exact: true }).click();
+    await expect.poll(async () => (await listed(page)).model).not.toBe('sonnet');
+    await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+    await releaseCall(page, 'get_task');
+    await page.waitForTimeout(300);
+    await expect(trigger(page).locator('[data-model-label]')).toHaveText(model);
+    // A listing read after the save is believed again.
+    await page.evaluate(() => (window as any).__previewEmit('sessions-changed', {}));
+    await page.waitForTimeout(300);
+    await expect(trigger(page).locator('[data-model-label]')).toHaveText(model);
+    await openSettled(page);
+    await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName(option);
+  });
+}
+
+test('a listing landing while a pick saves keeps the picked model on the busy trigger', async ({ page }) => {
+  await loadHeld(page);
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+  // Read before the configure stored anything: it still lists the old model.
+  await staleListing(page);
+  await releaseCall(page, 'get_task');
+  await page.waitForTimeout(300);
+  await expect(trigger(page).locator('[data-model-label]')).toHaveText('GPT-6-Astra');
+  await releaseCall(page, 'configure_session');
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(trigger(page).locator('[data-model-label]')).toHaveText('GPT-6-Astra');
+  expect((await listed(page)).model).toBe('gpt-6-astra');
+});
+
+test('a listing read before an effort change saved does not put the old effort back', async ({ page }) => {
+  await loadHeld(page);
+  await staleListing(page);
+  await openSettled(page);
+  await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
+  await expect.poll(async () => (await listed(page)).reasoningEffort).toBe('high');
+  await page.keyboard.press('Escape');
+  await releaseCall(page, 'get_task');
+  await page.waitForTimeout(300);
+  await expect(trigger(page).locator('.model-effort')).toHaveText('High');
+});
+
 test('a refused effort change puts the previous effort back', async ({ page }) => {
   await loadHeld(page);
   await holdCall(page, 'set_reasoning_effort');
@@ -765,6 +830,80 @@ test('the model button pressed during a held save opens the picker once it lands
   await expect.poll(reads).toBeGreaterThan(before);
   await page.waitForTimeout(500);
   await expect(picker(page)).toBeVisible();
+});
+
+// A listing (any worker change sends sessions-changed) or the pick's own saved task landing during the save once
+// changed the held open's snapshot, and the picker silently never opened.
+for (const [label, query, option] of [
+  ['within a harness', 'opus', 'Claude Code · Claude Opus 5'],
+  ['to another harness', 'astra', 'Codex · GPT-6-Astra'],
+] as const) {
+  test(`the model button held during a pick ${label} still opens after a listing lands`, async ({ page }) => {
+    await loadHeld(page);
+    await holdCall(page, 'configure_session');
+    await openSettled(page);
+    await search(page).fill(query);
+    await picker(page).getByRole('option', { name: option, exact: true }).click();
+    await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+    await trigger(page).click();
+    await page.evaluate(() => (window as any).__previewEmit('sessions-changed', {}));
+    await page.waitForTimeout(300);
+    await expect(picker(page)).toHaveCount(0);
+    await releaseCall(page, 'configure_session');
+    await expect(picker(page)).toBeVisible();
+    await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName(option);
+    await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  });
+}
+
+// renderComposer rebuilds the trigger. motion.ts aligns each pulse to the shared phase on its first animationstart, a
+// frame late, so every repaint mid-save showed the pulse back at full opacity for a frame: the trigger blinked.
+test('the busy pulse runs on through composer repaints', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await loadHeld(page);
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+  const node = await trigger(page).elementHandle();
+  // Repaint and read in one task, before the new pulse has drawn a frame.
+  const starts = await page.evaluate(() => {
+    window.dispatchEvent(new Event('pandacode:team-mode'));
+    const detail = document.querySelector('#model-picker-trigger > .model-detail')!;
+    return detail.getAnimations().filter(item => (item as CSSAnimation).animationName === 'state-pulse').map(item => item.startTime);
+  });
+  expect(await node!.evaluate(item => item.isConnected), 'the composer was rebuilt').toBe(false);
+  // Already on the shared phase (the document timeline's zero), not pending a first frame from the cycle's start.
+  expect(starts).toEqual([0]);
+  await releaseCall(page, 'configure_session');
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+});
+
+test('reduced motion: the busy trigger does not pulse', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await loadHeld(page);
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+  expect(await trigger(page).evaluate(node => node.getAnimations({ subtree: true }).length)).toBe(0);
+  await releaseCall(page, 'configure_session');
+});
+
+// A transcript paint held while the Settings default-model picker is open paints once it closes.
+test('closing the default-model picker paints a held transcript', async ({ page }) => {
+  await loadHeld(page);
+  await page.keyboard.press('Meta+,');
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('button', { name: 'Default model for new tasks', exact: true }).click();
+  await expect(picker(page)).toBeVisible();
+  await page.evaluate(async () => {
+    const path = '/src/model-switch.ts';
+    (await import(path)).deferTranscript(() => { (window as any).__heldPainted = true; });
+  });
+  expect(await page.evaluate(() => Boolean((window as any).__heldPainted)), 'held while the picker is open').toBe(false);
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).__heldPainted))).toBe(true);
 });
 
 test('a send right after a harness switch keeps its message when the transcript reloads', async ({ page }) => {
@@ -1286,6 +1425,35 @@ test('a board start held by a refused change is not started and says why', async
   expect(await starts()).toBe(0);
 });
 
+// The side thread re-reads its rows only for a saved harness change, once; a model change within a harness keeps them.
+for (const [label, query, reads] of [['within a harness', 'opus', 0], ['to another harness', 'astra', 1]] as const) {
+  test(`a side-thread pick ${label} re-reads its rows ${reads ? 'once, after it saves' : 'never'}`, async ({ page }) => {
+    await loadHeld(page, '/');
+    await page.locator('#prompt').fill('/btw first question');
+    await page.locator('#prompt').press('Enter');
+    const panel = page.locator('.btw-panel');
+    await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Send to side thread', exact: true })).toBeEnabled();
+    const sideReads = () => page.evaluate(() => (window as any).__callArgs.filter(([name, args]: [string, any]) => name === 'get_messages' && args?.sessionId && args.sessionId !== 'session-1').length);
+    const sideModel = panel.locator('.model-picker');
+    await sideModel.click();
+    await expect(picker(page)).toBeVisible();
+    await holdCall(page, 'configure_session');
+    const before = await sideReads();
+    await search(page).fill(query);
+    await page.keyboard.press('Enter');
+    await expect(picker(page)).toHaveCount(0);
+    await expect(sideModel).toContainText(query === 'opus' ? 'Claude Opus' : 'GPT-6-Astra');
+    await page.waitForTimeout(300);
+    expect(await sideReads(), 'nothing re-read while it saves').toBe(before);
+    await releaseCall(page, 'configure_session');
+    await expect(sideModel).not.toHaveAttribute('aria-busy', 'true');
+    await page.waitForTimeout(400);
+    expect(await sideReads()).toBe(before + reads);
+    await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
+  });
+}
+
 test('the side panel stays live during its model change: a send click is held, then sent', async ({ page }) => {
   await loadHeld(page, '/');
   const { panel, box, sends, before } = await sideSwitchHeld(page);
@@ -1301,8 +1469,18 @@ test('the side panel stays live during its model change: a send click is held, t
   await expect.poll(sends).toBe(before + 1);
 });
 
-test('re-picking the same model keeps its effort on screen', async ({ page }) => {
+const callCount = (page: Page, command: string) => page.evaluate(name => (window as any).__calls.filter((c: string) => c === name).length, command);
+// Picking the model already in use only closes the picker: nothing saves, the trigger never pulses, an automatic team
+// keeps its roster, and the effort stays on screen.
+for (const auto of [false, true]) test(`re-picking the current model ${auto ? 'in an automatic team ' : ''}just closes the picker`, async ({ page }) => {
+  if (auto) await page.addInitScript(() => {
+    const worker = { id: 'codex-default', name: 'Codex', provider: 'codex', model: 'default', reasoningEffort: null };
+    localStorage.setItem('pandacode.preview.architect-configs', JSON.stringify({ 'session-1': {
+      auto: true, council: { target: 9, maxRounds: 3, reviewers: 2 }, workers: [worker], catalog: [worker], maxParallel: 0, maxRounds: 8, maxAssignments: 24, workspace: 'shared', summaryLimit: 3072,
+    } }));
+  });
   await loadHeld(page);
+  if (auto) await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
   await openSettled(page);
   await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
   const effort = trigger(page).locator('.model-effort');
@@ -1310,15 +1488,23 @@ test('re-picking the same model keeps its effort on screen', async ({ page }) =>
   await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
   await page.keyboard.press('Escape');
   await expect(picker(page)).toHaveCount(0);
-  await holdCall(page, 'configure_session');
+  const configures = await callCount(page, 'configure_session'), teamSaves = await callCount(page, 'architect_configure');
   await openSettled(page);
+  // Watch for any busy cue from the pick on.
+  await trigger(page).evaluate(node => {
+    const w = window as any; w.__busySeen = false;
+    new MutationObserver(() => { if (document.querySelector('#model-picker-trigger[aria-busy="true"]')) w.__busySeen = true; })
+      .observe(node.closest('#composer-area') ?? document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-busy'] });
+  });
   await picker(page).locator('.model-menu-option[aria-current="true"]').click();
   await expect(picker(page)).toHaveCount(0);
-  // While the save is held the effort stays (no flash to Default), and it stays once saved.
+  await page.waitForTimeout(300);
+  expect(await callCount(page, 'configure_session')).toBe(configures);
+  expect(await callCount(page, 'architect_configure')).toBe(teamSaves);
+  expect(await page.evaluate(() => (window as any).__busySeen)).toBe(false);
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
   await expect(effort).toHaveText('High');
-  await releaseCall(page, 'configure_session');
-  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
-  await expect(effort).toHaveText('High');
+  expect(await page.evaluate(async () => { const path = '/src/model-switch.ts'; return (await import(path)).saving('session-1'); })).toBe(false);
 });
 
 test('with Start agents ahead off, typing and picking never warm', async ({ page }) => {

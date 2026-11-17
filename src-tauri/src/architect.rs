@@ -913,14 +913,19 @@ pub async fn architect_configure(
     architect: Option<profiles::ModelSelection>,
     profile_id: Option<String>,
 ) -> Result<Option<TeamSnapshot>> {
-    let changed = configure_state(
+    let (changed, relaunch) = configure_launch(
         &state,
         &session_id,
         config,
         architect,
         profile_id.as_deref(),
     )?;
-    crate::providers::discard_warm_agent(&session_id);
+    // An automatic team's roster refresh right after a model pick leaves the lead's own launch
+    // as it was: its warm agent, just switched to that pick, stays. A send adopts it only if
+    // its launch (tools included) still matches exactly.
+    if relaunch {
+        crate::providers::discard_warm_agent(&session_id);
+    }
     if let Some(team) = &changed {
         emit(&app, team);
         wake(app.clone());
@@ -940,8 +945,12 @@ pub async fn architect_set_council(
     session_id: String,
     council: Option<CouncilConfig>,
 ) -> Result<Option<TeamSnapshot>> {
-    let team = council::set(&state, &session_id, council)?;
-    crate::providers::discard_warm_agent(&session_id);
+    let (team, relaunch) = council_launch(&state, &session_id, council)?;
+    // Council is the team's setting, not the lead's launch: the warm spare stays unless that
+    // launch changed under it.
+    if relaunch {
+        crate::providers::discard_warm_agent(&session_id);
+    }
     emit(&app, &team);
     wake(app);
     Ok(Some(team))
@@ -963,6 +972,8 @@ pub(crate) fn refuse_mirror(store: &Store, session_id: &str) -> Result<()> {
         None => Ok(()),
     }
 }
+/// `configure_launch` without the launch flag (tests; the command uses `configure_launch`).
+#[cfg(test)]
 pub(super) fn configure_state(
     state: &AppState,
     session_id: &str,
@@ -970,6 +981,40 @@ pub(super) fn configure_state(
     architect: Option<profiles::ModelSelection>,
     profile_id: Option<&str>,
 ) -> Result<Option<TeamSnapshot>> {
+    configure_launch(state, session_id, config, architect, profile_id).map(|(team, _)| team)
+}
+
+/// The task's own launch, as its warm agent was started for it.
+fn own_launch(session: &crate::storage::Session) -> (String, String, Option<String>, String, Option<String>, Option<Value>) {
+    (
+        session.provider.clone(),
+        session.model.clone(),
+        session.reasoning_effort.clone(),
+        session.mode.clone(),
+        session.resume_id.clone(),
+        session.codex_settings.clone(),
+    )
+}
+
+/// `council::set`, and whether the task's own launch changed meanwhile (Council itself never
+/// changes it: the lead's harness, model, effort, permissions and conversation stay).
+fn council_launch(state: &AppState, session_id: &str, council: Option<CouncilConfig>) -> Result<(TeamSnapshot, bool)> {
+    let launch = |state: &AppState| -> Result<_> { Ok(own_launch(&state.store.lock().map_err(|e| e.to_string())?.session(session_id)?)) };
+    let before = launch(state)?;
+    let team = council::set(state, session_id, council)?;
+    Ok((team, launch(state)? != before))
+}
+
+/// `configure_state`, and whether the task's own launch changed: a team added or removed, or
+/// the lead's harness, model, effort, permissions or conversation. Only then is its warm agent
+/// useless.
+fn configure_launch(
+    state: &AppState,
+    session_id: &str,
+    config: Option<TeamConfig>,
+    architect: Option<profiles::ModelSelection>,
+    profile_id: Option<&str>,
+) -> Result<(Option<TeamSnapshot>, bool)> {
     if let Some(c) = &config {
         c.validate()?;
     }
@@ -1029,7 +1074,8 @@ pub(super) fn configure_state(
         }
         profiles::remember(&store, None, None)?;
         transaction.commit().map_err(|e| e.to_string())?;
-        return Ok(None);
+        // Saving ordinary mode on a task without a team changes nothing about its launch.
+        return Ok((None, existing.is_some()));
     };
     let fresh = existing.is_none();
     let mut team = existing.unwrap_or_else(|| new_team(session_id.into(), config.clone()));
@@ -1078,8 +1124,9 @@ pub(super) fn configure_state(
     }
     save(&store, &mut team)?;
     profiles::remember(&store, Some(setup), profile_id)?;
+    let relaunch = fresh || own_launch(&store.session(session_id)?) != own_launch(&session);
     transaction.commit().map_err(|e| e.to_string())?;
-    Ok(Some(team))
+    Ok((Some(team), relaunch))
 }
 
 /// A setup that names no Council keeps the team's: changing the team's kind or picking a named team
@@ -3572,3 +3619,81 @@ pub(crate) fn stopped_by_team(store: &Store, admission: Option<&Admission>, sid:
 }
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod warm_agent_tests {
+    use super::*;
+
+    fn state() -> (AppState, String) {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        let state = AppState {
+            store: Arc::new(std::sync::Mutex::new(store)),
+            agents: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            terminals: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        };
+        (state, task.id)
+    }
+
+    fn team(worker_model: &str) -> TeamConfig {
+        TeamConfig {
+            catalog: Vec::new(),
+            auto: true,
+            roster_only: false,
+            name: None,
+            workers: vec![WorkerProfile {
+                id: "fast".into(),
+                name: "Fast worker".into(),
+                provider: "codex".into(),
+                model: worker_model.into(),
+                reasoning_effort: None,
+            }],
+            max_parallel: 3,
+            max_rounds: 5,
+            max_assignments: 10,
+            workspace: "shared".into(),
+            summary_limit: 2000,
+            lead_guidance: None,
+            council: None,
+        }
+    }
+
+    #[test]
+    fn only_a_change_to_the_tasks_own_launch_drops_its_warm_agent() {
+        let (state, sid) = state();
+        // Ordinary mode saved on a task without a team: nothing about its launch changed.
+        assert!(matches!(configure_launch(&state, &sid, None, None, None).unwrap(), (None, false)));
+        // A team added: the lead's catalog and instructions change.
+        let (added, relaunch) = configure_launch(&state, &sid, Some(team("default")), None, None).unwrap();
+        assert!(added.is_some() && relaunch);
+        // The automatic team's roster refresh after a model pick: the lead's launch stays, so
+        // its warm agent (just switched to that pick) stays too.
+        let (_, relaunch) = configure_launch(&state, &sid, Some(team("gpt-5.5")), None, None).unwrap();
+        assert!(!relaunch, "a roster refresh keeps the spare");
+        // The lead's own model changes: its spare is for another launch.
+        let other = profiles::ModelSelection { provider: "claude".into(), model: "claude-opus-5-5".into(), reasoning_effort: None };
+        let (_, relaunch) = configure_launch(&state, &sid, Some(team("gpt-5.5")), Some(other), None).unwrap();
+        assert!(relaunch);
+        // The team removed: the launch loses the team's tools.
+        assert!(matches!(configure_launch(&state, &sid, None, None, None).unwrap(), (None, true)));
+    }
+
+    #[test]
+    fn a_council_change_keeps_the_warm_agent() {
+        let (state, sid) = state();
+        configure_launch(&state, &sid, Some(team("default")), None, None).unwrap();
+        let council = CouncilConfig { target: 9.0, max_rounds: 3, reviewers: 0 };
+        // Turning Council on, changing it and turning it off leave the lead's launch as it was.
+        let (on, relaunch) = council_launch(&state, &sid, Some(council.clone())).unwrap();
+        assert_eq!(on.config.council, Some(council));
+        assert!(!relaunch, "turning Council on keeps the spare");
+        let raised = CouncilConfig { target: 7.0, max_rounds: 5, reviewers: 2 };
+        assert!(!council_launch(&state, &sid, Some(raised)).unwrap().1, "changing Council keeps the spare");
+        let (off, relaunch) = council_launch(&state, &sid, None).unwrap();
+        assert_eq!(off.config.council, None);
+        assert!(!relaunch, "turning Council off keeps the spare");
+        // A task that doesn't exist still refuses, as before.
+        assert!(council_launch(&state, "no-such-task", None).is_err());
+    }
+}

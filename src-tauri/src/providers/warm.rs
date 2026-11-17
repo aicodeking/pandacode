@@ -185,15 +185,31 @@ pub(super) fn keyed(mut config: RunConfig, tools: &[Value]) -> (RunConfig, Strin
 /// or a skill or goal turn): they go now rather than idling.
 pub(super) fn launched(session_id: &str) {
     *LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(session_id.to_owned()).or_default() += 1;
-    spares().remove(session_id);
+    let stale = spares().remove(session_id);
     targets().remove(session_id);
     changed();
+    // Killed outside the lock.
+    drop(stale);
 }
 
-/// The task has a Claude agent waiting, recorded inputs (an agent starting or switching), or a
-/// first start debouncing.
+/// The task has a live Claude agent waiting, recorded inputs (an agent starting or switching),
+/// or a first start debouncing. A waiting agent whose process exited is not warm: it goes now,
+/// with its inputs, so the next pick or keystroke starts a new one.
 pub(super) fn present(session_id: &str) -> bool {
+    drop(evict_exited(session_id));
     spares().contains_key(session_id) || targets().get(session_id).is_some_and(|target| target.busy) || pending_ticket(session_id)
+}
+
+/// Take out the task's waiting agent if its process has exited, forgetting its inputs; the
+/// caller drops it outside the lock.
+fn evict_exited(session_id: &str) -> Option<Spare> {
+    let exited = {
+        let mut spares = spares();
+        let dead = spares.get_mut(session_id).is_some_and(|spare| !matches!(spare.child.try_wait(), Ok(None)));
+        if dead { spares.remove(session_id) } else { None }
+    }?;
+    forget(session_id, exited.generation);
+    Some(exited)
 }
 
 /// A debounced first start, if its ticket is still the newest. It records its inputs before
@@ -270,28 +286,41 @@ pub(super) fn miss(alive: bool, spare_key: &str, key: &str, age: Duration) -> Op
 /// Another harness's agent is starting for the task: its Claude agent goes (one spare per
 /// task). Its inputs stay, so switching back to Claude starts a new one.
 pub(super) fn other_start(session_id: &str) {
-    spares().remove(session_id);
+    let stale = spares().remove(session_id);
     changed();
+    drop(stale);
 }
 
 /// Drop every task's agent, inputs and pending start.
 pub(super) fn discard_all() {
-    spares().clear();
+    let stale = std::mem::take(&mut *spares());
     targets().clear();
     reservations().clear();
     changed();
+    // Killed outside the lock.
+    drop(stale);
 }
 
-/// Drop a task's warm agent (its folder changed, or it was deleted).
-pub fn discard(session_id: &str) {
-    spares().remove(session_id);
+/// Take out a task's warm agent, inputs and pending start (its folder changed, it was archived
+/// or deleted). Dropping the agent kills it: callers holding the store or agent registry drop
+/// it after releasing them.
+pub(super) fn take_out(session_id: &str) -> Option<Spare> {
+    let stale = spares().remove(session_id);
     targets().remove(session_id);
     reservations().remove(session_id);
     changed();
+    stale
 }
 
-/// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
-/// placeholder server answers the agent's startup listing and is rebound on adoption.
+/// Drop a task's warm agent (its folder changed, or it was deleted).
+#[cfg(test)]
+pub fn discard(session_id: &str) {
+    drop(take_out(session_id));
+}
+
+/// Start the next turn's agent for a task without a ticket. `tools` is the catalog its last turn
+/// used; the placeholder server answers the agent's startup listing and is rebound on adoption.
+#[cfg(test)]
 pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
     if !supported(&config) {
         return Ok(());
@@ -376,54 +405,59 @@ async fn spawn_spare(
         tokio::time::sleep(IDLE).await;
         let mut spares = spares();
         // A switched agent keeps its birth time but carries a newer generation.
-        if let Some(generation) = spares.get(&session_id).filter(|spare| spare.born == born).map(|spare| spare.generation) {
-            spares.remove(&session_id);
-            forget(&session_id, generation);
+        let expired = spares.get(&session_id).is_some_and(|spare| spare.born == born).then(|| spares.remove(&session_id)).flatten();
+        if let Some(spare) = &expired {
+            forget(&session_id, spare.generation);
         }
+        drop(spares);
+        drop(expired);
     });
     Ok(())
 }
 
 /// Store a freshly started (or switched) spare if it is still wanted; otherwise dropping it
-/// kills its process.
+/// kills its process (outside the lock, as does dropping an agent it replaces).
 fn adopt(spare: Spare, session_id: &str, launch: u64) -> bool {
-    let kept = keep(spare, session_id, launch);
+    let (kept, leftover) = keep(spare, session_id, launch);
     changed();
+    drop(leftover);
     if kept {
         super::limit_spares();
     }
     kept
 }
 
-fn keep(spare: Spare, session_id: &str, launch: u64) -> bool {
+/// Whether the spare was kept, and the agent left over: the one it replaced, or the spare
+/// itself when turned away.
+fn keep(spare: Spare, session_id: &str, launch: u64) -> (bool, Option<Spare>) {
     let mut spares = spares();
     // "Start agents ahead" was turned off while it started: nothing may stay running.
     if !start_ahead() {
         forget(session_id, spare.generation);
-        return false;
+        return (false, Some(spare));
     }
     // The next turn already started (a team review, a queued message): this spare would
     // carry an outdated conversation.
     if epoch(session_id) != launch {
         forget(session_id, spare.generation);
-        return false;
+        return (false, Some(spare));
     }
     // A newer retarget or prewarm owns the task's spare now: the latest settings win. An agent
     // superseded mid-switch is still kept while the slot is empty, so the newer switch can
     // switch it again instead of starting another CLI; anything newer replaces it.
     if !current(session_id, spare.generation) {
-        // Only while a newer generation is on its way (not after a discard).
-        if spares.contains_key(session_id) || !targets().contains_key(session_id) {
-            return false;
+        // Only while a newer Claude generation is on its way: not after a discard, nor once the
+        // task moved to another harness (its record is idle then, and that harness's start
+        // may already be under way: one spare per task).
+        if spares.contains_key(session_id) || !targets().get(session_id).is_some_and(|target| target.busy) {
+            return (false, Some(spare));
         }
-        spares.insert(session_id.to_owned(), spare);
-        return true;
+        return (true, spares.insert(session_id.to_owned(), spare));
     }
     if let Some(target) = targets().get_mut(session_id) {
         target.busy = false;
     }
-    spares.insert(session_id.to_owned(), spare);
-    true
+    (true, spares.insert(session_id.to_owned(), spare))
 }
 
 /// When each idle agent started, for the shared limit.
@@ -434,11 +468,12 @@ pub(super) fn births() -> Vec<(std::time::Instant, String)> {
 /// Drop the task's idle agent if it is still the one born then; dropping kills its process.
 pub(super) fn evict(session_id: &str, born: std::time::Instant) {
     let mut spares = spares();
-    if spares.get(session_id).is_some_and(|spare| spare.born == born) {
-        if let Some(spare) = spares.remove(session_id) {
-            forget(session_id, spare.generation);
-        }
+    let evicted = spares.get(session_id).is_some_and(|spare| spare.born == born).then(|| spares.remove(session_id)).flatten();
+    if let Some(spare) = &evicted {
+        forget(session_id, spare.generation);
     }
+    drop(spares);
+    drop(evicted);
 }
 
 #[cfg(all(test, unix))]
@@ -698,6 +733,58 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(take(&base.session_id, &wanted).await.is_none());
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_exited_waiting_agent_is_not_warm_and_goes_with_its_inputs() {
+        let base = RunConfig { session_id: "warm-exited-present".into(), ..crate::providers::tests::config("claude") };
+        let id = base.session_id.clone();
+        let launch = epoch(&id);
+        let generation = record(&base, &[], &HashSet::new(), launch);
+        assert!(adopt(spare(key(&base, &[]), generation, sleeper()), &id, launch));
+        assert!(present(&id), "a live agent is warm");
+        let pid = spares().get(&id).and_then(|spare| spare.child.id()).unwrap();
+        std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
+        // Reaped by the liveness check once the kill lands.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while present(&id) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!present(&id), "an agent whose process exited is not warm");
+        assert!(!waiting(&id) && !targets().contains_key(&id), "it went with its inputs, so a pick starts afresh");
+        discard(&id);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_agent_superseded_by_a_switch_to_another_harness_is_not_kept() {
+        let base = RunConfig { session_id: "warm-superseded-left".into(), ..crate::providers::tests::config("claude") };
+        let id = base.session_id.clone();
+        let launch = epoch(&id);
+        // The turn-end start is spawning when the task moves to Codex.
+        let generation = record(&base, &[], &HashSet::new(), launch);
+        assert!(retargeted(&id, |c| c.provider = "codex".into()).expect("inputs").is_none());
+        assert!(!adopt(spare(key(&base, &[]), generation, sleeper()), &id, launch), "no Claude agent idles beside the Codex one");
+        assert!(!waiting(&id));
+        // A switch to another Claude model is on its way instead: that one may still switch it.
+        let generation = record(&base, &[], &HashSet::new(), launch);
+        assert!(retargeted(&id, |c| c.model = "claude-opus-5-5".into()).expect("inputs").is_some());
+        assert!(adopt(spare(key(&base, &[]), generation, sleeper()), &id, launch));
+        discard(&id);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_taken_out_agent_runs_until_its_owner_drops_it_outside_the_lock() {
+        let id = "warm-take-out";
+        spares().insert(id.into(), spare("launch".into(), 0, sleeper()));
+        let mut taken = take_out(id).expect("the waiting agent");
+        assert!(!waiting(id), "out of the map at once");
+        // The map's lock is free while the process still runs: it is killed by the caller's drop.
+        assert!(SPARES.try_lock().is_ok());
+        assert!(matches!(taken.child.try_wait(), Ok(None)));
+        drop(taken);
     }
 
     #[cfg(unix)]

@@ -3,6 +3,7 @@
 // supplied by main.ts through the host, so both read and behave alike.
 import { escape, icon, isImeKey } from './dom';
 import { TITLE_PREFIX, parseBtw } from './btw';
+import { joinPulses } from './model-switch';
 import type { Message, MessagePage, Session } from './types';
 
 export interface BtwPanelHost {
@@ -251,6 +252,8 @@ export class BtwPanel {
       // Keep keyboard focus on the same control when it is redrawn.
       const focused = toolbar.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.action ?? (document.activeElement as HTMLElement).dataset.btw : undefined;
       toolbar.innerHTML = toolsHtml; toolbar.dataset.html = toolsHtml;
+      // A busy model or permissions button redrawn mid-save carries on its pulse rather than blinking.
+      joinPulses(toolbar);
       if (focused) toolbar.querySelector<HTMLElement>(`[data-action="${focused}"], [data-btw="${focused}"]`)?.focus({ preventScroll: true });
     }
     const input = root.querySelector<HTMLTextAreaElement>('.btw-input')!;

@@ -98,6 +98,16 @@ export const modeBusy = (id: string): boolean => modesSaving.has(id) || modeOpen
 const modesSaving = new Set<string>();
 const modeOpensHeld = new Map<string, number>();
 
+/* ----- Busy pulses ----- */
+/** Pulses under `root` (a redrawn trigger or composer, or a control just marked busy) join the shared `state-pulse`
+ *  phase now. motion.ts syncPulses aligns each on its first animationstart, a frame late, so a repaint mid-save showed
+ *  its pulse back at the start of the cycle for a frame: a blink on every redraw. Reduced motion has none to align. */
+export function joinPulses(root: Element | null | undefined): void {
+  for (const animation of root?.getAnimations({ subtree: true }) ?? []) {
+    if ((animation as CSSAnimation).animationName === 'state-pulse' && animation.startTime !== 0) animation.startTime = 0;
+  }
+}
+
 function wake(id: string): void {
   if (saving(id)) return;
   const waiting = waiters.get(id) ?? [];
@@ -114,6 +124,35 @@ export async function settledChange(id: string): Promise<Unchanged | null> {
 }
 /** As settledChange: whether everything that was saving saved. */
 export const settled = async (id: string): Promise<boolean> => !await settledChange(id);
+
+/* ----- Keeping a pick on screen through a task listing read before it saved ----- */
+/** The task fields each kind of pick writes. */
+type ChoiceField = 'provider' | 'model' | 'reasoningEffort' | 'codexSettings' | 'contextUsage' | 'mode';
+const MODEL_FIELDS: readonly ChoiceField[] = ['provider', 'model', 'reasoningEffort', 'codexSettings', 'contextUsage'];
+const CHOICE_FIELDS: readonly ChoiceField[] = [...MODEL_FIELDS, 'mode'];
+/** Counts every pick's write to a task, and for each task the count at each field's last write. */
+let writes = 0;
+const written = new Map<string, ReadonlyMap<ChoiceField, number>>();
+/** Model changes saving (not permission ones, which share `switches`). */
+const modelsSaving = new Set<string>();
+/** Holds a newer copy of the task and marks the fields this pick wrote. */
+function put(task: Session, fields: readonly ChoiceField[]): void {
+  writes += 1;
+  written.set(task.id, new Map([...(written.get(task.id) ?? []), ...fields.map(field => [field, writes] as const)]));
+  hooks.put(task);
+}
+/** Where a task listing starts: a pick written after this is newer than what the listing reads. */
+export const listingStamp = (): number => writes;
+/** A task as a listing read it (`since`: its `listingStamp()`), keeping the fields a pick wrote after it was read or is
+ *  still saving: native stores a pick a little later, so an earlier read would put the old model back on screen. */
+export function heldChoices(listed: Session, since: number): Session {
+  const local = hooks.task(listed.id), marks = written.get(listed.id);
+  if (!local || (!marks && !saving(listed.id))) return listed;
+  const savingField = (field: ChoiceField) => field === 'mode' ? modesSaving.has(listed.id)
+    : modelsSaving.has(listed.id) || (field === 'reasoningEffort' && efforts.has(listed.id));
+  const kept = CHOICE_FIELDS.filter(field => savingField(field) || (marks?.get(field) ?? 0) > since);
+  return kept.length ? { ...listed, ...Object.fromEntries(kept.map(field => [field, local[field]])) } : listed;
+}
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 /** Saves a model or permission change: `save` resolves whether it saved, `after` repaints. Waiters resume after `after`,
@@ -164,6 +203,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
   let previousEffort = previous.reasoningEffort;
   const harness = choice.provider !== previous.provider;
   sentWarm.delete(id); refused.delete(id);
+  modelsSaving.add(id);
   const run = switchModel(id, async () => {
     // A model picked while an effort change saves goes after it, so the effort reply can't land on the new model.
     for (let queue = efforts.get(id); queue; queue = efforts.get(id)) {
@@ -173,22 +213,22 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     let left: string | null = null;
     try {
       left = await leaveTeam(id);
-      hooks.put(await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) }));
+      put(await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) }), MODEL_FIELDS);
     } catch (error) {
       console.error(error);
       const restored = { ...(hooks.task(id) ?? previous), provider: previous.provider, model: previous.model, reasoningEffort: previousEffort, codexSettings: previous.codexSettings, contextUsage: previous.contextUsage };
-      hooks.put(restored);
+      put(restored, MODEL_FIELDS);
       hooks.notify(`Model not changed — still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}: ${message(error)}`);
       refused.set(id, { what: 'model', reason: message(error) });
       return false;
     }
     try { await settlePick(id, choice, harness); } catch (error) { console.error(error); hooks.notify(message(error)); }
     return true;
-  }, saved => ui.repaint(saved, harness));
+  }, saved => { modelsSaving.delete(id); ui.repaint(saved, harness); });
   // Shown once the save is registered, so the repaint already marks the trigger busy.
   // A new harness or model starts at its default effort; the same model keeps its effort, as native does.
   const sameModel = !harness && (choice.model || 'default') === (previous.model || 'default');
-  hooks.put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings: harness ? null : previous.codexSettings, contextUsage: sameModel ? previous.contextUsage : null });
+  put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings: harness ? null : previous.codexSettings, contextUsage: sameModel ? previous.contextUsage : null }, MODEL_FIELDS);
   ui.show();
   return run;
 }
@@ -196,9 +236,9 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
 /** What a pick of effort or permissions repaints, and whether it may warm the task (a main thread's own pick only). */
 type PickUi = { warm: boolean; paint(): void };
 /** Puts a changed field on the task as held now (a title or status that changed meanwhile stays) and repaints. */
-function setField(id: string, patch: Partial<Session>, ui: PickUi): void {
+function setField(id: string, patch: Partial<Pick<Session, ChoiceField>>, ui: PickUi): void {
   const now = hooks.task(id); if (!now) return;
-  hooks.put({ ...now, ...patch }); ui.paint();
+  put({ ...now, ...patch }, Object.keys(patch) as ChoiceField[]); ui.paint();
 }
 
 /** Permissions the user picked: shown at once with the button busy, saved behind; a refusal restores them and says so. */
@@ -274,7 +314,7 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
 /** A send made while the choice saves: held (the button shows it) until it lands; then what was refused, if anything. */
 export async function holdSend(id: string, button: () => Element | null): Promise<Unchanged | null> {
   count(sendsHeld, id, 1);
-  button()?.setAttribute('aria-busy', 'true');
+  button()?.setAttribute('aria-busy', 'true'); joinPulses(button());
   try { return await settledChange(id); } finally {
     // Another press of Enter may still be held: the cue stays until the last one ends.
     if (count(sendsHeld, id, -1) === 0) button()?.removeAttribute('aria-busy');
@@ -286,7 +326,7 @@ export async function holdSend(id: string, button: () => Element | null): Promis
 export async function holdOpen(id: string, trigger: () => HTMLElement | null, open: () => Promise<void>, signal: AbortSignal): Promise<void> {
   if (opensHeld.has(id) || signal.aborted) return;
   opensHeld.add(id);
-  trigger()?.setAttribute('aria-busy', 'true');
+  trigger()?.setAttribute('aria-busy', 'true'); joinPulses(trigger());
   let released = false;
   const release = () => {
     if (released) return;
@@ -310,7 +350,7 @@ export async function holdOpen(id: string, trigger: () => HTMLElement | null, op
 export async function holdModeOpen(id: string, trigger: () => HTMLElement | null, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
   count(modeOpensHeld, id, 1);
-  trigger()?.setAttribute('aria-busy', 'true');
+  trigger()?.setAttribute('aria-busy', 'true'); joinPulses(trigger());
   let released = false;
   const release = () => {
     if (released) return;
