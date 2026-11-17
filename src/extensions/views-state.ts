@@ -13,7 +13,7 @@ export type ViewControl =
   | { kind: 'table'; label: string; columns: string[]; rows: (string[] | ({ cells: string[] } & ViewRowCommand))[] }
   | { kind: 'tabs'; label: string; items: { label: string; text: string }[] }
   | { kind: 'progress'; label: string; value: number };
-export type ViewDefinition = { id: ExtensionInspectorView; title: string; text: string; rich?: { html: string; css: string; script: string }; controls?: ViewControl[]; toolbar?: { command: string }[] };
+export type ViewDefinition = { id: ExtensionInspectorView; title: string; text: string; rich?: { html: string; css: string; script: string; minSize?: { width: number; height: number }; placement?: 'inspector' | 'floating' | 'window' }; controls?: ViewControl[]; toolbar?: { command: string }[] };
 export type RegisteredView = { owner: string; version: string; view: ViewDefinition };
 
 export function registeredInspectorViews(snapshot: ExtensionSnapshot): RegisteredView[] {

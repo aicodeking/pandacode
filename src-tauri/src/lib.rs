@@ -4877,6 +4877,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::jobs::ExtensionJobs::default());
     app.manage(extensions::connections::ExtensionConnections::default());
     app.manage(extensions::rich_views::RichViews::default());
+    app.manage(extensions::rich_views::runtime_rich_mount::RichMounts::default());
     // Tauri gives WebKitGTK this folder as the webview's data directory (local storage holds
     // unsent drafts); elsewhere the webview keeps its data in a folder of its own.
     #[cfg(target_os = "linux")]
@@ -5190,6 +5191,9 @@ pub fn run() {
                 extensions::windows::extensions_present_action,
                 extensions::windows::extensions_native_layout,
                 extensions::rich_views::extensions_rich_view_open,
+                extensions::rich_views::runtime_rich_mount::extensions_rich_mount_open,
+                extensions::rich_views::runtime_rich_mount::extensions_rich_mount_bounds,
+                extensions::rich_views::runtime_rich_mount::extensions_rich_mount_close,
                 extensions::context::extensions_context,
                 extensions::runtime::extensions_runtime,
                 extensions::packages::extensions_snapshot,

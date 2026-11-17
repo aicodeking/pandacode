@@ -6,14 +6,19 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Mutex};
 use tauri::Manager;
+// R0301: the host mounts of rich panels live beside the window that shares their isolation (`rich_views::runtime_rich_mount`).
+// The module uses `crate::extensions::` paths, so it may move to mod.rs unchanged; never declare it in both places.
+#[path = "runtime_rich_mount.rs"]
+pub mod runtime_rich_mount;
 
 const CHANNEL: &str = include_str!("../../../src/extensions/rich-view-channel.js");
 const CLIENT: &str = include_str!("../../../src/extensions/rich-view-client.js");
 const HOST: &str = include_str!("../../../src/extensions/rich-view-host.js");
 pub const UNSUPPORTED: &str = "Rich HTML views are disabled: installed native isolation qualification is pending. Use the host-rendered view instead.";
 
-/// No installed WebView target has passed E16 yet. Not configurable by packages/env/trust.
-pub fn native_qualified() -> bool { false }
+/// The per-platform functional qualification (R0301): a code table in `runtime_rich_mount`, turned on by that
+/// platform's own evidence. Not configurable by packages, the environment or trust.
+pub fn native_qualified() -> bool { runtime_rich_mount::platform_qualified() }
 
 #[derive(Clone, PartialEq, Serialize)]
 pub struct RichAssets { pub html: String, pub css: String, pub script: String }
@@ -35,6 +40,24 @@ fn resolve(snapshot: &Snapshot, request: &OpenRequest) -> Result<Presentation, S
         }
     }
     Err("PermissionDenied".into())
+}
+/// What a mounted panel is pinned to: its owner, version and a fingerprint of the view and its assets, so a
+/// same-version reload or a changed view ends the mount (`runtime_rich_mount::reconcile`).
+pub(super) struct Pinned { pub owner: String, pub version: String, pub fingerprint: String }
+fn pinned(presentation: &Presentation) -> Pinned {
+    let mut digest = Sha256::new();
+    for part in [presentation.view.to_string(), presentation.assets.html.clone(), presentation.assets.css.clone(), presentation.assets.script.clone()] { digest.update((part.len() as u64).to_le_bytes()); digest.update(part.as_bytes()); }
+    Pinned { owner: presentation.owner.clone(), version: presentation.version.clone(), fingerprint: format!("{:x}", digest.finalize()) }
+}
+/// Resolves a view for a host mount without composing it.
+pub(super) fn pin(snapshot: &Snapshot, view_id: &str, version: &str) -> Result<Pinned, String> {
+    Ok(pinned(&resolve(snapshot, &OpenRequest { view_id: view_id.into(), version: version.into() })?))
+}
+/// The composed panel document for a host mount (the same shell and isolation as the separate window).
+pub(super) fn panel_document(snapshot: &Snapshot, view_id: &str, version: &str, label: &str, dark: bool) -> Result<(Pinned, String), String> {
+    let presentation = resolve(snapshot, &OpenRequest { view_id: view_id.into(), version: version.into() })?;
+    let session = uuid::Uuid::new_v4().to_string();
+    Ok((pinned(&presentation), document(&presentation, label, &session, dark)))
 }
 fn hash(source: &str) -> String { format!("'sha256-{}'", STANDARD.encode(Sha256::digest(source.as_bytes()))) }
 fn still_current(snapshot: &Snapshot, old: &Presentation) -> bool {
@@ -58,6 +81,8 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
     if window.label() != "main" { return Err("PermissionDenied".into()); }
     let snapshot = app.state::<ExtensionPackages>().0.lock().map_err(|_| "HostUnavailable")?.snapshot();
     let presentation = resolve(&snapshot, &request)?;
+    // R0301: executable trust and the `ui.richViews` grant, rechecked natively before any window exists.
+    runtime_rich_mount::authorize_app(&app, &snapshot, &presentation.owner, &presentation.version)?;
     if !native_qualified() { return Ok(json!({"opened":false,"reason":UNSUPPORTED})); }
     let label = format!("extension-view-{}", uuid::Uuid::new_v4());
     let session = uuid::Uuid::new_v4().to_string();
@@ -74,6 +99,7 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
         .devtools(false).disable_drag_drop_handler()
         .on_navigation(move |next| next.as_str() == navigation)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .on_document_title_changed(|view, title| runtime_rich_mount::observe_title(view.app_handle(), view.label(), &title))
         .build();
     let created = match result {
         Ok(created) => created,
@@ -84,10 +110,12 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
     reconcile(&app);
     let retained = state.0.lock().map(|views| views.contains_key(&label)).unwrap_or(false);
     if !retained { let _ = created.close(); return Err("StaleContext".into()); }
+    runtime_rich_mount::watch(&app, &label, runtime_rich_mount::Kind::Window);
     Ok(json!({"opened":true,"windowId":label}))
 }
 
 pub fn window_closed(app: &tauri::AppHandle, label: &str) {
+    runtime_rich_mount::window_closed(app, label);
     let Some(state) = app.try_state::<RichViews>() else { return };
     let Ok(mut views) = state.0.lock() else { return };
     if label != "main" { views.remove(label); return; }
@@ -102,11 +130,13 @@ pub fn reconcile(app: &tauri::AppHandle) {
     let Ok(mut views) = state.0.lock() else { return };
     let mut close = vec![];
     views.retain(|label, old| {
-        let keep = still_current(&snapshot, old);
+        // Disable, safe mode, a changed view, an untrusted digest or a revoked `ui.richViews` all close the window.
+        let keep = still_current(&snapshot, old) && runtime_rich_mount::authorize_app(app, &snapshot, &old.owner, &old.version).is_ok();
         if !keep { close.push(label.clone()); } keep
     });
     drop(views);
-    for label in close { if let Some(window) = app.get_webview_window(&label) { let _ = window.close(); } }
+    for label in close { runtime_rich_mount::forget(app, &label); if let Some(window) = app.get_webview_window(&label) { let _ = window.close(); } }
+    runtime_rich_mount::reconcile(app);
 }
 
 #[cfg(test)]
@@ -132,7 +162,10 @@ mod tests {
     }
     #[test]
     fn unqualified_targets_and_forged_window_options_fail_closed() {
-        assert!(!native_qualified());
+        // R0301: the gate is a per-platform table; targets without their own evidence stay closed.
+        assert_eq!(native_qualified(), super::runtime_rich_mount::qualified_for(super::super::runtime_platform_qualification::current_target()));
+        for target in ["macos-arm64", "macos-x64", "linux-x64", "linux-arm64"] { assert!(!super::runtime_rich_mount::qualified_for(Some(target)), "{target}"); }
+        assert!(!super::runtime_rich_mount::qualified_for(None));
         let request = json!({"viewId":"sample.rich-view/report","version":"1.0.0"});
         assert!(serde_json::from_value::<OpenRequest>(request.clone()).is_ok());
         for key in ["owner", "windowId", "url", "capabilities", "session", "width", "projectId"] {

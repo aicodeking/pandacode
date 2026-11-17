@@ -334,6 +334,8 @@ pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_
     super::runtime_notifications::sweep_app(&app);
     // A revoked or narrowed ui.dynamic returns the package's providers to their manifest values (R0806).
     super::runtime_provider_state::sweep_app(&app);
+    // A revoked ui.richViews destroys the package's panels and separate windows (R0301).
+    super::rich_views::runtime_rich_mount::sweep_app(&app);
     Ok(grants.projection())
 }
 

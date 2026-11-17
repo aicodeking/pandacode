@@ -61,6 +61,9 @@ test('extensions primitives: every host advertises only declared primitives; nat
   for (const kind of PRIMITIVES.families.view.kinds) assert.ok(PRIMITIVES.hosts.inspectorView.accepts.includes(`view.${kind}`));
   for (const kind of PRIMITIVES.families.menu.kinds) assert.ok(PRIMITIVES.hosts.actionSlot.accepts.includes(`menu.${kind}`));
   for (const policy of ['accessible-name', 'ime-guard', 'escape-one-level', 'focus-restore', 'forced-colors', 'increase-contrast', 'reduced-motion', 'reduced-transparency']) assert.ok(PRIMITIVES.accessibility.includes(policy), policy);
+  // Q059 (R0301, retained): `markup` stays excluded from host-rendered primitives because they render into the app's own
+  // document (fault isolation, interface stability, ADR-0005). The permissioned HTML path is `view.rich` under
+  // `ui.richViews`, mounted in its own frame or webview (tests/extensions-runtime-rich-mount.spec.ts).
   for (const excluded of ['callbacks', 'markup', 'dom-handles', 'raw-ipc']) assert.ok(PRIMITIVES.excluded.includes(excluded));
 });
 

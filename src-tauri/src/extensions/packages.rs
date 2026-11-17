@@ -43,6 +43,12 @@ impl Package {
     pub(super) fn in_scope(&self, project: Option<&str>) -> bool {
         self.projects.as_ref().is_none_or(|projects| project.is_some_and(|project| !project.is_empty() && projects.iter().any(|id| id == project)))
     }
+    /// `None` for a package without executable content, else whether the user trusted this digest (R0301 reads it).
+    pub(super) fn executable_trusted(&self) -> Option<bool> { self.executable.as_ref().map(|executable| executable.trusted) }
+    #[cfg(test)]
+    pub(super) fn set_executable_for_test(&mut self, trusted: Option<bool>) {
+        self.executable = trusted.map(|trusted| Executable { digest: "test-digest".into(), trusted });
+    }
 }
 /// Validates the persisted selected-project list: 1..=64 distinct, bounded, printable project IDs.
 fn valid_scope(projects: &[String]) -> bool {
@@ -166,6 +172,9 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
     } else if contributions["providers"].as_array().into_iter().flatten().any(|provider| provider.get("launch").is_some()) {
         // A declared `launch` harness runs a command, not package code: no entrypoint, but the same executable trust.
+        Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
+    } else if contributions["views"].as_array().into_iter().flatten().any(|view| view.get("rich").is_some()) {
+        // ADR-0001 (R0301): HTML or script is code, so a package with a rich view needs the same executable trust.
         Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
     } else { None };
     for icon in contributions["icons"].as_array().into_iter().flatten() {
@@ -845,7 +854,11 @@ mod tests {
         let script = include_bytes!("../../../tests/fixtures/extensions/rich-view/assets/view.js");
         let files = [("extension.json", manifest.as_slice()), ("assets/view.html", html.as_slice()), ("assets/view.css", css.as_slice()), ("assets/view.js", script.as_slice())];
         let storage = Storage::new(); let packages = storage.packages(false);
-        packages.install(&archive(&files)).unwrap(); packages.enable("sample.rich-view", true).unwrap();
+        packages.install(&archive(&files)).unwrap();
+        // R0301: rich content is code; enable waits for the executable trust of this digest.
+        assert!(packages.enable("sample.rich-view", true).unwrap_err().starts_with("ExecutableTrustRequired"));
+        let digest = packages.snapshot().packages[0].executable.as_ref().unwrap().digest.clone();
+        packages.trust("sample.rich-view", &digest, true).unwrap(); packages.enable("sample.rich-view", true).unwrap();
         let snapshot = storage.packages(false).snapshot();
         assert!(snapshot.packages[0].enabled && snapshot.packages[0].rich_assets.contains_key("sample.rich-view/report"));
         let public = serde_json::to_value(&snapshot).unwrap();
@@ -859,6 +872,36 @@ mod tests {
         let mut no_grant: Value = serde_json::from_slice(manifest).unwrap(); no_grant["permissions"] = json!(["ui.contribute"]);
         let bytes = serde_json::to_vec(&no_grant).unwrap(); let mut invalid = files; invalid[0] = ("extension.json", &bytes); assert!(validate(&archive(&invalid)).is_err());
         packages.enable("sample.rich-view", false).unwrap(); assert!(!packages.snapshot().packages[0].enabled);
+    }
+    #[test]
+    fn installed_rich_mount_fixture_needs_trust_and_grant_while_a_declarative_package_needs_neither() {
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/runtime-rich-mount/extension.json");
+        let html = include_bytes!("../../../tests/fixtures/extensions/runtime-rich-mount/assets/board.html");
+        let css = include_bytes!("../../../tests/fixtures/extensions/runtime-rich-mount/assets/board.css");
+        let script = include_bytes!("../../../tests/fixtures/extensions/runtime-rich-mount/assets/board.js");
+        let plain = include_bytes!("../../../tests/fixtures/extensions/runtime-rich-mount/declarative/extension.json");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&archive(&[("extension.json", manifest.as_slice()), ("assets/board.html", html.as_slice()), ("assets/board.css", css.as_slice()), ("assets/board.js", script.as_slice())])).unwrap();
+        packages.install(&archive(&[("extension.json", plain.as_slice())])).unwrap();
+        // Declarative views work without executable trust.
+        packages.enable("sample.rich-mount-plain", true).unwrap();
+        assert!(packages.enable("sample.rich-mount", true).unwrap_err().starts_with("ExecutableTrustRequired"));
+        let find = |snapshot: &Snapshot, id: &str| snapshot.packages.iter().position(|package| package.manifest["id"] == id).unwrap();
+        let before = packages.snapshot();
+        assert_eq!(before.packages[find(&before, "sample.rich-mount-plain")].executable_trusted(), None);
+        let digest = before.packages[find(&before, "sample.rich-mount")].executable.as_ref().unwrap().digest.clone();
+        packages.trust("sample.rich-mount", &digest, true).unwrap(); packages.enable("sample.rich-mount", true).unwrap();
+        let snapshot = packages.snapshot();
+        assert_eq!(snapshot.packages[find(&snapshot, "sample.rich-mount")].executable_trusted(), Some(true));
+        super::super::rich_views::pin(&snapshot, "sample.rich-mount/board", "1.0.0").unwrap();
+        // Trusted but not granted: still refused; granted: allowed (the native check of every open).
+        let dir = std::env::temp_dir().join(format!("pandacode-rich-mount-grants-{}", uuid::Uuid::new_v4()));
+        let grants = super::super::runtime_grants::RuntimeGrants::open(&dir);
+        grants.sync(&serde_json::to_value(&snapshot).unwrap()).unwrap();
+        assert_eq!(super::super::rich_views::runtime_rich_mount::authorize(&snapshot, Some(&grants), "sample.rich-mount", "1.0.0").unwrap_err(), "PermissionDenied");
+        grants.grant("sample.rich-mount", "ui.richViews", Default::default()).unwrap();
+        super::super::rich_views::runtime_rich_mount::authorize(&snapshot, Some(&grants), "sample.rich-mount", "1.0.0").unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn data_panel_views_install_restart_disable_and_reject_malformed_controls_atomically() {

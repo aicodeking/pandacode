@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-mount-plain",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "views": [{ "id": "sample.rich-mount-plain/summary", "title": "Plain summary", "text": "A declarative view: no executable trust needed.", "controls": [{ "kind": "list", "label": "Open cards", "items": ["Fix the build", "Write the guide"] }] }],
+    "commands": [{ "id": "sample.rich-mount-plain/open", "title": "Open plain summary", "action": { "kind": "openView", "view": "sample.rich-mount-plain/summary" } }],
+    "menus": [{ "id": "sample.rich-mount-plain/header", "location": "panda.workspace.header.actions", "command": "sample.rich-mount-plain/open", "presentation": "button" }]
+  }
+}

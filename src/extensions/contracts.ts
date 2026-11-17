@@ -349,6 +349,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     }
     for (const view of (contributions.views ?? []) as ObjectValue[]) {
       if (view.rich && !(manifest.permissions as string[]).includes('ui.richViews')) error('PermissionDenied', `${path}/permissions`, [id]);
+      // R0301: the schema admits heights from 24 (band views); every placement of this slice needs 160 or more.
+      const minSize = (view.rich as ObjectValue | undefined)?.minSize as ObjectValue | undefined;
+      if (minSize && (minSize.height as number) < 160) error('InvalidShape', `${path}/contributes/views`, [view.id as string]);
       for (const item of (view.toolbar ?? []) as ObjectValue[]) reference('commands', item.command, 'views');
     }
     for (const page of (contributions.settings ?? []) as ObjectValue[]) {

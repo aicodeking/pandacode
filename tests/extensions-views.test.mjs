@@ -58,6 +58,21 @@ test('extensions views: shared controls, references, namespace and bounds reject
   assert.equal(activation.actionFor('sample.data-panel/header', { ...context, surfaceId: 'panda.workspace.header.actions' }).view, id);
   activation.dispose(); assert.equal(activation.viewAction('sample.data-panel/refresh', context), undefined);
 });
+// Q057 (R0301): the `html` control above stays refused (host-rendered controls render into the app document: fault
+// isolation and interface stability). The permissioned HTML path is a rich view under `ui.richViews`.
+test('extensions views: HTML ships as a rich view with ui.richViews, placement and minSize, never as a control', () => {
+  const rich = JSON.parse(readFileSync(new URL('./fixtures/extensions/runtime-rich-mount/extension.json', import.meta.url), 'utf8'));
+  assert.equal(validateContract('packages', [rich]).ok, true);
+  const ungranted = structuredClone(rich); ungranted.permissions = ['ui.contribute'];
+  assert.equal(validateContract('packages', [ungranted]).error.code, 'PermissionDenied');
+  for (const mutate of [
+    value => { value.contributes.views[0].rich.placement = 'band'; },
+    value => { value.contributes.views[0].rich.minSize = { width: 100, height: 240 }; },
+    value => { value.contributes.views[0].rich.minSize = { width: 320, height: 100 }; },
+    value => { value.contributes.views[0].rich.minSize = { width: 320, height: 240, depth: 1 }; },
+  ]) { const invalid = structuredClone(rich); mutate(invalid); assert.equal(validateContract('packages', [invalid]).ok, false); }
+  for (const placement of ['inspector', 'floating', 'window']) { const value = structuredClone(rich); value.contributes.views[0].rich.placement = placement; assert.equal(validateContract('packages', [value]).ok, true); }
+});
 test('extensions views: catalog and scoped overlays retain dormant order/visibility after disable and safe recovery', () => {
   let state = structuredClone(snapshot); const catalog = createUiCatalog(() => state);
   assert.deepEqual(catalog.listItems({ owner: manifest.id, type: 'view', location: INSPECTOR_VIEW_LOCATION }).items.map(item => item.id), [notes, id]);

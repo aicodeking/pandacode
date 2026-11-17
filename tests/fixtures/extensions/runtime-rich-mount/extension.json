@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-mount",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews"],
+  "contributes": {
+    "views": [{ "id": "sample.rich-mount/board", "title": "Mounted board", "text": "Host-rendered board summary: three open cards.", "rich": { "html": "assets/board.html", "css": "assets/board.css", "script": "assets/board.js", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } }],
+    "commands": [{ "id": "sample.rich-mount/open", "title": "Open mounted board", "action": { "kind": "openView", "view": "sample.rich-mount/board" } }],
+    "menus": [{ "id": "sample.rich-mount/header", "location": "panda.workspace.header.actions", "command": "sample.rich-mount/open", "presentation": "button" }]
+  }
+}

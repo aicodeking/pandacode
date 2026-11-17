@@ -14,7 +14,7 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
   }
   const view = checked.value as unknown as ViewDefinition;
   const controller = new AbortController(), { signal } = controller;
-  let transient: (() => void) | undefined;
+  let transient: (() => void) | undefined, disposeRich: (() => void) | undefined;
   const panel = document.createElement('section'); panel.className = 'extension-inspector-view';
   panel.setAttribute('aria-label', `${view.title} — ${entry.owner}`);
   const appendText = (parent: HTMLElement, tag: string, text: string) => {
@@ -29,8 +29,13 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
     button.addEventListener('click', () => {
       if (signal.aborted) return;
       button.disabled = true;
-      void import('./rich-views').then(module => signal.aborted ? '' : module.openRichView(entry)).then(message => { if (!signal.aborted && message) status.textContent = message; }).catch(() => { if (!signal.aborted) status.textContent = 'The isolated view is unavailable. The host-rendered view remains usable.'; }).finally(() => { if (!signal.aborted) button.disabled = false; });
+      void import('./runtime-rich-mount').then(module => signal.aborted ? '' : module.openRichWindow(entry)).then(message => { if (!signal.aborted && message) status.textContent = message; }).catch(() => { if (!signal.aborted) status.textContent = 'The isolated view is unavailable. The host-rendered view remains usable.'; }).finally(() => { if (!signal.aborted) button.disabled = false; });
     }, { signal });
+    // R0301: the panel itself mounts here (host-owned mount and disposal) unless the view opens in a window first.
+    if (view.rich.placement !== 'window') {
+      const slot = document.createElement('div'); panel.append(slot);
+      void import('./runtime-rich-mount').then(module => { if (!signal.aborted) disposeRich = module.mountRichPanel(slot, entry); });
+    }
   }
   const toolbar = document.createElement('div'); toolbar.className = 'extension-view-toolbar'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', `${view.title} tools`); panel.append(toolbar);
   const captured = structuredClone({ ...context, schemaVersion: 1, windowId: 'main', surfaceId: view.id });
@@ -118,5 +123,5 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
     }
   }
   host.replaceChildren(panel);
-  return () => { controller.abort(); transient?.(); transient = undefined; panel.remove(); };
+  return () => { controller.abort(); transient?.(); transient = undefined; disposeRich?.(); disposeRich = undefined; panel.remove(); };
 }

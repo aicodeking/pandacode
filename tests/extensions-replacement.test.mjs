@@ -9,6 +9,9 @@ const props = (slot = 'panda.projects', directory = false) => ({ contractVersion
 const action = kind => ({ contractVersion: 1, kind, id: 'one', objectRevision: 3, revision: 7, context: 'project:A/task:one' });
 test('component manifests validate ownership, bounded data, no code or unsupported template/actions', () => {
   assert.equal(validateContract('packages', [manifest]).ok, true);
+  // Q061 (R0301 side, retained): a replacement component is host-rendered data in the app document, so `presentation:
+  // 'html'` and `render` code stay refused (fault isolation, interface stability); HTML is a rich view (`view.rich`,
+  // `ui.richViews`) in its own frame or webview. R1002 owns the replacement operations of this row.
   for (const change of [{ id: 'other.owner/stolen' }, { presentation: 'html' }, { actions: ['delete'] }, { render: 'function(){}' }]) {
     const value = structuredClone(manifest); Object.assign(value.contributes.components[0], change); assert.equal(validateContract('packages', [value]).ok, false);
   }

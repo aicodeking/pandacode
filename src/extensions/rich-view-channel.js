@@ -15,3 +15,10 @@ function richViewMessage(value, session, kind, sequence) {
       && theme.schemaVersion === 1 && ['dark', 'light'].includes(theme.colorScheme);
   } catch { return false; }
 }
+/* Liveness between the shell and its frame (R0301): `ping`/`pong` carry the shell's beat number, `fault` is sent once
+   by the client when the package's code throws. Same envelope as `ready`; nothing in it reaches the app. */
+function richViewSignal(value, session, kind) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !['ping', 'pong', 'fault'].includes(kind)) return false;
+  return Object.keys(value).sort().join(',') === 'kind,schemaVersion,sequence,session' && value.schemaVersion === 1 && value.kind === kind && value.session === session
+    && Number.isSafeInteger(value.sequence) && value.sequence >= 1;
+}

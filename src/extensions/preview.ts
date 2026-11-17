@@ -41,6 +41,7 @@ export const previewOwnedJobs = createJobsPreview();
 import developmentManifest from '../../examples/extensions/project-summary/package/extension.json';
 import dataPanelManifest from '../../tests/fixtures/extensions/data-panel/extension.json';
 import richViewManifest from '../../tests/fixtures/extensions/rich-view/extension.json';
+import richMountManifest from '../../tests/fixtures/extensions/runtime-rich-mount/extension.json';
 import appearanceManifest from '../../tests/fixtures/extensions/appearance/extension.json';
 import replacementManifest from '../../tests/fixtures/extensions/replacement/extension.json';
 import documentsManifest from '../../tests/fixtures/extensions/documents/extension.json';
@@ -320,7 +321,12 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
     } finally { activation.dispose(); }
   }
   if (command === 'extensions_snapshot') return snapshot;
-  if (command === 'extensions_runtime_grants' || command === 'extensions_runtime_grant') return runtimeGrants.createRuntimeGrantsPreview().call(command, args, snapshot);
+  if (command === 'extensions_runtime_grants') return runtimeGrants.createRuntimeGrantsPreview().call(command, args, snapshot);
+  // R0301: a grant change makes mounted rich panels recheck their authority at once (revoke destroys the frame).
+  if (command === 'extensions_runtime_grant') { const reply = runtimeGrants.createRuntimeGrantsPreview().call(command, args, snapshot); window.dispatchEvent(new Event('pandacode-extension-grants-changed')); return reply; }
+  // R0301: the preview mounts rich panels as sandboxed frames (runtime-rich-mount.ts) and never asks for a native webview.
+  if (command === 'extensions_rich_mount_open') return { mounted: false, reason: 'UnsupportedRuntime: the browser preview mounts panels as frames, not native webviews.' };
+  if (command === 'extensions_rich_mount_bounds' || command === 'extensions_rich_mount_close') return null;
   if (command === 'extensions_runtime_native_consents') return nativeConsents.createNativeConsentsPreview().call(command, snapshot);
   // No service runs in the preview: the live layer is empty (the spec drives runtime-dynamic-items.ts directly).
   if (command === 'extensions_runtime_items') return { revision: 0, owners: {} };
@@ -583,9 +589,9 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
       snapshot.packages.push({ manifest: harnessManifest as ExtensionPackage['manifest'], icons: {}, enabled: false, executable: { digest: 'recorded-harness-digest', trusted: false } });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
-    const selected = new URLSearchParams(location.search).has('extension-connections') ? connectionManifest : new URLSearchParams(location.search).has('extension-jobs') ? toolManifest : new URLSearchParams(location.search).has('transcript-conformance') ? transcriptManifest : new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
+    const selected = new URLSearchParams(location.search).has('extension-connections') ? connectionManifest : new URLSearchParams(location.search).has('extension-jobs') ? toolManifest : new URLSearchParams(location.search).has('transcript-conformance') ? transcriptManifest : new URLSearchParams(location.search).has('composer-conformance') ? composerManifest : new URLSearchParams(location.search).has('replacement') ? replacementManifest : new URLSearchParams(location.search).has('appearance') ? appearanceManifest : new URLSearchParams(location.search).has('rich-view') ? richViewManifest : new URLSearchParams(location.search).has('rich-mount') ? richMountManifest :new URLSearchParams(location.search).has('data-panel') ? dataPanelManifest : new URLSearchParams(location.search).has('executable-extension') ? executableManifest : new URLSearchParams(location.search).has('project-context') ? contextManifest : new URLSearchParams(location.search).has('window-laboratory') ? windowManifest : new URLSearchParams(location.search).has('settings-laboratory') ? settingsManifest : new URLSearchParams(location.search).has('thread-laboratory') ? threadManifest : manifest;
     if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Duplicate package ownership; already installed.');
-    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...([executableManifest, toolManifest, connectionManifest].includes(selected as typeof executableManifest) ? { executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
+    snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], enabled: false, icons: {}, ...([executableManifest, toolManifest, connectionManifest].includes(selected as typeof executableManifest) || (selected as { contributes?: { views?: { rich?: unknown }[] } }).contributes?.views?.some(view => view.rich) ?{ executable: { digest: 'preview-content-digest-not-native-trust', trusted: false } } : {}) });
   } else if (command === 'extensions_uninstall') {
     const item = snapshot.packages.find(item => item.manifest.id === args.id);
     if (item) localStorage.setItem(`pandacode.preview.extension-private-pages.v1.${item.manifest.id}`, JSON.stringify((item.manifest.contributes.settings ?? []).map(page => page.id)));

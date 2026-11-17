@@ -25,6 +25,13 @@ test('extensions rich views: installed local assets receive only presentation DT
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Extensions', exact: true }).click();
   await page.getByRole('button', { name: 'Install local package', exact: true }).click();
+  // Q119 (R0301): rich content is code (ADR-0001), so an installed rich package waits for executable trust.
+  await page.getByRole('button', { name: 'Enable sample.rich-view', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('ExecutableTrustRequired');
+  await page.getByRole('button', { name: 'Review executable trust sample.rich-view', exact: true }).click();
+  const trust = page.getByRole('dialog', { name: 'Trust executable extension? — panda.core', exact: true });
+  await trust.getByRole('button', { name: 'Review full authority', exact: true }).click();
+  await trust.getByRole('button', { name: 'Confirm', exact: true }).click();
   await page.getByRole('button', { name: 'Enable sample.rich-view', exact: true }).click();
   await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
   await page.locator('#terminal-toggle').click();
@@ -96,6 +103,8 @@ test('extensions rich views: zero extensions and safe mode never create rich pre
   await page.goto('/?extensions-baseline&rich-view&rich-view-characterization&safe-mode');
   await expect(page.locator('#prompt')).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Open isolated report', exact: true })).toHaveCount(0);
+  // Q119 (R0301): safe mode also leaves no inspector mount (retained: safe mode runs nothing of any package).
+  await expect(page.locator('.extension-rich-panel')).toHaveCount(0);
 });
 
 test('extensions rich views: owning host teardown closes presentation without an orphan popup', async ({ page }) => {
