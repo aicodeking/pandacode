@@ -159,6 +159,12 @@ jobs:
       - name: Upstream semantic remote sends and images (WebKit)
         env: { PW_PORT: '15852', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/upstream-semantic-remote-images.spec.ts --workers=1
+      - name: Upstream menu settings and usage (Chromium)
+        env: { PW_PORT: '16091', PW_PROD: '1' }
+        run: npx playwright test tests/upstream-menu-usage-extensions.spec.ts --workers=1
+      - name: Upstream menu settings and usage (WebKit)
+        env: { PW_PORT: '16092', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/upstream-menu-usage-extensions.spec.ts --workers=1
       - name: Trusted development preview (Chromium)
         env:
           PW_PORT: '1435'

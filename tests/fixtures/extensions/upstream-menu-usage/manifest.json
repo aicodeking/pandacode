@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-menu-usage",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize", "tasks.summary", "harnesses.inventory"],
+  "contributes": {
+    "components": [
+      { "id": "sample.upstream-menu-usage/settings", "title": "Settings actions first", "slot": "panda.settings", "contractVersion": 1, "presentation": "actions-first", "capabilities": ["host-sections", "host-controls", "original-actions"] },
+      { "id": "sample.upstream-menu-usage/usage", "title": "Usage details first", "slot": "panda.status", "contractVersion": 1, "presentation": "details-first", "capabilities": ["host-usage", "host-feedback", "original-actions"] }
+    ],
+    "commands": [
+      { "id": "sample.upstream-menu-usage/settings-note", "title": "Settings note", "action": { "kind": "showMessage", "message": "Settings and the application menu stay host-owned." } },
+      { "id": "sample.upstream-menu-usage/usage-note", "title": "Usage note", "action": { "kind": "showMessage", "message": "Usage reads, account details and Refresh stay host-owned." } }
+    ],
+    "menus": [
+      { "id": "sample.upstream-menu-usage/settings-page", "command": "sample.upstream-menu-usage/settings-note", "location": "panda.settings.actions", "presentation": "button", "text": "Settings note", "visible": { "op": "eq", "key": "selection.kind", "value": "settings-page" } },
+      { "id": "sample.upstream-menu-usage/usage-context", "command": "sample.upstream-menu-usage/usage-note", "location": "panda.status.context", "visible": { "op": "eq", "key": "selection.kind", "value": "usage-provider" } }
+    ],
+    "layouts": [
+      { "id": "sample.upstream-menu-usage/appearance-first", "title": "Appearance before General", "location": "panda.settings.sections", "rules": [{ "id": "panda.settings.sections/appearance", "target": "panda.settings.sections/general", "side": "before" }] },
+      { "id": "sample.upstream-menu-usage/refresh-first", "title": "Refresh before usage views", "location": "panda.status.controls", "rules": [{ "id": "panda.status.controls/refresh", "target": "panda.status.controls/tabs", "side": "before" }] }
+    ]
+  }
+}
