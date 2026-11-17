@@ -9,6 +9,7 @@ import { checkToolServerDeclarations } from './runtime-tool-servers.ts';
 import { policy as dialogPolicy } from './runtime-protected-presentation.ts';
 import { checkCliIntentDeclarations } from './runtime-cli-intent.ts';
 import { checkEditorDeclarations } from './runtime-document-editors.ts';
+import { checkNewFileDeclarations } from './runtime-new-file-templates.ts';
 import { checkAll as checkPresentations, checkConversationProvider } from './runtime-transcript-presentation.ts';
 import { checkAll as checkToolRows } from './runtime-tool-row-replacement.ts';
 
@@ -326,6 +327,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     // Custom editors (R0901): the rules the schema cannot say, shared with contracts.rs (runtime_document_editors::check).
     const editors = checkEditorDeclarations(manifest);
     if (!editors.ok) error(editors.refusal.code, `${path}/${editors.refusal.at}`, editors.refusal.ids);
+    // Templated new files (R0903): shared with contracts.rs (runtime_new_file_templates::check).
+    const newFiles = checkNewFileDeclarations(manifest);
+    if (!newFiles.ok) error(newFiles.refusal.code, `${path}/${newFiles.refusal.at}`, newFiles.refusal.ids);
     // Tool servers (R0702): shared with contracts.rs (runtime_tool_servers::check).
     const toolServers = checkToolServerDeclarations(manifest);
     if (!toolServers.ok) error(toolServers.refusal.code, `${path}/${toolServers.refusal.at}`, toolServers.refusal.ids);

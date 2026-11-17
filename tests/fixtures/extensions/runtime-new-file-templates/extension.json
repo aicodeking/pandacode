@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.notes",
+  "name": "Notes",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "documents.editors"],
+  "runtime": { "kind": "node", "files": ["editor", "templates"] },
+  "contributes": {
+    "editors": [
+      { "id": "sample.notes/note", "title": "Note editor", "extensions": [".note"], "priority": "default", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } },
+      { "id": "sample.notes/plain", "title": "Plain note", "extensions": [".note"], "priority": "option", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } },
+      { "id": "sample.notes/hex", "title": "Data view", "extensions": [".dat"], "priority": "default", "encoding": "bytes", "rich": { "folder": "editor", "entry": "index.html" } }
+    ],
+    "newFiles": [
+      { "id": "sample.notes/note", "title": "New note", "extension": ".note", "template": "templates/empty.note", "editor": "sample.notes/note" },
+      { "id": "sample.notes/data", "title": "New data file", "extension": ".dat", "template": "templates/blank.dat", "editor": "sample.notes/hex" },
+      { "id": "sample.notes/blank", "title": "New blank note", "extension": ".note", "template": "templates/empty.note" }
+    ]
+  }
+}

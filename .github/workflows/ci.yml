@@ -431,6 +431,12 @@ jobs:
       - name: Saving host buffers through bounded package hooks (WebKit)
         env: { PW_PORT: '16592', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-document-save.spec.ts --workers=1
+      - name: Templated new files and the editor of a revealed file (Chromium)
+        env: { PW_PORT: '16621', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-new-file-templates.spec.ts --workers=1
+      - name: Templated new files and the editor of a revealed file (WebKit)
+        env: { PW_PORT: '16622', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-new-file-templates.spec.ts --workers=1
       - name: Pending approvals and questions as events (Chromium)
         env: { PW_PORT: '16561', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-pending-requests.spec.ts --workers=1
