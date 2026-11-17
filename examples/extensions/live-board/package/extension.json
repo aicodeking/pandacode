@@ -5,7 +5,7 @@
   "name": "Work board",
   "engines": { "pandacodeApi": "^1.0.0" },
   "extensionKind": "ui",
-  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.richViews"],
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.richViews", "tasks.start"],
   "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
   "contributes": {
     "commands": [

@@ -15,8 +15,10 @@ let board = null;        // the committed board: { meta, issues, ready:Set, bloc
 let building = null;     // the board being assembled
 let selected = null;
 let statusOf = new Map();
+let marks = new Set();   // issues marked for Start (cut C); the service decides what a start does with them
+let agents = {};         // issue id -> 'Agent running' | 'Agent finished' | 'Agent failed', as the service says
 
-const remember = () => { try { view.state.set({ selected, scrollTop: viewport.scrollTop }); } catch { /* the bound is 256 KiB; two fields never reach it */ } };
+const remember = () => { try { view.state.set({ selected, scrollTop: viewport.scrollTop, marks: [...marks] }); } catch { /* the bound is 256 KiB; two fields never reach it */ } };
 const send = async message => { try { await view.postMessage(message); } catch (error) { observed.results.push({ ok: false, local: true, code: error?.code ?? 'Failed' }); show('result', `${error?.code ?? 'Failed'}: ${error?.message ?? ''}`); } };
 const show = (id, text) => { el(id).textContent = text; };
 
@@ -39,7 +41,9 @@ function draw() {
     row.className = 'row'; row.role = 'option'; row.dataset.id = issue.id; row.dataset.status = status;
     row.setAttribute('aria-selected', String(issue.id === selected));
     row.style.top = `${index * ROW}px`;
-    for (const [name, text] of [['id', issue.id], ['title', issue.title], ['status', status], ['assignee', issue.assignee || '-']]) {
+    row.dataset.marked = String(marks.has(issue.id));
+    if (agents[issue.id]) row.dataset.agent = agents[issue.id];
+    for (const [name, text] of [['mark', marks.has(issue.id) ? '*' : ''], ['id', issue.id], ['title', issue.title], ['status', status], ['assignee', issue.assignee || '-'], ['agent', agents[issue.id] ?? '']]) {
       const cell = document.createElement('span'); cell.className = name; cell.textContent = text; row.append(cell);
     }
     fragment.append(row);
@@ -57,6 +61,14 @@ function buttons() {
   el('close').disabled = !issue || closed;
   el('undo').disabled = !board?.meta.undo;
   el('undo').textContent = board?.meta.undo ?? 'Undo';
+  el('start').disabled = !board || marks.size === 0 || !!board.meta.stale;
+  el('start').textContent = marks.size ? `Start (${marks.size})` : 'Start';
+}
+
+function mark(id) {
+  if (marks.has(id)) marks.delete(id); else marks.add(id);
+  remember();
+  draw();
 }
 
 function header() {
@@ -74,7 +86,9 @@ function header() {
 function commit(next) {
   board = next;
   statusOf = new Map(board.issues.map(issue => [issue.id, statusFor(issue)]));
+  agents = next.meta.agents ?? {};
   if (selected && !statusOf.has(selected)) selected = null;
+  for (const id of [...marks]) if (!statusOf.has(id)) marks.delete(id);
   header();
   draw();
   observed.boards.push({ seq: next.meta.seq, total: next.meta.total, ready: next.ready.size, blocked: next.blocked.size, stale: !!next.meta.stale, at: Date.now() });
@@ -120,6 +134,7 @@ function select(id) {
 view.onDidInitialize(init => {
   observed.init = { viewId: view.viewId, instanceId: init.instanceId ?? null, placement: init.placement ?? null, restored: init.restored ?? null, state: init.state ?? null, at: Date.now() };
   if (init.state?.selected) selected = init.state.selected;
+  if (Array.isArray(init.state?.marks)) marks = new Set(init.state.marks.filter(id => typeof id === 'string'));
   if (init.state?.scrollTop) viewport.scrollTop = init.state.scrollTop;
 });
 view.onDidChangeVisibility(state => { observed.visibility.push({ visible: state.visible, focused: state.focused, at: Date.now() }); });
@@ -135,8 +150,9 @@ view.onMessage(message => {
 });
 
 viewport.addEventListener('scroll', () => { draw(); remember(); }, { passive: true });
-viewport.addEventListener('click', event => { const row = event.target.closest?.('.row'); if (row) select(row.dataset.id); });
+viewport.addEventListener('click', event => { const row = event.target.closest?.('.row'); if (!row) return; if (event.ctrlKey || event.metaKey) mark(row.dataset.id); else select(row.dataset.id); });
 viewport.addEventListener('keydown', event => {
+  if (board && event.key === ' ' && selected) { event.preventDefault(); mark(selected); return; }
   if (!board || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
   event.preventDefault();
   const at = board.issues.findIndex(issue => issue.id === selected);
@@ -149,12 +165,17 @@ viewport.addEventListener('keydown', event => {
 el('claim').addEventListener('click', () => { if (selected) void send({ kind: 'claim', id: selected }); });
 el('close').addEventListener('click', () => { if (selected) void send({ kind: 'close', id: selected }); });
 el('undo').addEventListener('click', () => { void send({ kind: 'undo' }); });
+// Start only asks: the service shows the host dialogs (choices, then the exact prompt) and answers with a `result`.
+el('start').addEventListener('click', () => { if (marks.size) void send({ kind: 'start', ids: [...marks] }); });
 
 window.__liveBoardDo = {
   select: id => select(id),
   claim: id => send({ kind: 'claim', id: id ?? selected }),
   close: id => send({ kind: 'close', id: id ?? selected }),
   undo: () => send({ kind: 'undo' }),
+  mark: id => mark(id ?? selected),
+  start: () => send({ kind: 'start', ids: [...marks] }),
+  marked: () => [...marks],
   scrollTo: index => { viewport.scrollTop = index * ROW; },
   rows: () => [...spacer.children].map(row => ({ id: row.dataset.id, status: row.dataset.status })),
   counts: () => el('counts').textContent,

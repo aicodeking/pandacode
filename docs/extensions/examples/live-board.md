@@ -1,8 +1,9 @@
-# Example: the Work board, cuts A and B (a background service with a live interface and a rich panel)
+# Example: the Work board, cuts A, B and C (a background service with a live interface, a rich panel and an attributed task start)
 
 Task R1201. One installable package, `sample.live-board` (`examples/extensions/live-board/`), the reference example of the
 runtime phases R1 and R2: a trusted background service that reads a tracker daemon and keeps a status item, a table, a Retry
-button and a dialog answer up to date. Cut B (R1202, below) grows the same package with the rich panel; no task is started (cut C).
+button and a dialog answer up to date. Cut B (R1202, below) grows the same package with the rich panel; cut C (R1203, below) adds
+Start, an attributed fake-agent task.
 
 ## What the package does
 
@@ -84,9 +85,46 @@ All of them are **prepared, not run (deferred to the final test phase)**; nothin
   containment, disable/revoke/safe-mode cleanup) and expectations are listed in the evidence-columns file. Adding the package to the
   runner's `stage.mjs` and `expected.json` is a final-phase edit of R0306's files. R3 closes for the board only after that run passes.
 
+## Cut C: start an attributed fake-agent task (R1203)
+
+The same package once more, with one more permission, `tasks.start` ([tasks start](../runtime-tasks-start.md), R0401; the
+host's label of the task, R0402). The panel gains a Start button and issue marks; the service gains the three-step flow. No
+second package, no second manifest.
+
+| Step | What happens |
+|---|---|
+| Mark | Ctrl+click (or Space on the selected row) marks issues, kept in `pandaView.state`; **Start (n)** asks the service to start for them. At most 12 issues, none closed; a stale board or a Start already waiting for an answer is refused. |
+| 1. Choose | A host dialog: project, harness (blank: the user's default), mode (Research or Implementation) and worktree (current or new). The project is suggested from the last project shown. |
+| 2. Preview | A second host dialog shows the exact prompt, built from the issues as they are now, and the service keeps a fingerprint of those issues (id, title, status, assignee, revision, the daemon's own ready and blocked marks). Research asks the harness for `ask` mode; Implementation sends no mode, so the harness gets the mode the user would get. |
+| 3. Confirm | The board is read again. If any selected issue differs from the fingerprint, the start is rejected with `Conflict` (`T-1 changed since the preview; nothing was started. Preview again.`) and **no task is created**; an offline tracker is `Unreachable`, also without a task. Otherwise `panda.tasks.start` runs once, with the previewed prompt (an edit of the prompt box is not sent). |
+
+The task row and the thread name the package (host attribution, `task.created` carries `startedBy`). Without the `tasks.start`
+grant the call answers `PermissionDenied`, the panel shows it, and nothing is launched. Starts, cancels and refusals are results in
+the panel (`op: "start"`, codes `Cancelled`, `Conflict`, `Unreachable`, `PermissionDenied`).
+
+**Agent finished.** The service remembers which issues each started task is for. A confirmed start shows
+`Agent running` on those rows; `turn.finished` of that task sets `Agent finished` (and a notice `Agent finished: T-1, T-2`, which the
+host labels with the package name); `turn.failed` sets `Agent failed`. Turns of tasks the board did not start change nothing. The
+marks live in the service for the session (private storage is a later cut).
+
+Fake agents only: Start does not authorize any installed real harness. The routine acceptance uses the B5 scripted agent
+(`sample.launch-agent/fake`, `tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs`).
+
+### Evidence columns of cut C
+
+Preview (both engines), native and installed Windows are kept apart in
+`tests/fixtures/extensions/example-live-board/evidence-columns-c.json`. All of them are **prepared, not run (deferred to the final
+test phase)**; nothing here is an observation. The preview tests are in `tests/extensions-example-live-board.spec.ts` (grep `live
+board preview:`; Chromium port 16521, WebKit 16522): the happy path with one task and its label, the race of the preview, the
+missing grant, and Agent finished with its notice. The installed column reuses the R0306 runner and the R1212 qualification; with the
+three cuts passed there, the board closes R1 to R4 as one spine.
+
 ## Limits of this cut
 
 - The last snapshot lives in the service's memory: a restart that finds the daemon away shows "unknown", never a stale table
-  from an earlier run (private storage is a later cut).
+  from an earlier run (private storage is a later cut). The same holds for the started-task list: after a restart the rows no
+  longer say Agent running or finished.
 - A settings change or a switch is checked in the preview; natively their delivery is proven by the workspace-events slice.
-- Cut A alone had no panel; cut B is below. No Start: cut C.
+- The Start dialogs use the host's field kinds: the project and harness are typed, not picked from a list (the service has no
+  project list; `projects.summary` and `harnesses.inventory` would give one in a later cut).
+- The native acceptance test of cut A grants four permissions, not `tasks.start`; Start there would be a recorded refusal.

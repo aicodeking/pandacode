@@ -15,9 +15,11 @@
     #notice[data-shown="true"] { display: block; }
     #viewport { overflow-y: auto; position: relative; contain: strict; }
     #spacer { position: relative; }
-    .row { position: absolute; left: 0; right: 0; height: 28px; display: grid; grid-template-columns: 5.5em 1fr 6.5em 7em; gap: 8px; align-items: center; padding: 0 10px; box-sizing: border-box; cursor: default; }
+    .row { position: absolute; left: 0; right: 0; height: 28px; display: grid; grid-template-columns: 1.4em 5.5em 1fr 6.5em 7em 8.5em; gap: 8px; align-items: center; padding: 0 10px; box-sizing: border-box; cursor: default; }
     .row[aria-selected="true"] { background: color-mix(in srgb, dodgerblue 25%, transparent); }
     .row .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row[data-marked="true"] { outline: 1px solid color-mix(in srgb, currentColor 45%, transparent); outline-offset: -1px; }
+    .row .agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: seagreen; }
     .row[data-status="ready"] .status { color: seagreen; }
     .row[data-status="blocked"] .status { color: darkorange; }
     footer { border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); padding: 8px 10px; display: grid; gap: 6px; }
@@ -39,6 +41,7 @@
       <button id="claim" type="button" disabled>Claim</button>
       <button id="close" type="button" disabled>Close</button>
       <button id="undo" type="button" disabled>Undo</button>
+      <button id="start" type="button" disabled title="Mark issues with Ctrl+click or Space, then start an agent task for them">Start</button>
       <span id="result" role="status"></span>
     </div>
   </footer>

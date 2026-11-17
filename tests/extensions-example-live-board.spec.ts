@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { validateContract } from '../src/extensions/contracts';
 import type { SettingsPackage, Store } from '../src/extensions/runtime-content-resources';
 import { PreviewPanelHost } from '../src/extensions/runtime-rich-channel';
+import type { StartWorld } from '../src/extensions/runtime-tasks-start';
 import { createRuntimePreview, type DaemonFactory, type Grants, type Loaders, type PreviewManifest, type ServiceModule } from '../src/extensions/runtime-preview';
 
 // R1201 (cut A) and R1202 (cut B): the Work board (sample.live-board). PREVIEW column: the shipped lib/board.mjs of the example package runs in
@@ -15,6 +16,7 @@ import { createRuntimePreview, type DaemonFactory, type Grants, type Loaders, ty
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const manifest = JSON.parse(read('examples/extensions/live-board/package/extension.json')) as PreviewManifest & { permissions: string[]; contributes: { settings: { id: string; fields: { id: string; kind: string; value?: string }[] }[] } };
 const OWNER = 'sample.live-board';
+const FAKE = 'sample.launch-agent/fake';
 const PAGE = `${OWNER}/tracker`, STATUS = `${OWNER}/ready`, VIEW = `${OWNER}/board`, RETRY_ITEM = `${OWNER}/retry-button`, RETRY = `${OWNER}/retry`, WHO = `${OWNER}/who`;
 type Seed = { issues: Record<string, unknown>[] };
 const SEED: Seed = { issues: [{ id: 'T-1', title: 'One' }, { id: 'T-2', title: 'Two', dependsOn: ['T-1'] }, { id: 'T-3', title: 'Three', status: 'closed' }] };
@@ -57,7 +59,15 @@ async function boot(over: { offline?: boolean; grants?: Grants; seed?: Seed; saf
     return { service: (panda: unknown, lifetime: unknown) => logic.run(panda as never, lifetime as never, { ...logic.linkFromPanda(panda as never), cli }) } as unknown as ServiceModule;
   } };
   const panels = over.panels ? new PreviewPanelHost(() => clock) : undefined;
-  const preview = createRuntimePreview({ manifest, loaders, grants, settings, store, daemon, now: () => clock, scopes: { tasks: ['t1'], projects: ['p1'] }, safeMode: over.safeMode, panels });
+  // Cut C: the host's world for `tasks.start` (the R0401 twin): one project, the user's default harness and the B5 scripted fake harness.
+  const tasksStart: StartWorld = {
+    projects: ['p1'], worktrees: [], targets: [],
+    catalog: {
+      providers: [{ id: 'claude', installed: true }, { id: FAKE, installed: true, models: [{ id: 'fake-1' }], metadata: { modes: ['ask'], readiness: { state: 'ready' } } }],
+      defaultProvider: 'claude', rememberedModel: id => (id === 'claude' ? 'sonnet' : 'fake-1'), initialMode: id => (id.includes('/') ? 'ask' : 'full'),
+    },
+  };
+  const preview = createRuntimePreview({ manifest, loaders, grants, settings, store, daemon, now: () => clock, scopes: { tasks: ['t1'], projects: ['p1'] }, safeMode: over.safeMode, panels, tasksStart });
   // The host applies 20 updates a second to a package: every action of the spec happens a second after the last.
   const act = async <T>(run: () => T | Promise<T>): Promise<T> => { clock += 1100; return run(); };
   const owner = () => (preview.layer().owners[OWNER] as Layer | undefined);
@@ -78,7 +88,7 @@ const within = (what: string, check: () => unknown, timeout = 2000) => expect.po
 
 test('live board preview: the package is a valid service package whose logic file is browser-safe', () => {
   expect(validateContract('packages', [manifest]).ok).toBe(true);
-  expect(manifest.permissions).toEqual(['ui.contribute', 'runtime.service', 'events.workspace', 'ui.dynamic', 'ui.notify', 'ui.richViews']);
+  expect(manifest.permissions).toEqual(['ui.contribute', 'runtime.service', 'events.workspace', 'ui.dynamic', 'ui.notify', 'ui.richViews', 'tasks.start']);
   expect(manifest.runtime).toMatchObject({ kind: 'node', entrypoint: 'main.cjs', files: ['lib'], service: { start: 'onEnable' } });
   const logic = read('examples/extensions/live-board/package/lib/board.mjs');
   expect(logic).not.toMatch(/\b(?:import|require)\b\s*[(\s'"]/);
@@ -525,6 +535,176 @@ test('live board preview: losing ui.richViews, a disable, safe mode and a stop l
     expect(run.owner()).toBeUndefined();
     expect(await run.preview.panelViews().instances(VIEW).catch(() => [])).toEqual([]);
   }
+});
+
+// ---- cut C: start an attributed fake-agent task ---------------------------------------------------------------------------
+
+const CHOICE = { project: 'p1', harness: FAKE, mode: 'research', worktree: 'new' };
+const CHOOSE = 'Start an agent task', PREVIEW = 'Start an agent task: preview';
+type Dialogs = Board['preview']['dialogs'];
+/** The dialog the service is waiting on, once it is the one with this title. */
+async function dialogOf(board: Board, title: string) {
+  await within(`the dialog "${title}"`, () => (board.preview.dialogs as Dialogs).pending().map(item => item.dialog.title)).toEqual([title]);
+  return (board.preview.dialogs as Dialogs).pending()[0];
+}
+const answer = (board: Board, id: string, values: Record<string, string>) => expect(board.preview.answerDialog(id, { status: 'confirmed', values })).toMatchObject({ ok: true });
+/** The three steps up to the confirmation of the preview; returns the previewed prompt. */
+async function previewStart(board: Board, panel: ReturnType<typeof attach>, ids: string[], choice: Record<string, string> = CHOICE) {
+  await panel.send({ kind: 'start', ids });
+  const first = await dialogOf(board, CHOOSE);
+  expect(first.dialog.fields.map(field => field.id)).toEqual(['project', 'harness', 'mode', 'worktree']);
+  answer(board, first.id, choice);
+  const second = await dialogOf(board, PREVIEW);
+  const field = second.dialog.fields[0] as { id: string; kind: string; value: string };
+  expect([field.id, field.kind]).toEqual(['prompt', 'textarea']);
+  return { second, prompt: field.value };
+}
+
+test('live board preview: Start chooses project, harness, mode and worktree, previews the prompt and creates exactly one labelled B5 task', async () => {
+  const board = await boot({ panels: true });
+  await board.preview.start();
+  await within('the first snapshot', () => board.statusText()).toBe('1 ready');
+  const panel = attach(board);
+  await within('the first board', () => panel.latest()?.meta.total).toBe(3);
+  // Nothing exists before the confirmation: choosing and previewing create no task.
+  const { second, prompt } = await previewStart(board, panel, ['T-1', 'T-2']);
+  expect(board.preview.starter!.tasks).toHaveLength(0);
+  expect(prompt).toContain('Work board handoff (research).');
+  expect(prompt).toContain('- T-1: One [open]');
+  expect(prompt).toContain('- T-2: Two [open]');
+  answer(board, second.id, { prompt });
+  await within('the start result', () => panel.results().filter(item => item.op === 'start').length).toBe(1);
+  expect(panel.results().at(-1)).toMatchObject({ op: 'start', ok: true });
+  // Exactly one task, with the previewed prompt, the chosen project, harness and mode, a new worktree, and the package label.
+  const tasks = board.preview.starter!.tasks;
+  expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toMatchObject({ projectId: 'p1', harness: FAKE, model: 'fake-1', mode: 'ask', prompt, title: 'Work board: T-1 and 1 more', startedBy: { owner: OWNER } });
+  expect(tasks[0].worktree).toMatch(/^pandacode\//);
+  expect(board.preview.starter!.origins.get(tasks[0].id)).toMatchObject({ owner: OWNER, projectId: 'p1' });
+  expect(board.preview.starter!.events).toContainEqual({ kind: 'task.created', taskId: tasks[0].id, projectId: 'p1', harness: FAKE, startedBy: { package: OWNER } });
+  // The linked issues say an agent is on them, and the service holds one task.
+  await within('the running marks', () => panel.latest()?.meta.agents).toEqual({ 'T-1': 'Agent running', 'T-2': 'Agent running' });
+  expect(board.held()).toMatchObject({ tasks: 1 });
+  // Implementation mode sends no host mode: the harness gets what the user would get (the fake harness's own `ask`).
+  const again = await previewStart(board, panel, ['T-1'], { ...CHOICE, mode: 'implementation', worktree: 'current' });
+  expect(again.prompt).toContain('Work board handoff (implementation).');
+  answer(board, again.second.id, { prompt: again.prompt });
+  await within('the second start', () => board.preview.starter!.tasks.length).toBe(2);
+  expect(board.preview.starter!.tasks[1]).toMatchObject({ mode: 'ask', worktree: null, title: 'Work board: T-1' });
+  // Cancelling the choices or the preview creates nothing and says so.
+  await panel.send({ kind: 'start', ids: ['T-2'] });
+  board.preview.answerDialog((await dialogOf(board, CHOOSE)).id, { status: 'cancelled' });
+  await within('the cancelled result', () => panel.results().at(-1)?.code).toBe('Cancelled');
+  const third = await previewStart(board, panel, ['T-2']);
+  board.preview.answerDialog(third.second.id, { status: 'cancelled' });
+  await within('the cancelled preview', () => panel.results().filter(item => item.code === 'Cancelled').length).toBe(2);
+  expect(board.preview.starter!.tasks).toHaveLength(2);
+  await board.preview.stop();
+});
+
+test('live board preview: an issue that changes between the preview and the confirmation rejects Start and creates no task', async () => {
+  const board = await boot({ panels: true });
+  await board.preview.start();
+  const panel = attach(board);
+  await within('the first board', () => panel.latest()?.meta.total).toBe(3);
+  const { second, prompt } = await previewStart(board, panel, ['T-1', 'T-2']);
+  // Someone else claims T-1 while the preview is open (B1 control): its revision moves.
+  await board.act(() => board.core.control('issues', { op: 'update', issue: { id: 'T-1', assignee: 'Grace' } }));
+  await within('the change reaches the panel', () => panel.latest()?.issues.find(item => item.id === 'T-1')?.assignee).toBe('Grace');
+  answer(board, second.id, { prompt });
+  await within('the rejection', () => panel.results().filter(item => item.op === 'start').length).toBe(1);
+  expect(panel.results().at(-1)).toMatchObject({ op: 'start', ok: false, code: 'Conflict' });
+  expect(panel.results().at(-1)!.message).toContain('T-1 changed since the preview');
+  expect(board.preview.starter!.tasks).toHaveLength(0);
+  expect(board.preview.starter!.origins.size).toBe(0);
+  expect(board.preview.starter!.events).toEqual([]);
+  expect(panel.latest()!.meta.agents).toEqual({});
+  // The dialog asks for a new preview: starting again previews the new state and then creates the one task.
+  const fresh = await previewStart(board, panel, ['T-1', 'T-2']);
+  expect(fresh.prompt).toContain('(assignee Grace)');
+  expect(fresh.prompt).not.toBe(prompt);
+  answer(board, fresh.second.id, { prompt: fresh.prompt });
+  await within('the new start', () => board.preview.starter!.tasks.length).toBe(1);
+  expect(board.preview.starter!.tasks[0].prompt).toBe(fresh.prompt);
+  // A tracker that is offline at the confirmation also creates nothing.
+  const last = await previewStart(board, panel, ['T-2']);
+  board.link.offline = true;
+  answer(board, last.second.id, { prompt: last.prompt });
+  await within('the offline refusal', () => panel.results().at(-1)?.code).toBe('Unreachable');
+  expect(board.preview.starter!.tasks).toHaveLength(1);
+  await board.preview.stop();
+});
+
+test('live board preview: without tasks.start Start answers PermissionDenied and nothing is launched', async () => {
+  const grants: Grants = new Map(manifest.permissions.filter(name => name !== 'tasks.start').map(name => [name, true as const]));
+  const board = await boot({ panels: true, grants });
+  await board.preview.start();
+  const panel = attach(board);
+  await within('the first board', () => panel.latest()?.meta.total).toBe(3);
+  const { second, prompt } = await previewStart(board, panel, ['T-1']);
+  answer(board, second.id, { prompt });
+  await within('the refusal', () => panel.results().filter(item => item.op === 'start').length).toBe(1);
+  expect(panel.results().at(-1)).toMatchObject({ op: 'start', ok: false, code: 'PermissionDenied' });
+  expect(board.preview.starter!.tasks).toHaveLength(0);
+  expect(board.preview.starter!.origins.size).toBe(0);
+  expect(panel.latest()!.meta.agents).toEqual({});
+  // Revoking the grant after a first start leaves the earlier task alone and refuses the next one.
+  const granted = await boot({ panels: true });
+  await granted.preview.start();
+  const second_ = attach(granted);
+  await within('the first board', () => second_.latest()?.meta.total).toBe(3);
+  const one = await previewStart(granted, second_, ['T-1']);
+  answer(granted, one.second.id, { prompt: one.prompt });
+  await within('the first task', () => granted.preview.starter!.tasks.length).toBe(1);
+  await granted.preview.revoke('tasks.start');
+  const two = await previewStart(granted, second_, ['T-2']);
+  answer(granted, two.second.id, { prompt: two.prompt });
+  await within('the second refusal', () => second_.results().filter(item => item.code === 'PermissionDenied').length).toBe(1);
+  expect(granted.preview.starter!.tasks).toHaveLength(1);
+  await granted.preview.stop();
+  await board.preview.stop();
+});
+
+test('live board preview: the end of the turn marks the linked issues Agent finished and names the package and the issues in a notice', async () => {
+  const board = await boot({ panels: true });
+  await board.preview.start();
+  const panel = attach(board);
+  await within('the first board', () => panel.latest()?.meta.total).toBe(3);
+  const { second, prompt } = await previewStart(board, panel, ['T-1', 'T-2']);
+  answer(board, second.id, { prompt });
+  await within('the started task', () => board.preview.starter!.tasks.length).toBe(1);
+  const taskId = board.preview.starter!.tasks[0].id;
+  // A turn of a task the board did not start changes nothing.
+  await board.act(() => board.preview.publish({ kind: 'turn.finished', taskId: 'task-other', projectId: 'p1', index: 0 }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(panel.latest()!.meta.agents).toEqual({ 'T-1': 'Agent running', 'T-2': 'Agent running' });
+  expect(board.preview.noticeSnapshot().notices).toEqual([]);
+  // The turn of the started task ends: both cards say so, and the notice names the issues (the host names the package).
+  await board.act(() => board.preview.publish({ kind: 'turn.finished', taskId, projectId: 'p1', index: 0 }));
+  await within('Agent finished', () => panel.latest()?.meta.agents).toEqual({ 'T-1': 'Agent finished', 'T-2': 'Agent finished' });
+  expect(board.preview.noticeSnapshot().notices.map(notice => notice.text)).toEqual(['Agent finished: T-1, T-2']);
+  // The label stays when the issues change under it, and a failed turn is its own word.
+  await board.issue({ id: 'T-4', title: 'Four' });
+  await within('the added issue', () => panel.latest()?.meta.total).toBe(4);
+  expect(panel.latest()!.meta.agents).toEqual({ 'T-1': 'Agent finished', 'T-2': 'Agent finished' });
+  await board.act(() => board.preview.publish({ kind: 'turn.failed', taskId, projectId: 'p1', index: 1 }));
+  await within('Agent failed', () => panel.latest()?.meta.agents['T-1']).toBe('Agent failed');
+  await board.preview.stop();
+});
+
+test('live board preview: the Start flow is in the panel, the manifest and the guide, and the cut C evidence columns are prepared, not run', () => {
+  const script = read('examples/extensions/live-board/package/panel/app.js');
+  for (const text of ["kind: 'start'", 'marks', "'Start'"]) expect(script, text).toContain(text);
+  expect(read('examples/extensions/live-board/package/panel/index.html')).toContain('id="start"');
+  const logic = read('examples/extensions/live-board/package/lib/board.mjs');
+  for (const text of ['panda.tasks.start(', 'Start an agent task: preview', "'turn.finished'", 'changed since the preview']) expect(logic, text).toContain(text);
+  const columns = JSON.parse(read('tests/fixtures/extensions/example-live-board/evidence-columns-c.json')) as { task: string; columns: Record<string, { status: string; engines?: Record<string, { port: number; status: string }> }> };
+  expect(columns.task).toBe('R1203');
+  for (const column of Object.values(columns.columns)) expect(column.status).toContain('prepared, not run');
+  expect(columns.columns.preview.engines!.chromium.port).toBe(16521);
+  expect(columns.columns.preview.engines!.webkit.port).toBe(16522);
+  const doc = read('docs/extensions/examples/live-board.md');
+  for (const text of ['Cut C', 'tasks.start', 'Agent finished', 'evidence-columns-c.json']) expect(doc, text).toContain(text);
 });
 
 test('live board preview: the spec, the package, the evidence columns and the guide are registered', () => {

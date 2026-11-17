@@ -45,6 +45,9 @@ export async function run(panda, lifetime, link, options = {}) {
     unit: UNIT, daemon: '', revision: null, snapshot: null, offline: false, since: null, failure: null,
     retries: 0, actor: null, answers: [], refused: [], switches: 0, refreshes: 0,
     acts: 0, undo: null, notice: null,
+    // Cut C: the Start flow. `agents` maps an issue id to what its agent task is doing; `started` maps a task id to the issues
+    // it was started for; `project` is the last project the user showed (the dialog's suggestion).
+    agents: {}, started: new Map(), project: '', starting: false, starts: 0,
   };
   const disposers = [];
   const topics = new Set();
@@ -55,7 +58,7 @@ export async function run(panda, lifetime, link, options = {}) {
 
   // One short line, always under the host's 200 character cap.
   const report = () => {
-    const body = { ready: state.snapshot ? state.snapshot.readyIds.length : null, total: state.snapshot ? state.snapshot.issues.length : null, offline: state.offline, retries: state.retries, actor: state.actor, unit: state.unit, revision: state.revision, switches: state.switches, refreshes: state.refreshes, answers: state.answers.length, acts: state.acts, undo: state.undo ? state.undo.op : null, refused: state.refused };
+    const body = { ready: state.snapshot ? state.snapshot.readyIds.length : null, total: state.snapshot ? state.snapshot.issues.length : null, offline: state.offline, retries: state.retries, actor: state.actor, unit: state.unit, revision: state.revision, switches: state.switches, refreshes: state.refreshes, answers: state.answers.length, acts: state.acts, undo: state.undo ? state.undo.op : null, tasks: state.started.size, refused: state.refused };
     let text = JSON.stringify(body);
     if (text.length > 200) text = JSON.stringify({ ...body, refused: state.refused.length });
     void Promise.resolve(lifetime.setStatus({ text: text.slice(0, 200) })).catch(() => undefined);
@@ -229,7 +232,7 @@ export async function run(panda, lifetime, link, options = {}) {
     const messages = [{
       kind: 'board.begin', seq: sequence, total: snapshot.issues.length, parts, readyIds: snapshot.readyIds, blockedIds: snapshot.blockedIds,
       revision: snapshot.revision ?? null, stale: state.offline, since: state.since ? clock(state.since) : null, actor: state.actor,
-      unit: state.unit, undo: undoLabel(), notice: state.notice,
+      unit: state.unit, undo: undoLabel(), notice: state.notice, agents: { ...state.agents },
     }];
     for (let index = 0; index < parts; index += 1) {
       messages.push({ kind: 'board.rows', seq: sequence, index, rows: snapshot.issues.slice(index * CHUNK, (index + 1) * CHUNK).map(issue => ({ id: clean(issue.id), title: clean(issue.title), status: clean(issue.status), assignee: clean(issue.assignee, ''), revision: issue.revision ?? null })) });
@@ -246,7 +249,7 @@ export async function run(panda, lifetime, link, options = {}) {
     if (!panel) return;
     const snapshot = state.snapshot;
     const body = snapshot ? (snapshot.revision ?? JSON.stringify(snapshot.issues)) : null;
-    const signature = JSON.stringify([body, snapshot ? snapshot.readyIds : null, snapshot ? snapshot.blockedIds : null, state.offline, state.since, state.actor, state.unit, undoLabel(), state.notice, snapshot ? null : state.failure]);
+    const signature = JSON.stringify([body, snapshot ? snapshot.readyIds : null, snapshot ? snapshot.blockedIds : null, state.offline, state.since, state.actor, state.unit, undoLabel(), state.notice, snapshot ? null : state.failure, state.agents]);
     if (!force && signature === pushed) return;
     pushed = signature;
     await Promise.resolve(sendBoard()).catch(refuse);
@@ -307,10 +310,121 @@ export async function run(panda, lifetime, link, options = {}) {
     return { kind: 'detail', id, issue: { id: clean(issue.id), title: clean(issue.title), status: clean(issue.status), assignee: clean(issue.assignee, ''), type: clean(issue.type, ''), priority: issue.priority ?? null, revision: issue.revision ?? null, description: String(issue.description ?? '').slice(0, 2000), dependsOn: Array.isArray(issue.dependsOn) ? issue.dependsOn.map(item => clean(item)).slice(0, 50) : [] } };
   };
 
+  // ---- Start: an attributed agent task (cut C) --------------------------------------------------------------------
+  //
+  // Three steps, all of them the user's: (1) a host dialog chooses project, harness, work mode and worktree; (2) a second host
+  // dialog previews the exact prompt built from the issues as they are NOW and the service remembers a fingerprint of those
+  // issues; (3) on confirmation the board is read again and, only if every selected issue is still what the preview showed,
+  // `panda.tasks.start` creates exactly one task with that previewed prompt. The host labels the task with the package name
+  // (R0402). A change between the preview and the confirmation, an offline tracker or a missing `tasks.start` grant creates
+  // nothing. Fake agents only in routine acceptance: Start never authorizes a real harness.
+  const MAX_START = 12;
+  const MODES = {
+    research: { host: 'ask', lead: 'Research these issues. Read the code and the tracker and report findings; do not change files.', close: 'Report what you found for each issue.' },
+    implementation: { host: null, lead: 'Implement these issues in this worktree.', close: 'Work on one issue at a time and report what changed for each.' },
+  };
+  const WORKTREES = ['current', 'new'];
+  const printOf = (snapshot, ids) => {
+    const ready = new Set(snapshot.readyIds), blocked = new Set(snapshot.blockedIds);
+    return ids.map(id => {
+      const issue = snapshot.issues.find(item => item.id === id);
+      return issue ? JSON.stringify([issue.id, issue.title, issue.status, issue.assignee ?? '', issue.revision ?? null, ready.has(id), blocked.has(id)]) : JSON.stringify([id, null]);
+    });
+  };
+  const promptFor = (snapshot, ids, mode) => {
+    const lines = ids.map(id => {
+      const issue = snapshot.issues.find(item => item.id === id);
+      return `- ${id}: ${clean(issue?.title).slice(0, 120)} [${clean(issue?.status, 'open')}]${issue?.assignee ? ` (assignee ${clean(issue.assignee)})` : ''}`;
+    });
+    return [`Work board handoff (${mode}).`, MODES[mode].lead, '', ...lines, '', MODES[mode].close].join('\n');
+  };
+  const titleFor = ids => `Work board: ${ids[0]}${ids.length > 1 ? ` and ${ids.length - 1} more` : ''}`;
+  const choose = values => {
+    const project = String(values?.project ?? '').trim(), harness = String(values?.harness ?? '').trim();
+    const mode = String(values?.mode ?? ''), worktree = String(values?.worktree ?? '');
+    if (!ID.test(project) || (harness && !/^[A-Za-z0-9._/-]{1,128}$/.test(harness)) || !MODES[mode] || !WORKTREES.includes(worktree)) throw refused('Choose a project, a work mode and a worktree.', 'InvalidShape');
+    return { project, harness, mode, worktree };
+  };
+  const startWork = async ids => {
+    if (state.starting) throw refused('A start is already waiting for an answer.', 'Busy');
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_START || new Set(ids).size !== ids.length) throw refused(`Select between 1 and ${MAX_START} issues.`, 'InvalidShape');
+    for (const id of ids) { const issue = issueOf(id); if (issue.status === 'closed') throw refused(`${id} is closed.`, 'InvalidState'); }
+    if (state.offline) throw refused('The tracker is offline; start again after it answers.', 'Unreachable');
+    state.starting = true;
+    try {
+      // Step 1: the choices.
+      const chosen = await panda.ui.showDialog({
+        title: 'Start an agent task',
+        fields: [
+          { id: 'project', label: 'Project', kind: 'text', required: true, value: state.project },
+          { id: 'harness', label: 'Harness (blank: your default)', kind: 'text', value: '' },
+          { id: 'mode', label: 'Mode', kind: 'select', required: true, options: [{ value: 'research', label: 'Research' }, { value: 'implementation', label: 'Implementation' }] },
+          { id: 'worktree', label: 'Worktree', kind: 'select', required: true, options: [{ value: 'current', label: 'Current checkout' }, { value: 'new', label: 'New worktree' }] },
+        ],
+        confirmLabel: 'Preview', successMessage: 'Choices kept',
+      });
+      if (chosen?.status !== 'confirmed') return { status: 'cancelled' };
+      const pick = choose(chosen.values);
+      state.project = pick.project;
+      // Step 2: the preview. The prompt and the fingerprint are fixed here.
+      const ids2 = [...ids];
+      const snapshot = state.snapshot;
+      const prompt = promptFor(snapshot, ids2, pick.mode), print = printOf(snapshot, ids2), title = titleFor(ids2);
+      const confirmed = await panda.ui.showDialog({
+        title: 'Start an agent task: preview',
+        fields: [{ id: 'prompt', label: `Prompt, sent exactly as shown (${pick.project}, ${pick.harness || 'default harness'}, ${pick.mode}, ${pick.worktree} worktree)`, kind: 'textarea', rows: 10, value: prompt }],
+        confirmLabel: 'Start', successMessage: 'Starting',
+      });
+      if (confirmed?.status !== 'confirmed') return { status: 'cancelled' };
+      // Step 3: read the board again; anything that moved since the preview rejects the start and creates nothing.
+      await refresh().catch(refuse);
+      if (state.offline) throw refused('The tracker went offline before the start; nothing was created.', 'Unreachable');
+      const now = printOf(state.snapshot, ids2);
+      const moved = ids2.filter((_, index) => now[index] !== print[index]);
+      if (moved.length) throw refused(`${moved.join(', ')} changed since the preview; nothing was started. Preview again.`, 'Conflict');
+      let task;
+      try {
+        task = await panda.tasks.start({
+          projectId: pick.project, prompt, title, worktree: pick.worktree,
+          ...(pick.harness ? { harness: pick.harness } : {}), ...(MODES[pick.mode].host ? { mode: MODES[pick.mode].host } : {}),
+        });
+      } catch (error) {
+        const code = String(error?.code ?? 'Failed');
+        throw refused(code === 'PermissionDenied' ? 'Starting tasks is not allowed for Work board (tasks.start); nothing was started.' : `The task could not be started (${code}); nothing was started.`, code);
+      }
+      state.starts += 1;
+      state.started.set(task.id, { ids: ids2, title, project: pick.project });
+      for (const id of ids2) state.agents[id] = 'Agent running';
+      await render(true);
+      report();
+      return { status: 'started', taskId: task.id, message: `Started ${task.id} for ${ids2.join(', ')}.` };
+    } finally { state.starting = false; }
+  };
+  // The turn of a task the board started ended: the linked issues say so, and a notice names the issue (the host adds the package).
+  const agentEnded = async (event, label, tone) => {
+    const entry = state.started.get(String(event?.taskId ?? ''));
+    if (!entry) return;
+    for (const id of entry.ids) state.agents[id] = label;
+    await Promise.resolve(panda.ui.notify({ key: `agent-${event.taskId}`, title: 'Work board', text: `${label}: ${entry.ids.join(', ')}`, tone })).catch(refuse);
+    await render(true);
+    report();
+  };
+
   const answerPanel = async (message, from) => {
     const op = message?.kind;
     const target = from?.instanceId ? { instance: from.instanceId } : undefined;
     const tell = body => Promise.resolve(panel.post(VIEW, body, target)).catch(refuse);
+    if (op === 'start') {
+      // The dialogs wait for the user: the panel's other messages never queue behind them.
+      void (async () => {
+        try {
+          const done = await startWork(message.ids);
+          if (done.status === 'started') await tell({ kind: 'result', op, id: '', ok: true, message: done.message, taskId: done.taskId });
+          else await tell({ kind: 'result', op, id: '', ok: false, code: 'Cancelled', message: 'Start cancelled; nothing was created.' });
+        } catch (error) { await tell({ kind: 'result', op, id: '', ok: false, code: String(error?.code ?? 'Failed'), message: error?.text ?? `start failed (${error?.code ?? 'Failed'}).` }); }
+      })().catch(refuse);
+      return null;
+    }
     if (op === 'detail') {
       try { await tell(await detailOf(message.id)); } catch (error) { await tell({ kind: 'result', op, id: String(message.id ?? ''), ok: false, code: String(error?.code ?? 'Failed'), message: error?.text ?? `Could not read ${message.id}.` }); }
       return null;
@@ -376,7 +490,10 @@ export async function run(panda, lifetime, link, options = {}) {
     if (moved) await refresh();
   });
   // A switch of task or project changes nothing on the board: it is one tracker. It is counted, and nothing is rebuilt.
-  for (const kind of ['task.shown', 'project.opened', 'project.closed']) on(kind, () => { state.switches += 1; report(); });
+  for (const kind of ['task.shown', 'project.opened', 'project.closed']) on(kind, event => { state.switches += 1; if (kind !== 'project.closed' && typeof event?.projectId === 'string') state.project = event.projectId; report(); });
+  // Cut C: the turn of a task this board started ended.
+  on('turn.finished', event => agentEnded(event, 'Agent finished', 'success'));
+  on('turn.failed', event => agentEnded(event, 'Agent failed', 'warning'));
   on('app.focus', event => { if (event?.focused && state.offline) return refresh(); });
   on('gap', () => refresh());
 
