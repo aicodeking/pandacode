@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "about": "R0503 synthetic replay shaped like the B5 fake agent (tests/fixtures/extensions/backends/fake-agent.mjs): runs in two projects (A granted, B not), two run kinds and two harnesses, observed by sample.hook-observer (extension.json) holding harness.hooks.observe for project A only. `expect` lists every delivered hook, in order, as event and task. Not a harness capture.",
+  "provenance": "synthetic",
+  "grant": { "package": "sample.hook-observer", "permission": "harness.hooks.observe", "projects": ["A"] },
+  "runs": [
+    { "task": "t-a1", "project": "A", "harness": "fake-agent", "run": "task" },
+    { "task": "t-w1", "project": "A", "harness": "fake-agent", "run": "worker" },
+    { "task": "t-b1", "project": "B", "harness": "fake-agent", "run": "task" },
+    { "task": "t-c1", "project": "A", "harness": "claude", "run": "task" }
+  ],
+  "steps": [
+    { "op": "turn", "task": "t-a1", "text": "list the files" },
+    { "op": "approval", "task": "t-a1", "call": "c1", "request": "r1", "tool": "Bash", "input": { "command": "ls -la" } },
+    { "op": "tool", "task": "t-a1", "call": "c1", "tool": "Bash", "status": "completed", "input": { "command": "ls -la" }, "output": "app.ts\nREADME.md" },
+    { "op": "approval", "task": "t-a1", "call": "c2", "request": "r2", "tool": "Read", "input": { "file_path": "src/app.ts" } },
+    { "op": "tool", "task": "t-a1", "call": "c3", "tool": "Edit", "status": "completed", "input": { "file_path": "src/app.ts", "old_string": "a", "new_string": "b" }, "output": "edited" },
+    { "op": "tool", "task": "t-a1", "call": "c4", "tool": "Edit", "status": "completed", "input": { "file_path": "README.md", "old_string": "a", "new_string": "b" }, "output": "edited" },
+    { "op": "compaction", "task": "t-a1" },
+    { "op": "end", "task": "t-a1", "successful": true },
+
+    { "op": "turn", "task": "t-w1", "text": "work on it" },
+    { "op": "approval", "task": "t-w1", "call": "c5", "request": "r5", "tool": "Bash", "input": { "command": "cargo build" } },
+    { "op": "end", "task": "t-w1", "successful": false, "error": "fake agent crashed" },
+
+    { "op": "turn", "task": "t-b1", "text": "elsewhere" },
+    { "op": "approval", "task": "t-b1", "call": "c6", "request": "r6", "tool": "Bash", "input": { "command": "ls" } },
+    { "op": "tool", "task": "t-b1", "call": "c7", "tool": "Edit", "status": "completed", "input": { "file_path": "src/b.ts", "old_string": "a", "new_string": "b" }, "output": "edited" },
+    { "op": "compaction", "task": "t-b1" },
+    { "op": "end", "task": "t-b1", "successful": true },
+
+    { "op": "turn", "task": "t-c1", "text": "claude run" },
+    { "op": "approval", "task": "t-c1", "call": "c8", "request": "r8", "tool": "Bash", "input": { "command": "ls" } },
+    { "op": "tool", "task": "t-c1", "call": "c9", "tool": "Write", "status": "completed", "input": { "file_path": "src/c.ts", "content": "x" }, "output": "written" },
+    { "op": "end", "task": "t-c1", "successful": true }
+  ],
+  "expect": [
+    { "event": "prompt.submit", "task": "t-a1" },
+    { "event": "turn.start", "task": "t-a1" },
+    { "event": "tool.before", "task": "t-a1" },
+    { "event": "tool.after", "task": "t-a1" },
+    { "event": "compaction", "task": "t-a1" },
+    { "event": "turn.finish", "task": "t-a1" },
+    { "event": "task.idle", "task": "t-a1" },
+    { "event": "prompt.submit", "task": "t-w1" },
+    { "event": "tool.before", "task": "t-w1" },
+    { "event": "turn.fail", "task": "t-w1" },
+    { "event": "task.idle", "task": "t-w1" },
+    { "event": "prompt.submit", "task": "t-c1" },
+    { "event": "turn.start", "task": "t-c1" },
+    { "event": "tool.after", "task": "t-c1" },
+    { "event": "turn.finish", "task": "t-c1" },
+    { "event": "task.idle", "task": "t-c1" }
+  ]
+}

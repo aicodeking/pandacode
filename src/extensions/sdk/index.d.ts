@@ -526,7 +526,7 @@ export interface TasksApi {
 }
 /** `workspace.settings` (global): the app's own settings, by the frozen keys `sidebar.sort`, `sidebar.filter`, `sidebar.scope`, `sidebar.order`, `view.open`, `tiles.layout`, `find.query`, `projects.search`, `tokenSaver`, `council`, `bot:<id>`, `channel:<id>`, `team.profiles`, `widgets`, `machines.orchestration`, `appearance.compact` and `appearance.theme`. An unknown key (telemetry, routing, the GitHub switch, safe mode, updates, trust, pairing and remote access are not keys) answers `NotFound`; a `revision` that is not the current one answers `StaleContext`. A fixed key nobody has written reads `null` at revision 0. See docs/extensions/runtime-workspace-settings.md. */
 export interface WorkspaceSettingsApi { list(): Promise<readonly string[]>; get(key: string): Promise<{ readonly key: string; readonly value: unknown; readonly revision: number }>; set(key: string, value: unknown, options?: { readonly revision?: number }): Promise<null> }
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi; readonly workspace: { readonly settings: WorkspaceSettingsApi }; readonly views: PanelViews }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly hooks: ServiceHooks; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi; readonly workspace: { readonly settings: WorkspaceSettingsApi }; readonly views: PanelViews }
 /** One mount of a rich view (R0303): its own id, document and `state`. An inspector panel keeps its id across a reload or failure in this run. See docs/extensions/runtime-rich-channel.md. */
 export interface PanelInstance { readonly instanceId: string; readonly viewId: string; readonly windowId: string; readonly placement: 'inspector' | 'floating' | 'window' | 'band' | 'editor'; readonly visible: boolean; readonly focused: boolean; readonly scope?: { readonly taskId?: string; readonly projectId?: string } }
 /** `panda.views` of a service (`ui.richViews`): `post` without `instance` reaches every live instance of the view and answers how many received it (nothing is queued for a closed one); messages are at most 256 KiB of JSON and 20 per second per package in each direction (`LimitExceeded`). A view that is not a rich view of the package is `NotFound`. */
@@ -592,6 +592,16 @@ export interface ProviderState {
   limits?: { windows: readonly { id: string; label: string; usedPercent: number; resetsAt?: string }[]; credits?: unknown } | null;
 }
 export interface ServiceProviders { update(id: string, state: ProviderState): Promise<null> }
+/** Hooks declared in `contributes.hooks` (service only; `harness.hooks.observe`, `documents.editors` for `save.before`). See docs/extensions/runtime-hook-registration.md. */
+export type HookEvent = 'turn.start' | 'prompt.submit' | 'tool.before' | 'tool.after' | 'turn.finish' | 'turn.fail' | 'task.idle' | 'compaction'
+  | 'approval.pending' | 'approval.resolved' | 'question.pending' | 'question.resolved' | 'save.before';
+export interface HookInputChunk { readonly schemaVersion: 1; readonly text: string; readonly cursor: number; readonly nextCursor: number | null; readonly totalBytes: number }
+/** `ready` settles with the host's answer: `UnknownReference` for an event the manifest does not declare, `PermissionDenied` without the grant. Deliveries are observe only in this slice: a returned value is never read. */
+export interface HookRegistration extends Disposable { readonly ready: Promise<void> }
+export interface ServiceHooks {
+  on(event: HookEvent, handler: (payload: Json) => unknown): HookRegistration;
+  input(options: { callId: string; cursor: number }): Promise<HookInputChunk>;
+}
 export interface ServiceHarnesses { refreshLimits(options?: { harness?: string }): Promise<null>; switchAccount(options: { harness: string; account: string }): Promise<null> }
 export interface ResourcePage { readonly schemaVersion: 1; readonly state: 'Ready'; readonly revision: string; readonly items: readonly Json[]; readonly nextCursor: number | null }
 export interface ServiceContext { query(options: { resource: ContextResource | ContentResource | UsageResource; taskId?: string; harness?: string; limit?: number; cursor?: number; revision?: string }): Promise<SummaryPage | ResourcePage> }

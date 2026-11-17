@@ -160,10 +160,52 @@ process.stdin.on('data', chunk => {
               : [...(panelEvents.get(params?.kind) ?? [])].map(handler => () => handler(instance));
             panelQueue = panelQueue.then(async () => { for (const run of handlers) { try { await run(); } catch { /* never stops the next message */ } } });
           };
+          // Hooks (R0503): declared in the manifest, registered natively per event (UnknownReference for an undeclared
+          // one, PermissionDenied without the grant). `on` returns a Disposable with `ready`, which settles with the
+          // host's answer. Deliveries are one-way and observe only: handlers run one after another, at most 256 wait.
+          const hookHandlers = new Map();
+          const hookQueue = [];
+          let hookPumping = false;
+          const pumpHooks = async () => {
+            if (hookPumping) return;
+            hookPumping = true;
+            try {
+              while (hookQueue.length) {
+                const delivery = hookQueue.shift();
+                for (const { handler } of [...(hookHandlers.get(delivery?.event) ?? [])]) {
+                  try { await handler(freeze(delivery.payload ?? null)); } catch { /* a failing handler never stops the next delivery */ }
+                }
+              }
+            } finally { hookPumping = false; }
+          };
+          const serveHook = delivery => { if (hookQueue.length >= 256) hookQueue.shift(); hookQueue.push(delivery); void pumpHooks(); };
+          const hooks = Object.freeze({
+            on(event, handler) {
+              if (typeof event !== 'string' || typeof handler !== 'function') throw new TypeError('hooks.on needs an event and a function');
+              const entry = { handler };
+              const set = hookHandlers.get(event) ?? new Set();
+              hookHandlers.set(event, set);
+              set.add(entry);
+              const forget = () => { set.delete(entry); if (!set.size && hookHandlers.get(event) === set) hookHandlers.delete(event); };
+              const ready = rpc('hooks', { op: 'register', event }).then(() => undefined, error => { forget(); throw error; });
+              ready.catch(() => {});
+              let live = true;
+              return Object.freeze({ ready, dispose: () => {
+                if (!live) return;
+                live = false;
+                forget();
+                // Unregister only what the host registered, after it did.
+                ready.then(() => rpc('hooks', { op: 'unregister', event }).catch(() => {}), () => {});
+              } });
+            },
+            // The complete serialization of a large tool input, in 256 KiB chunks (harness.hooks.observe for the call's project).
+            input: options => rpc('hooksInput', options === undefined || options === null ? {} : { ...options }),
+          });
           // Handlers registered here live in the service's shared state; owned commands only.
           const servicePanda = Object.freeze({
             apiVersion: '1.0.0',
             events,
+            hooks,
             commands: Object.freeze({ register(id, handler) {
               if (!invocation.lifetime.commands.includes(id) || typeof handler !== 'function' || commands.has(id)) throw new Error('PermissionDenied');
               commands.set(id, handler);
@@ -251,6 +293,8 @@ process.stdin.on('data', chunk => {
             const code = error => { const text = error?.code ?? error?.message; return typeof text === 'string' && /^[A-Z][A-Za-z]{0,63}$/.test(text) ? text : 'HostUnavailable'; };
             try {
               if (call.method === 'panel') { servePanel(call.params); return reply({ ok: true, value: null }); }
+              // A hook delivery (R0503) is answered at once; its handlers run afterwards, in order, and what they return goes nowhere.
+              if (call.method === 'hook') { reply({ ok: true, value: null }); serveHook(call.params); return; }
               const handler = call.method === 'command' ? commands.get(call.params?.commandId) : undefined;
               if (!handler) return reply({ ok: false, error: { code: 'PermissionDenied' } });
               const value = await invocations.run(call.id, () => handler(freeze({ commandId: call.params.commandId, args: call.params.args ?? null })));

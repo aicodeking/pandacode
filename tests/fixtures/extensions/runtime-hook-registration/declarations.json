@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "about": "R0503: contributes.hooks declarations. Each case replaces contributes.hooks of `base` (and applies `patch` / `remove` to the manifest). `expect` is null for a valid package, else the first refusal both validators answer: `source` says whether the schema shape or the event-dependent check (runtime_hook_registration::check / checkHookDeclarations) refuses it. Paths are relative to the package ($/0).",
+  "base": {
+    "manifestVersion": 1,
+    "id": "sample.hook-cases",
+    "version": "1.0.0",
+    "engines": { "pandacodeApi": "^1.0.0" },
+    "extensionKind": "workspace",
+    "permissions": ["runtime.service", "harness.hooks.observe"],
+    "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+    "contributes": {}
+  },
+  "cases": [
+    { "id": "minimal", "hooks": [{ "id": "sample.hook-cases/after", "event": "tool.after" }], "expect": null },
+    { "id": "full", "hooks": [{ "id": "sample.hook-cases/before", "event": "tool.before", "onFailure": "deny", "budgetMs": 30000, "match": { "toolKinds": ["shell", "edit"], "harnesses": ["*", "claude", "sample.pkg/agent"], "runs": ["task", "worker"], "extensions": [".rs", ".TS"] } }], "expect": null },
+    { "id": "prompt-deny", "hooks": [{ "id": "sample.hook-cases/prompt", "event": "prompt.submit", "onFailure": "deny", "budgetMs": 10000 }], "expect": null },
+    { "id": "compaction-longest-budget", "hooks": [{ "id": "sample.hook-cases/compaction", "event": "compaction", "budgetMs": 120000 }], "expect": null },
+    { "id": "every-event-once", "hooks": [
+      { "id": "sample.hook-cases/a", "event": "turn.start" }, { "id": "sample.hook-cases/b", "event": "prompt.submit" },
+      { "id": "sample.hook-cases/c", "event": "tool.before" }, { "id": "sample.hook-cases/d", "event": "tool.after" },
+      { "id": "sample.hook-cases/e", "event": "turn.finish" }, { "id": "sample.hook-cases/f", "event": "turn.fail" },
+      { "id": "sample.hook-cases/g", "event": "task.idle" }, { "id": "sample.hook-cases/h", "event": "compaction" },
+      { "id": "sample.hook-cases/i", "event": "approval.pending" }, { "id": "sample.hook-cases/j", "event": "approval.resolved" },
+      { "id": "sample.hook-cases/k", "event": "question.pending" }, { "id": "sample.hook-cases/l", "event": "question.resolved" }
+    ], "expect": null },
+    { "id": "save-before-with-editors", "patch": { "permissions": ["runtime.service", "documents.editors"] }, "hooks": [{ "id": "sample.hook-cases/save", "event": "save.before", "budgetMs": 5000, "match": { "extensions": [".md"] } }], "expect": null },
+
+    { "id": "unknown-event", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.during" }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks/0/event", "source": "schema" } },
+    { "id": "unknown-field", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start", "priority": 1 }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks/0/priority", "source": "schema" } },
+    { "id": "budget-above-every-range", "hooks": [{ "id": "sample.hook-cases/x", "event": "compaction", "budgetMs": 200000 }], "expect": { "code": "LimitExceeded", "path": "/contributes/hooks/0/budgetMs", "source": "schema" } },
+    { "id": "budget-below-every-range", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.before", "budgetMs": 50 }], "expect": { "code": "LimitExceeded", "path": "/contributes/hooks/0/budgetMs", "source": "schema" } },
+    { "id": "unknown-failure-policy", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.before", "onFailure": "approve" }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks/0/onFailure", "source": "schema" } },
+    { "id": "unknown-tool-kind", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.before", "match": { "toolKinds": ["network"] } }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks/0/match/toolKinds/0", "source": "schema" } },
+    { "id": "extension-without-dot", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.after", "match": { "extensions": ["ts"] } }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks/0/match/extensions/0", "source": "schema" } },
+    { "id": "unknown-run-kind", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start", "match": { "runs": ["cron"] } }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks/0/match/runs/0", "source": "schema" } },
+
+    { "id": "ask-on-tool-after", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.after", "onFailure": "ask" }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "ask-on-prompt-submit", "hooks": [{ "id": "sample.hook-cases/x", "event": "prompt.submit", "onFailure": "ask" }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "deny-on-turn-start", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start", "onFailure": "deny" }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "budget-on-an-event-nothing-waits-for", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start", "budgetMs": 1000 }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "prompt-budget-over-ten-seconds", "hooks": [{ "id": "sample.hook-cases/x", "event": "prompt.submit", "budgetMs": 20000 }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "tool-budget-over-thirty-seconds", "hooks": [{ "id": "sample.hook-cases/x", "event": "tool.after", "budgetMs": 31000 }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "tool-kinds-on-a-turn-event", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.finish", "match": { "toolKinds": ["shell"] } }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "extensions-on-task-idle", "hooks": [{ "id": "sample.hook-cases/x", "event": "task.idle", "match": { "extensions": [".ts"] } }], "expect": { "code": "InvalidShape", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "two-declarations-of-one-event", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start" }, { "id": "sample.hook-cases/y", "event": "turn.start" }], "expect": { "code": "DuplicateId", "path": "/contributes/hooks", "source": "check", "ids": ["turn.start"] } },
+    { "id": "one-id-twice", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start" }, { "id": "sample.hook-cases/x", "event": "turn.fail" }], "expect": { "code": "DuplicateId", "path": "/contributes/hooks", "source": "check", "ids": ["sample.hook-cases/x"] } },
+    { "id": "repeated-match-entry", "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start", "match": { "harnesses": ["claude", "claude"] } }], "expect": { "code": "DuplicateId", "path": "/contributes/hooks", "source": "check" } },
+    { "id": "another-package-id", "hooks": [{ "id": "other.pkg/x", "event": "turn.start" }], "expect": { "code": "InvalidId", "path": "/contributes/hooks", "source": "check", "ids": ["other.pkg/x"] } },
+    { "id": "reserved-id", "hooks": [{ "id": "panda.hooks/x", "event": "turn.start" }], "expect": { "code": "ReservedId", "path": "/contributes/hooks", "source": "check", "ids": ["panda.hooks/x"] } },
+    { "id": "observe-not-declared", "patch": { "permissions": ["runtime.service"] }, "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start" }], "expect": { "code": "PermissionDenied", "path": "/permissions", "source": "check", "ids": ["sample.hook-cases"] } },
+    { "id": "save-before-without-editors", "hooks": [{ "id": "sample.hook-cases/x", "event": "save.before" }], "expect": { "code": "PermissionDenied", "path": "/permissions", "source": "check", "ids": ["sample.hook-cases"] } },
+    { "id": "no-service-to-attach-it", "remove": ["runtime"], "hooks": [{ "id": "sample.hook-cases/x", "event": "turn.start" }], "expect": { "code": "UnsupportedRuntime", "path": "/contributes/hooks", "source": "check", "ids": ["sample.hook-cases"] } }
+  ]
+}

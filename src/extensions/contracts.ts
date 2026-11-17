@@ -3,6 +3,7 @@ import schemaDocument from './schema-v1.json' with { type: 'json' };
 import { proposalOrder, OrderingCycle, type Placement } from './ordering.ts';
 import { contrast, parseHex } from '../color.ts';
 import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts';
+import { checkHookDeclarations } from './runtime-hook-registration.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -301,6 +302,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     if (!serviceWithoutEvents && (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id)))) error('UnsupportedRuntime', path, [id]);
     // A background service is a named permission: it must be declared to be granted (runtime-service-lifetime.md).
     if ((manifest.runtime as ObjectValue | undefined)?.service && !((manifest.permissions ?? []) as Json[]).includes('runtime.service')) error('PermissionDenied', `${path}/permissions`, [id]);
+    // Hooks (R0503): the event-dependent rules the schema cannot say, shared with contracts.rs (runtime_hook_registration::check).
+    const hooks = checkHookDeclarations(manifest);
+    if (!hooks.ok) error(hooks.refusal.code, `${path}/${hooks.refusal.at}`, hooks.refusal.ids);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;

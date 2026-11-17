@@ -775,6 +775,7 @@ async fn delete_session_with_attachment_cleanup(
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
     for removed in &deleted.deleted_session_ids {
         extensions::runtime_service_lifetime::runtime_workspace_events::forget_task(removed);
+        extensions::runtime_hook_registration::task_removed(removed);
         extensions::runtime_dynamic_items::scope_gone(&app, &extensions::runtime_dynamic_items::Scope::Task(removed.clone()));
         extensions::runtime_tasks_start::task_removed(&app, removed);
         extensions::runtime_tasks_messages::task_removed(&app, removed);
@@ -1668,6 +1669,7 @@ fn emit_coalesced(
 ) {
     if matches!(event.kind.as_str(), "text" | "status" | "tool") { extensions::context::record_job(app, &event.session_id, "progress", "running"); }
     if let Some(tool) = &event.tool { extensions::runtime_service_lifetime::runtime_workspace_events::observe_tool(app, &event.session_id, &tool.id, &tool.name, &tool.status); }
+    extensions::runtime_hook_registration::agent_event(&event);
     let mut buffer = coalescer.lock().unwrap_or_else(|poison| poison.into_inner());
     let now = std::time::Instant::now();
     for event in buffer.push(event, now) {
@@ -2753,6 +2755,8 @@ async fn launch_operation_admitted(
     extensions::context::record_job(&app, &session_id, "progress", "running");
     let _ = app.emit("agent-event", event(&session_id, "status", "running"));
     extensions::runtime_service_lifetime::runtime_workspace_events::turn_started(&app, &session_id);
+    // Hooks (R0503): `prompt.submit` and `turn.start` for attached observers; free when none is attached.
+    extensions::runtime_hook_registration::run_began(&app, &session_id, &config.cwd, config.goal.is_none().then_some(config.prompt.as_str()), team_worker);
     tray::refresh(&app);
     let store = state.store.clone();
     let agents = state.agents.clone();
@@ -3357,6 +3361,7 @@ async fn launch_operation_admitted(
         extensions::context::record_job(&app, &session_id, "terminal", if ended_stopped { "stopped" } else if successful { "completed" } else { "failed" });
         let _ = app.emit("agent-event", event(&session_id, "done", done));
         extensions::runtime_service_lifetime::runtime_workspace_events::turn_ended(&app, &session_id, successful, ended_stopped);
+        extensions::runtime_hook_registration::run_ended(&session_id, successful, ended_stopped);
         remote::run_finished(&app, &session_id, successful, ended_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).
         let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
