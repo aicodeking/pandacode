@@ -1,0 +1,181 @@
+{
+  "label": "synthetic",
+  "about": "R0506: two (or three) fixture packages in one chain on a controlled clock. Each member's answer is scripted: a value or a rewrite rule after afterMs, an error (a throw), never (no answer), down (the service crashed or was parked: not running), removes (packages disabled or revoked while this member is asked). Read by runtime_hook_resolution::tests (paused tokio clock, the real member runner) and tests/extensions-runtime-hook-resolution.spec.ts (the twin's simulation).",
+  "cases": [
+    {
+      "id": "two rewrites follow the default first-enabled order",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "npm test" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "rewrite": { "from": "pnpm ", "to": "yarn " }, "afterMs": 10 } },
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "grants": ["harness.hooks.decide"], "answer": { "rewrite": { "from": "npm ", "to": "pnpm " }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha", "sample.hook-beta"], "removed": [], "failures": {}, "late": [], "elapsedMs": 20,
+        "outcome": { "kind": "approve", "by": "sample.hook-beta", "failed": false, "input": { "command": "yarn test" } },
+        "receipts": [
+          { "owner": "sample.hook-alpha", "applied": true, "code": null, "overriddenBy": null },
+          { "owner": "sample.hook-beta", "applied": true, "code": null, "overriddenBy": null }
+        ]
+      }
+    },
+    {
+      "id": "the user's order puts beta first",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "npm test" } },
+      "order": { "user": ["sample.hook-beta", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "grants": ["harness.hooks.decide"], "answer": { "rewrite": { "from": "npm ", "to": "pnpm " }, "afterMs": 10 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "rewrite": { "from": "pnpm ", "to": "yarn " }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-beta", "sample.hook-alpha"], "removed": [], "failures": {}, "late": [], "elapsedMs": 20,
+        "outcome": { "kind": "approve", "by": "sample.hook-alpha", "failed": false, "input": { "command": "pnpm test" } },
+        "receipts": [{ "owner": "sample.hook-alpha", "applied": true, "code": null, "overriddenBy": null }]
+      }
+    },
+    {
+      "id": "a deny wins over an earlier approve and names its owner",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "rm -rf build" } },
+      "order": { "user": ["sample.hook-alpha", "sample.hook-beta"], "firstEnabled": [] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "deny", "reason": "rm -rf is not allowed" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha", "sample.hook-beta"], "removed": [], "failures": {}, "late": [], "elapsedMs": 20,
+        "outcome": { "kind": "deny", "by": "sample.hook-beta", "failed": false, "reason": "rm -rf is not allowed" },
+        "receipts": [
+          { "owner": "sample.hook-alpha", "applied": false, "code": null, "overriddenBy": "sample.hook-beta" },
+          { "owner": "sample.hook-beta", "applied": true, "code": null, "overriddenBy": null }
+        ]
+      }
+    },
+    {
+      "id": "a deny first ends the chain",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "rm -rf build" } },
+      "order": { "user": ["sample.hook-beta", "sample.hook-alpha"], "firstEnabled": [] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "deny", "reason": "rm -rf is not allowed" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-beta"], "removed": [], "failures": {}, "late": [], "elapsedMs": 10,
+        "outcome": { "kind": "deny", "by": "sample.hook-beta", "failed": false, "reason": "rm -rf is not allowed" },
+        "receipts": [{ "owner": "sample.hook-beta", "applied": true, "code": null, "overriddenBy": null }]
+      }
+    },
+    {
+      "id": "a throw under onFailure ask asks the user and never approves",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "onFailure": "ask", "grants": ["harness.hooks.decide"], "answer": { "error": "Boom", "afterMs": 5 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha", "sample.hook-beta"], "removed": [], "failures": { "sample.hook-alpha": "Boom" }, "late": [], "elapsedMs": 15,
+        "outcome": { "kind": "ask", "by": "sample.hook-alpha", "failed": true, "reason": "Alpha did not answer (Boom)." },
+        "receipts": [{ "owner": "sample.hook-beta", "applied": false, "code": null, "overriddenBy": "sample.hook-alpha" }]
+      }
+    },
+    {
+      "id": "an invalid return under onFailure deny denies",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "maybe" }, "afterMs": 5 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha"], "removed": [], "failures": { "sample.hook-alpha": "InvalidShape" }, "late": [], "elapsedMs": 5,
+        "outcome": { "kind": "deny", "by": "sample.hook-alpha", "failed": true, "reason": "Alpha did not answer (InvalidShape)." },
+        "receipts": [{ "owner": "sample.hook-alpha", "applied": false, "code": "InvalidShape", "overriddenBy": null }]
+      }
+    },
+    {
+      "id": "a timeout under continue leaves the package out and its late approve is never applied",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "onFailure": "continue", "budgetMs": 1000, "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "deny", "reason": "too late" }, "afterMs": 5000 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha", "sample.hook-beta"], "removed": [], "failures": { "sample.hook-alpha": "Timeout" }, "late": ["sample.hook-alpha"], "elapsedMs": 1010,
+        "outcome": { "kind": "approve", "by": "sample.hook-beta", "failed": false, "input": null },
+        "receipts": [{ "owner": "sample.hook-beta", "applied": true, "code": null, "overriddenBy": null }]
+      }
+    },
+    {
+      "id": "a parked service under onFailure deny denies",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "onFailure": "deny", "down": true, "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": [], "removed": [], "failures": { "sample.hook-alpha": "HostUnavailable" }, "late": [], "elapsedMs": 0,
+        "outcome": { "kind": "deny", "by": "sample.hook-alpha", "failed": true, "reason": "Alpha did not answer (HostUnavailable)." },
+        "receipts": []
+      }
+    },
+    {
+      "id": "disabling a package while it is asked removes it instead of running its deny policy",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "removes": ["sample.hook-alpha"], "value": null, "afterMs": 0 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha", "sample.hook-beta"], "removed": ["sample.hook-alpha"], "failures": {}, "late": [], "elapsedMs": 10,
+        "outcome": { "kind": "approve", "by": "sample.hook-beta", "failed": false, "input": null },
+        "receipts": [{ "owner": "sample.hook-beta", "applied": true, "code": null, "overriddenBy": null }]
+      }
+    },
+    {
+      "id": "a package revoked before its turn is not asked and its policy does not run",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "grants": ["harness.hooks.decide"], "answer": { "removes": ["sample.hook-beta"], "value": { "decision": "approve" }, "afterMs": 10 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "deny", "reason": "never asked" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha"], "removed": ["sample.hook-beta"], "failures": {}, "late": [], "elapsedMs": 10,
+        "outcome": { "kind": "approve", "by": "sample.hook-alpha", "failed": false, "input": null },
+        "receipts": [{ "owner": "sample.hook-alpha", "applied": true, "code": null, "overriddenBy": null }]
+      }
+    },
+    {
+      "id": "the event ceiling and the 60 s chain: the third member is not reached and fails as declared",
+      "event": "tool.before", "can": ["approve", "deny", "ask", "rewriteInput"], "payload": { "input": { "command": "ls" } },
+      "order": { "user": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.hook-gamma"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/before", "budgetMs": 45000, "grants": ["harness.hooks.decide"], "answer": { "never": true } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/before", "budgetMs": 30000, "grants": ["harness.hooks.decide"], "answer": { "never": true } },
+        { "owner": "sample.hook-gamma", "name": "Gamma", "hookId": "sample.hook-gamma/before", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-alpha", "sample.hook-beta"], "removed": [],
+        "failures": { "sample.hook-alpha": "Timeout", "sample.hook-beta": "Timeout", "sample.hook-gamma": "Timeout" }, "late": [], "elapsedMs": 60000,
+        "outcome": { "kind": "deny", "by": "sample.hook-gamma", "failed": true, "reason": "Gamma did not answer (Timeout)." },
+        "receipts": []
+      }
+    },
+    {
+      "id": "prompt.submit uses the same order",
+      "event": "prompt.submit", "payload": { "text": "hello" },
+      "order": { "user": ["sample.hook-beta", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta"] },
+      "members": [
+        { "owner": "sample.hook-alpha", "name": "Alpha", "hookId": "sample.hook-alpha/prompt", "grants": ["harness.hooks.decide"], "answer": { "value": { "prompt": "from alpha" }, "afterMs": 10 } },
+        { "owner": "sample.hook-beta", "name": "Beta", "hookId": "sample.hook-beta/prompt", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "error": "Boom", "afterMs": 10 } }
+      ],
+      "expect": {
+        "asked": ["sample.hook-beta"], "removed": [], "failures": { "sample.hook-beta": "Boom" }, "late": [], "elapsedMs": 10,
+        "prompt": { "text": "hello", "blocked": { "by": "Beta", "failed": true, "message": "Not sent: Beta did not answer (Boom)." } }
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.hook-alpha",
+  "name": "Alpha",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "harness.hooks.observe", "harness.hooks.decide"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.hook-alpha/control", "title": "Alpha hook control", "action": { "kind": "runCommand" } }
+    ],
+    "hooks": [
+      { "id": "sample.hook-alpha/before", "event": "tool.before", "onFailure": "deny", "budgetMs": 1000 }
+    ]
+  }
+}

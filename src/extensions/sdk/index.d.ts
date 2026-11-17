@@ -717,7 +717,8 @@ export interface HookRegistration extends Disposable { readonly ready: Promise<v
 /** What the host did with a non-empty return of `prompt.submit`, `tool.after` or `compaction` (R0504; see docs/extensions/runtime-hook-context.md). */
 export interface HookReceipt {
   readonly schemaVersion: 1; readonly hookId: string; readonly event: HookEvent; readonly taskId: string; readonly callId?: string; readonly applied: boolean;
-  readonly code?: 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidShape' | 'LimitExceeded';
+  /** `Timeout` (R0506): the answer came after the budget and was never applied. */
+  readonly code?: 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidShape' | 'LimitExceeded' | 'Timeout';
   readonly refused?: Readonly<Record<string, 'PermissionDenied' | 'UnsupportedCapability'>>;
   /** R0505: an approve or rewrite another package's deny or ask overrode, or an ask a deny overrode. */
   readonly overriddenBy?: { readonly package: string };

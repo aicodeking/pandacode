@@ -15,6 +15,7 @@ import harnessSvg from '../../tests/fixtures/extensions/fake-harness/assets/mark
 import { createConnectionsPreview } from './connections-preview';
 import { createServicesPreview } from './services-preview';
 import * as runtimeGrants from './runtime-grants';
+import { createHookOrderPreview, type OrderSnapshot } from './runtime-hook-resolution';
 import { createServiceLifetimePreview } from './runtime-service-lifetime';
 import * as serviceSupervision from './runtime-service-supervision';
 import { createPrivateSecretsPreview } from './runtime-private-secrets';
@@ -350,6 +351,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   }
   if (command === 'extensions_snapshot') return snapshot;
   if (command === 'extensions_runtime_grants') return runtimeGrants.createRuntimeGrantsPreview().call(command, args, snapshot);
+  // R0506: the synthetic stand-in of the native hook order (`_hooks.json`), persisted in localStorage.
+  if (command === 'extensions_hook_order' || command === 'extensions_hook_order_change') return createHookOrderPreview().call(command, args, snapshot as unknown as OrderSnapshot);
   // R0301: a grant change makes mounted rich panels recheck their authority at once (revoke destroys the frame).
   if (command === 'extensions_runtime_grant') { const reply = runtimeGrants.createRuntimeGrantsPreview().call(command, args, snapshot); window.dispatchEvent(new Event('pandacode-extension-grants-changed')); return reply; }
   // R0301: the preview mounts rich panels as sandboxed frames (runtime-rich-mount.ts) and never asks for a native webview.

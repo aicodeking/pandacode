@@ -25,7 +25,7 @@
 //! default `onFailure: "continue"` the message is sent without that package's part. Everything here is for
 //! predictability and fault isolation (ADR-0005); the named grant is the safeguard.
 use serde_json::{json, Map, Value};
-use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex}, time::Instant};
 use tokio::sync::oneshot;
 
 use super::runtime_hook_registration::{self as hooks, HookRegistry, Occurrence};
@@ -319,32 +319,30 @@ pub type Ask = Arc<dyn Fn(&str, Value) -> Result<oneshot::Receiver<Result<Value,
 /// The display name of a package, for attribution.
 pub type Names = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
-async fn ask_one(ask: &Ask, owner: &str, frame: Value, budget: Duration) -> Result<Value, String> {
-    let receiver = ask(owner, frame).map_err(str::to_owned)?;
-    match tokio::time::timeout(budget, receiver).await {
-        Err(_) => Err("Timeout".into()),
-        Ok(Err(_)) => Err("HostUnavailable".into()),
-        Ok(Ok(answer)) => answer,
-    }
-}
-
-/// Asks every attached hook of the occurrence's event whose filter and observe grant accept it, one after another,
-/// folding each answer before the next is asked, then sends each receipt. Answers how many were asked.
+/// Asks every attached hook of the occurrence's event whose filter and observe grant accept it, one after another in
+/// the user's package order (R0506), folding each answer before the next is asked, then sends each receipt. Each
+/// member is asked through `runtime_hook_resolution::ask_member` (event ceiling, 60 s chain, removal instead of failure,
+/// late answers); a failure follows the fold's `onFailure` and counts toward the package's failure notice. Answers how
+/// many were asked.
 pub async fn drive<F: Fold + Send>(registry: &HookRegistry, ask: &Ask, names: &Names, occurrence: &Occurrence, task: &str, call: Option<&str>, fold: &mut F) -> usize {
+    use super::runtime_hook_resolution::{self as resolution, Asked, Late};
     let targets = registry.targets(occurrence);
-    let started = Instant::now();
-    let chain = Duration::from_millis(CHAIN_MS);
+    let started = tokio::time::Instant::now();
     let mut asked = Vec::new();
     for target in &targets {
         if fold.stopped() { break; }
-        let budget = Duration::from_millis(target.declaration.budget_ms).min(chain.saturating_sub(started.elapsed()));
-        let answer = if budget.is_zero() { Err("Timeout".to_owned()) } else {
-            let frame = json!({"schemaVersion": 1, "hookId": target.declaration.id, "event": occurrence.event, "observeOnly": false, "payload": fold.payload(&occurrence.payload)});
-            ask_one(ask, &target.owner, frame, budget).await
+        let frame = json!({"schemaVersion": 1, "hookId": target.declaration.id, "event": occurrence.event, "observeOnly": false, "payload": fold.payload(&occurrence.payload)});
+        let late = Late { hook_id: target.declaration.id.clone(), event: occurrence.event.to_owned(), task: task.to_owned(), call: call.map(str::to_owned) };
+        let (answer, reached) = match super::runtime_hook_resolution::ask_member(registry, ask, target, occurrence, frame, started, late).await {
+            Asked::Removed => continue,
+            Asked::Answered { answer, asked } => (answer, asked),
         };
         let grants = [DECIDE, CONTEXT, PRESENTATION].into_iter().filter(|permission| registry.holds(&target.owner, &target.version, permission, Some(&occurrence.project))).map(str::to_owned).collect();
         let receipts = fold.receipts().len();
-        fold.step(&Step { owner: target.owner.clone(), name: names(&target.owner), on_failure: target.declaration.on_failure.clone(), grants, answer });
+        let name = names(&target.owner);
+        fold.step(&Step { owner: target.owner.clone(), name: name.clone(), on_failure: target.declaration.on_failure.clone(), grants, answer: answer.clone() });
+        let codes: Vec<Option<String>> = fold.receipts()[receipts..].iter().map(|receipt| receipt.code.clone()).collect();
+        resolution::settle(target, occurrence.event, &name, task, resolution::failure_of(&answer, &codes).as_deref(), reached);
         asked.push((target.declaration.id.clone(), receipts));
     }
     // One receipt per non-empty return, to the package that made it, in the order the returns were made.

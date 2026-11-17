@@ -1,0 +1,141 @@
+{
+  "label": "synthetic",
+  "about": "R0506: the effective hook order (resolve) and the scripted life of _hooks.json. Read by runtime_hook_resolution::tests and tests/extensions-runtime-hook-resolution.spec.ts.",
+  "resolve": [
+    { "id": "default order is first enabled", "user": [], "firstEnabled": ["b", "a"], "ids": ["a", "b", "c"], "expect": ["b", "a", "c"] },
+    { "id": "the user's ids come first", "user": ["c"], "firstEnabled": ["a", "b"], "ids": ["a", "b", "c"], "expect": ["c", "a", "b"] },
+    { "id": "a repeated id counts at its first place", "user": ["b", "a", "b"], "firstEnabled": [], "ids": ["a", "b"], "expect": ["b", "a"] },
+    { "id": "an absent id in the user's order is ignored", "user": ["x", "b"], "firstEnabled": [], "ids": ["a", "b"], "expect": ["b", "a"] },
+    { "id": "nothing recorded: by id", "user": [], "firstEnabled": [], "ids": ["c", "a", "b"], "expect": ["a", "b", "c"] },
+    { "id": "repeated ids are one", "user": [], "firstEnabled": [], "ids": ["a", "a", "b"], "expect": ["a", "b"] }
+  ],
+  "script": [
+    { "id": "first sync records the enabled packages by id", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "order": [], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain"],
+      "effective": ["sample.hook-alpha", "sample.hook-beta", "sample.plain"],
+      "shown": [["sample.hook-alpha", "default"], ["sample.hook-beta", "default"], ["sample.hook-gamma", "default"]] },
+    { "id": "enabling gamma later appends it", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma"] },
+    { "id": "the user sets an order", "do": "change", "request": { "op": "set", "order": ["sample.hook-gamma", "sample.hook-alpha"] },
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "error": null, "order": ["sample.hook-gamma", "sample.hook-alpha"],
+      "effective": ["sample.hook-gamma", "sample.hook-alpha", "sample.hook-beta", "sample.plain"],
+      "shown": [["sample.hook-gamma", "user"], ["sample.hook-alpha", "user"], ["sample.hook-beta", "default"]] },
+    { "id": "a repeated id is refused and changes nothing", "do": "change", "request": { "op": "set", "order": ["sample.hook-beta", "sample.hook-beta"] },
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "error": "DuplicateId", "order": ["sample.hook-gamma", "sample.hook-alpha"] },
+    { "id": "an id that is not installed is refused", "do": "change", "request": { "op": "set", "order": ["sample.missing"] },
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "error": "UnknownReference", "order": ["sample.hook-gamma", "sample.hook-alpha"] },
+    { "id": "a restart keeps the order", "do": "restart",
+      "order": ["sample.hook-gamma", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma"], "available": true },
+    { "id": "disable keeps every place", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "order": ["sample.hook-gamma", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma"] },
+    { "id": "moving beta to the top keeps the list the user saw", "do": "change", "request": { "op": "move", "id": "sample.hook-beta", "to": 0 },
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "error": null, "order": ["sample.hook-beta", "sample.hook-gamma", "sample.hook-alpha"],
+      "shown": [["sample.hook-beta", "user"], ["sample.hook-gamma", "user"], ["sample.hook-alpha", "user"]] },
+    { "id": "uninstall removes gamma from both lists", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "order": ["sample.hook-beta", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain"] },
+    { "id": "a reinstall starts at the end", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "order": ["sample.hook-beta", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma"],
+      "effective": ["sample.hook-beta", "sample.hook-alpha", "sample.plain", "sample.hook-gamma"] },
+    { "id": "two packages enabled at once are appended by id", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-zeta", "name": "Zeta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-delta", "name": "Delta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma", "sample.hook-delta", "sample.hook-zeta"],
+      "effective": ["sample.hook-beta", "sample.hook-alpha", "sample.plain", "sample.hook-gamma", "sample.hook-delta", "sample.hook-zeta"] },
+    { "id": "safe mode changes nothing", "do": "sync", "snapshot": { "safeMode": true, "packages": [] },
+      "order": ["sample.hook-beta", "sample.hook-alpha"], "firstEnabled": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma", "sample.hook-delta", "sample.hook-zeta"] },
+    { "id": "no change in safe mode", "do": "change", "request": { "op": "reset" }, "snapshot": { "safeMode": true, "packages": [] },
+      "error": "Unavailable", "order": ["sample.hook-beta", "sample.hook-alpha"] },
+    { "id": "reset returns to the default", "do": "change", "request": { "op": "reset" },
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-zeta", "name": "Zeta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-delta", "name": "Delta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "error": null, "order": [],
+      "effective": ["sample.hook-alpha", "sample.hook-beta", "sample.plain", "sample.hook-gamma", "sample.hook-delta", "sample.hook-zeta"] },
+    { "id": "a damaged file answers the default and stays on disk", "do": "damage", "order": [], "firstEnabled": [], "effective": [], "available": false },
+    { "id": "sync after damage records in memory only", "do": "sync",
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-zeta", "name": "Zeta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-delta", "name": "Delta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "firstEnabled": ["sample.hook-beta", "sample.hook-delta", "sample.hook-gamma", "sample.hook-zeta", "sample.plain"], "available": false },
+    { "id": "the user's change replaces the damaged file", "do": "change", "request": { "op": "set", "order": ["sample.hook-zeta"] },
+      "snapshot": { "safeMode": false, "packages": [
+        { "manifest": { "id": "sample.hook-zeta", "name": "Zeta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-delta", "name": "Delta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-beta", "name": "Beta", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.hook-alpha", "name": "Alpha", "contributes": { "hooks": [{ "event": "tool.before" }] } }, "enabled": false },
+        { "manifest": { "id": "sample.hook-gamma", "name": "Gamma", "contributes": { "hooks": [{ "event": "prompt.submit" }] } }, "enabled": true },
+        { "manifest": { "id": "sample.plain", "name": "Plain" }, "enabled": true }
+      ] },
+      "error": null, "order": ["sample.hook-zeta"], "available": true,
+      "effective": ["sample.hook-zeta", "sample.hook-beta", "sample.hook-delta", "sample.hook-gamma", "sample.plain"] }
+  ]
+}

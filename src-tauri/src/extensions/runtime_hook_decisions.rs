@@ -6,7 +6,7 @@
 //!   (source `permissionRequest`, coverage `askedCalls` or `escalationsOnly` as the harness and mode give it), through
 //!   ask-at-host in `full` (source `askAtHost`), or later through a companion (R06xx, which hands its calls to the same
 //!   fold). The packages whose hook reaches the call and who hold `harness.hooks.decide` for its project and tool kind
-//!   are asked one after another (registration order; R0506 adds the user's order), inside their `budgetMs` and a 60 s
+//!   are asked one after another (the user's package order, R0506), inside their `budgetMs` and a 60 s
 //!   chain; the others receive the call one way. [`DecisionFold`] resolves the answers: a deny ends the chain and wins,
 //!   an ask wins over an approve, the first approve applies, rewrites accumulate (each package sees the input as the
 //!   earlier ones rewrote it). A failure follows `onFailure` (`continue`, `ask`, `deny`) and never approves.
@@ -29,10 +29,10 @@
 //! Everything here is for predictability and fault isolation (ADR-0004, ADR-0005): trust and the named grant are the
 //! safeguard; a slow or failing hook never blocks the agent and never approves.
 use serde_json::{json, Value};
-use std::{collections::{BTreeMap, BTreeSet}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}};
 use tokio::sync::mpsc::WeakUnboundedSender;
 
-use crate::extensions::runtime_hook_context::{Ask, Names, Step, CHAIN_MS, DECIDE, NOTE_BYTES, PRESENTATION, REASON_BYTES};
+use crate::extensions::runtime_hook_context::{Ask, Names, Step, DECIDE, NOTE_BYTES, PRESENTATION, REASON_BYTES};
 use crate::extensions::runtime_hook_payload::{self as payloads, Answer, DenyReason, Support};
 use crate::extensions::runtime_hook_registration::{self as hooks, HookRegistry, Occurrence, RunFacts, Target};
 use crate::providers::{AgentEvent, RunConfig, RunInput, Sink};
@@ -396,18 +396,12 @@ pub(crate) fn prepare(registry: &HookRegistry, decides: &Decides, request: &Requ
     }
 }
 
-async fn ask_one(ask: &Ask, owner: &str, frame: Value, budget: Duration) -> Result<Value, String> {
-    let receiver = ask(owner, frame).map_err(str::to_owned)?;
-    match tokio::time::timeout(budget, receiver).await {
-        Err(_) => Err("Timeout".into()),
-        Ok(Err(_)) => Err("HostUnavailable".into()),
-        Ok(Ok(answer)) => answer,
-    }
-}
-
-/// Runs a prepared chain: the observers get the call one way, the deciders are asked one after another (each inside
-/// its budget, all inside 60 s), then every non-empty return gets its receipt. Answers the fold.
+/// Runs a prepared chain: the observers get the call one way, the deciders are asked one after another in the user's
+/// package order (R0506) through `runtime_hook_resolution::ask_member` (each inside its budget and the event's
+/// ceiling, all inside 60 s; a package removed meanwhile is skipped, not failed; a late answer is never applied), then
+/// every non-empty return gets its receipt. A failure counts toward the package's failure notice. Answers the fold.
 pub(crate) async fn run_chain(registry: &HookRegistry, env: &Env, chain: &Chain, task: &str) -> DecisionFold {
+    use crate::extensions::runtime_hook_resolution::{self as resolution, Asked, Late};
     let _ = payloads::retain(&chain.call);
     let base = &chain.occurrence.payload;
     for observer in &chain.observers {
@@ -416,20 +410,28 @@ pub(crate) async fn run_chain(registry: &HookRegistry, env: &Env, chain: &Chain,
         let _ = registry.deliver_to(&observer.owner, json!({"schemaVersion": 1, "hookId": observer.declaration.id, "event": EVENT, "observeOnly": true, "payload": payload}));
     }
     let mut fold = DecisionFold::new(&chain.can);
-    let started = Instant::now();
-    let total = Duration::from_millis(CHAIN_MS);
+    let started = tokio::time::Instant::now();
     let mut asked: Vec<(String, usize)> = Vec::new();
     for target in &chain.deciders {
         if fold.stopped() { break; }
-        let budget = Duration::from_millis(target.declaration.budget_ms).min(total.saturating_sub(started.elapsed()));
-        let answer = if budget.is_zero() { Err("Timeout".to_owned()) } else {
-            let frame = json!({"schemaVersion": 1, "hookId": target.declaration.id, "event": EVENT, "observeOnly": false, "payload": fold.payload(base)});
-            ask_one(&env.ask, &target.owner, frame, budget).await
+        // A decide grant revoked or narrowed while the chain runs takes the package out of the deciders (R0506).
+        let kind = chain.occurrence.tool_kind.as_deref().unwrap_or("other");
+        let deciding = || (env.decides)(&target.owner, &target.version, &chain.occurrence.project, kind);
+        if !deciding() { continue; }
+        let frame = json!({"schemaVersion": 1, "hookId": target.declaration.id, "event": EVENT, "observeOnly": false, "payload": fold.payload(base)});
+        let late = Late { hook_id: target.declaration.id.clone(), event: EVENT.to_owned(), task: task.to_owned(), call: Some(chain.call.clone()) };
+        let (answer, reached) = match crate::extensions::runtime_hook_resolution::ask_member(registry, &env.ask, target, &chain.occurrence, frame, started, late).await {
+            Asked::Removed => continue,
+            Asked::Answered { answer, asked } => (answer, asked),
         };
+        if answer.is_err() && !deciding() { continue; }
         let mut grants = BTreeSet::from([DECIDE.to_owned()]);
         if registry.holds(&target.owner, &target.version, PRESENTATION, Some(&chain.occurrence.project)) { grants.insert(PRESENTATION.to_owned()); }
         let before = fold.receipts.len();
-        fold.step(&Step { owner: target.owner.clone(), name: (env.names)(&target.owner), on_failure: target.declaration.on_failure.clone(), grants, answer });
+        let name = (env.names)(&target.owner);
+        fold.step(&Step { owner: target.owner.clone(), name: name.clone(), on_failure: target.declaration.on_failure.clone(), grants, answer: answer.clone() });
+        let codes: Vec<Option<String>> = fold.receipts[before..].iter().map(|receipt| receipt.code.clone()).collect();
+        resolution::settle(target, EVENT, &name, task, resolution::failure_of(&answer, &codes).as_deref(), reached);
         asked.push((target.declaration.id.clone(), before));
     }
     payloads::release(&chain.call);

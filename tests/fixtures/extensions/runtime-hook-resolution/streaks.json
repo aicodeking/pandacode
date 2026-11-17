@@ -1,0 +1,10 @@
+{
+  "label": "synthetic",
+  "about": "R0506: consecutive failures of one package's hook (a code) and successes (null); the notice is due exactly once per streak, at the third failure in a row. Read by runtime_hook_resolution::tests and tests/extensions-runtime-hook-resolution.spec.ts.",
+  "cases": [
+    { "id": "three failures give one notice", "steps": ["Timeout", "Timeout", "Boom"], "notices": [false, false, true] },
+    { "id": "more failures give no second notice", "steps": ["Timeout", "Timeout", "Timeout", "Timeout", "Timeout"], "notices": [false, false, true, false, false] },
+    { "id": "a success starts the count again", "steps": ["Boom", "Boom", null, "Boom", "Boom", "Boom"], "notices": [false, false, false, false, false, true] },
+    { "id": "after a success a new streak notices again", "steps": ["InvalidShape", "InvalidShape", "InvalidShape", null, "HostUnavailable", "HostUnavailable", "HostUnavailable"], "notices": [false, false, true, false, false, false, true] }
+  ]
+}

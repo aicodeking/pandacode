@@ -287,7 +287,9 @@ pub type CallPayload<'a> = &'a dyn Fn(&Value, &str) -> Result<Value, &'static st
 /// Sees every occurrence the registry reports (the run coverage counters of R0509).
 pub type Observer = Arc<dyn Fn(&Occurrence) + Send + Sync>;
 
-struct Attached { version: String, declaration: Declaration, handlers: u32 }
+/// `down`: the service crashed (R0506): the hook stays a member of the awaited chains, which apply its failure policy,
+/// until the restarted service registers it again or the user removes the package.
+struct Attached { version: String, declaration: Declaration, handlers: u32, down: bool }
 struct Run {
     facts: RunFacts,
     since_compaction: u64,
@@ -326,6 +328,8 @@ pub struct HookRegistry {
     gate: Mutex<Option<Gate>>,
     deliver: Mutex<Option<Deliver>>,
     observer: Mutex<Option<Observer>>,
+    /// The effective package order of the awaited chains (R0506, `_hooks.json`); ids not listed follow by id.
+    order: Mutex<Vec<String>>,
     /// Any hook attached: the app's reports are free when this is off.
     active: AtomicBool,
     /// The app's registry also switches complete-input recording of built-in runs (`runtime_hook_payload::observed`).
@@ -337,7 +341,9 @@ impl HookRegistry {
     pub fn set_gate(&self, gate: Gate) { if let Ok(mut slot) = self.gate.lock() { *slot = Some(gate); } }
     pub fn set_deliver(&self, deliver: Deliver) { if let Ok(mut slot) = self.deliver.lock() { *slot = Some(deliver); } }
     fn gate(&self) -> Option<Gate> { self.gate.lock().ok().and_then(|slot| slot.clone()) }
-    fn deliverer(&self) -> Option<Deliver> { self.deliver.lock().ok().and_then(|slot| slot.clone()) }
+    pub(crate) fn deliverer(&self) -> Option<Deliver> { self.deliver.lock().ok().and_then(|slot| slot.clone()) }
+    /// The package order the awaited chains ask in (R0506).
+    pub fn set_order(&self, order: Vec<String>) { if let Ok(mut slot) = self.order.lock() { *slot = order; } }
     pub fn set_observer(&self, observer: Observer) { if let Ok(mut slot) = self.observer.lock() { *slot = Some(observer); } }
     fn observe(&self, occurrence: &Occurrence) { if let Some(observer) = self.observer.lock().ok().and_then(|slot| slot.clone()) { observer(occurrence); } }
     /// Whether any hook is attached.
@@ -359,7 +365,9 @@ impl HookRegistry {
         let declaration = declarations.iter().find(|declaration| declaration.event == event).ok_or("UnknownReference")?;
         if !self.gate().is_some_and(|gate| gate(owner, version, permission_of(event), None)) { return Err("PermissionDenied"); }
         let mut inner = self.lock();
-        let entry = inner.attached.entry((owner.to_owned(), event.to_owned())).or_insert_with(|| Attached { version: version.to_owned(), declaration: declaration.clone(), handlers: 0 });
+        let entry = inner.attached.entry((owner.to_owned(), event.to_owned())).or_insert_with(|| Attached { version: version.to_owned(), declaration: declaration.clone(), handlers: 0, down: false });
+        // The restarted service of a crashed one registers afresh.
+        if entry.down { entry.down = false; entry.handlers = 0; }
         entry.handlers += 1;
         entry.version = version.to_owned();
         entry.declaration = declaration.clone();
@@ -390,6 +398,19 @@ impl HookRegistry {
         self.refresh(&mut inner);
         removed
     }
+    /// The service of `owner` crashed (R0506): its hooks stay, marked down, so the chains apply their failure policy.
+    /// Answers how many were marked.
+    pub fn mark_down(&self, owner: &str) -> usize {
+        let mut inner = self.lock();
+        let mut marked = 0;
+        for ((attached, _), entry) in inner.attached.iter_mut() {
+            if attached == owner { entry.down = true; entry.handlers = 0; marked += 1; }
+        }
+        self.refresh(&mut inner);
+        marked
+    }
+    /// Whether any hook of `owner` is down (its service crashed and has not registered again).
+    pub fn down(&self, owner: &str) -> bool { self.lock().attached.iter().any(|((attached, _), entry)| attached == owner && entry.down) }
     /// Events `owner` has attached.
     pub fn listeners(&self, owner: &str) -> Vec<String> { self.lock().attached.keys().filter(|(attached, _)| attached == owner).map(|(_, event)| event.clone()).collect() }
     /// The package version an attached hook was registered for (the grant `hooks.input` is checked against).
@@ -430,12 +451,17 @@ impl HookRegistry {
         if !reached.is_empty() { self.observe(occurrence); }
         reached
     }
-    /// The attached hooks of `event`, in registration order (R0505: a `full` launch asks at the harness while a deciding
+    /// The attached hooks of `event`, in the effective package order (R0506: the user's order, then first enabled, then
+    /// by id), including hooks whose service crashed (R0505: a `full` launch asks at the harness while a deciding
     /// `tool.before` hook is held).
     pub fn attached(&self, event: &str) -> Vec<Target> {
-        self.lock().attached.iter()
+        let mut targets: Vec<Target> = self.lock().attached.iter()
             .filter(|((_, attached), _)| attached == event)
-            .map(|((owner, _), entry)| Target { owner: owner.clone(), version: entry.version.clone(), declaration: entry.declaration.clone() }).collect()
+            .map(|((owner, _), entry)| Target { owner: owner.clone(), version: entry.version.clone(), declaration: entry.declaration.clone() }).collect();
+        let order = self.order.lock().map(|order| order.clone()).unwrap_or_default();
+        // A stable sort over the id-ordered map: listed packages first in their order, the others by id.
+        targets.sort_by_key(|target| order.iter().position(|owner| *owner == target.owner).unwrap_or(usize::MAX));
+        targets
     }
     fn reach_of(&self, attached: Vec<Target>, occurrence: &Occurrence) -> Vec<Target> {
         let gate = self.gate();
@@ -687,7 +713,10 @@ fn serve_now(app: &tauri::AppHandle, owner: &str, method: &str, params: &Value) 
             match op {
                 "register" => {
                     let Some((version, declarations)) = declared(app, owner) else { return super::context::failure("HostUnavailable") };
-                    answer(REGISTRY.register(owner, &version, &declarations, event))
+                    let registered = REGISTRY.register(owner, &version, &declarations, event);
+                    // The chains' package order knows every enabled package (R0506).
+                    if registered.is_ok() { super::runtime_hook_resolution::registered(app); }
+                    answer(registered)
                 }
                 "unregister" => answer(REGISTRY.unregister(owner, event).map(|()| Value::Null)),
                 _ => super::context::failure("InvalidShape"),
@@ -709,8 +738,10 @@ fn input(app: &tauri::AppHandle, owner: &str, params: &Value) -> Result<Value, &
     super::runtime_hook_payload::serve(params).map_err(|code| match code.as_str() { "NotFound" => "NotFound", "StaleContext" => "StaleContext", "LimitExceeded" => "LimitExceeded", _ => "InvalidShape" })
 }
 
-/// The service of `owner` ended (any reason): its hooks go with it.
-pub fn service_stopped(_app: &tauri::AppHandle, owner: &str) { REGISTRY.remove_owner(owner); }
+/// The service of `owner` ended: its hooks go with it when the user stopped, disabled, uninstalled or revoked it or
+/// entered safe mode; after a crash they stay as failing members of the chains (R0506,
+/// `runtime_hook_resolution::service_ended`).
+pub fn service_stopped(app: &tauri::AppHandle, owner: &str) { super::runtime_hook_resolution::service_ended(app, owner); }
 
 /// A run of `session_id` begins (`launch_operation_admitted`): the facts every payload of the turn carries, then
 /// `prompt.submit` and `turn.start`. Free when no hook is attached.

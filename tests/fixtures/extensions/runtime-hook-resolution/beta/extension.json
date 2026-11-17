@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.hook-beta",
+  "name": "Beta",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "harness.hooks.observe", "harness.hooks.decide"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.hook-beta/control", "title": "Beta hook control", "action": { "kind": "runCommand" } }
+    ],
+    "hooks": [
+      { "id": "sample.hook-beta/before", "event": "tool.before", "onFailure": "ask", "budgetMs": 2000 }
+    ]
+  }
+}
