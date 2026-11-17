@@ -280,6 +280,7 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.sidebar.sections` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.sidebar.sort.menu` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.sidebar.task.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
+| `panda.sidebar.task.marks` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.simulator` | data | inspect, replace, move | controls-first | main | — |
 | `panda.simulator.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.simulator.context` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |

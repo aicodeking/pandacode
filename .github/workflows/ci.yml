@@ -171,6 +171,12 @@ jobs:
       - name: Upstream floating code editor (WebKit)
         env: { PW_PORT: '16022', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/upstream-editor-extensions.spec.ts --workers=1
+      - name: Dynamic items (Chromium)
+        env: { PW_PORT: '15931', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-dynamic-items.spec.ts --workers=1
+      - name: Dynamic items (WebKit)
+        env: { PW_PORT: '15932', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-dynamic-items.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1

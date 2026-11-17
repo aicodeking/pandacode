@@ -775,6 +775,7 @@ async fn delete_session_with_attachment_cleanup(
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
     for removed in &deleted.deleted_session_ids {
         extensions::runtime_service_lifetime::runtime_workspace_events::forget_task(removed);
+        extensions::runtime_dynamic_items::scope_gone(&app, &extensions::runtime_dynamic_items::Scope::Task(removed.clone()));
         if let Some(project) = &project { extensions::runtime_service_lifetime::runtime_workspace_events::task_removed(&app, removed, project); }
     }
     match app.path().app_data_dir() {
@@ -830,7 +831,10 @@ async fn remove_project(app: tauri::AppHandle, state: State<'_, AppState>, proje
     let removed = store.remove_project(&project_id);
     skill_manager::projects_changed();
     drop(store);
-    if removed.is_ok() { extensions::runtime_service_lifetime::runtime_workspace_events::project_closed(&app, &project_id); }
+    if removed.is_ok() {
+        extensions::runtime_dynamic_items::scope_gone(&app, &extensions::runtime_dynamic_items::Scope::Project(project_id.clone()));
+        extensions::runtime_service_lifetime::runtime_workspace_events::project_closed(&app, &project_id);
+    }
     removed
 }
 #[tauri::command]
@@ -4861,6 +4865,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_sign_in::SignIns::default());
     app.manage(extensions::context::ContextBroker::default());
     app.manage(extensions::runtime::ExtensionRuntime::default());
+    app.manage(extensions::runtime_dynamic_items::DynamicItems::default());
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
     app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
     extensions::runtime_service_lifetime::reconcile_app(app.handle());
@@ -5324,6 +5329,7 @@ pub fn run() {
                 agent_usage::agent_usage_asking_claude,
                 tray::tray_seen,
                 extensions::runtime_service_lifetime::runtime_workspace_events::extensions_workspace_task_shown,
+                extensions::runtime_dynamic_items::extensions_runtime_items,
                 usage_ledger::usage_ledger,
                 capabilities::capabilities_inventory,
                 capabilities::cache_alignment,

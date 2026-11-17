@@ -206,7 +206,8 @@ export const SETTINGS_FIELD_PAGES = ['general', 'appearance', 'teams', 'schedule
  * New chat and Search; `panda.sidebar.context` is the section headings' context menu. The task and project row
  * menus stay the existing `panda.sidebar.task.context` / `panda.sidebar.project.context`. Grouping, sorting,
  * selection and every handler stay in main.ts, sidebar-sections.ts and sidebar-sort.ts. */
-export const SIDEBAR_ACTION_SURFACES = ['panda.sidebar.actions', 'panda.sidebar.context', 'panda.sidebar.bots.actions', 'panda.sidebar.bots.context', 'panda.sidebar.channel.context'] as const;
+// `panda.sidebar.task.marks`: passive badges a background service puts on a task row (runtime-dynamic-items.md).
+export const SIDEBAR_ACTION_SURFACES = ['panda.sidebar.actions', 'panda.sidebar.context', 'panda.sidebar.bots.actions', 'panda.sidebar.bots.context', 'panda.sidebar.channel.context', 'panda.sidebar.task.marks'] as const;
 /** Bots panel adoption (docs/extensions/sidebar.md#bots-panel). `panda.sidebar.bots.actions` is the panel head's
  * accessory; `panda.sidebar.bots.context` and `panda.sidebar.channel.context` are the bot and shared-channel row
  * menus. Grouping (Needs you, Pinned, Hidden), unread state, pins, the dragged order and every handler stay in

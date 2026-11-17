@@ -32,7 +32,7 @@ const capabilities = ['btw.content', 'btw.taskControl', 'services.call', 'connec
 /** Every manifest permission/capability this validator accepts; author documentation is checked against it. */
 export const MANIFEST_CAPABILITIES: readonly string[] = Object.freeze([...capabilities]);
 export const MANIFEST_CONTRIBUTIONS: readonly string[] = Object.freeze([...knownContributions]);
-const publicShapes = ['botConversationPresentation', 'botConversationAction', 'windowMenusPresentation', 'windowMenusAction', 'taskMenusPresentation', 'taskMenusAction', 'commandsPresentation', 'commandsAction', 'tilesPresentation', 'tilesAction', 'projectPickerPresentation', 'projectPickerAction', 'threadExtrasPresentation', 'threadExtrasAction', 'composerAttachPresentation', 'composerAttachAction', 'composerPanelsPresentation', 'composerPanelsAction', 'composerPresentation', 'composerAction', 'statusPresentation', 'statusAction', 'rosterPresentation', 'rosterAction', 'dockPresentation', 'dockAction', 'sidebarPresentation', 'sidebarAction', 'sidebarBotsPresentation', 'sidebarBotsAction', 'settingsPresentation', 'settingsAction', 'dialogAccessory', 'machinesPresentation', 'machinesAction', 'cloudPresentation', 'cloudAction', 'moodboardPresentation', 'moodboardAction', 'worktreePresentation', 'worktreeAction', 'pullPresentation', 'pullAction', 'githubHubPresentation', 'githubHubAction', 'boardPresentation', 'boardAction', 'btwPresentation', 'btwAction', 'designPresentation', 'designAction', 'command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction', 'searchPresentation', 'searchAction', 'browserPresentation', 'browserAction', 'terminalPresentation', 'terminalAction', 'simulatorPresentation', 'simulatorAction', 'vmPresentation', 'vmAction', 'projectScope'];
+const publicShapes = ['botConversationPresentation', 'botConversationAction', 'windowMenusPresentation', 'windowMenusAction', 'taskMenusPresentation', 'taskMenusAction', 'commandsPresentation', 'commandsAction', 'tilesPresentation', 'tilesAction', 'projectPickerPresentation', 'projectPickerAction', 'threadExtrasPresentation', 'threadExtrasAction', 'composerAttachPresentation', 'composerAttachAction', 'composerPanelsPresentation', 'composerPanelsAction', 'composerPresentation', 'composerAction', 'statusPresentation', 'statusAction', 'rosterPresentation', 'rosterAction', 'dockPresentation', 'dockAction', 'sidebarPresentation', 'sidebarAction', 'sidebarBotsPresentation', 'sidebarBotsAction', 'settingsPresentation', 'settingsAction', 'dialogAccessory', 'machinesPresentation', 'machinesAction', 'cloudPresentation', 'cloudAction', 'moodboardPresentation', 'moodboardAction', 'worktreePresentation', 'worktreeAction', 'pullPresentation', 'pullAction', 'githubHubPresentation', 'githubHubAction', 'boardPresentation', 'boardAction', 'btwPresentation', 'btwAction', 'designPresentation', 'designAction', 'command', 'surface', 'contribution', 'context', 'error', 'expression', 'dialog', 'selectOptions', 'view', 'viewControl', 'documentPresentation', 'documentAction', 'changesPresentation', 'changesAction', 'searchPresentation', 'searchAction', 'browserPresentation', 'browserAction', 'terminalPresentation', 'terminalAction', 'simulatorPresentation', 'simulatorAction', 'vmPresentation', 'vmAction', 'slashCommand', 'projectScope'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
   detail: ContractError;
@@ -100,6 +100,13 @@ function bounded(value: unknown, path = '$', depth = 0, budget = { nodes: 0, byt
 
 function shape(value: Json, schema: Schema, path: string, diagnostics: Diagnostic[]): Json {
   if (schema.$ref) return shape(value, definitions[String(schema.$ref).split('/').at(-1)!], path, diagnostics);
+  // Opaque JSON (`x-opaqueJson`): already bounded by the walk, copied unchanged, limited in compact bytes.
+  if (schema['x-opaqueJson']) {
+    const opaque = schema['x-opaqueJson'] as { bytes: number; top: string };
+    if (opaque.top === 'object' && !object(value)) error('InvalidShape', path);
+    if (new TextEncoder().encode(JSON.stringify(value)).length > opaque.bytes) error('LimitExceeded', path);
+    return value;
+  }
   if (schema.anyOf) {
     for (const alternative of schema.anyOf as Schema[]) {
       const notes: Diagnostic[] = [];

@@ -10,6 +10,7 @@ import type { ComponentProvider } from './component-slot';
 import type { ConnectionDescriptor } from './sdk';
 import { packageHarnesses } from './harnesses';
 import { setPackageProviders } from './provider-state';
+import { onRuntimeLayerChanged, setRuntimeLayer, withRuntimeLayer, type Layer } from './runtime-dynamic-items';
 
 export type ExtensionMenuItem = { id: string; kind: 'command' | 'submenu' | 'separator' | 'checkbox' | 'radio'; title?: string; command?: string; icon?: string; checked?: boolean; group?: string; visible?: Json; enabled?: Json; items?: ExtensionMenuItem[] };
 export type ExtensionAction = { kind: 'showMessage'; message: string } | { kind: 'showDialog'; dialog: DialogDefinition } | { kind: 'openView'; view: string } | { kind: 'showProjectContext' } | { kind: 'runCommand' };
@@ -28,9 +29,28 @@ let activeProject: string | undefined;
 const listeners = new Set<() => void>();
 let generation = 0;
 export function packageInScope(item: Pick<ExtensionPackage, 'projects'>, project: string | undefined): boolean { return !item.projects || Boolean(project) && item.projects.includes(project!); }
-function effective(value: ExtensionSnapshot): ExtensionSnapshot {
+function withheld(value: ExtensionSnapshot): ExtensionSnapshot {
   if (!value.packages.some(item => item.projects && item.enabled && !packageInScope(item, activeProject))) return value;
   return { ...value, packages: value.packages.map(item => item.projects && item.enabled && !packageInScope(item, activeProject) ? { ...item, enabled: false, scopeWithheld: true } : item) };
+}
+// What contributes now: the scope-withheld packages, then the run-time layer of the running services laid over them
+// (runtime-dynamic-items.ts). The host clears a service's layer when it stops, so the manifest values return.
+function effective(value: ExtensionSnapshot): ExtensionSnapshot { return withRuntimeLayer(withheld(value)); }
+/** The run-time layer or the task this window shows moved: the contributions are recomputed and the hosts told. */
+function layerChanged(): void {
+  const previous = JSON.stringify(snapshot.packages);
+  snapshot = effective(managed);
+  if (previous !== JSON.stringify(snapshot.packages)) publish();
+}
+onRuntimeLayerChanged(layerChanged);
+let layerStarted = false;
+/** Reads the host's layer now and whenever the native side says it moved (a preview window has none). */
+async function startRuntimeLayer(): Promise<void> {
+  if (layerStarted || preview) return;
+  layerStarted = true;
+  const read = async () => { try { setRuntimeLayer(await call<Layer>('extensions_runtime_items')); } catch { setRuntimeLayer(null); } };
+  try { const { subscribe } = await import('../bridge'); await subscribe('extensions-runtime-items', () => { void read(); }); } catch { /* the layer is still read once below */ }
+  await read();
 }
 export function extensionsSnapshot(): ExtensionSnapshot { return structuredClone(snapshot); }
 /** Management view (Settings → Extensions, a package's own settings pages): ignores the active project's scope. */
@@ -104,7 +124,7 @@ function accept(value: ExtensionSnapshot): void {
   publish();
 }
 export async function loadExtensions(): Promise<void> {
-  try { accept(await call<ExtensionSnapshot>('extensions_snapshot')); }
+  try { accept(await call<ExtensionSnapshot>('extensions_snapshot')); void startRuntimeLayer(); }
   catch { accept({ safeMode: false, packages: [], diagnostics: ['Extensions unavailable; built-in controls remain available.'] }); }
 }
 /** Host-only auxiliary bootstrap; the native reply supplies the actual invoking label. */

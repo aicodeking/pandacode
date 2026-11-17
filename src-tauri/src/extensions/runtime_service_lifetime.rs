@@ -183,14 +183,18 @@ pub struct ServiceLifetime {
     clock: Arc<dyn Clock>,
     /// What runs when a crash restart is due: the app reconciles (tests reconcile their own packages).
     restart_hook: Arc<Mutex<Option<RestartHook>>>,
+    /// What runs, with the owner, whenever a service process ends for any reason (R0205: its live items go).
+    ended_hook: Arc<Mutex<Option<EndedHook>>>,
 }
 /// Runs when a scheduled crash restart is due.
 pub type RestartHook = Arc<dyn Fn() + Send + Sync>;
+/// Runs with the package id when its service process has ended.
+pub type EndedHook = Arc<dyn Fn(&str) + Send + Sync>;
 fn millis(duration: Duration) -> u64 { u64::try_from(duration.as_millis()).unwrap_or(u64::MAX) }
 
 impl ServiceLifetime {
     pub fn new(runtimes: Vec<PathBuf>) -> Self {
-        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), parent: Arc::default(), dispatch: Arc::default(), events: Arc::default(), clock: Arc::new(supervision::SystemClock::default()), restart_hook: Arc::default() }
+        Self { inner: Arc::default(), changed: Arc::default(), runtimes: Arc::new(runtimes), env: Arc::default(), parent: Arc::default(), dispatch: Arc::default(), events: Arc::default(), clock: Arc::new(supervision::SystemClock::default()), restart_hook: Arc::default(), ended_hook: Arc::default() }
     }
     /// Replaces the supervisor's clock (tests: backoff and the crash window on a controlled clock).
     #[cfg(test)]
@@ -200,9 +204,11 @@ impl ServiceLifetime {
     }
     /// Installs what runs when a crash restart is due (the app reconciles).
     pub fn set_restart_hook(&self, hook: RestartHook) { if let Ok(mut slot) = self.restart_hook.lock() { *slot = Some(hook); } }
+    /// Installs what runs when a service process ends (the app clears the package's live items).
+    pub fn set_ended_hook(&self, hook: EndedHook) { if let Ok(mut slot) = self.ended_hook.lock() { *slot = Some(hook); } }
     /// Another handle on the same manager, for the tasks it spawns.
     fn share(&self) -> Self {
-        Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), parent: self.parent.clone(), dispatch: self.dispatch.clone(), events: self.events.clone(), clock: self.clock.clone(), restart_hook: self.restart_hook.clone() }
+        Self { inner: self.inner.clone(), changed: self.changed.clone(), runtimes: self.runtimes.clone(), env: self.env.clone(), parent: self.parent.clone(), dispatch: self.dispatch.clone(), events: self.events.clone(), clock: self.clock.clone(), restart_hook: self.restart_hook.clone(), ended_hook: self.ended_hook.clone() }
     }
     /// Replaces the user environment the service inherits (tests: canary variables without touching the process).
     #[cfg(test)]
@@ -452,6 +458,8 @@ impl ServiceLifetime {
             (Some(_), Err(code)) => Outcome::Unstarted(code),
         };
         drop(storage);
+        // Whatever ended the process, the live items it registered end with it.
+        if let Some(hook) = self.ended_hook.lock().ok().and_then(|hook| hook.clone()) { hook(&id); }
         // Uninstall removed the record while this process ran from its code directory: remove the code now.
         // A reinstall queued behind this stop starts afterwards and writes its directory again.
         if matches!(outcome, Outcome::Stopped(StopReason::Uninstall, _)) {
@@ -751,6 +759,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| super::runtime_dynamic_items::service_stopped(&app, owner))); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
@@ -779,6 +788,10 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.harnesses.switchAccount` (R0805): `credentials.use` for the account's item is checked natively per call.
             if request.method == "accountSwitch" {
                 return tauri::async_runtime::spawn_blocking(move || runtime_held_credentials::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
+            // `panda.ui.register`, `update`, `updateView` and a handle's `update` / `dispose` (R0205).
+            if request.method == "ui" {
+                return tauri::async_runtime::spawn_blocking(move || super::runtime_dynamic_items::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
             // `panda.settings.get` and the task content reads: answered from the grants file, no captured context needed.
             if matches!(request.method.as_str(), "settingsGet" | "contentQuery") {
@@ -1570,6 +1583,97 @@ mod tests {
             assert_eq!((updated["reason"].as_str(), updated["version"].as_str(), updated["supervision"]["parked"].clone()), (Some("update"), Some("1.1.0"), Value::Null));
             println!("SERVICE_SUPERVISION {}", json!({"starts": updated["starts"], "stops": updated["stops"]}));
             manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
+        }
+
+        const DYNAMIC_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/runtime-dynamic-items/extension.json");
+        const DYNAMIC_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/runtime-dynamic-items/main.cjs");
+        const DYNAMIC_ID: &str = "sample.dynamic-items";
+        const DYNAMIC_OPEN: &str = "sample.dynamic-items/open";
+
+        impl B1 {
+            /// A signal whose payload tells the fixture service what to do (`{op: "add" | "change" | ...}`).
+            async fn order(&self, payload: Value) { self.http("POST", "/control/signal", &json!({"name": "order", "payload": payload})).await; }
+        }
+
+        /// R0205 acceptance: an installed service, told by B1 signals, adds, changes and removes a status item and a
+        /// table row; every field is reflected in the layer the interface reads, a click delivers its arguments
+        /// exactly once, and the layer is empty once the process ends.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn dynamic_items_installed_service_adds_changes_and_removes_a_status_item_and_a_table_row_by_signal() {
+            use crate::extensions::runtime_dynamic_items::{failure, now_millis, serve, Checks, DynamicItems};
+            let runtime = supervisor::Runtime::packaged(&runtime_dir()).unwrap();
+            let b1 = B1::start(&runtime).await;
+            let dir = Dir::new();
+            let packages = ExtensionPackages::new(&dir.0, false);
+            let grants = RuntimeGrants::open(&dir.0);
+            let items = Arc::new(DynamicItems::default());
+            let manifest: Value = serde_json::from_str(DYNAMIC_MANIFEST).unwrap();
+            let dispatch: Dispatch = { let (items, manifest) = (items.clone(), manifest.clone()); Arc::new(move |request: DispatchRequest| {
+                let (items, manifest) = (items.clone(), manifest.clone());
+                Box::pin(async move {
+                    if request.method != "ui" { return failure("UnsupportedCapability"); }
+                    let checks = Checks { granted: true, manifest: &manifest, scope_exists: &|_| true, version: "1.0.0", now_ms: now_millis() };
+                    serve(&items, &request.owner, &checks, &request.params)
+                }) as Pin<Box<dyn Future<Output = Value> + Send>>
+            }) };
+            { let packages = packages.0.lock().unwrap(); packages.install(&archive(DYNAMIC_MANIFEST, DYNAMIC_SOURCE)).unwrap(); let digest = digest(&packages); packages.trust(DYNAMIC_ID, &digest, true).unwrap(); packages.enable(DYNAMIC_ID, true).unwrap(); }
+            let env = [("PANDA_FIXTURE_B1", b1.socket.as_str())];
+            let manager = ServiceLifetime::new(vec![runtime_dir()]).with_env(&env);
+            manager.set_dispatch(dispatch);
+            { let items = items.clone(); manager.set_ended_hook(Arc::new(move |owner: &str| items.clear(owner))); }
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            grants.grant(DYNAMIC_ID, PERMISSION, Scope::default()).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !manager.serves(DYNAMIC_ID, DYNAMIC_OPEN) { assert!(Instant::now() < deadline, "the service never became ready"); tokio::time::sleep(Duration::from_millis(25)).await; }
+
+            // What the interface reads, waited for (the product is told by an event, never polls).
+            let layer = |what: &'static str, check: Box<dyn Fn(&Value) -> bool>| { let items = items.clone(); async move {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    let snapshot = items.snapshot();
+                    if check(&snapshot["owners"][DYNAMIC_ID]) { return snapshot["owners"][DYNAMIC_ID].clone(); }
+                    assert!(Instant::now() < deadline, "timed out waiting for {what}: {snapshot}");
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            } };
+            let status = |owner: &Value| owner["menus"].as_array().into_iter().flatten().find(|menu| menu["id"] == "sample.dynamic-items/alert").cloned();
+            let board = |owner: &Value| owner["overrides"]["sample.dynamic-items/board"]["controls"][0]["rows"].clone();
+
+            // Add: a status item appears with its text, tone, tooltip and progress.
+            b1.order(json!({"op": "add"})).await;
+            let owner = layer("the status item", Box::new(move |owner| owner["menus"].as_array().is_some_and(|menus| menus.len() == 1))).await;
+            let added = status(&owner).unwrap();
+            assert_eq!((added["text"].as_str(), added["tone"].as_str(), added["tooltip"].as_str(), added["progress"].as_u64()), (Some("3 builds failed"), Some("warning"), Some("Three builds failed"), Some(10)), "{added}");
+            assert_eq!(added["location"], "panda.status.items");
+            // Change: text, badge, tone, tooltip, progress, enabled and visible are reflected.
+            b1.order(json!({"op": "change"})).await;
+            let owner = layer("the changed item", Box::new(|owner| owner["menus"][0]["text"] == "4 builds failed")).await;
+            let changed = status(&owner).unwrap();
+            assert_eq!((changed["badge"].as_str(), changed["tone"].as_str(), changed["tooltip"].as_str(), changed["progress"].as_u64(), changed["enabled"].as_bool(), changed["visible"].as_bool()), (Some("4"), Some("danger"), Some("Four builds failed"), Some(80), Some(false), Some(true)), "{changed}");
+            // A table row with a command and arguments.
+            b1.order(json!({"op": "table"})).await;
+            let owner = layer("the table row", Box::new(move |owner| owner["overrides"]["sample.dynamic-items/board"]["controls"][0]["rows"].as_array().is_some_and(|rows| rows.len() == 1))).await;
+            assert_eq!(board(&owner), json!([{"cells": ["tracks"], "command": DYNAMIC_OPEN, "args": {"table": "tracks"}}]));
+            // A click delivers its arguments to the owning command exactly once.
+            let click = manager.call_command(DYNAMIC_ID, DYNAMIC_OPEN, json!({"table": "tracks"}), None).await.unwrap();
+            assert_eq!(click, json!({"delivered": 1}));
+            let delivered = wait_for(&manager, "the click was delivered", |service| service["status"]["text"].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).is_some_and(|status| status["opened"] == json!([{"table": "tracks"}]))).await;
+            assert_eq!(delivered["state"], "running");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let once = service(&manager)["status"]["text"].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).unwrap();
+            assert_eq!(once["opened"], json!([{"table": "tracks"}]), "delivered exactly once");
+            // Remove: the status item and the table row go.
+            b1.order(json!({"op": "remove"})).await; b1.order(json!({"op": "untable"})).await;
+            let owner = layer("the removals", Box::new(move |owner| owner["menus"].as_array().is_some_and(Vec::is_empty) && owner["overrides"]["sample.dynamic-items/board"]["controls"][0]["rows"].as_array().is_some_and(Vec::is_empty))).await;
+            assert_eq!(board(&owner), json!([]));
+            // The process ends: nothing of the layer stays.
+            b1.order(json!({"op": "add"})).await;
+            layer("the second status item", Box::new(|owner| owner["menus"].as_array().is_some_and(|menus| menus.len() == 1))).await;
+            manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
+            assert_eq!(items.count(DYNAMIC_ID), 0, "the layer ends with the process");
+            assert!(items.snapshot()["owners"].get(DYNAMIC_ID).is_none() || items.snapshot()["owners"][DYNAMIC_ID]["menus"] == json!([]));
+            b1.stop().await;
         }
     }
 }

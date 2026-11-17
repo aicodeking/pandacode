@@ -46,6 +46,17 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
     }, { signal });
   }
   toolbar.hidden = !toolbar.childElementCount;
+  // A row with a command runs it once with its arguments as `context.args`, the way the toolbar buttons run theirs.
+  const runRow = (commandId: string, args: Json | undefined) => {
+    const command = commands.find(itemCommand => itemCommand.command.id === commandId)?.command;
+    if (!command || signal.aborted || !panel.isConnected) return;
+    invokeExtensionCommand(command.id, { ...captured, ...(args === undefined ? {} : { args }) }, notify, close => { transient?.(); transient = close; });
+  };
+  const rowButton = (parent: HTMLElement, text: string, row: { command: string; args?: Json }) => {
+    const button = appendText(parent, 'button', text) as HTMLButtonElement; button.type = 'button'; button.className = 'ds-btn';
+    button.addEventListener('click', () => runRow(row.command, row.args), { signal });
+    return button;
+  };
   for (const control of view.controls ?? []) {
     const group = document.createElement('section'); group.className = 'extension-view-control ds-card-inner'; panel.append(group);
     appendText(group, 'h3', control.label);
@@ -54,11 +65,14 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
       progress.setAttribute('aria-label', control.label); group.append(progress); appendText(group, 'span', `${control.value}%`);
     } else if (control.kind === 'list') {
       const list = document.createElement('ul'); list.setAttribute('aria-label', control.label); group.append(list);
-      for (const item of control.items) appendText(list, 'li', item);
+      for (const item of control.items) { if (typeof item === 'string') appendText(list, 'li', item); else rowButton(appendText(list, 'li', '') , item.label, item); }
     } else if (control.kind === 'table') {
       const table = document.createElement('table'); table.setAttribute('aria-label', control.label); group.append(table);
       const head = table.createTHead().insertRow(); for (const column of control.columns) { const th = appendText(head, 'th', column); th.setAttribute('scope', 'col'); }
-      const body = table.createTBody(); for (const row of control.rows) { const tr = body.insertRow(); for (let i = 0; i < control.columns.length; i++) appendText(tr, 'td', row[i] ?? ''); }
+      const body = table.createTBody(); for (const row of control.rows) {
+        const cells = Array.isArray(row) ? row : row.cells, tr = body.insertRow();
+        for (let i = 0; i < control.columns.length; i++) { const cell = appendText(tr, 'td', i === 0 && !Array.isArray(row) ? '' : cells[i] ?? ''); if (i === 0 && !Array.isArray(row)) rowButton(cell, cells[0] ?? '', row); }
+      }
     } else if (control.kind === 'tabs') {
       const nav = document.createElement('div'); nav.setAttribute('role', 'tablist'); nav.setAttribute('aria-label', control.label); group.append(nav);
       const content = document.createElement('div'); content.setAttribute('role', 'tabpanel'); group.append(content);
@@ -86,7 +100,7 @@ export function mountInspectorView(host: HTMLElement, entry: RegisteredView, con
           let children: HTMLElement | undefined;
           if (item.children?.length) { children = document.createElement('ul'); children.id = `extension-view-tree-${crypto.randomUUID()}`; children.setAttribute('role', 'group'); children.hidden = true; row.append(children); button.setAttribute('aria-owns', children.id); button.setAttribute('aria-expanded', 'false'); addItems(children, item.children); }
           const expand = (value: boolean) => { if (children) { children.hidden = !value; button.setAttribute('aria-expanded', String(value)); } };
-          button.addEventListener('click', () => expand(children?.hidden ?? false), { signal });
+          button.addEventListener('click', () => { if (item.command) runRow(item.command, item.args); expand(children?.hidden ?? false); }, { signal });
           button.addEventListener('focus', () => { tree.querySelectorAll<HTMLElement>('[role="treeitem"]').forEach(node => { node.tabIndex = node === button ? 0 : -1; }); }, { signal });
           button.addEventListener('keydown', event => {
             if (isImeKey(event)) { if (event.key === 'Enter' || event.key === ' ') event.preventDefault(); return; }

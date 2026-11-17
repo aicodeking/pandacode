@@ -97,3 +97,9 @@
 .action-dock-group:not(:has(>button:not([hidden]):not([data-layout-hidden]),>button[data-leaving])) { display: none; }
 .workspace[data-team-hidden~="menu"] .team-progress-menu { display: none; }
 .workspace[data-team-order="menu-first"] .team-progress-menu { order: -1; }
+/* Marks a service puts on a task row (panda.sidebar.task.marks): passive badges that name their package in the title. */
+.sidebar .task-mark { flex: none; font-size: var(--ds-text-chip); font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; color: var(--muted); }
+.sidebar .task-mark[data-tone="info"] { color: var(--ds-info); }
+.sidebar .task-mark[data-tone="success"] { color: var(--ds-success); }
+.sidebar .task-mark[data-tone="warning"] { color: var(--ds-warning, var(--text)); }
+.sidebar .task-mark[data-tone="danger"] { color: var(--ds-danger); }

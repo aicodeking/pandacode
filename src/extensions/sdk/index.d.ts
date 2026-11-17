@@ -45,6 +45,20 @@ export interface InvocationContext {
   readonly dialog?: MainDialogId;
   /** Set when the command runs from the composer slash menu: the slash command, the task's harness and the arguments typed after the name (never the rest of the draft). */
   readonly slash?: { readonly command: string; readonly provider: string; readonly arguments: string };
+  /** The opaque `args` of the live item, table row or tree node that ran the command (up to 4 KiB). */
+  readonly args?: Json;
+}
+/** What a live registration is bound to: one task or one project. Checked when registered. */
+export type RuntimeScope = { readonly taskId: string } | { readonly projectId: string };
+/** One live contribution: the manifest shape of its `kind` plus an optional scope. `id`, `kind`, `location` and `command` are fixed. */
+export type RuntimeContribution = { readonly kind: 'menu' | 'command' | 'view' | 'slashCommand'; readonly id: string; readonly location?: string; readonly command?: string; readonly scope?: RuntimeScope; readonly [field: string]: Json | undefined };
+/** Changeable fields: text, badge, icon, tone, tooltip (up to 1,024 characters), progress (0-100), enabled, visible (boolean or null to restore the declared one), args, items; for a view also title, controls, toolbar. At most 20 applied per second. */
+export type RuntimePatch = { readonly text?: string; readonly badge?: string; readonly icon?: string; readonly tone?: 'neutral' | 'info' | 'success' | 'warning' | 'danger'; readonly tooltip?: string; readonly progress?: number; readonly enabled?: boolean | null; readonly visible?: boolean | null; readonly args?: Json; readonly items?: Json; readonly title?: string; readonly controls?: Json; readonly toolbar?: Json };
+export interface RuntimeItem {
+  readonly id: string;
+  update(patch: RuntimePatch): Promise<null>;
+  /** Removes the item; a handle that is gone answers NotFound. */
+  dispose(): Promise<null>;
 }
 /** Eligible main-window dialogs (`panda.dialog.<id>.actions` / `.bodyExtras`): shared modals, then module-owned and directly mounted dialogs. Destructive, credential, permission and recovery dialogs have no ID. */
 export type MainDialogId = 'recipes' | 'attachment' | 'task-details' | 'subagents' | 'task-status' | 'integrations-fallback' | 'working-directory' | 'changed-files' | 'open-project' | 'rename-task' | 'colors' | 'wallpapers' | 'opencode-models' | 'moodboards' | 'integrations' | 'jev-settings' | 'jev-assist' | 'jev-tests' | 'conversation-import' | 'bots' | 'bot-settings' | 'usage' | 'command-palette'
@@ -122,6 +136,13 @@ export interface PandaCode {
     /** Stages one validated dialog; displayed only after successful completion and reauthorization.
      * Resolves on admission, NOT on the user's answer. No live callback/DOM access is implied. */
     showDialog(dialog: DialogDefinition): Promise<null>;
+    /** Adds one live contribution (needs `runtime.service` and the `ui.dynamic` grant). Same validators as a manifest
+     * entry; the id starts with the package id; at most 128 live items. Gone when the service stops. */
+    register(item: RuntimeContribution): Promise<RuntimeItem>;
+    /** Changes fields of a live item or of an item of this package's own manifest, until the service stops. */
+    update(id: string, patch: RuntimePatch): Promise<null>;
+    /** Changes `title`, `text`, `controls` or `toolbar` of a view of this package. */
+    updateView(id: string, patch: RuntimePatch): Promise<null>;
   };
 }
 export type Activate = (panda: PandaCode, context: InvocationContext) => void | Promise<void>;

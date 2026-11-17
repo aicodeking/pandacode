@@ -24,6 +24,7 @@ import './inspector-bar.css';
 import './message-queue.css';
 import './extensions/extensions.css';
 import { threadActionSlot } from './extensions/thread-slots';
+import { taskMarks } from './extensions/runtime-dynamic-items';
 import './schedules.css';
 import './bot-shared-channels.css';
 import './bots.css';
@@ -2725,7 +2726,7 @@ function renderNavigation(): void {
       + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '')
       + (s.remoteDevice ? `<span class="task-cloud task-remote" role="img" aria-label="Runs on ${escape(s.remoteDevice.name)}" title="Runs on ${escape(s.remoteDevice.name)}">${icon('monitor')}</span>` : '');
     const branch = s.worktreePath || s.cloud || s.remoteDevice ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? branchLabel(s.worktreeBranch) : ''}</span>` : '';
-    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : '<span class="task-indicator" aria-hidden="true"></span>'}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}`;
+    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : '<span class="task-indicator" aria-hidden="true"></span>'}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}${taskMarks(s.id, s.projectId).map(mark => `<span class="task-mark" data-tone="${escape(mark.tone)}" data-extension="${escape(mark.owner)}" role="img" aria-label="${escape(mark.title)}" title="${escape(mark.title)}">${escape(mark.text)}</span>`).join('')}`;
     const stage = taskStage(s), done = stage === 'completed';
     const selected = s.id === state.sessionId;
     const button = `<button class="task-item${card ? '' : ' task-oneline'}${selected ? ' selected' : ''}${unread ? ' unread' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="true" data-reorderable="${reorderable}" data-pinned="${Boolean(s.pinned)}" tabindex="-1" ${reorderable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} ${selected ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape([s.title, showProject || card ? chatTask(s) ? 'Chat' : p?.name ?? '' : '', s.worktreeBranch ?? ''].filter(Boolean).join('\n'))}">`;
@@ -5269,7 +5270,11 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
 // Tells extension services (events.workspace) which task this window shows now; the host sends ids only.
-function reportTaskShown(sessionId: string): void { void call('extensions_workspace_task_shown', { sessionId }).catch(() => undefined); }
+function reportTaskShown(sessionId: string): void {
+  void call('extensions_workspace_task_shown', { sessionId }).catch(() => undefined);
+  // A scoped live contribution follows the task this window shows (runtime-dynamic-items.ts).
+  void import('./extensions/runtime-dynamic-items').then(items => items.setShown(sessionId, state.sessions.find(task => task.id === sessionId)?.projectId ?? null));
+}
 function selectSession(id: string, focusComposer = false, restoring = false): Promise<void> {
   if (!restoring) threadNavigation++;
   if (id !== state.sessionId) voiceDictation.detach();

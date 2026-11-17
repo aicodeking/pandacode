@@ -47,6 +47,7 @@ checks it against the ledger.
 | sections | `panda.sidebar.sections`, `panda.sidebar.rows`, `panda.sidebar.context` | yes | yes | toggle-section, completed-more, folder-more, select-task, task-menu, settle, reopen | Active never hides; Settled stays docked |
 | project.context | `panda.sidebar.project.context` | yes | yes | — | existing captured project menu |
 | task.context | `panda.sidebar.task.context` | yes | yes | task-menu opens it | existing captured task menu |
+| task.marks | `panda.sidebar.task.marks` | yes | yes | — | run-time badges of a service on a task row ([runtime-dynamic-items](runtime-dynamic-items.md)) |
 | bots | `panda.sidebar.bots`, `.groups`, `.rows`, `.protected`, `panda.sidebar.bots.actions`, `panda.sidebar.bots.context`, `panda.sidebar.channel.context` | yes | yes | toggle-view, search, mark-read, create-menu, new-bot, new-channel, toggle-hidden, open-bot, bot-settings, bot-menu, open-channel, channel-menu | own `sidebarBotsPresentation` contract; see [Bots panel](#bots-panel) |
 
 ## Contract and policy

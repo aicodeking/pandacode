@@ -8,6 +8,7 @@ import { openExtensionDialog } from './dialogs';
 import type { DialogDefinition } from './dialog-state';
 import type { ContextReply } from './context-state';
 import type { Json } from './contracts';
+import { itemArgs } from './runtime-dynamic-items';
 
 export const EXECUTABLE_WARNING = 'This is trusted executable code under your normal OS account. It can read and write user-accessible files, access credentials available to your account, use the network, and start programs. PandaCode API grants are not an OS sandbox and do not constrain independent OS calls. No automatic elevation. Revoking trust stops future managed activation and owned work where possible; it cannot undo prior effects or contain deliberately hostile trusted code.';
 
@@ -24,6 +25,9 @@ export function openExecutableCommand(id: string, version: string, context: Reco
   if (tool) return openToolCommand(id, version, context, tool, trigger, onClose);
   if (document.querySelector('[data-executable-command]')) return () => {};
   const captured = structuredClone(context), requestId = crypto.randomUUID();
+  // The arguments the clicked item (or row) was declared with reach the command once, as `context.args`.
+  const clicked = itemArgs(extensionsSnapshot(), id);
+  if (clicked !== undefined && captured.args === undefined) captured.args = clicked;
   const panel = document.createElement('section'); panel.className = 'extension-context-inspector ds-card'; panel.dataset.executableCommand = id;
   panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Executable command');
   const heading = document.createElement('h2'); heading.textContent = 'Executable command';

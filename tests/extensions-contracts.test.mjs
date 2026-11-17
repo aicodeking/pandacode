@@ -45,7 +45,7 @@ for (const fixture of corpus.cases) {
 test('extensions contracts: normative schema uses only the supported validation vocabulary', () => {
   assert.equal(corpus.schemaVersion, 1);
   assert.equal(schema.$id, 'pandacode:extensions:contracts:1');
-  const keywords = new Set(['$ref', 'type', 'minLength', 'maxLength', 'pattern', 'enum', 'const', 'anyOf', 'required', 'additionalProperties', 'properties', 'maxProperties', 'items', 'minItems', 'maxItems', 'minimum', 'maximum']);
+  const keywords = new Set(['$ref', 'type', 'minLength', 'maxLength', 'pattern', 'enum', 'const', 'anyOf', 'required', 'additionalProperties', 'properties', 'maxProperties', 'items', 'minItems', 'maxItems', 'minimum', 'maximum', 'x-opaqueJson']);
   function visit(node) {
     for (const [key, value] of Object.entries(node)) {
       assert.ok(keywords.has(key), `unimplemented keyword ${key} requires both validators to change`);
