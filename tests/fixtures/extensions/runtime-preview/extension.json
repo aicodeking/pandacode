@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.runtime-preview",
+  "version": "1.0.0",
+  "name": "Runtime preview",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.notify", "ui.dynamic", "tasks.summary"],
+  "runtime": { "kind": "node", "entrypoint": "service.mjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.runtime-preview/open", "title": "Open runtime preview", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.runtime-preview/header", "location": "panda.workspace.header.actions", "command": "sample.runtime-preview/open", "presentation": "button", "text": "Preview" }
+    ],
+    "settings": [{ "id": "sample.runtime-preview/preferences", "title": "Runtime preview preferences", "fields": [
+      { "id": "label", "kind": "text", "label": "Label", "value": "Preview", "required": true }
+    ] }]
+  }
+}
