@@ -130,7 +130,7 @@ export const settled = async (id: string): Promise<boolean> => !await settledCha
 
 /* ----- Keeping a pick on screen through a task read before it saved ----- */
 /** The task fields each kind of pick writes. */
-type ChoiceField = 'provider' | 'model' | 'reasoningEffort' | 'codexSettings' | 'contextUsage' | 'mode';
+export type ChoiceField = 'provider' | 'model' | 'reasoningEffort' | 'codexSettings' | 'contextUsage' | 'mode';
 const MODEL_FIELDS: readonly ChoiceField[] = ['provider', 'model', 'reasoningEffort', 'codexSettings', 'contextUsage'];
 const CHOICE_FIELDS: readonly ChoiceField[] = [...MODEL_FIELDS, 'mode'];
 /** Counts every pick's write to a task, and for each task the count at each field's last write. Marks only matter to
@@ -139,8 +139,11 @@ let writes = 0;
 const written = new Map<string, ReadonlyMap<ChoiceField, number>>();
 /** Native task reads in flight (`beginRead`), by read: the write count when each began. */
 const openReads = new Map<symbol, number>();
-/** Model changes saving (not permission ones, which share `switches`). */
-const modelsSaving = new Set<string>();
+/** Model changes saving per task (not permission ones, which share `switches`): a count, so the first of two picks
+ *  to finish does not stop holding the fields the other still saves. */
+const modelsSaving = new Map<string, number>();
+/** Each task's newest model pick: an older one's reply or refusal must not paint over it. */
+const latestPick = new Map<string, symbol>();
 /** Holds a newer copy of the task and marks the fields this pick wrote (for the reads already open). */
 function put(task: Session, fields: readonly ChoiceField[]): void {
   writes += 1;
@@ -162,33 +165,40 @@ export function forgetTasks(ids: Iterable<string>): void { for (const id of ids)
 /** How many tasks carry marks (for tests: they must not pile up). */
 export const markedTasks = (): number => written.size;
 /** A task as a read begun at `since` saw it, keeping the fields a pick wrote after the read began or is still saving:
- *  native stores a pick a little later, so an earlier read would put the old model back on screen. */
-function heldChoices(listed: Session, since: number): Session {
+ *  native stores a pick a little later, so an earlier read would put the old model back on screen. `owned` are the
+ *  fields the read's own command wrote (`fieldsWrittenBy`): its reply is what native stored for them, so they pass. */
+function heldChoices(listed: Session, since: number, owned: readonly ChoiceField[] = []): Session {
   const local = hooks.task(listed.id), marks = written.get(listed.id);
   if (!local || (!marks && !saving(listed.id))) return listed;
   const savingField = (field: ChoiceField) => field === 'mode' ? modesSaving.has(listed.id)
     : modelsSaving.has(listed.id) || (field === 'reasoningEffort' && efforts.has(listed.id));
-  const kept = CHOICE_FIELDS.filter(field => savingField(field) || (marks?.get(field) ?? 0) > since);
+  const kept = CHOICE_FIELDS.filter(field => !owned.includes(field) && (savingField(field) || (marks?.get(field) ?? 0) > since));
   return kept.length ? { ...listed, ...Object.fromEntries(kept.map(field => [field, local[field]])) } : listed;
 }
 /** A native read of tasks (a listing, get_task, or any command answering with the updated task) about to start: `hold`
  *  each task it brings before putting it in state, and `end` it once they are in (twice is harmless). */
 export type TaskRead = { hold(task: Session): Session; end(): void };
-export function beginRead(): TaskRead {
+export function beginRead(owned: readonly ChoiceField[] = []): TaskRead {
   const key = Symbol('read'), since = writes;
   openReads.set(key, since);
   return {
-    hold: task => heldChoices(task, since),
+    hold: task => heldChoices(task, since, owned),
     end: () => { if (openReads.delete(key)) pruneWritten(); },
   };
 }
+/** The pick fields a native command itself writes, so its reply is authoritative for them: a speed, plan or fast
+ *  change (set_task_preference) answers with the task's new codexSettings, which a model change saving meanwhile must
+ *  not mask with the copy held before it. */
+const WRITES: Readonly<Record<string, readonly ChoiceField[]>> = { set_task_preference: ['codexSettings'] };
+export const fieldsWrittenBy = (command: string): readonly ChoiceField[] => WRITES[command] ?? [];
 /** Whether a native reply is a task (get_task, an update's answer) rather than something else a command returns. */
 const isTask = (value: unknown): value is Session => typeof value === 'object' && value !== null
   && typeof (value as Session).id === 'string' && typeof (value as Session).provider === 'string' && 'model' in value;
 /** A native call (`read` starts it) whose reply may be a task or a list of tasks: each comes back with the fields a pick
- *  still saving, or written while the call ran, kept. Any other reply is returned as it is. */
-export async function readTasks<T>(read: () => Promise<T>): Promise<T> {
-  const open = beginRead();
+ *  still saving, or written while the call ran, kept, except those the call itself wrote (`owned`, from
+ *  `fieldsWrittenBy`). Any other reply is returned as it is. */
+export async function readTasks<T>(read: () => Promise<T>, owned: readonly ChoiceField[] = []): Promise<T> {
+  const open = beginRead(owned);
   try {
     const reply = await read();
     const hold = (value: unknown) => isTask(value) ? open.hold(value) : value;
@@ -201,15 +211,18 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
  *  which runs (and wakes them) even when `save` throws; a throw counts as not saved and is reported. */
 export function switchModel(id: string, save: () => Promise<boolean>, after: (saved: boolean) => void): Promise<boolean> {
   busy(id, 1);
-  const run = (async () => {
+  // A second change made while this one saves takes the task's slot: finishing first must not clear it from under that one.
+  let run: Promise<boolean> | undefined, done = false;
+  run = (async () => {
     let saved = false;
     try { saved = await save(); } catch (error) { console.error(error); hooks.notify(message(error)); } finally {
-      busy(id, -1); switches.delete(id);
+      done = true;
+      busy(id, -1); if (switches.get(id) === run) switches.delete(id);
       try { after(saved); } finally { wake(id); }
     }
     return saved;
   })();
-  switches.set(id, run);
+  if (!done) switches.set(id, run);
   return run;
 }
 
@@ -245,7 +258,15 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
   let previousEffort = previous.reasoningEffort;
   const harness = choice.provider !== previous.provider;
   sentWarm.delete(id); refused.delete(id);
-  modelsSaving.add(id);
+  count(modelsSaving, id, 1);
+  const pick = Symbol('pick');
+  latestPick.set(id, pick);
+  const superseded = () => latestPick.get(id) !== pick;
+  /** The task with a newer pick's model fields, as shown, kept over `task`. */
+  const keepNewer = (task: Session): Session => {
+    const shown = hooks.task(id);
+    return shown ? { ...task, ...Object.fromEntries(MODEL_FIELDS.map(field => [field, shown[field]])) } : task;
+  };
   const run = switchModel(id, async () => {
     // A model picked while an effort change saves goes after it, so the effort reply can't land on the new model.
     for (let queue = efforts.get(id); queue; queue = efforts.get(id)) {
@@ -255,10 +276,16 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     let left: string | null = null;
     try {
       left = await leaveTeam(id);
-      put(await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) }), MODEL_FIELDS);
+      // task-read-guard: ok the pick's own reply, put with its fields marked
+      const saved = await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) });
+      put(superseded() ? keepNewer(saved) : saved, MODEL_FIELDS);
     } catch (error) {
       console.error(error);
-      const restored = { ...(hooks.task(id) ?? previous), provider: previous.provider, model: previous.model, reasoningEffort: previousEffort, codexSettings: previous.codexSettings, contextUsage: previous.contextUsage };
+      // A newer pick is saving: its outcome decides what shows, and it reports its own refusal.
+      if (superseded()) return false;
+      const now = hooks.task(id) ?? previous;
+      // The pick only cleared codexSettings for a new harness; on the same one a speed change saved meanwhile stays.
+      const restored = { ...now, provider: previous.provider, model: previous.model, reasoningEffort: previousEffort, codexSettings: harness ? previous.codexSettings : now.codexSettings, contextUsage: previous.contextUsage };
       put(restored, MODEL_FIELDS);
       hooks.notify(`Model not changed — still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}: ${message(error)}`);
       refused.set(id, { what: 'model', reason: message(error) });
@@ -266,7 +293,11 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     }
     try { await settlePick(id, choice, harness); } catch (error) { console.error(error); hooks.notify(message(error)); }
     return true;
-  }, saved => { modelsSaving.delete(id); ui.repaint(saved, harness); });
+  }, saved => {
+    count(modelsSaving, id, -1);
+    if (!superseded()) latestPick.delete(id);
+    ui.repaint(saved, harness);
+  });
   // Shown once the save is registered, so the repaint already marks the trigger busy.
   // A new harness or model starts at its default effort; the same model keeps its effort, as native does.
   const sameModel = !harness && (choice.model || 'default') === (previous.model || 'default');
@@ -308,6 +339,7 @@ export async function pickEffort(id: string, effort: string | null, ui: PickUi):
   try {
     await saveEffort(id, effort, {
       initial: hooks.task(id)?.reasoningEffort ?? null,
+      // task-read-guard: ok the effort queue's own reply, confirmed and painted by saveEffort
       request: () => call<Session>('set_reasoning_effort', { sessionId: id, reasoningEffort: effort, ...warmArg(ui.warm) }),
       confirmed: updated => updated.reasoningEffort ?? null,
       paint: value => setField(id, { reasoningEffort: value }, ui),

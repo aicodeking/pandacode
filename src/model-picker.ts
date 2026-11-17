@@ -6,7 +6,9 @@ import { showPopover, hidePopover } from './popover-motion';
 import { trackSegment } from './motion';
 
 /** A named agent team from Settings, offered beside the models. `detail` is one line ("lead · N workers"); `roster` its harnesses. */
-export type PickerTeam = { id: string; name: string; detail: string; provider: ProviderId; roster?: ProviderId[]; selected: boolean };
+/** `detail` ("lead · N workers") is read at each render: a catalog landing while the picker is open names the lead as
+ *  the harness lists it ("Claude Opus 5"), not by the alias known before ("Claude Opus"). */
+export type PickerTeam = { id: string; name: string; detail: () => string; provider: ProviderId; roster?: ProviderId[]; selected: boolean };
 type ModelPickerOptions = {
   teams?: PickerTeam[];
   onTeamSelect?: (id: string) => Promise<void>;
@@ -210,7 +212,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   }
 
   function teamRow(team: PickerTeam): string {
-    return `<button type="button" role="option" tabindex="-1" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(`${team.name} · ${team.detail}`)}" ${team.selected ? 'aria-current="true"' : ''}>${teamLogos(team)}<span class="model-menu-name">${escape(team.name)}</span><span class="model-menu-meta">${teamDetail(team.detail)}</span>${team.selected ? icon('check', 'model-menu-check') : ''}</button>`;
+    return `<button type="button" role="option" tabindex="-1" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(`${team.name} · ${team.detail()}`)}" ${team.selected ? 'aria-current="true"' : ''}>${teamLogos(team)}<span class="model-menu-name">${escape(team.name)}</span><span class="model-menu-meta">${teamDetail(team.detail())}</span>${team.selected ? icon('check', 'model-menu-check') : ''}</button>`;
   }
 
   /** One line: name left, context (or the harness in mixed lists) right, a check on the current model. */
@@ -242,7 +244,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const recent = recentRows(all);
     const railKeys = [...(recent.length ? ['recent'] : []), ...(teams.length ? ['teams'] : []), ...all.map(group => group.key)];
     if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
-    const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail, 'team'], normalized)) : teams;
+    const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail(), 'team'], normalized)) : teams;
     const namedHarness = all.some(group => [group.provider.id, group.provider.name, group.name].some(name => name.toLowerCase() === normalized));
     const hits = new Map<string, Row[]>();
     if (query) for (const group of all) {

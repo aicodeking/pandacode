@@ -690,6 +690,17 @@ test('a picked model shows on the trigger before configure_session answers', asy
 
 test('a refused switch puts the previous model back and says why', async ({ page }) => {
   await loadHeld(page);
+  // Until Claude Code's catalog lands at startup, the trigger names the model by the harness's alias ("Claude Sonnet");
+  // then by the catalog's name, which is what a refusal puts back. Capture the label once it is catalog-resolved.
+  const listed = await page.evaluate(async () => {
+    const { invoke } = await import((window as any).__pandacodePreviewUrl);
+    const id = document.querySelector<HTMLElement>('#prompt')?.dataset.sessionId;
+    const current = await invoke('get_task', { sessionId: id });
+    const catalog: { id: string; name: string }[] = await invoke('list_provider_models', { provider: current.provider });
+    return catalog.find(model => model.id === (current.model || 'default'))?.name;
+  });
+  expect(listed, 'the task model is in its catalog').toBeTruthy();
+  await expect(trigger(page).locator('[data-model-label]')).toHaveText(listed!);
   const before = await trigger(page).locator('[data-model-label]').textContent();
   await holdCall(page, 'configure_session');
   await pickAstra(page);

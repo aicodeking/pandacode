@@ -162,6 +162,67 @@ test('marks: kept only while a read could predate them, and dropped for deleted 
   assert.equal(switcher.markedTasks(), 0, 'ending twice is harmless');
 });
 
+test('two model picks saving: the first to finish leaves the other held, and settled waits for both', async () => {
+  tasks.set('k', stored('k'));
+  const first = switcher.pickModel('k', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('k', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  let settled = false;
+  const waiting = switcher.settled('k').then(() => { settled = true; });
+  await reply('configure_session', args => stored('k', { model: args.model }));
+  assert.equal(await first, true);
+  // The first reply does not paint over the second pick, which still saves: a read now (native has not stored it) keeps it.
+  assert.equal(tasks.get('k').model, 'haiku');
+  assert.equal((await switcher.readTasks(async () => stored('k', { model: 'opus' }))).model, 'haiku');
+  assert.equal(switcher.saving('k'), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'still saving the second pick');
+  await reply('configure_session', args => stored('k', { model: args.model }));
+  assert.equal(await second, true);
+  await waiting;
+  assert.equal(switcher.saving('k'), false);
+  assert.equal((await switcher.readTasks(async () => stored('k', { model: 'other' }))).model, 'other');
+});
+
+test('an older pick refused while a newer one saves leaves the newer one shown and lets it decide', async () => {
+  tasks.set('n', stored('n'));
+  const first = switcher.pickModel('n', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('n', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await first, false);
+  assert.equal(tasks.get('n').model, 'haiku');
+  await reply('configure_session', args => stored('n', { model: args.model }));
+  assert.equal(await second, true);
+  assert.equal(await switcher.settledChange('n'), null, 'the newest pick saved: nothing refused');
+});
+
+test('a speed change answering while a model change saves is believed for codexSettings, held for the model', async () => {
+  tasks.set('l', stored('l', { provider: 'codex', model: 'astra', codexSettings: { serviceTier: null } }));
+  const saving = switcher.pickModel('l', { provider: 'codex', model: 'nova', warm: false, local: true }, ui);
+  const owned = switcher.fieldsWrittenBy('set_task_preference');
+  assert.deepEqual(owned, ['codexSettings']);
+  const fast = { serviceTier: 'fast' };
+  const answered = await switcher.readTasks(async () => stored('l', { provider: 'codex', model: 'astra', codexSettings: fast }), owned);
+  assert.deepEqual([answered.model, answered.codexSettings], ['nova', fast]);
+  // Any other read still holds codexSettings while the model saves.
+  assert.deepEqual((await switcher.readTasks(async () => stored('l', { provider: 'codex', codexSettings: { serviceTier: 'slow' } }))).codexSettings, { serviceTier: null });
+  assert.deepEqual(switcher.fieldsWrittenBy('get_task'), []);
+  // main.ts puts the reply in state; the model change is then refused: the speed saved meanwhile stays.
+  tasks.set('l', answered);
+  await reply('configure_session', new Error('Stop the agent first.'));
+  assert.equal(await saving, false);
+  assert.deepEqual([tasks.get('l').model, tasks.get('l').codexSettings], ['astra', fast]);
+});
+
+test('a refused pick to another harness restores the codexSettings it cleared', async () => {
+  const settings = { serviceTier: 'fast' };
+  tasks.set('m', stored('m', { provider: 'codex', model: 'astra', codexSettings: settings }));
+  const saving = switcher.pickModel('m', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  assert.equal(tasks.get('m').codexSettings, null);
+  await reply('configure_session', new Error('No.'));
+  assert.equal(await saving, false);
+  assert.deepEqual([tasks.get('m').provider, tasks.get('m').codexSettings], ['codex', settings]);
+});
+
 // A redrawn busy control's CSS pulse starts on its own clock; joinPulses puts it on the shared phase (startTime 0) at once.
 const fakeAnimation = (animationName, startTime) => ({ animationName, startTime });
 /** A composer or control: `busy` when something under it is aria-busy (the only pulses joinPulses aligns). */

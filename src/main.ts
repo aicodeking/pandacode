@@ -843,7 +843,7 @@ function replaceSession(next: Session): void { const index = state.sessions.find
  *  permission pick still saving or made while the call ran, which native may not have stored when it read
  *  (model-switch.ts readTasks). Every reply that replaces a task held in state comes through here, or, when the reply
  *  waits on something else before going in (loadSessions), through a read held open until then (beginRead). */
-function taskCall<T>(command: string, args?: Record<string, unknown>): Promise<T> { return modelSwitch.readTasks(() => call<T>(command, args)); }
+function taskCall<T>(command: string, args?: Record<string, unknown>): Promise<T> { return modelSwitch.readTasks(() => call<T>(command, args), modelSwitch.fieldsWrittenBy(command)); }
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
@@ -863,7 +863,8 @@ async function detectPullRequest(sessionId: string): Promise<void> {
   } catch { /* Detection is best effort; the branch menu can link it by hand. */ }
 }
 const worktrees = createWorktrees({
-  call, modal, closeModal, notify, notifyError, showChoices,
+  // attach, create and recreate answer with the task, which afterAttach puts in place of the one held.
+  call: taskCall, modal, closeModal, notify, notifyError, showChoices,
   session, project,
   git: () => state.git, gitError: () => state.gitError,
   draft: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '',
@@ -1023,7 +1024,7 @@ function openCommandPanel(task: Session, kind: string, argumentsText = ''): void
     if (action === 'import') { const result = await call<CommandPanel>('codex_command', { sessionId: task.id, request: { action: 'importSelected', ids: payload.ids } }); slashPicker?.refresh(); return result; }
     if (action === 'stop') { await call('codex_jobs', { sessionId: task.id, stopId: payload.id }); return load(); }
     if (action === 'resume' || action === 'fork') {
-      const adopted = await call<Session>('fork_codex_task', { sessionId: task.id, remoteId: payload.id });
+      const adopted = await taskCall<Session>('fork_codex_task', { sessionId: task.id, remoteId: payload.id });
       if (!state.sessions.some(s => s.id === adopted.id)) state.sessions.unshift(adopted);
       if (state.sessionId === task.id) { closeModal(); await selectSession(adopted.id, true); } else scheduleNavigation(); return;
     }
@@ -1944,7 +1945,7 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
     } catch { return; }
   }
   if (!choice || state.sessionId !== task.id || remoteChoice !== deviceId) return;
-  const updated = await call<Session>('configure_session', { sessionId: task.id, provider: choice.provider, model: choice.model });
+  const updated = await taskCall<Session>('configure_session', { sessionId: task.id, provider: choice.provider, model: choice.model });
   prewarmedDrafts.delete(task.id);
   const index = state.sessions.findIndex(item => item.id === task.id); if (index >= 0) state.sessions[index] = updated;
   renderComposer(); renderHeader();
@@ -4221,7 +4222,7 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   else {
     const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
     if (!harness) throw new Error('Open Settings to check your installed agents.');
-    saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
+    saved = await taskCall<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
   }
   const index = state.sessions.findIndex(s => s.id === saved.id);
   if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved;
@@ -4450,7 +4451,7 @@ async function forkAtMessage(sessionId: string, messageId: number, draft?: strin
   pendingMessageForks.add(key);
   const generation = state.generation;
   try {
-    const fork = await call<Session>('fork_session_at_message', { sessionId, messageId, exclusive: draft !== undefined });
+    const fork = await taskCall<Session>('fork_session_at_message', { sessionId, messageId, exclusive: draft !== undefined });
     state.sessions = [fork, ...state.sessions.filter(task => task.id !== fork.id)];
     if (draft) state.drafts.set(fork.id, draft);
     if (generation === state.generation) {
@@ -4684,7 +4685,7 @@ async function loadSessions(): Promise<void> {
 }
 async function loadSessionsHeld(read: modelSwitch.TaskRead): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
-  const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
+  const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'), // task-read-guard: ok held by `read`, open until both are in
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
   if (request !== sessionsReload) return;
   if (detailResult.status === 'rejected' && !deletedSessions.has(selectedId)) throw detailResult.reason;
@@ -4820,7 +4821,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     case 'usage': case 'hooks': case 'preferences': case 'imports': case 'conversations': case 'plugins': case 'jobs': openCommandPanel(task, action, argumentsText); break;
     case 'fork': {
-      const fork = await call<Session>('fork_codex_task', { sessionId: task.id }); state.sessions.unshift(fork); await selectSession(fork.id, true);
+      const fork = await taskCall<Session>('fork_codex_task', { sessionId: task.id }); state.sessions.unshift(fork); await selectSession(fork.id, true);
       if (argumentsText) await instruction(fork, argumentsText); break;
     }
     case 'archive': await call('archive_codex_task', { sessionId: task.id }); task.archived = true; render(); break;
@@ -5501,7 +5502,7 @@ async function sendDraft(): Promise<void> {
     // discarded at the next launch, and text under its id with it).
     if (wasDraft) {
       listed.draft = true; state.drafts.reclaim(s.id);
-      void call<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); renderNavigation(); }).catch(() => undefined);
+      void taskCall<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); renderNavigation(); }).catch(() => undefined);
     }
     restoreComposerDraft(s, draft);
     if (promptItemsConsumed) attachments.restore(s.id, promptItems);
@@ -5640,8 +5641,8 @@ async function applyBtwDraft(mainId: string, side: Session): Promise<Session> {
     try { return await work(); } catch (error) { throw new Error(`The side thread could not use the ${setting} you picked. ${errorText(error)}`); }
   };
   let current = side;
-  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) { current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model })); prewarmedDrafts.delete(current.id); }
-  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) { current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null })); prewarmedDrafts.delete(current.id); }
+  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) { current = await step('model', () => taskCall<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model })); prewarmedDrafts.delete(current.id); }
+  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) { current = await step('reasoning effort', () => taskCall<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null })); prewarmedDrafts.delete(current.id); }
   if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); prewarmedDrafts.delete(current.id); current = { ...current, mode: draft.mode }; }
   return current;
 }
@@ -5691,11 +5692,11 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     const page = await call<MessagePage>('get_messages', { sessionId: main.id });
     const last = [...page.messages].reverse().find(m => m.id > 0 && (m.role === 'user' || m.role === 'assistant'));
     if (!last) throw new Error('Send a first message in this task before asking on the side.');
-    side = await call<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
+    side = await taskCall<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
     link = { sideId: side.id, seenId: last.id, hiddenThrough: 0 };
   } else {
     // `team: false`: a side thread never picks up the saved default team.
-    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false, mainSessionId: main.id });
+    side = await taskCall<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false, mainSessionId: main.id });
     link = { sideId: side.id, seenId: 0 };
   }
   const title = sideTitle(prompt);
@@ -6650,7 +6651,7 @@ async function changeTaskProject(projectId: string): Promise<void> {
   const generation = state.generation;
   configuringSessions.add(selected.id);
   try {
-    const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
+    const updated = await taskCall<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
     prewarmedDrafts.delete(selected.id);
     const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
     if (chatTask(selected)) await forgetChat(selected.projectId);
@@ -6787,7 +6788,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
   modelPickerCleanup = openModelPicker({
-    teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
+    teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: () => pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
@@ -6911,7 +6912,7 @@ async function startTask(projectId: string): Promise<void> {
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
+    created = await taskCall<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
   seedFreshSession(created.id);
@@ -6939,8 +6940,8 @@ async function createChat(from?: Session): Promise<void> {
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
-    if (from?.reasoningEffort) { created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort }); prewarmedDrafts.delete(created.id); }
+    created = await taskCall<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    if (from?.reasoningEffort) { created = await taskCall<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort }); prewarmedDrafts.delete(created.id); }
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
     const connection = from && !pooled && taskConnection(from)?.id;
@@ -7047,7 +7048,7 @@ async function pinTask(id: string): Promise<void> {
   if (!task || orderingBusy) return;
   orderingBusy = true; $('#navigation').setAttribute('aria-busy', 'true');
   try {
-    const saved = await call<Session>('pin_session', { sessionId: id, pinned: !task.pinned });
+    const saved = await taskCall<Session>('pin_session', { sessionId: id, pinned: !task.pinned });
     const current = state.sessions.find(item => item.id === id);
     if (current) { current.pinned = saved.pinned; current.sidebarOrder = saved.sidebarOrder; }
     notify(saved.pinned ? 'Task pinned' : 'Task unpinned', saved.pinned ? undefined : () => run(pinTask(id)));
@@ -7059,7 +7060,7 @@ async function reorderThreads(ids: string[], focus: string): Promise<void> {
   orderingBusy = true; $('#navigation').setAttribute('aria-busy', 'true');
   // Keep navigation metadata separate from provider/stream state changed during IPC.
   try {
-    const saved = await call<Session[]>('reorder_sessions', { sessionIds: ids });
+    const saved = await taskCall<Session[]>('reorder_sessions', { sessionIds: ids });
     const ranks = new Map(saved.map(task => [task.id, task.sidebarOrder]));
     for (const task of state.sessions) if (ranks.has(task.id)) task.sidebarOrder = ranks.get(task.id);
   } finally {
@@ -7671,7 +7672,7 @@ async function assignTaskBot(task: Session, botId: string | null): Promise<void>
     if (bot) {
       taskBots.set(task.id, bot.id);
       // The bot's harness and model become the task's defaults; the picker can still change them.
-      if (bot.provider !== task.provider || bot.model !== task.model) { upsertSession(await call<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model })); prewarmedDrafts.delete(task.id); }
+      if (bot.provider !== task.provider || bot.model !== task.model) { upsertSession(await taskCall<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model })); prewarmedDrafts.delete(task.id); }
     } else taskBots.delete(task.id);
   } finally { configuringSessions.delete(task.id); }
   if (state.sessionId === task.id) render();
@@ -7873,7 +7874,7 @@ async function sendCloud(s: Session, target: CloudTarget, draft: string, text: s
   try {
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     const content = text + contexts.join('') + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
-    const started = await call<Session>('cloud_agent_start', {
+    const started = await taskCall<Session>('cloud_agent_start', {
       // The empty New task draft becomes the cloud task, so no stray draft is left behind.
       sessionId: s.id, projectId: s.projectId, provider: target.provider, prompt: content, harness: s.provider, model: s.model, mode: s.mode, effort: s.reasoningEffort ?? null,
     });
@@ -8317,7 +8318,7 @@ async function applyNextBotModel(sessionId: string): Promise<void> {
   const next = botThread.nextModel(sessionId);
   if (!next || isRunning(sessionId)) return;
   try {
-    const updated = await call<Session>('configure_session', { sessionId, provider: next.provider, model: next.model });
+    const updated = await taskCall<Session>('configure_session', { sessionId, provider: next.provider, model: next.model });
     prewarmedDrafts.delete(sessionId);
     botThread.setNextModel(sessionId, undefined);
     state.sessions = state.sessions.map(task => task.id === sessionId ? updated : task);
@@ -8792,7 +8793,7 @@ async function boot(): Promise<void> {
     call<QueuedMessage[]>('queue_list').catch(() => [] as QueuedMessage[]),
     takeCrashRecovery(),
     (async () => {
-      [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
+      [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), taskCall<Session[]>('list_sessions')]);
     })(),
     subscribe('agent-event', onAgent),
     subscribe('provider-models-changed', event => invalidateModels(event.provider)),
@@ -8865,6 +8866,11 @@ async function boot(): Promise<void> {
     if (providerGeneration !== settingsDiscoveryGeneration) return;
     state.providers = providers;
     render(); refreshModelLabels(); slashPicker?.refresh(true);
+    // The first thread's details usually land before the roster, when its harness isn't known to be installed yet, so
+    // its catalog was never asked: the trigger would name the model by the roster's alias ("Claude Sonnet") until the
+    // picker first opened, and a refused switch would then restore a different name ("Claude Sonnet 5").
+    const shown = session();
+    if (shown && provider(shown.provider)?.installed) void loadModels(shown.provider).catch(() => { /* Keep the alias if discovery is unavailable. */ });
     if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
   });
   run(providersReady.finally(() => { providerDiscovery = undefined; }));
