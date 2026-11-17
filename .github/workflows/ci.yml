@@ -645,6 +645,12 @@ jobs:
       - name: Attention inbox example, late answers and model tools (WebKit preview)
         env: { PW_PORT: '16692', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-inbox.spec.ts --workers=1
+      - name: Sign-in provider example (Chromium preview)
+        env: { PW_PORT: '16681', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-example-signin.spec.ts --workers=1
+      - name: Sign-in provider example (WebKit preview)
+        env: { PW_PORT: '16682', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-signin.spec.ts --workers=1
       - name: Arcade example, panel-only package (Chromium preview)
         env: { PW_PORT: '16641', PW_PROD: '1' }
         run: npx playwright test tests/extensions-example-arcade.spec.ts --workers=1

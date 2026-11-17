@@ -17,7 +17,8 @@
     { "dir": "upstream-acp", "id": "sample.upstream-acp", "categories": ["harness"], "executable": false },
     { "dir": "upstream-api", "id": "sample.upstream-api", "categories": ["api", "service", "harness"], "executable": true },
     { "dir": "upstream-team-tools", "id": "sample.upstream-team-tools", "categories": ["tool", "harness"], "executable": true },
-    { "dir": "live-board", "id": "sample.live-board", "categories": ["service", "workspace-surfaces"], "executable": true }
+    { "dir": "live-board", "id": "sample.live-board", "categories": ["service", "workspace-surfaces"], "executable": true },
+    { "dir": "signin", "id": "sample.signin", "categories": ["service", "harness"], "executable": true }
   ],
   "permissions": ["btw.content", "btw.taskControl", "services.call", "connections.request", "tools.execute", "ui.contribute", "ui.customize", "ui.richViews", "storage.private", "projects.summary", "tasks.summary", "harnesses.inventory", "connections.summary", "jobs.summary", "projects.files.metadata", "projects.files.read", "projects.git.read", "tasks.transcript.read", "tasks.tools.read", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.presentation", "tasks.start", "tasks.message", "tasks.draft", "tasks.control", "tasks.usage.read", "harnesses.limits.read", "harnesses.accounts.read", "harness.hooks.observe", "harness.hooks.decide", "harness.hooks.context", "harness.companions", "harness.console", "tools.model", "models.call", "secrets.private", "credentials.use", "auth.signIn", "documents.editors", "workspace.manage", "workspace.settings", "terminals.read", "terminals.write", "guests.control", "projects.checks.run", "metrics.read", "internal.unstable"],
   "priorFixtures": [

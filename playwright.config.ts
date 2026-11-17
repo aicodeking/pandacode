@@ -176,6 +176,7 @@ config.testMatch.push('**/upstream-acp-example.spec.ts');
 config.testMatch.push('**/upstream-api-tools-example.spec.ts');
 config.testMatch.push('**/extensions-example-live-board.spec.ts');
 config.testMatch.push('**/extensions-example-inbox.spec.ts');
+config.testMatch.push('**/extensions-example-signin.spec.ts');
 config.testMatch.push('**/extensions-example-arcade.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-mount.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-assets.spec.ts');

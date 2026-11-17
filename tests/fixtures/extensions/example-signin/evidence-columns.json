@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "package": "sample.signin",
+  "status": "prepared, not run (deferred to the final test phase)",
+  "columns": {
+    "preview": {
+      "file": "tests/extensions-example-signin.spec.ts",
+      "grep": "signin example:",
+      "ports": { "chromium": 16681, "webkit": 16682 },
+      "covers": ["manifest and launch admission", "sign-in success with models, account and limits", "cancel, timeout, wrong state, access_denied store nothing", "manual paste result and second-flow Conflict", "one shared refresh for two callers", "refresh timer", "revoked session returns to signed out", "rate limit: wait, then rotate with a notice", "account dialog switch and remove", "sign-out deletes secrets and no token appears anywhere", "grant loss and service stop", "fake ACP harness with two tasks and sign-out"],
+      "backends": ["B3 fake-cloud core in process", "B5 fake-agent over stdio"]
+    },
+    "native": {
+      "state": "not written in this task (R1209 owns no Rust file)",
+      "plan": "installed test in the style of runtime_provider_state::installed: install the package with the fake agent path substituted for __FAKE_AGENT__, grant the six permissions, sign in through the real loopback listener with B4 as the browser and B3 over sockets, then assert: no `tok-` in the projection, the credential activity list, logs, diagnostics or the catalog; secrets gone after remove own data; PermissionDenied without secrets.private; revoke of auth.signIn or safe mode stops the service and the host's own accounts are untouched"
+    },
+    "installed": {
+      "state": "pending: needs the installed Windows app and the qualification build opener (T1)",
+      "scenarios": ["install, enable, grant", "sign in through B4", "send on the fake harness in the real thread", "sign out and read the redacted recordings"]
+    }
+  }
+}
