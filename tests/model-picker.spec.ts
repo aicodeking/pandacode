@@ -930,6 +930,34 @@ test('the busy pulse runs on through composer repaints', async ({ page }) => {
   await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
 });
 
+// refreshModelLabels redraws the Permissions face in place when the shown mode changes; its busy pulse must keep phase.
+test('the Permissions busy pulse runs on through a label refresh', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await loadHeld(page, '/');
+  const mode = page.locator('#mode-picker-trigger');
+  await holdCall(page, 'update_session');
+  await mode.click();
+  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
+  await expect(mode).toHaveAttribute('aria-busy', 'true');
+  // Read the redrawn face's pulses as soon as it is replaced, before it has drawn a frame.
+  const starts = await page.evaluate(() => new Promise<(number | null)[] | 'not redrawn'>(resolve => {
+    const button = document.querySelector<HTMLElement>('#mode-picker-trigger')!;
+    const observer = new MutationObserver(() => {
+      observer.disconnect();
+      resolve([...button.children].flatMap(child => child.getAnimations()
+        .filter(item => (item as CSSAnimation).animationName === 'state-pulse').map(item => item.startTime as number | null)));
+    });
+    observer.observe(button, { childList: true });
+    setTimeout(() => { observer.disconnect(); resolve('not redrawn'); }, 3000);
+    button.dataset.mode = 'stale';
+    (window as any).__previewEmit('sessions-changed', {});
+  }));
+  expect(Array.isArray(starts) && starts.length > 0, `a redrawn face with pulses (${JSON.stringify(starts)})`).toBe(true);
+  expect(new Set(starts as (number | null)[])).toEqual(new Set([0]));
+  await releaseCall(page, 'update_session');
+  await expect(mode).not.toHaveAttribute('aria-busy', 'true');
+});
+
 test('reduced motion: the busy trigger does not pulse', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await loadHeld(page);

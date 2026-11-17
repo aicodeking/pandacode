@@ -260,3 +260,110 @@ test('joinPulses skips walking animations unless something under the root is bus
   switcher.joinPulses({ matches: () => true, querySelector: () => null, getAnimations: () => [pulse] });
   assert.equal(pulse.startTime, 0);
 });
+
+/* ----- Model and permission saves go to native one at a time, in pick order ----- */
+/** Lets queued saves start their next native call. */
+const ticks = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Promise(resolve => setImmediate(resolve)); };
+const pending = command => replies.filter(entry => entry.command === command);
+
+test('two model picks: the newer is not sent until the older lands, so it cannot finish first or be stored before it', async () => {
+  tasks.set('p', stored('p'));
+  let native = 'sonnet';
+  const first = switcher.pickModel('p', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('p', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  assert.equal(tasks.get('p').model, 'haiku', 'the newest pick shows at once');
+  await ticks();
+  assert.deepEqual(pending('configure_session').map(entry => entry.args.model), ['opus'], 'only the older pick is in flight');
+  let settled = false;
+  const waiting = switcher.settled('p').then(() => { settled = true; });
+  await reply('configure_session', args => { native = args.model; return stored('p', { model: args.model }); });
+  assert.equal(await first, true);
+  assert.equal(switcher.saving('p'), true, 'the newer pick still saves');
+  assert.equal(tasks.get('p').model, 'haiku');
+  await ticks();
+  assert.equal(settled, false);
+  assert.deepEqual(pending('configure_session').map(entry => entry.args.model), ['haiku']);
+  await reply('configure_session', args => { native = args.model; return stored('p', { model: args.model }); });
+  assert.equal(await second, true);
+  await waiting;
+  assert.equal(switcher.saving('p'), false);
+  assert.deepEqual([native, tasks.get('p').model], ['haiku', 'haiku'], 'native stored the newest pick last');
+});
+
+test('two model picks: the older refused, the newer still waits its turn and decides what shows', async () => {
+  tasks.set('q', stored('q'));
+  let native = 'sonnet';
+  const first = switcher.pickModel('q', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('q', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  await ticks();
+  assert.equal(pending('configure_session').length, 1);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await first, false);
+  assert.equal(switcher.saving('q'), true);
+  assert.equal(tasks.get('q').model, 'haiku');
+  await reply('configure_session', args => { native = args.model; return stored('q', { model: args.model }); });
+  assert.equal(await second, true);
+  assert.deepEqual([native, tasks.get('q').model], ['haiku', 'haiku']);
+  assert.equal(await switcher.settledChange('q'), null);
+});
+
+test('two model picks both refused go back to the model native has, not the older pick', async () => {
+  tasks.set('r', stored('r'));
+  const first = switcher.pickModel('r', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('r', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  await reply('configure_session', new Error('Busy.'));
+  await reply('configure_session', new Error('Still busy.'));
+  assert.deepEqual([await first, await second], [false, false]);
+  assert.equal(tasks.get('r').model, 'sonnet');
+});
+
+test('a model pick made while a permission pick saves goes after it; both keep the task saving until the last lands', async () => {
+  tasks.set('s', stored('s'));
+  const modeUi = { warm: false, paint() {}, name: mode => mode, trigger: () => null };
+  const mode = switcher.pickMode('s', 'full', modeUi);
+  const model = switcher.pickModel('s', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await ticks();
+  assert.equal(pending('configure_session').length, 0, 'the model waits for the permission save');
+  assert.equal(switcher.modeBusy('s'), true);
+  await reply('update_session', () => null);
+  assert.equal(await mode, true);
+  assert.equal(switcher.saving('s'), true);
+  assert.equal(switcher.modeBusy('s'), false);
+  await reply('configure_session', args => stored('s', { model: args.model, mode: 'full' }));
+  assert.equal(await model, true);
+  assert.equal(switcher.saving('s'), false);
+  assert.deepEqual([tasks.get('s').model, tasks.get('s').mode], ['opus', 'full']);
+});
+
+test('two permission picks: the older refused leaves the newer shown and busy; both refused go back to the saved one', async () => {
+  tasks.set('t', stored('t', { mode: 'ask' }));
+  const modeUi = { warm: false, paint() {}, name: mode => mode, trigger: () => null };
+  const first = switcher.pickMode('t', 'full', modeUi);
+  const second = switcher.pickMode('t', 'plan', modeUi);
+  await ticks();
+  assert.deepEqual(pending('update_session').map(entry => entry.args.mode), ['full']);
+  await reply('update_session', new Error('Busy.'));
+  assert.equal(await first, false);
+  assert.equal(tasks.get('t').mode, 'plan');
+  assert.equal(switcher.modeBusy('t'), true, 'the newer permission pick still saves');
+  await reply('update_session', new Error('Still busy.'));
+  assert.equal(await second, false);
+  assert.equal(tasks.get('t').mode, 'ask');
+  assert.equal(switcher.modeBusy('t'), false);
+});
+
+test('every command that writes pick fields is authoritative for them in its own reply', () => {
+  assert.deepEqual([...switcher.fieldsWrittenBy('configure_session')].sort(), ['codexSettings', 'contextUsage', 'model', 'provider', 'reasoningEffort']);
+  assert.deepEqual(switcher.fieldsWrittenBy('set_reasoning_effort'), ['reasoningEffort']);
+});
+
+test('a configure_session answering (a bot’s model) while a pick saves is believed for the model fields', async () => {
+  tasks.set('u', stored('u'));
+  const saving = switcher.pickEffort('u', 'high', { warm: false, paint() {} });
+  const answered = await switcher.readTasks(async () => stored('u', { provider: 'codex', model: 'astra', reasoningEffort: 'medium' }), switcher.fieldsWrittenBy('configure_session'));
+  assert.deepEqual([answered.provider, answered.model, answered.reasoningEffort], ['codex', 'astra', 'medium']);
+  const effort = await switcher.readTasks(async () => stored('u', { reasoningEffort: 'xhigh' }), switcher.fieldsWrittenBy('set_reasoning_effort'));
+  assert.equal(effort.reasoningEffort, 'xhigh');
+  await reply('set_reasoning_effort', args => stored('u', { reasoningEffort: args.reasoningEffort }));
+  await saving;
+});

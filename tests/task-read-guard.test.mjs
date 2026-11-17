@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // A native reply that is a task (or tasks) replaces the one held in state. If it was read before a model, effort or
 // permission pick saved, it puts the old choice back on screen, so every such call goes through main.ts' taskCall
@@ -9,7 +10,7 @@ import { join, relative } from 'node:path';
 // that can answer with a task. An intended one says why on its line or the line before:
 //   // task-read-guard: ok <reason>
 
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const ESCAPE = /\/\/\s*task-read-guard:\s*ok\s+\S/;
 
 function files(dir, pattern) {

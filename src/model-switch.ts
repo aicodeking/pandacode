@@ -1,7 +1,8 @@
 /**
  * Model, effort and permission changes that show at once and save behind (the model picker's optimistic switch).
  *
- * Per task, at most one model or permission change saves at a time, and effort changes queue so replies arrive in order. Anything
+ * Per task, model and permission changes save one at a time in pick order (each waits for the one before), and effort
+ * changes queue the same way, so native stores them in the order they were made. Anything
  * that must follow the saved choice (a send, a board start, reopening the picker) waits with `settled()`. Waiters are
  * woken explicitly after each save's bookkeeping (busy cleared, labels repainted), never by racing a promise that
  * other code also awaits, so what they see does not depend on the order promises settle in.
@@ -53,7 +54,7 @@ window.addEventListener('pandacode:start-ahead', event => { startAhead = (event 
 const warmOn = (): boolean => startAhead === true;
 const warmArg = (warm: boolean) => warm && warmOn() ? { warm: true } : {};
 
-/** Model changes saving, by task, resolving to whether the change saved. */
+/** Each task's newest model or permission change, resolving to whether it saved: the next change waits for it. */
 const switches = new Map<string, Promise<boolean>>();
 /** Effort changes per task: requests in flight, the newest one's number, the last effort the backend confirmed. */
 type EffortQueue = { seq: number; inFlight: number; confirmed: string | null; chain: Promise<unknown> };
@@ -92,10 +93,11 @@ export const unchangedText = ({ what, reason }: Unchanged): string =>
 export const saving = (id: string): boolean => switches.has(id) || efforts.has(id);
 /** Whether the task's send button or model trigger should show it is held (aria-busy). */
 export const sendHeld = (id: string): boolean => sendsHeld.has(id);
-export const triggerBusy = (id: string): boolean => (switches.has(id) && !modesSaving.has(id)) || opensHeld.has(id);
+export const triggerBusy = (id: string): boolean => modelsSaving.has(id) || opensHeld.has(id);
 /** Whether the task's permissions button should show its pick is saving (aria-busy). */
 export const modeBusy = (id: string): boolean => modesSaving.has(id) || modeOpensHeld.has(id);
-const modesSaving = new Set<string>();
+/** Permission changes saving per task: a count, so the first of two to finish leaves the button busy for the other. */
+const modesSaving = new Map<string, number>();
 const modeOpensHeld = new Map<string, number>();
 
 /* ----- Busy pulses ----- */
@@ -144,6 +146,12 @@ const openReads = new Map<symbol, number>();
 const modelsSaving = new Map<string, number>();
 /** Each task's newest model pick: an older one's reply or refusal must not paint over it. */
 const latestPick = new Map<string, symbol>();
+/** While a task's model picks save: the task as native last confirmed it (before the first pick, then each saved
+ *  reply), which a refused pick goes back to (not an older pick that was only shown, or itself refused). */
+const modelBase = new Map<string, Session>();
+/** The same for permission picks: each task's newest one, and the permissions native last confirmed. */
+const latestMode = new Map<string, symbol>();
+const modeBase = new Map<string, Session['mode']>();
 /** Holds a newer copy of the task and marks the fields this pick wrote (for the reads already open). */
 function put(task: Session, fields: readonly ChoiceField[]): void {
   writes += 1;
@@ -188,8 +196,14 @@ export function beginRead(owned: readonly ChoiceField[] = []): TaskRead {
 }
 /** The pick fields a native command itself writes, so its reply is authoritative for them: a speed, plan or fast
  *  change (set_task_preference) answers with the task's new codexSettings, which a model change saving meanwhile must
- *  not mask with the copy held before it. */
-const WRITES: Readonly<Record<string, readonly ChoiceField[]>> = { set_task_preference: ['codexSettings'] };
+ *  not mask with the copy held before it; a configure or effort change made through taskCall likewise answers with
+ *  the model or effort it stored. */
+const WRITES: Readonly<Record<string, readonly ChoiceField[]>> = {
+  set_task_preference: ['codexSettings'],
+  // A bot's, a side thread's or another computer's model, or a project move: native's reply is the model it stored.
+  configure_session: MODEL_FIELDS,
+  set_reasoning_effort: ['reasoningEffort'],
+};
 export const fieldsWrittenBy = (command: string): readonly ChoiceField[] => WRITES[command] ?? [];
 /** Whether a native reply is a task (get_task, an update's answer) rather than something else a command returns. */
 const isTask = (value: unknown): value is Session => typeof value === 'object' && value !== null
@@ -207,13 +221,16 @@ export async function readTasks<T>(read: () => Promise<T>, owned: readonly Choic
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-/** Saves a model or permission change: `save` resolves whether it saved, `after` repaints. Waiters resume after `after`,
- *  which runs (and wakes them) even when `save` throws; a throw counts as not saved and is reported. */
+/** Saves a model or permission change after the task's previous one has landed (so native gets them in pick order):
+ *  `save` resolves whether it saved, `after` repaints. Waiters resume after the last change's `after`, which runs (and
+ *  wakes them) even when `save` throws; a throw counts as not saved and is reported. */
 export function switchModel(id: string, save: () => Promise<boolean>, after: (saved: boolean) => void): Promise<boolean> {
   busy(id, 1);
-  // A second change made while this one saves takes the task's slot: finishing first must not clear it from under that one.
+  // The newest change holds the task's slot until it lands, so saving() stays true until every change has settled.
+  const before = switches.get(id);
   let run: Promise<boolean> | undefined, done = false;
   run = (async () => {
+    if (before) await before;
     let saved = false;
     try { saved = await save(); } catch (error) { console.error(error); hooks.notify(message(error)); } finally {
       done = true;
@@ -255,10 +272,10 @@ async function settlePick(id: string, choice: ModelChoice, harness: boolean): Pr
 export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; repaint(saved: boolean, harness: boolean): void }): Promise<boolean> {
   const previous = hooks.task(id);
   if (!previous) return Promise.resolve(false);
-  let previousEffort = previous.reasoningEffort;
   const harness = choice.provider !== previous.provider;
   sentWarm.delete(id); refused.delete(id);
   count(modelsSaving, id, 1);
+  if (!modelBase.has(id)) modelBase.set(id, previous);
   const pick = Symbol('pick');
   latestPick.set(id, pick);
   const superseded = () => latestPick.get(id) !== pick;
@@ -268,6 +285,9 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     return shown ? { ...task, ...Object.fromEntries(MODEL_FIELDS.map(field => [field, shown[field]])) } : task;
   };
   const run = switchModel(id, async () => {
+    // What a refusal goes back to: native's model once the picks before this one have landed.
+    const base = modelBase.get(id) ?? previous;
+    let previousEffort = base.reasoningEffort;
     // A model picked while an effort change saves goes after it, so the effort reply can't land on the new model.
     for (let queue = efforts.get(id); queue; queue = efforts.get(id)) {
       await queue.chain;
@@ -278,14 +298,15 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
       left = await leaveTeam(id);
       // task-read-guard: ok the pick's own reply, put with its fields marked
       const saved = await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) });
+      if (modelBase.has(id)) modelBase.set(id, saved);
       put(superseded() ? keepNewer(saved) : saved, MODEL_FIELDS);
     } catch (error) {
       console.error(error);
       // A newer pick is saving: its outcome decides what shows, and it reports its own refusal.
       if (superseded()) return false;
-      const now = hooks.task(id) ?? previous;
+      const now = hooks.task(id) ?? base;
       // The pick only cleared codexSettings for a new harness; on the same one a speed change saved meanwhile stays.
-      const restored = { ...now, provider: previous.provider, model: previous.model, reasoningEffort: previousEffort, codexSettings: harness ? previous.codexSettings : now.codexSettings, contextUsage: previous.contextUsage };
+      const restored = { ...now, provider: base.provider, model: base.model, reasoningEffort: previousEffort, codexSettings: choice.provider !== base.provider ? base.codexSettings : now.codexSettings, contextUsage: base.contextUsage };
       put(restored, MODEL_FIELDS);
       hooks.notify(`Model not changed — still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}: ${message(error)}`);
       refused.set(id, { what: 'model', reason: message(error) });
@@ -295,7 +316,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     return true;
   }, saved => {
     count(modelsSaving, id, -1);
-    if (!superseded()) latestPick.delete(id);
+    if (!superseded()) { latestPick.delete(id); modelBase.delete(id); }
     ui.repaint(saved, harness);
   });
   // Shown once the save is registered, so the repaint already marks the trigger busy.
@@ -316,19 +337,32 @@ function setField(id: string, patch: Partial<Pick<Session, ChoiceField>>, ui: Pi
 
 /** Permissions the user picked: shown at once with the button busy, saved behind; a refusal restores them and says so. */
 export function pickMode(id: string, mode: Session['mode'], ui: PickUi & { name(mode: Session['mode']): string; trigger(): HTMLElement | null }): Promise<boolean> {
-  const before = hooks.task(id)?.mode ?? mode;
-  modesSaving.add(id); refused.delete(id);
+  if (!modeBase.has(id)) modeBase.set(id, hooks.task(id)?.mode ?? mode);
+  count(modesSaving, id, 1); refused.delete(id);
+  const pick = Symbol('mode');
+  latestMode.set(id, pick);
+  const superseded = () => latestMode.get(id) !== pick;
   const run = switchModel(id, async () => {
-    try { await call('update_session', { sessionId: id, mode, ...warmArg(ui.warm) }); return true; } catch (error) {
+    try {
+      await call('update_session', { sessionId: id, mode, ...warmArg(ui.warm) });
+      if (modeBase.has(id)) modeBase.set(id, mode);
+      return true;
+    } catch (error) {
       console.error(error);
+      // A newer pick is saving: its outcome decides what shows, and it reports its own refusal.
+      if (superseded()) return false;
+      const before = modeBase.get(id) ?? mode;
       setField(id, { mode: before }, ui);
       hooks.notify(`Permissions not changed — still ${ui.name(before)}: ${message(error)}`);
       refused.set(id, { what: 'permissions', reason: message(error) });
       return false;
     }
-  }, () => { modesSaving.delete(id); ui.trigger()?.removeAttribute('aria-busy'); });
+  }, () => {
+    if (!superseded()) { latestMode.delete(id); modeBase.delete(id); }
+    if (count(modesSaving, id, -1) === 0 && !modeOpensHeld.has(id)) ui.trigger()?.removeAttribute('aria-busy');
+  });
   setField(id, { mode }, ui);
-  ui.trigger()?.setAttribute('aria-busy', 'true');
+  ui.trigger()?.setAttribute('aria-busy', 'true'); joinPulses(ui.trigger());
   return run;
 }
 
@@ -370,6 +404,9 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
   try {
     const confirmed = options.confirmed(await reply);
     efforts.set(id, { ...efforts.get(id)!, confirmed });
+    // A model pick saving goes back to the effort native now has, should it be refused.
+    const base = modelBase.get(id);
+    if (base) modelBase.set(id, { ...base, reasoningEffort: confirmed });
     if (latest()) options.paint(confirmed);
   } catch (error) {
     if (!latest()) throw new SupersededEffort(error instanceof Error ? error.message : String(error));

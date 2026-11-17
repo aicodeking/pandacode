@@ -1539,6 +1539,8 @@ function refreshModelLabels(): void {
   if (modeTrigger && modeTrigger.dataset.mode !== mode.id) {
     modeTrigger.dataset.mode = mode.id; modeTrigger.dataset.tip = modeTip(mode); modeTrigger.setAttribute('aria-label', modeName(mode)); modeTrigger.setAttribute('aria-description', mode.description);
     modeTrigger.innerHTML = modeFaceHtml(mode);
+    // The new face's busy pulse joins the shared phase rather than restarting (a blink mid-save).
+    modelSwitch.joinPulses(modeTrigger);
     trayStateChanged();
   }
   council.sync(s.id);
