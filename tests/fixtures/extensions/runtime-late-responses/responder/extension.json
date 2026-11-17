@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.late-responder",
+  "name": "Late responder",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "harness.hooks.observe", "harness.hooks.decide"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.late-responder/respond", "title": "Answer a waiting request", "action": { "kind": "runCommand" } },
+      { "id": "sample.late-responder/control", "title": "Late responder control", "action": { "kind": "runCommand" } }
+    ],
+    "hooks": [
+      { "id": "sample.late-responder/approval-pending", "event": "approval.pending" },
+      { "id": "sample.late-responder/question-pending", "event": "question.pending" },
+      { "id": "sample.late-responder/approval-resolved", "event": "approval.resolved" },
+      { "id": "sample.late-responder/question-resolved", "event": "question.resolved" }
+    ]
+  }
+}

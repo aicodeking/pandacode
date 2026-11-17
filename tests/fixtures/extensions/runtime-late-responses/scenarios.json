@@ -1,0 +1,175 @@
+{
+  "_fixture": {
+    "provenance": "synthetic",
+    "liveCapture": false,
+    "slice": "R0508",
+    "purpose": "Shared script of panda.tasks.respond, replayed by runtime_late_responses::tests and tests/extensions-runtime-late-responses.spec.ts. A stand-in agent per task keeps the window's checks (pending in the current run, the id carries that run). Outputs: the resolved events only, the result of each respond (a refusal code or null) and user answer (null, busy or stale), and what each agent received (the adapter's claimed answer, a steer, or a question response). 'wait' is a pause past the hook budget: nothing expires, so it changes nothing."
+  },
+  "package": { "id": "sample.late-responder", "name": "Late responder" },
+  "tasks": {
+    "t1": { "project": "A", "harness": "claude", "mode": "ask", "agentRun": "r1" },
+    "t2": { "project": "B", "harness": "codex", "mode": "auto", "agentRun": "r2" },
+    "t3": { "project": "A", "harness": "opencode", "mode": "ask", "agentRun": "r3" }
+  },
+  "scenarios": [
+    {
+      "id": "late-deny-with-reason",
+      "steps": [
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1:7", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "wait", "ms": 2000 },
+        { "op": "respond", "task": "t1", "request": "r1:7", "answer": { "approved": false, "reason": "Outside the project." } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.resolved", "payload": { "requestId": "r1:7", "taskId": "t1", "approved": false, "by": { "package": "sample.late-responder" }, "reason": "Outside the project." } }
+        ],
+        "results": [null],
+        "inputs": [
+          { "request": "7", "approved": false, "reason": "Outside the project.", "decidedBy": "sample.late-responder" }
+        ]
+      }
+    },
+    {
+      "id": "sandbox-holds-approve-and-a-deny-steers",
+      "steps": [
+        { "op": "open", "task": "t2", "kind": "approval", "request": "r2:1", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "wait", "ms": 2000 },
+        { "op": "respond", "task": "t2", "request": "r2:1", "answer": { "approved": true } },
+        { "op": "respond", "task": "t2", "request": "r2:1", "answer": { "approved": false, "reason": "No network." } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.resolved", "payload": { "requestId": "r2:1", "taskId": "t2", "approved": false, "by": { "package": "sample.late-responder" }, "reason": "No network." } }
+        ],
+        "results": ["UnsupportedCapability", null],
+        "inputs": [
+          { "request": "1", "approved": false, "reason": "No network.", "decidedBy": "sample.late-responder" },
+          { "steer": "Late responder denied Bash: No network." }
+        ]
+      }
+    },
+    {
+      "id": "multi-field-question",
+      "steps": [
+        { "op": "open", "task": "t1", "kind": "question", "request": "r1:q1", "data": { "kind": "questions", "questions": [
+          { "id": "db", "header": "", "question": "Which database?", "isOther": false, "isSecret": false, "options": [{ "label": "Postgres", "description": "" }, { "label": "SQLite", "description": "" }] },
+          { "id": "name", "header": "", "question": "Project name?", "isOther": true, "isSecret": false, "options": [] }
+        ] } },
+        { "op": "wait", "ms": 2000 },
+        { "op": "respond", "task": "t1", "request": "r1:q1", "answer": { "answers": { "db": "Postgres" } } },
+        { "op": "respond", "task": "t1", "request": "r1:q1", "answer": { "approved": true } },
+        { "op": "respond", "task": "t1", "request": "r1:q1", "answer": { "answers": { "db": "Postgres", "name": ["atlas"] } } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "question.resolved", "payload": { "requestId": "r1:q1", "taskId": "t1", "by": { "package": "sample.late-responder" }, "answers": { "db": ["Postgres"], "name": ["atlas"] } } }
+        ],
+        "results": ["InvalidShape", "InvalidShape", null],
+        "inputs": [
+          { "request": "q1", "response": { "answers": { "db": ["Postgres"], "name": ["atlas"] } }, "decidedBy": "sample.late-responder" }
+        ]
+      }
+    },
+    {
+      "id": "user-and-package-race",
+      "steps": [
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1:8", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "hold", "task": "t1", "request": "r1:8" },
+        { "op": "user", "task": "t1", "request": "r1:8", "approved": true },
+        { "op": "respond", "task": "t1", "request": "r1:8", "answer": { "approved": true } },
+        { "op": "release" },
+        { "op": "respond", "task": "t1", "request": "r1:8", "answer": { "approved": false, "reason": "Checked later." } },
+        { "op": "user", "task": "t1", "request": "r1:8", "approved": true },
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1:9", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "user", "task": "t1", "request": "r1:9", "approved": true },
+        { "op": "respond", "task": "t1", "request": "r1:9", "answer": { "approved": false, "reason": "Too late." } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.resolved", "payload": { "requestId": "r1:8", "taskId": "t1", "approved": false, "by": { "package": "sample.late-responder" }, "reason": "Checked later." } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:9", "taskId": "t1", "approved": true, "by": "user" } }
+        ],
+        "results": ["busy", "StaleContext", null, "stale", null, "StaleContext"],
+        "inputs": [
+          { "request": "8", "approved": false, "reason": "Checked later.", "decidedBy": "sample.late-responder" },
+          { "request": "9", "approved": true }
+        ]
+      }
+    },
+    {
+      "id": "stale-wrong-task-and-a-newer-run",
+      "steps": [
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1:10", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "open", "task": "t3", "kind": "approval", "request": "r3:10", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "respond", "task": "t3", "request": "r1:10", "answer": { "approved": false, "reason": "Wrong task." } },
+        { "op": "respond", "task": "t1", "request": "r1:999", "answer": { "approved": false, "reason": "Never issued." } },
+        { "op": "runEnded", "task": "t1", "run": "r1", "next": "r1b" },
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1b:10", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "respond", "task": "t1", "request": "r1:10", "answer": { "approved": true } },
+        { "op": "respond", "task": "t1", "request": "r1b:10", "answer": { "approved": true } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.resolved", "payload": { "requestId": "r1:10", "taskId": "t1", "approved": false, "by": "cancelled" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1b:10", "taskId": "t1", "approved": true, "by": { "package": "sample.late-responder" } } }
+        ],
+        "results": ["StaleContext", "NotFound", "StaleContext", null],
+        "inputs": [
+          { "request": "10", "approved": true, "decidedBy": "sample.late-responder" }
+        ]
+      }
+    },
+    {
+      "id": "revoke-disable-and-removal-never-resurrect",
+      "steps": [
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1:11", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "open", "task": "t1", "kind": "approval", "request": "r1:12", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "respond", "task": "t1", "request": "r1:12", "answer": { "approved": false, "reason": "Revoked meanwhile." }, "revokeAtSend": true },
+        { "op": "user", "task": "t1", "request": "r1:12", "approved": false },
+        { "op": "revoke" },
+        { "op": "respond", "task": "t1", "request": "r1:11", "answer": { "approved": false, "reason": "Revoked." } },
+        { "op": "grant" },
+        { "op": "disable" },
+        { "op": "respond", "task": "t1", "request": "r1:11", "answer": { "approved": false, "reason": "Disabled." } },
+        { "op": "enable" },
+        { "op": "taskRemoved", "task": "t1" },
+        { "op": "respond", "task": "t1", "request": "r1:11", "answer": { "approved": false, "reason": "Removed." } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.resolved", "payload": { "requestId": "r1:12", "taskId": "t1", "approved": false, "by": "user" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:11", "taskId": "t1", "approved": false, "by": "cancelled" } }
+        ],
+        "results": ["PermissionDenied", null, "PermissionDenied", "PermissionDenied", "StaleContext"],
+        "inputs": [
+          { "request": "12", "approved": false }
+        ]
+      }
+    },
+    {
+      "id": "withdrawal-while-answering-and-a-rejected-answer",
+      "steps": [
+        { "op": "open", "task": "t3", "kind": "question", "request": "r3:q1", "data": { "kind": "questions", "questions": [
+          { "id": "go", "header": "", "question": "Proceed?", "isOther": false, "isSecret": false, "options": [{ "label": "Yes", "description": "" }] }
+        ] } },
+        { "op": "respond", "task": "t3", "request": "r3:q1", "answer": { "answers": { "go": "Yes" } }, "withdrawOnSend": true },
+        { "op": "open", "task": "t3", "kind": "question", "request": "r3:q2", "data": { "kind": "questions", "questions": [
+          { "id": "go", "header": "", "question": "Proceed?", "isOther": false, "isSecret": false, "options": [{ "label": "Yes", "description": "" }] }
+        ] } },
+        { "op": "respond", "task": "t3", "request": "r3:q2", "answer": { "answers": { "go": "Yes" } }, "reject": true },
+        { "op": "user", "task": "t3", "request": "r3:q2", "response": { "answers": { "go": ["Yes"] } } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "question.resolved", "payload": { "requestId": "r3:q1", "taskId": "t3", "by": { "package": "sample.late-responder" }, "answers": { "go": ["Yes"] } } },
+          { "event": "question.resolved", "payload": { "requestId": "r3:q2", "taskId": "t3", "by": "user", "answers": { "go": ["Yes"] } } }
+        ],
+        "results": [null, "InvalidShape", null],
+        "inputs": [
+          { "request": "q1", "response": { "answers": { "go": ["Yes"] } }, "decidedBy": "sample.late-responder" },
+          { "request": "q2", "response": { "answers": { "go": ["Yes"] } } }
+        ]
+      }
+    }
+  ]
+}

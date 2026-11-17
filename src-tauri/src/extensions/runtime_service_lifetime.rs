@@ -842,6 +842,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if matches!(request.method.as_str(), "hooks" | "hooksInput") { return super::runtime_hook_registration::serve(app, request).await; }
             // `panda.hooks.pending` (R0507): the open approvals and questions, filtered like a live delivery, checked now.
             if request.method == "hooksPending" { return super::runtime_pending_requests::serve(app, request).await; }
+            // `panda.tasks.respond` (R0508): the open request, `harness.hooks.decide` and the mode are checked natively per call.
+            if request.method == "tasksRespond" { return super::runtime_late_responses::serve(app, request).await; }
             // `panda.modelTools.register` and dispose (R0701, tools.model): the declaration and the grant are checked natively per call.
             if request.method == "modelTools" { return super::runtime_model_tools::serve(app, request).await; }
             // `panda.models.call` (R0704, models.call): the grant is rechecked natively per call; a call may wait, so it is awaited here.

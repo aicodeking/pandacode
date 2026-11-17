@@ -344,6 +344,8 @@ process.stdin.on('data', chunk => {
               council: (taskId, decision) => rpc('tasksFlow', { action: 'council', taskId, decision, source: hookScope.getStore() ? 'hook' : 'service' }),
               worker: (taskId, workerId, action) => rpc('tasksFlow', { action: 'worker', taskId, workerId, op: action, source: hookScope.getStore() ? 'hook' : 'service' }),
               limit: (taskId, action, options) => rpc('tasksFlow', { action: 'limit', taskId, op: action, ...(options === undefined ? {} : { options }), source: hookScope.getStore() ? 'hook' : 'service' }),
+              // Answers an open approval or question after the hook budget (R0508, harness.hooks.decide): the host checks the request is open in that task.
+              respond: (taskId, requestId, answer) => rpc('tasksRespond', { taskId, requestId, answer }),
             }),
             // Virtual machine, simulator and browser guests (R0410, guests.control): the host checks the grant per call; a capture is a file in the package's data directory.
             guests: Object.freeze({

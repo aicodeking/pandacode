@@ -172,6 +172,21 @@ impl RunningAgent {
         request_id: String,
         approved: bool,
     ) -> Result<()> {
+        self.respond_approval_with(store, session_id, request_id, approved, &mut |_: &str| Ok(None))
+    }
+
+    /// `respond_approval`, with `before_send` run under the approvals lock once the request is
+    /// known to be pending in this run (given the harness's own id): `panda.tasks.respond`
+    /// attributes its answer there (R0508), so an answer racing it has one winner. What it
+    /// returns is sent right after the answer (a deny reason as a live steer).
+    fn respond_approval_with(
+        &self,
+        store: &Mutex<Store>,
+        session_id: &str,
+        request_id: String,
+        approved: bool,
+        before_send: &mut dyn FnMut(&str) -> Result<Option<RunInput>>,
+    ) -> Result<()> {
         // Lock order is registry (caller) -> approvals -> pending requests -> store. A new request
         // cannot become waiting between deciding the status and persisting it.
         let mut approvals = self.approvals.lock().map_err(|error| error.to_string())?;
@@ -183,6 +198,7 @@ impl RunningAgent {
             .strip_prefix(&format!("{}:", self.run_id))
             .ok_or("This approval belongs to an earlier run.")?
             .to_string();
+        let follow = before_send(&original_id)?;
         let store = store.lock().map_err(|error| error.to_string())?;
         // Hooks (R0504): a denied call's `tool.after` reports `denied` with no output.
         extensions::runtime_hook_context::answered(session_id, &original_id, approved);
@@ -191,6 +207,9 @@ impl RunningAgent {
             approved,
         })
         .map_err(|_| "Agent has stopped.".to_string())?;
+        if let Some(follow) = follow {
+            let _ = self.send(follow);
+        }
         remove_pending_request(&mut approvals, Some(&mut pending_requests), &request_id);
         store.status(
             session_id,
@@ -1675,6 +1694,8 @@ fn emit_coalesced(
     if let Some(tool) = &event.tool { extensions::runtime_service_lifetime::runtime_workspace_events::observe_tool(app, &event.session_id, &tool.id, &tool.name, &tool.status); }
     extensions::runtime_hook_registration::agent_event(&event);
     // Pending approvals and questions (R0507): opened and withdrawn under the id the window shows.
+    // Answers in flight (R0508): a withdrawal reported while one is applied is that answer.
+    extensions::runtime_late_responses::agent_event(&event);
     extensions::runtime_pending_requests::agent_event(app, &event);
     let mut buffer = coalescer.lock().unwrap_or_else(|poison| poison.into_inner());
     let now = std::time::Instant::now();
@@ -3508,6 +3529,11 @@ async fn respond_approval(
     request_id: String,
     approved: bool,
 ) -> Result<()> {
+    // R0508: one answer at a time; a package's `panda.tasks.respond` may be answering it.
+    let answering = extensions::runtime_late_responses::responses()
+        .claim(&session_id, &request_id, extensions::runtime_late_responses::approval_ending(approved))
+        .map_err(|_| "This approval is being answered.".to_string())?;
+    answering.arm();
     if remote::route(&app, &state, &session_id, "approval.respond", serde_json::json!({"requestId": request_id, "approve": approved})).await?.is_some() {
         extensions::runtime_pending_requests::approval_answered(&session_id, &request_id, approved);
         return Ok(());
@@ -3523,7 +3549,24 @@ async fn respond_approval(
     if answered.is_ok() {
         extensions::runtime_pending_requests::approval_answered(&session_id, &request_id, approved);
     }
+    drop(answering);
     answered
+}
+
+/// `panda.tasks.respond` (R0508) for an approval of a task running here: the window's own path,
+/// lock and checks, with `before_send` run once the request is known to be pending.
+pub(crate) fn respond_approval_for_extension(
+    state: &AppState,
+    session_id: &str,
+    request_id: &str,
+    approved: bool,
+    before_send: &mut dyn FnMut(&str) -> Result<Option<RunInput>>,
+) -> Result<()> {
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    let agent = agents
+        .get(session_id)
+        .ok_or("This agent is no longer running.")?;
+    agent.respond_approval_with(&state.store, session_id, request_id.to_owned(), approved, before_send)
 }
 #[tauri::command]
 async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
@@ -3571,25 +3614,47 @@ async fn respond_user_input(
     if response.to_string().len() > 32 * 1024 {
         return Err("Response is too large.".into());
     }
+    // R0508: one answer at a time; a package's `panda.tasks.respond` may be answering it.
+    let answering = extensions::runtime_late_responses::responses()
+        .claim(&session_id, &request_id, extensions::runtime_late_responses::question_ending(&response))
+        .map_err(|_| "This question is being answered.".to_string())?;
+    answering.arm();
     if remote::route(&app, &state, &session_id, "input.respond", serde_json::json!({"requestId": request_id, "response": response.clone()})).await?.is_some() {
         extensions::runtime_pending_requests::question_answered(&session_id, &request_id, &response);
         return Ok(());
     }
     // R0507: the answer as given, for `question.resolved` once the harness accepted it.
     let answered = response.clone();
+    answer_user_input(&state, &session_id, &request_id, response, |_: &str| Ok(())).await?;
+    drop(answering);
+    extensions::runtime_pending_requests::question_answered(&session_id, &request_id, &answered);
+    Ok(())
+}
+
+/// The local part of `respond_user_input`, shared with `panda.tasks.respond` (R0508): the
+/// question must be pending in the current run; `before_send` runs under the approvals lock
+/// once it is (given the harness's own id); the form stays pending until the protocol accepts.
+pub(crate) async fn answer_user_input<F: FnOnce(&str) -> Result<()> + Send>(
+    state: &AppState,
+    session_id: &str,
+    request_id: &str,
+    response: serde_json::Value,
+    before_send: F,
+) -> Result<()> {
     let reply = {
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let agent = agents
-            .get(&session_id)
+            .get(session_id)
             .ok_or("This agent is no longer running.")?;
         let pending = agent.approvals.lock().map_err(|e| e.to_string())?;
-        if agent.stopped.load(Ordering::SeqCst) || !pending.contains(&request_id) {
+        if agent.stopped.load(Ordering::SeqCst) || !pending.contains(request_id) {
             return Err("This question is no longer pending.".into());
         }
         let original_id = request_id
             .strip_prefix(&format!("{}:", agent.run_id))
             .ok_or("This question belongs to an earlier run.")?
             .to_owned();
+        before_send(&original_id)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         agent
             .send(RunInput::UserInput {
@@ -3608,17 +3673,16 @@ async fn respond_user_input(
         .map_err(|_| "The agent stopped before accepting the answer.".to_owned())?;
     accepted?;
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if let Some(agent) = agents.get(&session_id) {
+    if let Some(agent) = agents.get(session_id) {
         let mut approvals = agent.approvals.lock().map_err(|e| e.to_string())?;
         let mut pending_requests = agent.pending_requests.lock().map_err(|e| e.to_string())?;
-        remove_pending_request(&mut approvals, Some(&mut pending_requests), &request_id);
+        remove_pending_request(&mut approvals, Some(&mut pending_requests), request_id);
         state.store.lock().map_err(|e| e.to_string())?.status(
-            &session_id,
+            session_id,
             if approvals.is_empty() { "running" } else { "waiting" },
         )?;
     }
     drop(agents);
-    extensions::runtime_pending_requests::question_answered(&session_id, &request_id, &answered);
     Ok(())
 }
 
