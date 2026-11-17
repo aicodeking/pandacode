@@ -273,6 +273,33 @@ process.stdin.on('data', chunk => {
               draft: Object.freeze(Object.fromEntries(['get', 'set', 'insert', 'suggest', 'attach', 'detach'].map(op => [op, options => rpc('tasksDraft', { ...(options ?? {}), op })]))),
               attachments: Object.freeze({ read: options => rpc('tasksAttachmentsRead', options === undefined || options === null ? {} : { ...options }) }),
             }),
+            // Terminals (R0409): list/read/onOutput need terminals.read, open/write/close need terminals.write; the host checks both per call.
+            terminals: Object.freeze({
+              ...Object.fromEntries(['list', 'read', 'open', 'write', 'close'].map(op => [op, options => rpc('terminals', { ...(options ?? {}), op })])),
+              // A bounded subscription the host coalesces to ten chunks a second; every poll rechecks the grant, a refusal or the end stops it.
+              onOutput(options, handler) {
+                if (typeof handler !== 'function') throw new TypeError('terminals.onOutput needs a function');
+                let live = true, id = null, timer = null;
+                const stop = () => { live = false; if (timer) clearTimeout(timer); timer = null; if (id) { const gone = id; id = null; rpc('terminals', { op: 'unsubscribe', subscriptionId: gone }).catch(() => {}); } };
+                const tick = async () => {
+                  timer = null;
+                  if (!live) return;
+                  let answer;
+                  try { answer = await rpc('terminals', { op: 'poll', subscriptionId: id }); } catch { stop(); return; }
+                  if (!live) return;
+                  if (answer?.chunk) { try { await handler(freeze(answer.chunk)); } catch { /* a failing handler never stops the stream */ } }
+                  if (!live) return;
+                  if (answer?.ended) { stop(); return; }
+                  timer = setTimeout(tick, Math.max(10, Number(answer?.retryMs) || 100));
+                };
+                rpc('terminals', { ...(options ?? {}), op: 'subscribe' }).then(result => {
+                  if (!live) { rpc('terminals', { op: 'unsubscribe', subscriptionId: result.subscriptionId }).catch(() => {}); return; }
+                  id = result.subscriptionId;
+                  timer = setTimeout(tick, 0);
+                }).catch(() => { live = false; });
+                return Object.freeze({ dispose: stop });
+              },
+            }),
             // The app's own workspace settings (R0407, workspace.settings): the grant and the key are checked by the host per call; a stale revision is StaleContext.
             workspace: Object.freeze({
               // Bots and shared channels (R0406, workspace.manage): the host checks the grant per call; removals confirm by default.

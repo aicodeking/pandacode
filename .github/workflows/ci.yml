@@ -213,6 +213,12 @@ jobs:
       - name: Task drafts and attachments (WebKit)
         env: { PW_PORT: '16252', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tasks-drafts.spec.ts --workers=1
+      - name: Terminals read and write (Chromium)
+        env: { PW_PORT: '16361', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-terminals.spec.ts --workers=1
+      - name: Terminals read and write (WebKit)
+        env: { PW_PORT: '16362', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-terminals.spec.ts --workers=1
       - name: Moodboards and cloud machines (Chromium)
         env: { PW_PORT: '16341', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-workspace-cloud.spec.ts --workers=1
