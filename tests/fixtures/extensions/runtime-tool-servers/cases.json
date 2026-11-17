@@ -1,0 +1,38 @@
+{
+  "refusals": [
+    { "id": "reserved-id", "set": { "id": "panda.docs/s" }, "expect": { "code": "ReservedId", "at": "contributes/toolServers" } },
+    { "id": "foreign-id", "set": { "id": "other.pkg/s" }, "expect": { "code": "InvalidId", "at": "contributes/toolServers" } },
+    { "id": "duplicate-id", "extra": [{ "set": {} }], "expect": { "code": "DuplicateId", "at": "contributes/toolServers" } },
+    { "id": "unknown-transport", "set": { "transport": "sse" }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "stdio-with-authentication", "set": { "authentication": "bearer" }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "stdio-with-credential", "set": { "credential": { "source": "held", "id": "provider:glm" } }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "stdio-without-command", "drop": ["command"], "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "unknown-placeholder", "set": { "command": ["{node}", "{held}"] }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "http-user-information", "base": "sample.docs/hosted", "set": { "url": "https://user:secret@docs.example.com/mcp" }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "http-with-command", "base": "sample.docs/hosted", "set": { "command": ["x"] }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "http-bearer-without-credential", "base": "sample.docs/hosted", "set": { "authentication": "bearer" }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "http-held-without-id", "base": "sample.docs/hosted", "set": { "authentication": "bearer", "credential": { "source": "held" } }, "expect": { "code": "InvalidShape", "at": "contributes/toolServers" } },
+    { "id": "five-servers", "count": 5, "expect": { "code": "LimitExceeded", "at": "contributes/toolServers" } },
+    { "id": "no-tools-model-permission", "permissions": ["ui.contribute", "runtime.service"], "expect": { "code": "PermissionDenied", "at": "permissions" } }
+  ],
+  "placeholders": [
+    { "part": "{node}", "ok": true },
+    { "part": "{package}/server/index.mjs", "ok": true },
+    { "part": "plain", "ok": true },
+    { "part": "{held}", "ok": false },
+    { "part": "{node", "ok": false },
+    { "part": "node}", "ok": false }
+  ],
+  "urls": [
+    { "url": "https://docs.example.com/mcp", "ok": true },
+    { "url": "http://127.0.0.1:8765/mcp", "ok": true },
+    { "url": "ftp://docs.example.com/mcp", "ok": false },
+    { "url": "https://user:pw@docs.example.com/mcp", "ok": false },
+    { "url": "https:///mcp", "ok": false },
+    { "url": "https://docs.example.com/a b", "ok": false }
+  ],
+  "runs": {
+    "projects": { "p1": ["sample.docs"], "p2": [] },
+    "expectTools": { "sample.docs/local": ["docs_search", "docs_read"] }
+  }
+}

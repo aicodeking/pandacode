@@ -22,7 +22,7 @@ export interface OrchestrationHost {
   listen(name: string, callback: (event: any) => void): Promise<() => void>;
   notify(text: string, action?: { label: string; run: () => void }): void;
   notifyError?(text: string): void;
-  modal(title: string, body: string, cls?: string): HTMLDialogElement;
+  modal(title: string, body: string, cls?: string, accessory?: { dialog: import('./extensions/surfaces').MainDialogId; task?: string; project?: string }): HTMLDialogElement;
   closeModal(): void;
   openSession(id: string): void;
   sessionId(): string;

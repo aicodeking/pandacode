@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.docs",
+  "name": "Docs",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "tools.model"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["server"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.docs/control", "title": "Docs control", "action": { "kind": "runCommand" } }
+    ],
+    "toolServers": [
+      { "id": "sample.docs/local", "title": "Docs", "transport": "stdio", "command": ["{node}", "{package}/server/index.mjs"] },
+      { "id": "sample.docs/hosted", "title": "Docs (hosted)", "transport": "http", "url": "http://127.0.0.1:8765/mcp" },
+      { "id": "sample.docs/silent", "title": "Docs (silent)", "transport": "stdio", "command": ["{node}", "{package}/server/silent.mjs"] },
+      { "id": "sample.docs/secured", "title": "Docs (secured)", "transport": "http", "url": "https://docs.example.com/mcp", "authentication": "bearer", "credential": { "source": "secret", "key": "docs-token" } }
+    ]
+  }
+}

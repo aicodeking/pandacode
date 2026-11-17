@@ -5,6 +5,7 @@ import { contrast, parseHex } from '../color.ts';
 import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts';
 import { checkHookDeclarations } from './runtime-hook-registration.ts';
 import { checkModelToolDeclarations } from './runtime-model-tools.ts';
+import { checkToolServerDeclarations } from './runtime-tool-servers.ts';
 import { policy as dialogPolicy } from './runtime-protected-presentation.ts';
 import { checkCliIntentDeclarations } from './runtime-cli-intent.ts';
 import { checkEditorDeclarations } from './runtime-document-editors.ts';
@@ -325,6 +326,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     // Custom editors (R0901): the rules the schema cannot say, shared with contracts.rs (runtime_document_editors::check).
     const editors = checkEditorDeclarations(manifest);
     if (!editors.ok) error(editors.refusal.code, `${path}/${editors.refusal.at}`, editors.refusal.ids);
+    // Tool servers (R0702): shared with contracts.rs (runtime_tool_servers::check).
+    const toolServers = checkToolServerDeclarations(manifest);
+    if (!toolServers.ok) error(toolServers.refusal.code, `${path}/${toolServers.refusal.at}`, toolServers.refusal.ids);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;

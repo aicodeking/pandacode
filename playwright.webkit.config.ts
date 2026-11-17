@@ -227,6 +227,7 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-hook-resolution.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions hook resolution:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-model-tools.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-tool-servers.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions model tools:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-cli-intent.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions cli intent:`);

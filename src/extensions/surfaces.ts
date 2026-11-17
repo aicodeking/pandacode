@@ -139,6 +139,13 @@ export const OWNED_DIALOG_ALIASES = [['integrations-direct', 'integrations'], ['
 export const OWNED_DIALOG_PROTECTED = [
   ['extension-form', 'Extension form', "A package's own form is itself the accessory surface; another package's content is never placed inside it."],
 ] as const;
+/** Dialogs that were protected and now accept the band from packages holding `ui.presentation` (R1003,
+ * docs/extensions/runtime-protected-presentation.md): [dialog id, title, captured target, host]. `main` uses the shared modal. */
+export const PRESENTATION_DIALOG_EXTRAS = [
+  ['remove-project', 'Remove project', 'project', 'main'], ['delete-task', 'Delete task', 'task', 'main'], ['delete-bot', 'Delete bot', 'none', 'main'],
+  ['delete-cloud', 'Delete cloud', 'none', 'main'], ['provider-connections', 'Provider connections', 'none', 'main'],
+  ['worktree-cleanup', 'Clean up worktrees', 'task', 'module'], ['machine-link', 'Link a machine', 'none', 'module'], ['skill-add', 'Add a skill', 'none', 'direct'],
+] as const;
 export type MainDialogId = typeof MAIN_DIALOG_EXTRAS[number][0] | typeof OWNED_DIALOG_EXTRAS[number][0] | typeof PRESENTATION_DIALOG_EXTRAS[number][0];
 export type DialogTarget = 'none' | 'task' | 'project';
 /** Every dialog that accepts the band, in schema order: main modals first, then module-owned and direct dialogs. */
@@ -146,10 +153,6 @@ export const DIALOG_EXTRAS: ReadonlyArray<readonly [MainDialogId, string, Dialog
 /** The target kind a dialog captures; unknown IDs capture nothing. */
 export const dialogTarget = (id: string): DialogTarget => DIALOG_EXTRAS.find(([dialog]) => dialog === id)?.[2] ?? 'none';
 export const isOwnedDialog = (id: string): boolean => OWNED_DIALOG_EXTRAS.some(([dialog]) => dialog === id) || PRESENTATION_DIALOG_EXTRAS.some(([dialog, , , host]) => dialog === id && host !== 'main');
-/** Dialogs that were protected and now accept the band from packages holding `ui.presentation` (R1003,
- * docs/extensions/runtime-protected-presentation.md): [dialog id, title, captured target, host]. `main` uses the shared modal. */
-export const PRESENTATION_DIALOG_EXTRAS = [
-] as const;
 /** Main-window modals that never mount the band: [dialog id, title, reason]. Inspect-only in the catalog. */
 export const MAIN_DIALOG_PROTECTED = [
   ['github-behind', 'GitHub is behind this computer', 'The start-anyway recovery choice stays host-owned (panda.machines.protected).'],
