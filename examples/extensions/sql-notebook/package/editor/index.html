@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQL notebook</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template-rows: auto 1fr auto 1fr; height: 100vh; }
+    .bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); flex-wrap: wrap; }
+    #database { font-weight: 600; }
+    #dirty { opacity: .6; }
+    #chooser { display: none; padding: 6px 10px; gap: 6px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    #chooser[data-shown="true"] { display: flex; }
+    #editor { display: grid; grid-template-columns: auto 1fr; min-height: 0; }
+    #gutter, #text { font: 12px/1.5 ui-monospace, Consolas, monospace; padding: 6px 8px; margin: 0; border: 0; box-sizing: border-box; overflow: hidden; white-space: pre; }
+    #gutter { text-align: right; opacity: .55; user-select: none; background: color-mix(in srgb, currentColor 6%, transparent); }
+    #text { resize: none; outline: none; overflow: auto; background: transparent; color: inherit; tab-size: 2; }
+    #error { display: none; padding: 6px 10px; background: color-mix(in srgb, crimson 20%, transparent); white-space: pre-wrap; }
+    #error[data-shown="true"] { display: block; }
+    #grid { overflow: auto; min-height: 0; }
+    table { border-collapse: collapse; width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; }
+    th, td { text-align: left; padding: 2px 8px; border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent); white-space: nowrap; max-width: 28em; overflow: hidden; text-overflow: ellipsis; }
+    th { position: sticky; top: 0; background: Canvas; }
+    td[data-kind="null"] { opacity: .5; font-style: italic; }
+    td[data-kind="blob"] { color: darkorange; }
+    td[data-kind="int"], td[data-kind="real"] { text-align: right; }
+    #note { padding: 4px 10px; opacity: .8; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <span id="database">No database</span>
+    <button id="choose" type="button">Choose database</button>
+    <button id="run" type="button" title="Run the statement under the cursor (Ctrl+Enter, Cmd+Enter on macOS)">Run</button>
+    <button id="cancel" type="button" disabled>Cancel</button>
+    <button id="save" type="button" title="Save (the host writes the file)">Save</button>
+    <span id="dirty" role="status"></span>
+    <span id="status" role="status"></span>
+  </div>
+  <div id="chooser" role="group" aria-label="Choose database"></div>
+  <div id="editor"><pre id="gutter" aria-hidden="true">1</pre><textarea id="text" spellcheck="false" aria-label="SQL"></textarea></div>
+  <div><div id="error" role="alert"></div><div id="note" role="status"></div></div>
+  <div id="grid" role="region" aria-label="Result"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -179,6 +179,7 @@ config.testMatch.push('**/extensions-example-inbox.spec.ts');
 config.testMatch.push('**/extensions-example-signin.spec.ts');
 config.testMatch.push('**/extensions-example-arcade.spec.ts');
 config.testMatch.push('**/extensions-example-memory.spec.ts');
+config.testMatch.push('**/extensions-example-sql-notebook.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-mount.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-assets.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-channel.spec.ts');

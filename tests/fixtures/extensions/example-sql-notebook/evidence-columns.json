@@ -1,0 +1,49 @@
+{
+  "synthetic": true,
+  "package": "sample.sql-notebook",
+  "note": "Every column below is prepared, not run (deferred to the final test phase). Nothing here is an observation. The wiring of the editor shell and the rich channel to DocumentEditors/SaveFlow and of the new-file menu to NewFiles is still pending in the product; the columns record what is prepared, not what was seen.",
+  "backend": "B6 make-sqlite (tests/fixtures/extensions/backends/make-sqlite/make-sqlite.mjs): 250 tracks, the integer 9007199254740993, one 1,200-byte BLOB, table albums; created by the spec in a test-owned temporary folder and deleted afterwards.",
+  "columns": [
+    {
+      "id": "preview-node",
+      "status": "prepared, not run (deferred to the final test phase)",
+      "where": "tests/extensions-example-sql-notebook.spec.ts, tests named 'sql notebook (R1211): package, logic and service' and 'host buffers, new file, save and reopen' (Node, no browser page)",
+      "behaviours": [1, 2, 3, 4, 5, 6, 7, 8, 10],
+      "notes": "Behaviours 1, 6, 7 and 10 run against the R0901/R0902/R0903 twins; 2 to 5 and 8 against lib/notebook.mjs with a scripted driver and a fake panda; 3 and 4 also against the recorded result described in cases.json."
+    },
+    {
+      "id": "native-real-driver",
+      "status": "prepared, not run (deferred to the final test phase)",
+      "where": "tests/extensions-example-sql-notebook.spec.ts, tests named 'the real driver and the B6 database file' (lib/driver.cjs and node:sqlite in a child process, Node v26.1.0)",
+      "behaviours": [3, 4, 5],
+      "notes": "Truncation of 250 rows to 100, the exact integer above 2^53, the 1.2 KB BLOB label, the database's own error text, timeout and cancel ending the process, writes refused read-only and allowed with the changed count. The installed service reaching these through the real package flow (permission grants, the host's project folder) is the installed column."
+    },
+    {
+      "id": "installed-windows",
+      "status": "prepared, not run (deferred to the final test phase)",
+      "where": "the R0306 runner on a dedicated profile (reused, not copied), after the editor shell, the rich channel and the new-file menu are wired to the host modules",
+      "behaviours": [1, 3, 6, 7, 10],
+      "scenarios": [
+        "install sample.sql-notebook with its grants; create 'New SQL note' from the new-file menu and see it open in the notebook editor in the floating editor window",
+        "choose the B6 database; the first line is written only after the service opened it; Ctrl+Enter runs the statement under the cursor; 100 rows and the truncated note; the BLOB and the large integer render exactly",
+        "type, see the tab marked changed, Save, and read the file on disk; change the file on disk with an unchanged tab and see the editor follow, then with unsaved edits and see the conflict choice",
+        "Open with the built-in editor and back; the choice is remembered per file type",
+        "disable the package, start in safe mode and uninstall it: the same .sql opens in the built-in editor with its text; the data directory of the databases is never touched",
+        "revoke documents.editors or narrow it to another project: the mount falls back at once and the unsaved text is intact",
+        "make the panel fail and see the built-in editor offered; make the service slow or throw in the save hook and see the save still succeed"
+      ]
+    },
+    {
+      "id": "both-engines",
+      "status": "prepared, not run (deferred to the final test phase)",
+      "where": "npx playwright test tests/extensions-example-sql-notebook.spec.ts on Chromium (port 16701) and playwright.webkit.config.ts on WebKit (port 16702)",
+      "behaviours": [1, 2, 3, 4, 5, 6, 7, 8, 10],
+      "notes": "The spec is Node-only, so both engines run the same assertions; the editor page itself (editor/app.js) in a real WKWebView and Chromium frame is part of the installed column."
+    }
+  ],
+  "namedLimits": [
+    "Behaviour 9 (click a table, create a note, open it and run it) is not built as the plan words it: the SDK has no call for a service to create a project file, so the Databases tree only lists the tables (host-rendered) and a click does nothing. The user makes the note with New SQL note and types or pastes the SELECT. Opening an existing note from code exists (panda.ui.reveal with an editor).",
+    "The SDK has no call that returns a project folder to a service: the installed service reads databases under its working folder (the host sets it to the project folder) or PANDA_FIXTURE_B6 in tests.",
+    "The built-in editor switch (Open with) is the host's; the panel offers no button for it."
+  ]
+}

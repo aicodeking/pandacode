@@ -663,6 +663,12 @@ jobs:
       - name: Project memory example, model tool, recall and capture (WebKit preview)
         env: { PW_PORT: '16662', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-memory.spec.ts --workers=1
+      - name: SQL notebook example, custom editor, new file and save (Chromium preview)
+        env: { PW_PORT: '16701', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-example-sql-notebook.spec.ts --workers=1
+      - name: SQL notebook example, custom editor, new file and save (WebKit preview)
+        env: { PW_PORT: '16702', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-sql-notebook.spec.ts --workers=1
 
       # Absolute ceilings and leak/order gates always apply; the relative M0 comparison is reported as
       # incomparable on a shared runner (different machine from the frozen population), never as a pass.

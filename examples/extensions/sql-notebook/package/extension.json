@@ -1,0 +1,32 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.sql-notebook",
+  "version": "1.0.0",
+  "name": "SQL notebook",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "documents.editors", "ui.richViews", "ui.dynamic", "projects.files.metadata"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib", "editor", "templates"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "editors": [
+      { "id": "sample.sql-notebook/editor", "title": "SQL notebook", "extensions": [".sql"], "priority": "default", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } }
+    ],
+    "newFiles": [
+      { "id": "sample.sql-notebook/note", "title": "New SQL note", "extension": ".sql", "template": "templates/empty.sql", "editor": "sample.sql-notebook/editor" }
+    ],
+    "views": [
+      { "id": "sample.sql-notebook/databases", "title": "Databases", "controls": [{ "kind": "tree", "label": "Tables", "items": [] }] },
+      { "id": "sample.sql-notebook/recent", "title": "Recent notes", "controls": [{ "kind": "list", "label": "Notes", "items": [] }] }
+    ],
+    "hooks": [
+      { "id": "sample.sql-notebook/save", "event": "save.before", "budgetMs": 200, "match": { "extensions": [".sql"] } }
+    ],
+    "settings": [
+      { "id": "sample.sql-notebook/settings", "title": "SQL notebook", "fields": [
+        { "id": "row-limit", "kind": "text", "label": "Rows shown (1 to 1000)", "value": "100" },
+        { "id": "timeout-seconds", "kind": "text", "label": "Statement timeout in seconds (1 to 600)", "value": "10" },
+        { "id": "allow-writes", "kind": "switch", "label": "Allow writes", "value": false }
+      ] }
+    ]
+  }
+}

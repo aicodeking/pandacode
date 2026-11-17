@@ -1,0 +1,65 @@
+{
+  "synthetic": true,
+  "statements": [
+    { "id": "two-statements", "text": "SELECT 1;\nSELECT 2;\n", "at": 3, "expect": "SELECT 1" },
+    { "id": "second-statement", "text": "SELECT 1;\nSELECT 2;\n", "at": 12, "expect": "SELECT 2" },
+    { "id": "semicolon-in-string", "text": "SELECT 'a;b' AS v;\nSELECT 2;", "at": 5, "expect": "SELECT 'a;b' AS v" },
+    { "id": "semicolon-in-comment", "text": "-- first; still a comment\nSELECT 1; /* x; y */ SELECT 2;", "at": 30, "expect": "-- first; still a comment\nSELECT 1" },
+    { "id": "quoted-quote", "text": "SELECT 'it''s; fine';", "at": 3, "expect": "SELECT 'it''s; fine'" },
+    { "id": "after-the-last-one", "text": "SELECT 1;\n\n", "at": 10, "expect": "SELECT 1" },
+    { "id": "comments-only", "text": "-- nothing here\n/* nor here */", "at": 3, "expect": null }
+  ],
+  "writes": [
+    { "sql": "SELECT * FROM tracks", "write": false },
+    { "sql": "  select 1", "write": false },
+    { "sql": "WITH t AS (SELECT 1) SELECT * FROM t", "write": false },
+    { "sql": "WITH t AS (SELECT 1) INSERT INTO albums(name) SELECT 'x' FROM t", "write": true },
+    { "sql": "SELECT 'delete me' AS note", "write": false },
+    { "sql": "-- update\nSELECT 1", "write": false },
+    { "sql": "UPDATE tracks SET plays = 0", "write": true },
+    { "sql": "DELETE FROM tracks", "write": true },
+    { "sql": "INSERT INTO albums(name) VALUES ('a')", "write": true },
+    { "sql": "DROP TABLE tracks", "write": true },
+    { "sql": "CREATE TABLE t(x)", "write": true },
+    { "sql": "ATTACH 'other.db' AS other", "write": true },
+    { "sql": "VACUUM", "write": true },
+    { "sql": "PRAGMA table_info(tracks)", "write": false },
+    { "sql": "PRAGMA user_version", "write": false },
+    { "sql": "PRAGMA user_version = 3", "write": true },
+    { "sql": "EXPLAIN SELECT * FROM tracks", "write": false }
+  ],
+  "headers": [
+    { "text": "-- sqlnote: db=data/music.db\nSELECT 1;\n", "db": "data/music.db", "body": "SELECT 1;\n" },
+    { "text": "--sqlnote:db=a.sqlite\r\nSELECT 1;", "db": "a.sqlite", "body": "SELECT 1;" },
+    { "text": "SELECT 1;\n-- sqlnote: db=data/music.db\n", "db": null, "body": "SELECT 1;\n-- sqlnote: db=data/music.db\n" },
+    { "text": "", "db": null, "body": "" }
+  ],
+  "databasePaths": [
+    { "path": "music.db", "ok": true },
+    { "path": "data/music.sqlite", "ok": true },
+    { "path": "data/Music.SQLITE3", "ok": true },
+    { "path": "../music.db", "ok": false },
+    { "path": "/abs/music.db", "ok": false },
+    { "path": "C:/music.db", "ok": false },
+    { "path": "data\\music.db", "ok": false },
+    { "path": "data//music.db", "ok": false },
+    { "path": "notes.sql", "ok": false },
+    { "path": "", "ok": false }
+  ],
+  "values": [
+    { "id": "null", "value": null, "expect": { "k": "null", "v": "NULL" } },
+    { "id": "integer", "value": { "int": "42" }, "expect": { "k": "int", "v": "42" } },
+    { "id": "above-2-53", "value": { "int": "9007199254740993" }, "expect": { "k": "int", "v": "9007199254740993" } },
+    { "id": "real", "value": 2.5, "expect": { "k": "real", "v": "2.5" } },
+    { "id": "blob-1200", "value": { "blob": 1200 }, "expect": { "k": "blob", "v": "<blob 1.2 KB>" } },
+    { "id": "blob-small", "value": { "blob": 12 }, "expect": { "k": "blob", "v": "<blob 12 B>" } },
+    { "id": "text-short", "value": "hello", "expect": { "k": "text", "v": "hello" } }
+  ],
+  "recordedResult": {
+    "note": "The browser has no database: behaviours 3 and 4 of the preview run against this recorded result set of 'SELECT id, title, plays, cover FROM tracks' (first row of B6, then truncated).",
+    "columns": ["id", "title", "plays", "cover"],
+    "first": { "id": 1, "title": "Track 1", "plays": "9007199254740993", "cover": "<blob 1.2 KB>" },
+    "rowLimit": 100,
+    "tableRows": 250
+  }
+}
