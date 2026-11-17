@@ -273,6 +273,13 @@ process.stdin.on('data', chunk => {
               draft: Object.freeze(Object.fromEntries(['get', 'set', 'insert', 'suggest', 'attach', 'detach'].map(op => [op, options => rpc('tasksDraft', { ...(options ?? {}), op })]))),
               attachments: Object.freeze({ read: options => rpc('tasksAttachmentsRead', options === undefined || options === null ? {} : { ...options }) }),
             }),
+            // Virtual machine, simulator and browser guests (R0410, guests.control): the host checks the grant per call; a capture is a file in the package's data directory.
+            guests: Object.freeze({
+              list: () => rpc('guests', { op: 'list' }),
+              capture: id => rpc('guests', { op: 'capture', id }),
+              input: (id, input) => rpc('guests', { op: 'input', id, input }),
+              control: (id, action) => rpc('guests', { op: 'control', id, action }),
+            }),
             // Terminals (R0409): list/read/onOutput need terminals.read, open/write/close need terminals.write; the host checks both per call.
             terminals: Object.freeze({
               ...Object.fromEntries(['list', 'read', 'open', 'write', 'close'].map(op => [op, options => rpc('terminals', { ...(options ?? {}), op })])),

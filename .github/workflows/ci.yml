@@ -219,6 +219,12 @@ jobs:
       - name: Terminals read and write (WebKit)
         env: { PW_PORT: '16362', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-terminals.spec.ts --workers=1
+      - name: Guest control (Chromium)
+        env: { PW_PORT: '16371', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-guests.spec.ts --workers=1
+      - name: Guest control (WebKit)
+        env: { PW_PORT: '16372', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-guests.spec.ts --workers=1
       - name: Moodboards and cloud machines (Chromium)
         env: { PW_PORT: '16341', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-workspace-cloud.spec.ts --workers=1

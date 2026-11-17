@@ -28,6 +28,7 @@ pub(crate) mod runtime_provider_launch;
 pub mod runtime_tasks_start;
 pub mod runtime_tasks_messages;
 pub mod runtime_tasks_drafts;
+pub mod runtime_guests;
 pub mod runtime_terminals;
 pub mod runtime_harness_console;
 pub mod runtime_workspace_cloud;

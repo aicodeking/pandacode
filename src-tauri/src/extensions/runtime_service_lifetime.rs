@@ -857,6 +857,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.terminals.*` (R0409): `terminals.read` and `terminals.write` are checked natively per call.
             if request.method == "terminals" { return super::runtime_terminals::serve(app, request).await; }
             if request.method == "tasksAttachmentsRead" { return super::runtime_tasks_drafts::serve_attachment(app, request).await; }
+            // `panda.guests.list`, `capture`, `input` and `control` (R0410, guests.control): the grant is checked natively per call.
+            if request.method == "guests" { return super::runtime_guests::serve(app, request).await; }
             if request.method == "harnessConsole" { return super::runtime_harness_console::serve(app, request).await; }
             if request.method == "notice" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
