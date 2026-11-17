@@ -5,6 +5,7 @@
 // receives. Every delivery is observe only: nothing waits for it and nothing reads what a handler returns.
 // Everything here is for predictability and fault isolation (ADR-0005), never for trust.
 import { preview, type Json } from './runtime-hook-payload.ts';
+import { EVENTS as PENDING_EVENTS } from './runtime-pending-requests.ts';
 
 type Obj = { [key: string]: Json };
 const object = (value: Json | undefined): value is Obj => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -195,6 +196,9 @@ export class HookRegistry {
 
   setGate(gate: Gate): void { this.gate = gate; }
   setDeliver(deliver: Deliver): void { this.deliver = deliver; }
+  /** R0507: what is still waiting in a task (`task.idle.pending`); `PendingBook.counts` in the app's twin. */
+  private pendingCounts: (task: string) => [number, number] = () => [0, 0];
+  setPendingCounts(counts: (task: string) => [number, number]): void { this.pendingCounts = counts; }
   active(): boolean { return this.attached.size > 0; }
   private refresh(): void { if (!this.active()) this.runs.clear(); }
 
@@ -209,7 +213,8 @@ export class HookRegistry {
     entry.handlers += 1; entry.version = version; entry.declaration = declaration;
     this.attached.set(key, entry);
     this.refresh();
-    return { ...declarationJson(declaration), observeOnly: true, delivered: DELIVERED.includes(event as HookEvent) };
+    // `approval.*` and `question.*` are delivered by R0507 (runtime-pending-requests.ts).
+    return { ...declarationJson(declaration), observeOnly: true, delivered: DELIVERED.includes(event as HookEvent) || (PENDING_EVENTS as readonly string[]).includes(event) };
   }
   unregister(owner: string, event: string): string | null {
     if (!(EVENTS as readonly string[]).includes(event)) return 'InvalidShape';
@@ -325,7 +330,8 @@ export class HookRegistry {
       turn.error = { message: [...(error ?? 'The turn ended with an error.')].slice(0, 4_000).join('') };
       out = add(out, this.publish(this.occurrence(run.facts, 'turn.fail', turn)));
     }
-    const idle: Obj = { taskId: run.facts.taskId, projectId: run.facts.projectId, harness: run.facts.harness, turn: run.facts.index, pending: { approvals: 0, questions: 0 } };
+    const [approvals, questions] = this.pendingCounts(run.facts.taskId);
+    const idle: Obj = { taskId: run.facts.taskId, projectId: run.facts.projectId, harness: run.facts.harness, turn: run.facts.index, pending: { approvals, questions } };
     return add(out, this.publish(this.occurrence(run.facts, 'task.idle', idle)));
   }
   forgetTask(task: string): void { this.runs.delete(task); this.compacted.delete(task); }

@@ -577,6 +577,8 @@ impl Wrapped {
                 }
             }
             Action::Prompt(note) => {
+                // R0507: the package whose `ask` (or failing `ask` policy) shows this prompt is its `approval.pending.askedBy`.
+                if let Outcome::Ask(verdict) = fold.outcome() { crate::extensions::runtime_pending_requests::asked_by(&self.task, &request.request, &verdict.owner); }
                 let mut event = event;
                 if let Some(note) = note { event.text = format!("{}\n{note}", event.text); }
                 // R1003: the notes sit on the approval row too, each with the name of the package that wrote it.

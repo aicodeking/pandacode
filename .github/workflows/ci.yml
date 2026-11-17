@@ -419,6 +419,12 @@ jobs:
       - name: Custom editors bound to host buffers (WebKit)
         env: { PW_PORT: '16512', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-document-editors.spec.ts --workers=1
+      - name: Pending approvals and questions as events (Chromium)
+        env: { PW_PORT: '16561', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-pending-requests.spec.ts --workers=1
+      - name: Pending approvals and questions as events (WebKit)
+        env: { PW_PORT: '16562', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-pending-requests.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1

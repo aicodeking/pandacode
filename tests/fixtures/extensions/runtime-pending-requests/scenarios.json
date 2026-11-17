@@ -1,0 +1,175 @@
+{
+  "about": "R0507 shared script (synthetic): request events as the app's sink and a mirror report them, answers, mode changes, run ends and task removals, with the approval.* / question.* events and the hooks.pending snapshots they must produce. Both the native book (runtime_pending_requests::tests) and the webview twin (runtime-pending-requests.ts, tests/extensions-runtime-pending-requests.spec.ts) replay every scenario and must agree with `expect` exactly. `call` and `input` stand for what runtime_hook_payload recorded for the call; `askAtHost` for a run launched ask-at-host (R0505); `mode` changes the task's current mode; `askedBy` is R0505's attribution of a package's ask, `attribute` R0508's of a package's answer. Snapshots leave `revision` out (it only grows). No harness was run.",
+  "label": "synthetic",
+  "at": "2026-11-17T09:00:00.000Z",
+  "tasks": {
+    "t1": { "project": "A", "harness": "claude", "mode": "ask", "run": "task" },
+    "t2": { "project": "B", "harness": "codex", "mode": "ask", "run": "task" },
+    "m1": { "project": "A", "harness": "opencode", "mode": "full", "run": "remote" }
+  },
+  "scenarios": [
+    {
+      "id": "an approval answered by the user resolves once and never reopens",
+      "steps": [
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:7", "text": "Allow Bash?\nrm -rf build", "data": { "name": "Bash" }, "call": "call-1", "input": { "command": "rm -rf build" } },
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:7", "text": "Allow Bash?\nrm -rf build", "data": { "name": "Bash" }, "call": "call-1", "input": { "command": "rm -rf build" } },
+        { "op": "answered", "task": "t1", "request": "r1:7", "approved": true },
+        { "op": "event", "kind": "approval_cancelled", "task": "t1", "request": "r1:7" },
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:7", "text": "Allow Bash?\nrm -rf build", "data": { "name": "Bash" } },
+        { "op": "snapshot" }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.pending", "payload": { "requestId": "r1:7", "callId": "call-1", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "shell", "name": "Bash" }, "text": "Allow Bash?\nrm -rf build", "input": { "command": "rm -rf build" }, "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:7", "callId": "call-1", "taskId": "t1", "approved": true, "by": "user" } }
+        ],
+        "snapshots": [
+          { "schemaVersion": 1, "approvals": [], "questions": [], "truncated": false }
+        ]
+      }
+    },
+    {
+      "id": "a package's ask is the prompt's origin and a package's answer is its resolution",
+      "steps": [
+        { "op": "askedBy", "task": "t1", "request": "8", "package": "sample.guard" },
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:8", "text": "Allow Write?", "data": {}, "input": { "file_path": "a.ts", "content": "x" } },
+        { "op": "attribute", "task": "t1", "request": "r1:8", "package": "sample.pending-inbox", "reason": "Declined from the inbox" },
+        { "op": "answered", "task": "t1", "request": "r1:8", "approved": false },
+        { "op": "attribute", "task": "t1", "request": "r1:8", "package": "sample.pending-inbox" }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.pending", "payload": { "requestId": "r1:8", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "write", "name": "Write" }, "text": "Allow Write?", "input": { "file_path": "a.ts", "content": "x" }, "askedBy": { "package": "sample.guard" }, "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:8", "taskId": "t1", "approved": false, "reason": "Declined from the inbox", "by": { "package": "sample.pending-inbox" } } }
+        ],
+        "results": [null, "StaleContext"]
+      }
+    },
+    {
+      "id": "a request the harness withdraws after the mode changed is resolved by the mode",
+      "steps": [
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:9", "text": "Allow Edit?", "data": { "tool_name": "Edit" } },
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:10", "text": "Allow Bash?", "data": { "name": "Bash" }, "askAtHost": true },
+        { "op": "mode", "task": "t1", "mode": "full" },
+        { "op": "event", "kind": "approval_cancelled", "task": "t1", "request": "r1:9" },
+        { "op": "mode", "task": "t1", "mode": "ask" },
+        { "op": "event", "kind": "approval_cancelled", "task": "t1", "request": "r1:10" },
+        { "op": "counts", "task": "t1" }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.pending", "payload": { "requestId": "r1:9", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "edit", "name": "Edit" }, "text": "Allow Edit?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.pending", "payload": { "requestId": "r1:10", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "shell", "name": "Bash" }, "text": "Allow Bash?", "askedBy": "mode", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:9", "taskId": "t1", "approved": false, "by": "mode" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:10", "taskId": "t1", "approved": false, "by": "cancelled" } }
+        ],
+        "results": [[0, 0]]
+      }
+    },
+    {
+      "id": "a question opens once, its secret answer never travels, and it never replays",
+      "steps": [
+        { "op": "event", "kind": "input_request", "task": "t1", "request": "r1:q1", "text": "", "data": { "kind": "questions", "questions": [
+          { "id": "db", "header": "Database", "question": "Which database?", "isOther": false, "isSecret": false, "options": [{ "label": "Postgres", "description": "Relational" }, { "label": "SQLite", "description": "" }] },
+          { "id": "token", "header": "", "question": "Paste the deploy token", "isOther": false, "isSecret": true, "options": null }
+        ] } },
+        { "op": "event", "kind": "input_request", "task": "t1", "request": "r1:q1", "text": "", "data": { "kind": "questions", "questions": [] } },
+        { "op": "counts", "task": "t1" },
+        { "op": "answered", "task": "t1", "request": "r1:q1", "response": { "answers": { "db": { "answers": ["Postgres"] }, "token": { "answers": ["s3cr3t"] } } } },
+        { "op": "event", "kind": "input_cancelled", "task": "t1", "request": "r1:q1" },
+        { "op": "event", "kind": "input_request", "task": "t1", "request": "r1:q1", "text": "Which database?", "data": null },
+        { "op": "counts", "task": "t1" }
+      ],
+      "expect": {
+        "events": [
+          { "event": "question.pending", "payload": { "requestId": "r1:q1", "taskId": "t1", "projectId": "A", "harness": "claude", "at": "2026-11-17T09:00:00.000Z", "questions": [
+            { "id": "db", "header": "Database", "question": "Which database?", "options": [{ "label": "Postgres", "description": "Relational" }, { "label": "SQLite" }], "multiple": false, "secret": false },
+            { "id": "token", "question": "Paste the deploy token", "multiple": false, "secret": true }
+          ] } },
+          { "event": "question.resolved", "payload": { "requestId": "r1:q1", "taskId": "t1", "by": "user", "answers": { "db": { "answers": ["Postgres"] } } } }
+        ],
+        "results": [[0, 1], [0, 0]]
+      }
+    },
+    {
+      "id": "forms, links and plain questions, and a run's end cancels what it left open",
+      "steps": [
+        { "op": "event", "kind": "input_request", "task": "t1", "request": "r1:f1", "text": "", "data": { "kind": "form", "message": "Sign in to the registry", "schema": { "type": "object", "properties": {
+          "user": { "type": "string", "title": "User name" },
+          "password": { "type": "string", "format": "password", "description": "Password" },
+          "scopes": { "type": "array", "enum": ["read", "write"] }
+        } } } },
+        { "op": "answered", "task": "t1", "request": "r1:f1", "response": { "action": "accept", "content": { "user": "me", "password": "hunter2" } } },
+        { "op": "event", "kind": "input_request", "task": "t1", "request": "r1:u1", "text": "", "data": { "kind": "url", "message": "Confirm the device", "url": "https://example.test/device" } },
+        { "op": "event", "kind": "input_request", "task": "t1", "request": "r1:p1", "text": "Continue with the migration?", "data": null },
+        { "op": "runEnded", "task": "t1", "run": "r1" }
+      ],
+      "expect": {
+        "events": [
+          { "event": "question.pending", "payload": { "requestId": "r1:f1", "taskId": "t1", "projectId": "A", "harness": "claude", "at": "2026-11-17T09:00:00.000Z", "questions": [
+            { "id": "password", "header": "Sign in to the registry", "question": "Password", "multiple": false, "secret": true },
+            { "id": "scopes", "header": "Sign in to the registry", "question": "scopes", "options": [{ "label": "read" }, { "label": "write" }], "multiple": true, "secret": false },
+            { "id": "user", "header": "Sign in to the registry", "question": "User name", "multiple": false, "secret": false }
+          ] } },
+          { "event": "question.resolved", "payload": { "requestId": "r1:f1", "taskId": "t1", "by": "user" } },
+          { "event": "question.pending", "payload": { "requestId": "r1:u1", "taskId": "t1", "projectId": "A", "harness": "claude", "at": "2026-11-17T09:00:00.000Z", "questions": [
+            { "id": "url", "question": "Confirm the device\nhttps://example.test/device", "multiple": false, "secret": false }
+          ] } },
+          { "event": "question.pending", "payload": { "requestId": "r1:p1", "taskId": "t1", "projectId": "A", "harness": "claude", "at": "2026-11-17T09:00:00.000Z", "questions": [
+            { "id": "q0", "question": "Continue with the migration?", "multiple": false, "secret": false }
+          ] } },
+          { "event": "question.resolved", "payload": { "requestId": "r1:u1", "taskId": "t1", "by": "cancelled" } },
+          { "event": "question.resolved", "payload": { "requestId": "r1:p1", "taskId": "t1", "by": "cancelled" } }
+        ]
+      }
+    },
+    {
+      "id": "a run's end closes only its own requests, a removed task closes the rest, snapshots follow the project grant",
+      "steps": [
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r1:1", "text": "Allow Read?", "data": { "name": "Read" } },
+        { "op": "event", "kind": "approval", "task": "t1", "request": "r2:1", "text": "Allow Read?", "data": { "name": "Read" } },
+        { "op": "event", "kind": "approval", "task": "t2", "request": "r3:1", "text": "Allow Bash?", "data": { "name": "Bash" } },
+        { "op": "snapshot", "projects": ["A"] },
+        { "op": "runEnded", "task": "t1", "run": "r1" },
+        { "op": "snapshot" },
+        { "op": "taskRemoved", "task": "t2" },
+        { "op": "counts", "task": "t1" }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.pending", "payload": { "requestId": "r1:1", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "read", "name": "Read" }, "text": "Allow Read?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.pending", "payload": { "requestId": "r2:1", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "read", "name": "Read" }, "text": "Allow Read?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.pending", "payload": { "requestId": "r3:1", "taskId": "t2", "projectId": "B", "harness": "codex", "mode": "ask", "tool": { "kind": "shell", "name": "Bash" }, "text": "Allow Bash?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r1:1", "taskId": "t1", "approved": false, "by": "cancelled" } },
+          { "event": "approval.resolved", "payload": { "requestId": "r3:1", "taskId": "t2", "approved": false, "by": "cancelled" } }
+        ],
+        "snapshots": [
+          { "schemaVersion": 1, "truncated": false, "questions": [], "approvals": [
+            { "requestId": "r1:1", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "read", "name": "Read" }, "text": "Allow Read?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" },
+            { "requestId": "r2:1", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "read", "name": "Read" }, "text": "Allow Read?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" }
+          ] },
+          { "schemaVersion": 1, "truncated": false, "questions": [], "approvals": [
+            { "requestId": "r2:1", "taskId": "t1", "projectId": "A", "harness": "claude", "mode": "ask", "tool": { "kind": "read", "name": "Read" }, "text": "Allow Read?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" },
+            { "requestId": "r3:1", "taskId": "t2", "projectId": "B", "harness": "codex", "mode": "ask", "tool": { "kind": "shell", "name": "Bash" }, "text": "Allow Bash?", "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" }
+          ] }
+        ],
+        "results": [[1, 0]]
+      }
+    },
+    {
+      "id": "a mirror's resumed frames open nothing twice and the host's withdrawal closes the identity",
+      "steps": [
+        { "op": "event", "kind": "approval", "task": "m1", "request": "h1:5", "text": "Allow Bash?", "data": { "name": "Bash", "input": { "command": "ls" } }, "input": { "command": "ls" } },
+        { "op": "event", "kind": "approval", "task": "m1", "request": "h1:5", "text": "Allow Bash?", "data": { "name": "Bash", "input": { "command": "ls" } }, "input": { "command": "ls" } },
+        { "op": "event", "kind": "approval_cancelled", "task": "m1", "request": "h1:5" },
+        { "op": "event", "kind": "approval", "task": "m1", "request": "h1:5", "text": "Allow Bash?", "data": { "name": "Bash" } }
+      ],
+      "expect": {
+        "events": [
+          { "event": "approval.pending", "payload": { "requestId": "h1:5", "taskId": "m1", "projectId": "A", "harness": "opencode", "mode": "full", "tool": { "kind": "shell", "name": "Bash" }, "text": "Allow Bash?", "input": { "command": "ls" }, "askedBy": "harness", "at": "2026-11-17T09:00:00.000Z" } },
+          { "event": "approval.resolved", "payload": { "requestId": "h1:5", "taskId": "m1", "approved": false, "by": "cancelled" } }
+        ]
+      }
+    }
+  ]
+}

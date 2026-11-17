@@ -216,6 +216,8 @@ process.stdin.on('data', chunk => {
             },
             // The complete serialization of a large tool input, in 256 KiB chunks (harness.hooks.observe for the call's project).
             input: options => rpc('hooksInput', options === undefined || options === null ? {} : { ...options }),
+            // The open approvals and questions now (R0507), to rebuild a list after lost deliveries.
+            pending: () => rpc('hooksPending', {}),
             onApplied(handler) {
               if (typeof handler !== 'function') throw new TypeError('hooks.onApplied needs a function');
               appliedHandlers.add(handler);

@@ -541,6 +541,8 @@ pub fn mirror_sent(app: &tauri::AppHandle, local: &str, host: &str, text: &str) 
 
 /// Events of mirrored tasks, as `mirror::show` emits them (relabelled to local ids).
 pub fn mirror_events(app: &tauri::AppHandle, host: &str, events: &[Value]) {
+    // Pending approvals and questions of the mirrored task (R0507), whether or not a hook is attached yet.
+    super::runtime_pending_requests::mirror_events(app, events);
     let hub = super::runtime_hook_registration::registry();
     if !hub.active() { return; }
     feed(hub, events, |local| mirror_facts(app, local, host, ""), |run| tally().launch(run));
@@ -588,7 +590,11 @@ pub fn feed(hub: &HookRegistry, events: &[Value], start: impl Fn(&str) -> Option
 }
 
 /// The mirrored turn ended here (`mirror::finish`): `turn.finish` or `turn.fail`, then `task.idle`.
-pub fn mirror_ended(local: &str, successful: bool, stopped: bool) { super::runtime_hook_registration::run_ended(local, successful, stopped); }
+pub fn mirror_ended(local: &str, successful: bool, stopped: bool) {
+    super::runtime_hook_registration::run_ended(local, successful, stopped);
+    // R0507: the mirrored turn's open requests end with it.
+    super::runtime_pending_requests::run_ended(local, None);
+}
 
 #[cfg(test)]
 mod tests {

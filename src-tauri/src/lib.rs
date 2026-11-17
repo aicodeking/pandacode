@@ -778,6 +778,7 @@ async fn delete_session_with_attachment_cleanup(
     for removed in &deleted.deleted_session_ids {
         extensions::runtime_service_lifetime::runtime_workspace_events::forget_task(removed);
         extensions::runtime_hook_registration::task_removed(removed);
+        extensions::runtime_pending_requests::task_removed(removed);
         extensions::runtime_dynamic_items::scope_gone(&app, &extensions::runtime_dynamic_items::Scope::Task(removed.clone()));
         extensions::runtime_tasks_start::task_removed(&app, removed);
         extensions::runtime_tasks_messages::task_removed(&app, removed);
@@ -1673,6 +1674,8 @@ fn emit_coalesced(
     if matches!(event.kind.as_str(), "text" | "status" | "tool") { extensions::context::record_job(app, &event.session_id, "progress", "running"); }
     if let Some(tool) = &event.tool { extensions::runtime_service_lifetime::runtime_workspace_events::observe_tool(app, &event.session_id, &tool.id, &tool.name, &tool.status); }
     extensions::runtime_hook_registration::agent_event(&event);
+    // Pending approvals and questions (R0507): opened and withdrawn under the id the window shows.
+    extensions::runtime_pending_requests::agent_event(app, &event);
     let mut buffer = coalescer.lock().unwrap_or_else(|poison| poison.into_inner());
     let now = std::time::Instant::now();
     for event in buffer.push(event, now) {
@@ -3380,6 +3383,8 @@ async fn launch_operation_admitted(
         let _ = app.emit("agent-event", event(&session_id, "done", done));
         extensions::runtime_service_lifetime::runtime_workspace_events::turn_ended(&app, &session_id, successful, ended_stopped);
         extensions::runtime_hook_registration::run_ended(&session_id, successful, ended_stopped);
+        // R0507: what this run left waiting can no longer be answered (`task.idle` above counted it).
+        extensions::runtime_pending_requests::run_ended(&session_id, Some(&settle_id));
         remote::run_finished(&app, &session_id, successful, ended_stopped, done);
         // A wake turn that never reached the agent gives its claim back (at-least-once).
         let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
@@ -3502,13 +3507,21 @@ async fn respond_approval(
     approved: bool,
 ) -> Result<()> {
     if remote::route(&app, &state, &session_id, "approval.respond", serde_json::json!({"requestId": request_id, "approve": approved})).await?.is_some() {
+        extensions::runtime_pending_requests::approval_answered(&session_id, &request_id, approved);
         return Ok(());
     }
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    let tx = agents
-        .get(&session_id)
-        .ok_or("This agent is no longer running.")?;
-    tx.respond_approval(&state.store, &session_id, request_id, approved)
+    let answered = {
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let tx = agents
+            .get(&session_id)
+            .ok_or("This agent is no longer running.")?;
+        tx.respond_approval(&state.store, &session_id, request_id.clone(), approved)
+    };
+    // R0507: `approval.resolved`, delivered with no registry lock held.
+    if answered.is_ok() {
+        extensions::runtime_pending_requests::approval_answered(&session_id, &request_id, approved);
+    }
+    answered
 }
 #[tauri::command]
 async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
@@ -3556,9 +3569,12 @@ async fn respond_user_input(
     if response.to_string().len() > 32 * 1024 {
         return Err("Response is too large.".into());
     }
-    if remote::route(&app, &state, &session_id, "input.respond", serde_json::json!({"requestId": request_id, "response": response})).await?.is_some() {
+    if remote::route(&app, &state, &session_id, "input.respond", serde_json::json!({"requestId": request_id, "response": response.clone()})).await?.is_some() {
+        extensions::runtime_pending_requests::question_answered(&session_id, &request_id, &response);
         return Ok(());
     }
+    // R0507: the answer as given, for `question.resolved` once the harness accepted it.
+    let answered = response.clone();
     let reply = {
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let agent = agents
@@ -3599,6 +3615,8 @@ async fn respond_user_input(
             if approvals.is_empty() { "running" } else { "waiting" },
         )?;
     }
+    drop(agents);
+    extensions::runtime_pending_requests::question_answered(&session_id, &request_id, &answered);
     Ok(())
 }
 

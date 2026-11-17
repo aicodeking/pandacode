@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.pending-inbox",
+  "name": "Pending inbox",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "harness.hooks.observe"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.pending-inbox/control", "title": "Pending inbox control", "action": { "kind": "runCommand" } }
+    ],
+    "hooks": [
+      { "id": "sample.pending-inbox/approval-pending", "event": "approval.pending", "match": { "runs": ["task", "bot", "schedule", "remote"] } },
+      { "id": "sample.pending-inbox/approval-resolved", "event": "approval.resolved", "match": { "runs": ["task", "bot", "schedule", "remote"] } },
+      { "id": "sample.pending-inbox/question-pending", "event": "question.pending" },
+      { "id": "sample.pending-inbox/question-resolved", "event": "question.resolved" },
+      { "id": "sample.pending-inbox/idle", "event": "task.idle" }
+    ]
+  }
+}

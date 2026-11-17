@@ -749,10 +749,30 @@ export interface ServiceModels { call(options: ModelCallOptions): Promise<ModelC
 export interface CliIntentRule { readonly id: string; readonly command: string; readonly words?: readonly string[]; readonly flags?: readonly string[]; readonly intent: { readonly kind: string; readonly verb: string; readonly label?: string; readonly object?: string } }
 /** The classification of a shell call as a hook payload carries it in `intent` (present only when a package rule matched). */
 export interface CliIntentClassification { readonly schemaVersion: 1; readonly status: 'Matched' | 'Unmatched' | 'NoRule' | 'Unparseable'; readonly segments: readonly { readonly text: string; readonly status: string; readonly rule: string | null; readonly owner: string | null; readonly package: string | null; readonly intent: Json | null; readonly candidates: readonly string[] }[]; readonly hint: { readonly rule: string; readonly owner: string; readonly package: string; readonly intent: Json } | null }
+/** R0507: `approval.pending` (see docs/extensions/runtime-pending-requests.md). Fields are frozen when the prompt appears; `input` is the complete input when it travels structured (1 MiB). */
+export interface PendingApproval {
+  readonly requestId: string; readonly callId?: string; readonly taskId: string; readonly projectId: string; readonly harness: string; readonly mode: string;
+  readonly tool: { readonly kind: string; readonly name: string }; readonly text: string; readonly input?: Json;
+  readonly askedBy: 'harness' | 'mode' | { readonly package: string }; readonly at: string;
+}
+/** R0507: `question.pending`. */
+export interface PendingQuestion {
+  readonly requestId: string; readonly taskId: string; readonly projectId: string; readonly harness: string;
+  readonly questions: readonly { readonly id: string; readonly header?: string; readonly question: string; readonly options?: readonly { readonly label: string; readonly description?: string }[]; readonly multiple?: boolean; readonly secret?: boolean }[];
+  readonly at: string;
+}
+/** R0507: `approval.resolved`, once per pending approval. `mode`: withdrawn by the harness after the task's mode changed. */
+export interface ApprovalResolved { readonly requestId: string; readonly callId?: string; readonly taskId: string; readonly approved: boolean; readonly reason?: string; readonly by: 'user' | 'mode' | 'cancelled' | { readonly package: string } }
+/** R0507: `question.resolved`, once per pending question; `answers` never holds a secret question's answer. */
+export interface QuestionResolved { readonly requestId: string; readonly taskId: string; readonly by: 'user' | 'cancelled' | { readonly package: string }; readonly answers?: Json }
+/** R0507: `panda.hooks.pending()`, the open set now, filtered like a live delivery; a resolved request is never in it. */
+export interface PendingSnapshot { readonly schemaVersion: 1; readonly revision: number; readonly approvals: readonly PendingApproval[]; readonly questions: readonly PendingQuestion[]; readonly truncated: boolean }
 export interface ServiceHooks {
   on(event: HookEvent, handler: (payload: Json) => unknown): HookRegistration;
   input(options: { callId: string; cursor: number }): Promise<HookInputChunk>;
   onApplied(handler: (receipt: HookReceipt) => void): Disposable;
+  /** `UnknownReference` without an attached `approval.*` or `question.*` hook. */
+  pending(): Promise<PendingSnapshot>;
 }
 /** `harnesses.console` and `harnesses.commands` (R0408, `harness.console`): the user's own harness console and slash commands, per project grant. A task that is running answers `Busy` to `console.open`; a package harness has no console (`UnsupportedCapability`). See docs/extensions/runtime-harness-console.md. */
 export interface HarnessConsoleApi { open(options: { taskId: string } | { harness: string; projectId: string }): Promise<null> }

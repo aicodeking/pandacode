@@ -374,7 +374,8 @@ impl HookRegistry {
         self.refresh(&mut inner);
         let mut answer = declaration.json();
         answer["observeOnly"] = json!(true);
-        answer["delivered"] = json!(DELIVERED.contains(&event));
+        // `approval.*` and `question.*` are delivered by R0507 (`runtime_pending_requests`).
+        answer["delivered"] = json!(DELIVERED.contains(&event) || super::runtime_pending_requests::EVENTS.contains(&event));
         Ok(answer)
     }
     /// A handler was disposed; the hook stays attached while another handler of the event lives.
@@ -643,7 +644,9 @@ impl HookRegistry {
             turn.insert("error".into(), json!({"message": message}));
             out += self.publish(&Self::occurrence(&run.facts, "turn.fail", Value::Object(turn)));
         }
-        let idle = json!({"taskId": run.facts.task_id, "projectId": run.facts.project_id, "harness": run.facts.harness, "turn": run.facts.index, "pending": {"approvals": 0, "questions": 0}});
+        // What was still waiting for the user when the turn ended (R0507; each then ends `cancelled`).
+        let (approvals, questions) = super::runtime_pending_requests::counts(&run.facts.task_id);
+        let idle = json!({"taskId": run.facts.task_id, "projectId": run.facts.project_id, "harness": run.facts.harness, "turn": run.facts.index, "pending": {"approvals": approvals, "questions": questions}});
         out += self.publish(&Self::occurrence(&run.facts, "task.idle", idle));
         out
     }
