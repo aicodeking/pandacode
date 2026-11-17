@@ -1839,5 +1839,8 @@ mod tests {
             assert_eq!(slots.count(NAVIGATION_ID), 0, "the dialog ends with the process");
             b1.stop().await;
         }
+
+        // R1201: the Work board acceptance, pasted here to share this module's B1 driver and helpers.
+        include!("runtime_live_board_acceptance.rs");
     }
 }

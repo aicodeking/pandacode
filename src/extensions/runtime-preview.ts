@@ -48,7 +48,11 @@ export interface PreviewLifetime {
 }
 
 type Disposer = () => void;
+/** What a command handler of the service receives: the same two fields the native duplex channel hands over. */
+export type CommandHandler = (context: { commandId: string; args: unknown }) => unknown;
 export interface PreviewPanda {
+  /** The package's own `runCommand` commands, answered inside the service (R0201's duplex channel in the preview). */
+  readonly commands: { register(id: string, handler: CommandHandler): { dispose(): void } };
   readonly settings: { get(params: unknown): Promise<unknown> };
   readonly events: { on(kind: string, handler: (envelope: Envelope) => void): Disposer };
   readonly context: { query(params: unknown): Promise<unknown> };
@@ -124,6 +128,7 @@ export class RuntimePreview {
   private generation = 0;
   private clock = 0;
   private cleanups: Array<() => void | Promise<void>> = [];
+  private commandHandlers = new Map<string, CommandHandler>();
   private handlers = new Map<string, Set<(envelope: Envelope) => void>>();
   private topics = new Map<string, Set<(frame: { event: string; seq: number; data: unknown }) => void>>();
   private daemonCore: DaemonCore | null = null;
@@ -211,7 +216,7 @@ export class RuntimePreview {
     if (this.state !== 'running') return false;
     this.state = 'stopped'; this.stopReason = reason;
     this.events.detach(this.owner, this.generation);
-    this.handlers.clear(); this.topics.clear();
+    this.handlers.clear(); this.topics.clear(); this.commandHandlers.clear();
     this.dialogs.cancelOwner(this.owner);
     this.items.clear(this.owner);
     this.notices.clear(this.owner, `service-${reason}`);
@@ -252,6 +257,14 @@ export class RuntimePreview {
   }
   /** The workspace changed (a message, a task): resource revisions move, so a held cursor goes stale. */
   touchStore() { const store = this.options.store; if (store) store.revision += 1; return store?.revision ?? 0; }
+  /** A click on a menu item, a table row or a shortcut of one of the package's commands: runs the handler the service registered. */
+  async invoke(id: string, args: unknown = null): Promise<unknown> {
+    this.requireRunning();
+    const handler = this.commandHandlers.get(id);
+    if (!handler) { this.step('command', 'NotFound', id); throw new PandaError('NotFound'); }
+    this.step('command', undefined, id);
+    return handler({ commandId: id, args });
+  }
   /** The interface answers the dialog the service asked for. */
   answerDialog(id: string, answer: unknown) { return this.dialogs.answer(id, answer); }
   dismissNotice(key: string) { return this.notices.dismiss(this.owner, key); }
@@ -289,6 +302,15 @@ export class RuntimePreview {
       return () => { set.delete(handler); };
     };
     return {
+      commands: { register: (id, handler) => {
+        this.requireRunning();
+        const own = (this.options.manifest.contributes?.commands ?? []).some(entry => entry.id === id);
+        const code = !own ? 'UnknownReference' : this.commandHandlers.has(id) ? 'Conflict' : null;
+        if (code) { this.step('commands.register', code, id); throw new PandaError(code); }
+        this.commandHandlers.set(id, handler);
+        this.step('commands.register', undefined, id);
+        return { dispose: () => { if (this.commandHandlers.get(id) === handler) this.commandHandlers.delete(id); } };
+      } },
       // A package reads its own settings page with no permission, as native does; the page must exist and be enabled.
       settings: { get: params => this.call('settings.get', () => out(settingsGet(this.options.settings ?? [], owner, params))) },
       events: { on: (kind, handler) => {

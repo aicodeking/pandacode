@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.live-board",
+  "version": "1.0.0",
+  "name": "Work board",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.live-board/open", "title": "Open work board", "action": { "kind": "openView", "view": "sample.live-board/board" } },
+      { "id": "sample.live-board/retry", "title": "Retry tracker", "action": { "kind": "runCommand" } },
+      { "id": "sample.live-board/who", "title": "Who is working", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.live-board/ready", "location": "panda.status.items", "command": "sample.live-board/open", "presentation": "status", "text": "Board" },
+      { "id": "sample.live-board/who-button", "location": "panda.workspace.header.actions", "command": "sample.live-board/who", "presentation": "button", "text": "Who is working" }
+    ],
+    "views": [
+      { "id": "sample.live-board/board", "title": "Work board", "text": "Connecting to the tracker." }
+    ],
+    "settings": [
+      { "id": "sample.live-board/tracker", "title": "Tracker", "fields": [
+        { "id": "daemon", "kind": "text", "label": "Tracker address (host:port)", "value": "127.0.0.1:7421" },
+        { "id": "unit", "kind": "text", "label": "Name of the ready count", "value": "ready", "required": true }
+      ] }
+    ]
+  }
+}
