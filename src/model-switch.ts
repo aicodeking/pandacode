@@ -99,11 +99,14 @@ const modesSaving = new Set<string>();
 const modeOpensHeld = new Map<string, number>();
 
 /* ----- Busy pulses ----- */
+const BUSY = '[aria-busy="true"]';
 /** Pulses under `root` (a redrawn trigger or composer, or a control just marked busy) join the shared `state-pulse`
  *  phase now. motion.ts syncPulses aligns each on its first animationstart, a frame late, so a repaint mid-save showed
  *  its pulse back at the start of the cycle for a frame: a blink on every redraw. Reduced motion has none to align. */
 export function joinPulses(root: Element | null | undefined): void {
-  for (const animation of root?.getAnimations({ subtree: true }) ?? []) {
+  // Only busy controls pulse here: a render with none skips walking every animation under the root.
+  if (!root || !(root.matches(BUSY) || root.querySelector(BUSY))) return;
+  for (const animation of root.getAnimations({ subtree: true })) {
     if ((animation as CSSAnimation).animationName === 'state-pulse' && animation.startTime !== 0) animation.startTime = 0;
   }
 }
@@ -125,33 +128,72 @@ export async function settledChange(id: string): Promise<Unchanged | null> {
 /** As settledChange: whether everything that was saving saved. */
 export const settled = async (id: string): Promise<boolean> => !await settledChange(id);
 
-/* ----- Keeping a pick on screen through a task listing read before it saved ----- */
+/* ----- Keeping a pick on screen through a task read before it saved ----- */
 /** The task fields each kind of pick writes. */
 type ChoiceField = 'provider' | 'model' | 'reasoningEffort' | 'codexSettings' | 'contextUsage' | 'mode';
 const MODEL_FIELDS: readonly ChoiceField[] = ['provider', 'model', 'reasoningEffort', 'codexSettings', 'contextUsage'];
 const CHOICE_FIELDS: readonly ChoiceField[] = [...MODEL_FIELDS, 'mode'];
-/** Counts every pick's write to a task, and for each task the count at each field's last write. */
+/** Counts every pick's write to a task, and for each task the count at each field's last write. Marks only matter to
+ *  a read that began before them, so they are kept only while a read is open (`openReads`) and pruned as reads end. */
 let writes = 0;
 const written = new Map<string, ReadonlyMap<ChoiceField, number>>();
+/** Native task reads in flight (`beginRead`), by read: the write count when each began. */
+const openReads = new Map<symbol, number>();
 /** Model changes saving (not permission ones, which share `switches`). */
 const modelsSaving = new Set<string>();
-/** Holds a newer copy of the task and marks the fields this pick wrote. */
+/** Holds a newer copy of the task and marks the fields this pick wrote (for the reads already open). */
 function put(task: Session, fields: readonly ChoiceField[]): void {
   writes += 1;
-  written.set(task.id, new Map([...(written.get(task.id) ?? []), ...fields.map(field => [field, writes] as const)]));
+  if (openReads.size) written.set(task.id, new Map([...(written.get(task.id) ?? []), ...fields.map(field => [field, writes] as const)]));
   hooks.put(task);
 }
-/** Where a task listing starts: a pick written after this is newer than what the listing reads. */
-export const listingStamp = (): number => writes;
-/** A task as a listing read it (`since`: its `listingStamp()`), keeping the fields a pick wrote after it was read or is
- *  still saving: native stores a pick a little later, so an earlier read would put the old model back on screen. */
-export function heldChoices(listed: Session, since: number): Session {
+/** Drops marks no open read began before (and with no read open, all of them): a later read sees them already. */
+function pruneWritten(): void {
+  if (!openReads.size) { written.clear(); return; }
+  const oldest = Math.min(...openReads.values());
+  for (const [id, marks] of written) {
+    const kept = [...marks].filter(([, at]) => at > oldest);
+    if (!kept.length) written.delete(id);
+    else if (kept.length < marks.size) written.set(id, new Map(kept));
+  }
+}
+/** Tasks deleted: their marks go. */
+export function forgetTasks(ids: Iterable<string>): void { for (const id of ids) written.delete(id); }
+/** How many tasks carry marks (for tests: they must not pile up). */
+export const markedTasks = (): number => written.size;
+/** A task as a read begun at `since` saw it, keeping the fields a pick wrote after the read began or is still saving:
+ *  native stores a pick a little later, so an earlier read would put the old model back on screen. */
+function heldChoices(listed: Session, since: number): Session {
   const local = hooks.task(listed.id), marks = written.get(listed.id);
   if (!local || (!marks && !saving(listed.id))) return listed;
   const savingField = (field: ChoiceField) => field === 'mode' ? modesSaving.has(listed.id)
     : modelsSaving.has(listed.id) || (field === 'reasoningEffort' && efforts.has(listed.id));
   const kept = CHOICE_FIELDS.filter(field => savingField(field) || (marks?.get(field) ?? 0) > since);
   return kept.length ? { ...listed, ...Object.fromEntries(kept.map(field => [field, local[field]])) } : listed;
+}
+/** A native read of tasks (a listing, get_task, or any command answering with the updated task) about to start: `hold`
+ *  each task it brings before putting it in state, and `end` it once they are in (twice is harmless). */
+export type TaskRead = { hold(task: Session): Session; end(): void };
+export function beginRead(): TaskRead {
+  const key = Symbol('read'), since = writes;
+  openReads.set(key, since);
+  return {
+    hold: task => heldChoices(task, since),
+    end: () => { if (openReads.delete(key)) pruneWritten(); },
+  };
+}
+/** Whether a native reply is a task (get_task, an update's answer) rather than something else a command returns. */
+const isTask = (value: unknown): value is Session => typeof value === 'object' && value !== null
+  && typeof (value as Session).id === 'string' && typeof (value as Session).provider === 'string' && 'model' in value;
+/** A native call (`read` starts it) whose reply may be a task or a list of tasks: each comes back with the fields a pick
+ *  still saving, or written while the call ran, kept. Any other reply is returned as it is. */
+export async function readTasks<T>(read: () => Promise<T>): Promise<T> {
+  const open = beginRead();
+  try {
+    const reply = await read();
+    const hold = (value: unknown) => isTask(value) ? open.hold(value) : value;
+    return (Array.isArray(reply) ? reply.map(hold) : hold(reply)) as T;
+  } finally { open.end(); }
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);

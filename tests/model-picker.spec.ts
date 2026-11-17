@@ -9,6 +9,10 @@ const task = (page: Page) => page.evaluate(async () => {
   return invoke('get_task', { sessionId: id });
 });
 const activeOption = (page: Page) => picker(page).locator('[role="option"][aria-selected="true"]');
+/** Wait for a page's first picker open: it loads the picker module lazily (the trigger is busy meanwhile), and a cold
+ *  dev server under parallel workers took 3.7–6.5 s to serve it, past the default 5 s wait. Not a startup race: the
+ *  open lands once the module does. */
+const FIRST_OPEN_MS = 20_000;
 
 /** Vite's lazy module graph can outlive page.goto. Wait for the first composer, not history or a picker:
  *  a held startup get_messages call still leaves this prompt attached and disabled. */
@@ -18,6 +22,8 @@ async function gotoApp(page: Page, url: string): Promise<void> {
 }
 
 async function open(page: Page, url = '/?teams'): Promise<void> {
+  // As loadHeld: the rewritten preview module and the first picker open each load cold, so leave them room in the test.
+  test.setTimeout(90_000);
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: `${await response.text()}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
@@ -25,7 +31,7 @@ async function open(page: Page, url = '/?teams'): Promise<void> {
   await gotoApp(page, url);
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
   await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
+  await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
 }
 
 // Issue #123: the picker lists only installed harnesses. The preview marks
@@ -365,6 +371,7 @@ test('the Model button pressed while New task is on its way opens on the new tas
 });
 
 test('the picker shows provider logos for Cline, Kilo Code and Oh My Pi', async ({ page }) => {
+  test.setTimeout(90_000); // As loadHeld: a rewritten preview module and a cold first picker open.
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(); const source = await response.text();
     const marker = /switch\s*\(command\)\s*\{/;
@@ -374,6 +381,7 @@ test('the picker shows provider logos for Cline, Kilo Code and Oh My Pi', async 
   await gotoApp(page, '/');
   await page.locator('.new-task-button').click();
   await trigger(page).click();
+  await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
   const rail = picker(page).getByRole('tablist', { name: 'Harnesses' });
   for (const [name, id] of [['Cline', 'cline'], ['Kilo Code', 'kilo'], ['Oh My Pi', 'omp']]) {
     const tab = rail.getByRole('tab', { name, exact: true });
@@ -385,6 +393,8 @@ test('the picker shows provider logos for Cline, Kilo Code and Oh My Pi', async 
 
 /** Saved/native account assignments are metadata, never extra picker choices. */
 async function accountFixture(page: Page, pooled: boolean) {
+  // As loadHeld: a rewritten preview module and a cold first picker open need room inside the test.
+  test.setTimeout(90_000);
   const connections = ['claude', 'codex', 'kimi'].flatMap(provider => Array.from({ length: 6 }, (_, i) => ({
     id: `${provider}-${i}`, provider, name: `${provider} account ${i}`, args: [], env: {}, secretEnv: [], configDir: `/tmp/pandacode-fixture/${provider}-${i}`, revision: 1,
   })));
@@ -401,6 +411,7 @@ const accountCalls = (page: Page, command: string) => page.evaluate(name => (win
 for (const pooled of [false, true]) test(`accounts never duplicate harness tabs, models or search hits with pooling ${pooled ? 'on' : 'off'}`, async ({ page }) => {
   await accountFixture(page, pooled);
   await trigger(page).click();
+  await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
   const tabs = picker(page).getByRole('tablist', { name: 'Harnesses' }).getByRole('tab');
   const labels = await tabs.evaluateAll(nodes => nodes.map(node => node.textContent));
   expect(labels.filter(label => label?.includes('account'))).toEqual([]);
@@ -488,7 +499,7 @@ async function releaseCall(page: Page, name: string, fail?: string): Promise<voi
 /** Open exactly once: startup refreshes must preserve the interaction. */
 async function openSettled(page: Page): Promise<void> {
   await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
+  await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
 }
 async function pickAstra(page: Page): Promise<void> {
   await openSettled(page);
@@ -554,7 +565,7 @@ test('a catalog label refresh during one Model press keeps native activation', a
   await releaseCall(page, 'list_provider_models');
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await page.mouse.up();
-  await expect(picker(page)).toBeVisible();
+  await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
   await expect(search(page)).toBeFocused();
   await expect(label).toHaveText('Claude Sonnet 5');
 });
@@ -772,6 +783,36 @@ for (const [label, query, option, model] of [
     await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName(option);
   });
 }
+
+// Every native task read that replaces the task in state keeps a pick made meanwhile (main.ts taskCall), not only listings.
+test('a board edit whose task read began before a pick saved does not put the old model back', async ({ page }) => {
+  await loadHeld(page);
+  const stale = await task(page);
+  await page.getByRole('button', { name: /^Workspace view: / }).click();
+  await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
+  await page.getByRole('region', { name: 'Project board', exact: true }).getByRole('button', { name: `Open task: ${stale.title}`, exact: true }).click();
+  const edit = page.getByRole('region', { name: 'Task details', exact: true }).getByRole('button', { name: 'Edit task details', exact: true });
+  await expect(edit).toBeEnabled();
+  // The details read starts now and answers with the task as it was then, whatever saves before it lands.
+  await holdCall(page, 'get_task');
+  await page.evaluate(before => { (window as any).__override = { get_task: (args: { sessionId: string }) => args.sessionId === before.id ? before : undefined }; }, stale);
+  await edit.click();
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.get_task)), { message: 'the board edit reading the task' }).toBe(true);
+  await pickAstra(page);
+  await expect.poll(async () => (await listed(page)).model).toBe('gpt-6-astra');
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'get_task');
+  const form = page.locator('#dialog');
+  await expect(form.getByRole('textbox', { name: 'Task title', exact: true })).toHaveValue(stale.title);
+  await page.evaluate(() => { (window as any).__override = {}; });
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(form).toBeHidden();
+  // The picker opens on the task as held: the model picked, not the one the read saw.
+  await openSettled(page);
+  await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName('Codex · GPT-6-Astra');
+  await page.keyboard.press('Escape');
+  await expect(trigger(page).locator('[data-model-label]')).toHaveText('GPT-6-Astra');
+});
 
 test('a listing landing while a pick saves keeps the picked model on the busy trigger', async ({ page }) => {
   await loadHeld(page);

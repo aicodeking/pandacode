@@ -706,7 +706,7 @@ bindThreadReordering($('#navigation'), {
 });
 /* Branch and worktree control, plus optional GitHub through the user's gh CLI. */
 const github = createGithub({
-  call, modal, closeModal, notify, notifyError,
+  call: taskCall, modal, closeModal, notify, notifyError,
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
@@ -824,10 +824,10 @@ document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('key
   next?.focus();
 });
 const pullView = createPullView({
-  call,
+  call: taskCall,
   openUrl: url => call('open_external_url', { url }),
   unlink: async task => {
-    const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
+    const saved = await taskCall<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
     upsertSession(saved); pullView.forget(task.id);
     if (state.inspectorTab === 'pull' && task.id === state.sessionId) state.inspectorTab = 'changes';
     renderNavigation(); renderHeader(); renderInspector();
@@ -837,6 +837,13 @@ const pullView = createPullView({
   notify, notifyError,
 });
 function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); }
+/** Puts a task native answered with in place of the one held; a task no longer held (deleted meanwhile) is not added back. */
+function replaceSession(next: Session): void { const index = state.sessions.findIndex(s => s.id === next.id); if (index >= 0) state.sessions[index] = next; }
+/** A native call whose reply may be a task or tasks (get_task, an update's answer): each keeps a model, effort or
+ *  permission pick still saving or made while the call ran, which native may not have stored when it read
+ *  (model-switch.ts readTasks). Every reply that replaces a task held in state comes through here, or, when the reply
+ *  waits on something else before going in (loadSessions), through a read held open until then (beginRead). */
+function taskCall<T>(command: string, args?: Record<string, unknown>): Promise<T> { return modelSwitch.readTasks(() => call<T>(command, args)); }
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
@@ -848,7 +855,7 @@ async function detectPullRequest(sessionId: string): Promise<void> {
   const task = state.sessions.find(s => s.id === sessionId);
   if (!task || !githubEnabled() || !github.connected(task.projectId)) return;
   try {
-    const saved = await call<Session | null>('github_detect_pull_request', { sessionId });
+    const saved = await taskCall<Session | null>('github_detect_pull_request', { sessionId });
     if (!saved?.pullRequest) return;
     upsertSession(saved); pullView.forget(sessionId);
     renderNavigation(); renderHeader(); renderInspector();
@@ -982,10 +989,13 @@ function commandDialog(): HTMLDialogElement { disposeSettingsViews(); activeComm
 async function updateGoal(task: Session, request: GoalAction): Promise<GoalState | null> {
   const goal = await call<GoalState | null>('task_goal', { sessionId: task.id, request });
   // Native goal events are authoritative and may be newer than this request's acknowledgment.
-  if (task.id === state.sessionId) goalBanner.update(task.goalState ?? null);
+  const held = () => state.sessions.find(item => item.id === task.id);
+  if (task.id === state.sessionId) goalBanner.update(held()?.goalState ?? null);
   // A newly created goal has an initiating user message; keep streamed text intact.
-  const current = await call<Session>('get_task', { sessionId: task.id });
-  Object.assign(task, current, { goalState: task.goalState });
+  const current = await taskCall<Session>('get_task', { sessionId: task.id });
+  // The task as held now (a pick may have replaced it meanwhile) keeps its streamed goal; the read keeps held picks.
+  const live = held();
+  if (live) replaceSession({ ...current, goalState: live.goalState });
   if (task.id === state.sessionId && request.action === 'set') {
     const page = await latestMessagePage(task.id);
     if (task.id === state.sessionId) { setMessagePage(page); renderTranscript(); renderComposer(); }
@@ -4090,7 +4100,7 @@ async function startHubTask({ projectId, prompt, title, link, send: start }: { p
   const task = session();
   if (!task || task.projectId !== projectId) return;
   const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
-  if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
+  if (link) replace(await taskCall<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
   if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
   renderNavigation(); renderHeader();
   const field = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -4183,10 +4193,11 @@ function setWorkspaceView(view: WorkspaceView): void {
 async function editBoardTask(): Promise<void> {
   const task = session(), generation = state.generation;
   if (!task || task.archived || isRunning() || threadLoading() || state.messagesError) return;
-  const details = await call<Session>('get_task', { sessionId: task.id });
+  // A pick still saving, or made while this read ran, keeps its fields: native may not have stored it yet.
+  const details = await taskCall<Session>('get_task', { sessionId: task.id });
   if (task.id !== state.sessionId || generation !== state.generation || isRunning()) return;
   fullTaskDescription = { id: task.id, value: details.taskDescription ?? '' };
-  Object.assign(session()!, details);
+  replaceSession(details);
   showBoardTaskForm(details);
 }
 function showBoardTaskForm(task?: Session): void {
@@ -4206,7 +4217,7 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   if (!title) return;
   const id = form.dataset.sessionId, generation = state.generation;
   let saved: Session;
-  if (id) saved = await call<Session>('update_task_details', { sessionId: id, title, description });
+  if (id) saved = await taskCall<Session>('update_task_details', { sessionId: id, title, description });
   else {
     const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
     if (!harness) throw new Error('Open Settings to check your installed agents.');
@@ -4239,8 +4250,7 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
   try {
     // There is no archive any more: an archived task left over (old data, a mirror) is settled, and reopening clears the flag.
     if (stage !== 'completed' && s.archived) await call('update_session', { sessionId: s.id, archived: false });
-    const changed = await call<Session>('set_task_stage', { sessionId: s.id, stage });
-    const index = state.sessions.findIndex(task => task.id === s.id); if (index >= 0) state.sessions[index] = changed;
+    replaceSession(await taskCall<Session>('set_task_stage', { sessionId: s.id, stage }));
     if (s.id === state.sessionId) renderComposer();
   } finally { configuringSessions.delete(s.id); renderNavigation(); renderBoardView(); }
 }
@@ -4568,7 +4578,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   // starting) is newer than what the details say.
   const askedTask = state.sessions.find(task => task.id === id), asked = askedTask ? { ...askedTask } : undefined;
   let pageSettled = false;
-  const taskLoad = Promise.all([call<Session>('get_task', { sessionId: id }), loadTeam(id)]);
+  const taskLoad = Promise.all([taskCall<Session>('get_task', { sessionId: id }), loadTeam(id)]);
   taskLoad.then(([details]) => {
     if (generation !== state.generation) return;
     taskDetailsPending = undefined;
@@ -4666,10 +4676,14 @@ function reloadSessions(): Promise<void> {
   }
   return sessionsTrailing ??= sessionsLoading.catch(() => undefined).then(() => { sessionsTrailing = null; return reloadSessions(); });
 }
+/** Picks saving or made from here on are newer than what the listing says. One read spans both calls and is held as the
+ *  tasks go into state: the listing answers first and waits for the details, and a pick can land in between. */
 async function loadSessions(): Promise<void> {
+  const read = modelSwitch.beginRead();
+  try { await loadSessionsHeld(read); } finally { read.end(); }
+}
+async function loadSessionsHeld(read: modelSwitch.TaskRead): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
-  // Picks made from here on are newer than this listing (model-switch.ts heldChoices).
-  const picks = modelSwitch.listingStamp();
   const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
   if (request !== sessionsReload) return;
@@ -4678,7 +4692,7 @@ async function loadSessions(): Promise<void> {
   // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
   const listedIds = new Set(sessions.map(task => task.id));
   const drafts = state.sessions.filter(task => task.draft && !listedIds.has(task.id)).map(task => task.id === selectedId && details ? details : task);
-  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id)).map(task => modelSwitch.heldChoices(task, picks));
+  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id)).map(read.hold);
   // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
   state.drafts.reclaimAll();
   scheduleLimitResumes();
@@ -4713,6 +4727,7 @@ function removeDeletedSessions(ids: string[]): void {
     threadPanels.delete(id); fileTabs.forget(id);
   }
   state.sessions = state.sessions.filter(task => !removed.has(task.id));
+  modelSwitch.forgetTasks(removed);
   ++sessionsReload;
   if (fullTaskDescription && removed.has(fullTaskDescription.id)) fullTaskDescription = undefined;
   if (removed.has(state.sessionId)) {
@@ -4827,7 +4842,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       const settings = task.codexSettings;
       const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : Boolean(settings?.serviceTier);
       const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
-      const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
+      replaceSession(await taskCall<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }));
       prewarmedDrafts.delete(task.id);
       notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
       if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
@@ -5282,7 +5297,7 @@ async function limitAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'limit-dismiss') return clearLimit(s);
   if (action === 'limit-resume-at-reset') {
     const enabled = (element as HTMLInputElement).checked;
-    try { Object.assign(s, await call<Session>('set_resume_at_reset', { sessionId: s.id, enabled })); }
+    try { replaceSession(await taskCall<Session>('set_resume_at_reset', { sessionId: s.id, enabled })); }
     finally { scheduleLimitResumes(); renderComposer(); }
   }
 }
@@ -6806,9 +6821,9 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
       configuringSessions.add(selected.id);
       try {
-        const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
+        const updated = await taskCall<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
         prewarmedDrafts.delete(selected.id);
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        replaceSession(updated);
         if (inPanel) btwPanel.refresh();
         else if (selected.id === state.sessionId) refreshModelLabels();
       } finally { if (!modelSwitch.saving(selected.id)) configuringSessions.delete(selected.id); }
