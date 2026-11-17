@@ -25,6 +25,7 @@ import './message-queue.css';
 import './extensions/extensions.css';
 import { threadActionSlot } from './extensions/thread-slots';
 import { taskMarks } from './extensions/runtime-dynamic-items';
+import { hookContextHtml, splitHookContext } from './extensions/runtime-hook-context';
 import './schedules.css';
 import './bot-shared-channels.css';
 import './bots.css';
@@ -3678,12 +3679,14 @@ function contextBlocks(content: string): { typed: string; blocks: string[]; wake
   return { typed: content.slice(0, index), blocks: all.filter(block => !block.startsWith(TRACE_HEADER)), wake: all.filter(block => block.startsWith(TRACE_HEADER)) };
 }
 function userContent(content: string, messageId: number): string {
-  const { typed, blocks, wake } = contextBlocks(content);
+  // Context and notes extensions added (R0504) fold into one collapsible block that names them.
+  const hooked = splitHookContext(content);
+  const { typed, blocks, wake } = contextBlocks(hooked.typed);
   const items = parseAttachments(blocks);
   const thumbnails = new Map<string, string | null>();
   // Sources are applied to mounted images only, so markup caches never retain data URLs.
   const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
-  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, thumbnails) + details;
+  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, thumbnails) + details + hookContextHtml(hooked.blocks, escape);
 }
 // Encoded payloads share a byte budget; decoded sources belong only to intersecting chips.
 const visibleSentImages = new WeakSet<HTMLImageElement>();

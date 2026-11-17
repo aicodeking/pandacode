@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.hook-context",
+  "name": "Recall",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "harness.hooks.observe", "harness.hooks.decide", "harness.hooks.context", "ui.presentation"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.hook-context/control", "title": "Hook context control", "action": { "kind": "runCommand" } }
+    ],
+    "hooks": [
+      { "id": "sample.hook-context/prompt", "event": "prompt.submit", "onFailure": "deny", "budgetMs": 2000 },
+      { "id": "sample.hook-context/after", "event": "tool.after", "budgetMs": 2000 },
+      { "id": "sample.hook-context/compaction", "event": "compaction", "budgetMs": 5000 },
+      { "id": "sample.hook-context/turn-start", "event": "turn.start" }
+    ]
+  }
+}

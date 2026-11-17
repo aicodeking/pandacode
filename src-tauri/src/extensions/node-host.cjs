@@ -179,6 +179,19 @@ process.stdin.on('data', chunk => {
             } finally { hookPumping = false; }
           };
           const serveHook = delivery => { if (hookQueue.length >= 256) hookQueue.shift(); hookQueue.push(delivery); void pumpHooks(); };
+          // An awaited delivery (R0504: prompt.submit, a host tool's tool.after, compaction): the package's handlers of
+          // the event run in order, outside the observe queue; the first that returns a value answers for the package.
+          const answerHook = async delivery => {
+            let answer;
+            for (const { handler } of [...(hookHandlers.get(delivery?.event) ?? [])]) {
+              const value = await handler(freeze(delivery.payload ?? null));
+              if (answer === undefined && value !== undefined && value !== null) answer = value;
+            }
+            return answer === undefined ? null : answer;
+          };
+          // Receipts of what the host did with a return (R0504, panda.hooks.onApplied).
+          const appliedHandlers = new Set();
+          const serveReceipt = receipt => { for (const handler of [...appliedHandlers]) { try { void Promise.resolve(handler(freeze(receipt))).catch(() => {}); } catch { /* a failing handler never stops the next */ } } };
           const hooks = Object.freeze({
             on(event, handler) {
               if (typeof event !== 'string' || typeof handler !== 'function') throw new TypeError('hooks.on needs an event and a function');
@@ -200,6 +213,11 @@ process.stdin.on('data', chunk => {
             },
             // The complete serialization of a large tool input, in 256 KiB chunks (harness.hooks.observe for the call's project).
             input: options => rpc('hooksInput', options === undefined || options === null ? {} : { ...options }),
+            onApplied(handler) {
+              if (typeof handler !== 'function') throw new TypeError('hooks.onApplied needs a function');
+              appliedHandlers.add(handler);
+              return Object.freeze({ dispose: () => { appliedHandlers.delete(handler); } });
+            },
           });
           // Handlers registered here live in the service's shared state; owned commands only.
           const servicePanda = Object.freeze({
@@ -371,6 +389,9 @@ process.stdin.on('data', chunk => {
             try {
               if (call.method === 'panel') { servePanel(call.params); return reply({ ok: true, value: null }); }
               // A hook delivery (R0503) is answered at once; its handlers run afterwards, in order, and what they return goes nowhere.
+              if (call.method === 'hook' && call.params?.receipt) { reply({ ok: true, value: null }); serveReceipt(call.params.receipt); return; }
+              // An awaited delivery (R0504) answers with the handlers' return; a throw answers its code.
+              if (call.method === 'hook' && call.params?.observeOnly === false) return reply({ ok: true, value: await answerHook(call.params) });
               if (call.method === 'hook') { reply({ ok: true, value: null }); serveHook(call.params); return; }
               const handler = call.method === 'command' ? commands.get(call.params?.commandId) : undefined;
               if (!handler) return reply({ ok: false, error: { code: 'PermissionDenied' } });

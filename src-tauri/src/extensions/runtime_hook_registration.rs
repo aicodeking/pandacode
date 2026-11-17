@@ -255,7 +255,7 @@ pub fn matches(filter: &Match, occurrence: &Occurrence) -> bool {
 }
 
 /// `HookTurn` of a run.
-fn turn_payload(facts: &RunFacts, since_compaction: u64) -> Map<String, Value> {
+pub(crate) fn turn_payload(facts: &RunFacts, since_compaction: u64) -> Map<String, Value> {
     let mut turn = Map::new();
     turn.insert("schemaVersion".into(), json!(1));
     turn.insert("taskId".into(), json!(facts.task_id));
@@ -294,10 +294,21 @@ struct Run {
     before: BTreeSet<String>,
     after: BTreeSet<String>,
     tool_calls: u64,
+    /// Tool names of the calls whose `tool.before` was reported (for a `tool.after` the harness never reports).
+    names: BTreeMap<String, String>,
 }
-/// Turn index of a task's last compaction (for `sinceCompaction`, across turns).
+/// `compacted`: turn index of a task's last compaction (for `sinceCompaction`, across turns); `None` when it happened
+/// while no turn ran, so the next turn is the first after it. `steps`: compaction steps already counted (R0504).
+/// `submitted`: tasks whose next `prompt.submit` the awaited chain already delivered (R0504).
 #[derive(Default)]
-struct Inner { attached: BTreeMap<(String, String), Attached>, runs: BTreeMap<String, Run>, compacted: BTreeMap<String, u64>, counters: Counters }
+struct Inner { attached: BTreeMap<(String, String), Attached>, runs: BTreeMap<String, Run>, compacted: BTreeMap<String, Option<u64>>, steps: BTreeSet<String>, submitted: BTreeSet<String>, counters: Counters }
+/// `sinceCompaction` of turn `index` of a task.
+fn since(inner: &Inner, task: &str, index: u64) -> u64 {
+    match inner.compacted.get(task) { Some(Some(at)) => index.saturating_sub(at + 1), Some(None) => 0, None => index.saturating_sub(1) }
+}
+/// An attached hook a delivery reaches (filter and observe grant checked), for the awaited chains of R0504.
+#[derive(Clone, Debug)]
+pub struct Target { pub owner: String, pub version: String, pub declaration: Declaration }
 
 /// What one report did, for the counters and the tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -402,19 +413,46 @@ impl HookRegistry {
         Occurrence { event, project: facts.project_id.clone(), harness: facts.harness.clone(), run: facts.run_kind().to_owned(), tool_kind: None, paths: vec![], payload }
     }
 
-    /// A turn begins: `prompt.submit` (when the user's message is sent; observed, never changed here), then
-    /// `turn.start`.
+    /// The attached hooks of `occurrence`'s event whose filter accepts it and whose observe grant reaches its project,
+    /// in registration order (R0504 asks them one after another). The others count as filtered.
+    pub fn targets(&self, occurrence: &Occurrence) -> Vec<Target> {
+        let attached: Vec<Target> = self.lock().attached.iter()
+            .filter(|((_, event), _)| event == occurrence.event)
+            .map(|((owner, _), entry)| Target { owner: owner.clone(), version: entry.version.clone(), declaration: entry.declaration.clone() }).collect();
+        let gate = self.gate();
+        let (reached, filtered): (Vec<Target>, Vec<Target>) = attached.into_iter().partition(|target| matches(&target.declaration.matcher, occurrence) && gate.as_ref().is_some_and(|gate| gate(&target.owner, &target.version, permission_of(occurrence.event), Some(&occurrence.project))));
+        self.lock().counters.filtered += filtered.len() as u64;
+        reached
+    }
+    /// Whether `owner` holds `permission` for `project`, by the same gate deliveries use.
+    pub fn holds(&self, owner: &str, version: &str, permission: &str, project: Option<&str>) -> bool { self.gate().is_some_and(|gate| gate(owner, version, permission, project)) }
+    /// One one-way frame to `owner`'s service (receipts).
+    pub fn deliver_to(&self, owner: &str, frame: Value) -> Result<(), &'static str> { self.deliverer().ok_or("HostUnavailable").and_then(|deliver| deliver(owner, frame)) }
+    /// The awaited chain delivered the task's `prompt.submit`; the turn's start does not deliver it again.
+    pub fn mark_submitted(&self, task: &str) { let mut inner = self.lock(); if inner.submitted.len() > 4_096 { inner.submitted.clear(); } inner.submitted.insert(task.to_owned()); }
+    /// A compaction of `task` happened while no turn ran, and its next turn has not started yet.
+    pub fn pending_compaction(&self, task: &str) -> bool { self.lock().compacted.get(task) == Some(&None) }
+    /// `sinceCompaction` of turn `index` of `task`.
+    pub fn since_compaction(&self, task: &str, index: u64) -> u64 { since(&self.lock(), task, index) }
+    /// `HookTurn` of a run as an occurrence of `event`.
+    pub fn turn_occurrence(facts: &RunFacts, event: &'static str, since_compaction: u64) -> Occurrence { Self::occurrence(facts, event, Value::Object(turn_payload(facts, since_compaction))) }
+
+    /// A turn begins: `prompt.submit` (when the user's message is sent and the awaited chain did not already deliver
+    /// it; observed, never changed here), then `turn.start`.
     pub fn turn_started(&self, facts: RunFacts) -> Published {
-        if !self.active() { return Published::default(); }
-        let since = {
+        let (since, submitted) = {
             let mut inner = self.lock();
-            let since = match inner.compacted.get(&facts.task_id) { Some(at) => facts.index.saturating_sub(at + 1), None => facts.index.saturating_sub(1) };
-            inner.runs.insert(facts.task_id.clone(), Run { facts: facts.clone(), since_compaction: since, started: Instant::now(), before: BTreeSet::new(), after: BTreeSet::new(), tool_calls: 0 });
-            since
+            let since = since(&inner, &facts.task_id, facts.index);
+            // A compaction while no turn ran: this turn is the first after it.
+            if inner.compacted.get(&facts.task_id) == Some(&None) { inner.compacted.insert(facts.task_id.clone(), Some(facts.index.saturating_sub(1))); }
+            let submitted = inner.submitted.remove(&facts.task_id);
+            if !self.active() { return Published::default(); }
+            inner.runs.insert(facts.task_id.clone(), Run { facts: facts.clone(), since_compaction: since, started: Instant::now(), before: BTreeSet::new(), after: BTreeSet::new(), tool_calls: 0, names: BTreeMap::new() });
+            (since, submitted)
         };
         let turn = Value::Object(turn_payload(&facts, since));
         let mut out = Published::default();
-        if !facts.text.is_empty() { out += self.publish(&Self::occurrence(&facts, "prompt.submit", turn.clone())); }
+        if !facts.text.is_empty() && !submitted { out += self.publish(&Self::occurrence(&facts, "prompt.submit", turn.clone())); }
         out += self.publish(&Self::occurrence(&facts, "turn.start", turn));
         out
     }
@@ -422,7 +460,7 @@ impl HookRegistry {
     /// The facts of a run in progress.
     pub fn run(&self, task: &str) -> Option<RunFacts> { self.lock().runs.get(task).map(|run| run.facts.clone()) }
 
-    fn call_base(facts: &RunFacts, name: &str, kind: &str, request: Option<&str>, source: &str, coverage: &str) -> Value {
+    pub(crate) fn call_base(facts: &RunFacts, name: &str, kind: &str, request: Option<&str>, source: &str, coverage: &str) -> Value {
         let mut base = json!({
             "taskId": facts.task_id, "projectId": facts.project_id, "projectRoot": facts.project_root, "cwd": facts.cwd,
             "harness": facts.harness, "model": facts.model, "mode": facts.mode, "turn": facts.index, "run": facts.run,
@@ -432,7 +470,7 @@ impl HookRegistry {
         base
     }
     /// Kind, shell and paths of a built call, from its complete input when the payload carries it.
-    fn complete(call: &mut Value, name: &str) -> (String, Vec<String>) {
+    pub(crate) fn complete(call: &mut Value, name: &str) -> (String, Vec<String>) {
         let input = call["input"].clone();
         let mut kind = tool_kind(name);
         if kind == "other" { kind = kind_of_input(&input); }
@@ -452,6 +490,7 @@ impl HookRegistry {
             let mut inner = self.lock();
             let Some(run) = inner.runs.get_mut(task) else { return Published::default() };
             if !run.before.insert(harness_call.to_owned()) { return Published::default(); }
+            run.names.insert(harness_call.to_owned(), name.to_owned());
             run.facts.clone()
         };
         let base = Self::call_base(&facts, name, tool_kind(name), request, "permissionRequest", "askedCalls");
@@ -476,30 +515,59 @@ impl HookRegistry {
         let base = Self::call_base(&facts, name, tool_kind(name), None, source, coverage);
         let Ok(mut call) = payload(&base, call_id) else { return Published::default() };
         let (kind, paths) = Self::complete(&mut call, name);
-        let status = match status { "completed" | "success" | "succeeded" | "done" => "completed", "denied" | "rejected" => "denied", "cancelled" | "canceled" | "interrupted" => "cancelled", _ => "failed" };
+        // A call whose permission request was denied is `denied` whatever the harness reports, and the decline text
+        // it echoes is the host's own, not output (R0504); a denied or cancelled call without output has none.
+        let denied = super::runtime_hook_context::denied(task, call_id);
+        let status = if denied { "denied" } else { match status { "completed" | "success" | "succeeded" | "done" => "completed", "denied" | "rejected" => "denied", "cancelled" | "canceled" | "interrupted" => "cancelled", _ => "failed" } };
         let mut cut = output.len().min(OUTPUT_BYTES);
         while !output.is_char_boundary(cut) { cut -= 1; }
         call["status"] = json!(status);
-        call["output"] = json!(&output[..cut]);
-        call["outputComplete"] = json!(cut == output.len() && output.len() < OUTPUT_BYTES);
+        let none = denied || (matches!(status, "denied" | "cancelled") && output.trim().is_empty());
+        call["output"] = if none { Value::Null } else { json!(&output[..cut]) };
+        call["outputComplete"] = json!(none || (cut == output.len() && output.len() < OUTPUT_BYTES));
         call["durationMs"] = json!(duration);
         call["decidedBy"] = Value::Null;
         self.publish(&Occurrence { tool_kind: Some(kind), paths, ..Self::occurrence(&facts, "tool.after", call) })
     }
 
-    /// A compaction of the task finished (the harness exposes no point before it here): `compaction` with phase
-    /// `after` and nothing it could still change. `sinceCompaction` starts again.
-    pub fn compaction(&self, task: &str) -> Published {
+    /// The turn is ending: a call whose `tool.before` was reported but whose row never came still gets its
+    /// `tool.after`, `denied` when its request was denied and `cancelled` otherwise, with no output (R0504).
+    pub fn flush_unpaired(&self, task: &str, payload: CallPayload<'_>) -> Published {
         if !self.active() { return Published::default(); }
+        let unpaired: Vec<(String, String)> = {
+            let inner = self.lock();
+            inner.runs.get(task).map(|run| run.before.difference(&run.after).map(|call| (call.clone(), run.names.get(call).cloned().unwrap_or_else(|| "tool".to_owned()))).collect()).unwrap_or_default()
+        };
+        let mut out = Published::default();
+        for (call, name) in unpaired {
+            let status = if super::runtime_hook_context::denied(task, &call) { "denied" } else { "cancelled" };
+            out += self.tool_after(task, &call, &call, &name, status, "", payload);
+        }
+        out
+    }
+
+    /// A compaction of the task finished (the harness exposes no point before it here): `compaction` with phase
+    /// `after` and nothing it could still change. `sinceCompaction` starts again, also when no hook observes the
+    /// run or no turn runs (then the next turn is the first after it).
+    pub fn compaction(&self, task: &str) -> Published {
         let facts = {
             let mut inner = self.lock();
-            let Some(run) = inner.runs.get_mut(task) else { return Published::default() };
-            run.since_compaction = 0;
-            let facts = run.facts.clone();
-            inner.compacted.insert(task.to_owned(), facts.index);
+            let facts = inner.runs.get_mut(task).map(|run| { run.since_compaction = 0; run.facts.clone() });
+            inner.compacted.insert(task.to_owned(), facts.as_ref().map(|facts| facts.index));
             facts
         };
+        let Some(facts) = facts else { return Published::default() };
+        if !self.active() { return Published::default(); }
         self.publish(&Self::occurrence(&facts, "compaction", json!({"taskId": facts.task_id, "projectId": facts.project_id, "harness": facts.harness, "phase": "after", "can": []})))
+    }
+    /// A finished compaction step `step` of the task, counted once however often it is reported.
+    pub fn compacted(&self, task: &str, step: &str) -> Published {
+        {
+            let mut inner = self.lock();
+            if inner.steps.len() > 4_096 { inner.steps.clear(); }
+            if !inner.steps.insert(format!("{task}/{step}")) { return Published::default(); }
+        }
+        self.compaction(task)
     }
 
     /// The turn ended: `turn.finish` or `turn.fail` (a stop by the user ends it without finishing), then `task.idle`.
@@ -614,13 +682,21 @@ pub fn service_stopped(_app: &tauri::AppHandle, owner: &str) { REGISTRY.remove_o
 /// A run of `session_id` begins (`launch_operation_admitted`): the facts every payload of the turn carries, then
 /// `prompt.submit` and `turn.start`. Free when no hook is attached.
 pub fn run_began(app: &tauri::AppHandle, session_id: &str, cwd: &std::path::Path, prompt: Option<&str>, worker: bool) {
-    if !REGISTRY.active() { return; }
+    // With no hook attached only a compaction recorded while no turn ran needs this turn's index.
+    if !REGISTRY.active() && !REGISTRY.pending_compaction(session_id) { return; }
+    let Some(facts) = facts_of(app, session_id, Some(cwd), prompt, worker) else { return };
+    REGISTRY.turn_started(facts);
+}
+/// The facts of a run of `session_id` about to begin; `cwd` defaults to the task's checkout (R0504 asks before the
+/// run is prepared).
+pub fn facts_of(app: &tauri::AppHandle, session_id: &str, cwd: Option<&std::path::Path>, prompt: Option<&str>, worker: bool) -> Option<RunFacts> {
     use tauri::Manager;
-    let Some(state) = app.try_state::<crate::AppState>() else { return };
+    let state = app.try_state::<crate::AppState>()?;
     let facts = {
-        let Ok(store) = state.store.lock() else { return };
-        let Ok(task) = store.session(session_id) else { return };
+        let store = state.store.lock().ok()?;
+        let task = store.session(session_id).ok()?;
         let root = store.project(&task.project_id).map(|project| project.path).unwrap_or_default();
+        let cwd = match cwd { Some(cwd) => cwd.to_path_buf(), None => store.workspace_root(&task.project_id, Some(session_id)).unwrap_or_else(|_| std::path::PathBuf::from(&root)) };
         let count = |sql: &str| store.db.query_row(sql, rusqlite::params![session_id], |row| row.get::<_, i64>(0)).unwrap_or(0).max(0) as u64;
         let index = count("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user'").max(1);
         let cursor = count("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role NOT IN ('tool','changes') AND id < COALESCE((SELECT MAX(id) FROM messages WHERE session_id=?1 AND role='user'), 0)");
@@ -633,15 +709,21 @@ pub fn run_began(app: &tauri::AppHandle, session_id: &str, cwd: &std::path::Path
             attachments: vec![], started_by, transcript_cursor: cursor,
         }
     };
-    REGISTRY.turn_started(facts);
+    Some(facts)
 }
-/// The run ended: `turn.finish` or `turn.fail`, then `task.idle`.
+/// The run ended: the `tool.after` of calls whose row never came, `turn.finish` or `turn.fail`, then `task.idle`.
 pub fn run_ended(session_id: &str, successful: bool, stopped: bool) {
+    REGISTRY.flush_unpaired(session_id, &super::runtime_hook_payload::hook_call);
     REGISTRY.turn_ended(session_id, successful && !stopped, stopped.then_some("Stopped by the user."));
+    super::runtime_hook_context::forget_run(session_id);
 }
 /// The agent event sink (`emit_coalesced`): a permission request is `tool.before`, a finished tool call `tool.after`,
-/// a finished "Compact context" step `compaction`. Free when no hook is attached.
+/// a finished "Compact context" step `compaction` (recorded for `sinceCompaction` even when no hook is attached).
 pub fn agent_event(event: &crate::providers::AgentEvent) {
+    if let Some(tool) = event.tool.as_ref().filter(|tool| tool.name == "Compact context" && tool.status == "completed") {
+        REGISTRY.compacted(&event.session_id, &tool.id);
+        return;
+    }
     if !REGISTRY.active() { return; }
     let run = event.session_id.as_str();
     let payload: CallPayload<'_> = &super::runtime_hook_payload::hook_call;
@@ -654,11 +736,10 @@ pub fn agent_event(event: &crate::providers::AgentEvent) {
         return;
     }
     let Some(tool) = &event.tool else { return };
-    if tool.name == "Compact context" {
-        if tool.status == "completed" { REGISTRY.compaction(run); }
-        return;
-    }
+    if tool.name == "Compact context" { return; }
     if !matches!(tool.status.as_str(), "completed" | "success" | "failed" | "error" | "cancelled" | "canceled" | "denied" | "rejected" | "interrupted") { return; }
+    // A host-served call whose `tool.after` the awaited chain already delivered (R0504).
+    if super::runtime_hook_context::take_hosted(run, &tool.name) { return; }
     // The complete input an adapter recorded, or (a run whose adapter recorded nothing) the interface's preview.
     let call_id = super::runtime_hook_payload::call_id(run, &tool.id).or_else(|| {
         let project = REGISTRY.run(run).map(|facts| facts.project_id);

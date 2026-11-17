@@ -663,9 +663,20 @@ export type HookEvent = 'turn.start' | 'prompt.submit' | 'tool.before' | 'tool.a
 export interface HookInputChunk { readonly schemaVersion: 1; readonly text: string; readonly cursor: number; readonly nextCursor: number | null; readonly totalBytes: number }
 /** `ready` settles with the host's answer: `UnknownReference` for an event the manifest does not declare, `PermissionDenied` without the grant. Deliveries are observe only in this slice: a returned value is never read. */
 export interface HookRegistration extends Disposable { readonly ready: Promise<void> }
+/** What the host did with a non-empty return of `prompt.submit`, `tool.after` or `compaction` (R0504; see docs/extensions/runtime-hook-context.md). */
+export interface HookReceipt {
+  readonly schemaVersion: 1; readonly hookId: string; readonly event: HookEvent; readonly taskId: string; readonly callId?: string; readonly applied: boolean;
+  readonly code?: 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidShape' | 'LimitExceeded';
+  readonly refused?: Readonly<Record<string, 'PermissionDenied' | 'UnsupportedCapability'>>;
+}
+/** Returns the host applies (R0504): `context` needs `harness.hooks.context`; `prompt`, `block`, `output`, `summary`, `instructions`, `cancel` need `harness.hooks.decide` (and, for `output` and compaction, a matching entry in the payload's `can`); `note` needs `ui.presentation`. */
+export interface PromptSubmitReturn { context?: string; prompt?: string; block?: { reason: string }; note?: string }
+export interface ToolAfterReturn { output?: Json; note?: string }
+export interface CompactionReturn { summary?: string; instructions?: string; cancel?: { reason: string } }
 export interface ServiceHooks {
   on(event: HookEvent, handler: (payload: Json) => unknown): HookRegistration;
   input(options: { callId: string; cursor: number }): Promise<HookInputChunk>;
+  onApplied(handler: (receipt: HookReceipt) => void): Disposable;
 }
 /** `harnesses.console` and `harnesses.commands` (R0408, `harness.console`): the user's own harness console and slash commands, per project grant. A task that is running answers `Busy` to `console.open`; a package harness has no console (`UnsupportedCapability`). See docs/extensions/runtime-harness-console.md. */
 export interface HarnessConsoleApi { open(options: { taskId: string } | { harness: string; projectId: string }): Promise<null> }

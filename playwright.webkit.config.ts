@@ -207,6 +207,7 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-hook-payload.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions hook payload:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-hook-registration.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-hook-context.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions hook registration:`);
 config.testMatch = [...config.testMatch as string[], '**/upstream-semantic-remote-images.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream semantic`);

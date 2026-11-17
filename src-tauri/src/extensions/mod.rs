@@ -35,6 +35,7 @@ pub mod runtime_workspace_cloud;
 pub(crate) mod runtime_hook_fixtures;
 pub(crate) mod runtime_hook_payload;
 pub mod runtime_hook_registration;
+pub mod runtime_hook_context;
 pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;

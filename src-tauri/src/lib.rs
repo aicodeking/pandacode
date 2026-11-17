@@ -2663,6 +2663,12 @@ async fn launch_operation_admitted(
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
+    // Hooks (R0504): `prompt.submit` (or `compaction` before a typed /compact) may add context, rewrite or refuse the
+    // message before it is saved, and the task's waiting forModel notes ride it. `carried` gives the notes back
+    // unless the message is saved (`keep`).
+    let worker_run = team_admission.as_ref().is_some_and(|admission| admission.parent != session_id);
+    let eligible = prepared.is_none() && goal.is_none() && !cloud_attach && kind.is_none();
+    let (text, carried) = extensions::runtime_hook_context::before_send(&app, &session_id, text, eligible, worker_run).await?.split(&app, &session_id);
     let command = if prepared.is_some() {
         prepared
     } else if goal.is_none() && team_admission.is_none() && !cloud_attach && kind.is_none() {
@@ -2734,6 +2740,7 @@ async fn launch_operation_admitted(
             kind,
         },
     )?;
+    carried.keep();
     if !cloud_attach && turn_message_id > 0 && (!attachment_ids.is_empty() || attachment_text.contains("(moodboard ID: ")) {
         match app.path().app_data_dir() {
             Ok(app_data_dir) => {

@@ -1,0 +1,21 @@
+{
+  "label": "synthetic",
+  "about": "sinceCompaction across turns of one task, with a compaction inside a turn, a repeated report of the same step (counted once), and a compaction reported while no turn runs. 'expect' is turn.start's sinceCompaction for that turn.",
+  "steps": [
+    { "op": "turn", "index": 1, "expect": 0 },
+    { "op": "end" },
+    { "op": "turn", "index": 2, "expect": 1 },
+    { "op": "compaction", "step": "compact-1", "delivered": true },
+    { "op": "compaction", "step": "compact-1", "delivered": false },
+    { "op": "end" },
+    { "op": "turn", "index": 3, "expect": 0 },
+    { "op": "end" },
+    { "op": "turn", "index": 4, "expect": 1 },
+    { "op": "end" },
+    { "op": "compaction", "step": "compact-2", "delivered": false },
+    { "op": "turn", "index": 5, "expect": 0 },
+    { "op": "end" },
+    { "op": "turn", "index": 6, "expect": 1 },
+    { "op": "end" }
+  ]
+}

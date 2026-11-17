@@ -1,0 +1,144 @@
+{
+  "label": "synthetic",
+  "about": "Scripted hook returns folded by runtime_hook_context (native) and runtime-hook-context.ts (twin). Each step is one package of the chain: its grants for the run's project, its declared onFailure and what its handler answered ({ value } or { error: code }). 'seen' is what each asked step received (prompt text, tool output). Steps after a block or a cancel are never asked.",
+  "cases": [
+    {
+      "id": "context-with-the-context-grant", "event": "prompt.submit", "text": "recall: build",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": { "context": "The team uses pnpm." } } }],
+      "expect": { "text": "recall: build", "contexts": [["Recall", "The team uses pnpm."]], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1, "seen": ["recall: build"],
+        "receipts": [{ "owner": "a.recall", "applied": true }] }
+    },
+    {
+      "id": "context-without-the-context-grant", "event": "prompt.submit", "text": "hello",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.decide"], "answer": { "value": { "context": "x" } } }],
+      "expect": { "text": "hello", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1,
+        "receipts": [{ "owner": "a.recall", "applied": false, "code": "PermissionDenied", "refused": { "context": "PermissionDenied" } }] }
+    },
+    {
+      "id": "rewrite-needs-decide", "event": "prompt.submit", "text": "hello",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": { "prompt": "hello, politely" } } }],
+      "expect": { "text": "hello", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1,
+        "receipts": [{ "owner": "a.recall", "applied": false, "code": "PermissionDenied", "refused": { "prompt": "PermissionDenied" } }] }
+    },
+    {
+      "id": "rewrite-with-decide-and-the-next-package-sees-it", "event": "prompt.submit", "text": "fix: hello",
+      "steps": [
+        { "owner": "a.fixer", "name": "Fixer", "grants": ["harness.hooks.decide"], "answer": { "value": { "prompt": "hello" } } },
+        { "owner": "b.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": { "context": "Said hello before." } } }
+      ],
+      "expect": { "text": "hello", "contexts": [["Recall", "Said hello before."]], "rewrittenBy": ["Fixer"], "notes": [], "blocked": null, "asked": 2, "seen": ["fix: hello", "hello"],
+        "receipts": [{ "owner": "a.fixer", "applied": true }, { "owner": "b.recall", "applied": true }] }
+    },
+    {
+      "id": "block-with-decide-ends-the-chain", "event": "prompt.submit", "text": "my secret is 42",
+      "steps": [
+        { "owner": "a.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "block": { "reason": "The message names a secret." } } } },
+        { "owner": "b.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": { "context": "never asked" } } }
+      ],
+      "expect": { "text": "my secret is 42", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": { "by": "Guard", "reason": "The message names a secret.", "failed": false }, "asked": 1,
+        "receipts": [{ "owner": "a.guard", "applied": true }] }
+    },
+    {
+      "id": "block-without-decide-is-ignored", "event": "prompt.submit", "text": "my secret is 42",
+      "steps": [{ "owner": "a.guard", "name": "Guard", "grants": ["harness.hooks.context"], "answer": { "value": { "block": { "reason": "No." } } } }],
+      "expect": { "text": "my secret is 42", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1,
+        "receipts": [{ "owner": "a.guard", "applied": false, "code": "PermissionDenied", "refused": { "block": "PermissionDenied" } }] }
+    },
+    {
+      "id": "a-failure-under-continue-sends-without-the-package", "event": "prompt.submit", "text": "hello",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "onFailure": "continue", "grants": ["harness.hooks.context"], "answer": { "error": "Timeout" } }],
+      "expect": { "text": "hello", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1, "receipts": [] }
+    },
+    {
+      "id": "a-failure-under-deny-returns-the-message-to-the-draft", "event": "prompt.submit", "text": "slow",
+      "steps": [
+        { "owner": "a.guard", "name": "Guard", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "error": "Timeout" } },
+        { "owner": "b.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": { "context": "never asked" } } }
+      ],
+      "expect": { "text": "slow", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": { "by": "Guard", "reason": "Guard did not answer (Timeout).", "failed": true }, "asked": 1, "receipts": [] }
+    },
+    {
+      "id": "an-invalid-return-is-a-failure-with-a-receipt", "event": "prompt.submit", "text": "hello",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": { "context": 5 } } }],
+      "expect": { "text": "hello", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1,
+        "receipts": [{ "owner": "a.recall", "applied": false, "code": "InvalidShape" }] }
+    },
+    {
+      "id": "an-unknown-key-is-invalid", "event": "prompt.submit", "text": "hello",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "value": { "approve": true } } }],
+      "expect": { "text": "hello", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": { "by": "Recall", "reason": "Recall did not answer (InvalidShape).", "failed": true }, "asked": 1,
+        "receipts": [{ "owner": "a.recall", "applied": false, "code": "InvalidShape" }] }
+    },
+    {
+      "id": "an-empty-return-gets-no-receipt", "event": "prompt.submit", "text": "hello",
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.context"], "answer": { "value": {} } }],
+      "expect": { "text": "hello", "contexts": [], "rewrittenBy": [], "notes": [], "blocked": null, "asked": 1, "receipts": [] }
+    },
+    {
+      "id": "a-note-needs-ui-presentation", "event": "prompt.submit", "text": "recall: x",
+      "steps": [
+        { "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.context", "ui.presentation"], "answer": { "value": { "context": "c1", "note": "Recalled one memory" } } },
+        { "owner": "b.other", "name": "Other", "grants": ["harness.hooks.context"], "answer": { "value": { "context": "c2", "note": "Not shown" } } }
+      ],
+      "expect": { "text": "recall: x", "contexts": [["Recall", "c1"], ["Other", "c2"]], "rewrittenBy": [], "notes": [["Recall", "Recalled one memory"]], "blocked": null, "asked": 2,
+        "receipts": [{ "owner": "a.recall", "applied": true }, { "owner": "b.other", "applied": true, "refused": { "note": "PermissionDenied" } }] }
+    },
+    {
+      "id": "a-host-tool-result-is-rewritten", "event": "tool.after", "can": ["rewriteResult"], "output": { "echo": "hi" },
+      "steps": [{ "owner": "a.fix", "name": "Fixer", "grants": ["harness.hooks.decide"], "answer": { "value": { "output": { "rewritten": true } } } }],
+      "expect": { "output": { "rewritten": true }, "by": ["Fixer"], "notes": [], "asked": 1, "seen": [{ "echo": "hi" }], "receipts": [{ "owner": "a.fix", "applied": true }] }
+    },
+    {
+      "id": "rewrites-accumulate-and-the-last-runs", "event": "tool.after", "can": ["rewriteResult"], "output": "one",
+      "steps": [
+        { "owner": "a.fix", "name": "First", "grants": ["harness.hooks.decide"], "answer": { "value": { "output": "two" } } },
+        { "owner": "b.fix", "name": "Second", "grants": ["harness.hooks.decide"], "answer": { "value": { "output": "three" } } }
+      ],
+      "expect": { "output": "three", "by": ["First", "Second"], "notes": [], "asked": 2, "seen": ["one", "two"], "receipts": [{ "owner": "a.fix", "applied": true }, { "owner": "b.fix", "applied": true }] }
+    },
+    {
+      "id": "a-harness-run-call-cannot-be-rewritten", "event": "tool.after", "can": [], "output": "ls output",
+      "steps": [{ "owner": "a.fix", "name": "Fixer", "grants": ["harness.hooks.decide"], "answer": { "value": { "output": "other" } } }],
+      "expect": { "output": null, "by": [], "notes": [], "asked": 1,
+        "receipts": [{ "owner": "a.fix", "applied": false, "code": "UnsupportedCapability", "refused": { "output": "UnsupportedCapability" } }] }
+    },
+    {
+      "id": "a-result-rewrite-needs-decide", "event": "tool.after", "can": ["rewriteResult"], "output": "x",
+      "steps": [{ "owner": "a.fix", "name": "Fixer", "grants": ["harness.hooks.context"], "answer": { "value": { "output": "y" } } }],
+      "expect": { "output": null, "by": [], "notes": [], "asked": 1,
+        "receipts": [{ "owner": "a.fix", "applied": false, "code": "PermissionDenied", "refused": { "output": "PermissionDenied" } }] }
+    },
+    {
+      "id": "compaction-takes-only-what-can-lists", "event": "compaction", "can": ["cancel", "instructions"],
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.decide"], "answer": { "value": { "instructions": "Keep the API decisions.", "summary": "A summary." } } }],
+      "expect": { "cancel": null, "instructions": [["Recall", "Keep the API decisions."]], "summaries": [], "asked": 1,
+        "receipts": [{ "owner": "a.recall", "applied": true, "refused": { "summary": "UnsupportedCapability" } }] }
+    },
+    {
+      "id": "compaction-instructions-on-a-harness-without-them", "event": "compaction", "can": ["cancel"],
+      "steps": [{ "owner": "a.recall", "name": "Recall", "grants": ["harness.hooks.decide"], "answer": { "value": { "instructions": "Keep it." } } }],
+      "expect": { "cancel": null, "instructions": [], "summaries": [], "asked": 1,
+        "receipts": [{ "owner": "a.recall", "applied": false, "code": "UnsupportedCapability", "refused": { "instructions": "UnsupportedCapability" } }] }
+    },
+    {
+      "id": "compaction-cancel-ends-the-chain", "event": "compaction", "can": ["cancel", "instructions"],
+      "steps": [
+        { "owner": "a.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "cancel": { "reason": "A review is running." } } } },
+        { "owner": "b.recall", "name": "Recall", "grants": ["harness.hooks.decide"], "answer": { "value": { "instructions": "never asked" } } }
+      ],
+      "expect": { "cancel": { "by": "Guard", "reason": "A review is running." }, "instructions": [], "summaries": [], "asked": 1, "receipts": [{ "owner": "a.guard", "applied": true }] }
+    },
+    {
+      "id": "compaction-cancel-needs-decide", "event": "compaction", "can": ["cancel"],
+      "steps": [{ "owner": "a.guard", "name": "Guard", "grants": ["harness.hooks.context"], "answer": { "value": { "cancel": { "reason": "No." } } } }],
+      "expect": { "cancel": null, "instructions": [], "summaries": [], "asked": 1,
+        "receipts": [{ "owner": "a.guard", "applied": false, "code": "PermissionDenied", "refused": { "cancel": "PermissionDenied" } }] }
+    },
+    {
+      "id": "compaction-after-takes-nothing", "event": "compaction", "can": [],
+      "steps": [{ "owner": "a.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "cancel": { "reason": "Too late." } } } }],
+      "expect": { "cancel": null, "instructions": [], "summaries": [], "asked": 1,
+        "receipts": [{ "owner": "a.guard", "applied": false, "code": "UnsupportedCapability", "refused": { "cancel": "UnsupportedCapability" } }] }
+    }
+  ]
+}
