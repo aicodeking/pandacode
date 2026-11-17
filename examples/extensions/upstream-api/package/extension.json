@@ -1,0 +1,46 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-api",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "connections.request", "secrets.private"],
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "main.cjs",
+    "activationEvents": ["sample.upstream-api/chat", "sample.upstream-api/setup"],
+    "service": { "start": "onEnable" }
+  },
+  "requiredContributions": ["providers"],
+  "contributes": {
+    "commands": [{ "id": "sample.upstream-api/setup", "title": "Store the fake API key", "action": { "kind": "runCommand" } }],
+    "connections": [{
+      "id": "sample.upstream-api/chat",
+      "command": "sample.upstream-api/setup",
+      "title": "Fake chat API",
+      "authentication": "header",
+      "headerName": "x-api-key",
+      "credential": { "source": "secret", "key": "api-key" },
+      "adapter": "json",
+      "maxResponseBytes": 65536,
+      "timeoutMs": 5000,
+      "operations": [
+        { "id": "complete", "method": "POST", "url": "http://127.0.0.1:9/v1/chat", "body": "json" },
+        { "id": "models", "method": "GET", "url": "http://127.0.0.1:9/v1/models" }
+      ]
+    }],
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.upstream-api/chat",
+      "name": "Fake chat API",
+      "models": [{ "id": "fixture-small", "name": "Fixture small", "efforts": [], "contextWindow": 8000 }],
+      "metadata": {
+        "modes": ["ask"],
+        "teams": false,
+        "authentication": "The package keeps its own fake API key (secrets.private); the host attaches it to the declared request. No account, no personal credential and no live inference.",
+        "readiness": { "state": "ready", "reason": "Ready when the package service runs and the fake endpoint answers." },
+        "usage": { "context": true, "limitsReason": "The fake endpoint reports token counts, not account limits." }
+      }
+    }]
+  }
+}

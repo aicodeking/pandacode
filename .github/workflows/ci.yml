@@ -349,6 +349,12 @@ jobs:
       - name: ACP provider as an author package (WebKit)
         env: { PW_PORT: '16112', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/upstream-acp-example.spec.ts --workers=1
+      - name: API provider and team tools as author packages (Chromium)
+        env: { PW_PORT: '16121', PW_PROD: '1' }
+        run: npx playwright test tests/upstream-api-tools-example.spec.ts --workers=1
+      - name: API provider and team tools as author packages (WebKit)
+        env: { PW_PORT: '16122', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/upstream-api-tools-example.spec.ts --workers=1
 
       # Absolute ceilings and leak/order gates always apply; the relative M0 comparison is reported as
       # incomparable on a shared runner (different machine from the frozen population), never as a pass.

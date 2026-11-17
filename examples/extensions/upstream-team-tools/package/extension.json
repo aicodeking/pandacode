@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-team-tools",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "tools.execute"],
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "main.cjs",
+    "activationEvents": ["sample.upstream-team-tools/lookup", "sample.upstream-team-tools/team"]
+  },
+  "requiredContributions": ["providers"],
+  "contributes": {
+    "commands": [{ "id": "sample.upstream-team-tools/lookup", "title": "Run the lookup tool", "action": { "kind": "runCommand" } }],
+    "tools": [{
+      "id": "sample.upstream-team-tools/lookup",
+      "command": "sample.upstream-team-tools/lookup",
+      "executable": "node",
+      "arguments": { "maxItems": 4, "maxLength": 256 },
+      "cwd": "project",
+      "timeoutMs": 3000
+    }],
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.upstream-team-tools/team",
+      "name": "Team tools worker",
+      "models": [{ "id": "fixture-team", "name": "Fixture team worker", "efforts": [] }],
+      "metadata": {
+        "modes": ["ask"],
+        "teams": true,
+        "authentication": "Offline fixture; no account, key or network is used.",
+        "readiness": { "state": "ready", "reason": "Ready offline through the trusted adapter." },
+        "usage": { "context": false, "limitsReason": "This fixture reports no usage or limits." }
+      }
+    }]
+  }
+}
