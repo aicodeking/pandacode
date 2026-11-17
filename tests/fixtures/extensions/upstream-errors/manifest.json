@@ -1,0 +1,43 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-errors",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize",
+    "tasks.transcript.read"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.upstream-errors/timeline",
+        "title": "Timeline thread errors",
+        "slot": "panda.transcript",
+        "contractVersion": 1,
+        "presentation": "timeline",
+        "capabilities": [
+          "streaming",
+          "tool-output",
+          "questions",
+          "approvals",
+          "team-progress",
+          "usage",
+          "stop-resume",
+          "host-history"
+        ]
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.upstream-errors/dismiss-first",
+        "title": "Dismiss before Error details",
+        "location": "panda.thread.errors.controls",
+        "rules": [{ "id": "panda.thread.errors.controls/dismiss", "target": "panda.thread.errors.controls/details", "side": "before" }]
+      }
+    ]
+  }
+}

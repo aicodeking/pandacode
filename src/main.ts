@@ -939,6 +939,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     root: $('.workspace'), onContextChanged, find: () => threadFind,
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, provider: s?.provider, limit: s?.limitedAt ? `${s.limitedAt}:${s.limitedUntil ?? ''}:${s.resumeAtReset ? 1 : 0}` : '', busy: Boolean(modelPickerCleanup) }; },
   });
+  // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and
+  // activated through the original buttons. Error text, the dismissal journal, Undo and the toast text stay here and in
+  // thread-errors.ts and toast-model.ts.
+  threadErrors = await (await import('./extensions/upstream-errors')).mountUpstreamErrorsAdoption({
+    root: $('.workspace'), onContextChanged,
+    state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, busy: Boolean(modelPickerCleanup), toastShownAt }; },
+  });
   // Thread tiles' bar controls and actions, and the draft project picker's entries and actions: presentation only. Tile
   // layout, mirrors, drafts and moving a draft to another project stay here and in thread-tiles.ts and project-picker.ts.
   tilesPicker = (await import('./extensions/tiles-picker-host')).mountTilesPickerAdoption({
@@ -1131,6 +1138,8 @@ let taskMenuOpen: import('./extensions/task-menus-core').TaskMenusOpen = 'none';
 let tilesPicker: ReturnType<typeof import('./extensions/tiles-picker-host').mountTilesPickerAdoption> | undefined;
 /** Transcript extras adoption (docs/extensions/thread-extras.md), mounted once extensions load. */
 let threadExtras: ReturnType<typeof import('./extensions/thread-extras-host').mountThreadExtrasAdoption> | undefined;
+/** Thread error rows and toast close adoption (docs/extensions/upstream-errors.md), mounted once extensions load. */
+let threadErrors: Awaited<ReturnType<typeof import('./extensions/upstream-errors').mountUpstreamErrorsAdoption>> | undefined;
 /** Attach menu, Workflow recipes and wake-ups adoption (docs/extensions/composer-attach.md), mounted once extensions load. */
 let composerAttach: ReturnType<typeof import('./extensions/composer-attach-host').mountComposerAttachAdoption> | undefined;
 /** Action dock and team progress adoption (docs/extensions/action-dock.md), mounted once extensions load. */
@@ -1384,6 +1393,12 @@ if (preview && new URLSearchParams(location.search).has('tiles-picker')) {
 if (preview && new URLSearchParams(location.search).has('thread-extras')) {
   (window as any).__previewThreadExtras = () => threadExtras?.presentation();
   (window as any).__previewThreadExtrasAction = (input: unknown) => threadExtras?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+}
+if (preview && new URLSearchParams(location.search).has('upstream-errors')) {
+  (window as any).__previewUpstreamErrors = () => threadErrors?.presentation();
+  (window as any).__previewUpstreamErrorsAction = (input: unknown) => threadErrors?.dispatch(input) ?? { ok: false, reason: 'Revoked' };
+  (window as any).__previewUpstreamErrorsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+  (window as any).__previewUpstreamErrorsUninstall = async (id: string) => (await import('./extensions/manager')).uninstallExtension(id);
 }
 if (preview && new URLSearchParams(location.search).has('composer-attach')) {
   (window as any).__previewAttach = () => composerAttach?.presentation();

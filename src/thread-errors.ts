@@ -170,3 +170,27 @@ export function hiddenRunErrors(messages: readonly Pick<Message, 'id' | 'role' |
   }
   return hidden;
 }
+
+/* Extension adoption (docs/extensions/upstream-errors.md). The adapter in extensions/upstream-errors.ts arranges and
+ * activates the original buttons of an error row; the pure parts live here so a unit test can pin them. */
+/** The error controls a captured action may name: an error row's Details and Dismiss, a box's Dismiss all, a bot
+ * failover notice's Dismiss, and the toast's close button. */
+export const ERROR_CONTROL_IDS = ['error-details', 'error-dismiss', 'errors-dismiss-all', 'failover-dismiss', 'toast-close'] as const;
+export type ErrorControlId = typeof ERROR_CONTROL_IDS[number];
+/** Where each control's original node is (the toast's close button has a class, the others a `data-action`); the
+ * adapter activates that node, never a handler of its own. */
+export const ERROR_CONTROL_SELECTORS: Readonly<Record<ErrorControlId, string>> = {
+  'error-details': ':scope > .error-row-head > [data-action="toggle-error"]',
+  'error-dismiss': ':scope > .error-row-head > [data-action="dismiss-error"]',
+  'errors-dismiss-all': ':scope [data-action="dismiss-errors"]',
+  'failover-dismiss': ':scope > .error-row-head > [data-action="dismiss-failover-error"]',
+  'toast-close': ':scope > .toast-close',
+};
+/** Controls that delete or hide saved rows: each runs the original handler only after a fresh host choice, and the
+ * toast's Undo window still covers it. Opening a row's details and closing the toast never need one. */
+export const ERROR_CHOICE_CONTROLS: readonly ErrorControlId[] = ['error-dismiss', 'errors-dismiss-all', 'failover-dismiss'];
+/** Order-sensitive digest of the visible groups (key and count, never the text): a new, merged or dismissed group
+ * changes the captured revision, so an action built for the old rows is stale. */
+export function errorGroupsDigest(groups: readonly Pick<ErrorGroup, 'key' | 'count'>[]): string {
+  return `${groups.length}:${hash(groups.map(group => `${group.key}\u0000${group.count}`).join('\u0001'))}`;
+}

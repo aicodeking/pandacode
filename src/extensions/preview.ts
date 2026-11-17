@@ -62,6 +62,7 @@ import composerControlsManifest from '../../tests/fixtures/extensions/composer-c
 import composerPanelsManifest from '../../tests/fixtures/extensions/composer-panels/extension.json';
 import composerAttachManifest from '../../tests/fixtures/extensions/composer-attach/extension.json';
 import threadExtrasManifest from '../../tests/fixtures/extensions/thread-extras/extension.json';
+import upstreamErrorsManifest from '../../tests/fixtures/extensions/upstream-errors/manifest.json';
 import tilesPickerManifest from '../../tests/fixtures/extensions/tiles-picker/extension.json';
 import upstreamExplorerManifest from '../../tests/fixtures/extensions/upstream-explorer/manifest.json';
 import commandsExtrasManifest from '../../tests/fixtures/extensions/commands-extras/extension.json';
@@ -416,6 +417,11 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
     if (new URLSearchParams(location.search).has('tiles-picker')) {
       if (snapshot.packages.some(item => item.manifest.id === tilesPickerManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: tilesPickerManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('upstream-errors')) {
+      if (snapshot.packages.some(item => item.manifest.id === upstreamErrorsManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: upstreamErrorsManifest as unknown as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('thread-extras')) {

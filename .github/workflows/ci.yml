@@ -189,6 +189,12 @@ jobs:
       - name: Upstream workers panel and dock (WebKit)
         env: { PW_PORT: '16052', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/upstream-workers-extensions.spec.ts --workers=1
+      - name: Upstream thread errors and toasts (Chromium)
+        env: { PW_PORT: '16071', PW_PROD: '1' }
+        run: npx playwright test tests/upstream-errors-extensions.spec.ts --workers=1
+      - name: Upstream thread errors and toasts (WebKit)
+        env: { PW_PORT: '16072', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/upstream-errors-extensions.spec.ts --workers=1
       - name: Upstream menu settings and usage (Chromium)
         env: { PW_PORT: '16091', PW_PROD: '1' }
         run: npx playwright test tests/upstream-menu-usage-extensions.spec.ts --workers=1

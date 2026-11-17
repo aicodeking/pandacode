@@ -68,3 +68,13 @@ export function queueToast<T extends Queued>(state: { holding: boolean; queue: r
 /** A toast's `title` (its full text on hover) is at most this long; a live error can carry kilobytes. */
 export const TOAST_TITLE_CHARS = 500;
 export const toastTitle = (text: string): string => text.length > TOAST_TITLE_CHARS ? `${text.slice(0, TOAST_TITLE_CHARS - 1)}…` : text;
+
+/** What an adapter may know about the one app toast: that it shows, its tone, whether it is urgent, whether it offers
+ * Undo, how many buttons it carries and whether it closes. Never its text (a live error can carry kilobytes of the
+ * user's own output). */
+export type ToastPresentation = { showing: boolean; tone: 'danger' | 'neutral'; urgent: boolean; undo: boolean; actions: number; closable: boolean };
+export function toastPresentation(state: { visible: boolean; tone: ToastTone; undo: boolean; actions: number; closable: boolean; shownAt: number; now: number }): ToastPresentation {
+  const tone = state.tone === 'danger' ? 'danger' : 'neutral';
+  const urgent = state.visible && (tone === 'danger' || state.undo) && state.now >= state.shownAt && state.now - state.shownAt < TOAST_ESCAPE_GRACE_MS;
+  return { showing: state.visible, tone, urgent, undo: state.visible && state.undo, actions: state.visible ? Math.max(0, Math.min(8, Math.trunc(state.actions))) : 0, closable: state.visible && state.closable };
+}
