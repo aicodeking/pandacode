@@ -948,6 +948,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     root: $('.workspace'), onContextChanged, find: () => threadFind,
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, provider: s?.provider, limit: s?.limitedAt ? `${s.limitedAt}:${s.limitedUntil ?? ''}:${s.resumeAtReset ? 1 : 0}` : '', busy: Boolean(modelPickerCleanup) }; },
   });
+  // The composer band (ui.presentation): status segments and panels of trusted packages in a row above the composer. Additive:
+  // the composer, the draft and a running task are never touched.
+  void import('./extensions/runtime-composer-band').then(band => band.mountComposerBand({
+    area: $('#composer-area'), onContextChanged, notify,
+    state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, generation: state.generation }; },
+  }));
   // Notices that background services raise (ui.notify): a list above the toast, each row led by its package name.
   void import('./extensions/runtime-notifications').then(notices => notices.mountRuntimeNotices());
   // Tasks a package started (R0401): the window answers the user's defaults and marks each task with its package.

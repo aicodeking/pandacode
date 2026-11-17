@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.band-usage",
+  "version": "1.0.0",
+  "name": "Usage band",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "ui.dynamic", "ui.presentation"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.band-usage/open", "title": "Open usage", "action": { "kind": "runCommand" } },
+      { "id": "sample.band-usage/pause", "title": "Pause usage", "action": { "kind": "runCommand" } },
+      { "id": "sample.band-usage/resume", "title": "Resume usage", "action": { "kind": "runCommand" } },
+      { "id": "sample.band-usage/reset", "title": "Reset usage", "action": { "kind": "runCommand" } },
+      { "id": "sample.band-usage/control", "title": "Usage band control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      {
+        "id": "sample.band-usage/band",
+        "location": "panda.composer.band",
+        "command": "sample.band-usage/open",
+        "presentation": "status",
+        "icon": "chart",
+        "text": "Usage 0%",
+        "tone": "neutral",
+        "tooltip": "Tokens used by this task",
+        "progress": 0,
+        "items": [
+          { "id": "sample.band-usage/band-pause", "kind": "command", "title": "Pause", "command": "sample.band-usage/pause" },
+          { "id": "sample.band-usage/band-resume", "kind": "command", "title": "Resume", "command": "sample.band-usage/resume" },
+          { "id": "sample.band-usage/band-reset", "kind": "command", "title": "Reset", "command": "sample.band-usage/reset" }
+        ]
+      },
+      { "id": "sample.band-usage/header", "location": "panda.workspace.header.actions", "command": "sample.band-usage/control", "presentation": "button", "text": "Usage band" }
+    ]
+  }
+}

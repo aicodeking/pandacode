@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.band-rich",
+  "version": "1.0.0",
+  "name": "Rich band",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews", "ui.presentation"],
+  "contributes": {
+    "views": [
+      {
+        "id": "sample.band-rich/band",
+        "title": "Rich band",
+        "text": "Rich band panel",
+        "location": "panda.composer.band",
+        "rich": { "html": "assets/band.html", "css": "assets/band.css", "script": "assets/band.js", "minSize": { "width": 160, "height": 48 } }
+      }
+    ]
+  }
+}

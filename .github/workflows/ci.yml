@@ -183,6 +183,12 @@ jobs:
       - name: Dynamic items (WebKit)
         env: { PW_PORT: '15932', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-dynamic-items.spec.ts --workers=1
+      - name: Composer band (Chromium)
+        env: { PW_PORT: '16391', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-composer-band.spec.ts --workers=1
+      - name: Composer band (WebKit)
+        env: { PW_PORT: '16392', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-composer-band.spec.ts --workers=1
       - name: Dialog answers and navigation (Chromium)
         env: { PW_PORT: '16131', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-dialog-navigation.spec.ts --workers=1

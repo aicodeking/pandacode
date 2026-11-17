@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.band-plain",
+  "version": "1.0.0",
+  "name": "Plain band",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.presentation"],
+  "contributes": {
+    "commands": [{ "id": "sample.band-plain/open", "title": "Open plain band", "action": { "kind": "showMessage", "message": "Plain band opened" } }],
+    "menus": [{ "id": "sample.band-plain/band", "location": "panda.composer.band", "command": "sample.band-plain/open", "presentation": "status", "text": "Plain", "tone": "success", "tooltip": "A static segment" }]
+  }
+}

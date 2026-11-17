@@ -103,3 +103,27 @@
 .sidebar .task-mark[data-tone="success"] { color: var(--ds-success); }
 .sidebar .task-mark[data-tone="warning"] { color: var(--ds-warning, var(--text)); }
 .sidebar .task-mark[data-tone="danger"] { color: var(--ds-danger); }
+/* The composer band (panda.composer.band, runtime-composer-band.md): a row above the composer for the status and panels of trusted packages. Always loaded with this sheet so its first draw is styled; only color, background, opacity and scale change. */
+.composer-band { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 950px; margin: 0 auto; padding: 0 30px 6px; min-height: 24px; box-sizing: border-box; flex-shrink: 0; }
+.composer-band[hidden] { display: none; }
+.composer-band-segment { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 10px; border: 1px solid var(--ds-border); border-radius: 999px; background: var(--ds-card); color: var(--text); font-size: var(--ds-text-chip); box-shadow: var(--ds-shadow-card); }
+.composer-band-segment[data-tone="info"] { color: var(--ds-info); }
+.composer-band-segment[data-tone="success"] { color: var(--ds-success); }
+.composer-band-segment[data-tone="warning"] { color: var(--ds-warning, var(--text)); }
+.composer-band-segment[data-tone="danger"] { color: var(--ds-danger); }
+.composer-band-main { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: default; }
+button.composer-band-main { cursor: pointer; }
+button.composer-band-main:disabled { opacity: .5; cursor: default; }
+.composer-band-main:focus-visible, .composer-band-button:focus-visible, .composer-band-more:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.composer-band-icon { display: inline-flex; flex: none; }
+.composer-band-icon .icon { width: 14px; height: 14px; }
+.composer-band-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.composer-band-progress { flex: none; width: 48px; height: 4px; overflow: hidden; border-radius: 2px; background: var(--ds-card-inner); }
+.composer-band-progress-fill { display: block; width: 100%; height: 100%; border-radius: inherit; background: currentColor; transform-origin: left center; scale: var(--band-progress, 0) 1; transition: scale 160ms var(--ds-ease-out); }
+.composer-band-button { flex: none; padding: 0 8px; font-size: var(--ds-text-chip); }
+.composer-band-view { flex: 1 1 auto; min-width: 160px; padding: 0; height: var(--band-height, 24px); max-height: 96px; overflow: hidden; }
+.composer-band-view .extension-rich-panel-surface { width: 100%; height: 100%; min-height: 0 !important; }
+.composer-band-more { flex: none; padding: 0 8px; border: 1px solid var(--ds-border); border-radius: 999px; background: var(--ds-raised); color: var(--text); font: inherit; cursor: pointer; }
+:root:not([data-ready]) .composer-band-progress-fill { transition: none; }
+@media (prefers-reduced-motion: reduce) { .composer-band-progress-fill { transition: none; } }
+@media (forced-colors: active) { .composer-band-segment, .composer-band-more { border-color: CanvasText; } .composer-band-progress-fill { background: Highlight; } }

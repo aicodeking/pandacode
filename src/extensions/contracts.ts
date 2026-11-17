@@ -353,9 +353,13 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     }
     for (const view of (contributions.views ?? []) as ObjectValue[]) {
       if (view.rich && !(manifest.permissions as string[]).includes('ui.richViews')) error('PermissionDenied', `${path}/permissions`, [id]);
-      // R0301: the schema admits heights from 24 (band views); every placement of this slice needs 160 or more.
+      // R0301/R1001 (C04): the schema admits heights from 24. A view in `panda.composer.band` is 24 to 96 with no `placement`
+      // (the location fixes where it opens); every other view needs 160 or more.
       const minSize = (view.rich as ObjectValue | undefined)?.minSize as ObjectValue | undefined;
-      if (minSize && (minSize.height as number) < 160) error('InvalidShape', `${path}/contributes/views`, [view.id as string]);
+      if (view.location === 'panda.composer.band') {
+        const rich = view.rich as ObjectValue | undefined, height = minSize?.height as number | undefined;
+        if (!rich || rich.placement !== undefined || height === undefined || height < 24 || height > 96) error('InvalidShape', `${path}/contributes/views`, [view.id as string]);
+      } else if (minSize && (minSize.height as number) < 160) error('InvalidShape', `${path}/contributes/views`, [view.id as string]);
       // R0302: a remote page's origin is one of the origins it declares (`rich.remote`).
       const url = (view.rich as ObjectValue | undefined)?.url;
       if (typeof url === 'string') {
@@ -382,6 +386,12 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     }
     for (const menu of (contributions.menus ?? []) as ObjectValue[]) {
       reference('commands', menu.command, 'menus');
+      // R1001: a band item is a status with at most three command buttons.
+      if (menu.location === 'panda.composer.band') {
+        if (menu.presentation !== 'status') error('InvalidShape', `${path}/contributes/menus`, [menu.id as string]);
+        else if (Array.isArray(menu.items) && menu.items.length > 3) error('LimitExceeded', `${path}/contributes/menus`, [menu.id as string]);
+        else if (Array.isArray(menu.items) && (menu.items as ObjectValue[]).some(item => item.kind !== 'command')) error('InvalidShape', `${path}/contributes/menus`, [menu.id as string]);
+      }
       if (menu.icon) reference('icons', menu.icon, 'menus');
       if (menu.items) menuItems(menu.items as ObjectValue[], id, owned, `${path}/contributes/menus`, reference);
       allMenus.push(menu);

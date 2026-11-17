@@ -366,7 +366,7 @@ export const STATUS_PROTECTED = [
  * Permissions menu's contributed rows and `panda.composer.steering.actions` the steer bar's slot; composer-host.ts
  * mounts each one. Drafts, the selected model, the approval mode, Send, Stop and approvals stay in
  * main.ts, model-picker.ts and approval-modes.ts. */
-export const COMPOSER_ACTION_SURFACES = ['panda.composer.model.actions', 'panda.composer.permissions.actions', 'panda.composer.steering.actions'] as const;
+export const COMPOSER_ACTION_SURFACES = ['panda.composer.model.actions', 'panda.composer.permissions.actions', 'panda.composer.steering.actions', 'panda.composer.band'] as const;
 export const COMPOSER_TRAY_LOCATION = 'panda.composer.tray.controls';
 export const COMPOSER_MODEL_LOCATION = 'panda.composer.model.entries';
 export const COMPOSER_STEER_LOCATION = 'panda.composer.steering.controls';

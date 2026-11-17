@@ -370,8 +370,11 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         }
         for view in items(contributions, "views") {
             if view.get("rich").is_some() && !strings(&manifest["permissions"]).contains(&"ui.richViews".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }
-            // R0301: the schema admits heights from 24 (band views); every placement of this slice needs 160 or more.
-            if view["rich"]["minSize"]["height"].as_u64().is_some_and(|height| height < 160) { return Err(fail("InvalidShape", &format!("{path}/contributes/views"), vec![view["id"].as_str().unwrap_or_default().to_owned()])); }
+            // R0301/R1001 (C04): a view in `panda.composer.band` is 24 to 96 with no `placement`; every other view needs 160 or more.
+            if view["location"].as_str() == Some("panda.composer.band") {
+                let height = view["rich"]["minSize"]["height"].as_u64();
+                if !view["rich"].is_object() || !view["rich"]["placement"].is_null() || !height.is_some_and(|height| (24..=96).contains(&height)) { return Err(fail("InvalidShape", &format!("{path}/contributes/views"), vec![view["id"].as_str().unwrap_or_default().to_owned()])); }
+            } else if view["rich"]["minSize"]["height"].as_u64().is_some_and(|height| height < 160) { return Err(fail("InvalidShape", &format!("{path}/contributes/views"), vec![view["id"].as_str().unwrap_or_default().to_owned()])); }
             // R0302: a remote page's origin is one of the origins it declares (`rich.remote`).
             if let Some(url) = view["rich"]["url"].as_str() {
                 // The same rule as contracts.ts: `https://` + the address's authority is listed (the schema bounds both).
@@ -397,6 +400,8 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         }
         for menu in items(contributions, "menus") {
             reference(contributions, "commands", &menu["command"], &format!("{path}/contributes/menus"))?;
+            // R1001: a band item is a status with at most three command buttons.
+            if let Some(code) = super::runtime_composer_band::check_item(menu) { return Err(fail(code, &format!("{path}/contributes/menus"), vec![menu["id"].as_str().unwrap_or_default().to_owned()])); }
             if menu.get("icon").is_some() { reference(contributions, "icons", &menu["icon"], &format!("{path}/contributes/menus"))?; }
             if menu.get("items").is_some() { menu_items(items(menu, "items"), Some(contributions), &id, &mut owned, &format!("{path}/contributes/menus"), 1, &mut 0)?; }
             menus.push(menu.clone());

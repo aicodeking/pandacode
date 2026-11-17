@@ -317,6 +317,11 @@ pub fn serve_app(app: &tauri::AppHandle, owner: &str, params: &Value) -> Value {
     let Some(package) = snapshot["packages"].as_array().into_iter().flatten().find(|package| package["manifest"]["id"] == owner && package["enabled"] == true) else { return failure("NotFound") };
     let (manifest, version) = (&package["manifest"], package["manifest"]["version"].as_str().unwrap_or_default());
     let granted = app.try_state::<crate::extensions::runtime_grants::RuntimeGrants>().is_some_and(|grants| grants.check(owner, version, PERMISSION, &crate::extensions::runtime_grants::Target::default()).is_ok());
+    // R1001: an item put in the composer band needs `ui.presentation` as well, rechecked here on every registration.
+    if params["op"] == "register" {
+        let holds = app.try_state::<crate::extensions::runtime_grants::RuntimeGrants>().is_some_and(|grants| grants.check(owner, version, crate::extensions::runtime_composer_band::PERMISSION, &crate::extensions::runtime_grants::Target::default()).is_ok());
+        if let Err(code) = crate::extensions::runtime_composer_band::gate(&params["item"], holds) { return failure(code); }
+    }
     let scope_exists = |scope: &Scope| {
         let Some(state) = app.try_state::<crate::AppState>() else { return false };
         let Ok(store) = state.store.try_lock() else { return false };
@@ -366,7 +371,26 @@ pub fn scope_gone(app: &tauri::AppHandle, scope: &Scope) {
 
 /// The interface reads the whole layer: items, scopes and overrides of every owner whose service runs.
 #[tauri::command]
-pub fn extensions_runtime_items(app: tauri::AppHandle) -> Value { state(&app).map_or_else(|| json!({"revision": 0, "owners": {}}), |items| items.snapshot()) }
+pub fn extensions_runtime_items(app: tauri::AppHandle) -> Value {
+    let mut layer = state(&app).map_or_else(|| json!({"revision": 0, "owners": {}}), |items| items.snapshot());
+    strip_band(&app, &mut layer);
+    layer
+}
+
+/// R1001: the band items of an owner that no longer holds `ui.presentation` leave the layer the interface reads, so a revoke
+/// takes the band away at once without touching the composer or a running task.
+fn strip_band(app: &tauri::AppHandle, layer: &mut Value) {
+    use tauri::Manager;
+    let Some(grants) = app.try_state::<crate::extensions::runtime_grants::RuntimeGrants>() else { return };
+    let packages = app.state::<crate::extensions::packages::ExtensionPackages>();
+    let Ok(packages) = packages.0.try_lock() else { return };
+    let snapshot = serde_json::to_value(packages.snapshot()).unwrap_or(Value::Null);
+    let holds = |owner: &str| {
+        let version = snapshot["packages"].as_array().into_iter().flatten().find(|package| package["manifest"]["id"] == owner).and_then(|package| package["manifest"]["version"].as_str().map(str::to_owned));
+        version.is_some_and(|version| grants.check(owner, &version, crate::extensions::runtime_composer_band::PERMISSION, &crate::extensions::runtime_grants::Target::default()).is_ok())
+    };
+    crate::extensions::runtime_composer_band::strip_ungranted(layer, &holds);
+}
 
 #[cfg(test)]
 mod tests {

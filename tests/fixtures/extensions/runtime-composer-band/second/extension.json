@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.band-second",
+  "version": "1.0.0",
+  "name": "Second band",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.presentation"],
+  "contributes": {
+    "commands": [{ "id": "sample.band-second/open", "title": "Open second band", "action": { "kind": "showMessage", "message": "Second band opened" } }],
+    "menus": [{ "id": "sample.band-second/band", "location": "panda.composer.band", "command": "sample.band-second/open", "presentation": "status", "text": "Second", "tone": "warning", "progress": 55 }]
+  }
+}

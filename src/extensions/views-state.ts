@@ -21,5 +21,5 @@ export function registeredInspectorViews(snapshot: ExtensionSnapshot): Registere
   const checked = validateContract('packages', snapshot.packages.filter(item => item.enabled).map(item => item.manifest));
   if (!checked.ok) return [];
   const normalized = checked.value as unknown as { packages: ExtensionSnapshot['packages'][number]['manifest'][] };
-  return normalized.packages.flatMap(manifest => (manifest.contributes.views ?? []).filter(view => isExtensionInspectorView(view.id)).map(view => ({ owner: manifest.id, version: manifest.version, view })));
+  return normalized.packages.flatMap(manifest => (manifest.contributes.views ?? []).filter(view => isExtensionInspectorView(view.id) && (view as { location?: string }).location !== 'panda.composer.band').map(view => ({ owner: manifest.id, version: manifest.version, view })));
 }
