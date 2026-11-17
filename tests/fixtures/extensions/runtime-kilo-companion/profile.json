@@ -1,0 +1,8 @@
+{
+  "provenance": "synthetic loader and SDK-derived callback frames; not a live capture",
+  "liveCapture": false,
+  "source": "37b2900fcb6223fec33c2bd5f59263e93682c670",
+  "api": "kilo.plugin.v1",
+  "canonicalAcpBackend": "../backends/",
+  "restrictions": { "pure": "UnsupportedCapability", "sandbox": "Kilo native policy remains authoritative", "goal": "Kilo native goal policy remains authoritative" }
+}

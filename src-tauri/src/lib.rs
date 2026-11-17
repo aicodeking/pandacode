@@ -3133,7 +3133,7 @@ async fn launch_operation_admitted(
             use extensions::runtime_companion_lifetime::{InstalledApi, registry};
             let installed = InstalledApi { harness: config.provider.clone(), version: None, apis: vec![] };
             if let Ok(mut companions) = registry().lock() {
-                let profile = if config.provider == "codex" { Some(extensions::runtime_codex_companion::profile()) } else if config.provider == "opencode" { extensions::runtime_opencode_companion::profile(&installed) } else { extensions::runtime_callback_companions::profile(&config.provider) };
+                let profile = if config.provider == "codex" { Some(extensions::runtime_codex_companion::profile()) } else if config.provider == "opencode" { extensions::runtime_opencode_companion::profile(&installed) } else if config.provider == "kilo" { extensions::runtime_kilo_companion::profile(&installed) } else { extensions::runtime_callback_companions::profile(&config.provider) };
                 let _ = companions.begin(companion_key.clone(), &companion_owners, &installed, profile.as_ref(),
                     |manifest| extensions::runtime_callback_companions::resources(manifest, &config.provider));
             }

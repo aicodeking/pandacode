@@ -64,3 +64,4 @@ pub(crate) mod placement;
 pub(crate) mod supervisor;
 pub mod runtime_codex_companion;
 pub mod runtime_opencode_companion;
+pub mod runtime_kilo_companion;
