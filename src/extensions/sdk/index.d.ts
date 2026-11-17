@@ -24,7 +24,7 @@ export type DocumentResult = { readonly ok: true } | { readonly ok: false; reado
 /** Manifest-owned executable provider, experimental; only role-scoped core team tools. */
 export type ProviderMetadata = { modes: ('ask' | 'auto' | 'plan' | 'full')[]; authentication: string; teams?: boolean; readiness: { state: 'ready' | 'signedOut' | 'unavailable'; reason: string }; icon?: string; usage: { context: boolean; limitsReason: string } };
 export type ProviderDiscoveryRoot = { kind: 'skills' | 'rules' | 'config'; scope: 'user' | 'project'; path: string };
-export type ProviderDescriptor = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; discovery?: ProviderDiscoveryRoot[]; models: { id: string; name: string; efforts: string[]; contextWindow?: number }[] };
+export type ProviderDescriptor = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; discovery?: ProviderDiscoveryRoot[]; models: { id: string; name: string; efforts: string[]; contextWindow?: number; speedTiers?: { id: string; name: string; description?: string }[] }[] };
 export type ProviderRun = Readonly<{ apiVersion: 1; id: string; version: string; digest: string; model: string; effort: string | null; mode: 'ask' | 'auto' | 'plan' | 'full'; resumeId: string | null; prompt: string; instructions: string; teamTools: readonly Json[] }>;
 export type ProviderInput = { kind: 'approval'; approved: boolean } | { kind: 'question'; response: Json } | { kind: 'steer'; id: string; text: string };
 export type ProviderEvent = { kind: 'text' | 'thinking'; text: string } | { kind: 'session'; id: string } | { kind: 'approval'; text: string } | { kind: 'question'; questions: Json } | { kind: 'usage'; usedTokens: number; contextWindow?: number } | { kind: 'tool'; tool: { id: string; name: string; status: 'running' | 'completed' | 'failed'; input: string; output: string; writePaths?: string[] } };
@@ -48,7 +48,7 @@ export interface InvocationContext {
 }
 /** Eligible main-window dialogs (`panda.dialog.<id>.actions` / `.bodyExtras`): shared modals, then module-owned and directly mounted dialogs. Destructive, credential, permission and recovery dialogs have no ID. */
 export type MainDialogId = 'recipes' | 'attachment' | 'task-details' | 'subagents' | 'task-status' | 'integrations-fallback' | 'working-directory' | 'changed-files' | 'open-project' | 'rename-task' | 'colors' | 'wallpapers' | 'opencode-models' | 'moodboards' | 'integrations' | 'jev-settings' | 'jev-assist' | 'jev-tests' | 'conversation-import' | 'bots' | 'bot-settings' | 'usage' | 'command-palette'
-  | 'agent-updates' | 'channel-create' | 'channel-settings' | 'github-import' | 'github-pr' | 'github-link' | 'sketch' | 'worktree-create' | 'command-center' | 'progress-lightbox' | 'team-model-add';
+  | 'agent-updates' | 'channel-create' | 'channel-settings' | 'github-import' | 'github-pr' | 'github-link' | 'sketch' | 'worktree-create' | 'command-center' | 'progress-lightbox' | 'team-model-add' | 'tool-image-viewer';
 /** `contributes.dialogExtras[]` (at most 64): owner-labelled plain text in the dialog's extension band; 8 per dialog are shown. */
 export interface DialogExtra { readonly id: string; readonly dialog: MainDialogId; readonly text: string }
 /** Captured once when an eligible main dialog opens; `project`/`task` are opaque handles, empty when none. */

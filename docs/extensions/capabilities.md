@@ -41,7 +41,6 @@ closed.
 |---|---|---|
 | Project explorer (`src/file-explorer.ts`) | `close-dialog`, create/rename/delete dialog, file context menu; in `src/main.ts`: `file-menu`, `new-workspace-file`, `new-workspace-folder`, dock `toggle-files` | S0601 |
 | Floating editor dock button | `toggle-file-editor` (the editor body is `panda.documents`, already a table row) | S0602 |
-| Tool image viewer (`src/tool-image-viewer.ts`) | `close`, `copy`, `reveal`, `zoom`, viewer dialog | S0604 |
 | Grouped thread errors | `dismiss-error`, `dismiss-errors`, `dismiss-failover-error`, `toggle-error` in `src/main.ts`; `dismiss-error` in `src/bots.ts` and `src/agents-dock-window.ts`; `models-retry` in `src/bots.ts` | S0607 (S0605 owns the dock window file) |
 
 Named exceptions, with provenance (`_work/30-plan/upstream-sync/PLAN-upstream-content.md`, sections 1
@@ -200,6 +199,8 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.dialog.task-status.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.team-model-add.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.team-model-add.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.tool-image-viewer.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.tool-image-viewer.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.usage.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.usage.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.wallpapers.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |

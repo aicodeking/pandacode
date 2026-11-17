@@ -1,4 +1,5 @@
 import { escape, icon, isImeKey } from './dom.ts';
+import type { ToolImageExtras } from './extensions/upstream-tool-images.ts';
 import { isMac, isWindows } from './platform.ts';
 import { basename, bindToolImages, buttonSession, defaultLoader, hydrateToolImages, isAbsolutePath, isImageDataUrl, isNetworkPath, MISSING_TITLE, missingTitle, toolImageCache, type ToolImageLoader } from './tool-images.ts';
 
@@ -84,6 +85,8 @@ type Viewer = {
   index: number;
   shownToken: number;
   copyTimer: number;
+  /** The extension band of this opening (main window only), re-captured for every image shown. */
+  extras: ToolImageExtras | null;
 };
 
 const part = <T extends HTMLElement>(viewer: Viewer, selector: string) => viewer.dialog.querySelector<T>(selector)!;
@@ -117,6 +120,7 @@ function createViewer(items: readonly ViewerItem[], clicked: ViewerItem, load: T
     index: Math.max(0, items.findIndex(item => sameItem(item, clicked))),
     shownToken: 0,
     copyTimer: 0,
+    extras: null,
   };
 }
 
@@ -198,6 +202,8 @@ function show(viewer: Viewer, next: number): void {
   zoom.hidden = false; image.hidden = true; image.removeAttribute('src'); image.alt = basename(item.path);
   part(viewer, '.tool-image-viewer-missing').hidden = true;
   keepFocus(viewer);
+  // Another image is another capture: an extension action taken for the previous one is stale from here on.
+  viewer.extras?.rebind(item.session);
   loadStage(viewer, item, token);
 }
 
@@ -254,6 +260,7 @@ function closeViewer(viewer: Viewer): void {
   const { dialog, returnFocus } = viewer;
   if (!dialog.isConnected) return;
   clearTimeout(viewer.copyTimer);
+  viewer.extras?.dispose(); viewer.extras = null;
   if (dialog.open) dialog.close();
   dialog.remove();
   if (openViewer === dialog) openViewer = null;
@@ -266,6 +273,8 @@ function onViewerKey(viewer: Viewer, event: KeyboardEvent): void {
   // back to its task list) would otherwise act too, and its preventDefault would keep `cancel` from firing.
   if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeViewer(viewer); return; }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  // Arrow keys on the extension band move between its own controls, never between images.
+  if ((event.target as Element).closest?.('.dialog-extension-extras')) return;
   event.preventDefault();
   step(viewer, event.key === 'ArrowLeft' ? -1 : 1);
 }
@@ -309,6 +318,13 @@ export function openToolImage(button: HTMLElement, options: ToolImageViewerOptio
   openViewer = viewer.dialog;
   viewer.dialog.showModal();
   action(viewer, 'close').focus();
+  // Opt-in extension band (docs/extensions/upstream-tool-images.md). The launcher window runs no extensions.
+  if (!viewer.canReveal) return viewer.dialog;
+  void import('./extensions/upstream-tool-images').then(({ attachToolImageExtras }) => {
+    if (!viewer.dialog.isConnected || openViewer !== viewer.dialog) return;
+    viewer.extras = attachToolImageExtras(viewer.dialog, part(viewer, '.tool-image-viewer-plate'), () => viewer.dialog.isConnected && viewer.dialog.open);
+    viewer.extras.rebind(viewer.items[viewer.index].session);
+  }).catch(() => { /* The viewer stays complete without its extension band. */ });
   return viewer.dialog;
 }
 

@@ -1,0 +1,60 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.tool-image-viewer",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute"
+  ],
+  "requiredContributions": [
+    "dialogExtras"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "sample.tool-image-viewer/annotate",
+        "title": "Annotate image",
+        "action": {
+          "kind": "showMessage",
+          "message": "Annotate image: the viewer keeps its own controls"
+        }
+      },
+      {
+        "id": "sample.tool-image-viewer/share",
+        "title": "Share image",
+        "action": {
+          "kind": "showMessage",
+          "message": "Share image: the viewer keeps its own controls"
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.tool-image-viewer/annotate",
+        "location": "panda.dialog.tool-image-viewer.actions",
+        "presentation": "button",
+        "command": "sample.tool-image-viewer/annotate",
+        "text": "Annotate image",
+        "order": 10
+      },
+      {
+        "id": "sample.tool-image-viewer/share",
+        "location": "panda.dialog.tool-image-viewer.actions",
+        "presentation": "button",
+        "command": "sample.tool-image-viewer/share",
+        "text": "Share image",
+        "order": 20
+      }
+    ],
+    "dialogExtras": [
+      {
+        "id": "sample.tool-image-viewer/note",
+        "dialog": "tool-image-viewer",
+        "text": "Image tools from this package; the viewer keeps its own zoom, copy, reveal and close."
+      }
+    ]
+  }
+}

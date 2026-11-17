@@ -33,7 +33,7 @@ dialog.tool-image-viewer::backdrop{background:var(--scrim);backdrop-filter:blur(
   border:1px solid var(--glass-border);border-radius:var(--sheet-radius);background:var(--glass-warm);
   backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);
   box-shadow:0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near);animation:tool-image-in var(--ds-ease-out) ease-out}
-html[data-theme="dark"] .tool-image-viewer-plate{backdrop-filter:blur(54px) saturate(1.7) brightness(.92);-webkit-backdrop-filter:blur(54px) saturate(1.7) brightness(.92)}
+html[data-theme="dark"] .tool-image-viewer-plate{backdrop-filter:blur(54px) saturate(1.7) brightness(.92);-webkit-backdrop-filter:blur(54px) saturate(1.7) brightness(.92)} .tool-image-viewer-plate>.dialog-extension-extras{flex:none;margin-top:0;max-height:30%;overflow:auto}
 .tool-image-viewer-head{display:flex;align-items:center;gap:10px;flex:none;min-width:0;height:44px}
 /* The titles take whatever the controls leave (never their own width) and ellipsize. */
 .tool-image-viewer-titles{flex:1 1 0;min-width:0;overflow:hidden}

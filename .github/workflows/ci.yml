@@ -165,12 +165,24 @@ jobs:
       - name: Running services and quit accounting (WebKit)
         env: { PW_PORT: '15972', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-service-status.spec.ts --workers=1
+      - name: Upstream floating code editor (Chromium)
+        env: { PW_PORT: '16021', PW_PROD: '1' }
+        run: npx playwright test tests/upstream-editor-extensions.spec.ts --workers=1
+      - name: Upstream floating code editor (WebKit)
+        env: { PW_PORT: '16022', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/upstream-editor-extensions.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (WebKit)
         env: { PW_PORT: '15852', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/upstream-semantic-remote-images.spec.ts --workers=1
+      - name: Upstream tool image viewer (Chromium)
+        env: { PW_PORT: '16041', PW_PROD: '1' }
+        run: npx playwright test tests/upstream-tool-images-extensions.spec.ts --workers=1
+      - name: Upstream tool image viewer (WebKit)
+        env: { PW_PORT: '16042', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/upstream-tool-images-extensions.spec.ts --workers=1
       - name: Upstream workers panel and dock (Chromium)
         env: { PW_PORT: '16051', PW_PROD: '1' }
         run: npx playwright test tests/upstream-workers-extensions.spec.ts --workers=1

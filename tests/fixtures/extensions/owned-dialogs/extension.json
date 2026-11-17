@@ -175,6 +175,14 @@
         "text": "Owned dialog note"
       },
       {
+        "id": "sample.owned-dialogs/tool-image-viewer",
+        "location": "panda.dialog.tool-image-viewer.actions",
+        "presentation": "button",
+        "icon": "sample.owned-dialogs/mark",
+        "command": "sample.owned-dialogs/note",
+        "text": "Owned dialog note"
+      },
+      {
         "id": "sample.owned-dialogs/team-model-add",
         "location": "panda.dialog.team-model-add.actions",
         "presentation": "button",
@@ -284,6 +292,11 @@
         "id": "sample.owned-dialogs/progress-lightbox-note",
         "dialog": "progress-lightbox",
         "text": "Owned guidance for Progress large view; the host keeps its fields and actions."
+      },
+      {
+        "id": "sample.owned-dialogs/tool-image-viewer-note",
+        "dialog": "tool-image-viewer",
+        "text": "Owned guidance for Tool image viewer; the host keeps its fields and actions."
       },
       {
         "id": "sample.owned-dialogs/team-model-add-note",

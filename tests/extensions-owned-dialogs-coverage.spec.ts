@@ -11,7 +11,7 @@ const OWNED: [string, string, 'module' | 'direct'][] = [
   ['command-center', 'command-center', 'direct'], ['goal', 'command-center', 'direct'], ['team-model-add', 'team-model-add', 'direct'],
   ['integrations-direct', 'integrations', 'direct'], ['jev-assist-direct', 'jev-assist', 'direct'], ['jev-tests-direct', 'jev-tests', 'direct'],
 ];
-const TITLES: Record<string, string> = { 'agent-updates': 'Agent updates', 'channel-create': 'New channel', 'channel-settings': 'Channel settings', 'github-import': 'Import from GitHub', 'github-pr': 'Push & open pull request', 'github-link': 'Link pull request', sketch: 'Sketch a mockup', 'worktree-create': 'New worktree', 'command-center': 'Command center', 'team-model-add': 'Models for teams', integrations: 'Tools & integrations', 'jev-assist': 'Jev assistance', 'jev-tests': 'Browser tests', 'progress-lightbox': 'Progress large view' };
+const TITLES: Record<string, string> = { 'agent-updates': 'Agent updates', 'channel-create': 'New channel', 'channel-settings': 'Channel settings', 'github-import': 'Import from GitHub', 'github-pr': 'Push & open pull request', 'github-link': 'Link pull request', sketch: 'Sketch a mockup', 'worktree-create': 'New worktree', 'command-center': 'Command center', 'team-model-add': 'Models for teams', integrations: 'Tools & integrations', 'jev-assist': 'Jev assistance', 'jev-tests': 'Browser tests', 'progress-lightbox': 'Progress large view', 'tool-image-viewer': 'Tool image viewer' };
 const dialog = (page: Page) => page.locator('#dialog');
 const band = (page: Page, id: string) => page.locator(`.dialog-extension-extras[data-dialog-accessory="${id}"]`);
 const accessory = (page: Page, id: string) => page.evaluate(id => (window as any).__previewOwnedAccessory(id), id);
@@ -213,4 +213,46 @@ test('Owned dialogs: the progress large view carries its own band in the plate; 
   await expect(lightbox).toHaveCount(0); await expect(page.locator('.dialog-extension-extras')).toHaveCount(0);
   expect(await admit(page, 'progress-lightbox', captured)).toEqual({ ok: false, reason: 'Revoked' });
   await expect(card.getByRole('button', { name: 'Open large view' })).toBeFocused();
+});
+
+test('Owned dialogs: the tool image viewer carries its own band in the plate; each image is its own capture and Escape disposes only the band', async ({ page }) => {
+  const at = Date.now() - 20_000, paths = ['shots/first.png', 'shots/second.png'];
+  const seeded = [
+    { id: 92_001, sessionId: 'session-1', role: 'user', content: 'Look at the screenshots.', createdAt: at },
+    ...paths.map((path, index) => ({ id: 92_002 + index, sessionId: 'session-1', role: 'tool', createdAt: at + (index + 1) * 100,
+      content: JSON.stringify({ type: 'tool_activity', version: 1, id: `viewer-image-${index}`, name: 'Read', status: 'completed', input: JSON.stringify({ file_path: path }), output: '[Non-text content omitted]' }) })),
+    { id: 92_100, sessionId: 'session-1', role: 'assistant', content: 'Both screenshots show the settings.', createdAt: at + 5_000 },
+  ];
+  await page.addInitScript(([seeded, manifest]) => {
+    (window as any).__extensionsBaseline = { version: 1, calls: [], seedMessages: { 'session-1': seeded } }; localStorage.setItem('pandacode.wallpapers', 'false');
+    if (localStorage.getItem('pandacode.preview.extensions.v1') === null) localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify([{ manifest, enabled: true, icons: {} }]));
+  }, [seeded, manifest] as const);
+  await page.goto('/?extensions-baseline&owned-dialog-coverage'); await expect(page.locator('#prompt')).toBeEnabled();
+  const card = page.locator('.turn-card').last();
+  await expect(card).toContainText('Both screenshots show the settings.');
+  const activity = card.locator('details.turn-activity');
+  if (await activity.getAttribute('open') === null) await activity.locator(':scope > summary').click();
+  const group = card.locator('details.tool-group').last();
+  if (await group.count() && await group.getAttribute('open') === null) await group.locator(':scope > summary').click();
+  const thumb = card.locator(`.tool-image-thumb[data-tool-image="${paths[0]}"]`);
+  await expect(thumb).toHaveClass(/\bis-loaded\b/); await thumb.click();
+  const viewer = page.locator('dialog.tool-image-viewer'); await expect(viewer).toBeVisible();
+  const slot = viewer.locator('.tool-image-viewer-plate > .dialog-extension-extras[data-dialog-accessory="tool-image-viewer"]');
+  await expect(slot).toBeVisible();
+  await expect.poll(async () => (await accessory(page, 'tool-image-viewer'))?.task).toBe('session-1');
+  await expect(slot.locator('[data-extension-location="panda.dialog.tool-image-viewer.bodyExtras"]')).toHaveText(`${manifest.id}: Owned guidance for Tool image viewer; the host keeps its fields and actions.`);
+  const action = slot.getByRole('button', { name: 'Owned dialog note', exact: true });
+  await action.focus(); await page.keyboard.press('ArrowRight');
+  await expect(viewer.locator('.tool-image-viewer-count')).toHaveText('1 of 2');
+  await action.click(); await expect(slot.locator('.dialog-extension-status')).toHaveText('Owned dialog note: the host keeps this dialog');
+  const first = await accessory(page, 'tool-image-viewer');
+  await viewer.getByRole('button', { name: 'Next image', exact: true }).click();
+  await expect(viewer.locator('.tool-image-viewer-count')).toHaveText('2 of 2');
+  await expect.poll(async () => (await accessory(page, 'tool-image-viewer'))?.mount).not.toBe(first.mount);
+  expect(await admit(page, 'tool-image-viewer', first)).toEqual({ ok: false, reason: 'StaleContext' });
+  const captured = await accessory(page, 'tool-image-viewer');
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0); await expect(page.locator('.dialog-extension-extras')).toHaveCount(0);
+  expect(await admit(page, 'tool-image-viewer', captured)).toEqual({ ok: false, reason: 'Revoked' });
+  await expect(thumb).toBeFocused();
 });

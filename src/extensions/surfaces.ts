@@ -130,6 +130,7 @@ export const OWNED_DIALOG_EXTRAS = [
   ['github-import', 'Import from GitHub', 'project', 'module'], ['github-pr', 'Push & open pull request', 'task', 'module'], ['github-link', 'Link pull request', 'task', 'module'],
   ['sketch', 'Sketch a mockup', 'task', 'module'], ['worktree-create', 'New worktree', 'task', 'module'],
   ['command-center', 'Command center', 'task', 'direct'], ['progress-lightbox', 'Progress large view', 'task', 'direct'], ['team-model-add', 'Models for teams', 'none', 'direct'],
+  ['tool-image-viewer', 'Tool image viewer', 'task', 'direct'],
 ] as const;
 /** Direct mounts of a main dialog's own view (used when the view opens the dialog itself): they reuse that
  * dialog's ID and band, so one opening never registers twice. [ledger id, reused dialog id]. */
