@@ -1,0 +1,48 @@
+{
+  "recipe": {
+    "scope": "project",
+    "projectId": "project-1",
+    "name": "review-diff",
+    "description": "Review the diff, then run the check",
+    "steps": [
+      { "kind": "prompt", "text": "Review the diff." },
+      { "kind": "slash", "command": "/review", "text": "Review it.", "requires": ["slash:review"] },
+      { "kind": "check", "text": "Run the project checks and report." }
+    ]
+  },
+  "globalRecipe": {
+    "scope": "global",
+    "name": "wrap-up",
+    "description": "Summarise and stop",
+    "steps": [{ "kind": "prompt", "text": "Summarise what changed." }]
+  },
+  "blockedRecipe": {
+    "scope": "project",
+    "projectId": "project-1",
+    "name": "needs-deploy",
+    "steps": [{ "kind": "prompt", "text": "Start." }, { "kind": "slash", "command": "/deploy" }]
+  },
+  "wakeup": {
+    "sessionId": "task-1",
+    "title": "Morning check",
+    "prompt": "Continue where you stopped.",
+    "kind": "daily",
+    "timeOfDay": "09:30",
+    "days": [],
+    "maxRuns": 5
+  },
+  "wakeupUpdate": {
+    "sessionId": "task-1",
+    "title": "Evening check",
+    "prompt": "Continue where you stopped.",
+    "kind": "interval",
+    "intervalMinutes": 90
+  },
+  "foreignWakeup": {
+    "sessionId": "task-2",
+    "title": "Other project",
+    "prompt": "Continue.",
+    "kind": "interval",
+    "intervalMinutes": 60
+  }
+}
