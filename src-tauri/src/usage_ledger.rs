@@ -1,5 +1,5 @@
 //! Estimated API cost from the agents' own local session logs (Claude Code
-//! project logs and Codex rollouts). Files are read only when Agent usage is
+//! project logs, Codex rollouts and Pi session logs). Files are read only when Agent usage is
 //! opened; token counts are cached per file so later opens only read what was
 //! appended. Nothing leaves the machine except the public price-list request.
 //!
@@ -36,6 +36,7 @@ const IDLE_DROP_MS: i64 = 600_000;
 pub(crate) enum Agent {
     Claude,
     Codex,
+    Pi,
 }
 
 /// Parsed token counts for one log file, with where to resume once it grows.
@@ -114,7 +115,7 @@ pub(crate) fn claude_roots() -> Vec<PathBuf> {
 type Roots = Vec<(Agent, Vec<PathBuf>)>;
 
 fn agent_roots() -> Roots {
-    [Agent::Claude, Agent::Codex].into_iter().map(|agent| (agent, roots(agent))).collect()
+    [Agent::Claude, Agent::Codex, Agent::Pi].into_iter().map(|agent| (agent, roots(agent))).collect()
 }
 
 fn roots(agent: Agent) -> Vec<PathBuf> {
@@ -131,6 +132,15 @@ fn roots(agent: Agent) -> Vec<PathBuf> {
                 .filter(|path| path.is_absolute())
                 .or_else(|| home.map(|home| home.join(".codex")));
             base.into_iter().flat_map(|base| [base.join("sessions"), base.join("archived_sessions")]).collect()
+        }
+        Agent::Pi => {
+            // Pi writes one JSONL per session under a cwd-named folder; a dedicated
+            // session dir wins over a moved agent dir, then the default location.
+            let absolute = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
+            let base = absolute("PI_CODING_AGENT_SESSION_DIR")
+                .or_else(|| absolute("PI_CODING_AGENT_DIR").map(|dir| dir.join("sessions")))
+                .or_else(|| home.map(|home| home.join(".pi").join("agent").join("sessions")));
+            base.into_iter().collect()
         }
     };
     roots.dedup();
@@ -189,6 +199,7 @@ fn read_file(path: &Path, agent: Agent, entry: &mut FileEntry) -> std::io::Resul
                     parse::merge_hourly(&mut entry.records, record);
                 }
             }
+            Agent::Pi => entry.records.extend(parse::pi_line(text)),
         }
     }
     Ok(())
@@ -205,7 +216,8 @@ fn refresh_entry(cache: &mut Cache, key: String, path: &Path, metadata: &std::fs
     if entry.agent != Some(agent) || length < entry.offset {
         *entry = FileEntry {
             agent: Some(agent),
-            session: agent == Agent::Codex || !path.components().any(|part| part.as_os_str() == "subagents"),
+            session: !matches!(agent, Agent::Claude)
+                || !path.components().any(|part| part.as_os_str() == "subagents"),
             ..FileEntry::default()
         };
     }
@@ -474,12 +486,14 @@ pub(crate) struct TaskUsage {
 }
 
 /// Whether one cached log file belongs to the harness session: Claude names the file
-/// after the session, Codex ends the rollout file name with the session id.
+/// after the session, Codex ends the rollout file name with the session id, and Pi
+/// names it `<timestamp>_<session-id>` (including for custom session ids).
 fn file_belongs_to(link: &str, agent: Agent, path: &Path) -> bool {
     let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else { return false };
     match agent {
         Agent::Claude => stem == link,
         Agent::Codex => stem.len() > link.len() && stem.ends_with(link),
+        Agent::Pi => stem.strip_suffix(link).is_some_and(|prefix| prefix.ends_with('_')),
     }
 }
 

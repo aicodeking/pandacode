@@ -124,13 +124,18 @@ impl PriceBook {
     }
 
     /// Finds a model by exact name, then without a `[1m]`-style suffix or a date stamp.
+    /// A trailing relay/self-hosted prefix (`acme:model-x`) is stripped last, so a
+    /// model id rewritten by a proxy still matches the catalog name.
     pub(crate) fn find(&self, model: &str) -> Option<&Price> {
+        let try_name = |name: &str| -> Option<&Price> {
+            let name = name.split('[').next().unwrap_or(name).trim();
+            self.prices.get(name).or_else(|| {
+                let (stem, date) = name.rsplit_once('-')?;
+                (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())).then(|| self.prices.get(stem)).flatten()
+            })
+        };
         let name = model.rsplit('/').next().unwrap_or(model);
-        let name = name.split('[').next().unwrap_or(name).trim();
-        self.prices.get(name).or_else(|| {
-            let (stem, date) = name.rsplit_once('-')?;
-            (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())).then(|| self.prices.get(stem)).flatten()
-        })
+        try_name(name).or_else(|| try_name(name.rsplit(':').next().unwrap_or(name)))
     }
 
     /// Cost and cache savings in dollars, or `None` when the model is not listed.

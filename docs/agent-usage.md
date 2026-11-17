@@ -20,12 +20,13 @@ Each account shows up to two limit windows (5-hour and weekly). Meters are muted
 
 The estimate answers "what would these tokens have cost through the API?". It does not show what a subscription bills.
 
-- **Sources.** Claude Code project logs (`$CLAUDE_CONFIG_DIR` or `~/.claude`, plus `~/.config/claude`, under `projects/`) and Codex rollouts (`$CODEX_HOME` or `~/.codex`, under `sessions/` and `archived_sessions/`). Other harnesses show "Cost not tracked". Their calendars count prompts sent from PandaCode (`prompt_activity`).
+- **Sources.** Claude Code project logs (`$CLAUDE_CONFIG_DIR` or `~/.claude`, plus `~/.config/claude`, under `projects/`), Codex rollouts (`$CODEX_HOME` or `~/.codex`, under `sessions/` and `archived_sessions/`), and Pi session logs (`~/.pi/agent/sessions/`, or `PI_CODING_AGENT_SESSION_DIR`, or `<PI_CODING_AGENT_DIR>/sessions`). Other harnesses show "Cost not tracked". Their calendars count prompts sent from PandaCode (`prompt_activity`).
 - **Counting.** A Claude reply streams several copies and resumed sessions copy history, so replies are de-duplicated by message ID and request ID across all files. Subagent logs count toward cost but not toward sessions.
   - Codex events carry a running total. An event whose total has not moved is a repeat and is skipped. A September 2026 check across 1,200 local rollouts found no token events duplicated between files.
   - Codex `input_tokens` already includes cached and cache-write tokens, and `output_tokens` includes reasoning, so neither is counted twice.
+  - Pi assistant messages, standalone `usage` entries and compaction/branch-summary entries each count once, de-duplicated by entry ID across forked sessions. `reasoning` is already inside `output` and `cacheWrite1h` is a subset of `cacheWrite`, so neither is added again; summary entries without a model count as tokens but stay unpriced.
 - **Pricing.** Rates come from [LiteLLM's public price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), the list ccusage uses. It is fetched with a plain GET at most daily and saved as `usage-prices.json`. Offline, the saved copy or the snapshot bundled in `src-tauri/src/usage_ledger/prices.json` is used.
-  - The vendor's own listing wins over reseller entries.
+  - The vendor's own listing wins over reseller entries. A model id with a relay prefix (`acme:model-x`) falls back to the bare name after the last `:`.
   - Rates cover uncached input, cache reads, 5-minute and 1-hour cache writes, output, and the long-context tier above 200k or 272k tokens.
   - Batch, priority and fast-mode pricing are excluded.
   - Models missing from the list, such as `codex-auto-review`, count as unpriced, and the headline states the unpriced share. *Cache savings* is cache-read tokens times the gap between input and cache-read rates.
