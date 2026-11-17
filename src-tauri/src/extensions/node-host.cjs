@@ -334,6 +334,8 @@ process.stdin.on('data', chunk => {
                 return Object.freeze({ dispose: stop });
               },
             }),
+            // Projects, worktrees, branches, tasks and pull requests (R0405, workspace.manage) and the project check (projects.checks.run): the host checks the grant per call; irreversible removals confirm by default.
+            projects: Object.freeze({ checks: Object.freeze({ run: input => rpc('workspaceProjects', { call: 'projects.checks.run', input }) }) }),
             // The app's own workspace settings (R0407, workspace.settings): the grant and the key are checked by the host per call; a stale revision is StaleContext.
             workspace: Object.freeze({
               // Bots and shared channels (R0406, workspace.manage): the host checks the grant per call; removals confirm by default.
@@ -371,6 +373,31 @@ process.stdin.on('data', chunk => {
               cloud: Object.freeze({
                 provision: input => rpc('workspaceCloud', { op: 'provision', input }),
                 ...Object.fromEntries(['sync', 'retry', 'open', 'stop', 'remove'].map(op => [op, machineId => rpc('workspaceCloud', { op, machineId })])),
+              }),
+              // Projects, worktrees, branches, tasks and pulls (R0405, workspace.manage): one fixed input shape per call; irreversible removals confirm by default.
+              projects: Object.freeze({
+                add: input => rpc('workspaceProjects', { call: 'projects.add', input }),
+                remove: projectId => rpc('workspaceProjects', { call: 'projects.remove', input: { projectId } }),
+                rename: (projectId, name) => rpc('workspaceProjects', { call: 'projects.rename', input: { projectId, name } }),
+                relink: (projectId, path) => rpc('workspaceProjects', { call: 'projects.relink', input: { projectId, path } }),
+              }),
+              worktrees: Object.freeze({
+                create: input => rpc('workspaceProjects', { call: 'worktrees.create', input }),
+                remove: (worktreeId, options) => rpc('workspaceProjects', { call: 'worktrees.remove', input: { ...(options ?? {}), worktreeId } }),
+                recreate: worktreeId => rpc('workspaceProjects', { call: 'worktrees.recreate', input: { worktreeId } }),
+                merge: worktreeId => rpc('workspaceProjects', { call: 'worktrees.merge', input: { worktreeId } }),
+              }),
+              branches: Object.freeze(Object.fromEntries(['create', 'switch', 'rename', 'remove'].map(op => [op, input => rpc('workspaceProjects', { call: 'branches.' + op, input })]))),
+              tasks: Object.freeze({
+                remove: taskId => rpc('workspaceProjects', { call: 'tasks.remove', input: { taskId } }),
+                rename: (taskId, title) => rpc('workspaceProjects', { call: 'tasks.rename', input: { taskId, title } }),
+                move: (taskId, projectId) => rpc('workspaceProjects', { call: 'tasks.move', input: { taskId, projectId } }),
+              }),
+              pulls: Object.freeze({
+                link: (taskId, options) => rpc('workspaceProjects', { call: 'pulls.link', input: { ...(options ?? {}), taskId } }),
+                unlink: taskId => rpc('workspaceProjects', { call: 'pulls.unlink', input: { taskId } }),
+                check: taskId => rpc('workspaceProjects', { call: 'pulls.check', input: { taskId } }),
+                merge: (taskId, options) => rpc('workspaceProjects', { call: 'pulls.merge', input: { ...(options ?? {}), taskId } }),
               }),
               settings: Object.freeze({
               list: () => rpc('workspaceSettings', { op: 'list' }),

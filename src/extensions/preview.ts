@@ -31,6 +31,7 @@ import { previewWorkspaceSettings } from './runtime-workspace-settings';
 import { previewWorkspaceAutomation, previewWorkspaceAutomationNotifier } from './runtime-workspace-automation';
 import { previewWorkspaceSchedules } from './runtime-workspace-schedules';
 import { previewWorkspaceCloud } from './runtime-workspace-cloud';
+import { previewWorkspaceProjects } from './runtime-workspace-projects';
 // One store per page, so a ticket minted by a gate is the one the choice presents; a reload is the preview's restart.
 const previewFamilyConsents = familyConsents.createFamilyConsentsPreview(runtimeGrants.createRuntimeGrantsPreview());
 (window as unknown as { __extensionFamilyConsents?: unknown }).__extensionFamilyConsents = { ...familyConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
@@ -381,6 +382,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   if (command === 'extensions_runtime_console_answer') { ((window as unknown as { __runtimeConsoleAnswers?: unknown[] }).__runtimeConsoleAnswers ??= []).push(args); return null; }
   // Moodboards and cloud machines (R0406C): the confirmation answers are recorded for the spec (runtime-workspace-cloud.ts).
   if (command.startsWith('extensions_runtime_workspace_cloud_')) return previewWorkspaceCloud(command, args);
+  // Projects, worktrees, branches, tasks and pulls (R0405): the confirmation answers are recorded for the spec (runtime-workspace-projects.ts).
+  if (command === 'extensions_runtime_workspace_confirm_answer') return previewWorkspaceProjects(command, args);
   if (command === 'extensions_runtime_draft_allowed') return ((args.ghosts as unknown[]) ?? []).map(() => true);
   if (command === 'extensions_runtime_dialogs') return [];
   if (command === 'extensions_runtime_dialog_answer') { ((window as unknown as { __runtimeDialogAnswers?: unknown[] }).__runtimeDialogAnswers ??= []).push(args); return null; }

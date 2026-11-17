@@ -1009,6 +1009,8 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   }));
   // The host confirmation of a package's irreversible moodboard or cloud machine removal (R0406C).
   void import('./extensions/runtime-workspace-cloud').then(cloud => cloud.mountWorkspaceCloud());
+  // The host confirmation of a package's irreversible project, task, worktree, branch or pull request action, and the project list after a change (R0405).
+  void import('./extensions/runtime-workspace-projects').then(projects => projects.startRuntimeWorkspaceProjects({ reloadProjects: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); } }));
   // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
   void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
   // The app's own settings a package with `workspace.settings` reads and changes (R0407): the window publishes its values and applies the package's changes.

@@ -577,7 +577,7 @@ export interface WorkspaceWakeupsListInput { readonly taskId?: string }
 export interface WorkspaceWakeupsInput { readonly sessionId: string; readonly title?: string; readonly prompt: string; readonly kind: 'once' | 'interval' | 'daily' | 'weekdays' | 'weekly' | 'after'; readonly intervalMinutes?: number | null; readonly timeOfDay?: string | null; readonly days?: readonly number[]; readonly runAt?: number | null; readonly watchSessionId?: string | null; readonly onlyOnSuccess?: boolean; readonly maxRuns?: number | null; readonly workflowId?: string | null; readonly chainFromId?: string | null }
 export interface WorkspaceWakeup { readonly id: string; readonly sessionId: string; readonly projectId: string; readonly title: string; readonly prompt: string; readonly kind: string; readonly enabled: boolean; readonly by: string | null; readonly [field: string]: unknown }
 export interface WorkspaceWakeupsApi { list(options?: WorkspaceWakeupsListInput): Promise<readonly WorkspaceWakeup[]>; create(input: WorkspaceWakeupsInput): Promise<WorkspaceWakeup>; update(wakeupId: string, input: WorkspaceWakeupsInput): Promise<WorkspaceWakeup>; remove(wakeupId: string): Promise<null> }
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly hooks: ServiceHooks; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi; readonly terminals: TerminalsApi; readonly guests: GuestsApi; readonly workspace: { readonly bots: WorkspaceBotsApi; readonly channels: WorkspaceChannelsApi; readonly settings: WorkspaceSettingsApi; readonly recipes: WorkspaceRecipesApi; readonly wakeups: WorkspaceWakeupsApi; readonly moodboards: WorkspaceMoodboardsApi; readonly cloud: WorkspaceCloudApi }; readonly views: PanelViews }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly hooks: ServiceHooks; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi; readonly terminals: TerminalsApi; readonly guests: GuestsApi; readonly workspace: { readonly bots: WorkspaceBotsApi; readonly channels: WorkspaceChannelsApi; readonly settings: WorkspaceSettingsApi; readonly recipes: WorkspaceRecipesApi; readonly wakeups: WorkspaceWakeupsApi; readonly moodboards: WorkspaceMoodboardsApi; readonly cloud: WorkspaceCloudApi; readonly projects: WorkspaceProjectsApi; readonly worktrees: WorkspaceWorktreesApi; readonly branches: WorkspaceBranchesApi; readonly tasks: WorkspaceTasksApi; readonly pulls: WorkspacePullsApi }; readonly projects: { readonly checks: ProjectChecksApi }; readonly views: PanelViews }
 /** A moodboard as the host stores it. */
 export interface MoodboardInfo { readonly id: string; readonly projectId: string; readonly name: string; readonly imageCount: number; readonly updatedAt: number }
 /** `workspace.manage` (project scoped): moodboard content, over the same native commands the moodboard panel uses. `remove` is irreversible: the host confirms by default (the user can turn that off per package) and a declined one answers `Cancelled`. An image is `{ name, dataUrl }` (a `data:image/...` URL up to 17 MiB); 24 boards a project and 64 images a board. A board of a project outside the grant answers `PermissionDenied`. */
@@ -588,6 +588,42 @@ export interface WorkspaceMoodboardsApi {
   addImage(boardId: string, input: { name: string; dataUrl: string }): Promise<MoodboardInfo & { readonly images: readonly { readonly id: string; readonly name: string; readonly caption: string; readonly width: number; readonly height: number; readonly createdAt: number }[] }>;
   removeImage(boardId: string, imageId: string): Promise<null>;
 }
+/** A project as the workspace lists it. */
+export interface WorkspaceProjectInfo { readonly projectId: string; readonly name: string }
+/** `workspace.manage` (project scoped): the frozen input of each call; `projects.add` takes a path (the folder chooser stays the user's) and needs the grant for every project. `projects.remove`, `tasks.remove`, `worktrees.remove`, `branches.remove` and `pulls.merge` are irreversible: the host confirms by default (the user can turn that off per package) and a declined one answers `Cancelled`. Pairing a machine and remote access are not methods. A worktree is identified by its task's id. */
+export interface WorkspaceProjectsApi {
+  add(input: { path: string }): Promise<WorkspaceProjectInfo>;
+  remove(projectId: string): Promise<null>;
+  rename(projectId: string, name: string): Promise<WorkspaceProjectInfo>;
+  relink(projectId: string, path: string): Promise<WorkspaceProjectInfo>;
+}
+export interface WorkspaceWorktreesApi {
+  create(input: { taskId: string; branch: string; base?: string; existing?: boolean }): Promise<{ readonly worktreeId: string; readonly taskId: string; readonly projectId: string; readonly branch: string }>;
+  remove(worktreeId: string, options?: { deleteBranch?: boolean }): Promise<{ readonly removed: boolean; readonly branch: string; readonly branchDeleted: boolean; readonly note: string }>;
+  recreate(worktreeId: string): Promise<{ readonly worktreeId: string; readonly branch: string }>;
+  merge(worktreeId: string): Promise<{ readonly branch: string; readonly target: string; readonly commits: number; readonly switchedFrom: string | null }>;
+}
+export interface WorkspaceBranchList { readonly current: string; readonly branches: readonly string[]; readonly defaultBranch: string }
+export interface WorkspaceBranchesApi {
+  create(input: { projectId: string; taskId?: string; name: string; from?: string; switch?: boolean }): Promise<WorkspaceBranchList>;
+  switch(input: { projectId: string; taskId?: string; branch: string }): Promise<WorkspaceBranchList>;
+  rename(input: { projectId: string; taskId?: string; from: string; to: string }): Promise<WorkspaceBranchList>;
+  remove(input: { projectId: string; taskId?: string; branch: string; force?: boolean }): Promise<WorkspaceBranchList>;
+}
+export interface WorkspaceTasksApi {
+  remove(taskId: string): Promise<{ readonly taskIds: readonly string[] }>;
+  rename(taskId: string, title: string): Promise<null>;
+  move(taskId: string, projectId: string): Promise<{ readonly taskId: string; readonly projectId: string }>;
+}
+export interface WorkspacePullInfo { readonly number: number; readonly url: string; readonly title: string; readonly state: string }
+export interface WorkspacePullsApi {
+  link(taskId: string, input: { reference: string }): Promise<WorkspacePullInfo>;
+  unlink(taskId: string): Promise<null>;
+  check(taskId: string): Promise<Json>;
+  merge(taskId: string, options?: { method?: 'squash' | 'merge' | 'rebase' }): Promise<WorkspacePullInfo>;
+}
+/** `projects.checks.run` (per project, revocable, no prompt after the grant): runs the project's check script in the task's checkout through the existing runner. No plan is a report, not an error. */
+export interface ProjectChecksApi { run(input: { taskId: string }): Promise<{ readonly schemaVersion: 1; readonly report: Json }> }
 /** A cloud machine as the machines panel lists it. */
 export interface CloudMachineInfo { readonly id: string; readonly provider: string; readonly name: string; readonly state: string; readonly os: string; readonly desktop: boolean; readonly detail: string }
 /** `workspace.manage`: provision (only a provider the user already connected, else `UnsupportedCapability`) and control cloud machines. `sync`, `retry` and the task-owned `stop` and `remove` reach the cloud task that owns the machine; `remove` is irreversible and confirms by default. Connecting a provider, pairing, remote access and credentials are not methods or fields. A machine no task owns, and `provision`, need the grant for every project. */

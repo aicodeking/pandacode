@@ -34,6 +34,7 @@ pub mod runtime_guests;
 pub mod runtime_terminals;
 pub mod runtime_harness_console;
 pub mod runtime_workspace_cloud;
+pub mod runtime_workspace_projects;
 pub(crate) mod runtime_hook_fixtures;
 pub(crate) mod runtime_hook_payload;
 pub mod runtime_hook_registration;

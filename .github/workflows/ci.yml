@@ -243,6 +243,12 @@ jobs:
       - name: Moodboards and cloud machines (WebKit)
         env: { PW_PORT: '16342', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-cloud.spec.ts --workers=1
+      - name: Projects, worktrees, branches, tasks, pulls and project checks (Chromium)
+        env: { PW_PORT: '16431', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-workspace-projects.spec.ts --workers=1
+      - name: Projects, worktrees, branches, tasks, pulls and project checks (WebKit)
+        env: { PW_PORT: '16432', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-projects.spec.ts --workers=1
       - name: Rich panels mounted in host surfaces (Chromium)
         env: { PW_PORT: '16191', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-rich-mount.spec.ts --workers=1
