@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { validateContract } from '../src/extensions/contracts.ts';
 import { admitDialogAccessory, dialogContext, isEligibleDialog, ownedDialogAccessory } from '../src/extensions/dialog-accessory.ts';
-import { MAIN_DIALOG_EXTRAS, OWNED_DIALOG_EXTRAS, OWNED_DIALOG_ALIASES, OWNED_DIALOG_PROTECTED, DIALOG_ACTION_SURFACES, DIALOG_DATA_SURFACES, DIALOG_PROTECTED_LOCATION, dialogTarget, isOwnedDialog } from '../src/extensions/surfaces.ts';
+import { MAIN_DIALOG_EXTRAS, OWNED_DIALOG_EXTRAS, OWNED_DIALOG_ALIASES, OWNED_DIALOG_PROTECTED, PRESENTATION_DIALOG_EXTRAS, DIALOG_ACTION_SURFACES, DIALOG_DATA_SURFACES, DIALOG_PROTECTED_LOCATION, dialogTarget, isOwnedDialog } from '../src/extensions/surfaces.ts';
 import { createUiCatalog } from '../src/extensions/catalog.ts';
 import { createDeclarativeActivation } from '../src/extensions/activation.ts';
 
@@ -14,12 +14,15 @@ const ledger = read('./fixtures/extensions/surfaces.json');
 const manifest = read('./fixtures/extensions/owned-dialogs/extension.json');
 const members = ledger.families.find(family => family.id === 'panda.dialog').members.filter(([, owner]) => owner !== 'src/main.ts');
 const ownedIds = OWNED_DIALOG_EXTRAS.map(([id]) => id), aliasIds = OWNED_DIALOG_ALIASES.map(([id]) => id), protectedIds = OWNED_DIALOG_PROTECTED.map(([id]) => id);
+// R1003: the three module or direct dialogs that accept extras from packages holding ui.presentation.
+const presOwned = PRESENTATION_DIALOG_EXTRAS.filter(([, , , host]) => host !== 'main').map(([id]) => id);
 const packages = value => validateContract('packages', [value]);
 const SPEC = 'tests/extensions-owned-dialogs-coverage.spec.ts';
 
 test('Owned dialogs: every module-owned and direct ledger row is registered, an alias of its main dialog, or protected with a reason', () => {
-  assert.deepEqual([...ownedIds, ...aliasIds, ...protectedIds].sort(), members.map(([id]) => id).sort());
-  assert.equal(new Set([...ownedIds, ...aliasIds, ...protectedIds]).size, members.length);
+  assert.deepEqual([...ownedIds, ...aliasIds, ...presOwned, ...protectedIds].sort(), members.map(([id]) => id).sort());
+  assert.equal(new Set([...ownedIds, ...aliasIds, ...presOwned, ...protectedIds]).size, members.length);
+  for (const id of presOwned) { assert.equal(isEligibleDialog(id), true, id); assert.equal(isOwnedDialog(id), true, id); }
   for (const [id, title, target, host] of OWNED_DIALOG_EXTRAS) {
     assert.ok(title && ['none', 'task', 'project'].includes(target) && ['module', 'direct'].includes(host), id);
     const [, owner, anchor] = members.find(([member]) => member === id);
@@ -125,12 +128,12 @@ test('Owned dialogs: an accessory is captured from the host request with its own
   assert.deepEqual(admitDialogAccessory(accessory, accessory), { ok: true });
   for (const [change, reason] of [
     [{ mount: 'command-center/3' }, 'StaleContext'], [{ mount: 'main/2' }, 'StaleContext'], [{ task: 'session-1' }, 'StaleContext'], [{ dialog: 'team-model-add' }, 'StaleContext'],
-    [{ dialog: 'machine-link' }, 'UnsupportedCapability'], [{ dialog: 'skill-add' }, 'UnsupportedCapability'], [{ dialog: 'worktree-cleanup' }, 'UnsupportedCapability'], [{ dialog: 'extension-form' }, 'UnsupportedCapability'],
+    [{ dialog: 'extension-form' }, 'UnsupportedCapability'],
     [{ dialog: 'integrations-direct' }, 'InvalidArguments'], [{ owner: 'host' }, 'InvalidArguments'], [{ window: 'progress' }, 'InvalidArguments'],
   ]) assert.deepEqual(admitDialogAccessory({ ...accessory, ...change }, accessory), { ok: false, reason }, JSON.stringify(change));
   assert.deepEqual(admitDialogAccessory(accessory, undefined), { ok: false, reason: 'Revoked' });
   assert.deepEqual(dialogContext(accessory), { dialog: 'command-center', revision: 5, projectId: 'project-1', sessionId: 'session-2', selection: { kind: 'task', ids: ['session-2'] } });
   assert.deepEqual(dialogContext(ownedDialogAccessory({ dialog: 'channel-settings' }, 'main/4', 4)), { dialog: 'channel-settings', revision: 4 });
   assert.equal(validateContract('context', { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.dialog.command-center.actions', ...dialogContext(accessory) }).ok, true);
-  assert.equal(validateContract('context', { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.dialog.machine-link.actions', revision: 1, dialog: 'machine-link' }).ok, false);
+  assert.equal(validateContract('context', { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.dialog.extension-form.actions', revision: 1, dialog: 'extension-form' }).ok, false);
 });

@@ -5,7 +5,9 @@ import { contrast, parseHex } from '../color.ts';
 import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts';
 import { checkHookDeclarations } from './runtime-hook-registration.ts';
 import { checkModelToolDeclarations } from './runtime-model-tools.ts';
+import { policy as dialogPolicy } from './runtime-protected-presentation.ts';
 import { checkAll as checkPresentations, checkConversationProvider } from './runtime-transcript-presentation.ts';
+import { checkAll as checkToolRows } from './runtime-tool-row-replacement.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -365,9 +367,16 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     const presentations = (contributions.presentations ?? []) as ObjectValue[];
     const conversation = ((contributions.components ?? []) as ObjectValue[]).filter(provider => provider.slot === 'panda.transcript' && provider.presentation === 'conversation');
     if ((presentations.length || conversation.length) && !(manifest.permissions as string[]).includes('ui.presentation')) error('PermissionDenied', `${path}/permissions`, [id]);
+    // R1003: extras in the eight formerly protected dialogs need `ui.presentation` too.
+    for (const extra of (contributions.dialogExtras ?? []) as ObjectValue[]) if (dialogPolicy(String(extra.dialog)) === 'extras' && !(manifest.permissions as string[]).includes('ui.presentation')) error('PermissionDenied', `${path}/permissions`, [String(extra.id)]);
     const presentationFailure = checkPresentations(presentations, ((contributions.views ?? []) as ObjectValue[]).map(view => String(view.id)), ((contributions.icons ?? []) as ObjectValue[]).map(icon => String(icon.asset)));
     if (presentationFailure) error(presentationFailure, `${path}/contributes/presentations`, presentations.map(item => String(item.id)));
     for (const provider of conversation) if (checkConversationProvider(provider)) error('InvalidShape', `${path}/contributes/components`, [String(provider.id)]);
+    // R1004: tool row replacements and risk signals need `ui.presentation`; each entry meets its bounds, tokens and signal vocabulary.
+    const toolRows = (contributions.toolRows ?? []) as ObjectValue[];
+    if (toolRows.length && !(manifest.permissions as string[]).includes('ui.presentation')) error('PermissionDenied', `${path}/permissions`, [id]);
+    const toolRowFailure = checkToolRows(toolRows);
+    if (toolRowFailure) error(toolRowFailure, `${path}/contributes/toolRows`, toolRows.map(item => String(item.id)));
     for (const view of (contributions.views ?? []) as ObjectValue[]) {
       if (view.rich && !(manifest.permissions as string[]).includes('ui.richViews')) error('PermissionDenied', `${path}/permissions`, [id]);
       // R0301/R1001 (C04): the schema admits heights from 24. A view in `panda.composer.band` is 24 to 96 with no `placement`

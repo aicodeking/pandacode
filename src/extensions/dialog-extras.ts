@@ -1,5 +1,6 @@
 import { extensionsSnapshot, onExtensionsChanged } from './manager';
 import { mountExtensionActions } from './header';
+import { requiredPermissions } from './runtime-protected-presentation';
 import { admitDialogAccessory, dialogActionsLocation, dialogBodyLocation, dialogContext, isEligibleDialog, MAX_DIALOG_BODY_EXTRAS, ownedDialogAccessory, type DialogAccessory, type DialogRequest } from './dialog-accessory';
 
 /** Mounts one owner-labelled band after the host content of an eligible dialog. The host's fields,
@@ -26,7 +27,7 @@ export function mountMainDialogExtras(dialog: HTMLDialogElement, accessory: Dial
   const draw = () => {
     body.replaceChildren(); const snapshot = extensionsSnapshot();
     if (snapshot.safeMode || !active()) return;
-    const notes = snapshot.packages.filter(item => item.enabled && item.manifest.permissions?.includes('ui.contribute'))
+    const notes = snapshot.packages.filter(item => item.enabled && requiredPermissions(captured.dialog).every(permission => item.manifest.permissions?.includes(permission)))
       .flatMap(item => (item.manifest.contributes.dialogExtras ?? []).filter(extra => extra.dialog === captured.dialog).map(extra => ({ owner: item.manifest.id, extra })));
     for (const { owner, extra } of notes.slice(0, MAX_DIALOG_BODY_EXTRAS)) {
       const note = document.createElement('p'); note.dataset.extensionContribution = extra.id; note.textContent = `${owner}: ${extra.text}`; body.append(note);

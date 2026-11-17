@@ -195,6 +195,12 @@ jobs:
       - name: Transcript and working presentations (WebKit)
         env: { PW_PORT: '16462', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-transcript-presentation.spec.ts --workers=1
+      - name: Tool row replacement and risk signals (Chromium)
+        env: { PW_PORT: '16581', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-tool-row-replacement.spec.ts --workers=1
+      - name: Tool row replacement and risk signals (WebKit)
+        env: { PW_PORT: '16582', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tool-row-replacement.spec.ts --workers=1
       - name: Dialog answers and navigation (Chromium)
         env: { PW_PORT: '16131', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-dialog-navigation.spec.ts --workers=1
@@ -401,6 +407,12 @@ jobs:
       - name: One bounded model answer (WebKit)
         env: { PW_PORT: '16542', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-model-call.spec.ts --workers=1
+      - name: Attributed notes and protected-dialog extras (Chromium)
+        env: { PW_PORT: '16571', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-protected-presentation.spec.ts --workers=1
+      - name: Attributed notes and protected-dialog extras (WebKit)
+        env: { PW_PORT: '16572', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-protected-presentation.spec.ts --workers=1
       - name: Custom editors bound to host buffers (Chromium)
         env: { PW_PORT: '16511', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-document-editors.spec.ts --workers=1

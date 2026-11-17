@@ -140,6 +140,8 @@ const hasBots = (options: AddSkillOptions): Promise<boolean> =>
 
 const checkedValues = (form: HTMLFormElement, name: string) => [...form.querySelectorAll<HTMLInputElement>(`input[name="${name}"]:checked`)].map(input => input.value);
 
+import { attachDialogExtras } from './extensions/owned-dialogs';
+
 export async function openAddSkill(options: AddSkillOptions): Promise<void> {
   const dialog = document.querySelector<HTMLDialogElement>('#dialog');
   if (!dialog || dialog.open) return;
@@ -375,6 +377,7 @@ export async function openAddSkill(options: AddSkillOptions): Promise<void> {
   dialog.addEventListener('close', () => { if (mine === generation) generation++; if (form.isConnected) options.trigger()?.focus(); }, { once: true });
   sync();
   dialog.showModal();
+  attachDialogExtras(dialog, { dialog: 'skill-add' }, { owner: form, alive: current });
   source.focus();
   // A source handed over by Rules & library is looked at right away, like a chosen folder.
   if (options.source) { source.value = options.source; void find(); }

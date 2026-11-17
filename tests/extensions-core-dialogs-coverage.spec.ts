@@ -10,7 +10,8 @@ const ELIGIBLE: [string, string][] = [
   ['integrations', 'Tools & integrations'], ['jev-settings', 'Jev add-on'], ['jev-assist', 'Jev assistance'], ['jev-tests', 'Browser tests'],
   ['conversation-import', 'Import conversations'], ['bots', 'Bots'], ['bot-settings', 'Bot settings'], ['usage', 'Agent usage'], ['command-palette', 'Go to anything'],
 ];
-const PROTECTED = ['remove-project', 'delete-task', 'provider-connections', 'delete-cloud', 'github-behind', 'delete-bot'];
+// R1003: the other five formerly protected dialogs take a band only from packages holding ui.presentation (tests/extensions-runtime-protected-presentation.spec.ts).
+const PROTECTED = ['github-behind'];
 const dialog = (page: Page) => page.locator('#dialog');
 const band = (page: Page) => page.locator('#dialog .dialog-extension-extras');
 const accessory = (page: Page) => page.evaluate(() => (window as any).__previewDialogAccessory());
@@ -159,7 +160,7 @@ test('Core dialogs: a task switch keeps the captured target; replacement and clo
   await expect(band(page).locator('[data-extension-location="panda.dialog.rename-task.bodyExtras"]')).toHaveCount(0);
   await close(page);
   expect(await admit(page, live)).toEqual({ ok: false, reason: 'Revoked' });
-  expect(await admit(page, { ...live, dialog: 'delete-task' })).toEqual({ ok: false, reason: 'UnsupportedCapability' });
+  expect(await admit(page, { ...live, dialog: 'github-behind' })).toEqual({ ok: false, reason: 'UnsupportedCapability' });
   await expect(page.locator('.dialog-extension-extras')).toHaveCount(0);
 });
 

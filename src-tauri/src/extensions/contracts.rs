@@ -378,6 +378,11 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             if command["action"]["kind"] == "showDialog" { dialog_fields(&command["action"]["dialog"], &format!("{path}/contributes/commands"))?; }
         }
         // R1002: selectable presentations and the conversation transcript need `ui.presentation`; each entry meets its bounds and sources.
+        // R1003: extras in the eight formerly protected dialogs need `ui.presentation` too.
+        for extra in items(contributions, "dialogExtras") {
+            let dialog = extra["dialog"].as_str().unwrap_or_default();
+            if super::runtime_protected_presentation::policy(dialog) == super::runtime_protected_presentation::Policy::Extras && !strings(&manifest["permissions"]).contains(&"ui.presentation".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![extra["id"].as_str().unwrap_or_default().to_owned()])); }
+        }
         let presentations = items(contributions, "presentations");
         let conversation: Vec<&Value> = items(contributions, "components").iter().filter(|provider| provider["slot"] == "panda.transcript" && provider["presentation"] == "conversation").collect();
         if (!presentations.is_empty() || !conversation.is_empty()) && !strings(&manifest["permissions"]).contains(&"ui.presentation".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }
@@ -386,6 +391,10 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             let icon_assets: Vec<&str> = items(contributions, "icons").iter().filter_map(|icon| icon["asset"].as_str()).collect();
             if let Some(code) = super::runtime_transcript_presentation::check_all(presentations, &view_ids, &icon_assets) { return Err(fail(code, &format!("{path}/contributes/presentations"), presentations.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect())); }
             for provider in conversation { if let Some(code) = super::runtime_transcript_presentation::check_conversation_provider(provider) { return Err(fail(code, &format!("{path}/contributes/components"), vec![provider["id"].as_str().unwrap_or_default().to_owned()])); } }
+            // R1004: tool row replacements and risk signals need `ui.presentation`; each entry meets its bounds, tokens and signal vocabulary.
+            let tool_rows = items(contributions, "toolRows");
+            if !tool_rows.is_empty() && !strings(&manifest["permissions"]).contains(&"ui.presentation".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }
+            if let Some(code) = super::runtime_tool_row_replacement::check_all(tool_rows) { return Err(fail(code, &format!("{path}/contributes/toolRows"), tool_rows.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect())); }
         }
         for view in items(contributions, "views") {
             if view.get("rich").is_some() && !strings(&manifest["permissions"]).contains(&"ui.richViews".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }

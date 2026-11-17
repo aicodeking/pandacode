@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.protected-notes",
+  "name": "Protected notes",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.presentation"],
+  "requiredContributions": ["dialogExtras"],
+  "contributes": {
+    "dialogExtras": [
+      { "id": "sample.protected-notes/remove-project", "dialog": "remove-project", "text": "Archive the project notes before you remove it." },
+      { "id": "sample.protected-notes/delete-task", "dialog": "delete-task", "text": "Export the transcript first if you may need it." },
+      { "id": "sample.protected-notes/delete-bot", "dialog": "delete-bot", "text": "Its channels stop answering at once." },
+      { "id": "sample.protected-notes/delete-cloud", "dialog": "delete-cloud", "text": "Snapshots are billed until they are removed." },
+      { "id": "sample.protected-notes/worktree-cleanup", "dialog": "worktree-cleanup", "text": "Unpushed commits live only in this worktree." },
+      { "id": "sample.protected-notes/provider-connections", "dialog": "provider-connections", "text": "Keys stay in the host; this note is text only." },
+      { "id": "sample.protected-notes/machine-link", "dialog": "machine-link", "text": "Linking lets agents here launch threads there." },
+      { "id": "sample.protected-notes/skill-add", "dialog": "skill-add", "text": "Skills may include scripts; the host scan still runs." }
+    ]
+  }
+}

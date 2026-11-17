@@ -960,6 +960,9 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     pane: $('.conversation-pane'), transcript: $('#transcript'), onContextChanged, notify, resync: syncTranscriptPresentation,
     state: () => ({ task: session()?.id || undefined, running: isRunning(), generation: state.generation }),
   }));
+  // Tool rows a package replaces and the risk signals it adds (ui.presentation): drawn by the host from declared tokens over the built-in rows,
+  // which stay in the page and return on disable, revoke, safe mode, a conflict or a fault (docs/extensions/runtime-tool-row-replacement.md).
+  void import('./extensions/runtime-tool-row-replacement').then(rows => rows.mountToolRowReplacement({ root: $('.workspace'), notify }));
   // Notices that background services raise (ui.notify): a list above the toast, each row led by its package name.
   void import('./extensions/runtime-notifications').then(notices => notices.mountRuntimeNotices());
   // Tasks a package started (R0401): the window answers the user's defaults and marks each task with its package.
@@ -8244,7 +8247,7 @@ async function showProjectRowActions(anchor: HTMLElement, id: string, point?: { 
   } });
 }
 function showRemoveProject(project: Project): void {
-  modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+  modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog', { dialog: 'remove-project', project: project.id });
 }
 /** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
 function reorderFolders(ids: string[], focus: string): void {
@@ -8373,7 +8376,7 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
 }
 function showDeleteTask(task = session()): void {
   if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
-  const dialog = modal('Delete task?', `<form id="delete-task-form"><p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p><p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete task</button></div></form>`, 'delete-task-dialog');
+  const dialog = modal('Delete task?', `<form id="delete-task-form"><p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p><p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete task</button></div></form>`, 'delete-task-dialog', { dialog: 'delete-task', task: task.id });
   const form = dialog.querySelector<HTMLFormElement>('#delete-task-form')!;
   const confirm = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
   const error = form.querySelector<HTMLElement>('[role="alert"]')!;
@@ -8532,7 +8535,7 @@ async function showWallpaperSettings(): Promise<void> {
   wallpaperSettingsCleanup = mountWallpaperSettings(host, wallpapers);
 }
 async function showProviderConnections(): Promise<void> {
-  const dialog = modal('Provider connections', '<div id="provider-connections-content"><p class="dialog-loading">Loading connections…</p></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'provider-connections-dialog');
+  const dialog = modal('Provider connections', '<div id="provider-connections-content"><p class="dialog-loading">Loading connections…</p></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'provider-connections-dialog', { dialog: 'provider-connections' });
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
   const { mountProviderSettings } = await import('./provider-settings');
   if (!dialog.open || !host.isConnected) return;
@@ -8978,7 +8981,7 @@ async function runCloudAction(s: Session, id: string): Promise<void> {
   } finally { cloudPending.delete(s.id); syncCloudStrip(); }
 }
 function confirmDeleteMachine(s: Session): Promise<boolean> {
-  const dialog = modal('Delete cloud machine?', deleteMachineDialog(s));
+  const dialog = modal('Delete cloud machine?', deleteMachineDialog(s), '', { dialog: 'delete-cloud' });
   const form = dialog.querySelector<HTMLFormElement>('#cloud-delete-form')!;
   cloudConfirming = s.id; cloudPresentation.observe();
   return new Promise(resolve => {
@@ -9455,7 +9458,7 @@ async function deleteBot(bot: import('./bots').Bot): Promise<void> {
   render();
 }
 function confirmBotDelete(name: string): Promise<boolean> {
-  const dialog = modal(`Delete ${name}?`, '<form id="delete-bot-form"><p class="delete-task-description">This removes the bot, its conversations and its channel connections. Its workspace folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete bot</button></div></form>', 'delete-task-dialog');
+  const dialog = modal(`Delete ${name}?`, '<form id="delete-bot-form"><p class="delete-task-description">This removes the bot, its conversations and its channel connections. Its workspace folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete bot</button></div></form>', 'delete-task-dialog', { dialog: 'delete-bot' });
   const form = dialog.querySelector<HTMLFormElement>('#delete-bot-form')!;
   form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
   return new Promise(resolve => {

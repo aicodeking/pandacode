@@ -137,26 +137,22 @@ export const OWNED_DIALOG_EXTRAS = [
 export const OWNED_DIALOG_ALIASES = [['integrations-direct', 'integrations'], ['jev-assist-direct', 'jev-assist'], ['jev-tests-direct', 'jev-tests']] as const;
 /** Module-owned or direct dialogs that never mount the band: [ledger id, title, reason]. Inspect-only in the catalog. */
 export const OWNED_DIALOG_PROTECTED = [
-  ['machine-link', 'Link a machine', 'Granting agents here access to another machine is a permission choice that stays host-owned (panda.machines.protected).'],
-  ['worktree-cleanup', 'Settle task / Remove worktree', 'Removing a worktree folder or branch is a destructive confirmation that stays host-owned (panda.worktree.protected).'],
-  ['skill-add', 'Add skills', 'Installing third-party skills into agent harnesses follows a host security scan; its verdicts and the install confirmation stay host-owned.'],
   ['extension-form', 'Extension form', "A package's own form is itself the accessory surface; another package's content is never placed inside it."],
 ] as const;
-export type MainDialogId = typeof MAIN_DIALOG_EXTRAS[number][0] | typeof OWNED_DIALOG_EXTRAS[number][0];
+export type MainDialogId = typeof MAIN_DIALOG_EXTRAS[number][0] | typeof OWNED_DIALOG_EXTRAS[number][0] | typeof PRESENTATION_DIALOG_EXTRAS[number][0];
 export type DialogTarget = 'none' | 'task' | 'project';
 /** Every dialog that accepts the band, in schema order: main modals first, then module-owned and direct dialogs. */
-export const DIALOG_EXTRAS: ReadonlyArray<readonly [MainDialogId, string, DialogTarget]> = [...MAIN_DIALOG_EXTRAS, ...OWNED_DIALOG_EXTRAS.map(([id, title, target]) => [id, title, target] as const)];
+export const DIALOG_EXTRAS: ReadonlyArray<readonly [MainDialogId, string, DialogTarget]> = [...MAIN_DIALOG_EXTRAS, ...OWNED_DIALOG_EXTRAS.map(([id, title, target]) => [id, title, target] as const), ...PRESENTATION_DIALOG_EXTRAS.map(([id, title, target]) => [id, title, target] as const)];
 /** The target kind a dialog captures; unknown IDs capture nothing. */
 export const dialogTarget = (id: string): DialogTarget => DIALOG_EXTRAS.find(([dialog]) => dialog === id)?.[2] ?? 'none';
-export const isOwnedDialog = (id: string): boolean => OWNED_DIALOG_EXTRAS.some(([dialog]) => dialog === id);
+export const isOwnedDialog = (id: string): boolean => OWNED_DIALOG_EXTRAS.some(([dialog]) => dialog === id) || PRESENTATION_DIALOG_EXTRAS.some(([dialog, , , host]) => dialog === id && host !== 'main');
+/** Dialogs that were protected and now accept the band from packages holding `ui.presentation` (R1003,
+ * docs/extensions/runtime-protected-presentation.md): [dialog id, title, captured target, host]. `main` uses the shared modal. */
+export const PRESENTATION_DIALOG_EXTRAS = [
+] as const;
 /** Main-window modals that never mount the band: [dialog id, title, reason]. Inspect-only in the catalog. */
 export const MAIN_DIALOG_PROTECTED = [
-  ['remove-project', 'Remove project', 'A destructive confirmation stays host-owned; the folder-retention explanation is not extensible.'],
-  ['delete-task', 'Delete task', 'A destructive confirmation stays host-owned.'],
-  ['provider-connections', 'Provider connections', 'Credential entry and sign-in are never presented beside package content.'],
-  ['delete-cloud', 'Delete cloud machine', 'A destructive confirmation stays host-owned (panda.cloud.protected).'],
   ['github-behind', 'GitHub is behind this computer', 'The start-anyway recovery choice stays host-owned (panda.machines.protected).'],
-  ['delete-bot', 'Delete bot', 'A destructive confirmation stays host-owned.'],
 ] as const;
 export const DIALOG_ACTION_SURFACES = DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.actions` as const);
 export const DIALOG_DATA_SURFACES = DIALOG_EXTRAS.map(([id]) => `panda.dialog.${id}.bodyExtras` as const);

@@ -504,7 +504,7 @@ export async function openLinkDialog(options: { request?: LinkRequest; deviceId?
   if (!host) return;
   const h = host;
   let rows: Row[] = [], step: 1 | 2 = 1, chosen = '', access: Access = 'ask', error = '', busy = false;
-  const dialog = h.modal('Link a machine', '<p class="dialog-description">Agents here can then launch, message and wait on threads there.</p><form id="machine-link-form" class="machine-link-form"><p class="dialog-loading" role="status">Loading computers…</p></form>', 'machine-link-dialog');
+  const dialog = h.modal('Link a machine', '<p class="dialog-description">Agents here can then launch, message and wait on threads there.</p><form id="machine-link-form" class="machine-link-form"><p class="dialog-loading" role="status">Loading computers…</p></form>', 'machine-link-dialog', { dialog: 'machine-link' });
   linkDialog = dialog; render();
   dialog.addEventListener('close', () => { if (linkDialog === dialog) { linkDialog = undefined; render(); } }, { once: true });
   const form = dialog.querySelector<HTMLFormElement>('#machine-link-form')!;

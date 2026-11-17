@@ -307,7 +307,7 @@ export function createWorktrees(host: WorktreeHost) {
         control = `<label class="worktree-cleanup-option"><input type="checkbox" name="remove" ${intent === 'remove' || !unpublished ? 'checked' : ''}><span>Remove the worktree folder${status.merged ? ` and delete <code>${escape(branch)}</code>` : `; <code>${escape(branch)}</code> is kept until it is merged`}</span></label>`;
       }
       const canProceed = intent !== 'remove' || (status.exists ? status.clean : true);
-      const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" ${canProceed ? '' : 'disabled'}>${intent === 'remove' ? 'Remove and settle' : verb}</button></div></form>`, 'compact-dialog worktree-dialog');
+      const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" ${canProceed ? '' : 'disabled'}>${intent === 'remove' ? 'Remove and settle' : verb}</button></div></form>`, 'compact-dialog worktree-dialog', { dialog: 'worktree-cleanup', task: session.id });
       cleanup?.resolve({ proceed: false, remove: false });
       cleanup = { resolve, dialog, session: session.id, intent };
       host.rerender?.();

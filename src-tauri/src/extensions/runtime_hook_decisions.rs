@@ -579,6 +579,9 @@ impl Wrapped {
             Action::Prompt(note) => {
                 let mut event = event;
                 if let Some(note) = note { event.text = format!("{}\n{note}", event.text); }
+                // R1003: the notes sit on the approval row too, each with the name of the package that wrote it.
+                let notes = crate::extensions::runtime_protected_presentation::lines(&crate::extensions::runtime_protected_presentation::row(&crate::extensions::runtime_hook_decisions::Outcome::None, &fold.notes), &request.name);
+                if !notes.is_empty() { event.text = format!("{}\n{}", event.text, notes.join("\n")); }
                 (self.inner)(event);
             }
         }

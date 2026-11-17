@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.protected-plain",
+  "name": "Protected plain",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "requiredContributions": ["dialogExtras"],
+  "contributes": {
+    "dialogExtras": [
+      { "id": "sample.protected-plain/delete-task", "dialog": "delete-task", "text": "Needs ui.presentation in a protected dialog." }
+    ]
+  }
+}

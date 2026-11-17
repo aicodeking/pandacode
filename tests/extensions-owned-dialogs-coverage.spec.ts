@@ -60,7 +60,8 @@ test('Owned dialogs: zero extensions keep every module-owned and direct dialog u
   }
   await page.evaluate(() => (window as any).__previewOpenOwnedDialog('machine-link'));
   await expect(dialog(page)).toHaveJSProperty('open', true); await expect(dialog(page).locator('#machine-link-form')).toHaveCount(1);
-  expect(await accessory(page, 'machine-link')).toBeNull(); await expect(page.locator('.dialog-extension-extras')).toHaveCount(0);
+  // R1003: Link a machine takes a band only from packages holding ui.presentation; none is installed here.
+  await expect(page.locator('#dialog [data-extension-contribution]')).toHaveCount(0);
   await close(page);
 });
 
@@ -87,7 +88,7 @@ test('Owned dialogs: an installed package adds owner-labelled notes and clickabl
   }
   await page.evaluate(() => (window as any).__previewOpenOwnedDialog('machine-link'));
   await expect(dialog(page).locator('#machine-link-form')).toHaveCount(1);
-  await expect(page.locator('.dialog-extension-extras')).toHaveCount(0); await expect(page.locator('#dialog [data-extension-contribution]')).toHaveCount(0);
+  await expect(page.locator('#dialog [data-extension-contribution]')).toHaveCount(0);
   await close(page);
 });
 
@@ -153,7 +154,7 @@ test('Owned dialogs: a task switch keeps the captured target; replacement and cl
   const reopened = await accessory(page, 'command-center');
   expect(reopened.mount).not.toBe(captured.mount);
   expect(await admit(page, 'command-center', captured)).toEqual({ ok: false, reason: 'StaleContext' });
-  expect(await admit(page, 'command-center', { ...captured, dialog: 'machine-link' })).toEqual({ ok: false, reason: 'UnsupportedCapability' });
+  expect(await admit(page, 'command-center', { ...captured, dialog: 'extension-form' })).toEqual({ ok: false, reason: 'UnsupportedCapability' });
   await close(page);
   expect(await admit(page, 'command-center', reopened)).toEqual({ ok: false, reason: 'Revoked' });
   await expect(page.locator('.dialog-extension-extras')).toHaveCount(0);
