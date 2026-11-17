@@ -617,6 +617,8 @@ export interface PandaView {
   onDidChangeVisibility(callback: (state: { readonly visible: boolean; readonly focused: boolean }) => void): () => void;
   /** Synchronous; `set` throws `LimitExceeded` above 256 KiB. Kept for one run of the app, across hiding, reload and failure. */
   readonly state: { get(): Json | undefined; set(value: Json): void };
+  /** R0304: gives the keyboard back to the app control that had it before the panel (the same as an unhandled Escape). */
+  releaseFocus(): void;
   readonly panda: PanelApi;
 }
 /** What the user answered a service's dialog (R0206). A dialog that was closed, or whose service ended, is `cancelled`. */

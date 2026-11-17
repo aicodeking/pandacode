@@ -49,7 +49,22 @@ const RICH_VIEW_SHAPES = {
   focus: ['focused,kind,schemaVersion,session'], message: ['kind,message,schemaVersion,session'],
   reply: ['error,id,kind,ok,schemaVersion,session', 'id,kind,ok,schemaVersion,session,value'],
   visibility: ['kind,schemaVersion,session,visible', 'focused,kind,schemaVersion,session,visible'], theme: ['kind,schemaVersion,session,theme'],
+  // R0304: panel to host, a key-down the page left alone and `pandaView.releaseFocus()`.
+  key: ['altKey,code,ctrlKey,key,kind,metaKey,schemaVersion,session,shiftKey'], release: ['kind,schemaVersion,session'],
 };
+/* R0304: the key-downs a page left alone that go to the host: Escape, or a key with the platform's command modifier
+   (Cmd on macOS, Ctrl elsewhere) that is not itself a modifier. Never a key of an input-method composition (the app's
+   isImeKey rule: isComposing, or WebKit's committing Enter with key code 229). Read after the event's dispatch, so a
+   page that called preventDefault() keeps its key. Answers the request's fields, or null. */
+function richViewChord(event, mac) {
+  if (!event || event.defaultPrevented || event.isComposing || event.keyCode === 229 || typeof event.key !== 'string') return null;
+  const command = mac ? !!event.metaKey : !!event.ctrlKey;
+  if (event.key !== 'Escape' && (!command || ['Control', 'Meta', 'Shift', 'Alt'].includes(event.key))) return null;
+  const code = typeof event.code === 'string' ? event.code : '';
+  if (!event.key || [...event.key].length > 32 || /[\u0000-\u001f\u007f-\u009f]/.test(event.key) || !/^[A-Za-z0-9]{0,32}$/.test(code)) return null;
+  return { key: event.key, code, ctrlKey: !!event.ctrlKey, metaKey: !!event.metaKey, shiftKey: !!event.shiftKey, altKey: !!event.altKey };
+}
+function richViewMac(nav) { return !!nav && /Mac|iPhone|iPad|iPod/.test(String(nav.platform || nav.userAgent || '')); }
 function richViewBytes(value) {
   try { const text = JSON.stringify(value); return text === undefined ? Infinity : new TextEncoder().encode(text).length; } catch { return Infinity; }
 }
@@ -69,6 +84,7 @@ function richViewChannel(value, session, kind) {
     case 'reply': return id() && typeof value.ok === 'boolean' && (value.ok ? !('error' in value) : !!value.error && typeof value.error === 'object' && typeof value.error.code === 'string');
     case 'visibility': return typeof value.visible === 'boolean' && (value.focused === undefined || typeof value.focused === 'boolean');
     case 'theme': return richViewTheme(value.theme);
+    case 'key': return ['ctrlKey', 'metaKey', 'shiftKey', 'altKey'].every(name => typeof value[name] === 'boolean') && richViewChord({ ...value, isComposing: false, keyCode: 0, defaultPrevented: false }, value.metaKey && !value.ctrlKey) !== null;
     default: return true;
   }
 }

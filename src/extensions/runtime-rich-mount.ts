@@ -20,6 +20,7 @@ import { appearanceSnapshot, richViewDocument, type RichAssets } from './rich-vi
 import { createRuntimeGrantsPreview, type SyncSnapshot } from './runtime-grants';
 import { ASSET_RELOADABLE, assetEndedNote, assetRefusalNote, previewServedUrl, servedSource } from './runtime-rich-assets';
 import { followTheme, previewPanelHost } from './runtime-rich-channel';
+import { bindPanelFocus, enterNative, forgetParked, fromFrame, minSize, parkNative, resumeNative, visibleBox } from './runtime-rich-focus';
 import type { RegisteredView } from './views-state';
 
 export type MountTechnique = 'browser-iframe' | 'native-webview';
@@ -107,6 +108,9 @@ async function mountFrame(surface: HTMLElement, entry: RegisteredView, report: (
   frame.className = 'extension-rich-panel-frame'; frame.title = `${entry.view.title} — ${entry.owner}`;
   // The served shell keeps its own (package) origin, which is never the app's: it still cannot reach this document.
   frame.setAttribute('sandbox', served ? 'allow-scripts allow-same-origin' : 'allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.dataset.mountId = id;
+  // R0304: the frame keeps rich.minSize and the slot scrolls around it (never scaled, nothing animates).
+  const size = minSize(entry.view.rich);
+  Object.assign(frame.style, { display: 'block', width: '100%', minWidth: `${size.width}px`, minHeight: `${size.height}px`, border: '0' });
   let last = performance.now(), started = false, ended = false;
   // R0303: a served shell talks to the page's panel host (instance, state, messages); the instance keeps its state
   // for a reload of this slot. Visibility follows the frame's box.
@@ -120,6 +124,8 @@ async function mountFrame(surface: HTMLElement, entry: RegisteredView, report: (
     if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object' || event.data.schemaVersion !== 1) return;
     if (event.data.kind === 'beat') { last = performance.now(); started = true; }
     else if (event.data.kind === 'failed') end(['unresponsive', 'error', 'timeout', 'origin'].includes(event.data.reason) ? event.data.reason : 'error');
+    // R0304: a key the page left alone, or releaseFocus.
+    else if (!ended) fromFrame(id, event.data);
   };
   window.addEventListener('message', onMessage);
   const timer = window.setInterval(() => {
@@ -143,52 +149,83 @@ function obscured(rect: { x: number; y: number; width: number; height: number })
   });
 }
 
-/** Installed app: a child webview of the main window placed over `surface`, in window points. */
-async function mountNative(surface: HTMLElement, entry: RegisteredView, report: (event: Report) => void): Promise<() => void> {
-  await nextFrame();
-  const measure = () => {
-    const rect = surface.getBoundingClientRect(), zoom = pageZoom();
-    return { x: Math.max(0, rect.x * zoom), y: Math.max(0, rect.y * zoom), width: Math.max(1, rect.width * zoom), height: Math.max(1, rect.height * zoom) };
-  };
-  let reply: { mounted: boolean; mountId?: string; reason?: string };
-  try { reply = await call('extensions_rich_mount_open', { request: { viewId: entry.view.id, version: entry.version, placement: 'inspector', bounds: measure() } }); }
-  catch (error) { throw new Refusal(String(error)); }
-  if (!reply.mounted || !reply.mountId) throw new Refusal(reply.reason ?? 'UnsupportedRuntime');
-  const mountId = reply.mountId;
+/**
+ * An installed panel's webview, attached to one surface at a time. R0304: between surfaces it is parked natively
+ * (hidden, document and focus kept; at most four in the app), so a tab or task switch does not reload it.
+ */
+type NativePanel = { readonly mountId: string; attach(surface: HTMLElement, report: (event: Report) => void): void; park(): void; close(): void };
+const pageBox = (surface: HTMLElement) => {
+  // The webview covers only what the scrolling ancestors leave visible; its shell scrolls to keep rich.minSize.
+  const rect = visibleBox(surface), zoom = pageZoom();
+  return { x: Math.max(0, rect.x * zoom), y: Math.max(0, rect.y * zoom), width: Math.max(1, rect.width * zoom), height: Math.max(1, rect.height * zoom) };
+};
+async function nativePanel(mountId: string, viewId: string): Promise<NativePanel> {
+  let surface: HTMLElement | undefined, report: ((event: Report) => void) | undefined;
   let disposed = false, lastKey = '', pending = 0;
   const sync = () => {
-    if (disposed) return;
-    const bounds = measure(), visible = surface.isConnected && surface.checkVisibility() && !obscured(bounds) && bounds.width > 1 && bounds.height > 1;
+    if (disposed || !surface) return;
+    const bounds = pageBox(surface);
+    // Hidden with the main window too (minimized or hidden), so visibility matches the window's state.
+    const visible = !document.hidden && surface.isConnected && surface.checkVisibility() && !obscured(bounds) && bounds.width > 1 && bounds.height > 1;
     const key = JSON.stringify({ ...bounds, visible });
     if (key === lastKey) return;
     lastKey = key;
     void call('extensions_rich_mount_bounds', { request: { mountId, bounds, visible } }).catch(() => {});
   };
   const schedule = () => { if (!disposed && !pending) pending = window.setTimeout(() => { pending = 0; sync(); }, 16); };
-  const resize = new ResizeObserver(schedule); resize.observe(surface);
+  const resize = new ResizeObserver(schedule);
   const overlays = new MutationObserver(records => {
     const selector = '.floating-menu,.file-window,dialog,#settings-page,#inspector';
     if (records.some(record => record.type === 'attributes'
       ? record.target instanceof Element && record.target.matches(selector)
       : [...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element && (node.matches(selector) || node.querySelector(selector))))) schedule();
   });
-  overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-hidden', 'open', 'style', 'hidden', 'data-popover-state', 'data-leaving'] });
-  window.addEventListener('resize', schedule);
+  const detach = () => {
+    window.clearTimeout(pending); pending = 0; resize.disconnect(); overlays.disconnect();
+    window.removeEventListener('resize', schedule); document.removeEventListener('visibilitychange', schedule); document.removeEventListener('scroll', schedule, true);
+    surface = undefined; report = undefined; lastKey = '';
+  };
   const { listen } = await import('@tauri-apps/api/event');
   const unlisten = await listen<{ mountId: string; reason: string }>(ENDED_EVENT, event => {
     if (disposed || event.payload.mountId !== mountId) return;
-    stop(); report({ kind: 'ended', reason: event.payload.reason });
+    // A parked panel that ends (closed beyond the four kept, a failure, a lifecycle end) is shown fresh next time.
+    const tell = report; stop(); forgetParked(mountId); tell?.({ kind: 'ended', reason: event.payload.reason });
   });
-  const stop = () => {
-    if (disposed) return;
-    disposed = true; window.clearTimeout(pending); resize.disconnect(); overlays.disconnect(); window.removeEventListener('resize', schedule); unlisten();
+  const stop = () => { if (disposed) return; disposed = true; detach(); unlisten(); };
+  const panel: NativePanel = {
+    mountId,
+    attach(next, nextReport) {
+      if (disposed) return;
+      detach(); surface = next; report = nextReport;
+      resize.observe(next);
+      overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-hidden', 'open', 'style', 'hidden', 'data-popover-state', 'data-leaving'] });
+      window.addEventListener('resize', schedule); document.addEventListener('visibilitychange', schedule); document.addEventListener('scroll', schedule, { capture: true, passive: true });
+      sync();
+    },
+    park() { if (disposed) return; detach(); void parkNative(viewId, panel); },
+    close() { const live = !disposed; stop(); forgetParked(mountId); if (live) void call('extensions_rich_mount_close', { mountId }).catch(() => {}); },
   };
-  if (disposed) return () => {};
-  report({ kind: 'mounted', id: mountId });
+  return panel;
+}
+
+/** Installed app: a child webview of the main window placed over `surface`, in window points. */
+async function mountNative(surface: HTMLElement, entry: RegisteredView, report: (event: Report) => void): Promise<(park?: boolean) => void> {
+  await nextFrame();
+  // R0304: the view's parked panel is shown again with its document; else a new mount (restored from its state).
+  let panel = await resumeNative<NativePanel>(entry.view.id);
+  if (!panel) {
+    let reply: { mounted: boolean; mountId?: string; reason?: string };
+    try { reply = await call('extensions_rich_mount_open', { request: { viewId: entry.view.id, version: entry.version, placement: 'inspector', bounds: pageBox(surface) } }); }
+    catch (error) { throw new Refusal(String(error)); }
+    if (!reply.mounted || !reply.mountId) throw new Refusal(reply.reason ?? 'UnsupportedRuntime');
+    panel = await nativePanel(reply.mountId, entry.view.id);
+  }
+  const mounted = panel;
+  report({ kind: 'mounted', id: mounted.mountId });
   // R0303: mounted panels follow the app's appearance (scheme and tokens), sent once and at every palette change.
   followTheme();
-  sync();
-  return () => { const live = !disposed; stop(); if (live) void call('extensions_rich_mount_close', { mountId }).catch(() => {}); };
+  mounted.attach(surface, report);
+  return park => { if (park) mounted.park(); else mounted.close(); };
 }
 
 /**
@@ -197,12 +234,16 @@ async function mountNative(surface: HTMLElement, entry: RegisteredView, report: 
  */
 export function mountRichPanel(slot: HTMLElement, entry: RegisteredView): () => void {
   const controller = new AbortController(), { signal } = controller;
-  let teardown: (() => void) | undefined, state: 'idle' | 'loading' | 'mounted' | 'failed' | 'refused' = 'idle', generation = 0;
+  let teardown: ((park?: boolean) => void) | undefined, state: 'idle' | 'loading' | 'mounted' | 'failed' | 'refused' = 'idle', generation = 0;
   slot.classList.add('extension-rich-panel'); slot.dataset.richMount = mountTechnique();
   slot.setAttribute('role', 'region'); slot.setAttribute('aria-label', `${entry.view.title} panel — ${entry.owner}`);
   const surface = document.createElement('div'); surface.className = 'extension-rich-panel-surface';
-  const size = entry.view.rich?.minSize;
-  surface.style.minWidth = `${size?.width ?? 160}px`; surface.style.minHeight = `${size?.height ?? 240}px`;
+  // R0304: rich.minSize. The preview frame keeps it and the slot scrolls; an installed webview covers the visible part
+  // of the surface and its shell scrolls to keep it (a webview cannot be clipped like an element). No layout animates.
+  const size = minSize(entry.view.rich);
+  slot.style.overflow = 'auto';
+  if (preview) surface.style.minWidth = `${size.width}px`;
+  surface.style.minHeight = `${size.height}px`;
   const note = document.createElement('p'); note.className = 'extension-rich-panel-note'; note.setAttribute('aria-live', 'polite');
   const reload = document.createElement('button'); reload.type = 'button'; reload.className = 'ds-btn'; reload.textContent = 'Reload panel'; reload.hidden = true;
   slot.replaceChildren(surface, note, reload);
@@ -243,8 +284,15 @@ export function mountRichPanel(slot: HTMLElement, entry: RegisteredView): () => 
   const unsubscribe = onExtensionChanged(entry.owner, recheck);
   window.addEventListener(GRANTS_CHANGED, recheck, { signal });
   reload.addEventListener('click', start, { signal });
+  // R0304: the installed panel is one tab stop of the app; reaching it moves the keyboard into its webview.
+  bindPanelFocus(slot, () => { const id = slot.dataset.mountId; if (state === 'mounted' && id) void enterNative(id); }, signal);
   queueMicrotask(start);
-  return () => { controller.abort(); generation++; unsubscribe(); clear(); slot.replaceChildren(); };
+  // R0304: leaving the screen (a tab or task switch) parks a mounted installed panel instead of closing it.
+  return () => {
+    controller.abort(); generation++; unsubscribe();
+    const dispose = teardown; teardown = undefined; dispose?.(state === 'mounted');
+    surface.replaceChildren(); slot.replaceChildren();
+  };
 }
 
 const previewWindows = new Map<Window, () => void>();

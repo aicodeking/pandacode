@@ -90,6 +90,26 @@
     if (!pending) { pending = beat; frame.contentWindow.postMessage({ schemaVersion: 1, session: config.session, kind: 'ping', sequence: beat }, '*'); }
   }, 1000);
   const origins = served ? [location.origin, ...(Array.isArray(config.frameOrigins) ? config.frameOrigins : [])] : ['null'];
+  // R0304: keys the page left alone and releaseFocus go to the host: the host page of an embedded shell, the channel
+  // of a served shell, else this document's title (the inline form has no channel). The title sequence only grows.
+  let focusSequence = Date.now();
+  const mac = typeof navigator !== 'undefined' && richViewMac(navigator);
+  const forward = (kind, chord) => {
+    if (!alive) return;
+    if (embedded) { tell(kind, kind === 'key' ? { chord } : {}); return; }
+    if (transport === 'native') { void toHost(kind, kind === 'key' ? chord : {}); return; }
+    focusSequence++;
+    const flags = chord ? (chord.ctrlKey ? 1 : 0) | (chord.metaKey ? 2 : 0) | (chord.shiftKey ? 4 : 0) | (chord.altKey ? 8 : 0) : 0;
+    document.title = kind === 'key' ? `panda-view:key:${focusSequence}:${flags}:${chord.code}:${chord.key}` : `panda-view:release:${focusSequence}`;
+  };
+  // The shell's own document (its status line or reload control) follows the same rule.
+  addEventListener('keydown', event => { setTimeout(() => { const chord = alive ? richViewChord(event, mac) : null; if (chord) forward('key', chord); }, 0); }, { signal: controller.signal });
+  // The keyboard arriving at the shell (the host's tab stop gave the webview focus) goes on to the panel's frame.
+  addEventListener('focus', () => { if (alive && frame.isConnected && document.activeElement === document.body) frame.focus(); }, { signal: controller.signal });
+  // R0304: rich.minSize from the host's address (`#panda-min=<w>x<h>`): the frame keeps that minimum and this document
+  // scrolls, so a smaller mount scrolls and the page is never scaled.
+  const minimum = /(?:^#|&)panda-min=(\d{2,4})x(\d{2,4})(?:&|$)/.exec(String(location.hash || ''));
+  if (minimum) { frame.style.minWidth = `${minimum[1]}px`; frame.style.minHeight = `${minimum[2]}px`; frame.style.display = 'block'; document.documentElement.style.overflow = 'auto'; }
   // The host page of an embedded shell answers its channel requests and pushes; nothing else from it is heard.
   if (transport === 'embedded') addEventListener('message', event => {
     const data = event.data;
@@ -130,6 +150,9 @@
   addEventListener('message', event => {
     if (!alive || event.source !== frame.contentWindow || !origins.includes(event.origin)) return;
     if (richViewSignal(event.data, config.session, 'fault')) { fail('error'); return; }
+    // R0304: a key-down the page left alone, or releaseFocus, from the frame's client (any time it is alive).
+    if (richViewChannel(event.data, config.session, 'key')) { const { key, code, ctrlKey, metaKey, shiftKey, altKey } = event.data; forward('key', { key, code, ctrlKey, metaKey, shiftKey, altKey }); return; }
+    if (richViewChannel(event.data, config.session, 'release')) { forward('release'); return; }
     // The frame's channel requests after the handshake go to the host as they are, never as anything else.
     if (initialized && served) {
       const data = event.data;

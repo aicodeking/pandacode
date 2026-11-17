@@ -354,6 +354,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   // R0301: the preview mounts rich panels as sandboxed frames (runtime-rich-mount.ts) and never asks for a native webview.
   if (command === 'extensions_rich_mount_open') return { mounted: false, reason: 'UnsupportedRuntime: the browser preview mounts panels as frames, not native webviews.' };
   if (command === 'extensions_rich_mount_bounds' || command === 'extensions_rich_mount_close') return null;
+  // R0304: preview frames take focus and are never parked natively (runtime-rich-focus.ts).
+  if (command === 'extensions_rich_focus') return null;
   if (command === 'extensions_runtime_native_consents') return nativeConsents.createNativeConsentsPreview().call(command, snapshot);
   // No service runs in the preview: the live layer is empty (the spec drives runtime-dynamic-items.ts directly).
   if (command === 'extensions_runtime_items') return { revision: 0, owners: {} };

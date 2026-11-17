@@ -17,7 +17,7 @@
 //!   reports a failure, never starts or stops beating is destroyed and the main window is told
 //!   (`extensions-rich-mount-ended`), so it shows the failure with a reload control; tasks, terminals and the draft
 //!   are never touched.
-use crate::extensions::{packages::{ExtensionPackages, Snapshot}, rich_views, runtime_grants::{RuntimeGrants, Target}, runtime_platform_qualification as platform, rich_views::runtime_rich_channel as channel};
+use crate::extensions::{packages::{ExtensionPackages, Snapshot}, rich_views, runtime_grants::{RuntimeGrants, Target}, runtime_platform_qualification as platform, rich_views::runtime_rich_channel as channel, rich_views::runtime_rich_focus as focus};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::{atomic::{AtomicBool, Ordering}, Mutex}, time::{Duration, Instant}};
@@ -134,6 +134,10 @@ pub struct BoundsRequest { mount_id: String, bounds: Bounds, visible: bool }
 fn rect(bounds: Bounds) -> tauri::Rect {
     tauri::Rect { position: tauri::LogicalPosition::new(bounds.x, bounds.y).into(), size: tauri::LogicalSize::new(bounds.width, bounds.height).into() }
 }
+/// R0304: the view of a live inspector mount (`None` for any other label).
+pub fn panel_view(app: &tauri::AppHandle, label: &str) -> Option<String> {
+    app.try_state::<RichMounts>()?.inner.lock().ok()?.panels.get(label).map(|panel| panel.view_id.clone())
+}
 fn owned(app: &tauri::AppHandle, label: &str) -> bool {
     label.starts_with(PANEL_PREFIX) && app.try_state::<RichMounts>().is_some_and(|state| state.inner.lock().is_ok_and(|inner| inner.panels.contains_key(label)))
 }
@@ -153,6 +157,9 @@ pub async fn extensions_rich_mount_open(caller: tauri::Webview, app: tauri::AppH
     // R0302: a legacy inline view opens its data document; a folder or remote page opens the shell on the package's
     // own origin (`runtime_rich_assets`), registered under `label` until `forget` releases it.
     let (pinned, url) = rich_views::panel_target(&app, &snapshot, &request.view_id, &request.version, &label, dark)?;
+    // R0304: the shell keeps `rich.minSize` and scrolls (its address fragment; the webview covers only what is visible).
+    let size = focus::declared_view(&snapshot, &pinned.owner, &pinned.version, &request.view_id).map_or((focus::MIN_WIDTH, focus::MIN_HEIGHT), focus::min_size);
+    let url = focus::sized(&url, size);
     let navigation = url.clone();
     let Ok(parsed) = url.parse() else { forget(&app, &label); return Err("UnsafeAsset".into()) };
     {
@@ -189,8 +196,10 @@ pub async fn extensions_rich_mount_bounds(caller: tauri::Webview, app: tauri::Ap
     if !owned(&app, &request.mount_id) { return Err("StaleContext".into()); }
     let view = app.get_webview(&request.mount_id).ok_or("StaleContext")?;
     view.set_bounds(rect(bounds)).map_err(|_| "HostUnavailable")?;
-    if request.visible { view.show() } else { view.hide() }.map_err(|_| "HostUnavailable")?;
-    pause(&app, &request.mount_id, !request.visible);
+    // R0304: a parked panel stays hidden until it is resumed (a late bounds call of its old slot must not show it).
+    let visible = request.visible && !focus::parked(&request.mount_id);
+    if visible { view.show() } else { view.hide() }.map_err(|_| "HostUnavailable")?;
+    pause(&app, &request.mount_id, !visible);
     Ok(())
 }
 
@@ -205,6 +214,8 @@ pub async fn extensions_rich_mount_close(caller: tauri::Webview, app: tauri::App
 
 /// Called by the title callback of every panel and separate window (main thread): records a beat or a failure.
 pub fn observe_title(app: &tauri::AppHandle, label: &str, title: &str) {
+    // R0304: the inline shell's forwarded keys and releaseFocus share this channel.
+    if focus::observe_title(app, label, title) { return; }
     let Some(signal) = signal(title) else { return };
     let Some(state) = app.try_state::<RichMounts>() else { return };
     let Ok(mut inner) = state.inner.lock() else { return };
@@ -224,7 +235,7 @@ pub fn watch(app: &tauri::AppHandle, label: &str, kind: Kind) {
     if spawned.is_err() { state.running.store(false, Ordering::SeqCst); }
 }
 /// A hidden panel's timers may be throttled: its watch pauses and restarts its clock when shown again.
-fn pause(app: &tauri::AppHandle, label: &str, paused: bool) {
+pub fn pause(app: &tauri::AppHandle, label: &str, paused: bool) {
     let Some(state) = app.try_state::<RichMounts>() else { return };
     {
         let Ok(mut inner) = state.inner.lock() else { return };
@@ -284,6 +295,8 @@ pub fn forget(app: &tauri::AppHandle, label: &str) { forget_keeping(app, label, 
 /// reopen when `keep` (R0303).
 pub fn forget_keeping(app: &tauri::AppHandle, label: &str, keep: bool) {
     rich_views::runtime_rich_assets::release(label);
+    // R0304: a parked panel that ends is no longer counted.
+    focus::forget(label);
     channel::detach(app, label, keep);
     let Some(state) = app.try_state::<RichMounts>() else { return };
     let Ok(mut inner) = state.inner.lock() else { return };
@@ -297,7 +310,7 @@ pub fn window_closed(app: &tauri::AppHandle, label: &str) {
         Ok(mut inner) => { let panels: Vec<String> = inner.panels.keys().cloned().collect(); for label in &panels { inner.watches.remove(label); } inner.panels.clear(); panels }
         Err(_) => return,
     };
-    for label in panels { rich_views::runtime_rich_assets::release(&label); channel::detach(app, &label, false); if let Some(view) = app.get_webview(&label) { let _ = view.close(); } }
+    for label in panels { rich_views::runtime_rich_assets::release(&label); focus::forget(&label); channel::detach(app, &label, false); if let Some(view) = app.get_webview(&label) { let _ = view.close(); } }
 }
 /// Disable, uninstall, update, safe mode, untrust and revoke end the mounts they no longer allow (`rich_views::reconcile`
 /// calls this after every lifecycle change; the grant command calls `sweep_app`).

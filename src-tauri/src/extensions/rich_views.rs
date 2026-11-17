@@ -16,6 +16,9 @@ pub mod runtime_rich_assets;
 // R0303: panel instances and the panel-service channel (`rich_views::runtime_rich_channel`); same rule as above.
 #[path = "runtime_rich_channel.rs"]
 pub mod runtime_rich_channel;
+// R0304: panel focus, forwarded keys, kept-alive hidden panels and minimum size (`rich_views::runtime_rich_focus`).
+#[path = "runtime_rich_focus.rs"]
+pub mod runtime_rich_focus;
 use runtime_rich_assets::Source;
 
 const CHANNEL: &str = include_str!("../../../src/extensions/rich-view-channel.js");
@@ -123,6 +126,9 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
     if app.state::<RichViews>().0.lock().map_err(|_| "HostUnavailable")?.len() >= 8 { return Err("LimitExceeded".into()); }
     // R0302: a legacy view opens its data document; a folder or remote page opens the shell on the package origin.
     let url = target(&app, &presentation, &label, window.theme().is_ok_and(|theme| theme == tauri::Theme::Dark))?;
+    // R0304: the shell keeps `rich.minSize` (its address fragment), and the window is never smaller than it.
+    let (min_width, min_height) = runtime_rich_focus::min_size(&presentation.view);
+    let url = runtime_rich_focus::sized(&url, (min_width, min_height));
     let navigation = url.clone();
     let url = match url.parse() { Ok(url) => url, Err(_) => { runtime_rich_assets::release(&label); return Err("UnsafeAsset".into()); } };
     let state = app.state::<RichViews>();
@@ -130,7 +136,7 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
     if views.len() >= 8 { drop(views); runtime_rich_assets::release(&label); return Err("LimitExceeded".into()); }
     views.insert(label.clone(), presentation); drop(views);
     let result = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
-        .title("Extension view — experimental").inner_size(760.0, 560.0).min_inner_size(360.0, 240.0)
+        .title("Extension view — experimental").inner_size(760f64.max(min_width as f64), 560f64.max(min_height as f64)).min_inner_size(360f64.max(min_width as f64), 240f64.max(min_height as f64))
         // The package origin's scheme is pinned (its storage is keyed by it).
         .use_https_scheme(false)
         .devtools(false).disable_drag_drop_handler()

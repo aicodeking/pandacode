@@ -1,0 +1,39 @@
+{
+  "session": "s",
+  "cases": [
+    { "name": "plain Escape returns focus", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "Escape", "code": "Escape", "ctrlKey": false, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": "release" },
+    { "name": "Shift+Escape returns focus", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "Escape", "code": "Escape", "ctrlKey": false, "metaKey": false, "shiftKey": true, "altKey": false }, "forward": "release" },
+    { "name": "releaseFocus", "request": { "schemaVersion": 1, "session": "s", "kind": "release" }, "forward": "release" },
+    { "name": "Ctrl+B is a host chord", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "b", "code": "KeyB", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": "key" },
+    { "name": "Cmd+Shift+P is a host chord", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "P", "code": "KeyP", "ctrlKey": false, "metaKey": true, "shiftKey": true, "altKey": false }, "forward": "key" },
+    { "name": "Ctrl+Enter is a host chord when the page left it alone", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "Enter", "code": "Enter", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": "key" },
+    { "name": "a printable key stays in the page", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "a", "code": "KeyA", "ctrlKey": false, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "arrow keys never scroll the app", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "ArrowDown", "code": "ArrowDown", "ctrlKey": false, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "Shift+Enter without the command modifier stays in the page", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "Enter", "code": "Enter", "ctrlKey": false, "metaKey": false, "shiftKey": true, "altKey": false }, "forward": null },
+    { "name": "a bare modifier is not a chord", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "Control", "code": "ControlLeft", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "an empty key", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "", "code": "KeyB", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "a key longer than 32 characters", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "code": "KeyB", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "a code outside letters and digits", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "b", "code": "Key:B", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "a control character in the key", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "\u0007", "code": "KeyB", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "a command field is never part of a key", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "b", "code": "KeyB", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false, "command": "read_file" }, "forward": null },
+    { "name": "a release with a target", "request": { "schemaVersion": 1, "session": "s", "kind": "release", "target": "#prompt" }, "forward": null },
+    { "name": "another session", "request": { "schemaVersion": 1, "session": "other", "kind": "key", "key": "Escape", "code": "Escape", "ctrlKey": false, "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "a missing modifier field", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "b", "code": "KeyB", "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "a modifier that is not a boolean", "request": { "schemaVersion": 1, "session": "s", "kind": "key", "key": "b", "code": "KeyB", "ctrlKey": "true", "metaKey": false, "shiftKey": false, "altKey": false }, "forward": null },
+    { "name": "another schema version", "request": { "schemaVersion": 2, "session": "s", "kind": "release" }, "forward": null }
+  ],
+  "titles": [
+    { "title": "panda-view:release:1", "forward": "release" },
+    { "title": "panda-view:key:2:1:KeyB:b", "forward": "key", "key": "b", "code": "KeyB", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false },
+    { "title": "panda-view:key:3:6:KeyP:P", "forward": "key", "key": "P", "code": "KeyP", "ctrlKey": false, "metaKey": true, "shiftKey": true, "altKey": false },
+    { "title": "panda-view:key:4:0:Escape:Escape", "forward": "release" },
+    { "title": "panda-view:key:5:1:Semicolon::", "forward": "key", "key": ":", "code": "Semicolon", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false },
+    { "title": "panda-view:key:8:1::k", "forward": "key", "key": "k", "code": "", "ctrlKey": true, "metaKey": false, "shiftKey": false, "altKey": false },
+    { "title": "panda-view:key:6:0:KeyA:a", "forward": null },
+    { "title": "panda-view:key:7:16:KeyB:b", "forward": null },
+    { "title": "panda-view:key:x:1:KeyB:b", "forward": null },
+    { "title": "panda-view:release:", "forward": null },
+    { "title": "panda-view:alive:3", "forward": null },
+    { "title": "Extension view", "forward": null }
+  ]
+}

@@ -184,6 +184,8 @@ impl RunningAgent {
             .ok_or("This approval belongs to an earlier run.")?
             .to_string();
         let store = store.lock().map_err(|error| error.to_string())?;
+        // Hooks (R0504): a denied call's `tool.after` reports `denied` with no output.
+        extensions::runtime_hook_context::answered(session_id, &original_id, approved);
         self.send(RunInput::Approval {
             request_id: original_id,
             approved,
@@ -2637,6 +2639,8 @@ fn build_task_host(
     let host = Some(agent_tools::with_preview(host, app.clone(), sid, stopped.clone()));
     let host = Some(turn_changes::with_host(host, tracker, stopped.clone()));
     let host = Some(session_titles::with_host(title_run, host, stopped));
+    // Hooks (R0504): `tool.after` of PandaCode's own tools is awaited and may rewrite the result the harness gets.
+    let host = host.map(|host| extensions::runtime_hook_context::with_result_hooks(host, app.clone(), session_id.to_owned()));
     (host, team_tools_missing)
 }
 
@@ -5209,6 +5213,7 @@ pub fn run() {
                 extensions::rich_views::runtime_rich_mount::extensions_rich_mount_open,
                 extensions::rich_views::runtime_rich_mount::extensions_rich_mount_bounds,
                 extensions::rich_views::runtime_rich_mount::extensions_rich_mount_close,
+                extensions::rich_views::runtime_rich_focus::extensions_rich_focus,
                 extensions::context::extensions_context,
                 extensions::runtime::extensions_runtime,
                 extensions::packages::extensions_snapshot,

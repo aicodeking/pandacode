@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-focus",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews"],
+  "contributes": {
+    "views": [
+      { "id": "sample.rich-focus/one", "title": "Focus one", "text": "Host-rendered summary one.", "rich": { "html": "assets/one.html", "css": "assets/one.css", "script": "assets/one.js", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } },
+      { "id": "sample.rich-focus/two", "title": "Focus two", "text": "Host-rendered summary two.", "rich": { "html": "assets/two.html", "css": "assets/two.css", "script": "assets/two.js", "placement": "inspector", "minSize": { "width": 2000, "height": 160 } } },
+      { "id": "sample.rich-focus/three", "title": "Focus three", "text": "Host-rendered summary three.", "rich": { "html": "assets/three.html", "css": "assets/three.css", "script": "assets/three.js", "placement": "inspector" } },
+      { "id": "sample.rich-focus/four", "title": "Focus four", "text": "Host-rendered summary four.", "rich": { "html": "assets/four.html", "css": "assets/four.css", "script": "assets/four.js", "placement": "inspector", "minSize": { "width": 480, "height": 360 } } },
+      { "id": "sample.rich-focus/five", "title": "Focus five", "text": "Host-rendered summary five.", "rich": { "html": "assets/five.html", "css": "assets/five.css", "script": "assets/five.js", "placement": "window", "minSize": { "width": 160, "height": 200 } } }
+    ]
+  }
+}

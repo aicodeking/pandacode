@@ -70,8 +70,14 @@
     (kind === 'init' ? callbacks : themeCallbacks).forEach(callback => safely(callback, kind === 'init' ? current : current.theme));
   };
   addEventListener('message', listener);
+  // R0304: the key-downs this page left alone (Escape, command chords; never an input-method composition) go to the
+  // host through the shell. Read after the event's dispatch, so a page that handles a key (preventDefault) keeps it.
+  const mac = typeof navigator !== 'undefined' && richViewMac(navigator);
+  const later = typeof setTimeout === 'function' ? run => setTimeout(run, 0) : run => run();
+  const onKey = event => { if (alive) later(() => { const chord = alive ? richViewChord(event, mac) : null; if (chord) send('key', chord); }); };
+  addEventListener('keydown', onKey);
   addEventListener('pagehide', () => {
-    alive = false; removeEventListener('message', listener); removeEventListener('error', fault); removeEventListener('unhandledrejection', fault);
+    alive = false; removeEventListener('message', listener); removeEventListener('error', fault); removeEventListener('unhandledrejection', fault); removeEventListener('keydown', onKey);
     callbacks.clear(); themeCallbacks.clear(); messageCallbacks.clear(); visibilityCallbacks.clear(); current = undefined;
     for (const waiter of waiting.values()) waiter.reject(failure('StaleContext: the panel document is closed.'));
     waiting.clear();
@@ -122,6 +128,13 @@
         if (instance && alive) send('state', { value: state });
       },
     }),
+    // R0304: gives the keyboard back to the app control that had it before this panel (the same as Escape).
+    releaseFocus() {
+      if (!alive) return;
+      const active = typeof document.activeElement === 'object' ? document.activeElement : null;
+      if (active && active !== document.body && typeof active.blur === 'function') active.blur();
+      send('release', {});
+    },
     panda: node(''),
   }) });
   parent.postMessage({ schemaVersion: 1, session, kind: 'ready', sequence: 1 }, '*');

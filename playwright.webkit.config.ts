@@ -245,6 +245,8 @@ config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-rich
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions rich assets:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-rich-channel.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions rich channel:`);
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-rich-focus.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions rich focus:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-harness-console.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime harness console:`);
 export default defineConfig(config, {

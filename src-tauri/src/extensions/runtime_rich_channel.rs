@@ -401,6 +401,8 @@ fn declares_service(app: &tauri::AppHandle, owner: &str) -> bool {
 /// `POST /~panda/channel` from the shell of mount `label` (its host-recorded session and origin). Answers at once;
 /// a message's and a call's results arrive later as a `reply` push.
 pub fn serve_post(app: &tauri::AppHandle, label: &str, session: &str, origin: Origin, body: &[u8]) -> Value {
+    // R0304: keys the page left alone and releaseFocus (kinds `key` and `release`) are `runtime_rich_focus`'s.
+    if let Some(answer) = super::runtime_rich_focus::serve_post(app, label, session, body) { return answer; }
     let request = match parse(body, session) { Ok(request) => request, Err(error) => return refusal(&error) };
     match request {
         Request::Hello => match with(|channel| Some(channel.hello(label, session, origin))).unwrap_or_else(|| Err("HostUnavailable".into())) {
