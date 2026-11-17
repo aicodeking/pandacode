@@ -108,20 +108,23 @@ impl BinaryStamp {
     }
 }
 
-/// A resolved file named unlike the path as found (Volta, mise and npm links), a known shim
-/// binary, or a script in an asdf shims folder.
+/// A known shim binary (Volta, mise, asdf, rtx) or a file in an asdf or mise shims folder: one
+/// file that answers for whatever version the manager selects. A plain link to a differently
+/// named file (npm's link to `cli.js`, Claude's versioned binary) is not a shim: an upgrade
+/// changes the resolved target's path, size or mtime, and so the cache key.
 fn is_shim(path: &Path, target: &Path) -> bool {
-    let name = |file: &Path| file.file_name().map(|name| name.to_string_lossy().to_lowercase());
     let stem = target.file_stem().map(|stem| stem.to_string_lossy().to_lowercase()).unwrap_or_default();
-    name(path) != name(target) || SHIM_NAMES.contains(&stem.as_str()) || in_asdf_shims(path) || in_asdf_shims(target)
+    SHIM_NAMES.contains(&stem.as_str()) || in_shims_folder(path) || in_shims_folder(target)
 }
 
-fn in_asdf_shims(file: &Path) -> bool {
+/// Whether the file sits in `.asdf/shims`, `.mise/shims` or `mise/shims` (e.g.
+/// `~/.local/share/mise/shims`).
+fn in_shims_folder(file: &Path) -> bool {
     let folders: Vec<_> = file
         .parent()
         .map(|folder| folder.components().map(|part| part.as_os_str().to_owned()).collect())
         .unwrap_or_default();
-    folders.windows(2).any(|pair| pair[0] == ".asdf" && pair[1] == "shims")
+    folders.windows(2).any(|pair| pair[1] == "shims" && [".asdf", ".mise", "mise"].iter().any(|manager| pair[0] == *manager))
 }
 
 #[derive(Clone, Debug, Default)]

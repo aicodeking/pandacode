@@ -323,7 +323,10 @@ fn shims_are_recognised_by_name_and_folder() {
     assert!(shim("/home/u/.volta/bin/claude", "/home/u/.volta/bin/volta-shim"));
     assert!(shim("/home/u/.local/share/mise/shims/codex", "/usr/local/bin/mise"));
     assert!(shim("/home/u/.asdf/shims/gemini", "/home/u/.asdf/shims/gemini"));
-    assert!(shim("/usr/local/bin/qwen", "/usr/local/lib/node_modules/qwen/cli.js"));
+    assert!(shim("/home/u/.local/share/mise/shims/codex", "/home/u/.local/share/mise/shims/codex"));
+    assert!(shim("/home/u/.mise/shims/codex", "/home/u/.mise/shims/codex"));
+    assert!(!shim("/usr/local/bin/qwen", "/usr/local/lib/node_modules/qwen/cli.js"));
+    assert!(!shim("/home/u/.local/bin/claude", "/home/u/.local/share/claude/versions/2.1.0"));
     assert!(!shim("/opt/homebrew/bin/codex", "/opt/homebrew/Cellar/codex/1.2.0/bin/codex"));
     assert!(!shim("/home/u/.local/bin/claude", "/home/u/.local/bin/claude"));
 }
@@ -372,6 +375,36 @@ fn shim_answers_are_checked_once_per_launch() {
     std::fs::remove_dir_all(&root).unwrap();
     assert_eq!(starts, (2, 1), "the shim was checked once per launch, the plain CLI once");
     assert_eq!(shown, [""], "a shim answer from an earlier day was shown");
+}
+
+/// An npm-style link to a script with a different name is not a shim: its answer is trusted on
+/// the next launch, and an upgrade (which changes the resolved script) is asked again.
+#[cfg(unix)]
+#[test]
+fn npm_links_are_not_probed_again_on_the_next_launch() {
+    let root = scratch("version-npm-link");
+    let log = root.join("runs.log");
+    let script = fake_cli(&root, "cli.js", &log, "echo 'qwen 1.0.0'");
+    let qwen = root.join("qwen");
+    std::os::unix::fs::symlink(&script, &qwen).unwrap();
+    let file = root.join(super::CACHE_FILE);
+    let targets = [target("qwen", &qwen)];
+    let stamp = BinaryStamp::of(&qwen).unwrap();
+
+    let (first, first_reports) = fresh_cache(QUICK);
+    first.load(file.clone());
+    assert_eq!(first.versions_blocking(&targets), ["qwen 1.0.0"]);
+    assert_eq!(next_report(&first_reports), report(&[("qwen", "qwen 1.0.0")], true));
+
+    let (second, second_reports) = fresh_cache(QUICK);
+    second.load(file.clone());
+    assert_eq!(second.versions_now(&targets, true), ["qwen 1.0.0"]);
+    assert!(!second.running(), "an npm link was asked again on the next launch");
+    assert!(second_reports.recv_timeout(Duration::from_millis(300)).is_err());
+    let starts = count_starts(&log, "cli.js");
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(!stamp.shim());
+    assert_eq!(starts, 1);
 }
 
 /// A saved answer younger than a day is trusted; an older one is shown and asked again in the
