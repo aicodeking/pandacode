@@ -1,0 +1,151 @@
+{
+  "label": "synthetic",
+  "about": "R0902: one save of one open file with scripted package hooks. `disk` is the file, `buffer` the host buffer (unsaved when different), `via` is the host's save or the panel's document.save(), `willSave` is what the package panel's onWillSave does (ok, throw, slow). Each member's answer is scripted: a `value` or an `error` (a throw), `never`, after `afterMs` on a controlled clock, and `editsBuffer` types into the buffer while the chain runs. `expect.written` is what the host writer received (null: nothing), `events` what the package panel hears in order, `receipts` what the packages are told (the late ones are listed apart), `willSave` the outcomes of the package panel's onWillSave that were not `ok`. The pad marker `{pad:N}` stands for N `x` characters. Read by runtime_document_save::tests (paused tokio clock, the real member runner) and tests/extensions-runtime-document-save.spec.ts (the twin).",
+  "owners": { "first": "sample.sqlfmt", "second": "sample.sqlfmt2" },
+  "scenarios": [
+    {
+      "id": "a formatter's text is what the host writes",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "SELECT 1;", "buffer": "SELECT 1;", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": true, "code": null }], "late": [], "willSave": [],
+        "events": ["replace:format", "didSave"]
+      }
+    },
+    {
+      "id": "an auto-save reaches the same hook with trigger auto",
+      "disk": "select 1", "buffer": "select  1", "trigger": "auto",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "SELECT 1;", "buffer": "SELECT 1;", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "auto" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": true, "code": null }], "late": [], "willSave": [],
+        "events": ["replace:format", "didSave"]
+      }
+    },
+    {
+      "id": "a save from the package panel uses the host writer and trigger package",
+      "disk": "select 1", "buffer": "select  1", "trigger": "package", "via": "panel",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "SELECT 1;", "buffer": "SELECT 1;", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "package" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": true, "code": null }], "late": [], "willSave": [],
+        "events": ["replace:format", "didSave"]
+      }
+    },
+    {
+      "id": "a handler that throws never refuses the save",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "error": "Internal", "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "select  1", "buffer": "select  1", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [], "late": [], "willSave": [], "events": ["didSave"]
+      }
+    },
+    {
+      "id": "a handler past its budget is skipped and its late answer is never applied",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user", "settleMs": 30000,
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "TOO LATE" }, "afterMs": 20000 } }],
+      "expect": {
+        "error": null, "written": "select  1", "buffer": "select  1", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [], "late": ["sample.sqlfmt"], "willSave": [], "events": ["didSave"]
+      }
+    },
+    {
+      "id": "an invalid return is refused with InvalidShape and the text is saved as it was",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": 5 }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "select  1", "buffer": "select  1", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": false, "code": "InvalidShape" }], "late": [], "willSave": [], "events": ["didSave"]
+      }
+    },
+    {
+      "id": "a text over 4 MiB is refused with LimitExceeded",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "{pad:4194305}" }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "select  1", "buffer": "select  1", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": false, "code": "LimitExceeded" }], "late": [], "willSave": [], "events": ["didSave"]
+      }
+    },
+    {
+      "id": "two formatters run in order and the second sees the first's text",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [
+        { "owner": "sample.sqlfmt", "answer": { "value": { "text": "A;" }, "afterMs": 10 } },
+        { "owner": "sample.sqlfmt2", "answer": { "value": { "text": "B;" }, "afterMs": 10 } }
+      ],
+      "expect": {
+        "error": null, "written": "B;", "buffer": "B;", "dirty": false, "asked": ["sample.sqlfmt", "sample.sqlfmt2"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }, { "owner": "sample.sqlfmt2", "text": "A;", "trigger": "user" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": true, "code": null }, { "owner": "sample.sqlfmt2", "applied": true, "code": null }],
+        "late": [], "willSave": [], "events": ["replace:format", "didSave"]
+      }
+    },
+    {
+      "id": "a newer revision typed while the hook ran is saved and the late result is not applied",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10, "editsBuffer": "select 2 -- typed meanwhile" } }],
+      "expect": {
+        "error": null, "written": "select 2 -- typed meanwhile", "buffer": "select 2 -- typed meanwhile", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": false, "code": "Timeout" }], "late": [], "willSave": [], "events": ["didSave"]
+      }
+    },
+    {
+      "id": "an onWillSave that is slow is waited for 1 s and the save goes on",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user", "willSave": "slow",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "SELECT 1;", "buffer": "SELECT 1;", "dirty": false, "asked": ["sample.sqlfmt"],
+        "frames": [{ "owner": "sample.sqlfmt", "text": "select  1", "trigger": "user" }],
+        "receipts": [{ "owner": "sample.sqlfmt", "applied": true, "code": null }], "late": [], "willSave": ["timeout"],
+        "events": ["replace:format", "didSave"]
+      }
+    },
+    {
+      "id": "an onWillSave that throws never blocks the save",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user", "willSave": "throw",
+      "members": [],
+      "expect": {
+        "error": null, "written": "select  1", "buffer": "select  1", "dirty": false, "asked": [], "frames": [],
+        "receipts": [], "late": [], "willSave": ["failed"], "events": ["didSave"]
+      }
+    },
+    {
+      "id": "a read-only file refuses the save and asks no hook",
+      "disk": "select 1", "buffer": "select 1", "trigger": "user", "readOnly": true,
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": "ReadOnly", "written": null, "buffer": "select 1", "dirty": false, "asked": [], "frames": [],
+        "receipts": [], "late": [], "willSave": [], "events": []
+      }
+    },
+    {
+      "id": "a disk conflict refuses the save, asks no hook and keeps the buffer",
+      "disk": "select 1", "buffer": "select  1", "trigger": "user", "diskChange": "theirs",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": "Conflict", "written": null, "buffer": "select  1", "dirty": true, "asked": [], "frames": [],
+        "receipts": [], "late": [], "willSave": [], "events": []
+      }
+    },
+    {
+      "id": "a file the hook does not match is saved as it is",
+      "path": "notes.txt", "disk": "select 1", "buffer": "select  1", "trigger": "user",
+      "members": [{ "owner": "sample.sqlfmt", "answer": { "value": { "text": "SELECT 1;" }, "afterMs": 10 } }],
+      "expect": {
+        "error": null, "written": "select  1", "buffer": "select  1", "dirty": false, "asked": [], "frames": [],
+        "receipts": [], "late": [], "willSave": [], "events": []
+      }
+    }
+  ]
+}

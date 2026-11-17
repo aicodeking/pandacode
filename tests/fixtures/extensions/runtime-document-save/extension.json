@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.sqlfmt",
+  "name": "SQL formatter",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "documents.editors"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["editor"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "editors": [
+      { "id": "sample.sqlfmt/sql", "title": "SQL formatter view", "extensions": [".sql"], "priority": "default", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } }
+    ],
+    "hooks": [
+      { "id": "sample.sqlfmt/save", "event": "save.before", "budgetMs": 100, "match": { "extensions": [".sql"] } }
+    ]
+  }
+}

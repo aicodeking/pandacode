@@ -236,6 +236,7 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-protected-presentation.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions protected presentation:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-document-editors.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-document-save.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions custom editors:`);
 config.testMatch = [...config.testMatch as string[], '**/upstream-semantic-remote-images.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream semantic`);

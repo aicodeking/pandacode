@@ -159,6 +159,7 @@ config.testMatch.push('**/extensions-runtime-cli-intent.spec.ts');
 config.testMatch.push('**/extensions-runtime-model-call.spec.ts');
 config.testMatch.push('**/extensions-runtime-protected-presentation.spec.ts');
 config.testMatch.push('**/extensions-runtime-document-editors.spec.ts');
+config.testMatch.push('**/extensions-runtime-document-save.spec.ts');
 config.testMatch.push('**/upstream-semantic-remote-images.spec.ts');
 config.testMatch.push('**/upstream-tool-images-extensions.spec.ts');
 config.testMatch.push('**/upstream-workers-extensions.spec.ts');

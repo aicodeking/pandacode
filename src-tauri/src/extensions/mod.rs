@@ -46,6 +46,7 @@ pub mod runtime_model_tools;
 pub mod runtime_tool_servers;
 pub mod runtime_cli_intent;
 pub mod runtime_document_editors;
+pub mod runtime_document_save;
 pub mod runtime_model_call;
 pub mod runtime_protected_presentation;
 pub mod runtime_hook_decisions;
