@@ -44,6 +44,7 @@ import './redesign/bots.css';
 import './voice-dictation.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
 import { setDocumentView } from './document-viewer';
+import { applyEditorNavigation } from './extensions/upstream-editor';
 import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCommand, wakeGlyph, wakeStrip, wakeView } from './schedules-thread';
 import { TRACE_HEADER } from './schedules-api';
@@ -757,12 +758,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   let extensionsLayoutSafeMode = true;
   extensionSidebarHidden = () => !extensionsLayoutSafeMode && layout.isHidden('panda.sidebar', state.projectId ?? undefined);
   applyExtensionVisibility = () => {
-    const documentNavigation = [
-      ['panda.documents.navigation/open-files', document.querySelector<HTMLElement>('[data-action="tab-open-files"]')],
-      ['panda.documents.navigation/close-open-files', document.querySelector<HTMLElement>('.file-panel-tab [data-action="close-inspector-tab"]')],
-    ] as const;
-    applyControlOrder('panda.documents.navigation', documentNavigation, extensionsLayoutSafeMode);
-    if (!extensionsLayoutSafeMode) applyControlVisibility(documentNavigation, () => $('#inspector-toggle'));
+    applyEditorNavigation(extensionsLayoutSafeMode, () => document.querySelector<HTMLElement>('#prompt:not([disabled])') ?? $('#inspector-toggle'));
     applyControlOrder('panda.workspace.header.actions', [
       ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')], ['panda.workspace.header.actions/view-menu', $('#view-menu')],
     ], extensionsLayoutSafeMode);

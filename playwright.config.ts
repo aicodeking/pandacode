@@ -129,6 +129,7 @@ config.testMatch.push('**/upstream-tool-images-extensions.spec.ts');
 config.testMatch.push('**/upstream-workers-extensions.spec.ts');
 config.testMatch.push('**/upstream-menu-usage-extensions.spec.ts');
 config.testMatch.push('**/upstream-explorer-extensions.spec.ts');
+config.testMatch.push('**/upstream-editor-extensions.spec.ts');
 config.testMatch.push('**/upstream-tool-rows-extensions.spec.ts');
 config.testMatch.push('**/upstream-recovery-extensions.spec.ts');
 config.testMatch.push('**/upstream-errors-extensions.spec.ts');

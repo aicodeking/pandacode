@@ -43,6 +43,7 @@ import richViewManifest from '../../tests/fixtures/extensions/rich-view/extensio
 import appearanceManifest from '../../tests/fixtures/extensions/appearance/extension.json';
 import replacementManifest from '../../tests/fixtures/extensions/replacement/extension.json';
 import documentsManifest from '../../tests/fixtures/extensions/documents/extension.json';
+import upstreamEditorManifest from '../../tests/fixtures/extensions/upstream-editor/manifest.json';
 import diffManifest from '../../tests/fixtures/extensions/diff/extension.json';
 import searchManifest from '../../tests/fixtures/extensions/search/extension.json';
 import browserManifest from '../../tests/fixtures/extensions/browser/extension.json';
@@ -507,8 +508,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
       snapshot.packages.push({ manifest: simulatorManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
-    if (new URLSearchParams(location.search).has('documents-coverage') || new URLSearchParams(location.search).has('diff-coverage') || new URLSearchParams(location.search).has('search-coverage') || new URLSearchParams(location.search).has('browser-coverage') || new URLSearchParams(location.search).has('terminal-coverage')) {
-      const selected = new URLSearchParams(location.search).has('terminal-coverage') ? terminalManifest : new URLSearchParams(location.search).has('browser-coverage') ? browserManifest : new URLSearchParams(location.search).has('search-coverage') ? searchManifest : new URLSearchParams(location.search).has('diff-coverage') ? diffManifest : documentsManifest;
+    if (new URLSearchParams(location.search).has('documents-coverage') || new URLSearchParams(location.search).has('upstream-editor') || new URLSearchParams(location.search).has('diff-coverage') || new URLSearchParams(location.search).has('search-coverage') || new URLSearchParams(location.search).has('browser-coverage') || new URLSearchParams(location.search).has('terminal-coverage')) {
+      const selected = new URLSearchParams(location.search).has('terminal-coverage') ? terminalManifest : new URLSearchParams(location.search).has('browser-coverage') ? browserManifest : new URLSearchParams(location.search).has('search-coverage') ? searchManifest : new URLSearchParams(location.search).has('diff-coverage') ? diffManifest : new URLSearchParams(location.search).has('upstream-editor') ? upstreamEditorManifest : documentsManifest;
       if (snapshot.packages.some(item => item.manifest.id === selected.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: selected as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();

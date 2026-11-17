@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-editor",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "requiredContributions": ["commands", "menus", "layouts"],
+  "contributes": {
+    "commands": [{ "id": "sample.upstream-editor/info", "title": "Editor tools", "action": { "kind": "showMessage", "message": "The floating editor keeps its own tabs, drafts and save handlers." } }],
+    "menus": [
+      { "id": "sample.upstream-editor/action", "location": "panda.documents.actions", "command": "sample.upstream-editor/info", "presentation": "button" },
+      { "id": "sample.upstream-editor/context", "location": "panda.documents.context", "command": "sample.upstream-editor/info" }
+    ],
+    "layouts": [{ "id": "sample.upstream-editor/order", "title": "Attach first", "location": "panda.documents.actions", "rules": [{ "id": "panda.documents.actions/attach", "target": "panda.documents.actions/copy", "side": "before" }] }]
+  }
+}

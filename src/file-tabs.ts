@@ -14,6 +14,7 @@ import { onExtensionsChanged, extensionsSnapshot } from './extensions/manager';
 import { applyControlOrder, applyControlVisibility, layout } from './extensions/layout-host';
 import { mountExtensionActions } from './extensions/header';
 import { openContextActions } from './extensions/context-actions';
+import { captureEditorIdentity, editorActionVerdict, publishEditorState, type EditorIdentity, type EditorMode } from './extensions/upstream-editor';
 
 type Context = { projectId: string; sessionId?: string };
 /** `source` shows a viewer-handled file (e.g. an SVG) as text. */
@@ -172,6 +173,8 @@ export function createFileTabs(deps: Deps) {
     view.dataset.path = active?.path ?? '';
     strip.hidden = !entry?.tabs.length;
     view.hidden = !active || !entry?.visible;
+    const mode: EditorMode = !active ? 'none' : typeof active.content !== 'string' ? 'viewer' : active.editing ? 'source' : 'preview';
+    publishEditorState(pane, { mode, dirty: Boolean(active && dirty(active)), saving: Boolean(active?.saving) });
     if (!entry?.tabs.length) { disposeActions(); disposeOffice(); disposeOffice = () => {}; viewerControls = []; strip.innerHTML = ''; view.innerHTML = ''; refreshPresentation(); return; }
     const tabButton = (path: string, label: string, glyph: string) => {
       const selected = entry.active === path;
@@ -287,6 +290,7 @@ export function createFileTabs(deps: Deps) {
     const discard = view.querySelector<HTMLButtonElement>('[data-file-tab="discard"]');
     if (discard) discard.disabled = Boolean(tab.saving) || !dirty(tab);
     syncSelection();
+    publishEditorState(pane, { mode: tab.editing && typeof tab.content === 'string' ? 'source' : typeof tab.content === 'string' ? 'preview' : 'viewer', dirty: dirty(tab), saving: Boolean(tab.saving) });
     for (const entry of thread()?.tabs ?? []) {
       const label = strip.querySelector<HTMLElement>(`[data-tab="${CSS.escape(entry.path)}"] [role="tab"]>span`);
       if (label) label.textContent = name(entry.path) + (dirty(entry) ? ' ●' : '');
@@ -365,10 +369,16 @@ export function createFileTabs(deps: Deps) {
     const controls = ['select', 'close', 'attach', 'copy', 'preview'];
     const currentProps = () => presentation(tab, controls);
     const props = currentProps(), captured = createDocumentPresentation(props, currentProps, () => true, perform);
+    const identity = captureEditorIdentity({ context: props.context, revision: props.revision, tabId: tab.id, documentId: tab.documentId });
+    /** The live identity of the captured tab, or nothing once it was closed or the editor moved to another task. */
+    const liveIdentity = (): EditorIdentity | undefined => {
+      const live = currentProps(), found = live.tabs.find(item => item.id === tab.id);
+      return found ? { context: live.context, revision: live.revision, tabId: found.id, documentId: found.documentId } : undefined;
+    };
     openContextActions(anchor, 'panda.documents.context', { ...tab.context, selection: { kind: 'file', ids: [tab.id, tab.documentId] }, revision: props.revision }, {
       title: name(tab.path), notify: deps.notify, items: props.tabs.find(item => item.id === tab.id)!.controls.filter(control => ['select', 'close', 'attach', 'copy', 'preview'].includes(control.id) && control.enabled).map(control => ({ id: control.id, label: control.label })),
       onSelect: controlId => { const result = captured.dispatch({ contractVersion: 1, context: props.context, revision: props.revision, tabId: tab.id, documentId: tab.documentId, controlId }); if (!result.ok) deps.notify(result.reason); },
-      isAlive: () => currentProps().revision === props.revision && currentProps().visible,
+      isAlive: () => editorActionVerdict(identity, liveIdentity()) === 'ok' && currentProps().visible,
     });
   };
   strip.addEventListener('contextmenu', contextMenu);
