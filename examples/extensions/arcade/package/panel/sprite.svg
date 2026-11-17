@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="16" viewBox="0 0 64 16">
+  <!-- Four 16x16 tiles in a row: head, body, fruit, wall. -->
+  <rect x="1" y="1" width="14" height="14" rx="4" fill="#2f9e5f"/>
+  <circle cx="5" cy="6" r="1.6" fill="#ffffff"/><circle cx="11" cy="6" r="1.6" fill="#ffffff"/>
+  <rect x="17" y="2" width="12" height="12" rx="3" fill="#53b97f"/>
+  <circle cx="40" cy="9" r="5" fill="#d9534f"/><rect x="39" y="2" width="2" height="4" fill="#6b4a2b"/>
+  <rect x="49" y="1" width="14" height="14" rx="2" fill="#7a7f87"/><path d="M49 8h14M56 1v14" stroke="#5d6168" stroke-width="1"/>
+</svg>

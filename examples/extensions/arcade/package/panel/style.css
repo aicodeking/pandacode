@@ -1,0 +1,30 @@
+/* Colours follow the application's theme: the page sets data-theme from the host's theme message, and the host's own
+   tokens (names starting with --) are applied on top when it sends them. Nothing animates layout. */
+:root {
+  color-scheme: light dark;
+  font: 13px/1.4 system-ui, sans-serif;
+  --arcade-bg: #101418; --arcade-grid: #1b232b; --arcade-ink: #e6e9ec; --arcade-muted: #9aa4ad;
+  --arcade-edge: color-mix(in srgb, #ffffff 12%, transparent); --arcade-head: #2f9e5f; --arcade-body: #53b97f; --arcade-fruit: #d9534f; --arcade-wall: #7a7f87;
+  --arcade-accent: #2f9e5f;
+}
+:root[data-theme="light"] {
+  --arcade-bg: #f4f6f8; --arcade-grid: #e3e8ec; --arcade-ink: #1c2126; --arcade-muted: #5b6670;
+  --arcade-edge: color-mix(in srgb, #000000 12%, transparent);
+}
+body { margin: 0; padding: 10px; display: grid; gap: 8px; justify-items: start; color: var(--arcade-ink); background: transparent; min-width: 320px; }
+header { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+header b { font-variant-numeric: tabular-nums; }
+#board { display: block; width: 320px; height: 320px; max-width: 100%; border: 1px solid var(--arcade-edge); border-radius: 6px; background: var(--arcade-bg); image-rendering: pixelated; outline-offset: 2px; }
+#board:focus-visible { outline: 2px solid var(--arcade-accent); }
+#state { min-height: 1.4em; color: var(--arcade-muted); }
+#state[data-paused="false"] { color: var(--arcade-ink); }
+#actions { display: flex; gap: 6px; }
+button { font: inherit; color: inherit; background: transparent; border: 1px solid var(--arcade-edge); border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: opacity 120ms ease-out, background-color 120ms ease-out; }
+button:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+button:active { opacity: 0.8; }
+button:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 1px; }
+button[aria-pressed="true"] { border-color: var(--arcade-accent); }
+small { color: var(--arcade-muted); }
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none; }
+}

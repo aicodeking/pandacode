@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arcade</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header>
+    <span>Score <b id="score">0</b></span>
+    <span>Best <b id="best">0</b></span>
+  </header>
+  <canvas id="board" width="320" height="320" tabindex="0" role="img" aria-label="Snake board. Arrow keys steer, Space pauses, Escape returns to the app."></canvas>
+  <div id="state" role="status">Loading.</div>
+  <div id="actions">
+    <button id="restart" type="button">New round</button>
+    <button id="sound" type="button" aria-pressed="false">Sound off</button>
+  </div>
+  <small>Arrow keys steer. Space pauses and resumes. Escape returns the keyboard to the app.</small>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

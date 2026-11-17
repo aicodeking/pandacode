@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.arcade",
+  "version": "1.0.0",
+  "name": "Arcade",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews", "storage.private"],
+  "contributes": {
+    "views": [
+      { "id": "sample.arcade/game", "title": "Arcade", "text": "Host-rendered fallback: the snake game draws here once the package may show panels.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 320 } } }
+    ],
+    "commands": [
+      { "id": "sample.arcade/open", "title": "Open arcade", "action": { "kind": "openView", "view": "sample.arcade/game" } }
+    ],
+    "menus": [
+      { "id": "sample.arcade/button", "location": "panda.workspace.header.actions", "command": "sample.arcade/open", "presentation": "button", "text": "Arcade" }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "arcade-evidence-columns",
+  "task": "R1205",
+  "note": "Every column below is prepared and was NOT run when written (binding user decision of 2026-11-16: no tests, no installed-app or browser runs until the final test phase). Nothing here is an observation.",
+  "columns": {
+    "preview": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "spec": "tests/extensions-example-arcade.spec.ts",
+      "grep": "arcade preview:",
+      "engines": {
+        "chromium": { "status": "prepared, not run (deferred to the final test phase)", "port": 16641, "command": "npx.cmd playwright test tests/extensions-example-arcade.spec.ts --workers=1" },
+        "webkit": { "status": "prepared, not run (deferred to the final test phase)", "port": 16642, "command": "npx.cmd playwright test -c playwright.webkit.config.ts tests/extensions-example-arcade.spec.ts --workers=1" }
+      },
+      "environment": { "PW_PORT": "16641 (Chromium) / 16642 (WebKit)", "PW_WORKERS": "2", "PANDACODE_TEST_CHROME": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "PLAYWRIGHT_BROWSERS_PATH": "D:\\panda-code\\_work\\00-tmp\\playwright-browsers" },
+      "covers": ["plan behaviours 1 to 7 in the frame of the preview", "zero service starts", "service-only calls answer UnsupportedCapability", "failed page leaves the application responsive", "disable and safe mode"],
+      "doesNotCover": ["a real webview key handling", "sound output", "the worker in WebKit (the page builds the level there)", "plan behaviour 8 (a streaming scripted task), installed only"]
+    },
+    "installedWindows": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "runner": "tests/fixtures/extensions/runtime-windows-panels/qualify.mjs (R0306, reused; no second runner)",
+      "command": "node tests/fixtures/extensions/runtime-windows-panels/qualify.mjs --build",
+      "profile": "a dedicated Windows account or a Windows Sandbox with PANDACODE_QUALIFICATION_PROFILE=dedicated",
+      "stage": {
+        "package": "examples/extensions/arcade/package (zip it like stagePackages does; sample.arcade)",
+        "grants": ["ui.richViews", "storage.private"],
+        "environment": {},
+        "seeds": { "default": "none: the package has no fake backend", "task": "a B5 scripted fake-agent task (tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs) that streams an answer while a round runs" },
+        "integration": "stage.mjs PACKAGES and expected.json belong to R0306: the final phase adds one `arcade` entry there; this fixture does not edit them"
+      },
+      "scenarios": [
+        { "id": "assets", "steps": "open Arcade; read window.__arcade.frames and __arcadeDo.resources()", "expect": { "framesRiseAtDisplayRate": true, "resources": "style.css, main.js, game.js, audio.js, sprite.svg, one sound after a key, all on the package origin, none from the network", "levelFrom": "worker" } },
+        { "id": "input", "steps": "click the board, press arrows; focus the composer and press arrows; press Escape in the panel", "expect": { "arrowsSteerOnlyWithFocus": true, "applicationDoesNotScroll": true, "escapeReturnsFocus": true } },
+        { "id": "state", "steps": "play to a score; switch view and back; reload the panel; close and reopen the application", "expect": { "roundSurvivesSwitchAndReload": true, "bestSurvivesRestart": true, "soundPreferenceKept": true } },
+        { "id": "focus-visibility", "steps": "hide the inspector tab; focus another window; press Space", "expect": { "pausedOnHiddenAndBlur": true, "resumesOnSpace": true } },
+        { "id": "task-stream", "steps": "start a B5 fake-agent task that streams, play a round, close the panel", "expect": { "threadStreamsWithoutStall": true, "taskUntouchedByPanelClose": true } },
+        { "id": "zero-service", "steps": "read the Running list of the Extensions page and the process list", "expect": { "arcadeNotRunning": true, "noProcessForPackage": true, "serviceOnlyCallsFail": "UnsupportedCapability for postMessage and storage.directory" } },
+        { "id": "failure-containment", "steps": "run __arcadeDo.fail() and, separately, __arcadeDo.hang(60000) with a fake task running", "expect": { "panelFailedWithReload": true, "hungPanelEndedByWatchdog": true, "applicationAndTaskResponsive": true } },
+        { "id": "cleanup", "steps": "disable the package; re-enable; enter safe mode", "expect": { "noPanelFrame": true, "keyboardInApp": true, "restoredAfterEnable": true } }
+      ],
+      "closes": "the arcade for R3 only once these scenarios have run and passed"
+    }
+  }
+}
