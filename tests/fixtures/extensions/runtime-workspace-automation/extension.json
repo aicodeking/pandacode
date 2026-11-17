@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.runtime-workspace-automation",
+  "version": "1.0.0",
+  "name": "Workspace automation",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "workspace.manage"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.runtime-workspace-automation/control", "title": "Workspace automation control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.runtime-workspace-automation/header", "location": "panda.workspace.header.actions", "command": "sample.runtime-workspace-automation/control", "presentation": "button", "text": "Workspace automation" }
+    ]
+  }
+}

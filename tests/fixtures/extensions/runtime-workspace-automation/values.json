@@ -1,0 +1,22 @@
+{
+  "bot": { "name": "Scout", "role": "Reviewer", "instructions": "Review pull requests.", "goals": "Keep the queue short.", "provider": "claude", "model": "sonnet", "mode": "ask", "heartbeatMinutes": 30, "color": "#3366ff", "reasoningEffort": "", "backupModels": [{ "provider": "codex", "model": "gpt-5" }], "fallbackMode": "ask", "notify": true, "whileWorking": "queue", "showPlan": false, "skills": ["review-code"], "mcp": ["files"] },
+  "botPatch": { "role": "Release captain", "heartbeatMinutes": 0, "showPlan": true, "skills": [] },
+  "channel": { "name": "launch" },
+  "badBots": [
+    { "input": { "name": "A", "secret": 1 }, "code": "InvalidShape", "path": "secret" },
+    { "input": { "name": 5 }, "code": "InvalidShape", "path": "name" },
+    { "input": { "role": "no name" }, "code": "InvalidShape", "path": "name" },
+    { "input": { "name": "A", "provider": "claude", "model": "sonnet", "mode": "yolo" }, "code": "InvalidShape", "path": "mode" },
+    { "input": { "name": "A", "provider": "nobody", "model": "m", "mode": "ask" }, "code": "InvalidShape", "path": "provider" },
+    { "input": { "name": "A", "provider": "claude", "model": "m", "mode": "ask", "heartbeatMinutes": 99999 }, "code": "InvalidShape", "path": "heartbeatMinutes" },
+    { "input": { "name": "A", "provider": "claude", "model": "m", "mode": "ask", "color": "red" }, "code": "InvalidShape", "path": "color" },
+    { "input": { "name": "A", "skills": ["Not A Slug"] }, "code": "InvalidShape", "path": "skills" }
+  ],
+  "badChannels": [
+    { "input": { "name": "x", "memberIds": ["a", "a"] }, "code": "InvalidShape", "path": "memberIds" },
+    { "input": { "name": "x" }, "code": "InvalidShape", "path": "memberIds" },
+    { "input": { "memberIds": [] }, "code": "InvalidShape", "path": "name" },
+    { "input": { "name": "x", "memberIds": [], "kind": "dm" }, "code": "InvalidShape", "path": "kind" },
+    { "input": { "name": "x", "memberIds": ["ghost"] }, "code": "NotFound", "path": "$" }
+  ]
+}
