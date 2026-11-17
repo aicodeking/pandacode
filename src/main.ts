@@ -111,7 +111,7 @@ import { createAgentInput, type AgentInput } from './agent-input';
 import { mountSlashCommands, type SlashCommand } from './slash-commands';
 import { mountFileMentions, type MentionEntry } from './file-mentions';
 import { createFileTabs } from './file-tabs';
-import { createFileExplorer } from './file-explorer';
+import { createFileExplorer, noteFilePollChange, setFilePollMounted } from './file-explorer';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
@@ -695,6 +695,8 @@ const fileTabs = createFileTabs({
   },
   focusConversation: () => document.querySelector<HTMLElement>('#prompt')?.focus(),
   changed: () => {
+    // Every redraw of the tabs (an open file reloaded from disk included) is a change the poll keeps up with.
+    syncFilePoll(); noteFilePollChange();
     const toggle = $('#file-editor-toggle'); toggle.hidden = !fileTabs.count;
     toggle.classList.toggle('active', fileTabs.visible); toggle.setAttribute('aria-expanded', String(fileTabs.visible));
   },
@@ -717,7 +719,7 @@ const fileExplorer = createFileExplorer({
   },
   created: (context, parent) => { if (parent && context.projectId === state.projectId && (context.sessionId ?? '') === state.sessionId) state.openFolders.add(parent); },
   hasChanges: (context, path) => fileTabs.hasChanges(context, path),
-  refresh: async () => { fileTabs.reload(); await refreshExplorerFiles(); },
+  refresh: async () => { fileTabs.reload(); return refreshExplorerFiles(); },
   notify, report,
 });
 document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('contextmenu', event => {
@@ -5827,22 +5829,34 @@ function onAgent(event: AgentEvent): void {
   if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
 }
 
-async function refreshExplorerFiles(): Promise<void> {
-  if (!project() || session()?.remoteDevice || state.inspectorTab !== 'files' || !state.inspector || state.inspectorLoading) return;
+/** Whether two listings hold the same entries in the same order: the fields `list_files` returns, compared in place, so a
+ *  poll of an unchanged tree builds no strings (it used to JSON.stringify both sides every 2 s). */
+function sameListing(current: FileEntry[] | undefined, next: FileEntry[]): boolean {
+  const before = current ?? [];
+  if (before.length !== next.length) return false;
+  for (let i = 0; i < next.length; i++) {
+    const a = before[i], b = next[i];
+    if (a.name !== b.name || a.path !== b.path || a.isDir !== b.isDir) return false;
+  }
+  return true;
+}
+/** Re-reads the open tree; true when it changed and was redrawn. */
+async function refreshExplorerFiles(): Promise<boolean> {
+  if (!project() || session()?.remoteDevice || state.inspectorTab !== 'files' || !state.inspector || state.inspectorLoading) return false;
   const key = workspaceKey(), context = workspaceContext(), folders = ['', ...state.openFolders];
   const results = await Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', { ...context, path })));
-  if (key !== workspaceKey()) return;
-  const same = (current: FileEntry[] | undefined, next: FileEntry[]) => JSON.stringify(current ?? []) === JSON.stringify(next);
+  if (key !== workspaceKey()) return false;
   let changed = false;
   results.forEach((result, i) => {
     if (result.status !== 'fulfilled') return;
     if (!folders[i]) {
-      if (!same(state.files, result.value) || state.filesError) { state.files = result.value; state.filesError = ''; changed = true; }
-    } else if (state.openFolders.has(folders[i]) && !same(state.folderFiles.get(folders[i]), result.value)) {
+      if (!sameListing(state.files, result.value) || state.filesError) { state.files = result.value; state.filesError = ''; changed = true; }
+    } else if (state.openFolders.has(folders[i]) && !sameListing(state.folderFiles.get(folders[i]), result.value)) {
       state.folderFiles.set(folders[i], result.value); changed = true;
     }
   });
   if (changed) renderInspector();
+  return changed;
 }
 
 /** A thread switch within the workspace whose status loaded this long ago (ms) reuses it rather than reloading the
@@ -6155,7 +6169,16 @@ let inspectorDrawn = false, inspectorView: WorkspaceView | undefined;
 let inspectorArmed = false;
 const armInspector = () => { inspectorArmed = true; removeEventListener('pointerdown', armInspector, true); removeEventListener('keydown', armInspector, true); };
 addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
+/** Runs the Files poll's interval only while the Files tree is open in a shown inspector or a file tab exists. */
+function syncFilePoll(): void {
+  const filesOpen = state.inspector && !inspectorSuppressed && !state.sharedChannelId && state.inspectorTab === 'files';
+  setFilePollMounted(filesOpen || fileTabs.count > 0);
+}
 function renderInspector(): void {
+  drawInspector();
+  syncFilePoll();
+}
+function drawInspector(): void {
   const diffEpoch = ++inspectorDiffEpoch;
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.

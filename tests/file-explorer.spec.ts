@@ -246,3 +246,80 @@ test('file explorer: a window that starts unfocused polls at the 8 s rate', asyn
   const after = await polls();
   await expect.poll(polls, { timeout: 3500, intervals: [100], message: 'focused again, it polls every 2 s' }).toBeGreaterThan(after);
 });
+
+/** Tracks the Files poll's live interval (named `filePollTick` in file-explorer.ts) by its period, so a test can read the
+ * rate directly: [] while nothing is mounted, [2000] while in use, [8000] once settled. */
+async function trackPollTimer(page: Page): Promise<() => Promise<number[]>> {
+  await page.addInitScript(() => {
+    const live = new Map<number, number>(), set = window.setInterval.bind(window), clear = window.clearInterval.bind(window);
+    window.setInterval = ((handler: TimerHandler, ms?: number, ...rest: unknown[]) => {
+      const id = set(handler, ms, ...rest);
+      if (typeof handler === 'function' && handler.name === 'filePollTick') live.set(id, ms ?? 0);
+      return id;
+    }) as typeof window.setInterval;
+    window.clearInterval = ((id?: number) => { if (id !== undefined) live.delete(id); clear(id); }) as typeof window.clearInterval;
+    (window as any).__filePollPeriods = () => [...live.values()];
+  });
+  return () => page.evaluate(() => (window as any).__filePollPeriods() as number[]);
+}
+/** Waits, without input, until the focused poll settles to 8 s after its unchanged reads. */
+async function settle(page: Page, periods: () => Promise<number[]>): Promise<void> {
+  await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'three unchanged reads slow the focused poll to 8 s' }).toEqual([8000]);
+}
+
+test('file explorer: a focused poll backs off to 8 s after unchanged reads', async ({ page }) => {
+  test.setTimeout(60_000);
+  const periods = await trackPollTimer(page);
+  const polls = await countPolls(page);
+  expect(await periods()).toEqual([2000]);
+  await settle(page, periods);
+  // Settled: no 2 s tick, and the next read comes on the 8 s beat.
+  await expectQuiet(page, polls, 'no 2 s poll once the tree has read the same three times');
+  const from = await polls();
+  await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'a settled poll still reads every 8 s' }).toBeGreaterThan(from);
+  expect(await periods()).toEqual([8000]);
+});
+
+test('file explorer: input brings a settled poll back to 2 s', async ({ page }) => {
+  test.setTimeout(60_000);
+  const periods = await trackPollTimer(page);
+  const polls = await countPolls(page);
+  await settle(page, periods);
+  await page.keyboard.press('Shift');
+  expect(await periods()).toEqual([2000]);
+  const from = await polls();
+  await expect.poll(polls, { timeout: 3000, intervals: [100], message: 'after input, the next read is on the 2 s beat' }).toBeGreaterThan(from);
+  const next = await polls();
+  await expect.poll(polls, { timeout: 3000, intervals: [100], message: 'and the one after it' }).toBeGreaterThan(next);
+});
+
+test('file explorer: no poll timer runs while neither the tree nor a file tab is mounted', async ({ page }) => {
+  test.setTimeout(45_000);
+  const periods = await trackPollTimer(page);
+  await countPolls(page);
+  expect(await periods()).toEqual([2000]);
+  await page.getByRole('button', { name: 'Toggle file explorer', exact: true }).click();
+  await expect(explorer(page)).toBeHidden();
+  await expect(page.locator('#file-tabs .file-tab')).toHaveCount(0);
+  expect(await periods(), 'closing the tree with no file open stops the timer').toEqual([]);
+  // An open file alone is mounted: the timer comes back for it and goes again when its tab closes.
+  await showExplorer(page);
+  expect(await periods()).toEqual([2000]);
+  await item(page, 'README.md').click();
+  await page.getByRole('button', { name: 'Toggle file explorer', exact: true }).click();
+  await expect(explorer(page)).toBeHidden();
+  expect(await periods(), 'an open file tab keeps the timer').toEqual([2000]);
+  await page.locator('#file-tabs [data-file-tab="close"]').click();
+  await expect(page.locator('#file-tabs .file-tab')).toHaveCount(0);
+  await expect.poll(periods, { message: 'the last tab closing stops the timer' }).toEqual([]);
+});
+
+test('file explorer: a change on disk shows within one settled tick and restores the 2 s rate', async ({ page }) => {
+  test.setTimeout(60_000);
+  const periods = await trackPollTimer(page);
+  await countPolls(page);
+  await settle(page, periods);
+  await disk(page, 'manage_workspace_entry', { action: 'new-file', path: 'appeared.txt' });
+  await expect(item(page, 'appeared.txt')).toBeVisible({ timeout: 9000 });
+  expect(await periods(), 'a change brings the quick rate back').toEqual([2000]);
+});

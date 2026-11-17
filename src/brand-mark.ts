@@ -32,6 +32,11 @@ export function desktopBrandFlight(h: number, rest: Point, target: (Point & { sc
   return { ...p, scale: WORD_SCALE * p.scale * (target.scale ?? SCALE) ** glide(h), opacity: 1 };
 }
 
+/** After this long with no pointer or keyboard input, the mark finishes its blink and stops scheduling more. */
+const IDLE_AFTER_MS = 120_000;
+/** A still moment after the startup show and its breaths, where only rest blinks remain. */
+const REST_FROM = SHOW_END + 8;
+
 let markId = 0;
 function makeMark() {
   const stage = document.createElement('span');
@@ -96,10 +101,20 @@ function measure(mark: Mark) {
   return { ...desktopBrandLayout(spans, ascents, baseline), spans };
 }
 type Layout = ReturnType<typeof measure>;
-const transform = (el: SVGElement, value: string) => { el.setAttribute('transform', value); };
+/** The last value written per element and property: a frame that changes nothing writes nothing. */
+const written = new WeakMap<Element, Map<string, string>>();
+function changed(el: Element, key: string, value: string): boolean {
+  let seen = written.get(el);
+  if (!seen) written.set(el, seen = new Map());
+  if (seen.get(key) === value) return false;
+  seen.set(key, value);
+  return true;
+}
+const transform = (el: SVGElement, value: string) => { if (changed(el, 'transform', value)) el.setAttribute('transform', value); };
+const style = (el: HTMLElement | SVGElement, property: string, value: string) => { if (changed(el, property, value)) el.style.setProperty(property, value); };
 
 function drawPanda(mark: Mark, p: Pose, x: number, feetY: number, scale = 1, spin = 0) {
-  mark.panda.style.transform = `translate(${x - PANDA_SIZE / 2}px,${feetY - PANDA_SIZE}px) scale(${scale})`;
+  style(mark.panda, 'transform', `translate(${x - PANDA_SIZE / 2}px,${feetY - PANDA_SIZE}px) scale(${scale})`);
   const g = mark.parts;
   transform(g.lean, `rotate(${p.groundLean} 11 22)`);
   transform(g.spin, `rotate(${p.pitch + p.tilt + spin} 11 11)`);
@@ -126,8 +141,8 @@ function drawHeader(mark: Mark, layout: Layout, t: number, trickAt = 0) {
   mark.letters.forEach((el, i) => {
     const state = letter(t, layout.passes[i]);
     const perch = PERCH_LETTER.indexOf(i as (typeof PERCH_LETTER)[number]);
-    el.style.transform = `translateY(${state.dip * DIP}px)`;
-    el.style.setProperty('--brand-wipe', `${100 * (1 - Math.max(state.glow, perch < 0 ? 0 : perchGlow(t, perch)))}%`);
+    style(el, 'transform', `translateY(${state.dip * DIP}px)`);
+    style(el, '--brand-wipe', `${100 * (1 - Math.max(state.glow, perch < 0 ? 0 : perchGlow(t, perch)))}%`);
   });
   const press = p.grounded && p.perch !== 0 ? letter(t, layout.passes[PERCH_LETTER[p.perch]]).dip * DIP : 0;
   drawPanda(mark, { ...p, sy: p.sy * q.sy * (1 + .04 * p.breath), earsL: p.earsL + q.earsL, earsR: p.earsR + q.earsR,
@@ -148,6 +163,8 @@ export function mountDesktopBrand(host: HTMLElement): void {
   const forced = matchMedia('(forced-colors: active)');
   const root = document.documentElement;
   let frame = 0, timer = 0, last = 0, time = 0, trickAt = 0, ready = false, shown = false, scale = SCALE;
+  // Rest blinks run only for a focused window and a user who has touched it within IDLE_AFTER_MS.
+  let focused = true, dormant = false, lastInput = performance.now(), idleAfterMs = IDLE_AFTER_MS, frames = 0;
   let launch: { el: HTMLElement; mark: Mark; layout: Layout; rest: Point; from: Point; starts: number[]; pushed: number; at: number; target: (Point & { scale: number }) | null; flying: boolean; input: AbortController } | null = null;
   const staticMotion = () => motion.matches || forced.matches;
   const visible = () => host.isConnected && host.getClientRects().length > 0 && getComputedStyle(host).visibility !== 'hidden';
@@ -174,7 +191,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
     launch = null;
     delete host.dataset.brandLaunch;
   };
-  const canRun = () => ready && shown && host.isConnected && !document.hidden && !staticMotion();
+  const canRun = () => ready && shown && focused && !dormant && host.isConnected && !document.hidden && !staticMotion();
   const wake = () => {
     stop();
     if (!launch && !canRun()) return;
@@ -188,6 +205,7 @@ export function mountDesktopBrand(host: HTMLElement): void {
   };
   const tick = (now: number) => {
     frame = 0;
+    frames++;
     if (document.hidden || staticMotion()) { endLaunch(); return; }
     const dt = Math.min((now - last) / 1000, .05);
     last = now;
@@ -214,11 +232,15 @@ export function mountDesktopBrand(host: HTMLElement): void {
       l.el.style.setProperty('--launch-plate', String(1 - smooth(h * 2)));
       if (h >= 1) { endLaunch(); syncLayout(); time = 0; }
     } else {
-      if (!canRun()) return;
+      // Blur and the no-input stretch are checked at rest below, so a blink in flight still reopens the eyes.
+      if (!ready || !shown || !host.isConnected) return;
       time += dt;
       if (trickAt > 0) trickAt = trickAt + dt >= TRICK_S ? 0 : trickAt + dt;
       drawHeader(mark, layout, time, trickAt);
       if (!moving(time) && trickAt === 0) {
+        // At rest with no input for a while: sleep until the next pointer or key instead of blinking on.
+        if (!focused) return;
+        if (now - lastInput >= idleAfterMs) { dormant = true; return; }
         const next = nextWake(time);
         timer = window.setTimeout(() => { time = next; wake(); }, (next - time) * 1000);
         return;
@@ -263,9 +285,31 @@ export function mountDesktopBrand(host: HTMLElement): void {
   if (host.parentElement) observer.observe(host.parentElement);
   window.addEventListener('resize', resize, { passive: true });
   document.fonts?.addEventListener('loadingdone', resize);
-  const preference = () => { endLaunch(); stop(); time = staticMotion() ? 0 : SHOW_END + 8; trickAt = 0; syncLayout(); wake(); };
+  const preference = () => { endLaunch(); stop(); time = staticMotion() ? 0 : REST_FROM; trickAt = 0; syncLayout(); wake(); };
   motion.addEventListener('change', preference);
   forced.addEventListener('change', preference);
+  // A rest blink in flight finishes and stops at rest; the startup show or a trick skips to the rest pose instead of
+  // playing on (or freezing mid-air) behind another window. A pending rest timer is simply dropped.
+  window.addEventListener('blur', () => {
+    focused = false;
+    if (launch) return;
+    if (frame && (trickAt > 0 || time < REST_FROM)) { trickAt = 0; time = REST_FROM; drawHeader(mark, layout, time); }
+    else if (frame) return;
+    stop();
+  });
+  window.addEventListener('focus', () => { focused = true; lastInput = performance.now(); dormant = false; if (!frame && !timer) wake(); });
+  const active = () => {
+    lastInput = performance.now();
+    if (dormant) { dormant = false; wake(); }
+  };
+  for (const event of ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart']) window.addEventListener(event, active, { capture: true, passive: true });
+  if (!('__TAURI_INTERNALS__' in window)) {
+    // Preview only: specs count frames and shorten the no-input stretch.
+    Object.defineProperty(window, '__brand', { configurable: true, value: {
+      get frames() { return frames; }, get dormant() { return dormant; }, get time() { return time; }, restFrom: REST_FROM,
+      get idleAfterMs() { return idleAfterMs; }, set idleAfterMs(ms: number) { idleAfterMs = ms; },
+    } });
+  }
   document.addEventListener('visibilitychange', () => {
     stop();
     endLaunch();
