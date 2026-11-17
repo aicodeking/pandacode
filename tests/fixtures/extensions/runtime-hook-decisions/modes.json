@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "about": "R0505 per-call `can`, source and coverage, and the full-mode launch rule, read by runtime_hook_decisions::tests and tests/extensions-runtime-hook-decisions.spec.ts. `can` drops approve and rewriteInput where the mode or sandbox holds the call: plan for anything but read/search/fetch, Codex/DeepSeek/Muse escalations, the Claude Code family in full, a standing-rule (lasting) request; ask-at-host never offers rewriteInput. Coverage is the harness capability table's, never everyCall for a permission request. A full launch asks at the harness only for the listed harnesses and only while a deciding tool.before hook is held.",
+  "provenance": "synthetic",
+  "calls": [
+    { "harness": "claude", "mode": "ask", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["approve", "deny", "ask", "rewriteInput"], "coverage": "askedCalls" },
+    { "harness": "claude", "mode": "full", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["deny", "ask"], "coverage": "escalationsOnly" },
+    { "harness": "claude", "mode": "plan", "kind": "read", "lasting": false, "source": "permissionRequest", "can": ["approve", "deny", "ask", "rewriteInput"], "coverage": "askedCalls" },
+    { "harness": "claude", "mode": "plan", "kind": "edit", "lasting": false, "source": "permissionRequest", "can": ["deny", "ask"], "coverage": "askedCalls" },
+    { "harness": "codex", "mode": "ask", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["deny", "ask"], "coverage": "escalationsOnly" },
+    { "harness": "codex", "mode": "full", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["deny", "ask"], "coverage": "askedCalls" },
+    { "harness": "opencode", "mode": "ask", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["approve", "deny", "ask"], "coverage": "askedCalls" },
+    { "harness": "opencode", "mode": "full", "kind": "shell", "lasting": false, "source": "askAtHost", "can": ["approve", "deny", "ask"], "coverage": "askedCalls" },
+    { "harness": "kimi", "mode": "ask", "kind": "shell", "lasting": true, "source": "permissionRequest", "can": ["deny", "ask"], "coverage": "askedCalls" },
+    { "harness": "kimi", "mode": "auto", "kind": "edit", "lasting": false, "source": "permissionRequest", "can": ["approve", "deny", "ask"], "coverage": "escalationsOnly" },
+    { "harness": "devin", "mode": "ask", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["approve", "deny", "ask"], "coverage": "escalationsOnly" },
+    { "harness": "fake.agent/agent", "mode": "ask", "kind": "shell", "lasting": false, "source": "permissionRequest", "can": ["approve", "deny", "ask"], "coverage": "askedCalls" }
+  ],
+  "launches": [
+    { "harness": "opencode", "mode": "full", "held": true, "asks": true },
+    { "harness": "opencode", "mode": "full", "held": false, "asks": false },
+    { "harness": "opencode", "mode": "ask", "held": true, "asks": false },
+    { "harness": "kimi", "mode": "full", "held": true, "asks": true },
+    { "harness": "zcode", "mode": "full", "held": true, "asks": true },
+    { "harness": "claude", "mode": "full", "held": true, "asks": false },
+    { "harness": "codex", "mode": "full", "held": true, "asks": false },
+    { "harness": "antigravity", "mode": "full", "held": true, "asks": false }
+  ]
+}

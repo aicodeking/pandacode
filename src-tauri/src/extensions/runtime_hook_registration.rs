@@ -422,15 +422,37 @@ impl HookRegistry {
     /// The attached hooks of `occurrence`'s event whose filter accepts it and whose observe grant reaches its project,
     /// in registration order (R0504 asks them one after another). The others count as filtered.
     pub fn targets(&self, occurrence: &Occurrence) -> Vec<Target> {
-        let attached: Vec<Target> = self.lock().attached.iter()
-            .filter(|((_, event), _)| event == occurrence.event)
-            .map(|((owner, _), entry)| Target { owner: owner.clone(), version: entry.version.clone(), declaration: entry.declaration.clone() }).collect();
-        let gate = self.gate();
-        let (reached, filtered): (Vec<Target>, Vec<Target>) = attached.into_iter().partition(|target| matches(&target.declaration.matcher, occurrence) && gate.as_ref().is_some_and(|gate| gate(&target.owner, &target.version, permission_of(occurrence.event), Some(&occurrence.project))));
-        self.lock().counters.filtered += filtered.len() as u64;
+        let attached = self.attached(occurrence.event);
+        let total = attached.len();
+        let reached = self.reach_of(attached, occurrence);
+        self.lock().counters.filtered += (total - reached.len()) as u64;
         // An occurrence an awaited chain delivers is not published again (R0504): it is observed here once.
         if !reached.is_empty() { self.observe(occurrence); }
         reached
+    }
+    /// The attached hooks of `event`, in registration order (R0505: a `full` launch asks at the harness while a deciding
+    /// `tool.before` hook is held).
+    pub fn attached(&self, event: &str) -> Vec<Target> {
+        self.lock().attached.iter()
+            .filter(|((_, attached), _)| attached == event)
+            .map(|((owner, _), entry)| Target { owner: owner.clone(), version: entry.version.clone(), declaration: entry.declaration.clone() }).collect()
+    }
+    fn reach_of(&self, attached: Vec<Target>, occurrence: &Occurrence) -> Vec<Target> {
+        let gate = self.gate();
+        attached.into_iter().filter(|target| matches(&target.declaration.matcher, occurrence) && gate.as_ref().is_some_and(|gate| gate(&target.owner, &target.version, permission_of(occurrence.event), Some(&occurrence.project)))).collect()
+    }
+    /// The hooks an occurrence reaches, like [`HookRegistry::targets`] but without counting or observing it (R0505
+    /// decides first whether a chain runs).
+    pub fn reach(&self, occurrence: &Occurrence) -> Vec<Target> { self.reach_of(self.attached(occurrence.event), occurrence) }
+    /// The decision path (R0505) reports this call's `tool.before` itself: a later report of the same call is not
+    /// delivered again. Answers the run's facts the first time; `None` when the call was already reported or no run is
+    /// observed.
+    pub fn claim_before(&self, task: &str, harness_call: &str, name: &str) -> Option<RunFacts> {
+        let mut inner = self.lock();
+        let run = inner.runs.get_mut(task)?;
+        if !run.before.insert(harness_call.to_owned()) { return None; }
+        run.names.insert(harness_call.to_owned(), name.to_owned());
+        Some(run.facts.clone())
     }
     /// Whether `owner` holds `permission` for `project`, by the same gate deliveries use.
     pub fn holds(&self, owner: &str, version: &str, permission: &str, project: Option<&str>) -> bool { self.gate().is_some_and(|gate| gate(owner, version, permission, project)) }
@@ -534,7 +556,8 @@ impl HookRegistry {
         call["output"] = if none { Value::Null } else { json!(&output[..cut]) };
         call["outputComplete"] = json!(none || (cut == output.len() && output.len() < OUTPUT_BYTES));
         call["durationMs"] = json!(duration);
-        call["decidedBy"] = Value::Null;
+        // The package that decided the call's permission request (R0505), else nobody.
+        call["decidedBy"] = json!(super::runtime_hook_decisions::decided_by(task, call_id));
         self.publish(&Occurrence { tool_kind: Some(kind), paths, ..Self::occurrence(&facts, "tool.after", call) })
     }
 
@@ -730,6 +753,7 @@ pub fn run_ended(session_id: &str, successful: bool, stopped: bool) {
     REGISTRY.flush_unpaired(session_id, &super::runtime_hook_payload::hook_call);
     REGISTRY.turn_ended(session_id, successful && !stopped, stopped.then_some("Stopped by the user."));
     super::runtime_hook_context::forget_run(session_id);
+    super::runtime_hook_decisions::forget_run(session_id);
 }
 /// The agent event sink (`emit_coalesced`): a permission request is `tool.before`, a finished tool call `tool.after`,
 /// a finished "Compact context" step `compaction` (recorded for `sinceCompaction` even when no hook is attached).

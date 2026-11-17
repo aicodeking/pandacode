@@ -719,7 +719,15 @@ export interface HookReceipt {
   readonly schemaVersion: 1; readonly hookId: string; readonly event: HookEvent; readonly taskId: string; readonly callId?: string; readonly applied: boolean;
   readonly code?: 'PermissionDenied' | 'UnsupportedCapability' | 'InvalidShape' | 'LimitExceeded';
   readonly refused?: Readonly<Record<string, 'PermissionDenied' | 'UnsupportedCapability'>>;
+  /** R0505: an approve or rewrite another package's deny or ask overrode, or an ask a deny overrode. */
+  readonly overriddenBy?: { readonly package: string };
 }
+/** R0505: what a `tool.before` handler returns (needs `harness.hooks.decide` for the call's project and tool kind; see docs/extensions/runtime-hook-decisions.md). `approve` and `rewrite` apply only where the payload's `can` lists `approve` / `rewriteInput`; `note` needs `ui.presentation`. Nothing (or `null`) is no decision. */
+export type ToolDecision = void | null
+  | { decision: 'approve'; reason?: string; note?: string }
+  | { decision: 'deny'; reason: string; note?: string }
+  | { decision: 'ask'; reason?: string; note?: string }
+  | { decision: 'rewrite'; input: Json; reason?: string; note?: string };
 /** Returns the host applies (R0504): `context` needs `harness.hooks.context`; `prompt`, `block`, `output`, `summary`, `instructions`, `cancel` need `harness.hooks.decide` (and, for `output` and compaction, a matching entry in the payload's `can`); `note` needs `ui.presentation`. */
 export interface PromptSubmitReturn { context?: string; prompt?: string; block?: { reason: string }; note?: string }
 export interface ToolAfterReturn { output?: Json; note?: string }
@@ -749,7 +757,7 @@ export interface HarnessCapabilities {
   readonly companion: { readonly state: 'sourceFeasible' | 'unknown' | 'none'; readonly mechanism: string | null; readonly qualification: CapabilityQualification };
   readonly hooks: { readonly toolBefore: Readonly<Record<string, ToolBeforeCell>>; readonly toolAfter: Json; readonly hostTools: Json; readonly promptSubmit: Json; readonly turn: Json; readonly compaction: Json };
 }
-export interface HarnessCoverageReport { readonly schemaVersion: 1; readonly decisions: 'observeOnly'; readonly harnesses: readonly HarnessCapabilities[]; readonly runs: readonly { readonly kind: HookRun['kind']; readonly paths: readonly Json[]; readonly counters: Json }[] }
+export interface HarnessCoverageReport { readonly schemaVersion: 1; readonly decisions: 'delivered'; readonly harnesses: readonly HarnessCapabilities[]; readonly runs: readonly { readonly kind: HookRun['kind']; readonly paths: readonly Json[]; readonly counters: Json }[] }
 export interface ServiceHarnesses { list(options?: { harness?: string; includeModels?: false }): Promise<HarnessCoverageReport>; refreshLimits(options?: { harness?: string }): Promise<null>; switchAccount(options: { harness: string; account: string }): Promise<null>; readonly console: HarnessConsoleApi; readonly commands: HarnessCommandsApi }
 export interface ResourcePage { readonly schemaVersion: 1; readonly state: 'Ready'; readonly revision: string; readonly items: readonly Json[]; readonly nextCursor: number | null }
 export interface ServiceContext { query(options: { resource: ContextResource | ContentResource | UsageResource; taskId?: string; harness?: string; limit?: number; cursor?: number; revision?: string }): Promise<SummaryPage | ResourcePage> }

@@ -1,0 +1,251 @@
+{
+  "schemaVersion": 1,
+  "about": "R0505 scripted tool.before returns, folded by runtime_hook_decisions::DecisionFold (native tests) and DecisionFold in src/extensions/runtime-hook-decisions.ts (spec). Each case lists the call's `can`, the packages asked in order with what each holds and answered (`value`, or `error` for a failure), and the expected outcome, asked count, settled receipts, notes, the input each package saw and the action per path: `request` (a permission request), `askAtHost` (full launched ask-at-host) and `standing` (ask-at-host, a request ask-at-host never answers itself). Not a harness capture.",
+  "provenance": "synthetic",
+  "cases": [
+    {
+      "id": "approve removes the prompt",
+      "can": ["approve", "deny", "ask", "rewriteInput"],
+      "payload": { "input": { "command": "npm test" }, "inputComplete": true, "inputBytes": 22 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve", "reason": "reads only" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "approve", "by": "sample.guard", "reason": "reads only", "failed": false, "input": null },
+        "asked": 1, "notes": [], "seen": [{ "command": "npm test" }],
+        "receipts": [{ "owner": "sample.guard", "applied": true }],
+        "actions": {
+          "request": { "kind": "approve", "decidedBy": "sample.guard", "reason": "reads only", "input": null },
+          "askAtHost": { "kind": "approve", "decidedBy": "sample.guard", "reason": "reads only", "input": null }
+        }
+      }
+    },
+    {
+      "id": "a deny carries its reason, wins and ends the chain",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "rm -rf build" }, "inputComplete": true, "inputBytes": 26 },
+      "steps": [
+        { "owner": "sample.other", "name": "Other", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" } } },
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "deny", "reason": "rm -rf outside the project" } } },
+        { "owner": "sample.third", "name": "Third", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "deny", "by": "sample.guard", "reason": "rm -rf outside the project", "failed": false },
+        "asked": 2, "notes": [],
+        "receipts": [
+          { "owner": "sample.other", "applied": false, "overriddenBy": "sample.guard" },
+          { "owner": "sample.guard", "applied": true }
+        ],
+        "actions": {
+          "request": { "kind": "deny", "decidedBy": "sample.guard", "reason": "rm -rf outside the project" },
+          "askAtHost": { "kind": "deny", "decidedBy": "sample.guard", "reason": "rm -rf outside the project" }
+        }
+      }
+    },
+    {
+      "id": "an ask wins over another package's approve",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "curl https://example.com" }, "inputComplete": true, "inputBytes": 38 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "ask", "reason": "network   access" } } },
+        { "owner": "sample.other", "name": "Other", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "ask", "by": "sample.guard", "reason": "network access", "failed": false },
+        "asked": 2, "notes": [],
+        "receipts": [
+          { "owner": "sample.guard", "applied": true },
+          { "owner": "sample.other", "applied": false, "overriddenBy": "sample.guard" }
+        ],
+        "actions": {
+          "request": { "kind": "prompt", "note": "Guard asks you to decide: network access" },
+          "askAtHost": { "kind": "prompt", "note": "Guard asks you to decide: network access" }
+        }
+      }
+    },
+    {
+      "id": "rewrites accumulate and the last one runs",
+      "can": ["approve", "deny", "ask", "rewriteInput"],
+      "payload": { "input": { "command": "npm test" }, "inputComplete": true, "inputBytes": 22 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "rewrite", "input": { "command": "pnpm test" } } } },
+        { "owner": "sample.other", "name": "Other", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "rewrite", "input": { "command": "pnpm test --silent" } } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "approve", "by": "sample.other", "reason": null, "failed": false, "input": { "command": "pnpm test --silent" } },
+        "asked": 2, "notes": [], "seen": [{ "command": "npm test" }, { "command": "pnpm test" }],
+        "receipts": [{ "owner": "sample.guard", "applied": true }, { "owner": "sample.other", "applied": true }],
+        "actions": {
+          "request": { "kind": "approve", "decidedBy": "sample.other", "reason": null, "input": { "command": "pnpm test --silent" } }
+        }
+      }
+    },
+    {
+      "id": "a rewrite the source cannot run is refused and the call goes on",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "npm test" }, "inputComplete": true, "inputBytes": 22 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "rewrite", "input": { "command": "pnpm test" } } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "none" },
+        "asked": 1, "notes": [], "seen": [{ "command": "npm test" }],
+        "receipts": [{ "owner": "sample.guard", "applied": false, "code": "UnsupportedCapability", "refused": { "decision": "UnsupportedCapability" } }],
+        "actions": {
+          "request": { "kind": "prompt", "note": null },
+          "askAtHost": { "kind": "approve", "decidedBy": null, "reason": null, "input": null },
+          "standing": { "kind": "prompt", "note": null }
+        }
+      }
+    },
+    {
+      "id": "an approve the mode or sandbox holds is refused",
+      "can": ["deny", "ask"],
+      "payload": { "input": { "command": "make install" }, "inputComplete": true, "inputBytes": 26 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "none" },
+        "asked": 1, "notes": [],
+        "receipts": [{ "owner": "sample.guard", "applied": false, "code": "UnsupportedCapability", "refused": { "decision": "UnsupportedCapability" } }],
+        "actions": { "request": { "kind": "prompt", "note": null } }
+      }
+    },
+    {
+      "id": "a failure declared ask shows the prompt and never approves",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "onFailure": "ask", "grants": ["harness.hooks.decide"], "answer": { "error": "Timeout" } },
+        { "owner": "sample.other", "name": "Other", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "ask", "by": "sample.guard", "reason": "Guard did not answer (Timeout).", "failed": true },
+        "asked": 2, "notes": [],
+        "receipts": [{ "owner": "sample.other", "applied": false, "overriddenBy": "sample.guard" }],
+        "actions": {
+          "request": { "kind": "prompt", "note": "Guard did not answer (Timeout). Decide yourself." },
+          "askAtHost": { "kind": "prompt", "note": "Guard did not answer (Timeout). Decide yourself." }
+        }
+      }
+    },
+    {
+      "id": "a failure declared deny denies with the package named",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "onFailure": "deny", "grants": ["harness.hooks.decide"], "answer": { "error": "HostUnavailable" } },
+        { "owner": "sample.other", "name": "Other", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "deny", "by": "sample.guard", "reason": "Guard did not answer (HostUnavailable).", "failed": true },
+        "asked": 1, "notes": [], "receipts": [],
+        "actions": { "request": { "kind": "deny", "decidedBy": "sample.guard", "reason": "Guard did not answer (HostUnavailable)." } }
+      }
+    },
+    {
+      "id": "a failure declared continue leaves the normal behaviour",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "onFailure": "continue", "grants": ["harness.hooks.decide"], "answer": { "error": "Timeout" } }
+      ],
+      "expect": {
+        "outcome": { "kind": "none" },
+        "asked": 1, "notes": [], "receipts": [],
+        "actions": {
+          "request": { "kind": "prompt", "note": null },
+          "askAtHost": { "kind": "approve", "decidedBy": null, "reason": null, "input": null }
+        }
+      }
+    },
+    {
+      "id": "an invalid return is a failure with its receipt",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "maybe" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "none" },
+        "asked": 1, "notes": [],
+        "receipts": [{ "owner": "sample.guard", "applied": false, "code": "InvalidShape" }],
+        "actions": { "request": { "kind": "prompt", "note": null } }
+      }
+    },
+    {
+      "id": "a deny without a reason is invalid and follows onFailure ask",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "onFailure": "ask", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "deny" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "ask", "by": "sample.guard", "reason": "Guard did not answer (InvalidShape).", "failed": true },
+        "asked": 1, "notes": [],
+        "receipts": [{ "owner": "sample.guard", "applied": false, "code": "InvalidShape" }],
+        "actions": { "request": { "kind": "prompt", "note": "Guard did not answer (InvalidShape). Decide yourself." } }
+      }
+    },
+    {
+      "id": "a note needs ui.presentation",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "file_path": "src/app.ts" }, "inputComplete": true, "inputBytes": 27 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": { "decision": "approve", "note": "Reads are safe" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "approve", "by": "sample.guard", "reason": null, "failed": false, "input": null },
+        "asked": 1, "notes": [],
+        "receipts": [{ "owner": "sample.guard", "applied": true, "refused": { "note": "PermissionDenied" } }],
+        "actions": { "request": { "kind": "approve", "decidedBy": "sample.guard", "reason": null, "input": null } }
+      }
+    },
+    {
+      "id": "a note is shown with the package's name",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "file_path": "src/app.ts" }, "inputComplete": true, "inputBytes": 27 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide", "ui.presentation"], "answer": { "value": { "decision": "approve", "note": "  Reads   are safe " } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "approve", "by": "sample.guard", "reason": null, "failed": false, "input": null },
+        "asked": 1, "notes": [["Guard", "Reads are safe"]],
+        "receipts": [{ "owner": "sample.guard", "applied": true }],
+        "actions": {}
+      }
+    },
+    {
+      "id": "no decision continues the normal behaviour",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["harness.hooks.decide"], "answer": { "value": null } }
+      ],
+      "expect": {
+        "outcome": { "kind": "none" },
+        "asked": 1, "notes": [], "receipts": [],
+        "actions": {
+          "request": { "kind": "prompt", "note": null },
+          "askAtHost": { "kind": "approve", "decidedBy": null, "reason": null, "input": null },
+          "standing": { "kind": "prompt", "note": null }
+        }
+      }
+    },
+    {
+      "id": "a decision without harness.hooks.decide is not applied",
+      "can": ["approve", "deny", "ask"],
+      "payload": { "input": { "command": "ls" }, "inputComplete": true, "inputBytes": 16 },
+      "steps": [
+        { "owner": "sample.guard", "name": "Guard", "grants": ["ui.presentation"], "answer": { "value": { "decision": "approve" } } }
+      ],
+      "expect": {
+        "outcome": { "kind": "none" },
+        "asked": 1, "notes": [],
+        "receipts": [{ "owner": "sample.guard", "applied": false, "code": "PermissionDenied", "refused": { "decision": "PermissionDenied" } }],
+        "actions": { "request": { "kind": "prompt", "note": null } }
+      }
+    }
+  ]
+}

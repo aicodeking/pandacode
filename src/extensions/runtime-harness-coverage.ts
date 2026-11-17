@@ -10,6 +10,8 @@
 // (tests/fixtures/extensions/runtime-harness-coverage/). It runs no harness and reads no store.
 import { builtinSupport, can, providerSupport, type HookPayloads, type Json, type Support } from './runtime-hook-payload.ts';
 import { DELIVERED, RUN_KINDS, type HookRegistry, type Occurrence, type RunFacts } from './runtime-hook-registration.ts';
+// R0505: the `can` a deciding hook gets for a request of each mode (no approve where the sandbox or mode holds it).
+import { modeCan } from './runtime-hook-decisions.ts';
 
 type Obj = { [key: string]: Json };
 
@@ -179,7 +181,7 @@ function beforeCell(harness: Harness, mode: string): Obj {
   const coverage = requestCoverage(harness, mode);
   const cell: Obj = coverage === 'none'
     ? { source: null, coverage: 'none', can: [], sourceCan: [], qualification: 'unsupported' }
-    : { source: 'permissionRequest', coverage, can: [], sourceCan: can(support(harness)), qualification: qualify(harness, `toolBefore.permissionRequest.${mode}`, recorded(harness)) };
+    : { source: 'permissionRequest', coverage, can: modeCan(support(harness), harness.id, mode), sourceCan: can(support(harness)), qualification: qualify(harness, `toolBefore.permissionRequest.${mode}`, recorded(harness)) };
   const feasible: Obj[] = [];
   if (companion(harness)[0] === 'sourceFeasible') feasible.push({ source: 'companion', coverage: 'everyCall', qualification: installedQualified(harness.id, `toolBefore.companion.${mode}`) ? 'installedQualified' : 'sourceFeasible' });
   const ask = askAtHost(harness);
@@ -250,7 +252,7 @@ export function runs(counters: Obj | null): Obj[] {
   }));
 }
 export function report(harnesses: readonly Harness[], counters: Obj | null, only: string | null): Obj {
-  return { schemaVersion: SCHEMA_VERSION, decisions: 'observeOnly', harnesses: harnesses.filter(harness => only === null || harness.id === only).map(row), runs: runs(counters) };
+  return { schemaVersion: SCHEMA_VERSION, decisions: 'delivered', harnesses: harnesses.filter(harness => only === null || harness.id === only).map(row), runs: runs(counters) };
 }
 
 /** The built-in roster and the package providers of enabled, trusted packages outside safe mode. */

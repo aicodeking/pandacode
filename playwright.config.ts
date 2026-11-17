@@ -150,6 +150,7 @@ config.testMatch.push('**/extensions-runtime-hook-payload.spec.ts');
 config.testMatch.push('**/extensions-runtime-hook-registration.spec.ts');
 config.testMatch.push('**/extensions-runtime-harness-coverage.spec.ts');
 config.testMatch.push('**/extensions-runtime-hook-context.spec.ts');
+config.testMatch.push('**/extensions-runtime-hook-decisions.spec.ts');
 config.testMatch.push('**/upstream-semantic-remote-images.spec.ts');
 config.testMatch.push('**/upstream-tool-images-extensions.spec.ts');
 config.testMatch.push('**/upstream-workers-extensions.spec.ts');

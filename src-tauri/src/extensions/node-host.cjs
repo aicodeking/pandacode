@@ -175,7 +175,7 @@ process.stdin.on('data', chunk => {
               while (hookQueue.length) {
                 const delivery = hookQueue.shift();
                 for (const { handler } of [...(hookHandlers.get(delivery?.event) ?? [])]) {
-                  try { await handler(freeze(delivery.payload ?? null)); } catch { /* a failing handler never stops the next delivery */ }
+                  try { await hookScope.run(true, () => handler(freeze(delivery.payload ?? null))); } catch { /* a failing handler never stops the next delivery */ }
                 }
               }
             } finally { hookPumping = false; }
@@ -186,7 +186,8 @@ process.stdin.on('data', chunk => {
           const answerHook = async delivery => {
             let answer;
             for (const { handler } of [...(hookHandlers.get(delivery?.event) ?? [])]) {
-              const value = await handler(freeze(delivery.payload ?? null));
+              // Inside `hookScope`: a call the handler makes is marked as coming from a hook (R0404, R0505).
+              const value = await hookScope.run(true, () => handler(freeze(delivery.payload ?? null)));
               if (answer === undefined && value !== undefined && value !== null) answer = value;
             }
             return answer === undefined ? null : answer;

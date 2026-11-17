@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "about": "R0505 demonstration: identical fake tool calls with no hook, an observe-only hook, a deciding hook and a revoked hook (attached, its grants revoked), across a mode that asks (Claude Code ask) and a full mode that can ask at the harness (OpenCode full). The deciding package is sample.hook-guard (extension.json, main.cjs: deny rm -rf, ask on curl, nothing for ls). `expect`: the mode the harness is launched in, whether a permission request arrives at all, the route (pass: the normal prompt path; approve: ask-at-host answers; chain: deciding packages are asked), the action, how many decision frames were awaited and how many one-way tool.before deliveries were made. Not a harness capture.",
+  "provenance": "synthetic",
+  "cases": [
+    { "id": "claude ask, no hook", "harness": "claude", "mode": "ask", "hook": "none", "tool": "Bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "ask", "request": true, "route": "pass", "action": "prompt", "awaited": 0, "oneWay": 0 } },
+    { "id": "claude ask, observe-only hook", "harness": "claude", "mode": "ask", "hook": "observer", "tool": "Bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "ask", "request": true, "route": "pass", "action": "prompt", "awaited": 0, "oneWay": 1 } },
+    { "id": "claude ask, deciding hook", "harness": "claude", "mode": "ask", "hook": "decider", "tool": "Bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "ask", "request": true, "route": "chain", "action": "deny", "awaited": 1, "oneWay": 0 } },
+    { "id": "claude ask, revoked hook", "harness": "claude", "mode": "ask", "hook": "revoked", "tool": "Bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "ask", "request": true, "route": "pass", "action": "prompt", "awaited": 0, "oneWay": 0 } },
+    { "id": "claude ask, deciding hook without a decision", "harness": "claude", "mode": "ask", "hook": "decider", "tool": "Bash", "input": { "command": "ls" },
+      "expect": { "launchMode": "ask", "request": true, "route": "chain", "action": "prompt", "awaited": 1, "oneWay": 0 } },
+    { "id": "opencode full, no hook", "harness": "opencode", "mode": "full", "hook": "none", "tool": "bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "full", "request": false } },
+    { "id": "opencode full, observe-only hook", "harness": "opencode", "mode": "full", "hook": "observer", "tool": "bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "full", "request": false } },
+    { "id": "opencode full, deciding hook", "harness": "opencode", "mode": "full", "hook": "decider", "tool": "bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "ask", "request": true, "route": "chain", "action": "deny", "awaited": 1, "oneWay": 0 } },
+    { "id": "opencode full, deciding hook without a decision", "harness": "opencode", "mode": "full", "hook": "decider", "tool": "bash", "input": { "command": "ls" },
+      "expect": { "launchMode": "ask", "request": true, "route": "chain", "action": "approve", "awaited": 1, "oneWay": 0 } },
+    { "id": "opencode full, deciding hook that asks", "harness": "opencode", "mode": "full", "hook": "decider", "tool": "bash", "input": { "command": "curl https://example.com" },
+      "expect": { "launchMode": "ask", "request": true, "route": "chain", "action": "prompt", "awaited": 1, "oneWay": 0 } },
+    { "id": "opencode full, revoked hook", "harness": "opencode", "mode": "full", "hook": "revoked", "tool": "bash", "input": { "command": "rm -rf build" },
+      "expect": { "launchMode": "full", "request": false } }
+  ]
+}

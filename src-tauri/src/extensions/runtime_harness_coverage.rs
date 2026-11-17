@@ -336,7 +336,7 @@ fn support(harness: &Harness) -> super::runtime_hook_payload::Support {
 }
 
 /// The `tool.before` cell of `mode`: the source and coverage delivered today, what the source could carry once
-/// decisions are delivered (`sourceCan`; `can` is empty while deliveries are observe only), and the other sources
+/// decisions are delivered (`sourceCan`; `can` is what a deciding hook can do there, R0505), and the other sources
 /// that are feasible, each with its own qualification.
 fn before_cell(harness: &Harness, mode: &str) -> Value {
     let coverage = request_coverage(harness, mode);
@@ -345,7 +345,10 @@ fn before_cell(harness: &Harness, mode: &str) -> Value {
         json!({"source": null, "coverage": "none", "can": [], "sourceCan": [], "qualification": "unsupported"})
     } else {
         let path = format!("toolBefore.permissionRequest.{mode}");
-        json!({"source": "permissionRequest", "coverage": coverage, "can": [], "sourceCan": support.can(), "qualification": qualify(harness, &path, recorded(harness))})
+        // `can`: what a deciding hook can do with a request of this mode for a call the mode allows (R0505: no approve
+        // where the sandbox or the mode holds the request); `sourceCan`: what the source carries at all.
+        let can = super::runtime_hook_decisions::mode_can(support, &harness.id, mode);
+        json!({"source": "permissionRequest", "coverage": coverage, "can": can, "sourceCan": support.can(), "qualification": qualify(harness, &path, recorded(harness))})
     };
     let mut feasible = Vec::new();
     if companion(harness).0 == "sourceFeasible" {
@@ -436,7 +439,8 @@ pub fn runs(counters: &Value) -> Value {
 /// The whole answer of `panda.harnesses.list`.
 pub fn report(harnesses: &[Harness], counters: &Value, only: Option<&str>) -> Value {
     let rows: Vec<Value> = harnesses.iter().filter(|harness| only.is_none_or(|id| harness.id == id)).map(row).collect();
-    json!({"schemaVersion": SCHEMA_VERSION, "decisions": "observeOnly", "harnesses": rows, "runs": runs(counters)})
+    // R0505: `tool.before` decisions are delivered (approve, deny, ask, rewrite where `can` lists it).
+    json!({"schemaVersion": SCHEMA_VERSION, "decisions": "delivered", "harnesses": rows, "runs": runs(counters)})
 }
 
 /// The built-in roster and the package providers of enabled, trusted packages (`snapshot` is `extensions_snapshot`
@@ -619,7 +623,10 @@ mod tests {
                 assert_eq!(cell["coverage"], want["before"][mode], "{id} {mode}");
                 let qualification = if want["before"][mode] == "none" { json!("unsupported") } else { want["request"].clone() };
                 assert_eq!(cell["qualification"], qualification, "{id} {mode} qualification");
-                assert_eq!(cell["can"], json!([]), "{id} {mode}: observe only");
+                // R0505: the delivered `can`, never more than the source carries, never approve where the sandbox or mode holds it.
+                let source_can: Vec<&str> = cell["sourceCan"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+                assert!(cell["can"].as_array().unwrap().iter().all(|entry| source_can.contains(&entry.as_str().unwrap())), "{id} {mode}: can within sourceCan");
+                if crate::extensions::runtime_hook_decisions::mode_holds(id, mode) { assert!(!cell["can"].as_array().unwrap().contains(&json!("approve")), "{id} {mode}: held by the mode"); }
                 let companion = cell["feasible"].as_array().unwrap().iter().any(|feasible| feasible["source"] == "companion" && feasible["coverage"] == "everyCall");
                 assert_eq!(companion, want["companion"] == "sourceFeasible", "{id} {mode} companion");
                 let ask = cell["feasible"].as_array().unwrap().iter().find(|feasible| feasible["source"] == "askAtHost").map(|feasible| feasible["coverage"].clone());
@@ -790,7 +797,7 @@ mod tests {
         assert_eq!(roster(&json!({"safeMode": true, "packages": snapshot["packages"]}), |_| false).len(), crate::providers::PROVIDERS.len());
         let only = report(&harnesses, &Value::Null, Some("fake.agent/agent"));
         assert_eq!(only["harnesses"].as_array().unwrap().len(), 1);
-        assert_eq!([&only["harnesses"][0]["kind"], &only["harnesses"][0]["owner"], &only["decisions"]], [&json!("package"), &json!("fake.agent"), &json!("observeOnly")]);
+        assert_eq!([&only["harnesses"][0]["kind"], &only["harnesses"][0]["owner"], &only["decisions"]], [&json!("package"), &json!("fake.agent"), &json!("delivered")]);
         // The reader's manifest declares what it needs.
         let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
         assert!(manifest["permissions"].as_array().unwrap().iter().any(|permission| permission == PERMISSION));

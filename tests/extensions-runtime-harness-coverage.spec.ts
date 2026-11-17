@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { validateContract } from '../src/extensions/contracts';
 import { HookPayloads, type Json } from '../src/extensions/runtime-hook-payload';
+import { modeHolds } from '../src/extensions/runtime-hook-decisions';
 import { checkHookDeclarations, DELIVERED, HookRegistry, RUN_KINDS, type Declaration, type Occurrence, type RunFacts } from '../src/extensions/runtime-hook-registration';
 import {
   BUILT_INS, COVERAGES, INSTALLED_QUALIFIED, PATHS, QUALIFICATIONS, RECORDED, SOURCES, TRIGGERS, Tally, classify, feedMirror, mirrorRun, readOptions, report, roster, row,
@@ -46,7 +47,9 @@ test('extensions harness coverage: every harness row agrees with the expected ma
       const cell = shown.hooks.toolBefore[mode];
       expect(cell.coverage, `${id} ${mode}`).toBe(coverage);
       expect(cell.qualification, `${id} ${mode}`).toBe(coverage === 'none' ? 'unsupported' : want.request);
-      expect(cell.can, `${id} ${mode}: observe only`).toEqual([]);
+      // R0505: the delivered `can` stays inside what the source carries, without approve where the mode or sandbox holds it.
+      expect((cell.can as string[]).every(entry => (cell.sourceCan as string[]).includes(entry)), `${id} ${mode}: can within sourceCan`).toBe(true);
+      if (modeHolds(id, mode)) expect(cell.can, `${id} ${mode}: held by the mode`).not.toContain('approve');
       expect(cell.feasible.some((item: Obj) => item.source === 'companion' && item.coverage === 'everyCall'), `${id} ${mode} companion`).toBe(want.companion === 'sourceFeasible');
       const ask = cell.feasible.find((item: Obj) => item.source === 'askAtHost');
       if (mode === 'full' && want.before.full !== 'askedCalls') expect(ask?.coverage ?? null, `${id} askAtHost`).toBe(want.askAtHost);
@@ -166,7 +169,7 @@ test('extensions harness coverage: list options are strict and the report filter
   expect(roster({ safeMode: true, packages: snapshot.packages } as any, () => false).length).toBe(BUILT_INS.length);
   const only = report(harnesses, null, 'fake.agent/agent') as Obj;
   expect(only.harnesses.length).toBe(1);
-  expect([only.harnesses[0].kind, only.harnesses[0].owner, only.decisions]).toEqual(['package', 'fake.agent', 'observeOnly']);
+  expect([only.harnesses[0].kind, only.harnesses[0].owner, only.decisions]).toEqual(['package', 'fake.agent', 'delivered']);
 });
 
 test('extensions harness coverage: the twin and the native table name the same roster and recorded harnesses', () => {

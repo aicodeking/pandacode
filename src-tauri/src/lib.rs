@@ -3092,6 +3092,10 @@ async fn launch_operation_admitted(
                 }
             }
         });
+        // Hooks (R0505): each permission request goes through the deciding `tool.before` hooks before it can become a
+        // prompt, and `full` asks at the harness and is answered at the host while a deciding hook is held. Unchanged
+        // when no hook is attached.
+        let (config, sink) = extensions::runtime_hook_decisions::wrap(&app, config, sink, own_input.clone(), stopped.clone());
         let (host, team_tools_missing) = task_tool_host(&app, &session_id, &stopped, team.as_ref(), cloud, tracker.clone(), title_run.as_ref());
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the

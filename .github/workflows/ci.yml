@@ -363,6 +363,12 @@ jobs:
       - name: Prompt context, result rewrites and compaction answers (WebKit)
         env: { PW_PORT: '16402', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-hook-context.spec.ts --workers=1
+      - name: Tool decisions and scoped full mode (Chromium)
+        env: { PW_PORT: '16451', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-hook-decisions.spec.ts --workers=1
+      - name: Tool decisions and scoped full mode (WebKit)
+        env: { PW_PORT: '16452', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-hook-decisions.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1
