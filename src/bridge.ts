@@ -54,6 +54,8 @@ export async function subscribe(name: 'extensions-runtime-draft', callback: (eve
 export async function subscribe(name: 'extensions-runtime-draft-end', callback: (event: { owner: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-draft-sweep', callback: (event: number) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-workspace-setting', callback: (event: { key: string; revision: number; by: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-runtime-task-target', callback: (event: { id: string; owner: string; taskId: string; target: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-runtime-task-controls', callback: (event: number) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-provider-state', callback: (event: unknown) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {

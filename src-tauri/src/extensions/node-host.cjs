@@ -8,6 +8,8 @@ let maxFrame = 65536, maxPending = 16;
 let buffer = Buffer.alloc(0), init, sequence = 0, stopService, serveCall, serveEvent, stopping = false;
 const pending = new Map();
 const invocations = new AsyncLocalStorage();
+// Set by the hook runner around a harness hook handler, so a call made from inside one is marked source 'hook' (a hook never changes a mode, R0404).
+const hookScope = new AsyncLocalStorage();
 const write = process.stdout.write.bind(process.stdout);
 function send(value) {
   const body = Buffer.from(JSON.stringify(value));
@@ -292,6 +294,11 @@ process.stdin.on('data', chunk => {
               // Composer drafts and attachments, never sent (R0403, tasks.draft); the target is { taskId } or { windowId }.
               draft: Object.freeze(Object.fromEntries(['get', 'set', 'insert', 'suggest', 'attach', 'detach'].map(op => [op, options => rpc('tasksDraft', { ...(options ?? {}), op })]))),
               attachments: Object.freeze({ read: options => rpc('tasksAttachmentsRead', options === undefined || options === null ? {} : { ...options }) }),
+              // Stop, mode, configure and compact (R0404, tasks.control): thin adapters over the interface's own operations; a mode change from a hook is refused.
+              stop: taskId => rpc('tasksControl', { action: 'stop', taskId, source: hookScope.getStore() ? 'hook' : 'service' }),
+              setMode: (taskId, mode) => rpc('tasksControl', { action: 'setMode', taskId, mode, source: hookScope.getStore() ? 'hook' : 'service' }),
+              configure: (taskId, change) => rpc('tasksControl', { action: 'configure', taskId, change, source: hookScope.getStore() ? 'hook' : 'service' }),
+              compact: taskId => rpc('tasksControl', { action: 'compact', taskId, source: hookScope.getStore() ? 'hook' : 'service' }),
             }),
             // Virtual machine, simulator and browser guests (R0410, guests.control): the host checks the grant per call; a capture is a file in the package's data directory.
             guests: Object.freeze({

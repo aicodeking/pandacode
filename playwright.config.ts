@@ -134,6 +134,7 @@ config.testMatch.push('**/extensions-runtime-tasks-drafts.spec.ts');
 config.testMatch.push('**/extensions-runtime-terminals.spec.ts');
 config.testMatch.push('**/extensions-runtime-guests.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-cloud.spec.ts');
+config.testMatch.push('**/extensions-runtime-tasks-control.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-settings.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-automation.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-schedules.spec.ts');

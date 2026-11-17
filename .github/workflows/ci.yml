@@ -213,6 +213,12 @@ jobs:
       - name: Task drafts and attachments (WebKit)
         env: { PW_PORT: '16252', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tasks-drafts.spec.ts --workers=1
+      - name: Task stop, configure and compact (Chromium)
+        env: { PW_PORT: '16261', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-tasks-control.spec.ts --workers=1
+      - name: Task stop, configure and compact (WebKit)
+        env: { PW_PORT: '16262', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tasks-control.spec.ts --workers=1
       - name: Terminals read and write (Chromium)
         env: { PW_PORT: '16361', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-terminals.spec.ts --workers=1

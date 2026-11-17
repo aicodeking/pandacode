@@ -183,6 +183,7 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-tasks-messages.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime tasks messages:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-tasks-drafts.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-tasks-control.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime tasks drafts:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-terminals.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime terminals:`);

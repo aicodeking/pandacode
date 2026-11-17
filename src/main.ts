@@ -960,6 +960,8 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     void messages.startRuntimeTasksMessages({ resume: id => { const task = state.sessions.find(item => item.id === id); if (!task) return; state.queueHolds.delete(id); refreshComposer(task); void dispatchQueue(id); } });
     void messages.mountMessageOrigins();
   });
+  // Who last stopped, configured or compacted the open task (R0404): the header names the package.
+  void import('./extensions/runtime-tasks-control').then(control => control.mountTaskControls());
   // Drafts and attachments a package edits without sending (R0403): the window answers each round from the composer itself.
   void import('./extensions/runtime-tasks-drafts').then(drafts => drafts.mountRuntimeDrafts({
     windowId: 'main',

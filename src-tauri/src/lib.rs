@@ -781,6 +781,7 @@ async fn delete_session_with_attachment_cleanup(
         extensions::runtime_dynamic_items::scope_gone(&app, &extensions::runtime_dynamic_items::Scope::Task(removed.clone()));
         extensions::runtime_tasks_start::task_removed(&app, removed);
         extensions::runtime_tasks_messages::task_removed(&app, removed);
+        extensions::runtime_tasks_control::task_removed(&app, removed);
         if let Some(project) = &project { extensions::runtime_service_lifetime::runtime_workspace_events::task_removed(&app, removed, project); }
     }
     match app.path().app_data_dir() {
@@ -4895,6 +4896,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_harness_console::ConsoleSlots::default());
     app.manage(extensions::runtime_workspace_cloud::WorkspaceCloud::default());
     app.manage(extensions::runtime_tasks_messages::TaskMessages::open(&dir));
+    app.manage(extensions::runtime_tasks_control::ControlLog::default());
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
     app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
     extensions::runtime_service_lifetime::reconcile_app(app.handle());
@@ -5391,6 +5393,7 @@ pub fn run() {
                 extensions::runtime_service_lifetime::runtime_workspace_automation::extensions_workspace_automation_pending,
                 extensions::runtime_service_lifetime::runtime_workspace_automation::extensions_workspace_automation_origins,
                 extensions::runtime_service_lifetime::runtime_workspace_schedules::extensions_workspace_origins,
+                extensions::runtime_tasks_control::extensions_runtime_task_controls,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialog_answer,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialogs,
                 usage_ledger::usage_ledger,

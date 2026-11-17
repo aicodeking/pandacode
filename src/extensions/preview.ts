@@ -372,6 +372,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   // Recipes and wake-ups (R0406B): labelled stand-in with the native ids, shapes and refusal envelope (runtime-workspace-schedules.ts).
   if (command.startsWith('extensions_workspace_schedules_') || command === 'extensions_workspace_origins') return previewWorkspaceSchedules(command, args);
   if (command === 'extensions_runtime_task_origins') return { revision: 0, origins: {} };
+  // No service controls a task in the preview: the ledger is empty and the spec fills it through window.__runtimeTaskControls (runtime-tasks-control.ts).
+  if (command === 'extensions_runtime_task_controls') return { revision: 0, controls: {} };
   // No service queues a message in the preview: no entry is labelled (the spec drives runtime-tasks-messages.ts directly).
   if (command === 'extensions_runtime_message_origins') return { revision: 0, entries: {} };
   if (command === 'extensions_runtime_task_defaults_answer') { ((window as unknown as { __runtimeTaskDefaultsAnswers?: unknown[] }).__runtimeTaskDefaultsAnswers ??= []).push(args); return null; }

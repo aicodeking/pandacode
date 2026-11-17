@@ -538,6 +538,8 @@ export interface TerminalsApi {
   write(options: { terminalId: string; data: string }): Promise<null>;
   close(options: { terminalId: string }): Promise<null>;
 }
+/** What `tasks.configure` may change (R0404): the picker's fields. A harness always comes with its model; `null` clears effort, team, connection and bot. See docs/extensions/runtime-tasks-control.md. */
+export interface TasksConfigureChange { harness?: string; model?: string; effort?: string | null; team?: string | null; connection?: string | null; bot?: string | null; target?: string; stage?: 'active' | 'completed' }
 export interface TasksApi {
   readonly draft: TasksDraftApi;
   readonly attachments: TasksAttachmentsApi;
@@ -545,6 +547,13 @@ export interface TasksApi {
   message(taskId: string, message: TasksMessage): Promise<{ readonly id: string; readonly delivery: 'sent' | 'queued' | 'steered' }>;
   note(taskId: string, note: { text: string; forModel?: boolean }): Promise<{ readonly id: string }>;
   readonly queue: TasksQueueApi;
+  /** Permission `tasks.control`, per project. Runs the interface's own stop; an idle task changes nothing. */
+  stop(taskId: string): Promise<null>;
+  /** Refused while an agent runs, and from inside a hook (PermissionDenied, path `setMode`). */
+  setMode(taskId: string, mode: 'ask' | 'auto' | 'review' | 'plan' | 'full'): Promise<null>;
+  configure(taskId: string, change: TasksConfigureChange): Promise<null>;
+  /** UnsupportedCapability when the harness has no compaction; `task.compacted` is emitted when it completes. */
+  compact(taskId: string): Promise<null>;
 }
 /** `workspace.settings` (global): the app's own settings, by the frozen keys `sidebar.sort`, `sidebar.filter`, `sidebar.scope`, `sidebar.order`, `view.open`, `tiles.layout`, `find.query`, `projects.search`, `tokenSaver`, `council`, `bot:<id>`, `channel:<id>`, `team.profiles`, `widgets`, `machines.orchestration`, `appearance.compact` and `appearance.theme`. An unknown key (telemetry, routing, the GitHub switch, safe mode, updates, trust, pairing and remote access are not keys) answers `NotFound`; a `revision` that is not the current one answers `StaleContext`. A fixed key nobody has written reads `null` at revision 0. See docs/extensions/runtime-workspace-settings.md. */
 /** `workspace.manage` (global): bots as the New bot form makes them. `update` is a patch; `remove` deletes the bot and its channel connections (its workspace folder stays) and asks the host first unless the user turned that off for the package. See docs/extensions/runtime-workspace-automation.md. */

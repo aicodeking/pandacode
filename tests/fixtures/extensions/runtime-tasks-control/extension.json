@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.runtime-tasks-control",
+  "version": "1.0.0",
+  "name": "Task controller",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "tasks.control"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.runtime-tasks-control/control", "title": "Task controller control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.runtime-tasks-control/header", "location": "panda.workspace.header.actions", "command": "sample.runtime-tasks-control/control", "presentation": "button", "text": "Control task" }
+    ]
+  }
+}

@@ -855,6 +855,7 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.tasks.draft.*` (R0403, tasks.draft) and `panda.tasks.attachments.read` (tasks.transcript.read): the grant is checked natively per call.
             // `panda.workspace.moodboards.*` and `panda.workspace.cloud.*` (R0406C, workspace.manage): the grant is checked natively per call.
             if matches!(request.method.as_str(), "workspaceMoodboards" | "workspaceCloud") { return super::runtime_workspace_cloud::serve(app, request).await; }
+            if request.method == "tasksControl" { return super::runtime_tasks_control::serve(app, request).await; }
             if request.method == "tasksDraft" { return super::runtime_tasks_drafts::serve(app, request).await; }
             // `panda.terminals.*` (R0409): `terminals.read` and `terminals.write` are checked natively per call.
             if request.method == "terminals" { return super::runtime_terminals::serve(app, request).await; }
