@@ -385,6 +385,24 @@ fn cache() -> &'static HashMap<&'static str, CacheSlot> {
     })
 }
 
+/// The reading the usage view last kept for `provider`'s own setup. It never starts a check, waits for one or
+/// serves a reading the configuration has since outdated: `None` then (extension runtime: the `limits` and
+/// `accounts` resources serve this cache).
+pub(crate) fn peek(provider: &str) -> Option<Usage> {
+    peek_slot(cache().get(provider)?)
+}
+
+/// `peek` for a saved connection at the revision it has now.
+pub(crate) fn peek_connection(id: &str, revision: u64) -> Option<Usage> {
+    let slot = connection_slots().get(&format!("{id}#{revision}"))?.clone();
+    peek_slot(&slot)
+}
+
+fn peek_slot(slot: &CacheSlot) -> Option<Usage> {
+    let entry = slot.entry.try_lock().ok()?;
+    (entry.generation == slot.generation.load(Ordering::SeqCst)).then(|| entry.result.clone()).flatten()
+}
+
 pub(crate) fn invalidate(provider: &str) {
     if let Some(slot) = cache().get(provider) {
         slot.generation.fetch_add(1, Ordering::SeqCst);

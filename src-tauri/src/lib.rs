@@ -1743,7 +1743,10 @@ fn save_agent_activity(
         "limited" => db.set_limited(&activity.session_id, activity.data.as_ref().and_then(|data| data["resetsAt"].as_i64())),
         "approval" => db.status(&activity.session_id, "waiting"),
         "usage" => match usage {
-            Some(usage) => db.record_context_usage(&activity.session_id, usage),
+            Some(usage) => db.record_context_usage(&activity.session_id, usage).inspect(|_| {
+                // The last report of each turn, for the usage resource of background services; never fails the run.
+                let _ = extensions::runtime_service_lifetime::runtime_usage_resources::record(db, &activity.session_id, usage);
+            }),
             None => Ok(()),
         },
         // Provider message boundaries separate commentary from subsequent

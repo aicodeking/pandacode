@@ -34,6 +34,9 @@ use self::runtime_workspace_events::WorkspaceEvents;
 // Package settings and the content resources of tasks, served to the service natively (R0203).
 #[path = "runtime_content_resources.rs"]
 pub mod runtime_content_resources;
+// Usage per turn, limits, accounts and metrics, served to the service natively (R0204).
+#[path = "runtime_usage_resources.rs"]
+pub mod runtime_usage_resources;
 // Crash restart with backoff, parking, the start state and memory measurement (R0106).
 #[path = "runtime_service_supervision.rs"]
 pub mod runtime_service_supervision;
@@ -716,6 +719,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if matches!(request.method.as_str(), "settingsGet" | "contentQuery") {
                 return tauri::async_runtime::spawn_blocking(move || runtime_content_resources::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
+            // Usage per turn, limits, accounts, metrics and the limits refresh (R0204): the grant is checked natively per call.
+            if matches!(request.method.as_str(), "usageQuery" | "limitsRefresh") { return runtime_usage_resources::serve(app, request).await; }
             if request.method != "context" { return super::context::failure("UnsupportedCapability"); }
             let Some(handle) = request.handle else { return super::context::failure("StaleContext") };
             let result = (|| {

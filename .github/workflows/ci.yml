@@ -129,6 +129,12 @@ jobs:
       - name: Settings and content resources (WebKit)
         env: { PW_PORT: '15942', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-content-resources.spec.ts --workers=1
+      - name: Usage, limits, accounts and metrics (Chromium)
+        env: { PW_PORT: '15951', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-usage-resources.spec.ts --workers=1
+      - name: Usage, limits, accounts and metrics (WebKit)
+        env: { PW_PORT: '15952', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-usage-resources.spec.ts --workers=1
       - name: Declared provider launch (Chromium)
         env: { PW_PORT: '15981', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-provider-launch.spec.ts --workers=1

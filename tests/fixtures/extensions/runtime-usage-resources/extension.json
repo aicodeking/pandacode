@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.usage-resources",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "tasks.usage.read", "harnesses.limits.read", "harnesses.accounts.read", "metrics.read"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.usage-resources/control", "title": "Usage resources control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [{ "id": "sample.usage-resources/header", "location": "panda.workspace.header.actions", "command": "sample.usage-resources/control", "presentation": "button", "text": "Usage resources" }]
+  }
+}
