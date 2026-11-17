@@ -74,28 +74,37 @@ function busy(id: string, step: 1 | -1): void {
   if (step === 1 && next === 1) hooks.setBusy(id, true);
   if (step === -1 && next === 0) hooks.setBusy(id, false);
 }
+/** Waits holding a refusal's notice for themselves (`holdChange`: a send, a board start, a picker row), and of those the
+ *  held sends, whose button shows it. */
+const waitsHeld = new Map<string, number>();
 const sendsHeld = new Map<string, number>();
 const opensHeld = new Set<string>();
-/** The task's last refused change, kept until its next pick starts, so whatever waited on it can say what wasn't changed
- *  and what it stays on (`still`: "still on Claude Sonnet", "still Ask"). */
+/** A refused change, kept until the task's next pick starts, so whatever waited on it can say what wasn't changed and
+ *  what it stays on (`still`: "still on Claude Sonnet", "still Ask"). */
 export type Unchanged = { what: 'model' | 'permissions' | 'effort'; reason: string; still: string };
-const refused = new Map<string, Unchanged>();
-/** A refusal's own notice, held back because a held send says it (with what stays) instead: one notice, not two. */
+/** Each task's refusals since its last pick started, oldest first: two picks in one queue (permissions, then a model)
+ *  can both be refused before what waited on them wakes, and each must be said. */
+const refused = new Map<string, readonly Unchanged[]>();
+const refuse = (id: string, refusal: Unchanged): void => { refused.set(id, [...(refused.get(id) ?? []), refusal]); };
+/** A refusal's own notice, held back because a held wait says it (with what stays) instead: one notice, not two. */
 const unsaid = new WeakMap<Unchanged, string>();
-/** Refusals a held send has been handed (`holdSend`): it says them. */
+/** Refusals a held wait has been handed (`holdChange`): it says them. */
 const heldBack = new WeakSet<Unchanged>();
-/** Says a refusal now, unless a held send will (or something that waited on it already did). */
+/** Says a refusal now (and marks it said, so nothing that waited on it says it again), unless a held wait will. */
 function sayRefusal(id: string, refusal: Unchanged, notice: string): void {
   if (announced.has(refusal) || heldBack.has(refusal)) return;
-  if (sendsHeld.has(id)) unsaid.set(refusal, notice); else hooks.notify(notice);
+  if (waitsHeld.has(id)) unsaid.set(refusal, notice);
+  else if (announce(refusal)) hooks.notify(notice);
 }
-/** A new pick starts: the last refusal goes, said now if a held send meant to say it but was never handed it (a newer
- *  pick replaced it before the send's wait ended). */
+/** A new pick starts: the last refusals go, each said now if a held wait meant to say it but was never handed it (a
+ *  newer pick replaced it before the wait ended). */
 function clearRefusal(id: string): void {
-  const refusal = refused.get(id);
+  const kept = refused.get(id) ?? [];
   refused.delete(id);
-  const notice = refusal && unsaid.get(refusal);
-  if (refusal && notice && !heldBack.has(refusal) && announce(refusal)) hooks.notify(notice);
+  for (const refusal of kept) {
+    const notice = unsaid.get(refusal);
+    if (notice && !heldBack.has(refusal) && announce(refusal)) hooks.notify(notice);
+  }
 }
 /** Whether this refusal still needs saying for what it held back: true once per refused change, so several held
  *  presses of Enter (or a send and a board start) show one notice. */
@@ -108,6 +117,14 @@ export function announce(refusal: Unchanged): boolean {
 /** "the model wasn't changed (reason); still on X", for notices about something held back by a refused change. */
 export const unchangedText = ({ what, reason, still }: Unchanged): string =>
   `${what === 'permissions' ? 'the permissions weren’t' : `the ${what} wasn’t`} changed${reason ? ` (${reason})` : ''}${still ? `; ${still}` : ''}`;
+/** Every refusal a wait was handed, in order: "the permissions weren't changed (…); still Ask; and the model wasn't…". */
+export const refusalsText = (refusals: readonly Unchanged[]): string => refusals.map(unchangedText).join('; and ');
+/** What a wait that held back something should say about the refusals it was handed: those no notice has said yet
+ *  (now marked said), or null when every one was already said. */
+export function unsaidText(refusals: readonly Unchanged[]): string | null {
+  const fresh = refusals.filter(announce);
+  return fresh.length ? refusalsText(fresh) : null;
+}
 
 export const saving = (id: string): boolean => switches.has(id) || efforts.has(id);
 /** Whether the task's send button or model trigger should show it is held (aria-busy). */
@@ -142,9 +159,13 @@ function wake(id: string): void {
 /** Waits until the task's model, permission and effort changes have landed; then what was refused, if anything (each
  *  refusal is already rolled back and reported). */
 export async function settledChange(id: string): Promise<Unchanged | null> {
+  return (await settledRefusals(id)).at(-1) ?? null;
+}
+/** As settledChange: every change refused since the task's last pick started (none: everything saved). */
+async function settledRefusals(id: string): Promise<readonly Unchanged[]> {
   await switches.get(id);
   if (saving(id)) await new Promise<void>(resolve => waiters.set(id, [...(waiters.get(id) ?? []), resolve]));
-  return refused.get(id) ?? null;
+  return refused.get(id) ?? [];
 }
 /** As settledChange: whether everything that was saving saved. */
 export const settled = async (id: string): Promise<boolean> => !await settledChange(id);
@@ -201,7 +222,7 @@ function pruneWritten(): void {
 }
 /** Per-task pick state a deleted task must not keep (in-flight counts end with their saves). */
 const perTask = (): readonly { has(id: string): boolean; delete(id: string): boolean }[] =>
-  [written, modelBase, latestPick, leftTeams, runStart, storedPick, latestMode, modeBase, refused, sentWarm];
+  [written, modelBase, latestPick, leftTeams, runStart, storedPick, accountReleased, latestMode, modeBase, refused, sentWarm];
 /** Tasks deleted: their marks and pick state go, so a pick still in flight acts as replaced (it shows and says nothing). */
 export function forgetTasks(ids: Iterable<string>): void { for (const id of ids) perTask().forEach(map => map.delete(id)); }
 /** Whether any pick state is kept for the task (for tests: a deleted task keeps none). */
@@ -292,17 +313,32 @@ async function leaveTeam(id: string): Promise<string | null> {
   hooks.teamChanged({ sessionId: id, removed: true });
   return team.name ? `team ${team.name}` : 'its team';
 }
-/** After the durable configure: the account binding a new harness can't use, the automatic team's roster, the default. */
-async function settlePick(id: string, choice: ModelChoice, harness: boolean): Promise<void> {
+/** Tasks whose account binding a pick in the current run of picks already released: a newer pick settling the run
+ *  after it does not release it again. */
+const accountReleased = new Set<string>();
+/** After the durable configure: the account binding a new harness can't use, the automatic team's roster, the default.
+ *  `latest`: the pick is still the task's newest; a newer one picked during an await here settles the run itself, so
+ *  this stops there (false) rather than refreshing the team or remembering the default twice. */
+async function settlePick(id: string, choice: ModelChoice, harness: boolean, latest: () => boolean): Promise<boolean> {
   // Same-harness model choices keep the account and its resumable conversation.
-  if (choice.local && harness) await hooks.releaseAccount(id);
+  if (choice.local && harness && !accountReleased.has(id)) {
+    await hooks.releaseAccount(id);
+    // A deleted task (forgetTasks drops latestPick) keeps nothing.
+    if (latestPick.has(id)) accountReleased.add(id);
+  }
+  if (!latest()) return false;
   // An automatic team keeps its limits but learns about newly installed models.
   const auto = hooks.team(id);
   if (auto?.auto && !auto.rosterOnly) {
-    const team = await call<TeamSnapshot | null>('architect_configure', { sessionId: id, config: await hooks.autoTeam(auto), architect: null, profileId: null });
+    const config = await hooks.autoTeam(auto);
+    if (!latest()) return false;
+    const team = await call<TeamSnapshot | null>('architect_configure', { sessionId: id, config, architect: null, profileId: null });
+    // What native now has, whoever settles next.
     hooks.teamChanged(team ?? { sessionId: id, removed: true });
+    if (!latest()) return false;
   }
   hooks.remember(choice);
+  return true;
 }
 /** A model the user picked: shown at once, then saved (team removal, configure, then `settlePick`). If the configure
  *  fails, only the task's own model fields go back (a title or status that changed meanwhile stays) and the notice
@@ -344,12 +380,13 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     const kept = storedPick.get(id);
     if (kept) {
       harness = kept.provider !== start.provider;
-      try { await settlePick(id, kept, harness); } catch (error) { console.error(error); hooks.notify(message(error)); }
+      // Replaced while it settled: the newer pick finishes settling and reloads the thread, not this one as well.
+      try { if (!await settlePick(id, kept, harness, () => !superseded())) harness = false; } catch (error) { console.error(error); hooks.notify(message(error)); }
     }
     return saved;
   }, saved => {
     count(modelsSaving, id, -1);
-    if (!superseded()) [latestPick, modelBase, leftTeams, runStart, storedPick].forEach(map => map.delete(id));
+    if (!superseded()) [latestPick, modelBase, leftTeams, runStart, storedPick, accountReleased].forEach(map => map.delete(id));
     ui.repaint(saved, harness);
   });
   /** Team removal and the durable configure; a refusal (unless a newer pick decides) goes back to `base` and says so. */
@@ -378,7 +415,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
       put(restored, MODEL_FIELDS);
       const still = `still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}`;
       const refusal: Unchanged = { what: 'model', reason: message(error), still };
-      refused.set(id, refusal);
+      refuse(id, refusal);
       sayRefusal(id, refusal, `Model not changed — ${still}: ${refusal.reason}`);
       return false;
     }
@@ -426,7 +463,7 @@ export function pickMode(id: string, mode: Session['mode'], ui: PickUi & { name(
       const before = modeBase.get(id) ?? mode;
       setField(id, { mode: before }, ui);
       const refusal: Unchanged = { what: 'permissions', reason: message(error), still: `still ${ui.name(before)}` };
-      refused.set(id, refusal);
+      refuse(id, refusal);
       sayRefusal(id, refusal, `Permissions not changed — ${refusal.still}: ${refusal.reason}`);
       return false;
     }
@@ -456,7 +493,7 @@ export async function pickEffort(id: string, effort: string | null, ui: PickUi):
   } catch (error) {
     if (error instanceof SupersededEffort) throw error;
     const failure = new Error(`Effort not changed — ${still() || 'as before'}: ${message(error)}`);
-    const refusal = refused.get(id);
+    const refusal = refused.get(id)?.at(-1);
     if (!hooks.pickerShown()) {
       console.error(error);
       if (refusal) sayRefusal(id, refusal, failure.message); else hooks.notify(failure.message);
@@ -493,7 +530,7 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
     options.paint(efforts.get(id)!.confirmed);
     // A model queued behind this save owns the outcome; its rollback still needs the confirmed effort.
     if (switches.has(id)) throw new SupersededEffort(message(error));
-    refused.set(id, { what: 'effort', reason: message(error), still: options.still?.() ?? '' });
+    refuse(id, { what: 'effort', reason: message(error), still: options.still?.() ?? '' });
     throw error;
   } finally {
     const entry = efforts.get(id)!;
@@ -502,15 +539,22 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
   }
 }
 
-/** A send made while the choice saves: held (the button shows it) until it lands; then what was refused, if anything. */
-export async function holdSend(id: string, button: () => Element | null): Promise<Unchanged | null> {
+/** Something that must follow the choice (a send, a board start, a picker row, a team change) waiting while it saves:
+ *  the refusals it lands with are handed to it, held back from their own notices, so it says them in one notice of its
+ *  own (`unsaidText`). Resolves to every refusal since the task's last pick (none: everything saved). */
+export async function holdChange(id: string): Promise<readonly Unchanged[]> {
+  count(waitsHeld, id, 1);
+  try {
+    const refusals = await settledRefusals(id);
+    refusals.forEach(refusal => heldBack.add(refusal));
+    return refusals;
+  } finally { count(waitsHeld, id, -1); }
+}
+/** A send made while the choice saves: held (the button shows it) until it lands; then what was refused (`holdChange`). */
+export async function holdSend(id: string, button: () => Element | null): Promise<readonly Unchanged[]> {
   count(sendsHeld, id, 1);
   button()?.setAttribute('aria-busy', 'true'); joinPulses(button());
-  try {
-    const unchanged = await settledChange(id);
-    if (unchanged) heldBack.add(unchanged);
-    return unchanged;
-  } finally {
+  try { return await holdChange(id); } finally {
     // Another press of Enter may still be held: the cue stays until the last one ends.
     if (count(sendsHeld, id, -1) === 0) button()?.removeAttribute('aria-busy');
   }

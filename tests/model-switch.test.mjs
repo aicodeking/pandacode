@@ -578,7 +578,7 @@ test('a refusal holding a send is said once by the send, still naming what stays
   const held = switcher.holdSend('ha', () => null);
   await reply('configure_session', new Error('Busy.'));
   assert.equal(await saving, false);
-  const unchanged = await held;
+  const [unchanged] = await held;
   assert.deepEqual(notices, [], 'the held send says it instead');
   assert.equal(unchanged.still, 'still on sonnet');
   assert.equal(switcher.unchangedText(unchanged), 'the model wasn’t changed (Busy.); still on sonnet');
@@ -588,7 +588,7 @@ test('a refusal holding a send is said once by the send, still naming what stays
   const heldMode = switcher.holdSend('hb', () => null);
   await reply('update_session', new Error('Locked.'));
   assert.equal(await mode, false);
-  assert.equal(switcher.unchangedText(await heldMode), 'the permissions weren’t changed (Locked.); still ask');
+  assert.equal(switcher.refusalsText(await heldMode), 'the permissions weren’t changed (Locked.); still ask');
   assert.deepEqual(notices, []);
   const alone = switcher.pickMode('hb', 'full', modeUi);
   await reply('update_session', new Error('Locked.'));
@@ -603,7 +603,7 @@ test('a refused effort holding a send is said once by the send', async () => {
   const held = switcher.holdSend('hc', () => null);
   await reply('set_reasoning_effort', new Error('No.'));
   await assert.rejects(saving);
-  assert.equal(switcher.unchangedText(await held), 'the effort wasn’t changed (No.); still low');
+  assert.equal(switcher.refusalsText(await held), 'the effort wasn’t changed (No.); still low');
   assert.deepEqual(notices, []);
 });
 
@@ -620,6 +620,87 @@ test('a refusal kept back for a held send is said when a newer pick replaces it 
   assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.'], 'said once the newer pick replaces it');
   await reply('configure_session', args => stored('hd', { model: args.model }));
   await reply('update_session', () => null);
-  assert.deepEqual([await model, await again, await held], [true, true, null]);
+  assert.deepEqual([await model, await again, await held], [true, true, []]);
   assert.equal(notices.length, 1);
+});
+
+/** A board start, a continue or a picker row as main.ts' afterChoiceSaved runs it: held, then one notice of its own. */
+const boardStart = async id => {
+  const refusals = await switcher.holdChange(id);
+  const text = switcher.unsaidText(refusals);
+  if (text) notices.push(`Not started — ${text}.`);
+  return !refusals.length;
+};
+
+test('a board start waiting on a refused pick shows one notice, keeping what the task is still on', async () => {
+  tasks.set('bs', stored('bs'));
+  notices.length = 0;
+  const saving = switcher.pickModel('bs', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const start = boardStart('bs');
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await saving, false);
+  assert.equal(await start, false);
+  assert.deepEqual(notices, ['Not started — the model wasn’t changed (Busy.); still on sonnet.']);
+  // A second waiter on the same refusal (a send after the start) says nothing more.
+  assert.equal(switcher.unsaidText(await switcher.holdChange('bs')), null);
+  assert.equal(notices.length, 1);
+});
+
+test('a refusal said on its own is not said again by a wait that began after it', async () => {
+  tasks.set('bt', stored('bt', { mode: 'ask' }));
+  notices.length = 0;
+  const mode = switcher.pickMode('bt', 'full', modeUi);
+  const model = switcher.pickModel('bt', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await reply('update_session', new Error('Locked.'));
+  assert.equal(await mode, false);
+  assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.'], 'nothing waited: said at once');
+  const start = boardStart('bt');
+  await reply('configure_session', args => stored('bt', { model: args.model }));
+  assert.equal(await model, true);
+  assert.equal(await start, false, 'the refused permissions still hold the start back');
+  assert.equal(notices.length, 1, 'one notice for the one refusal');
+});
+
+test('a refused permissions pick and a refused model pick holding one send are both said, once', async () => {
+  tasks.set('bu', stored('bu', { mode: 'ask' }));
+  notices.length = 0;
+  const mode = switcher.pickMode('bu', 'full', modeUi);
+  const model = switcher.pickModel('bu', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const held = switcher.holdSend('bu', () => null);
+  const again = switcher.holdSend('bu', () => null);
+  await reply('update_session', new Error('Locked.'));
+  await reply('configure_session', new Error('Busy.'));
+  assert.deepEqual([await mode, await model], [false, false]);
+  const refusals = await held;
+  assert.deepEqual(refusals.map(refusal => refusal.what), ['permissions', 'model']);
+  assert.deepEqual(notices, [], 'the held send says them');
+  assert.equal(switcher.unsaidText(refusals), 'the permissions weren’t changed (Locked.); still ask; and the model wasn’t changed (Busy.); still on sonnet');
+  assert.equal(switcher.unsaidText(await again), null, 'a second press of Enter repeats nothing');
+  // A newer pick clears them without saying them again.
+  const next = switcher.pickMode('bu', 'plan', modeUi);
+  await reply('update_session', () => null);
+  assert.equal(await next, true);
+  assert.deepEqual(notices, []);
+});
+
+test('a newer pick landing while an older one settles: the run settles once (account, team, default, reload)', async () => {
+  tasks.set('bv', stored('bv'));
+  teams.set('bv', { auto: true, rosterOnly: false, workers: [] });
+  releases.length = 0; remembered.length = 0;
+  const harnesses = [];
+  const track = { show() {}, repaint: (saved, harness) => harnesses.push([saved, harness]) };
+  const first = switcher.pickModel('bv', { provider: 'codex', model: 'astra', warm: false, local: true }, track);
+  await reply('configure_session', args => stored('bv', { provider: args.provider, model: args.model }));
+  // The older pick is refreshing its automatic team when the newer one is picked.
+  for (let i = 0; i < 20 && !pending('architect_configure').length; i += 1) await new Promise(resolve => setImmediate(resolve));
+  const second = switcher.pickModel('bv', { provider: 'codex', model: 'nova', warm: false, local: true }, track);
+  await reply('architect_configure', () => ({ sessionId: 'bv', config: { auto: true, rosterOnly: false, workers: [] } }));
+  assert.equal(await first, true);
+  await reply('configure_session', args => stored('bv', { provider: args.provider, model: args.model }));
+  await reply('architect_configure', () => ({ sessionId: 'bv', config: { auto: true, rosterOnly: false, workers: [] } }));
+  assert.equal(await second, true);
+  assert.deepEqual(releases, ['bv'], 'the account binding is released once');
+  assert.deepEqual(remembered.map(choice => choice.model), ['nova'], 'only the newest pick is remembered');
+  assert.deepEqual(harnesses, [[true, false], [true, true]], 'only the newest pick reloads the thread');
+  teams.delete('bv');
 });

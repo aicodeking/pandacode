@@ -1088,9 +1088,11 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
 }
 
 /// A new draft's start ahead: its launch and ticket, read and reserved under the store lock. A
-/// pick saves its row and plans its own start (`warm_launch::plan_rewarm`) under that lock, so
-/// one landing after this supersedes or cancels the ticket, and one before it is read here. A
-/// draft with nothing to start reserves nothing, so a send never waits for it.
+/// pick saves its row and then, after the save has released the store lock, takes it again to
+/// plan its own start (`warm_launch::plan_rewarm`). Both sides read the row as it is when they
+/// hold the lock and tickets are ordered, so a pick planned after this supersedes or cancels the
+/// ticket, and a row saved before it is what is read here. A draft with nothing to start reserves
+/// nothing, so a send never waits for it.
 fn reserve_draft_prewarm(db: &Store, session_id: &str) -> Result<Option<(u64, RunConfig)>> {
     if !db.is_empty_draft(session_id)? || architect::load(db, session_id)?.is_some() {
         return Ok(None);
@@ -3585,9 +3587,11 @@ async fn launch_operation_admitted(
     });
     Ok(())
 }
-/// The turn-end start's ticket and the task's row, read and reserved under the store lock: a
-/// pick saves its row and plans its own start (`warm_launch::plan_rewarm`) under that lock, so
-/// one landing after this supersedes or cancels the ticket, and one before it is read here. A
+/// The turn-end start's ticket and the task's row, read and reserved under the store lock. A
+/// pick saves its row and then, after the save has released the store lock, takes it again to
+/// plan its own start (`warm_launch::plan_rewarm`). Both sides read the current row while holding
+/// the lock and tickets are ordered, so a pick planned after this supersedes or cancels the
+/// ticket, and a row saved before it is what is read here. A
 /// harness pick that landed first keeps its own pending start: the run's launch (tools,
 /// instructions) was built for the old harness, so nothing is reserved for it.
 fn reserve_turn_end_warm(store: &Store, session_id: &str, provider: &str) -> Option<(u64, Session)> {

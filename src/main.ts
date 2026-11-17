@@ -579,9 +579,9 @@ const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${t
 /** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
  * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
 async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
-  // A model, effort or permission change still saving: wait for it (a refusal is already said), then go on if the task
-  // is still open and nothing else is configuring it.
-  if (modelSwitch.saving(task.id) && (!await modelSwitch.settled(task.id) || !state.sessions.some(item => item.id === task.id))) return false;
+  // A model, effort or permission change still saving: wait for it, then go on if the task is still open and nothing
+  // else is configuring it. A refused one stops the team change, said once with what stays.
+  if (!await afterChoiceSaved(task.id, on ? 'Team not turned on' : 'Team not turned off') || !state.sessions.some(item => item.id === task.id)) return false;
   if (configuringSessions.has(task.id)) return false;
   teamToggles.add(task.id); configuringSessions.add(task.id);
   try {
@@ -5250,13 +5250,15 @@ function scheduleLimitResumes(): void {
   }, Math.min(Math.max(0, next - Date.now()), 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
-/** Waits for the task's model, effort or permission change still saving; false when one was refused (said once, as
- *  `<held> — <what> wasn't changed.`), so a turn never starts with the old choice. */
+/** Waits for the task's model, effort or permission change still saving; false when one was refused, so a turn never
+ *  starts with the old choice. The wait holds the refusals' own notices back and says them once, as `<held> — <what>
+ *  wasn't changed; still …`, naming each refused change no notice has said yet. */
 async function afterChoiceSaved(id: string, held: string): Promise<boolean> {
   if (!modelSwitch.saving(id)) return true;
-  const unchanged = await modelSwitch.settledChange(id);
-  if (unchanged && modelSwitch.announce(unchanged)) notify(`${held} — ${modelSwitch.unchangedText(unchanged)}.`);
-  return !unchanged;
+  const refusals = await modelSwitch.holdChange(id);
+  const text = modelSwitch.unsaidText(refusals);
+  if (text) notify(`${held} — ${text}.`);
+  return !refusals.length;
 }
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (teamHeld(task.id)) return clearLimit(task);
@@ -5398,9 +5400,9 @@ async function sendDraft(): Promise<void> {
   // the old choice. A failed model change (already reported) or another task opened meanwhile sends nothing.
   if (modelSwitch.saving(sessionId)) {
     // A refused model, permission or effort change (already rolled back) or another task opened meanwhile: nothing goes.
-    const unchanged = await modelSwitch.holdSend(sessionId, () => document.querySelector('#composer .send-button[type="submit"]'));
-    // A refused change is said once, however many presses of Enter it held.
-    if (unchanged) { if (modelSwitch.announce(unchanged)) notify(`Not sent — ${modelSwitch.unchangedText(unchanged)}. Your draft is still there.`); return; }
+    const refusals = await modelSwitch.holdSend(sessionId, () => document.querySelector('#composer .send-button[type="submit"]'));
+    // Each refused change is said once, however many presses of Enter it held.
+    if (refusals.length) { const text = modelSwitch.unsaidText(refusals); if (text) notify(`Not sent — ${text}. Your draft is still there.`); return; }
     if (state.sessionId !== sessionId) { notify('Not sent — you switched tasks. Your draft is still there.'); return; }
   }
   // Read after the wait: text typed while the change saved goes too.
@@ -5744,8 +5746,9 @@ async function deliverBtw(main: Session, text: string): Promise<void> {
   const link = btwLink(main.id) ?? await createBtw(main, text);
   // A model or effort change on the side thread still saving: the message waits for it, and a failed change keeps it.
   if (modelSwitch.saving(link.sideId)) {
-    const unchanged = await modelSwitch.holdSend(link.sideId, () => document.querySelector('.btw-panel .btw-send'));
-    if (unchanged) throw new Error(`Not sent — ${modelSwitch.unchangedText(unchanged)}. Your message is back in the box.`);
+    const refusals = await modelSwitch.holdSend(link.sideId, () => document.querySelector('.btw-panel .btw-send'));
+    // The panel shows this error itself: it names every refused change, each marked said so no other notice repeats it.
+    if (refusals.length) { refusals.forEach(modelSwitch.announce); throw new Error(`Not sent — ${modelSwitch.refusalsText(refusals)}. Your message is back in the box.`); }
   }
   const side = state.sessions.find(task => task.id === link.sideId)!;
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
@@ -6749,8 +6752,9 @@ function paintTaskChoice(id: string, inPanel: boolean): void {
  *  throws `<refused> — <what> wasn't changed` (shown in the picker) when that change was refused. */
 async function afterPickerChoiceSaved(id: string, refused: string): Promise<void> {
   if (!modelSwitch.saving(id)) return;
-  const unchanged = await modelSwitch.settledChange(id);
-  if (unchanged) { modelSwitch.announce(unchanged); throw new Error(`${refused} — ${modelSwitch.unchangedText(unchanged)}.`); }
+  // Held: the refusals' own notices wait for this one, which the picker shows, naming each and marking it said.
+  const refusals = await modelSwitch.holdChange(id);
+  if (refusals.length) { refusals.forEach(modelSwitch.announce); throw new Error(`${refused} — ${modelSwitch.refusalsText(refusals)}.`); }
 }
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
@@ -6827,7 +6831,11 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
       modelPickerCleanup = undefined;
       modelSwitch.flushTranscript();
-      if (promptOnClose && !inPanel && selected.id === state.sessionId && generation === state.generation) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+      // The side thread's picker hands focus back to the panel's message box while the panel still shows that thread.
+      if (promptOnClose && generation === state.generation) {
+        if (!inPanel && selected.id === state.sessionId) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+        else if (inPanel && current()) btwPanel.focus();
+      }
     },
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');

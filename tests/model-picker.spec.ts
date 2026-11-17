@@ -1510,8 +1510,17 @@ test('a refused switch holding a send shows one notice that still names the mode
   expect(toasts.filter(text => /not changed|wasn’t changed/.test(text)), 'one notice, not the refusal then the held send').toHaveLength(1);
 });
 
+/** Records every distinct text the toast shows, from now on (`window.__toasts`). */
+const watchToasts = (page: Page) => page.evaluate(() => {
+  const toast = document.querySelector('#toast')!; const w = window as any; w.__toasts = [];
+  new MutationObserver(() => { const text = toast.textContent ?? ''; if (text && text !== w.__toasts.at(-1)) w.__toasts.push(text); }).observe(toast, { childList: true, characterData: true, subtree: true });
+});
+const refusalToasts = async (page: Page): Promise<string[]> =>
+  (await page.evaluate(() => (window as any).__toasts as string[])).filter(text => /not changed|wasn’t changed/.test(text));
+
 test('a board start held by a refused change is not started and says why', async ({ page }) => {
   await loadHeld(page, '/');
+  await watchToasts(page);
   await holdCall(page, 'configure_session');
   await pickAstra(page);
   const starts = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'start_task' || c === 'architect_start').length);
@@ -1524,6 +1533,24 @@ test('a board start held by a refused change is not started and says why', async
   await expect(page.locator('#toast')).toHaveText(/^Not started — the model wasn’t changed \(Preview refused the switch\.\); still on .+\.$/);
   await page.waitForTimeout(200);
   expect(await starts()).toBe(0);
+  expect(await refusalToasts(page), 'one notice, not the refusal then the held start').toHaveLength(1);
+});
+
+test('a team turned on while a refused switch saves is not turned on, and says so once', async ({ page }) => {
+  await loadHeld(page, '/');
+  await watchToasts(page);
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await expect(picker(page)).toHaveCount(0);
+  const teamSaves = await callCount(page, 'architect_configure');
+  await page.locator('#team-trigger').click();
+  await page.getByRole('menuitemradio', { name: 'Team', exact: true }).click();
+  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
+  await expect(page.locator('#toast')).toHaveText(/^Team not turned on — the model wasn’t changed \(Preview refused the switch\.\); still on .+\.$/);
+  await page.waitForTimeout(300);
+  expect(await callCount(page, 'architect_configure')).toBe(teamSaves);
+  await expect(page.locator('#team-trigger')).not.toHaveAttribute('data-on');
+  expect(await refusalToasts(page), 'one notice for the refused switch and the team it held back').toHaveLength(1);
 });
 
 // The side thread re-reads its rows only for a saved harness change, once; a model change within a harness keeps them.
@@ -1610,6 +1637,21 @@ for (const auto of [false, true]) test(`re-picking the current model ${auto ? 'i
   await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
   await expect(effort).toHaveText('High');
   expect(await page.evaluate(async () => { const path = '/src/model-switch.ts'; return (await import(path)).saving('session-1'); })).toBe(false);
+});
+
+test('re-picking the side thread’s current model returns focus to the panel’s message box', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.locator('#prompt').fill('/btw first question');
+  await page.locator('#prompt').press('Enter');
+  const panel = page.locator('.btw-panel');
+  await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
+  const configures = await callCount(page, 'configure_session');
+  await panel.locator('.model-picker').click();
+  await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
+  await picker(page).locator('.model-menu-option[aria-current="true"]').click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Message the side thread', exact: true })).toBeFocused();
+  expect(await callCount(page, 'configure_session')).toBe(configures);
 });
 
 test('with Start agents ahead off, typing and picking never warm', async ({ page }) => {
